@@ -15,7 +15,8 @@ Code:
 - `apps/favn_runner/lib/favn_runner/execution_lifecycle.ex` owns runner execution
   lifecycle state, worker/waiter/subscriber monitor bookkeeping, bounded
   completed-execution retention, bounded log/event buffers, and lifecycle
-  diagnostics counts
+  diagnostics counts. Production retention is configured with
+  `config :favn_runner, :execution_retention, ...`.
 - `apps/favn_runner/lib/favn_runner/runtime_config_diagnostic.ex` normalizes
   runner runtime-config failures into stable redacted run diagnostics
 - `apps/favn_runner/lib/favn_runner/sql/materialization_planner.ex` owns runner SQL

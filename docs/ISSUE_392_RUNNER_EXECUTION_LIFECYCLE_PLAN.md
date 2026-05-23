@@ -162,6 +162,9 @@ Recommended defaults:
 }
 ```
 
+Production runner supervision reads these values from
+`config :favn_runner, :execution_retention, ...`.
+
 Rules:
 
 - Completed executions remain awaitable only while retained.

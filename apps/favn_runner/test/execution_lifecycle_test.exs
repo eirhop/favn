@@ -53,6 +53,18 @@ defmodule FavnRunner.ExecutionLifecycleTest do
     assert diagnostics.retention.evicted_completed_executions == 1
   end
 
+  test "pre-completed execution has no worker start timestamp" do
+    lifecycle = ExecutionLifecycle.new()
+    work = work("run_preflight_failed")
+    result = result(work)
+
+    lifecycle = ExecutionLifecycle.put_completed(lifecycle, "rx_preflight_failed", work, result)
+
+    assert {:ok, execution} = ExecutionLifecycle.fetch_execution(lifecycle, "rx_preflight_failed")
+    assert execution.started_at == nil
+    assert %DateTime{} = execution.completed_at
+  end
+
   test "log and event buffers drop oldest entries under configured bounds" do
     lifecycle =
       ExecutionLifecycle.new(retention: [max_logs_per_execution: 2, max_events_per_execution: 1])

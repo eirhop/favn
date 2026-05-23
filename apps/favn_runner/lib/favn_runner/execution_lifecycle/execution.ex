@@ -15,7 +15,7 @@ defmodule FavnRunner.ExecutionLifecycle.Execution do
           result: RunnerResult.t() | nil,
           events: [term()],
           logs: [term()],
-          started_at: DateTime.t(),
+          started_at: DateTime.t() | nil,
           completed_at: DateTime.t() | nil,
           dropped_event_count: non_neg_integer(),
           dropped_log_count: non_neg_integer()
@@ -55,7 +55,6 @@ defmodule FavnRunner.ExecutionLifecycle.Execution do
       work: work,
       status: :completed,
       result: result,
-      started_at: completed_at,
       completed_at: completed_at
     }
   end

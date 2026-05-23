@@ -24,7 +24,7 @@ defmodule FavnRunner.Application do
           {FavnRunner.ManifestStore, name: FavnRunner.ManifestStore},
           {FavnRunner.Server,
            name: FavnRunner.Server,
-           retention: Application.get_env(:favn, :runner_execution_retention, [])}
+           retention: Application.get_env(:favn_runner, :execution_retention, [])}
         ]
 
     opts = [strategy: :one_for_one, name: FavnRunner.Supervisor]
