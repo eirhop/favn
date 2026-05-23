@@ -14,6 +14,7 @@ defmodule FavnRunner.Server do
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
   alias Favn.SQL.SessionPool
+  alias FavnRunner.ExecutionLifecycle
   alias FavnRunner.Inspection
   alias FavnRunner.ManifestResolver
   alias FavnRunner.ManifestStore
@@ -22,32 +23,14 @@ defmodule FavnRunner.Server do
 
   @type execution_id :: String.t()
 
-  @type waiter :: %{
-          required(:from) => GenServer.from(),
-          required(:timer_ref) => reference()
-        }
-
-  @type execution_state :: %{
-          required(:work) => RunnerWork.t(),
-          required(:status) => :running | :completed,
-          optional(:pid) => pid(),
-          optional(:monitor_ref) => reference(),
-          optional(:result) => RunnerResult.t(),
-          optional(:events) => [term()],
-          optional(:logs) => [term()]
-        }
-
   @type state :: %{
-          executions: %{required(execution_id()) => execution_state()},
-          monitor_to_execution: %{required(reference()) => execution_id()},
-          waiters: %{required(execution_id()) => [waiter()]},
-          log_subscribers: %{required(execution_id()) => MapSet.t(pid())}
+          lifecycle: ExecutionLifecycle.t()
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, %{}, name: name)
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   @spec register_manifest(Version.t(), keyword()) :: :ok | {:error, term()}
@@ -134,8 +117,8 @@ defmodule FavnRunner.Server do
   end
 
   @impl true
-  def init(_args) do
-    {:ok, %{executions: %{}, monitor_to_execution: %{}, waiters: %{}, log_subscribers: %{}}}
+  def init(opts) do
+    {:ok, %{lifecycle: ExecutionLifecycle.new(opts)}}
   end
 
   @impl true
@@ -158,34 +141,28 @@ defmodule FavnRunner.Server do
             with {:ok, pid} <- start_worker(execution_id, work, version, asset) do
               monitor_ref = Process.monitor(pid)
 
-              execution = %{
-                work: work,
-                status: :running,
-                pid: pid,
-                monitor_ref: monitor_ref,
-                events: [],
-                logs: []
-              }
+              lifecycle =
+                ExecutionLifecycle.put_running(
+                  state.lifecycle,
+                  execution_id,
+                  work,
+                  pid,
+                  monitor_ref
+                )
 
-              next_state =
-                state
-                |> put_in([:executions, execution_id], execution)
-                |> put_in([:monitor_to_execution, monitor_ref], execution_id)
-
-              {{:ok, execution_id}, next_state}
+              {{:ok, execution_id}, %{state | lifecycle: lifecycle}}
             end
 
           {:error, diagnostic} ->
-            execution = %{
-              work: work,
-              status: :completed,
-              result: preflight_failed_result(work, version, diagnostic),
-              events: [],
-              logs: []
-            }
+            lifecycle =
+              ExecutionLifecycle.put_completed(
+                state.lifecycle,
+                execution_id,
+                work,
+                preflight_failed_result(work, version, diagnostic)
+              )
 
-            next_state = put_in(state, [:executions, execution_id], execution)
-            {{:ok, execution_id}, next_state}
+            {{:ok, execution_id}, %{state | lifecycle: lifecycle}}
         end
       end
 
@@ -196,36 +173,41 @@ defmodule FavnRunner.Server do
   end
 
   def handle_call({:await_result, execution_id, timeout}, from, state) do
-    case Map.fetch(state.executions, execution_id) do
-      {:ok, %{status: :completed, result: %RunnerResult{} = result}} ->
+    case ExecutionLifecycle.fetch_result(state.lifecycle, execution_id) do
+      {:ok, %RunnerResult{} = result} ->
         {:reply, {:ok, result}, state}
 
-      {:ok, %{status: :running}} ->
+      {:error, :not_completed} ->
+        waiter_monitor_ref = Process.monitor(elem(from, 0))
         timer_ref = Process.send_after(self(), {:await_timeout, execution_id, from}, timeout)
-        waiters = [%{from: from, timer_ref: timer_ref} | Map.get(state.waiters, execution_id, [])]
-        {:noreply, put_in(state, [:waiters, execution_id], waiters)}
 
-      :error ->
+        lifecycle =
+          ExecutionLifecycle.add_waiter(
+            state.lifecycle,
+            execution_id,
+            from,
+            timer_ref,
+            waiter_monitor_ref
+          )
+
+        {:noreply, %{state | lifecycle: lifecycle}}
+
+      {:error, :execution_not_found} ->
         {:reply, {:error, :execution_not_found}, state}
     end
   end
 
   def handle_call({:cancel_work, execution_id, reason}, _from, state) do
-    case Map.fetch(state.executions, execution_id) do
+    case ExecutionLifecycle.fetch_execution(state.lifecycle, execution_id) do
       {:ok, %{status: :completed}} ->
         {:reply,
          {:ok, RunnerCancellation.outcome(:already_completed, execution_id: execution_id)}, state}
 
-      {:ok, %{status: :running, pid: pid, work: work, monitor_ref: monitor_ref}} ->
+      {:ok, %{status: :running, pid: pid, work: work}} ->
         _ = DynamicSupervisor.terminate_child(FavnRunner.WorkerSupervisor, pid)
 
         result = cancelled_result(work, reason)
         next_state = finalize_execution(state, execution_id, result)
-
-        next_state = %{
-          next_state
-          | monitor_to_execution: Map.delete(next_state.monitor_to_execution, monitor_ref)
-        }
 
         {:reply, {:ok, RunnerCancellation.outcome(:acknowledged, execution_id: execution_id)},
          next_state}
@@ -236,39 +218,30 @@ defmodule FavnRunner.Server do
   end
 
   def handle_call({:subscribe_execution_logs, execution_id, subscriber}, _from, state) do
-    case Map.fetch(state.executions, execution_id) do
-      {:ok, %{status: status} = execution} when status in [:running, :completed] ->
-        subscribers =
-          state.log_subscribers
-          |> Map.get(execution_id, MapSet.new())
-          |> MapSet.put(subscriber)
+    monitor_ref = Process.monitor(subscriber)
 
-        execution
-        |> Map.get(:logs, [])
-        |> Enum.reverse()
-        |> Enum.each(fn entry -> send(subscriber, {:runner_log_entry, execution_id, entry}) end)
+    case ExecutionLifecycle.subscribe_logs(state.lifecycle, execution_id, subscriber, monitor_ref) do
+      {:ok, replay_entries, cleanup_monitor_refs, lifecycle} ->
+        cleanup_monitor_refs(cleanup_monitor_refs)
 
-        {:reply, :ok, put_in(state, [:log_subscribers, execution_id], subscribers)}
+        Enum.each(replay_entries, fn entry ->
+          send(subscriber, {:runner_log_entry, execution_id, entry})
+        end)
 
-      :error ->
-        {:reply, {:error, :execution_not_found}, state}
+        {:reply, :ok, %{state | lifecycle: lifecycle}}
+
+      {:error, :execution_not_found, cleanup_monitor_refs, lifecycle} ->
+        cleanup_monitor_refs(cleanup_monitor_refs)
+        {:reply, {:error, :execution_not_found}, %{state | lifecycle: lifecycle}}
     end
   end
 
   def handle_call({:unsubscribe_execution_logs, execution_id, subscriber}, _from, state) do
-    subscribers =
-      state.log_subscribers
-      |> Map.get(execution_id, MapSet.new())
-      |> MapSet.delete(subscriber)
+    {cleanup_monitor_refs, lifecycle} =
+      ExecutionLifecycle.unsubscribe_logs(state.lifecycle, execution_id, subscriber)
 
-    log_subscribers =
-      if MapSet.size(subscribers) == 0 do
-        Map.delete(state.log_subscribers, execution_id)
-      else
-        Map.put(state.log_subscribers, execution_id, subscribers)
-      end
-
-    {:reply, :ok, %{state | log_subscribers: log_subscribers}}
+    cleanup_monitor_refs(cleanup_monitor_refs)
+    {:reply, :ok, %{state | lifecycle: lifecycle}}
   end
 
   def handle_call({:inspect_relation, %RelationInspectionRequest{} = request}, _from, state) do
@@ -284,52 +257,37 @@ defmodule FavnRunner.Server do
   end
 
   def handle_call(:diagnostics, _from, state) do
-    executions = Map.values(state.executions)
-
     reply =
       {:ok,
-       %{
+       state.lifecycle
+       |> ExecutionLifecycle.diagnostics()
+       |> Map.merge(%{
          available?: true,
          server: __MODULE__,
-         in_flight_executions: Enum.count(executions, &(&1.status == :running)),
-         completed_executions: Enum.count(executions, &(&1.status == :completed)),
          data_plane: data_plane_diagnostics()
-       }}
+       })}
 
     {:reply, reply, state}
   end
 
   @impl true
   def handle_info({:runner_event, execution_id, event}, state) do
-    next_state =
-      update_in(state, [:executions, execution_id, :events], fn
-        nil -> [event]
-        events -> [event | events]
-      end)
-
-    {:noreply, next_state}
+    lifecycle = ExecutionLifecycle.append_event(state.lifecycle, execution_id, event)
+    {:noreply, %{state | lifecycle: lifecycle}}
   end
 
   def handle_info({:runner_log_entry, execution_id, entry}, state) do
-    state.log_subscribers
-    |> Map.get(execution_id, MapSet.new())
-    |> Enum.each(fn subscriber -> send(subscriber, {:runner_log_entry, execution_id, entry}) end)
+    {subscribers, lifecycle} = ExecutionLifecycle.append_log(state.lifecycle, execution_id, entry)
 
-    next_state =
-      if Map.has_key?(state.executions, execution_id) do
-        update_in(state, [:executions, execution_id, :logs], fn
-          nil -> [entry]
-          logs -> [entry | logs]
-        end)
-      else
-        state
-      end
+    Enum.each(subscribers, fn subscriber ->
+      send(subscriber, {:runner_log_entry, execution_id, entry})
+    end)
 
-    {:noreply, next_state}
+    {:noreply, %{state | lifecycle: lifecycle}}
   end
 
   def handle_info({:runner_result, execution_id, %RunnerResult{} = result}, state) do
-    case Map.fetch(state.executions, execution_id) do
+    case ExecutionLifecycle.fetch_execution(state.lifecycle, execution_id) do
       {:ok, %{status: :running}} ->
         {:noreply, finalize_execution(state, execution_id, result)}
 
@@ -342,30 +300,42 @@ defmodule FavnRunner.Server do
   end
 
   def handle_info({:await_timeout, execution_id, from}, state) do
-    {waiters, remaining_waiters} = pop_waiter(state.waiters, execution_id, from)
+    {waiters, lifecycle} = ExecutionLifecycle.pop_waiter(state.lifecycle, execution_id, from)
 
-    Enum.each(waiters, fn %{from: waiter_from} ->
+    Enum.each(waiters, fn %{from: waiter_from, monitor_ref: monitor_ref} ->
+      cleanup_monitor_refs([monitor_ref])
       GenServer.reply(waiter_from, {:error, :timeout})
     end)
 
-    {:noreply, %{state | waiters: remaining_waiters}}
+    {:noreply, %{state | lifecycle: lifecycle}}
   end
 
   def handle_info({:DOWN, monitor_ref, :process, _pid, reason}, state) do
-    case Map.pop(state.monitor_to_execution, monitor_ref) do
-      {nil, monitor_to_execution} ->
-        {:noreply, %{state | monitor_to_execution: monitor_to_execution}}
+    {execution_id, lifecycle} =
+      ExecutionLifecycle.pop_worker_monitor(state.lifecycle, monitor_ref)
 
-      {execution_id, monitor_to_execution} ->
-        next_state = %{state | monitor_to_execution: monitor_to_execution}
+    state = %{state | lifecycle: lifecycle}
 
-        case Map.fetch(next_state.executions, execution_id) do
+    cond do
+      is_binary(execution_id) ->
+        case ExecutionLifecycle.fetch_execution(state.lifecycle, execution_id) do
           {:ok, %{status: :running, work: work}} ->
-            crash_result = crashed_result(work, reason)
-            {:noreply, finalize_execution(next_state, execution_id, crash_result)}
+            {:noreply, finalize_execution(state, execution_id, crashed_result(work, reason))}
 
           _other ->
-            {:noreply, next_state}
+            {:noreply, state}
+        end
+
+      true ->
+        {waiters, lifecycle} =
+          ExecutionLifecycle.remove_waiter_monitor(state.lifecycle, monitor_ref)
+
+        if waiters != [] do
+          Enum.each(waiters, fn %{timer_ref: timer_ref} -> Process.cancel_timer(timer_ref) end)
+          {:noreply, %{state | lifecycle: lifecycle}}
+        else
+          lifecycle = ExecutionLifecycle.remove_subscriber_monitor(lifecycle, monitor_ref)
+          {:noreply, %{state | lifecycle: lifecycle}}
         end
     end
   end
@@ -393,50 +363,22 @@ defmodule FavnRunner.Server do
   end
 
   defp finalize_execution(state, execution_id, %RunnerResult{} = result) do
-    execution = Map.get(state.executions, execution_id, %{})
+    {waiters, monitor_refs, lifecycle} =
+      ExecutionLifecycle.finalize(state.lifecycle, execution_id, result)
 
-    next_state =
-      put_in(state, [:executions, execution_id], %{
-        work: execution[:work],
-        status: :completed,
-        result: result,
-        events: execution[:events] || [],
-        logs: execution[:logs] || []
-      })
+    cleanup_monitor_refs(monitor_refs)
 
-    next_state = %{
-      next_state
-      | log_subscribers: Map.delete(next_state.log_subscribers, execution_id)
-    }
-
-    {waiters, remaining_waiters} = Map.pop(next_state.waiters, execution_id, [])
-
-    Enum.each(waiters, fn %{from: from, timer_ref: timer_ref} ->
+    Enum.each(waiters, fn %{from: from, timer_ref: timer_ref, monitor_ref: monitor_ref} ->
       _ = Process.cancel_timer(timer_ref)
+      cleanup_monitor_refs([monitor_ref])
       GenServer.reply(from, {:ok, result})
     end)
 
-    %{next_state | waiters: remaining_waiters}
+    %{state | lifecycle: lifecycle}
   end
 
-  defp pop_waiter(waiters, execution_id, from) do
-    case Map.fetch(waiters, execution_id) do
-      {:ok, execution_waiters} ->
-        {matched, remaining} = Enum.split_with(execution_waiters, &(&1.from == from))
-
-        next_waiters =
-          if remaining == [] do
-            Map.delete(waiters, execution_id)
-          else
-            Map.put(waiters, execution_id, remaining)
-          end
-
-        {matched, next_waiters}
-
-      :error ->
-        {[], waiters}
-    end
-  end
+  defp cleanup_monitor_refs(monitor_refs) when is_list(monitor_refs),
+    do: Enum.each(monitor_refs, &Process.demonitor(&1, [:flush]))
 
   defp cancelled_result(work, reason) do
     %RunnerResult{

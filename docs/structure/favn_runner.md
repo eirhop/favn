@@ -12,6 +12,10 @@ Code:
 - `apps/favn_runner/lib/favn_runner/sql_runtime_preflight.ex` validates planned SQL
   connection runtime config from explicit runner work planned scope before worker
   execution begins
+- `apps/favn_runner/lib/favn_runner/execution_lifecycle.ex` owns runner execution
+  lifecycle state, worker/waiter/subscriber monitor bookkeeping, bounded
+  completed-execution retention, bounded log/event buffers, and lifecycle
+  diagnostics counts
 - `apps/favn_runner/lib/favn_runner/runtime_config_diagnostic.ex` normalizes
   runner runtime-config failures into stable redacted run diagnostics
 - `apps/favn_runner/lib/favn_runner/sql/materialization_planner.ex` owns runner SQL
