@@ -16,12 +16,14 @@ defmodule FavnOrchestrator.Storage do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
+  alias FavnOrchestrator.CursorPage
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunState
 
   @type freshness_state_key :: StorageAdapter.freshness_state_key()
+  @type read_model_replacement_scope :: StorageAdapter.read_model_replacement_scope()
 
   @spec child_specs() :: {:ok, [Supervisor.child_spec()]} | {:error, term()}
   @spec child_specs(RuntimeConfig.t()) :: {:ok, [Supervisor.child_spec()]} | {:error, term()}
@@ -348,6 +350,15 @@ defmodule FavnOrchestrator.Storage do
     end)
   end
 
+  @spec scan_backfill_windows(keyword(), keyword()) ::
+          {:ok, CursorPage.t(BackfillWindow.t())} | {:error, term()}
+  def scan_backfill_windows(filters \\ [], scan_opts \\ [])
+      when is_list(filters) and is_list(scan_opts) do
+    cursor_adapter_call(filters, scan_opts, fn adapter, filters, scan_opts, opts ->
+      adapter.scan_backfill_windows(filters, scan_opts, opts)
+    end)
+  end
+
   @spec apply_backfill_child_projection(BackfillWindow.t(), [AssetWindowState.t()]) ::
           {:ok, BackfillProgress.t()} | {:error, term()}
   def apply_backfill_child_projection(%BackfillWindow{} = window, asset_window_states)
@@ -429,8 +440,17 @@ defmodule FavnOrchestrator.Storage do
     end
   end
 
+  @spec scan_asset_freshness_states(keyword(), keyword()) ::
+          {:ok, CursorPage.t(AssetFreshnessState.t())} | {:error, term()}
+  def scan_asset_freshness_states(filters \\ [], scan_opts \\ [])
+      when is_list(filters) and is_list(scan_opts) do
+    cursor_adapter_call(filters, scan_opts, fn adapter, filters, scan_opts, opts ->
+      adapter.scan_asset_freshness_states(filters, scan_opts, opts)
+    end)
+  end
+
   @spec replace_backfill_read_models(
-          keyword(),
+          read_model_replacement_scope(),
           [CoverageBaseline.t()],
           [BackfillWindow.t()],
           [AssetWindowState.t()]
@@ -441,17 +461,26 @@ defmodule FavnOrchestrator.Storage do
         backfill_windows,
         asset_window_states
       )
-      when is_list(scope) and is_list(coverage_baselines) and is_list(backfill_windows) and
+      when is_list(coverage_baselines) and is_list(backfill_windows) and
              is_list(asset_window_states) do
-    adapter_call(fn adapter, opts ->
-      adapter.replace_backfill_read_models(
-        scope,
-        coverage_baselines,
-        backfill_windows,
-        asset_window_states,
-        opts
-      )
-    end)
+    with {:ok, scope} <- normalize_replacement_scope(scope),
+         :ok <-
+           validate_replacement_rows(
+             scope,
+             coverage_baselines,
+             backfill_windows,
+             asset_window_states
+           ) do
+      adapter_call(fn adapter, opts ->
+        adapter.replace_backfill_read_models(
+          scope,
+          coverage_baselines,
+          backfill_windows,
+          asset_window_states,
+          opts
+        )
+      end)
+    end
   end
 
   @spec put_auth_actor(map()) :: :ok | {:error, term()}
@@ -684,6 +713,47 @@ defmodule FavnOrchestrator.Storage do
       adapter_call(fn adapter, opts -> fun.(adapter, Keyword.merge(filters, page_opts), opts) end)
     end
   end
+
+  defp cursor_adapter_call(filters, scan_opts, fun)
+       when is_list(filters) and is_list(scan_opts) and is_function(fun, 4) do
+    with {:ok, scan_opts} <- CursorPage.normalize_opts(scan_opts) do
+      adapter_call(fn adapter, opts -> fun.(adapter, filters, scan_opts, opts) end)
+    end
+  end
+
+  defp normalize_replacement_scope(:all), do: {:ok, :all}
+
+  defp normalize_replacement_scope({:backfill_run, id}) when is_binary(id) and id != "",
+    do: {:ok, {:backfill_run, id}}
+
+  defp normalize_replacement_scope({:pipeline, module}) when is_atom(module),
+    do: {:ok, {:pipeline, module}}
+
+  defp normalize_replacement_scope(scope),
+    do: {:error, {:unsupported_replacement_scope, scope}}
+
+  defp validate_replacement_rows(:all, _coverage_baselines, _backfill_windows, _asset_states),
+    do: :ok
+
+  defp validate_replacement_rows({:pipeline, module} = scope, baselines, windows, states) do
+    if Enum.all?(baselines ++ windows ++ states, &match_pipeline_scope?(&1, module)) do
+      :ok
+    else
+      {:error, {:replacement_row_out_of_scope, scope}}
+    end
+  end
+
+  defp validate_replacement_rows({:backfill_run, id} = scope, baselines, windows, states) do
+    valid? =
+      Enum.all?(baselines, &(&1.created_by_run_id == id)) and
+        Enum.all?(windows, &(&1.backfill_run_id == id)) and
+        Enum.all?(states, &(&1.latest_parent_run_id == id))
+
+    if valid?, do: :ok, else: {:error, {:replacement_row_out_of_scope, scope}}
+  end
+
+  defp match_pipeline_scope?(%{pipeline_module: module}, module), do: true
+  defp match_pipeline_scope?(_value, _module), do: false
 
   defp maybe_child_to_list(:none), do: []
   defp maybe_child_to_list(value), do: [value]

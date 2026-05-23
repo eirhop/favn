@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
+  alias FavnOrchestrator.CursorPage
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
@@ -451,6 +452,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def scan_backfill_windows(filters, scan_opts, opts)
+      when is_list(filters) and is_list(scan_opts) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:scan_backfill_windows, filters, scan_opts})
+  end
+
+  @impl true
   def apply_backfill_child_projection(%BackfillWindow{} = window, asset_window_states, opts)
       when is_list(asset_window_states) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
@@ -520,6 +528,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def scan_asset_freshness_states(filters, scan_opts, opts)
+      when is_list(filters) and is_list(scan_opts) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:scan_asset_freshness_states, filters, scan_opts})
+  end
+
+  @impl true
   def get_asset_freshness_states_by_keys(keys, opts) when is_list(keys) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:get_asset_freshness_states_by_keys, keys})
@@ -533,7 +548,8 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
         asset_window_states,
         opts
       )
-      when is_list(scope) and is_list(coverage_baselines) and is_list(backfill_windows) and
+      when (scope == :all or is_tuple(scope)) and is_list(coverage_baselines) and
+             is_list(backfill_windows) and
              is_list(asset_window_states) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
 
@@ -1208,6 +1224,25 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, {:ok, Page.from_fetched(rows, page_opts(filters))}, state}
   end
 
+  def handle_call({:scan_backfill_windows, filters, scan_opts}, _from, state) do
+    case backfill_window_cursor(Keyword.get(scan_opts, :after)) do
+      {:ok, after_key} ->
+        rows =
+          state.backfill_windows
+          |> Map.values()
+          |> filter_by(filters)
+          |> Enum.sort_by(&backfill_window_sort_key/1)
+          |> cursor_drop(after_key, &backfill_window_sort_key/1)
+          |> Enum.take(Keyword.fetch!(scan_opts, :limit) + 1)
+
+        page = CursorPage.from_fetched(rows, scan_opts, &backfill_window_cursor!/1)
+        {:reply, {:ok, page}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call(
         {:apply_backfill_child_projection, %BackfillWindow{} = window, asset_window_states},
         _from,
@@ -1320,6 +1355,24 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     end
   end
 
+  def handle_call({:scan_asset_freshness_states, filters, scan_opts}, _from, state) do
+    with :ok <- validate_filters(filters, @asset_freshness_state_filters),
+         {:ok, after_key} <- asset_freshness_cursor(Keyword.get(scan_opts, :after)) do
+      rows =
+        state.asset_freshness_states
+        |> Map.values()
+        |> filter_by(filters)
+        |> Enum.sort_by(&asset_freshness_sort_key/1)
+        |> cursor_drop(after_key, &asset_freshness_sort_key/1)
+        |> Enum.take(Keyword.fetch!(scan_opts, :limit) + 1)
+
+      page = CursorPage.from_fetched(rows, scan_opts, &asset_freshness_cursor!/1)
+      {:reply, {:ok, page}, state}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:get_asset_freshness_states_by_keys, keys}, _from, state) do
     rows =
       keys
@@ -1339,31 +1392,38 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
         _from,
         state
       ) do
-    next_state = %{
-      state
-      | coverage_baselines:
-          state.coverage_baselines
-          |> reject_scoped(scope)
-          |> put_coverage_baselines(coverage_baselines),
-        backfill_windows:
+    case replacement_scope(scope) do
+      {:ok, scope} ->
+        next_backfill_windows =
           state.backfill_windows
-          |> reject_scoped(scope)
-          |> put_backfill_windows(backfill_windows),
-        backfill_progress:
-          state.backfill_progress
-          |> reject_scoped_progress(scope)
-          |> rebuild_all_progress(
-            state.backfill_windows
-            |> reject_scoped(scope)
-            |> put_backfill_windows(backfill_windows)
-          ),
-        asset_window_states:
-          state.asset_window_states
-          |> reject_scoped(scope)
-          |> put_asset_window_states(asset_window_states)
-    }
+          |> reject_replacement_scope(scope)
+          |> put_backfill_windows(backfill_windows)
 
-    {:reply, :ok, next_state}
+        affected_backfill_ids =
+          affected_backfill_ids(state.backfill_windows, scope, backfill_windows)
+
+        next_state = %{
+          state
+          | coverage_baselines:
+              state.coverage_baselines
+              |> reject_replacement_scope(scope)
+              |> put_coverage_baselines(coverage_baselines),
+            backfill_windows: next_backfill_windows,
+            backfill_progress:
+              state.backfill_progress
+              |> reject_replacement_progress(scope)
+              |> rebuild_progress_for_ids(next_backfill_windows, affected_backfill_ids),
+            asset_window_states:
+              state.asset_window_states
+              |> reject_replacement_scope(scope)
+              |> put_asset_window_states(asset_window_states)
+        }
+
+        {:reply, :ok, next_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:put_auth_actor, actor}, _from, state) do
@@ -1942,24 +2002,64 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   defp validate_replay_limit(limit) when is_integer(limit) and limit > 0, do: :ok
   defp validate_replay_limit(_limit), do: {:error, :cursor_invalid}
 
-  defp reject_scoped(_values, []), do: %{}
+  defp replacement_scope(:all), do: {:ok, :all}
+  defp replacement_scope({:backfill_run, id}) when is_binary(id), do: {:ok, {:backfill_run, id}}
+  defp replacement_scope({:pipeline, module}) when is_atom(module), do: {:ok, {:pipeline, module}}
 
-  defp reject_scoped(values, scope) when is_map(values) do
+  defp replacement_scope(scope),
+    do: {:error, {:unsupported_replacement_scope, scope}}
+
+  defp reject_replacement_scope(_values, :all), do: %{}
+
+  defp reject_replacement_scope(values, scope) when is_map(values) do
     values
-    |> Enum.reject(fn {_key, value} -> scoped?(value, scope) end)
+    |> Enum.reject(fn {_key, value} -> in_replacement_scope?(value, scope) end)
     |> Map.new()
   end
 
-  defp reject_scoped_progress(_values, []), do: %{}
+  defp reject_replacement_progress(_values, :all), do: %{}
 
-  defp reject_scoped_progress(values, backfill_run_id: backfill_run_id) do
-    Map.delete(values, backfill_run_id)
+  defp reject_replacement_progress(values, {:backfill_run, backfill_run_id}),
+    do: Map.delete(values, backfill_run_id)
+
+  defp reject_replacement_progress(values, {:pipeline, _module}), do: values
+
+  defp in_replacement_scope?(_value, :all), do: true
+
+  defp in_replacement_scope?(%CoverageBaseline{created_by_run_id: id}, {:backfill_run, id}),
+    do: true
+
+  defp in_replacement_scope?(%BackfillWindow{backfill_run_id: id}, {:backfill_run, id}),
+    do: true
+
+  defp in_replacement_scope?(%AssetWindowState{latest_parent_run_id: id}, {:backfill_run, id}),
+    do: true
+
+  defp in_replacement_scope?(%{pipeline_module: module}, {:pipeline, module}), do: true
+  defp in_replacement_scope?(_value, _scope), do: false
+
+  defp affected_backfill_ids(backfill_windows, :all, replacement_windows) do
+    backfill_windows
+    |> Map.values()
+    |> Enum.map(& &1.backfill_run_id)
+    |> Kernel.++(Enum.map(replacement_windows, & &1.backfill_run_id))
+    |> Enum.uniq()
   end
 
-  defp reject_scoped_progress(_values, _scope), do: %{}
+  defp affected_backfill_ids(_backfill_windows, {:backfill_run, id}, replacement_windows) do
+    [id | Enum.map(replacement_windows, & &1.backfill_run_id)]
+    |> Enum.uniq()
+  end
 
-  defp scoped?(value, scope) do
-    Enum.all?(scope, fn {key, expected} -> Map.get(value, key) == expected end)
+  defp affected_backfill_ids(backfill_windows, {:pipeline, module}, replacement_windows) do
+    deleted_ids =
+      backfill_windows
+      |> Map.values()
+      |> Enum.filter(&(&1.pipeline_module == module))
+      |> Enum.map(& &1.backfill_run_id)
+
+    (deleted_ids ++ Enum.map(replacement_windows, & &1.backfill_run_id))
+    |> Enum.uniq()
   end
 
   defp put_coverage_baselines(values, baselines) do
@@ -2020,17 +2120,110 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     end
   end
 
-  defp rebuild_all_progress(progress, backfill_windows) do
-    backfill_windows
-    |> Map.values()
-    |> Enum.map(& &1.backfill_run_id)
-    |> Enum.uniq()
-    |> Enum.reduce(progress, fn backfill_run_id, acc ->
+  defp rebuild_progress_for_ids(progress, backfill_windows, ids) do
+    Enum.reduce(ids, progress, fn backfill_run_id, acc ->
       case rebuild_progress_from_windows(backfill_windows, backfill_run_id) do
         {:ok, %BackfillProgress{} = rebuilt} -> Map.put(acc, backfill_run_id, rebuilt)
+        {:error, :not_found} -> Map.delete(acc, backfill_run_id)
         {:error, _reason} -> acc
       end
     end)
+  end
+
+  defp cursor_drop(rows, nil, _sort_fun), do: rows
+
+  defp cursor_drop(rows, after_key, sort_fun) do
+    Enum.drop_while(rows, &(sort_fun.(&1) <= after_key))
+  end
+
+  defp backfill_window_cursor(nil), do: {:ok, nil}
+
+  defp backfill_window_cursor(%{
+         kind: :backfill_window,
+         window_start_at: %DateTime{} = window_start_at,
+         backfill_run_id: backfill_run_id,
+         pipeline_module: pipeline_module,
+         window_key: window_key
+       })
+       when is_binary(backfill_run_id) and is_atom(pipeline_module) and is_binary(window_key),
+       do:
+         {:ok,
+          backfill_window_sort_key(window_start_at, backfill_run_id, pipeline_module, window_key)}
+
+  defp backfill_window_cursor(_cursor), do: {:error, :invalid_cursor_pagination}
+
+  defp backfill_window_cursor!(%BackfillWindow{} = window) do
+    %{
+      kind: :backfill_window,
+      window_start_at: window.window_start_at,
+      backfill_run_id: window.backfill_run_id,
+      pipeline_module: window.pipeline_module,
+      window_key: window.window_key
+    }
+  end
+
+  defp backfill_window_sort_key(%BackfillWindow{} = window) do
+    backfill_window_sort_key(
+      window.window_start_at,
+      window.backfill_run_id,
+      window.pipeline_module,
+      window.window_key
+    )
+  end
+
+  defp backfill_window_sort_key(
+         %DateTime{} = window_start_at,
+         backfill_run_id,
+         pipeline_module,
+         window_key
+       ) do
+    {DateTime.to_unix(window_start_at, :microsecond), backfill_run_id,
+     Atom.to_string(pipeline_module), window_key}
+  end
+
+  defp asset_freshness_cursor(nil), do: {:ok, nil}
+
+  defp asset_freshness_cursor(%{
+         kind: :asset_freshness_state,
+         updated_at: %DateTime{} = updated_at,
+         asset_ref_module: asset_ref_module,
+         asset_ref_name: asset_ref_name,
+         freshness_key: freshness_key
+       })
+       when is_atom(asset_ref_module) and is_atom(asset_ref_name) and is_binary(freshness_key),
+       do:
+         {:ok,
+          asset_freshness_sort_key(updated_at, asset_ref_module, asset_ref_name, freshness_key)}
+
+  defp asset_freshness_cursor(_cursor), do: {:error, :invalid_cursor_pagination}
+
+  defp asset_freshness_cursor!(%AssetFreshnessState{} = state) do
+    %{
+      kind: :asset_freshness_state,
+      updated_at: state.updated_at,
+      asset_ref_module: state.asset_ref_module,
+      asset_ref_name: state.asset_ref_name,
+      freshness_key: state.freshness_key
+    }
+  end
+
+  defp asset_freshness_sort_key(%AssetFreshnessState{} = state) do
+    asset_freshness_sort_key(
+      state.updated_at,
+      state.asset_ref_module,
+      state.asset_ref_name,
+      state.freshness_key
+    )
+  end
+
+  defp asset_freshness_sort_key(
+         %DateTime{} = updated_at,
+         asset_ref_module,
+         asset_ref_name,
+         freshness_key
+       ) do
+    {DateTime.to_unix(updated_at, :microsecond) * -1, Atom.to_string(asset_ref_module),
+     Atom.to_string(asset_ref_name), freshness_key}
   end
 
   defp offset_and_fetch(values, filters) do

@@ -30,7 +30,7 @@ defmodule FavnOrchestrator.Backfill.RepairTest do
     assert :ok = Storage.put_run(child)
     assert {:ok, before_events} = Storage.list_run_events(parent.id)
 
-    assert {:ok, report} = FavnOrchestrator.repair_backfill_projections(apply: true)
+    assert {:ok, report} = FavnOrchestrator.repair_backfill_projections(apply: true, all: true)
 
     assert report.counts.backfill_windows == 1
     assert report.counts.asset_window_states == 1
@@ -107,7 +107,7 @@ defmodule FavnOrchestrator.Backfill.RepairTest do
     assert :ok = Storage.put_run(rerun)
     assert :ok = Storage.put_run(failed)
 
-    assert {:ok, report} = FavnOrchestrator.repair_backfill_projections(apply: true)
+    assert {:ok, report} = FavnOrchestrator.repair_backfill_projections(apply: true, all: true)
 
     assert report.counts.backfill_windows == 1
     assert report.counts.asset_window_states == 1
@@ -148,6 +148,11 @@ defmodule FavnOrchestrator.Backfill.RepairTest do
 
     assert {:error, :not_found} =
              Storage.get_backfill_window(parent.id, MyApp.Pipelines.Daily, "day:2026-04-27")
+  end
+
+  test "apply requires an explicit destructive replacement scope" do
+    assert {:error, :replacement_scope_required} =
+             FavnOrchestrator.repair_backfill_projections(apply: true)
   end
 
   defp parent_run(run_id) do

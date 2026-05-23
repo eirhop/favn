@@ -111,6 +111,10 @@ defmodule Favn.StorageFacadeTest do
     def list_backfill_windows(_filters, _opts), do: {:ok, []}
 
     @impl true
+    def scan_backfill_windows(_filters, scan_opts, _opts),
+      do: {:ok, FavnOrchestrator.CursorPage.from_fetched([], scan_opts, fn _ -> nil end)}
+
+    @impl true
     def apply_backfill_child_projection(_window, _states, _opts), do: {:error, :not_found}
 
     @impl true
@@ -138,6 +142,10 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def list_asset_freshness_states(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def scan_asset_freshness_states(_filters, scan_opts, _opts),
+      do: {:ok, FavnOrchestrator.CursorPage.from_fetched([], scan_opts, fn _ -> nil end)}
 
     @impl true
     def get_asset_freshness_states_by_keys(_keys, _opts), do: {:ok, %{}}
@@ -275,6 +283,10 @@ defmodule Favn.StorageFacadeTest do
     def list_backfill_windows(_filters, _opts), do: {:ok, []}
 
     @impl true
+    def scan_backfill_windows(_filters, scan_opts, _opts),
+      do: {:ok, FavnOrchestrator.CursorPage.from_fetched([], scan_opts, fn _ -> nil end)}
+
+    @impl true
     def apply_backfill_child_projection(_window, _states, _opts), do: {:error, :not_found}
 
     @impl true
@@ -302,6 +314,10 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def list_asset_freshness_states(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def scan_asset_freshness_states(_filters, scan_opts, _opts),
+      do: {:ok, FavnOrchestrator.CursorPage.from_fetched([], scan_opts, fn _ -> nil end)}
 
     @impl true
     def get_asset_freshness_states_by_keys(_keys, _opts), do: {:ok, %{}}

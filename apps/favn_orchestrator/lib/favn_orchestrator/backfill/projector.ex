@@ -171,21 +171,23 @@ defmodule FavnOrchestrator.Backfill.Projector do
   @doc false
   @spec list_all_backfill_windows(keyword()) :: {:ok, [BackfillWindow.t()]} | {:error, term()}
   def list_all_backfill_windows(filters) when is_list(filters) do
-    fetch_backfill_window_pages(filters, 0, [])
+    fetch_backfill_window_pages(filters, nil, [])
   end
 
-  defp fetch_backfill_window_pages(filters, offset, acc) do
+  defp fetch_backfill_window_pages(filters, cursor, acc) do
     with {:ok, page} <-
-           Storage.list_backfill_windows(Keyword.merge(filters, limit: 500, offset: offset)) do
-      acc = acc ++ page.items
+           Storage.scan_backfill_windows(filters, [{:limit, 500}, {:after, cursor}]) do
+      acc = prepend_page_items(page.items, acc)
 
       if page.has_more? do
-        fetch_backfill_window_pages(filters, page.next_offset, acc)
+        fetch_backfill_window_pages(filters, page.next_cursor, acc)
       else
-        {:ok, acc}
+        {:ok, Enum.reverse(acc)}
       end
     end
   end
+
+  defp prepend_page_items(items, acc), do: Enum.reduce(items, acc, &[&1 | &2])
 
   @doc false
   @spec parent_status([BackfillWindow.t()]) ::
