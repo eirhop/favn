@@ -213,7 +213,7 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp load_run(run_id, existing_back_asset_href \\ nil) do
-    case FavnOrchestrator.get_execution_group_detail_for_run(run_id) do
+    case FavnOrchestrator.get_operator_run_detail(run_id, include: [:events], event_limit: 200) do
       {:ok, detail} -> detail_from_execution_group(detail, run_id, existing_back_asset_href)
       {:error, reason} -> %{id: run_id, found?: false, error: error_label(reason)}
     end
@@ -224,11 +224,10 @@ defmodule FavnView.RunDetailLive do
          run_id,
          existing_back_asset_href
        ) do
-    root_detail = root_detail(summary.id)
     attempts = Enum.map(Map.get(detail, :asset_attempts, []), &attempt_from_public/1)
-    legacy_asset_results = Enum.map(Map.get(root_detail, :steps, []), &legacy_step_from_public/1)
+    legacy_asset_results = Enum.map(Map.get(detail, :steps, []), &legacy_step_from_public/1)
     windows = Enum.map(Map.get(detail, :windows, []), &window_from_public/1)
-    events = Map.get(detail, :events, root_detail.events)
+    events = Map.get(detail, :events, [])
     child_runs = child_runs_from_public(Map.get(detail, :child_runs, []), attempts, windows)
     cancel_target = cancel_target(summary, root_run, child_runs, run_id)
     timeline = Enum.map(Map.get(detail, :timeline, []), &timeline_from_public(&1, attempts))
@@ -236,7 +235,7 @@ defmodule FavnView.RunDetailLive do
     failures = Enum.filter(attempts, &(&1.status_tone == :error))
 
     backfill_failures =
-      Enum.map(Map.get(root_detail, :backfill_failures, []), &backfill_failure_from_public/1)
+      Enum.map(Map.get(detail, :backfill_failures, []), &backfill_failure_from_public/1)
 
     target = target_label(summary.target_assets)
     status = group_status(summary)
@@ -283,13 +282,12 @@ defmodule FavnView.RunDetailLive do
       legacy_asset_text: legacy_asset_text(legacy_asset_results),
       failures: failures,
       backfill_failures: backfill_failures,
-      backfill_failure_count:
-        Map.get(root_detail, :backfill_failure_count, length(backfill_failures)),
+      backfill_failure_count: Map.get(detail, :backfill_failure_count, length(backfill_failures)),
       child_runs: child_runs,
       timeline: timeline,
       events: Enum.map(events, &event_from_public/1),
-      latest_event_summary: events |> Enum.map(&event_from_public/1) |> latest_event_summary(),
-      waiting_activity?: root_detail.events == [] and active_group?(summary),
+      latest_event_summary: latest_event_summary(detail, events),
+      waiting_activity?: events == [] and active_group?(summary),
       current_activity: current_activity(attempts),
       selected_attempt: nil,
       context: context_items(summary, root_run, target, windows),
@@ -297,15 +295,8 @@ defmodule FavnView.RunDetailLive do
         existing_back_asset_href || back_asset_href(List.first(summary.target_assets)),
       raw_run: inspect(detail, pretty: true, limit: 50, printable_limit: 2_000),
       raw_events: inspect(events, pretty: true, limit: 50, printable_limit: 2_000),
-      root_event_sequence: latest_sequence(root_detail.events, nil)
+      root_event_sequence: Map.get(detail, :latest_event_sequence)
     }
-  end
-
-  defp root_detail(run_id) do
-    case FavnOrchestrator.get_run_detail(run_id) do
-      {:ok, detail} -> detail
-      {:error, _reason} -> %{events: []}
-    end
   end
 
   defp maybe_schedule_refresh(%{assigns: %{run: %{active?: true}}} = socket) do
@@ -826,6 +817,13 @@ defmodule FavnView.RunDetailLive do
   defp short_id(id) when is_binary(id) and byte_size(id) > 18, do: String.slice(id, 0, 18)
   defp short_id(id) when is_binary(id), do: id
   defp short_id(_id), do: "unknown"
+
+  defp latest_event_summary(%{latest_event: latest_event}, _events) when not is_nil(latest_event),
+    do: latest_event |> event_from_public() |> Map.get(:summary)
+
+  defp latest_event_summary(_detail, events),
+    do: events |> Enum.map(&event_from_public/1) |> latest_event_summary()
+
   defp latest_event_summary([]), do: nil
   defp latest_event_summary(events), do: events |> List.last() |> Map.get(:summary)
 
@@ -846,6 +844,11 @@ defmodule FavnView.RunDetailLive do
 
   defp latest_sequence(events, fallback),
     do: events |> Enum.map(&Map.get(&1, :sequence)) |> Enum.max(fn -> fallback end)
+
+  defp legacy_step_status_label(_status, :cascade), do: "Cascade failed"
+  defp legacy_step_status_label(status, _role) when status in [:pending, "pending"], do: "Waiting"
+  defp legacy_step_status_label(status, _role) when status in [:ok, "ok"], do: "Succeeded"
+  defp legacy_step_status_label(status, _role), do: status_label(status)
 
   defp fresh_run_event?(%{sequence: sequence}, latest_sequence) when is_integer(sequence),
     do: is_nil(latest_sequence) or sequence > latest_sequence
@@ -912,11 +915,6 @@ defmodule FavnView.RunDetailLive do
   defp label(:step_started), do: "Step submitted"
   defp label("step_started"), do: "Step submitted"
   defp label(value), do: value |> to_string() |> String.replace("_", " ") |> String.capitalize()
-
-  defp legacy_step_status_label(_status, :cascade), do: "Cascade failed"
-  defp legacy_step_status_label(status, _role) when status in [:pending, "pending"], do: "Waiting"
-  defp legacy_step_status_label(status, _role) when status in [:ok, "ok"], do: "Succeeded"
-  defp legacy_step_status_label(status, _role), do: status_label(status)
 
   defp error_summary(nil), do: nil
   defp error_summary(%{message: message}) when is_binary(message), do: message

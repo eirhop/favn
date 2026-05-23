@@ -21,6 +21,9 @@ defmodule FavnOrchestrator.RunReadModel do
   @backfill_failure_detail_limit 10
   @execution_group_overview_default_scan_limit 500
   @execution_group_overview_max_scan_limit 2_000
+  @operator_step_event_limit 200
+  @operator_event_default_limit 50
+  @operator_event_max_limit 500
 
   @type run_role :: :asset | :pipeline | :backfill_parent | :backfill_child | :rerun
 
@@ -181,6 +184,23 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:events) => [RunEvent.t()]
         }
 
+  @type operator_run_detail :: %{
+          required(:summary) => execution_group_summary(),
+          required(:root_run) => run_summary(),
+          required(:child_runs) => [run_summary()],
+          required(:windows) => [map()],
+          required(:asset_attempts) => [asset_attempt_summary()],
+          required(:timeline) => [timeline_entry()],
+          required(:steps) => [step_summary()],
+          required(:progress) => progress_summary() | nil,
+          required(:counts) => map(),
+          required(:backfill_failures) => [backfill_failure()],
+          required(:backfill_failure_count) => non_neg_integer(),
+          required(:latest_event_sequence) => non_neg_integer() | nil,
+          required(:latest_event) => RunEvent.t() | nil,
+          optional(:events) => [RunEvent.t()]
+        }
+
   @type asset_step_log_context :: %{
           required(:run) => run_summary(),
           required(:step) => step_summary() | nil,
@@ -230,6 +250,26 @@ defmodule FavnOrchestrator.RunReadModel do
          backfill_failure_count: backfill_failure_count,
          events: events
        }}
+    end
+  end
+
+  @doc """
+  Returns the bounded operator-facing run detail for a run detail page.
+
+  The default response does not include full event streams. Pass
+  `include: [:events]` with an optional `event_limit` to request a bounded event
+  page explicitly.
+  """
+  @spec get_operator_run_detail(String.t(), keyword()) ::
+          {:ok, operator_run_detail()} | {:error, term()}
+  def get_operator_run_detail(run_id, opts \\ [])
+
+  def get_operator_run_detail(run_id, opts) when is_binary(run_id) and is_list(opts) do
+    with {:ok, event_opts} <- normalize_operator_event_opts(opts),
+         {:ok, %RunState{} = run} <- Storage.get_run(run_id),
+         group_id <- RunQuery.root_execution_group_id(run),
+         {:ok, group} <- load_execution_group(group_id) do
+      operator_run_detail(group, event_opts)
     end
   end
 
@@ -341,8 +381,13 @@ defmodule FavnOrchestrator.RunReadModel do
           {:ok, [asset_attempt_summary()]} | {:error, term()}
   def list_execution_group_asset_attempts(group_id, filters \\ [])
       when is_binary(group_id) and is_list(filters) do
-    with {:ok, detail} <- get_execution_group_detail(group_id, filters) do
-      {:ok, detail.asset_attempts}
+    with {:ok, group} <- load_execution_group(group_id) do
+      attempts =
+        group
+        |> execution_group_asset_attempts(:operator)
+        |> filter_asset_attempts(filters)
+
+      {:ok, attempts}
     end
   end
 
@@ -352,8 +397,8 @@ defmodule FavnOrchestrator.RunReadModel do
   @spec list_execution_group_windows(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
   def list_execution_group_windows(group_id, filters \\ [])
       when is_binary(group_id) and is_list(filters) do
-    with {:ok, detail} <- get_execution_group_detail(group_id, filters) do
-      {:ok, detail.windows}
+    with {:ok, group} <- load_execution_group(group_id) do
+      {:ok, execution_group_window_summaries(group)}
     end
   end
 
@@ -364,8 +409,8 @@ defmodule FavnOrchestrator.RunReadModel do
           {:ok, [timeline_entry()]} | {:error, term()}
   def list_execution_group_timeline(group_id, filters \\ [])
       when is_binary(group_id) and is_list(filters) do
-    with {:ok, detail} <- get_execution_group_detail(group_id, filters) do
-      {:ok, detail.timeline}
+    with {:ok, attempts} <- list_execution_group_asset_attempts(group_id, filters) do
+      {:ok, timeline_entries(attempts)}
     end
   end
 
@@ -613,6 +658,95 @@ defmodule FavnOrchestrator.RunReadModel do
     }
   end
 
+  defp operator_run_detail(group, event_opts) do
+    attempts = execution_group_asset_attempts(group, :operator)
+    windows = execution_group_window_summaries(group)
+    root_events = run_events(group.root.id, :operator)
+    root_steps = step_summaries(group.root, root_events)
+
+    group_summary =
+      execution_group_summary(Map.merge(group, %{attempts: attempts, windows: windows}), :detail)
+
+    {backfill_failures, backfill_failure_count} =
+      backfill_failures(group.root, detail_backfill_windows(group.root))
+
+    events = operator_events(group.id, event_opts)
+
+    detail = %{
+      summary: group_summary,
+      root_run: summary(group.root),
+      child_runs: Enum.map(group.children, &summary/1),
+      windows: windows,
+      asset_attempts: attempts,
+      timeline: timeline_entries(attempts),
+      steps: root_steps,
+      progress: group_summary.progress,
+      counts: group_summary.summary_totals,
+      backfill_failures: backfill_failures,
+      backfill_failure_count: backfill_failure_count,
+      latest_event_sequence: group.root.event_seq,
+      latest_event: List.last(events)
+    }
+
+    if event_opts.include_events? do
+      {:ok, Map.put(detail, :events, events)}
+    else
+      {:ok, detail}
+    end
+  end
+
+  defp normalize_operator_event_opts(opts) do
+    include = opts |> Keyword.get(:include, []) |> List.wrap()
+    include_events? = :events in include or "events" in include
+
+    limit =
+      Keyword.get(opts, :event_limit, Keyword.get(opts, :limit, @operator_event_default_limit))
+
+    after_sequence = Keyword.get(opts, :after_sequence)
+    after_global_sequence = Keyword.get(opts, :after_global_sequence)
+
+    cond do
+      not is_integer(limit) or limit <= 0 ->
+        {:error, :invalid_opts}
+
+      limit > @operator_event_max_limit ->
+        {:error, :invalid_opts}
+
+      not is_nil(after_sequence) and (not is_integer(after_sequence) or after_sequence < 0) ->
+        {:error, :invalid_opts}
+
+      not is_nil(after_global_sequence) and
+          (not is_integer(after_global_sequence) or after_global_sequence < 0) ->
+        {:error, :invalid_opts}
+
+      true ->
+        {:ok,
+         %{
+           include_events?: include_events?,
+           limit: limit,
+           after_sequence: after_sequence,
+           after_global_sequence: after_global_sequence
+         }}
+    end
+  end
+
+  defp operator_events(_group_id, %{include_events?: false}), do: []
+
+  defp operator_events(group_id, event_opts) do
+    opts =
+      [limit: event_opts.limit]
+      |> maybe_put_event_opt(:after_sequence, event_opts.after_sequence)
+      |> maybe_put_event_opt(:after_global_sequence, event_opts.after_global_sequence)
+
+    case list_execution_group_events(group_id, opts) do
+      {:ok, events} -> events
+      {:error, _reason} -> []
+    end
+  end
+
+  defp maybe_put_event_opt(opts, _key, nil), do: opts
+  defp maybe_put_event_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
   defp execution_group_active?(group, windows, attempt_counts) do
     attempt_counts.running > 0 or attempt_counts.queued > 0 or
       Enum.any?(group.runs, &(with_public_status(&1).status in [:pending, :running])) or
@@ -662,7 +796,7 @@ defmodule FavnOrchestrator.RunReadModel do
           []
 
         _role ->
-          events = if(mode == :detail, do: run_events(run.id), else: [])
+          events = if(mode in [:detail, :operator], do: run_events(run.id, mode), else: [])
           window = Map.get(windows_by_child_run_id, run.id)
 
           run
@@ -919,7 +1053,16 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
-  defp run_events(run_id) do
+  defp run_events(run_id, mode \\ :detail)
+
+  defp run_events(run_id, :operator) do
+    case Storage.list_run_events(run_id, limit: @operator_step_event_limit) do
+      {:ok, events} -> Enum.map(events, &RunEvent.from_map/1)
+      {:error, _reason} -> []
+    end
+  end
+
+  defp run_events(run_id, _mode) do
     case Storage.list_run_events(run_id) do
       {:ok, events} -> Enum.map(events, &RunEvent.from_map/1)
       {:error, _reason} -> []

@@ -200,6 +200,7 @@ defmodule FavnOrchestrator do
   @type run_detail :: RunReadModel.run_detail()
   @type execution_group_summary :: RunReadModel.execution_group_summary()
   @type execution_group_detail :: RunReadModel.execution_group_detail()
+  @type operator_run_detail :: RunReadModel.operator_run_detail()
 
   @doc """
   Returns redacted operator diagnostics for the orchestrator runtime.
@@ -1553,6 +1554,20 @@ defmodule FavnOrchestrator do
   @spec get_run_detail(run_id()) :: {:ok, run_detail()} | {:error, term()}
   def get_run_detail(run_id) when is_binary(run_id) do
     RunReadModel.get_run_detail(run_id)
+  end
+
+  @doc """
+  Returns bounded operator-facing run detail for the run detail page.
+
+  By default this does not include full event streams. Pass `include: [:events]`
+  with `event_limit` to request bounded events explicitly.
+  """
+  @spec get_operator_run_detail(run_id(), keyword()) ::
+          {:ok, operator_run_detail()} | {:error, term()}
+  def get_operator_run_detail(run_id, opts \\ [])
+
+  def get_operator_run_detail(run_id, opts) when is_binary(run_id) and is_list(opts) do
+    RunReadModel.get_operator_run_detail(run_id, opts)
   end
 
   @doc """
