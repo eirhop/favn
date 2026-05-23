@@ -221,7 +221,7 @@ defmodule FavnView.RunDetailLive do
 
   defp detail_from_execution_group(
          %{summary: summary, root_run: root_run} = detail,
-         _run_id,
+         run_id,
          existing_back_asset_href
        ) do
     root_detail = root_detail(summary.id)
@@ -230,6 +230,7 @@ defmodule FavnView.RunDetailLive do
     windows = Enum.map(Map.get(detail, :windows, []), &window_from_public/1)
     events = Map.get(detail, :events, root_detail.events)
     child_runs = child_runs_from_public(Map.get(detail, :child_runs, []), attempts, windows)
+    cancel_target = cancel_target(summary, root_run, child_runs, run_id)
     timeline = Enum.map(Map.get(detail, :timeline, []), &timeline_from_public(&1, attempts))
     matrix = matrix(attempts, windows)
     failures = Enum.filter(attempts, &(&1.status_tone == :error))
@@ -246,8 +247,9 @@ defmodule FavnView.RunDetailLive do
       subscribed_run_id: root_run.id,
       raw_status: status,
       active?: active_group?(summary),
-      cancellable?: cancellable_group?(summary, root_run),
-      cancel_run_id: root_run.id,
+      cancellable?: !is_nil(cancel_target),
+      cancel_run_id: cancel_target && cancel_target.id,
+      cancel_label: cancel_target && cancel_target.label,
       short_id: short_id(summary.id),
       title: group_title(summary),
       subtitle: subtitle([target, window_range_label(windows)]),
@@ -740,8 +742,23 @@ defmodule FavnView.RunDetailLive do
 
   defp active_group?(summary), do: group_status(summary) in @active_statuses
 
-  defp cancellable_group?(summary, root_run) do
-    active_group?(summary) and Map.get(root_run, :submit_kind) != :backfill_pipeline
+  defp cancel_target(summary, root_run, child_runs, run_id) do
+    cond do
+      active_child = active_child_run(child_runs, run_id) ->
+        %{id: active_child.id, label: "Cancel window run"}
+
+      active_group?(summary) and Map.get(root_run, :submit_kind) != :backfill_pipeline ->
+        %{id: root_run.id, label: "Cancel run"}
+
+      true ->
+        nil
+    end
+  end
+
+  defp active_child_run(child_runs, run_id) do
+    Enum.find(child_runs, fn child ->
+      child.id == run_id and child.raw_status in @active_statuses
+    end)
   end
 
   defp target_label([single]), do: LogsViewModel.ref_label(single)

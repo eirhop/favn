@@ -23,7 +23,7 @@ defmodule Favn.Dev.Runs do
           poll_interval_ms: pos_integer()
         ]
 
-  @terminal_statuses ["ok", "error", "cancelled", "timed_out"]
+  @terminal_statuses ["ok", "partial", "error", "cancelled", "timed_out"]
   @default_wait_timeout_ms 60_000
   @default_poll_interval_ms 1_000
 

@@ -922,6 +922,12 @@ defmodule FavnView.PageLiveTest do
     assert run.status == :cancelled
   end
 
+  test "run detail does not render cancel for terminal runs", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
+
+    refute has_element?(view, ~s([data-testid="cancel-run-button"]))
+  end
+
   test "run detail renders events mode when present", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
 
@@ -1612,6 +1618,33 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="execution-group-id"]), parent_id)
     assert has_element?(view, ~s([data-testid="execution-group-stat-cards"]), "Asset attempts")
     assert has_element?(view, ~s([data-testid="execution-group-stat-cards"]), "Running")
+  end
+
+  test "run detail does not render cancel for active backfill parent", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    refute has_element?(view, ~s([data-testid="cancel-run-button"]))
+  end
+
+  test "run detail can cancel an active backfill child route", %{conn: conn} do
+    %{parent_id: parent_id, child_ids: child_ids} = seed_run_detail_group!()
+    child_id = List.last(child_ids)
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{child_id}")
+
+    assert has_element?(view, ~s([data-testid="cancel-run-button"]), "Cancel window run")
+
+    view
+    |> element(~s([data-testid="cancel-run-button"]))
+    |> render_click()
+
+    assert {:ok, child} = Storage.get_run(child_id)
+    assert child.status == :cancelled
+
+    assert {:ok, parent} = Storage.get_run(parent_id)
+    refute parent.status == :cancelled
   end
 
   test "run detail renders asset window matrix with multiple windows", %{conn: conn} do

@@ -55,7 +55,7 @@ defmodule FavnView.Components.RunDetailPage do
           data-confirm="Cancel this run? Active runner work will be asked to stop."
           data-testid="cancel-run-button"
         >
-          <.icon name="hero-no-symbol" class="size-4" /> Cancel run
+          <.icon name="hero-no-symbol" class="size-4" /> {@run[:cancel_label] || "Cancel run"}
         </button>
       </:compact_header_action>
 
