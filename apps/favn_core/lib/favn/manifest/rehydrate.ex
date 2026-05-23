@@ -9,6 +9,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Build
   alias Favn.Manifest.Graph
+  alias Favn.Manifest.Labels
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.SQLExecution
@@ -561,18 +562,29 @@ defmodule Favn.Manifest.Rehydrate do
     do: {:module, decode_module(value)}
 
   defp decode_selector([kind, value]) when kind in [:tag, "tag"],
-    do: {:tag, decode_atom_or_binary(value)}
+    do: {:tag, Labels.normalize_label!(value)}
 
   defp decode_selector([kind, value]) when kind in [:category, "category"],
-    do: {:category, decode_atom_or_binary(value)}
+    do: {:category, Labels.normalize_label!(value)}
+
+  defp decode_selector([module, name]), do: {:asset, decode_ref([module, name])}
 
   defp decode_selector(value) when is_map(value) do
-    case value |> field_value(:module) |> decode_atom_or_binary() do
-      :asset -> {:asset, value |> field_value(:name) |> decode_selector_asset()}
-      :module -> {:module, value |> field_value(:name) |> decode_module()}
-      :tag -> {:tag, value |> field_value(:name) |> decode_atom_or_binary()}
-      :category -> {:category, value |> field_value(:name) |> decode_atom_or_binary()}
-      _other -> value
+    case field_value(value, :module) do
+      kind when kind in [:asset, "asset"] ->
+        {:asset, value |> field_value(:name) |> decode_selector_asset()}
+
+      kind when kind in [:module, "module"] ->
+        {:module, value |> field_value(:name) |> decode_module()}
+
+      kind when kind in [:tag, "tag"] ->
+        {:tag, value |> field_value(:name) |> Labels.normalize_label!()}
+
+      kind when kind in [:category, "category"] ->
+        {:category, value |> field_value(:name) |> Labels.normalize_label!()}
+
+      _asset_ref ->
+        {:asset, decode_ref(value)}
     end
   end
 
@@ -684,16 +696,18 @@ defmodule Favn.Manifest.Rehydrate do
     plain
     |> Map.delete("category")
     |> Map.delete("tags")
-    |> maybe_put(:category, field_value(value, :category) |> decode_atom_or_binary())
+    |> maybe_put(:category, field_value(value, :category) |> normalize_label_optional())
     |> maybe_put(:tags, field_value(value, :tags) |> build_metadata_tags())
   end
 
   defp build_metadata(_other), do: %{}
 
   defp build_metadata_tags(values) when is_list(values),
-    do: Enum.map(values, &decode_atom_or_binary/1)
+    do: Labels.normalize_labels!(values)
 
-  defp build_metadata_tags(_other), do: nil
+  defp build_metadata_tags(nil), do: nil
+
+  defp build_metadata_tags(other), do: Labels.normalize_labels!(other)
 
   defp build_template_span(nil), do: nil
 
@@ -803,17 +817,8 @@ defmodule Favn.Manifest.Rehydrate do
   defp decode_known_atom_optional(nil, _allowed), do: nil
   defp decode_known_atom_optional(value, allowed), do: decode_known_atom(value, allowed)
 
-  defp decode_atom_or_binary(value) when is_atom(value), do: value
-
-  defp decode_atom_or_binary(value) when is_binary(value) do
-    if valid_manifest_atom?(value) do
-      decode_manifest_atom!(value)
-    else
-      value
-    end
-  end
-
-  defp decode_atom_or_binary(other), do: other
+  defp normalize_label_optional(nil), do: nil
+  defp normalize_label_optional(value), do: Labels.normalize_label!(value)
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
@@ -866,22 +871,83 @@ defmodule Favn.Manifest.Rehydrate do
     |> collect_manifest_atom_refs(refs)
   end
 
-  defp collect_manifest_atom_refs(map, refs) when is_map(map) do
+  defp collect_manifest_atom_refs(value, refs), do: collect_manifest_atom_refs(value, refs, [])
+
+  defp collect_manifest_atom_refs(%_{} = struct, refs, path) do
+    struct
+    |> Map.from_struct()
+    |> collect_manifest_atom_refs(refs, path)
+  end
+
+  defp collect_manifest_atom_refs(map, refs, path) when is_map(map) do
     Enum.reduce(map, refs, fn {key, value}, acc ->
-      refs = collect_manifest_atom_refs(key, acc)
-      collect_manifest_atom_refs(value, refs)
+      key_name = collect_key_name(key)
+
+      cond do
+        key_name == "selectors" ->
+          collect_manifest_selectors(value, acc, [key | path])
+
+        metadata_label_path?(path, key_name) ->
+          acc
+
+        true ->
+          refs = collect_manifest_atom_refs(key, acc, [key | path])
+          collect_manifest_atom_refs(value, refs, [key | path])
+      end
     end)
   end
 
-  defp collect_manifest_atom_refs(list, refs) when is_list(list) do
-    Enum.reduce(list, refs, &collect_manifest_atom_refs/2)
+  defp collect_manifest_atom_refs(list, refs, path) when is_list(list) do
+    Enum.reduce(list, refs, &collect_manifest_atom_refs(&1, &2, path))
   end
 
-  defp collect_manifest_atom_refs(value, refs) when is_binary(value) do
+  defp collect_manifest_atom_refs(value, refs, _path) when is_binary(value) do
     if valid_manifest_atom_ref?(value), do: MapSet.put(refs, value), else: refs
   end
 
-  defp collect_manifest_atom_refs(_other, refs), do: refs
+  defp collect_manifest_atom_refs(_other, refs, _path), do: refs
+
+  defp collect_manifest_selectors(values, refs, path) when is_list(values) do
+    Enum.reduce(values, refs, &collect_manifest_selector(&1, &2, path))
+  end
+
+  defp collect_manifest_selectors(value, refs, path),
+    do: collect_manifest_atom_refs(value, refs, path)
+
+  defp collect_manifest_selector([kind, _label], refs, path) when kind in [:tag, "tag"] do
+    collect_manifest_atom_refs(kind, refs, path)
+  end
+
+  defp collect_manifest_selector([kind, _label], refs, path)
+       when kind in [:category, "category"] do
+    collect_manifest_atom_refs(kind, refs, path)
+  end
+
+  defp collect_manifest_selector(value, refs, path) when is_map(value) do
+    case field_value(value, :module) do
+      kind when kind in [:tag, "tag", :category, "category"] ->
+        value
+        |> Map.delete(:name)
+        |> Map.delete("name")
+        |> collect_manifest_atom_refs(refs, path)
+
+      _other ->
+        collect_manifest_atom_refs(value, refs, path)
+    end
+  end
+
+  defp collect_manifest_selector(value, refs, path),
+    do: collect_manifest_atom_refs(value, refs, path)
+
+  defp metadata_label_path?(path, key_name) when key_name in ["category", "tags"] do
+    collect_key_name(List.first(path)) in ["metadata", "meta"]
+  end
+
+  defp metadata_label_path?(_path, _key_name), do: false
+
+  defp collect_key_name(key) when is_atom(key), do: Atom.to_string(key)
+  defp collect_key_name(key) when is_binary(key), do: key
+  defp collect_key_name(_key), do: nil
 
   defp decode_manifest_atom!(value) do
     if valid_manifest_atom?(value) do

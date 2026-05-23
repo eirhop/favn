@@ -6,6 +6,7 @@ defmodule Favn.Pipeline.Resolver do
   then refs are deduplicated and sorted.
   """
 
+  alias Favn.Manifest.Labels
   alias Favn.Pipeline.Definition
   alias Favn.Pipeline.Resolution
   alias Favn.Pipeline.SelectorNormalizer
@@ -189,26 +190,34 @@ defmodule Favn.Pipeline.Resolver do
   end
 
   defp selector_refs({:tag, value}, assets, _assets_by_ref) do
-    refs =
-      assets
-      |> Enum.filter(fn asset -> value in tags_from_meta(asset) end)
-      |> Enum.map(& &1.ref)
+    with {:ok, label} <- Labels.normalize_label(value) do
+      refs =
+        assets
+        |> Enum.filter(fn asset ->
+          asset
+          |> tags_from_meta()
+          |> Enum.any?(&Labels.match_label?(&1, label))
+        end)
+        |> Enum.map(& &1.ref)
 
-    {:ok, refs}
+      {:ok, refs}
+    end
   end
 
   defp selector_refs({:category, value}, assets, _assets_by_ref) do
-    refs =
-      assets
-      |> Enum.filter(fn asset ->
-        asset
-        |> Map.get(:meta, %{})
-        |> Map.get(:category)
-        |> Kernel.==(value)
-      end)
-      |> Enum.map(& &1.ref)
+    with {:ok, label} <- Labels.normalize_label(value) do
+      refs =
+        assets
+        |> Enum.filter(fn asset ->
+          asset
+          |> Map.get(:meta, %{})
+          |> Map.get(:category)
+          |> Labels.match_label?(label)
+        end)
+        |> Enum.map(& &1.ref)
 
-    {:ok, refs}
+      {:ok, refs}
+    end
   end
 
   defp tags_from_meta(asset) do

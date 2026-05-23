@@ -198,14 +198,14 @@ defmodule Favn.Manifest.VersionTest do
     assert %RelationRef{} = asset.relation
     assert %SQLExecution{} = asset.sql_execution
     assert %Template{} = asset.sql_execution.template
-    assert asset.metadata.category == :sales
-    assert asset.metadata.tags == [:gold]
+    assert asset.metadata.category == "sales"
+    assert asset.metadata.tags == ["gold"]
 
     assert %Graph{} = version.manifest.graph
     assert version.manifest.graph.nodes == [ref]
 
     assert %Pipeline{} = pipeline = hd(version.manifest.pipelines)
-    assert pipeline.selectors == [{:asset, ref}, {:tag, :gold}, {:category, :sales}]
+    assert pipeline.selectors == [{:asset, ref}, {:tag, "gold"}, {:category, "sales"}]
     assert {:inline, %Schedule{cron: "0 * * * *"}} = pipeline.schedule
 
     assert {:ok, index} = Index.build_from_version(version)
@@ -327,7 +327,7 @@ defmodule Favn.Manifest.VersionTest do
     assert hd(version.manifest.assets).metadata.tags == ["external tag"]
   end
 
-  test "rehydrates atom-like metadata and selector values deterministically" do
+  test "keeps atom-like metadata and selector strings as strings" do
     suffix = System.unique_integer([:positive])
     category = "category_#{suffix}"
     tag = "tag_#{suffix}"
@@ -372,16 +372,73 @@ defmodule Favn.Manifest.VersionTest do
 
     assert {:ok, version} = Version.new(manifest, manifest_version_id: "mv_atom_like_values")
 
-    category_atom = String.to_existing_atom(category)
-    tag_atom = String.to_existing_atom(tag)
+    assert_raise ArgumentError, fn -> String.to_existing_atom(category) end
+    assert_raise ArgumentError, fn -> String.to_existing_atom(tag) end
 
-    assert hd(version.manifest.assets).metadata.category == category_atom
-    assert hd(version.manifest.assets).metadata.tags == [tag_atom]
+    assert hd(version.manifest.assets).metadata.category == category
+    assert hd(version.manifest.assets).metadata.tags == [tag]
 
     assert hd(version.manifest.pipelines).selectors == [
-             {:tag, tag_atom},
-             {:category, category_atom}
+             {:tag, tag},
+             {:category, category}
            ]
+  end
+
+  test "resolves atom and string labels consistently after JSON persistence" do
+    raw_ref = {MyApp.Assets.RawOrders, :asset}
+    mart_ref = {MyApp.Assets.MartOrders, :asset}
+
+    assets = [
+      %Asset{
+        ref: raw_ref,
+        module: elem(raw_ref, 0),
+        name: :asset,
+        depends_on: [],
+        metadata: %{category: :orders, tags: [:raw, "daily"]}
+      },
+      %Asset{
+        ref: mart_ref,
+        module: elem(mart_ref, 0),
+        name: :asset,
+        depends_on: [raw_ref],
+        metadata: %{category: "orders", tags: ["mart"]}
+      }
+    ]
+
+    assert {:ok, graph} = Graph.build(assets)
+
+    manifest = %Manifest{
+      schema_version: 2,
+      runner_contract_version: 2,
+      assets: assets,
+      pipelines: [
+        %Pipeline{
+          module: MyApp.Pipelines.Orders,
+          name: :orders,
+          selectors: [{:tag, :raw}, {:category, "orders"}],
+          deps: :none
+        }
+      ],
+      schedules: [],
+      graph: graph,
+      metadata: %{}
+    }
+
+    assert {:ok, encoded} = Serializer.encode_manifest(manifest)
+    assert {:ok, decoded} = Serializer.decode_manifest(encoded)
+    assert {:ok, version} = Version.new(decoded, manifest_version_id: "mv_label_resolution")
+
+    assert [raw_asset, mart_asset] = version.manifest.assets
+    assert raw_asset.metadata == %{category: "orders", tags: ["raw", "daily"]}
+    assert mart_asset.metadata == %{category: "orders", tags: ["mart"]}
+
+    assert [%Pipeline{selectors: [{:tag, "raw"}, {:category, "orders"}]} = pipeline] =
+             version.manifest.pipelines
+
+    assert {:ok, index} = Index.build_from_version(version)
+
+    assert {:ok, %{target_refs: [^mart_ref, ^raw_ref]}} =
+             PipelineResolver.resolve(index, pipeline, [])
   end
 
   test "rejects invalid unloaded module references during rehydration" do

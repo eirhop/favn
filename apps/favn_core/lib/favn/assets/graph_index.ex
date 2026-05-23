@@ -20,6 +20,7 @@ defmodule Favn.Assets.GraphIndex do
   """
 
   alias Favn.Assets.DependencyInference
+  alias Favn.Manifest.Labels
   alias Favn.Ref
 
   @index_key {__MODULE__, :index}
@@ -340,10 +341,11 @@ defmodule Favn.Assets.GraphIndex do
   defp matches_tags?(_asset, []), do: true
 
   defp matches_tags?(asset, tags) when is_list(tags) do
-    tags_from_meta(asset)
-    |> MapSet.new()
-    |> MapSet.disjoint?(MapSet.new(tags))
-    |> Kernel.not()
+    asset_tags = tags_from_meta(asset)
+
+    Enum.any?(tags, fn tag ->
+      Enum.any?(asset_tags, &Labels.match_label?(&1, tag))
+    end)
   end
 
   defp tags_from_meta(asset) do

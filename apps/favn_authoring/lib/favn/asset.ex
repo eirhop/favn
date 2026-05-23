@@ -59,7 +59,9 @@ defmodule Favn.Asset do
   ## Attributes
 
   - `@doc`: asset documentation shown in compiled docs and metadata
-  - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
+  - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`;
+    category and tag labels may be atoms or strings and normalize to manifest
+    strings
   - `@depends`: repeatable dependency declaration
   - `@window`: one `Favn.Window.*` spec
   - `@freshness`: optional asset freshness policy
@@ -231,6 +233,7 @@ defmodule Favn.Asset do
   alias Favn.Diagnostic
   alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Freshness.Policy, as: FreshnessPolicy
+  alias Favn.Manifest.Labels
   alias Favn.Ref
   alias Favn.RelationRef
   alias Favn.RuntimeConfig.Requirements
@@ -473,46 +476,44 @@ defmodule Favn.Asset do
   def normalize_meta!(meta) when is_map(meta) do
     supported = [:owner, :category, :tags]
 
-    Enum.each(meta, fn
-      {:owner, owner} when is_binary(owner) ->
-        :ok
+    Enum.reduce(meta, %{}, fn {key, value}, acc ->
+      case normalize_meta_key(key) do
+        :owner when is_binary(value) ->
+          Map.put(acc, :owner, value)
 
-      {:owner, value} ->
-        raise ArgumentError, "asset meta owner must be a string, got: #{inspect(value)}"
+        :owner ->
+          raise ArgumentError, "asset meta owner must be a string, got: #{inspect(value)}"
 
-      {:category, category} when is_atom(category) ->
-        :ok
+        :category when is_atom(value) or is_binary(value) ->
+          Map.put(acc, :category, Labels.normalize_label!(value))
 
-      {:category, value} ->
-        raise ArgumentError, "asset meta category must be an atom, got: #{inspect(value)}"
-
-      {:tags, tags} when is_list(tags) ->
-        Enum.each(tags, fn
-          tag when is_atom(tag) or is_binary(tag) ->
-            :ok
-
-          tag ->
-            raise ArgumentError,
-                  "asset meta tags entries must be atoms or strings, got: #{inspect(tag)}"
-        end)
-
-      {:tags, value} ->
-        raise ArgumentError, "asset meta tags must be a list, got: #{inspect(value)}"
-
-      {key, _value} ->
-        if key in supported do
-          :ok
-        else
+        :category ->
           raise ArgumentError,
-                "asset meta contains unsupported key #{inspect(key)}; allowed keys: [:owner, :category, :tags]"
-        end
-    end)
+                "asset meta category must be an atom or string, got: #{inspect(value)}"
 
-    meta
+        :tags when is_list(value) ->
+          Map.put(acc, :tags, Labels.normalize_labels!(value))
+
+        :tags ->
+          raise ArgumentError, "asset meta tags must be a list, got: #{inspect(value)}"
+
+        nil ->
+          raise ArgumentError,
+                "asset meta contains unsupported key #{inspect(key)}; allowed keys: #{inspect(supported)}"
+      end
+    end)
   end
 
   def normalize_meta!(meta),
     do: raise(ArgumentError, "asset meta must be a keyword list or map, got: #{inspect(meta)}")
+
+  defp normalize_meta_key(:owner), do: :owner
+  defp normalize_meta_key(:category), do: :category
+  defp normalize_meta_key(:tags), do: :tags
+  defp normalize_meta_key("owner"), do: :owner
+  defp normalize_meta_key("category"), do: :category
+  defp normalize_meta_key("tags"), do: :tags
+  defp normalize_meta_key(_other), do: nil
 
   defp validate_depends_on!(depends_on) when is_list(depends_on) do
     Enum.each(depends_on, fn
