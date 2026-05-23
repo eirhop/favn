@@ -897,6 +897,8 @@ defmodule FavnOrchestrator.RunManagerTest do
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+    previous_timeout = Application.get_env(:favn_orchestrator, :run_manager_call_timeout_ms)
+    previous_metrics_hook = Application.get_env(:favn_orchestrator, :metrics_hook)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
@@ -906,6 +908,19 @@ defmodule FavnOrchestrator.RunManagerTest do
     on_exit(fn ->
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      if is_nil(previous_timeout) do
+        Application.delete_env(:favn_orchestrator, :run_manager_call_timeout_ms)
+      else
+        Application.put_env(:favn_orchestrator, :run_manager_call_timeout_ms, previous_timeout)
+      end
+
+      if is_nil(previous_metrics_hook) do
+        Application.delete_env(:favn_orchestrator, :metrics_hook)
+      else
+        Application.put_env(:favn_orchestrator, :metrics_hook, previous_metrics_hook)
+      end
+
       Memory.reset()
     end)
 
@@ -1018,6 +1033,25 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert {:error, :invalid_run_metadata} =
              FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, metadata: [])
+  end
+
+  test "asset preparation failures emit run submission failure events" do
+    parent = self()
+
+    Application.put_env(:favn_orchestrator, :metrics_hook, fn event, measurements, metadata ->
+      send(parent, {:metrics_hook, event, measurements, metadata})
+    end)
+
+    version = manifest_version("mv_asset_preparation_failure_event")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_asset_preparation_failure_event")
+
+    assert {:error, :invalid_run_metadata} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, metadata: [])
+
+    assert_receive {:metrics_hook, :run_submission_failed, %{}, metadata}
+    assert metadata.submit_kind == :manual
+    assert metadata.reason == :invalid_run_metadata
   end
 
   test "run submissions persist normalized refresh policy metadata" do
@@ -2354,6 +2388,45 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert persisted.error == nil
   end
 
+  test "run manager admission timeout reports unknown outcome and may still commit" do
+    Application.put_env(:favn_orchestrator, :run_manager_call_timeout_ms, 10)
+
+    version = manifest_version("mv_manager_timeout_unknown_outcome")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_manager_timeout_unknown_outcome")
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      cancel_log: cancel_log,
+      block_ms: 1_000
+    )
+
+    :sys.suspend(FavnOrchestrator.RunManager)
+
+    on_exit(fn ->
+      stop_agent(cancel_log)
+
+      if Process.whereis(FavnOrchestrator.RunManager) do
+        :sys.resume(FavnOrchestrator.RunManager)
+      end
+    end)
+
+    run_id = "run_manager_timeout_unknown_outcome"
+
+    assert {:error, {:run_manager_timeout, :admission_state_unknown}} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               run_id: run_id,
+               dependencies: :none
+             )
+
+    :sys.resume(FavnOrchestrator.RunManager)
+
+    assert {:ok, pid} = await_manager_run_pid(run_id)
+    assert Process.alive?(pid)
+  end
+
   test "cancel keeps run in-flight when runner cancellation failure is unconfirmed" do
     version = manifest_version("mv_cancel_unconfirmed")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -2505,6 +2578,21 @@ defmodule FavnOrchestrator.RunManagerTest do
   end
 
   defp await_inflight_run(_run_id, 0), do: {:error, :timeout_waiting_for_inflight_state}
+
+  defp await_manager_run_pid(run_id, attempts \\ 40)
+
+  defp await_manager_run_pid(run_id, attempts) when attempts > 0 do
+    case :sys.get_state(FavnOrchestrator.RunManager).run_pids[run_id] do
+      pid when is_pid(pid) ->
+        {:ok, pid}
+
+      _other ->
+        Process.sleep(15)
+        await_manager_run_pid(run_id, attempts - 1)
+    end
+  end
+
+  defp await_manager_run_pid(_run_id, 0), do: {:error, :timeout_waiting_for_manager_pid}
 
   defp await_cancelled_run(run_id, attempts \\ 40)
 
