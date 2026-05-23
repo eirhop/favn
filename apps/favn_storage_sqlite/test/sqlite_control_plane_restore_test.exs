@@ -8,6 +8,7 @@ defmodule FavnStorageSqlite.ControlPlaneRestoreTest do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
   alias FavnStorageSqlite.Repo
@@ -120,6 +121,90 @@ defmodule FavnStorageSqlite.ControlPlaneRestoreTest do
     assert :ok = Adapter.put_run(new_run, restored_opts)
     assert {:ok, stored_new_run} = Adapter.get_run(new_run.id, restored_opts)
     assert stored_new_run.id == new_run.id
+
+    maybe_stop_pid(restored_pid)
+  end
+
+  test "restores stopped-backend auth and idempotency state from copied SQLite database", %{
+    source_path: source_path,
+    restored_path: restored_path,
+    unique: unique
+  } do
+    source_opts = adapter_opts(source_path, unique, :auth_source, migration_mode: :auto)
+    restored_opts = adapter_opts(restored_path, unique, :auth_restored, migration_mode: :manual)
+
+    {:ok, source_pid} = SQLiteSupervisor.start_link(source_opts)
+
+    now = timestamp()
+    actor = auth_actor("actor_restore_#{unique}", now)
+    credential = auth_credential()
+    session = auth_session("session_restore_#{unique}", actor.id, now)
+    revoked_at = DateTime.add(now, 60, :second)
+    audit = auth_audit("audit_restore_#{unique}", actor.id, session.id, now)
+    {record, response_body} = idempotency_record(actor.id, session.id, unique)
+
+    assert :ok = Adapter.put_auth_actor(actor, source_opts)
+    assert :ok = Adapter.put_auth_credential(actor.id, credential, source_opts)
+    assert :ok = Adapter.put_auth_session(session, source_opts)
+    assert :ok = Adapter.revoke_auth_session(session.id, revoked_at, source_opts)
+    assert :ok = Adapter.put_auth_audit(audit, source_opts)
+
+    assert {:ok, {:reserved, reserved}} = Adapter.reserve_idempotency_record(record, source_opts)
+
+    assert :ok =
+             Adapter.complete_idempotency_record(
+               reserved.id,
+               %{
+                 status: :completed,
+                 response_status: 200,
+                 response_body: response_body,
+                 resource_type: "manifest",
+                 resource_id: response_body.manifest_version_id,
+                 updated_at: now,
+                 completed_at: now
+               },
+               source_opts
+             )
+
+    assert {:ok, _} = SQL.query(Repo, "PRAGMA wal_checkpoint(TRUNCATE)", [])
+
+    maybe_stop_pid(source_pid)
+    File.cp!(source_path, restored_path)
+
+    {:ok, restored_pid} = SQLiteSupervisor.start_link(restored_opts)
+
+    assert {:ok, ^actor} = Adapter.get_auth_actor(actor.id, restored_opts)
+    assert {:ok, ^actor} = Adapter.get_auth_actor_by_username(actor.username, restored_opts)
+    assert {:ok, ^credential} = Adapter.get_auth_credential(actor.id, restored_opts)
+
+    assert {:ok, restored_session} =
+             Adapter.get_auth_session_by_token_hash(session.token_hash, restored_opts)
+
+    assert restored_session.id == session.id
+    assert restored_session.actor_id == actor.id
+    assert restored_session.revoked_at == revoked_at
+
+    assert {:ok, [restored_audit]} = Adapter.list_auth_audit([limit: 10], restored_opts)
+    assert restored_audit.id == audit.id
+    assert restored_audit.actor_id == actor.id
+    assert restored_audit.session_id == session.id
+    assert restored_audit.action == audit.action
+    assert restored_audit.outcome == audit.outcome
+    assert restored_audit["reason"] == "restore verification"
+
+    assert {:ok, restored_record} = Adapter.get_idempotency_record(record.id, restored_opts)
+    assert restored_record.id == record.id
+    assert restored_record.status == :completed
+    assert restored_record.response_status == 200
+
+    assert restored_record.response_body == %{
+             "activated" => true,
+             "manifest_version_id" => response_body.manifest_version_id
+           }
+
+    assert {:ok, {:replay, replay}} = Adapter.reserve_idempotency_record(record, restored_opts)
+    assert replay.id == record.id
+    assert replay.response_body == restored_record.response_body
 
     maybe_stop_pid(restored_pid)
   end
@@ -259,6 +344,71 @@ defmodule FavnStorageSqlite.ControlPlaneRestoreTest do
       })
 
     state
+  end
+
+  defp auth_actor(actor_id, now) do
+    %{
+      id: actor_id,
+      username: "restore-admin-#{actor_id}",
+      display_name: "Restore Admin",
+      roles: [:admin, :operator],
+      status: :active,
+      inserted_at: now,
+      updated_at: now
+    }
+  end
+
+  defp auth_credential do
+    %{password_hash: "$argon2id$v=19$m=256,t=1,p=1$encoded-salt$encoded-hash"}
+  end
+
+  defp auth_session(session_id, actor_id, now) do
+    %{
+      id: session_id,
+      token_hash: token_hash("restore-token-#{session_id}"),
+      actor_id: actor_id,
+      provider: "password_local",
+      issued_at: now,
+      expires_at: DateTime.add(now, 3_600, :second),
+      revoked_at: nil
+    }
+  end
+
+  defp auth_audit(audit_id, actor_id, session_id, now) do
+    %{
+      id: audit_id,
+      occurred_at: now,
+      action: "auth.restore_test",
+      actor_id: actor_id,
+      session_id: session_id,
+      outcome: "accepted",
+      reason: "restore verification"
+    }
+  end
+
+  defp idempotency_record(actor_id, session_id, unique) do
+    manifest_version_id = "mv_idempotency_restore_#{unique}"
+    request = %{manifest_version_id: manifest_version_id}
+
+    record =
+      Idempotency.new_record(
+        %{
+          operation: "manifest.activate",
+          actor_id: actor_id,
+          session_id: session_id,
+          service_identity: "favn_web",
+          idempotency_key_hash: Idempotency.key_hash("restore-idempotency-key-#{unique}")
+        },
+        Idempotency.request_fingerprint(request)
+      )
+
+    {record, %{activated: true, manifest_version_id: manifest_version_id}}
+  end
+
+  defp token_hash(token) do
+    :sha256
+    |> :crypto.hash(token)
+    |> Base.url_encode64(padding: false)
   end
 
   defp timestamp, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
