@@ -2,6 +2,7 @@ defmodule Favn.Pipeline.SelectorNormalizer do
   @moduledoc false
 
   alias Favn.Assets.Compiler
+  alias Favn.Manifest.Labels
 
   @type selector ::
           {:asset, module() | Favn.Ref.t()}
@@ -57,12 +58,14 @@ defmodule Favn.Pipeline.SelectorNormalizer do
     do: {:ok, {:module, module}}
 
   defp normalize_selector({:tag, value}, _resolve_asset_module)
-       when is_atom(value) or is_binary(value),
-       do: {:ok, {:tag, value}}
+       when is_atom(value) or is_binary(value) do
+    with {:ok, label} <- Labels.normalize_label(value), do: {:ok, {:tag, label}}
+  end
 
   defp normalize_selector({:category, value}, _resolve_asset_module)
-       when is_atom(value) or is_binary(value),
-       do: {:ok, {:category, value}}
+       when is_atom(value) or is_binary(value) do
+    with {:ok, label} <- Labels.normalize_label(value), do: {:ok, {:category, label}}
+  end
 
   defp normalize_selector(_other, _resolve_asset_module), do: {:error, :invalid_selector}
 

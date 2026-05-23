@@ -10,6 +10,8 @@ Code:
   error, cancellation, logging, and inspection contract structs
 - `apps/favn_core/lib/favn/plan/node_identity.ex` owns the planned-node identity
   seam consumed by runner work without exposing graph/index internals
+- `apps/favn_core/lib/favn/manifest/labels.ex` owns tag/category label
+  normalization so selector-facing metadata persists and matches as strings
 
 Tests:
 - `apps/favn_core/test/`

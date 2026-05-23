@@ -9,6 +9,10 @@ defmodule Favn.Manifest.Asset do
   as normalized `Favn.Freshness.Policy` values. Runtime code uses this manifest
   field, not authoring modules, when deciding whether a planned node should run,
   skip as fresh, or dirty downstream nodes.
+
+  Metadata `:category` and `:tags` values are selector labels. They are
+  normalized to strings at manifest boundaries so persisted manifests do not need
+  to create atoms for user-facing labels.
   """
 
   alias Favn.Freshness.Policy, as: FreshnessPolicy

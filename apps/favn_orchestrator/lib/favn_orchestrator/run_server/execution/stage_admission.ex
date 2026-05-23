@@ -114,7 +114,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
              %{
                asset_step_id: asset_step_id,
                execution_pool: RunnerWork.execution_pool(work)
-             }, stage: stage, attempt: attempt) do
+             },
+             stage: stage,
+             attempt: attempt
+           ) do
         {:ok, lease} ->
           handle_admitted_entry(%{
             rest: rest,

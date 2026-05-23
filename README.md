@@ -217,6 +217,11 @@ segment/domain, and table/view is the asset name.
 Keep asset-specific logic near the asset; move code to `integrations/` or `sql/`
 only when it is transport-specific or genuinely reusable.
 
+Asset `@meta` category and tag values are manifest labels. You may author them as
+atoms or strings, but persisted manifests normalize them to strings so pipeline
+selectors behave the same before and after JSON persistence without creating
+atoms from stored label data.
+
 Assets and generated multi-assets can declare required runtime configuration with
 `source_config/2`, `env!/1`, and `secret_env!/1`. Manifests record the required
 environment keys and secret flags, but never embed resolved runtime values. The

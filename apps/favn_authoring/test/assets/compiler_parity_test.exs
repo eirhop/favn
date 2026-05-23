@@ -39,6 +39,21 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     end
   end
 
+  test "asset metadata normalizes category and tags to manifest string labels" do
+    meta = Asset.normalize_meta!(owner: "data", category: :sales, tags: [:raw, "daily"])
+
+    assert meta == %{owner: "data", category: "sales", tags: ["raw", "daily"]}
+
+    assert Asset.normalize_meta!(%{"category" => "finance", "tags" => [:mart]}) == %{
+             category: "finance",
+             tags: ["mart"]
+           }
+
+    assert_raise ArgumentError, ~r/asset meta category must be an atom or string/, fn ->
+      Asset.normalize_meta!(category: 123)
+    end
+  end
+
   test "single-asset module rejects module shorthand for multi-asset dependency modules" do
     module_name = Module.concat(__MODULE__, "BadDepends#{unique_suffix()}")
 

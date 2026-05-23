@@ -525,6 +525,9 @@ defmodule Favn.Pipeline do
   - `category atom_or_string`
   - `module Some.Namespace`
 
+  Tag and category selectors are manifest labels. Authored atoms and strings are
+  normalized to strings so selector behavior is stable after JSON persistence.
+
   ## Example
 
       select do

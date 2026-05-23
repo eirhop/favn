@@ -1,6 +1,9 @@
 defmodule Favn.Manifest.Pipeline do
   @moduledoc """
   Canonical persisted descriptor for one pipeline definition.
+
+  Tag and category selectors carry manifest labels. Labels are normalized to
+  strings for stable selector behavior across JSON persistence.
   """
 
   alias Favn.Window.Policy
