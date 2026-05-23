@@ -13,6 +13,7 @@ defmodule Mix.Tasks.Favn.Backfill do
       mix favn.backfill asset-window-states
       mix favn.backfill rerun-window RUN_ID --window-key day:2026-04-01 --allow-success --refresh force
       mix favn.backfill repair --pipeline-module MyApp.Pipelines.Daily --apply
+      mix favn.backfill repair --all --apply
 
   The local CLI submit path accepts explicit `--from`/`--to`/`--kind` ranges or
   compact `--window kind:FROM..TO` syntax for `hour`, `day`, `month`, and `year`
@@ -85,6 +86,7 @@ defmodule Mix.Tasks.Favn.Backfill do
   @repair_switches [
     root_dir: :string,
     apply: :boolean,
+    all: :boolean,
     backfill_run_id: :string,
     pipeline_module: :string
   ]
@@ -183,7 +185,8 @@ defmodule Mix.Tasks.Favn.Backfill do
         {:ok, {:repair, opts}}
 
       {[], [], _count} ->
-        {:error, "expected at most one repair scope: --backfill-run-id or --pipeline-module"}
+        {:error,
+         "expected at most one repair scope: --all, --backfill-run-id, or --pipeline-module"}
 
       {[], _many, _count} ->
         {:error, "unexpected argument for mix favn.backfill repair"}
@@ -294,9 +297,9 @@ defmodule Mix.Tasks.Favn.Backfill do
   end
 
   defp repair_scope_count(opts) do
-    Enum.count([:backfill_run_id, :pipeline_module], fn key ->
+    Enum.count([:all, :backfill_run_id, :pipeline_module], fn key ->
       value = Keyword.get(opts, key)
-      not (is_nil(value) or value == "")
+      not (is_nil(value) or value == false or value == "")
     end)
   end
 
@@ -321,6 +324,10 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   defp error_message(:stack_not_healthy),
     do: "stack not healthy; use mix favn.stop then mix favn.dev"
+
+  defp error_message(:replacement_scope_required),
+    do:
+      "--apply requires an explicit repair scope: --all, --backfill-run-id, or --pipeline-module"
 
   defp error_message({:pipeline_not_found, requested, available}),
     do: pipeline_not_found_message(requested, available)

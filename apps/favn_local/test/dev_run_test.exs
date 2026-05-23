@@ -3,6 +3,7 @@ defmodule Favn.Dev.RunTest do
 
   alias Favn.Dev
   alias Favn.Dev.Run
+  alias Favn.Dev.Runs
   alias Favn.Dev.State
 
   setup do
@@ -281,7 +282,25 @@ defmodule Favn.Dev.RunTest do
     write_running_runtime!(root_dir, base_url)
 
     assert {:error, {:run_failed, %{"id" => "run_timed_out", "status" => "timed_out"}}} =
-             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
+              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
+  end
+
+  test "runs cancel wait treats partial as terminal", %{root_dir: root_dir} do
+    {:ok, base_url, _server} =
+      start_server([
+        {200, ~s({"data":{"cancelled":true,"run_id":"run_partial"}})},
+        {200, ~s({"data":{"run":{"id":"run_partial","status":"partial"}}})}
+      ])
+
+    write_running_runtime!(root_dir, base_url)
+
+    assert {:ok, %{"id" => "run_partial", "status" => "partial"}} =
+             Runs.cancel("run_partial",
+               root_dir: root_dir,
+               wait: true,
+               wait_timeout_ms: 1_000,
+               poll_interval_ms: 1
+             )
   end
 
   defp start_server(responses, opts \\ []) when is_list(responses) do

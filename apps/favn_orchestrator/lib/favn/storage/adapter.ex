@@ -39,6 +39,7 @@ defmodule Favn.Storage.Adapter do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
+  alias FavnOrchestrator.CursorPage
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
@@ -52,6 +53,8 @@ defmodule Favn.Storage.Adapter do
   @type child_spec_result :: {:ok, Supervisor.child_spec()} | :none | {:error, error()}
   @type readiness_diagnostics :: map()
   @type diagnostics :: map()
+  @type cursor_scan_opts :: keyword()
+  @type read_model_replacement_scope :: :all | {:backfill_run, String.t()} | {:pipeline, module()}
 
   @callback child_spec(adapter_opts()) :: child_spec_result()
   @callback readiness(adapter_opts()) :: {:ok, readiness_diagnostics()} | {:error, error()}
@@ -151,6 +154,8 @@ defmodule Favn.Storage.Adapter do
               {:ok, BackfillWindow.t()} | {:error, error()}
   @callback list_backfill_windows(filter_opts(), adapter_opts()) ::
               {:ok, Page.t(BackfillWindow.t())} | {:error, error()}
+  @callback scan_backfill_windows(filter_opts(), cursor_scan_opts(), adapter_opts()) ::
+              {:ok, CursorPage.t(BackfillWindow.t())} | {:error, error()}
   @callback apply_backfill_child_projection(
               BackfillWindow.t(),
               [AssetWindowState.t()],
@@ -176,9 +181,11 @@ defmodule Favn.Storage.Adapter do
               {:ok, %{freshness_state_key() => AssetFreshnessState.t()}} | {:error, error()}
   @callback list_asset_freshness_states(filter_opts(), adapter_opts()) ::
               {:ok, Page.t(AssetFreshnessState.t())} | {:error, error()}
+  @callback scan_asset_freshness_states(filter_opts(), cursor_scan_opts(), adapter_opts()) ::
+              {:ok, CursorPage.t(AssetFreshnessState.t())} | {:error, error()}
 
   @callback replace_backfill_read_models(
-              filter_opts(),
+              read_model_replacement_scope(),
               [CoverageBaseline.t()],
               [BackfillWindow.t()],
               [AssetWindowState.t()],

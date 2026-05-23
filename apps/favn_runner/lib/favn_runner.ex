@@ -48,7 +48,7 @@ defmodule FavnRunner do
   def register_manifest(version, opts \\ [])
 
   def register_manifest(%Version{} = version, opts) when is_list(opts),
-    do: Server.register_manifest(version)
+    do: Server.register_manifest(version, opts)
 
   @doc """
   Submits one manifest-pinned work request for asynchronous execution.
@@ -67,7 +67,7 @@ defmodule FavnRunner do
 
   def await_result(execution_id, timeout, opts)
       when is_binary(execution_id) and is_integer(timeout) and timeout > 0 and is_list(opts) do
-    Server.await_result(execution_id, timeout)
+    Server.await_result(execution_id, timeout, opts)
   end
 
   def await_result(_execution_id, _timeout, _opts), do: {:error, :invalid_await_args}
@@ -81,7 +81,7 @@ defmodule FavnRunner do
 
   def cancel_work(execution_id, reason, opts)
       when is_binary(execution_id) and is_map(reason) and is_list(opts) do
-    Server.cancel_work(execution_id, RunnerCancellation.from_map(reason))
+    Server.cancel_work(execution_id, RunnerCancellation.from_map(reason), opts)
   end
 
   def cancel_work(_execution_id, _reason, _opts) do

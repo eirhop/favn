@@ -92,7 +92,7 @@ defmodule FavnRunner.ServerTest do
     assert {:ok, execution_id} = FavnRunner.submit_work(work)
 
     state = :sys.get_state(FavnRunner.Server)
-    worker_pid = get_in(state, [:executions, execution_id, :pid])
+    worker_pid = state.lifecycle.executions[execution_id].pid
     assert is_pid(worker_pid)
     Process.exit(worker_pid, :kill)
 
@@ -129,6 +129,151 @@ defmodule FavnRunner.ServerTest do
     assert {:error, :execution_not_found} = FavnRunner.await_result("rx_missing", 50)
   end
 
+  test "completed execution retention evicts the oldest retained result" do
+    server = start_runner_server(max_completed_executions: 1)
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.FastAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+
+    first_work = build_work(version, FavnRunner.ServerTest.FastAsset)
+    second_work = build_work(version, FavnRunner.ServerTest.FastAsset)
+
+    assert {:ok, first_execution_id} = FavnRunner.submit_work(first_work, server: server)
+
+    assert {:ok, first_result} =
+             FavnRunner.await_result(first_execution_id, 1_000, server: server)
+
+    assert first_result.status == :ok
+
+    assert {:ok, second_execution_id} = FavnRunner.submit_work(second_work, server: server)
+
+    assert {:ok, second_result} =
+             FavnRunner.await_result(second_execution_id, 1_000, server: server)
+
+    assert second_result.status == :ok
+
+    assert {:error, :execution_not_found} =
+             FavnRunner.await_result(first_execution_id, 50, server: server)
+
+    assert {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
+    assert diagnostics.completed_executions == 1
+    assert diagnostics.retention.evicted_completed_executions == 1
+  end
+
+  test "log replay is bounded to newest entries in chronological order" do
+    server = start_runner_server(max_logs_per_execution: 2)
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+
+    work = build_work(version, FavnRunner.ServerTest.SlowAsset)
+    assert {:ok, execution_id} = FavnRunner.submit_work(work, server: server)
+
+    wait_until(fn ->
+      state = :sys.get_state(server)
+      execution = state.lifecycle.executions[execution_id]
+      execution && length(execution.logs) > 0
+    end)
+
+    send(server, {:runner_log_entry, execution_id, %{sequence: 1}})
+    send(server, {:runner_log_entry, execution_id, %{sequence: 2}})
+    send(server, {:runner_log_entry, execution_id, %{sequence: 3}})
+
+    wait_until(fn ->
+      state = :sys.get_state(server)
+      execution = state.lifecycle.executions[execution_id]
+      length(execution.logs) == 2 and execution.dropped_log_count >= 1
+    end)
+
+    assert :ok = FavnRunner.subscribe_execution_logs(execution_id, self(), server: server)
+    assert_receive {:runner_log_entry, ^execution_id, %{sequence: 2}}
+    assert_receive {:runner_log_entry, ^execution_id, %{sequence: 3}}
+    refute_receive {:runner_log_entry, ^execution_id, %{sequence: 1}}, 50
+
+    assert {:ok, %{status: :acknowledged}} =
+             FavnRunner.cancel_work(execution_id, %{}, server: server)
+  end
+
+  test "dead log subscribers are removed from diagnostics" do
+    server = start_runner_server()
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+
+    work = build_work(version, FavnRunner.ServerTest.SlowAsset)
+    assert {:ok, execution_id} = FavnRunner.submit_work(work, server: server)
+
+    subscriber =
+      spawn(fn ->
+        :ok = FavnRunner.subscribe_execution_logs(execution_id, self(), server: server)
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    wait_until(fn ->
+      {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
+      diagnostics.log_subscribers == 1
+    end)
+
+    Process.exit(subscriber, :kill)
+
+    wait_until(fn ->
+      {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
+      diagnostics.log_subscribers == 0 and diagnostics.log_subscriptions == 0
+    end)
+
+    assert {:ok, %{status: :acknowledged}} =
+             FavnRunner.cancel_work(execution_id, %{}, server: server)
+  end
+
+  test "abandoned await callers are removed from diagnostics" do
+    server = start_runner_server()
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+
+    work = build_work(version, FavnRunner.ServerTest.SlowAsset)
+    assert {:ok, execution_id} = FavnRunner.submit_work(work, server: server)
+
+    waiter =
+      spawn(fn ->
+        _ = FavnRunner.await_result(execution_id, 5_000, server: server)
+      end)
+
+    wait_until(fn ->
+      {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
+      diagnostics.waiters == 1
+    end)
+
+    Process.exit(waiter, :kill)
+
+    wait_until(fn ->
+      {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
+      diagnostics.waiters == 0
+    end)
+
+    assert {:ok, %{status: :acknowledged}} =
+             FavnRunner.cancel_work(execution_id, %{}, server: server)
+  end
+
   test "favn runner facade validates await and cancel arguments" do
     assert {:error, :invalid_await_args} = FavnRunner.await_result(:bad, 10)
     assert {:error, :invalid_await_args} = FavnRunner.await_result("rx", -1)
@@ -160,6 +305,39 @@ defmodule FavnRunner.ServerTest do
 
   defp unique_id(prefix),
     do: prefix <> "_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+
+  defp build_work(%Version{} = version, asset_module) do
+    %RunnerWork{
+      run_id: unique_id("run"),
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      asset_ref: {asset_module, :asset}
+    }
+  end
+
+  defp start_runner_server(retention \\ []) do
+    server = String.to_atom(unique_id("runner_server"))
+    start_supervised!({FavnRunner.Server, name: server, retention: retention})
+    server
+  end
+
+  defp wait_until(fun, attempts \\ 50)
+
+  defp wait_until(fun, attempts) when attempts > 0 do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(20)
+      wait_until(fun, attempts - 1)
+    end
+  end
+
+  defp wait_until(fun, 0), do: assert(fun.())
+end
+
+defmodule FavnRunner.ServerTest.FastAsset do
+  @spec asset(Favn.Run.Context.t()) :: :ok
+  def asset(_ctx), do: :ok
 end
 
 defmodule FavnRunner.ServerTest.SlowAsset do

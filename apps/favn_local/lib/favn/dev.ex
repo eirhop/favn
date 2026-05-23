@@ -31,7 +31,8 @@ defmodule Favn.Dev do
   - `status/1`: inspect current stack state
   - `diagnostics/1`: fetch service-authenticated operator diagnostics
   - `reload/1`: rebuild and republish the manifest
-  - `list_runs/1`, `get_run/2`, `list_run_events/2`: inspect local runs through HTTP APIs
+  - `list_runs/1`, `get_run/2`, `cancel_run/2`, `list_run_events/2`: inspect
+    and control local runs through HTTP APIs
   - `build_runner/1`, `build_web/1`, `build_orchestrator/1`, `build_single/1`:
     project-local packaging flows
   - `bootstrap_single/1`: API-driven single-node backend bootstrap
@@ -191,6 +192,13 @@ defmodule Favn.Dev do
   @spec get_run(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def get_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts),
     do: Runs.get(run_id, opts)
+
+  @doc """
+  Requests cancellation for one persisted run from the running local stack.
+  """
+  @spec cancel_run(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def cancel_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts),
+    do: Runs.cancel(run_id, opts)
 
   @doc """
   Lists persisted run events from the running local stack.

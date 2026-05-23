@@ -19,7 +19,8 @@ Tests:
 - bootstrap and diagnostics task argument/default coverage in `apps/favn/test/mix_tasks/public_tasks_test.exs`
 
 Use when changing public APIs, public docs breadcrumbs, public SQL client access,
-or public Mix task argument/dispatch behavior, including `mix favn.bootstrap.single` and `mix favn.diagnostics`.
+or public Mix task argument/dispatch behavior, including `mix favn.runs cancel`,
+`mix favn.bootstrap.single`, and `mix favn.diagnostics`.
 
 `Favn.SQLClient.with_connection/3` is the recommended public pattern for
 asset-scoped SQL session reuse from Elixir assets and helpers. It opens one

@@ -98,14 +98,25 @@ defmodule Favn.Dev.OrchestratorClient do
           {:ok, map()} | {:error, term()}
   def cancel_run(base_url, service_token, run_id, session_context \\ nil)
       when is_binary(base_url) and is_binary(service_token) and is_binary(run_id) do
-    request_post(
-      :cancel_run,
-      base_url <> "/api/orchestrator/v1/runs/#{run_id}/cancel",
-      service_token,
-      %{},
-      session_context,
-      idempotency_key(:cancel_run, session_context, %{run_id: run_id})
-    )
+    url = base_url <> "/api/orchestrator/v1/runs/#{URI.encode(run_id)}/cancel"
+
+    case request_post(
+           :cancel_run,
+           url,
+           service_token,
+           %{},
+           session_context,
+           idempotency_key(:cancel_run, session_context, %{run_id: run_id})
+         ) do
+      {:ok, %{"data" => data}} when is_map(data) ->
+        {:ok, data}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:cancel_run, :post, url, :invalid_response)}
+    end
   end
 
   @spec password_login(String.t(), String.t(), String.t(), String.t()) ::

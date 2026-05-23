@@ -12,6 +12,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
+  alias FavnOrchestrator.CursorPage
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
@@ -893,6 +894,29 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   @impl true
+  def scan_backfill_windows(filters, scan_opts, opts)
+      when is_list(filters) and is_list(scan_opts) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, {where_sql, params}} <-
+           build_filter_sql(read_filters(filters), backfill_window_filter_columns()),
+         {:ok, {cursor_sql, cursor_params}} <-
+           backfill_window_cursor_sql(Keyword.get(scan_opts, :after), length(params)),
+         {where_sql, params} <- append_cursor_sql(where_sql, params, cursor_sql, cursor_params) do
+      sql =
+        "SELECT #{backfill_window_columns()} FROM favn_backfill_windows#{where_sql} ORDER BY window_start_at ASC, backfill_run_id ASC, pipeline_module ASC, window_key ASC LIMIT ?#{length(params) + 1}"
+
+      decode_cursor_page(
+        repo,
+        sql,
+        params,
+        scan_opts,
+        &decode_backfill_window_row/1,
+        &backfill_window_cursor!/1
+      )
+    end
+  end
+
+  @impl true
   def apply_backfill_child_projection(%BackfillWindow{} = window, asset_window_states, opts)
       when is_list(asset_window_states) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
@@ -1091,6 +1115,29 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   @impl true
+  def scan_asset_freshness_states(filters, scan_opts, opts)
+      when is_list(filters) and is_list(scan_opts) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, {where_sql, params}} <-
+           build_filter_sql(read_filters(filters), asset_freshness_state_filter_columns()),
+         {:ok, {cursor_sql, cursor_params}} <-
+           asset_freshness_cursor_sql(Keyword.get(scan_opts, :after), length(params)),
+         {where_sql, params} <- append_cursor_sql(where_sql, params, cursor_sql, cursor_params) do
+      sql =
+        "SELECT #{asset_freshness_state_columns()} FROM favn_asset_freshness_states#{where_sql} ORDER BY updated_at DESC, asset_ref_module ASC, asset_ref_name ASC, freshness_key ASC LIMIT ?#{length(params) + 1}"
+
+      decode_cursor_page(
+        repo,
+        sql,
+        params,
+        scan_opts,
+        &decode_asset_freshness_state_row/1,
+        &asset_freshness_cursor!/1
+      )
+    end
+  end
+
+  @impl true
   def get_asset_freshness_states_by_keys(keys, opts) when is_list(keys) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
       keys
@@ -1113,42 +1160,32 @@ defmodule Favn.Storage.Adapter.SQLite do
         asset_window_states,
         opts
       )
-      when is_list(scope) and is_list(coverage_baselines) and is_list(backfill_windows) and
+      when (scope == :all or is_tuple(scope)) and is_list(coverage_baselines) and
+             is_list(backfill_windows) and
              is_list(asset_window_states) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, scope} <- replacement_scope(scope) do
       repo.transact(fn ->
-        with :ok <-
-               delete_scoped(
+        with {:ok, affected_ids} <- affected_backfill_ids_for_scope(repo, scope),
+             :ok <-
+               delete_replacement_scope(
                  repo,
                  "favn_pipeline_coverage_baselines",
-                 scope,
-                 coverage_baseline_filter_columns()
+                 :coverage,
+                 scope
                ),
+             :ok <- delete_replacement_scope(repo, "favn_backfill_windows", :window, scope),
              :ok <-
-               delete_scoped(
-                 repo,
-                 "favn_backfill_windows",
-                 scope,
-                 backfill_window_filter_columns()
-               ),
-             :ok <-
-               delete_scoped(
-                 repo,
-                 "favn_asset_window_states",
-                 scope,
-                 asset_window_state_filter_columns()
-               ),
-             :ok <-
-               delete_scoped(
-                 repo,
-                 "favn_backfill_progress",
-                 [],
-                 backfill_progress_filter_columns()
-               ),
+               delete_replacement_scope(repo, "favn_asset_window_states", :asset_state, scope),
+             :ok <- delete_replacement_progress(repo, scope),
              :ok <- put_all(coverage_baselines, &put_coverage_baseline(&1, opts)),
              :ok <- put_all(backfill_windows, &put_backfill_window(&1, opts)),
              :ok <- put_all(asset_window_states, &put_asset_window_state(&1, opts)),
-             :ok <- rebuild_all_backfill_progress(repo) do
+             :ok <-
+               rebuild_backfill_progress_for_ids(
+                 repo,
+                 affected_ids ++ Enum.map(backfill_windows, & &1.backfill_run_id)
+               ) do
           {:ok, :ok}
         else
           {:error, reason} -> repo.rollback(reason)
@@ -1735,13 +1772,6 @@ defmodule Favn.Storage.Adapter.SQLite do
     }
   end
 
-  defp backfill_progress_filter_columns do
-    %{
-      backfill_run_id: {:text, "backfill_run_id"},
-      status: {:atom, "status"}
-    }
-  end
-
   defp asset_window_state_filter_columns do
     %{
       asset_ref_module: {:atom, "asset_ref_module"},
@@ -1918,23 +1948,6 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
-  defp rebuild_all_backfill_progress(repo) do
-    case SQL.query(repo, "SELECT DISTINCT backfill_run_id FROM favn_backfill_windows", []) do
-      {:ok, %{rows: rows}} ->
-        rows
-        |> Enum.map(fn [backfill_run_id] -> backfill_run_id end)
-        |> Enum.reduce_while(:ok, fn backfill_run_id, :ok ->
-          case rebuild_backfill_progress_with_repo(repo, backfill_run_id) do
-            {:ok, %BackfillProgress{}} -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
   defp put_backfill_progress(repo, %BackfillProgress{} = progress) do
     sql = """
     INSERT INTO favn_backfill_progress (
@@ -1998,6 +2011,15 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
+  defp decode_cursor_page(repo, sql, params, scan_opts, decoder, cursor_fun)
+       when is_function(decoder, 1) and is_function(cursor_fun, 1) do
+    params = params ++ [Keyword.fetch!(scan_opts, :limit) + 1]
+
+    with {:ok, rows} <- decode_rows(repo, sql, params, decoder) do
+      {:ok, CursorPage.from_fetched(rows, scan_opts, cursor_fun)}
+    end
+  end
+
   defp read_filters(filters), do: Keyword.drop(filters, [:limit, :offset])
 
   defp put_all(items, fun) when is_list(items) and is_function(fun, 1) do
@@ -2016,26 +2038,185 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
-  defp delete_scoped(repo, table, [], _columns) do
-    case SQL.query(repo, "DELETE FROM #{table}", []) do
-      {:ok, _} -> :ok
+  defp replacement_scope(:all), do: {:ok, :all}
+  defp replacement_scope({:backfill_run, id}) when is_binary(id), do: {:ok, {:backfill_run, id}}
+  defp replacement_scope({:pipeline, module}) when is_atom(module), do: {:ok, {:pipeline, module}}
+
+  defp replacement_scope(scope),
+    do: {:error, {:unsupported_replacement_scope, scope}}
+
+  defp delete_replacement_scope(repo, table, kind, scope) do
+    case replacement_scope_filter(kind, scope) do
+      {:ok, nil, []} ->
+        query_ok(repo, "DELETE FROM #{table}", [])
+
+      {:ok, where_sql, params} ->
+        query_ok(repo, "DELETE FROM #{table} WHERE #{where_sql}", params)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp replacement_scope_filter(_kind, :all), do: {:ok, nil, []}
+
+  defp replacement_scope_filter(:coverage, {:backfill_run, id}),
+    do: {:ok, "created_by_run_id = ?1", [id]}
+
+  defp replacement_scope_filter(:window, {:backfill_run, id}),
+    do: {:ok, "backfill_run_id = ?1", [id]}
+
+  defp replacement_scope_filter(:asset_state, {:backfill_run, id}),
+    do: {:ok, "latest_parent_run_id = ?1", [id]}
+
+  defp replacement_scope_filter(kind, {:pipeline, module})
+       when kind in [:coverage, :window, :asset_state],
+       do: {:ok, "pipeline_module = ?1", [encode_atom(module)]}
+
+  defp replacement_scope_filter(_kind, scope),
+    do: {:error, {:unsupported_replacement_scope, scope}}
+
+  defp delete_replacement_progress(repo, :all),
+    do: query_ok(repo, "DELETE FROM favn_backfill_progress", [])
+
+  defp delete_replacement_progress(repo, {:backfill_run, id}),
+    do: query_ok(repo, "DELETE FROM favn_backfill_progress WHERE backfill_run_id = ?1", [id])
+
+  defp delete_replacement_progress(_repo, {:pipeline, _module}), do: :ok
+
+  defp affected_backfill_ids_for_scope(repo, :all) do
+    query_distinct_backfill_ids(
+      repo,
+      "SELECT DISTINCT backfill_run_id FROM favn_backfill_windows",
+      []
+    )
+  end
+
+  defp affected_backfill_ids_for_scope(_repo, {:backfill_run, id}), do: {:ok, [id]}
+
+  defp affected_backfill_ids_for_scope(repo, {:pipeline, module}) do
+    query_distinct_backfill_ids(
+      repo,
+      "SELECT DISTINCT backfill_run_id FROM favn_backfill_windows WHERE pipeline_module = ?1",
+      [encode_atom(module)]
+    )
+  end
+
+  defp query_distinct_backfill_ids(repo, sql, params) do
+    case SQL.query(repo, sql, params) do
+      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, fn [id] -> id end)}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp delete_scoped(repo, table, scope, columns) do
-    filters = Enum.filter(scope, fn {key, _value} -> Map.has_key?(columns, key) end)
+  defp rebuild_backfill_progress_for_ids(repo, ids) do
+    ids
+    |> Enum.uniq()
+    |> Enum.reduce_while(:ok, fn backfill_run_id, :ok ->
+      case rebuild_backfill_progress_with_repo(repo, backfill_run_id) do
+        {:ok, %BackfillProgress{}} ->
+          {:cont, :ok}
 
-    if filters == [] do
-      :ok
-    else
-      with {:ok, {where_sql, params}} <- build_filter_sql(filters, columns) do
-        case SQL.query(repo, "DELETE FROM #{table}#{where_sql}", params) do
-          {:ok, _} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
+        {:error, :not_found} ->
+          delete_backfill_progress(repo, backfill_run_id) |> reduce_query_result()
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
       end
-    end
+    end)
+  end
+
+  defp delete_backfill_progress(repo, backfill_run_id) do
+    query_ok(repo, "DELETE FROM favn_backfill_progress WHERE backfill_run_id = ?1", [
+      backfill_run_id
+    ])
+  end
+
+  defp reduce_query_result(:ok), do: {:cont, :ok}
+  defp reduce_query_result({:error, reason}), do: {:halt, {:error, reason}}
+
+  defp append_cursor_sql(where_sql, params, "", []), do: {where_sql, params}
+
+  defp append_cursor_sql("", params, cursor_sql, cursor_params),
+    do: {" WHERE #{cursor_sql}", params ++ cursor_params}
+
+  defp append_cursor_sql(where_sql, params, cursor_sql, cursor_params),
+    do: {where_sql <> " AND #{cursor_sql}", params ++ cursor_params}
+
+  defp backfill_window_cursor_sql(nil, _offset), do: {:ok, {"", []}}
+
+  defp backfill_window_cursor_sql(
+         %{
+           kind: :backfill_window,
+           window_start_at: %DateTime{} = window_start_at,
+           backfill_run_id: backfill_run_id,
+           pipeline_module: pipeline_module,
+           window_key: window_key
+         },
+         offset
+       )
+       when is_binary(backfill_run_id) and is_atom(pipeline_module) and is_binary(window_key) do
+    sql =
+      "(window_start_at > ?#{offset + 1} OR (window_start_at = ?#{offset + 1} AND backfill_run_id > ?#{offset + 2}) OR (window_start_at = ?#{offset + 1} AND backfill_run_id = ?#{offset + 2} AND pipeline_module > ?#{offset + 3}) OR (window_start_at = ?#{offset + 1} AND backfill_run_id = ?#{offset + 2} AND pipeline_module = ?#{offset + 3} AND window_key > ?#{offset + 4}))"
+
+    {:ok,
+     {sql,
+      [
+        encode_datetime(window_start_at),
+        backfill_run_id,
+        encode_atom(pipeline_module),
+        window_key
+      ]}}
+  end
+
+  defp backfill_window_cursor_sql(_cursor, _offset), do: {:error, :invalid_cursor_pagination}
+
+  defp backfill_window_cursor!(%BackfillWindow{} = window) do
+    %{
+      kind: :backfill_window,
+      window_start_at: window.window_start_at,
+      backfill_run_id: window.backfill_run_id,
+      pipeline_module: window.pipeline_module,
+      window_key: window.window_key
+    }
+  end
+
+  defp asset_freshness_cursor_sql(nil, _offset), do: {:ok, {"", []}}
+
+  defp asset_freshness_cursor_sql(
+         %{
+           kind: :asset_freshness_state,
+           updated_at: %DateTime{} = updated_at,
+           asset_ref_module: asset_ref_module,
+           asset_ref_name: asset_ref_name,
+           freshness_key: freshness_key
+         },
+         offset
+       )
+       when is_atom(asset_ref_module) and is_atom(asset_ref_name) and is_binary(freshness_key) do
+    sql =
+      "(updated_at < ?#{offset + 1} OR (updated_at = ?#{offset + 1} AND asset_ref_module > ?#{offset + 2}) OR (updated_at = ?#{offset + 1} AND asset_ref_module = ?#{offset + 2} AND asset_ref_name > ?#{offset + 3}) OR (updated_at = ?#{offset + 1} AND asset_ref_module = ?#{offset + 2} AND asset_ref_name = ?#{offset + 3} AND freshness_key > ?#{offset + 4}))"
+
+    {:ok,
+     {sql,
+      [
+        encode_datetime(updated_at),
+        encode_atom(asset_ref_module),
+        encode_atom(asset_ref_name),
+        freshness_key
+      ]}}
+  end
+
+  defp asset_freshness_cursor_sql(_cursor, _offset), do: {:error, :invalid_cursor_pagination}
+
+  defp asset_freshness_cursor!(%AssetFreshnessState{} = state) do
+    %{
+      kind: :asset_freshness_state,
+      updated_at: state.updated_at,
+      asset_ref_module: state.asset_ref_module,
+      asset_ref_name: state.asset_ref_name,
+      freshness_key: state.freshness_key
+    }
   end
 
   defp page_opts(filters), do: Page.normalize_opts(filters)

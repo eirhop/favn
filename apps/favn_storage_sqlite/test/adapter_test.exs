@@ -427,7 +427,7 @@ defmodule FavnStorageSqlite.AdapterTest do
 
     assert :ok =
              Adapter.replace_backfill_read_models(
-               [pipeline_module: MyApp.Pipeline],
+               {:pipeline, MyApp.Pipeline},
                [replacement_baseline],
                [replacement_window],
                [replacement_state],

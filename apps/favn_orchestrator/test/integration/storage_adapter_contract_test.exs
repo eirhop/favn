@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -395,6 +396,8 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert_freshness_lookup_contract(label, run)
     assert_backfill_progress_contract(label, run)
+    assert_cursor_scan_contract(label, run)
+    assert_replacement_scope_contract(label, run)
   end
 
   defp manifest_version(manifest_version_id) do
@@ -482,6 +485,164 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert Map.keys(states) == [key]
     refute Map.has_key?(states, unrelated_key)
     assert {:ok, %{}} = Storage.get_asset_freshness_states_by_keys([])
+  end
+
+  defp assert_cursor_scan_contract(label, run) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    backfill_run_id = "cursor_backfill_#{label}_#{System.unique_integer([:positive])}"
+
+    assert {:ok, first_window} = backfill_window(backfill_run_id, run, "m", :pending, now)
+    assert {:ok, second_window} = backfill_window(backfill_run_id, run, "z", :pending, now)
+
+    assert :ok = Storage.put_backfill_window(first_window)
+    assert :ok = Storage.put_backfill_window(second_window)
+
+    assert {:error, {:unsupported_filter, :unknown}} =
+             Storage.scan_backfill_windows([unknown: :value], limit: 1)
+
+    assert {:ok, first_page} =
+             Storage.scan_backfill_windows([backfill_run_id: backfill_run_id], limit: 1)
+
+    assert Enum.map(first_page.items, & &1.window_key) == ["m"]
+    assert first_page.has_more?
+    assert is_map(first_page.next_cursor)
+
+    assert {:ok, before_cursor_window} =
+             backfill_window(backfill_run_id, run, "a", :pending, now)
+
+    assert :ok = Storage.put_backfill_window(before_cursor_window)
+
+    assert {:ok, second_page} =
+             Storage.scan_backfill_windows(
+               [backfill_run_id: backfill_run_id],
+               [{:limit, 10}, {:after, first_page.next_cursor}]
+             )
+
+    assert Enum.map(second_page.items, & &1.window_key) == ["z"]
+
+    assert_freshness_cursor_scan_contract(label, run, now)
+  end
+
+  defp assert_freshness_cursor_scan_contract(label, run, now) do
+    manifest_version_id = "cursor_freshness_#{label}_#{System.unique_integer([:positive])}"
+
+    assert {:ok, first_state} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.Asset,
+               asset_ref_name: :a,
+               freshness_key: "latest",
+               status: :ok,
+               latest_success_run_id: run.id,
+               manifest_version_id: manifest_version_id,
+               updated_at: now
+             })
+
+    assert {:ok, second_state} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.Asset,
+               asset_ref_name: :b,
+               freshness_key: "latest",
+               status: :ok,
+               latest_success_run_id: run.id,
+               manifest_version_id: manifest_version_id,
+               updated_at: now
+             })
+
+    assert :ok = Storage.put_asset_freshness_state(first_state)
+    assert :ok = Storage.put_asset_freshness_state(second_state)
+
+    assert {:error, {:unsupported_filter, :unknown}} =
+             Storage.scan_asset_freshness_states([unknown: :value], limit: 1)
+
+    assert {:ok, first_page} =
+             Storage.scan_asset_freshness_states([manifest_version_id: manifest_version_id],
+               limit: 1
+             )
+
+    assert Enum.map(first_page.items, & &1.asset_ref_name) == [:a]
+    assert first_page.has_more?
+
+    assert {:ok, before_cursor_state} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.Asset,
+               asset_ref_name: :_before,
+               freshness_key: "latest",
+               status: :ok,
+               latest_success_run_id: run.id,
+               manifest_version_id: manifest_version_id,
+               updated_at: now
+             })
+
+    assert :ok = Storage.put_asset_freshness_state(before_cursor_state)
+
+    assert {:ok, second_page} =
+             Storage.scan_asset_freshness_states(
+               [manifest_version_id: manifest_version_id],
+               [{:limit, 10}, {:after, first_page.next_cursor}]
+             )
+
+    assert Enum.map(second_page.items, & &1.asset_ref_name) == [:b]
+  end
+
+  defp assert_replacement_scope_contract(label, run) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    backfill_run_id = "replace_backfill_#{label}_#{System.unique_integer([:positive])}"
+    kept_backfill_run_id = "replace_kept_#{label}_#{System.unique_integer([:positive])}"
+
+    stale_baseline = coverage_baseline("baseline_#{backfill_run_id}", backfill_run_id, now)
+
+    kept_baseline =
+      coverage_baseline("baseline_#{kept_backfill_run_id}", kept_backfill_run_id, now)
+
+    assert {:ok, stale_window} =
+             backfill_window(backfill_run_id, run, "replace-stale", :pending, now)
+
+    assert {:ok, kept_window} =
+             backfill_window(kept_backfill_run_id, run, "replace-kept", :pending, now)
+
+    stale_window = %{stale_window | latest_attempt_run_id: "#{backfill_run_id}_child"}
+    kept_window = %{kept_window | latest_attempt_run_id: "#{kept_backfill_run_id}_child"}
+    assert {:ok, stale_state} = asset_window_state(stale_window, run, :ok)
+    assert {:ok, kept_state} = asset_window_state(kept_window, run, :ok)
+
+    for baseline <- [stale_baseline, kept_baseline],
+        do: assert(:ok = Storage.put_coverage_baseline(baseline))
+
+    for window <- [stale_window, kept_window],
+        do: assert(:ok = Storage.put_backfill_window(window))
+
+    for state <- [stale_state, kept_state],
+        do: assert(:ok = Storage.put_asset_window_state(state))
+
+    assert {:ok, _progress} = Storage.get_backfill_progress(backfill_run_id)
+
+    assert :ok =
+             Storage.replace_backfill_read_models({:backfill_run, backfill_run_id}, [], [], [])
+
+    assert {:error, :not_found} = Storage.get_coverage_baseline(stale_baseline.baseline_id)
+
+    assert {:error, :not_found} =
+             Storage.get_backfill_window(backfill_run_id, MyApp.Pipeline, stale_window.window_key)
+
+    assert {:error, :not_found} =
+             Storage.get_asset_window_state(MyApp.Asset, :asset, stale_state.window_key)
+
+    assert {:error, :not_found} = Storage.get_backfill_progress(backfill_run_id)
+
+    assert {:ok, ^kept_baseline} = Storage.get_coverage_baseline(kept_baseline.baseline_id)
+
+    assert {:ok, ^kept_window} =
+             Storage.get_backfill_window(
+               kept_backfill_run_id,
+               MyApp.Pipeline,
+               kept_window.window_key
+             )
+
+    assert {:error, {:unsupported_replacement_scope, {:asset, MyApp.Asset}}} =
+             Storage.replace_backfill_read_models({:asset, MyApp.Asset}, [], [], [])
+
+    assert :ok = Storage.replace_backfill_read_models(:all, [], [], [])
+    assert {:error, :not_found} = Storage.get_coverage_baseline(kept_baseline.baseline_id)
   end
 
   defp assert_backfill_progress_contract(label, run) do
@@ -597,6 +758,26 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert progress.pending_count == 1
     assert progress.ok_count + progress.error_count == 1
     assert progress.status == :running
+  end
+
+  defp coverage_baseline(baseline_id, created_by_run_id, now) do
+    %CoverageBaseline{
+      baseline_id: baseline_id,
+      pipeline_module: MyApp.Pipeline,
+      source_key: "orders",
+      segment_key_hash: "sha256:#{baseline_id}",
+      segment_key_redacted: nil,
+      window_kind: :day,
+      timezone: "Etc/UTC",
+      coverage_start_at: DateTime.add(now, -86_400, :second),
+      coverage_until: now,
+      created_by_run_id: created_by_run_id,
+      manifest_version_id: "mv_#{baseline_id}",
+      status: :ok,
+      metadata: %{},
+      created_at: now,
+      updated_at: now
+    }
   end
 
   defp backfill_window(backfill_run_id, run, window_key, status, now) do

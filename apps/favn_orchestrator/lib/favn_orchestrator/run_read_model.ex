@@ -1080,23 +1080,24 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
-  defp list_all_backfill_windows(backfill_run_id, offset \\ 0, acc \\ []) do
-    case Storage.list_backfill_windows(
-           backfill_run_id: backfill_run_id,
-           limit: Page.max_limit(),
-           offset: offset
+  defp list_all_backfill_windows(backfill_run_id, cursor \\ nil, acc \\ []) do
+    case Storage.scan_backfill_windows(
+           [backfill_run_id: backfill_run_id],
+           [{:limit, Page.max_limit()}, {:after, cursor}]
          ) do
-      {:ok, %Page{items: items, has_more?: true, next_offset: next_offset}}
-      when is_integer(next_offset) ->
-        list_all_backfill_windows(backfill_run_id, next_offset, acc ++ items)
+      {:ok, %{items: items, has_more?: true, next_cursor: next_cursor}}
+      when is_map(next_cursor) ->
+        list_all_backfill_windows(backfill_run_id, next_cursor, prepend_page_items(items, acc))
 
-      {:ok, %Page{items: items}} ->
-        {:ok, acc ++ items}
+      {:ok, %{items: items}} ->
+        {:ok, Enum.reverse(prepend_page_items(items, acc))}
 
       {:error, _reason} = error ->
         error
     end
   end
+
+  defp prepend_page_items(items, acc), do: Enum.reduce(items, acc, &[&1 | &2])
 
   defp detail_backfill_windows(%RunState{} = run) do
     case classify(run) do
