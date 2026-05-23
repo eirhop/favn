@@ -22,7 +22,9 @@ defmodule FavnRunner.Application do
           {Registry, keys: :unique, name: FavnRunner.ExecutionRegistry},
           {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.WorkerSupervisor},
           {FavnRunner.ManifestStore, name: FavnRunner.ManifestStore},
-          {FavnRunner.Server, name: FavnRunner.Server}
+          {FavnRunner.Server,
+           name: FavnRunner.Server,
+           retention: Application.get_env(:favn_runner, :execution_retention, [])}
         ]
 
     opts = [strategy: :one_for_one, name: FavnRunner.Supervisor]
