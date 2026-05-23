@@ -13,7 +13,7 @@ for Favn.
 - local stack lifecycle implementation (`dev`, `stop`, `status`, `reload`)
 - local project bootstrap and validation (`init`, `doctor`)
 - install/reset/log tooling (`install`, `reset`, `logs`)
-- local run investigation (`runs`, `logs RUN_ID`)
+- local run investigation and cancellation (`runs`, `logs RUN_ID`)
 - local SQL data inspection and read-only querying (`inspect`, `query`)
 - local operational-backfill submission, planning, inspection, rerun, and repair
 - project-local packaging flows (`build.runner`, `build.web`,
@@ -81,6 +81,8 @@ mix favn.backfill submit MyApp.Pipelines.Monthly --window month:2025-05..2026-05
 mix favn.backfill windows RUN_ID
 mix favn.runs list --status error --limit 20
 mix favn.runs show RUN_ID
+mix favn.runs cancel RUN_ID
+mix favn.runs cancel RUN_ID --wait --wait-timeout-ms 30000
 mix favn.logs RUN_ID
 mix favn.inspect relation raw.sales.orders
 mix favn.inspect partitions raw.sales.orders
@@ -94,6 +96,12 @@ mix favn.stop
 directly from a consumer project. The tasks start the current Mix app and
 `:favn_sql_runtime` before connecting, so the SQL session pool is supervised
 without requiring `mix do app.start + ...`.
+
+`mix favn.runs cancel RUN_ID` requests cancellation through the local
+orchestrator HTTP API using the trusted local-dev context. Add `--wait` when the
+command should poll that run until it is terminal or the local wait timeout
+expires. Backfill parent runs still need explicit backfill cancellation support;
+cancel active child/window runs individually for now.
 
 ### Clean local state
 

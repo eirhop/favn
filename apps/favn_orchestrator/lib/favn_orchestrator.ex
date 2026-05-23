@@ -3,8 +3,10 @@ defmodule FavnOrchestrator do
   Runtime orchestrator control-plane facade for manifest-pinned operations.
 
   `FavnOrchestrator` is the boundary used by runtime apps, operator tooling, and
-  the thin `Favn` runtime helpers. It is not the stable authoring-time API that
-  most application code should build against.
+  the thin `Favn` runtime helpers. Same-BEAM operator UI code uses the operator
+  wrappers here, including run submission, backfill submission, and
+  `cancel_operator_run/2`, so authz stays in the control plane. It is not the
+  stable authoring-time API that most application code should build against.
   """
 
   alias Favn.Assets.Planner
@@ -1313,6 +1315,24 @@ defmodule FavnOrchestrator do
   def cancel_run(run_id, reason \\ %{}) when is_binary(run_id) and is_map(reason) do
     RunManager.cancel_run(run_id, reason)
   end
+
+  @doc """
+  Requests cancellation for one run on behalf of an authenticated operator.
+
+  This is the same-BEAM boundary for browser operator actions. The orchestrator
+  validates the actor/session context before forwarding cancellation to the
+  run-manager lifecycle contract.
+  """
+  @spec cancel_operator_run(operator_actor_context(), run_id()) :: :ok | {:error, term()}
+  def cancel_operator_run(actor_context, run_id)
+      when is_map(actor_context) and is_binary(run_id) do
+    with :ok <- require_operator_context(actor_context),
+         {:ok, actor} <- actor_context_object(actor_context, :actor) do
+      cancel_run(run_id, %{actor_id: context_id(actor), requested_by: :operator})
+    end
+  end
+
+  def cancel_operator_run(_actor_context, _run_id), do: {:error, :unauthenticated}
 
   @doc """
   Submits a rerun pinned to the source run's manifest version.

@@ -11,5 +11,8 @@ facade.
 - Tidewave is plugged only in dev. Use it from the local Phoenix endpoint; do not enable remote access unless you intentionally change local dev networking and understand Tidewave's security guidance.
 - PhoenixStorybook is available at `/storybook` when dev routes are enabled.
 - Stories live under `apps/favn_view/storybook/`. Add or update stories when adding reusable UI components.
+- Run detail pages expose active-run cancellation through the public
+  `FavnOrchestrator` facade. Do not call storage, runner, `RunManager`, or
+  `RunServer` directly from UI code.
 
 Do not build product UI screens here unless explicitly requested.

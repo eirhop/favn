@@ -40,5 +40,9 @@ Ownership rules:
   runs, and asset range backfills must pass refresh intent through the public
   orchestrator facade rather than reconstructing freshness, range expansion, or
   backfill state in the UI.
+- Operator run cancellation controls must call the public `FavnOrchestrator`
+  facade only. UI state may disable buttons, show confirmations, and map stable
+  error atoms to labels, but cancellation lifecycle, audit, idempotency, runner
+  dispatch, and terminal status semantics remain orchestrator-owned.
 - Tidewave is plugged only in dev. PhoenixStorybook is mounted under
   `/storybook` when dev routes are enabled.

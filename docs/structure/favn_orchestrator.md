@@ -8,8 +8,15 @@ Code:
 - `apps/favn_orchestrator/lib/favn_orchestrator.ex`
 - `apps/favn_orchestrator/lib/favn_orchestrator/`
 - Auth/session/service-token helpers under `apps/favn_orchestrator/lib/favn_orchestrator/auth/`
-- Run submission, execution admission, materialization-claim admission, and recovery in `apps/favn_orchestrator/lib/favn_orchestrator/run_manager.ex`, `apps/favn_orchestrator/lib/favn_orchestrator/execution_admission.ex`, `apps/favn_orchestrator/lib/favn_orchestrator/materialization_claim.ex`, and `apps/favn_orchestrator/lib/favn_orchestrator/run_recovery.ex`
+- Run submission, cancellation, execution admission, materialization-claim
+  admission, and recovery in
+  `apps/favn_orchestrator/lib/favn_orchestrator/run_manager.ex`,
+  `apps/favn_orchestrator/lib/favn_orchestrator/execution_admission.ex`,
+  `apps/favn_orchestrator/lib/favn_orchestrator/materialization_claim.ex`, and
+  `apps/favn_orchestrator/lib/favn_orchestrator/run_recovery.ex`
 - Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
+- Runner cancellation envelope and best-effort dispatch under
+  `apps/favn_orchestrator/lib/favn_orchestrator/run_server/cancellation.ex`
 - Run read models in `apps/favn_orchestrator/lib/favn_orchestrator/run_read_model.ex`,
   including execution-group summaries/details, asset attempts, windows, and
   timeline entries for thin operator clients.
@@ -45,9 +52,9 @@ Tests:
 - execution-group run read-model coverage in `apps/favn_orchestrator/test/run_read_model_test.exs`
 - optional adapter contract smoke coverage under `apps/favn_orchestrator/test/integration/`; adapter-specific suites own full adapter coverage
 
-Use when changing run lifecycle, freshness decisions/queries, scheduling,
-private API behavior, SSE/events, auth, command idempotency, bootstrap
-service-token/runner-registration endpoints, same-BEAM readiness facade behavior,
-backfill orchestration, execution leases, materialization claims, runtime-state
-repair, control-plane concurrency/admission, queue reasons, or storage contract
-semantics.
+Use when changing run lifecycle, run cancellation semantics, freshness
+decisions/queries, scheduling, private API behavior, SSE/events, auth, command
+idempotency, bootstrap service-token/runner-registration endpoints, same-BEAM
+readiness facade behavior, backfill orchestration, execution leases,
+materialization claims, runtime-state repair, control-plane
+concurrency/admission, queue reasons, or storage contract semantics.

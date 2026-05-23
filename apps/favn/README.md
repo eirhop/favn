@@ -4,6 +4,9 @@ Purpose:
 
 - one public package users depend on (`{:favn, ...}`)
 - own public facade and public `mix favn.*` entrypoints
+- expose local run investigation and cancellation entrypoints such as
+  `mix favn.runs list`, `mix favn.runs show RUN_ID`, and
+  `mix favn.runs cancel RUN_ID`
 
 Visibility:
 
