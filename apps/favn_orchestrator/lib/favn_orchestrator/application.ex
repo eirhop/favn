@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.API.Config, as: APIConfig
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
+  alias FavnOrchestrator.ExecutionAdmission.Coordinator, as: AdmissionCoordinator
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.RunManager
@@ -37,6 +38,7 @@ defmodule FavnOrchestrator.Application do
           [
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},
+            {AdmissionCoordinator, []},
             {RunRecovery, []},
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
             {RunManager, []}

@@ -94,6 +94,16 @@ defmodule Favn.Storage.Adapter do
   @callback expire_execution_leases(DateTime.t(), adapter_opts()) ::
               {:ok, non_neg_integer()} | {:error, error()}
   @callback list_execution_leases(adapter_opts()) :: {:ok, [map()]} | {:error, error()}
+  @callback upsert_execution_admission_waiter(map(), adapter_opts()) ::
+              {:ok, map()} | {:error, error()}
+  @callback delete_execution_admission_waiter(String.t(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback delete_execution_admission_waiters_for_run(String.t(), adapter_opts()) ::
+              {:ok, non_neg_integer()} | {:error, error()}
+  @callback list_execution_admission_waiters_for_scope(map(), filter_opts(), adapter_opts()) ::
+              {:ok, [map()]} | {:error, error()}
+  @callback expire_execution_admission_waiters(DateTime.t(), adapter_opts()) ::
+              {:ok, non_neg_integer()} | {:error, error()}
 
   @callback try_acquire_materialization_claim(MaterializationClaim.t() | map(), adapter_opts()) ::
               {:ok, MaterializationClaim.t()}

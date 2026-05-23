@@ -42,7 +42,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.Storage
 
   @stage_admission_timeout_buffer_ms 2_000
-  @stage_admission_retry_ms 100
+  @deferred_stage_retry_ms 100
   @await_task_timeout_buffer_ms 2_000
 
   @type step_event ::
@@ -51,7 +51,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
           | {:runner_await_down, String.t(), reference(), term()}
           | {:attempt_timeout, String.t(), reference()}
           | {:retry_attempt, reference()}
-          | {:stage_admission_retry, reference()}
+          | {:stage_admission_timeout, reference()}
+          | {:execution_admission_wakeup, String.t(), non_neg_integer()}
 
   @spec start_state(RunState.t(), Version.t()) ::
           {:ok, RunExecutionState.t()} | {:terminal, RunState.t()}
@@ -195,16 +196,40 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  def handle_event(%RunExecutionState{} = state, {:stage_admission_retry, timer_ref}) do
+  def handle_event(%RunExecutionState{} = state, {:stage_admission_timeout, timer_ref}) do
     case RunExecutionState.pop_admission_timer(state, timer_ref) do
       {nil, state} ->
         {:cont, state}
 
-      {%{payload: _retry}, state} when map_size(state.awaits) > 0 ->
+      {%{payload: _timer}, state} when map_size(state.awaits) > 0 ->
         {:cont, %{state | status: :awaiting}}
 
-      {%{payload: _retry}, state} ->
+      {%{payload: %{kind: :retry}}, state} ->
         after_pipeline_progress(state)
+
+      {%{payload: _timer}, state} ->
+        timeout_admission_wait(state)
+    end
+  end
+
+  def handle_event(
+        %RunExecutionState{} = state,
+        {:execution_admission_wakeup, waiter_id, generation}
+      ) do
+    case RunExecutionState.pop_admission_waiter(state, waiter_id) do
+      {nil, state} ->
+        {:cont, state}
+
+      {%{wake_generation: waiter_generation} = waiter, state}
+      when waiter_generation == generation ->
+        :ok = ExecutionAdmission.cancel_wait(waiter)
+
+        state
+        |> RunExecutionState.cancel_admission_timers()
+        |> after_pipeline_progress()
+
+      {_stale_waiter, state} ->
+        {:cont, state}
     end
   end
 
@@ -224,6 +249,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     :ok = RunWorkSet.cleanup_all(state.work_set, reason)
     :ok = ExecutionAdmission.release_run(cancelled_run.id)
+    :ok = ExecutionAdmission.cancel_run_waits(cancelled_run.id)
 
     Snapshots.cancelled_terminal(cancelled_run, state.accumulated_results)
   end
@@ -684,7 +710,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
            state.runner_client,
            state.runner_opts
          ) do
-      {:ok, run_after_submit, entries, deferred_node_keys, queued_steps} ->
+      {:ok, run_after_submit, entries, deferred_node_keys, queued_steps, waiters} ->
         stage_state =
           StageAttemptState.new(
             run_after_submit,
@@ -694,14 +720,16 @@ defmodule FavnOrchestrator.RunServer.Execution do
             queued_steps
           )
 
-        state = %{
-          state
-          | run: run_after_submit,
-            stage_state: stage_state,
-            stage_attempt: attempt,
-            stage_admission_deadline_ms: stage_admission_deadline(run_after_submit.timeout_ms),
-            stage_executed_node_keys: StageAttemptState.attempted_node_keys(stage_state)
-        }
+        state =
+          %{
+            state
+            | run: run_after_submit,
+              stage_state: stage_state,
+              stage_attempt: attempt,
+              stage_admission_deadline_ms: stage_admission_deadline(run_after_submit.timeout_ms),
+              stage_executed_node_keys: StageAttemptState.attempted_node_keys(stage_state)
+          }
+          |> RunExecutionState.put_admission_waiters(waiters)
 
         state
         |> start_pipeline_awaits(entries)
@@ -758,7 +786,16 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp after_pipeline_progress(%RunExecutionState{} = state) do
     cond do
       state.stage_state.deferred_node_keys != [] and state.stage_state.terminal_failure == nil ->
-        refill_or_schedule_admission(state)
+        cond do
+          map_size(state.awaits) > 0 ->
+            refill_or_schedule_admission(state)
+
+          map_size(state.admission_waiters) > 0 ->
+            schedule_admission_timeout(state)
+
+          true ->
+            refill_or_schedule_admission(state)
+        end
 
       map_size(state.awaits) > 0 ->
         {:cont, %{state | status: :awaiting}}
@@ -772,6 +809,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp refill_or_schedule_admission(%RunExecutionState{} = state) do
+    state = clear_admission_waiters(state)
     {stage, _stage_node_keys} = Enum.at(state.stage_groups, state.stage_index)
 
     case submit_stage_entries(
@@ -786,7 +824,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
            state.runner_opts,
            state.stage_state.queued_steps
          ) do
-      {:ok, next_run, [], next_deferred_node_keys, next_queued_steps} ->
+      {:ok, next_run, [], next_deferred_node_keys, next_queued_steps, waiters} ->
         stage_state =
           StageAttemptState.defer_only(
             state.stage_state,
@@ -795,7 +833,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
             next_queued_steps
           )
 
-        state = %{state | run: next_run, stage_state: stage_state}
+        state =
+          %{state | run: next_run, stage_state: stage_state}
+          |> RunExecutionState.put_admission_waiters(waiters)
 
         cond do
           next_deferred_node_keys == [] ->
@@ -804,11 +844,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
           map_size(state.awaits) > 0 ->
             {:cont, %{state | status: :awaiting}}
 
+          waiters != [] ->
+            schedule_admission_timeout(state)
+
           true ->
-            schedule_admission_retry(state)
+            schedule_deferred_retry(state)
         end
 
-      {:ok, next_run, entries, next_deferred_node_keys, next_queued_steps} ->
+      {:ok, next_run, entries, next_deferred_node_keys, next_queued_steps, waiters} ->
         stage_state =
           StageAttemptState.add_entries(
             state.stage_state,
@@ -819,6 +862,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
           )
 
         %{state | run: next_run, stage_state: stage_state}
+        |> RunExecutionState.put_admission_waiters(waiters)
         |> start_pipeline_awaits(entries)
         |> after_starting_pipeline_awaits(entries)
 
@@ -843,26 +887,65 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp after_starting_pipeline_awaits(%RunExecutionState{} = state, []),
     do: after_pipeline_progress(state)
 
-  defp schedule_admission_retry(%RunExecutionState{} = state) do
+  defp schedule_admission_timeout(%RunExecutionState{} = state) do
+    if map_size(state.admission_timers) > 0 do
+      {:cont, %{state | status: :admission_wait}}
+    else
+      now = System.monotonic_time(:millisecond)
+
+      deadline =
+        state.stage_admission_deadline_ms || stage_admission_deadline(state.run.timeout_ms)
+
+      wait_ms = max(deadline - now, 0)
+
+      if wait_ms == 0 do
+        timeout_admission_wait(state)
+      else
+        timer_token = make_ref()
+        timer_ref = Process.send_after(self(), {:stage_admission_timeout, timer_token}, wait_ms)
+
+        {:cont,
+         RunExecutionState.put_admission_timer(state, timer_token, timer_ref, %{
+           kind: :deadline,
+           stage_index: state.stage_index
+         })}
+      end
+    end
+  end
+
+  defp schedule_deferred_retry(%RunExecutionState{} = state) do
     now = System.monotonic_time(:millisecond)
     deadline = state.stage_admission_deadline_ms || stage_admission_deadline(state.run.timeout_ms)
-    wait_ms = min(@stage_admission_retry_ms, max(deadline - now, 0))
+    wait_ms = min(@deferred_stage_retry_ms, max(deadline - now, 0))
 
     if wait_ms == 0 do
-      {:terminal,
-       elem(
-         timeout_deferred_stage_attempt(state.stage_state),
-         1
-       )}
+      timeout_admission_wait(state)
     else
       timer_token = make_ref()
-      timer_ref = Process.send_after(self(), {:stage_admission_retry, timer_token}, wait_ms)
+      timer_ref = Process.send_after(self(), {:stage_admission_timeout, timer_token}, wait_ms)
 
       {:cont,
        RunExecutionState.put_admission_timer(state, timer_token, timer_ref, %{
+         kind: :retry,
          stage_index: state.stage_index
        })}
     end
+  end
+
+  defp timeout_admission_wait(%RunExecutionState{} = state) do
+    state = clear_admission_waiters(state)
+
+    {:terminal,
+     elem(
+       timeout_deferred_stage_attempt(state.stage_state),
+       1
+     )}
+  end
+
+  defp clear_admission_waiters(%RunExecutionState{} = state) do
+    {waiters, state} = RunExecutionState.clear_admission_waiters(state)
+    Enum.each(waiters, &ExecutionAdmission.cancel_wait/1)
+    RunExecutionState.cancel_admission_timers(state)
   end
 
   defp schedule_pipeline_retry(%RunExecutionState{} = state) do

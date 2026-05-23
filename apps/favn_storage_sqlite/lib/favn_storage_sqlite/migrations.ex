@@ -8,6 +8,7 @@ defmodule FavnStorageSqlite.Migrations do
   alias FavnStorageSqlite.Migrations.AddBackfillProgress
   alias FavnStorageSqlite.Migrations.AddIdempotencyRecords
   alias FavnStorageSqlite.Migrations.AddExecutionLeases
+  alias FavnStorageSqlite.Migrations.AddExecutionAdmissionWaiters
   alias FavnStorageSqlite.Migrations.AddLogEntries
   alias FavnStorageSqlite.Migrations.AddMaterializationClaims
   alias FavnStorageSqlite.Migrations.AddRunGroupQueryColumns
@@ -25,6 +26,7 @@ defmodule FavnStorageSqlite.Migrations do
     {20_260_509_100_000, AddAssetFreshnessState},
     {20_260_510_100_000, AddLogEntries},
     {20_260_520_100_000, AddExecutionLeases},
+    {20_260_520_110_000, AddExecutionAdmissionWaiters},
     {20_260_521_100_000, AddMaterializationClaims},
     {20_260_521_200_000, AddRunGroupQueryColumns},
     {20_260_522_100_000, AddBackfillProgress}
@@ -49,6 +51,7 @@ defmodule FavnStorageSqlite.Migrations do
     "favn_log_entries",
     "favn_execution_leases",
     "favn_execution_lease_scopes",
+    "favn_execution_admission_waiters",
     "favn_materialization_claims"
   ]
   @expected_versions Enum.map(@migrations, fn {version, _module} -> to_string(version) end)

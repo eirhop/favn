@@ -19,6 +19,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
   alias FavnOrchestrator.Storage.Backfill.ProgressCodec
+  alias FavnOrchestrator.Storage.ExecutionAdmissionWaiterCodec
   alias FavnOrchestrator.Storage.ExecutionLeaseCodec
   alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
   alias FavnOrchestrator.Storage.JsonSafe
@@ -471,6 +472,92 @@ defmodule Favn.Storage.Adapter.Postgres do
 
         {:error, reason} ->
           {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def upsert_execution_admission_waiter(waiter, opts) when is_map(waiter) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, normalized} <- ExecutionAdmissionWaiterCodec.normalize(waiter) do
+      repo.transact(fn ->
+        with {:ok, existing} <- fetch_execution_admission_waiter(repo, normalized.waiter_id),
+             next <- next_execution_admission_waiter(normalized, existing),
+             {:ok, payload} <- ExecutionAdmissionWaiterCodec.encode(next),
+             :ok <- upsert_execution_admission_waiter_row(repo, next, payload) do
+          {:ok, next}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, waiter} -> {:ok, waiter}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def delete_execution_admission_waiter(waiter_id, opts)
+      when is_binary(waiter_id) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      case SQL.query(repo, "DELETE FROM favn_execution_admission_waiters WHERE waiter_id = $1", [
+             waiter_id
+           ]) do
+        {:ok, _result} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def delete_execution_admission_waiters_for_run(run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      case SQL.query(repo, "DELETE FROM favn_execution_admission_waiters WHERE run_id = $1", [
+             run_id
+           ]) do
+        {:ok, result} -> {:ok, Map.get(result, :num_rows, 0)}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_execution_admission_waiters_for_scope(scope, waiter_opts, opts)
+      when is_map(scope) and is_list(waiter_opts) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, normalized_scope} <- ExecutionLeaseCodec.normalize_scope(scope) do
+      {scope_kind, scope_key} = ExecutionLeaseCodec.scope_identity(normalized_scope)
+      limit = waiter_limit(waiter_opts)
+
+      sql = """
+      SELECT waiter_payload
+      FROM favn_execution_admission_waiters
+      WHERE blocked_scope_kind = $1 AND blocked_scope_key = $2
+      ORDER BY inserted_at ASC, waiter_id ASC
+      LIMIT $3
+      """
+
+      query_and_decode_rows(
+        repo,
+        sql,
+        [scope_kind, scope_key, limit],
+        &decode_execution_admission_waiter_row/1
+      )
+    end
+  end
+
+  @impl true
+  def expire_execution_admission_waiters(%DateTime{} = now, opts) when is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      case SQL.query(
+             repo,
+             "DELETE FROM favn_execution_admission_waiters WHERE deadline_at IS NOT NULL AND deadline_at <= $1",
+             [now]
+           ) do
+        {:ok, result} -> {:ok, Map.get(result, :num_rows, 0)}
+        {:error, reason} -> {:error, reason}
       end
     end
   end
@@ -1321,6 +1408,13 @@ defmodule Favn.Storage.Adapter.Postgres do
     end)
   end
 
+  defp query_ok(repo, sql, params) do
+    case SQL.query(repo, sql, params) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp delete_scoped(repo, table, [], _specs) do
     case SQL.query(repo, "DELETE FROM #{table}", []) do
       {:ok, _} -> :ok
@@ -1362,6 +1456,13 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp page_opts(filters), do: Page.normalize_opts(filters)
+
+  defp waiter_limit(opts) do
+    case Keyword.get(opts, :limit, 50) do
+      limit when is_integer(limit) and limit > 0 -> limit
+      _other -> 50
+    end
+  end
 
   defp decode_coverage_baseline_row([record_payload]),
     do: CoverageBaselineCodec.decode(record_payload)
@@ -1525,6 +1626,9 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp decode_materialization_claim_row([record_payload]),
     do: MaterializationClaimCodec.decode(record_payload)
+
+  defp decode_execution_admission_waiter_row([waiter_payload]),
+    do: ExecutionAdmissionWaiterCodec.decode(waiter_payload)
 
   defp decode_log_entry_row([payload]), do: LogEntryCodec.decode(payload)
 
@@ -3093,6 +3197,61 @@ defmodule Favn.Storage.Adapter.Postgres do
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp fetch_execution_admission_waiter(repo, waiter_id) do
+    sql =
+      "SELECT waiter_payload FROM favn_execution_admission_waiters WHERE waiter_id = $1 LIMIT 1"
+
+    case SQL.query(repo, sql, [waiter_id]) do
+      {:ok, %{rows: []}} -> {:ok, nil}
+      {:ok, %{rows: [[payload]]}} -> ExecutionAdmissionWaiterCodec.decode(payload)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp next_execution_admission_waiter(waiter, nil), do: waiter
+
+  defp next_execution_admission_waiter(waiter, existing) do
+    %{waiter | inserted_at: existing.inserted_at, wake_generation: existing.wake_generation + 1}
+  end
+
+  defp upsert_execution_admission_waiter_row(repo, waiter, payload) do
+    {scope_kind, scope_key} = ExecutionLeaseCodec.scope_identity(waiter.blocked_scope)
+
+    sql = """
+    INSERT INTO favn_execution_admission_waiters
+      (waiter_id, run_id, asset_step_id, queue_reason, blocked_scope_kind, blocked_scope_key,
+       inserted_at, updated_at, deadline_at, wake_generation, waiter_payload)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    ON CONFLICT(waiter_id) DO UPDATE SET
+      run_id = EXCLUDED.run_id,
+      asset_step_id = EXCLUDED.asset_step_id,
+      queue_reason = EXCLUDED.queue_reason,
+      blocked_scope_kind = EXCLUDED.blocked_scope_kind,
+      blocked_scope_key = EXCLUDED.blocked_scope_key,
+      inserted_at = EXCLUDED.inserted_at,
+      updated_at = EXCLUDED.updated_at,
+      deadline_at = EXCLUDED.deadline_at,
+      wake_generation = EXCLUDED.wake_generation,
+      waiter_payload = EXCLUDED.waiter_payload
+    """
+
+    params = [
+      waiter.waiter_id,
+      waiter.run_id,
+      waiter.asset_step_id,
+      Atom.to_string(waiter.queue_reason),
+      scope_kind,
+      scope_key,
+      waiter.inserted_at,
+      waiter.updated_at,
+      waiter.deadline_at,
+      waiter.wake_generation,
+      payload
+    ]
+
+    query_ok(repo, sql, params)
   end
 
   defp delete_execution_lease_scopes(repo, lease_id) when is_binary(lease_id),

@@ -310,6 +310,11 @@ defmodule FavnOrchestrator.RunServerTest do
     defdelegate release_execution_lease(lease_id, opts), to: Memory
     defdelegate expire_execution_leases(now, opts), to: Memory
     defdelegate list_execution_leases(opts), to: Memory
+    defdelegate upsert_execution_admission_waiter(waiter, opts), to: Memory
+    defdelegate delete_execution_admission_waiter(waiter_id, opts), to: Memory
+    defdelegate delete_execution_admission_waiters_for_run(run_id, opts), to: Memory
+    defdelegate list_execution_admission_waiters_for_scope(scope, waiter_opts, opts), to: Memory
+    defdelegate expire_execution_admission_waiters(now, opts), to: Memory
     defdelegate persist_log_entries(entries, opts), to: Memory
     defdelegate list_logs(filter, opts, adapter_opts), to: Memory
     defdelegate replay_logs_after(cursor, filter, opts, adapter_opts), to: Memory

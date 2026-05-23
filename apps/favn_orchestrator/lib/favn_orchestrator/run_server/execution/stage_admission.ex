@@ -25,7 +25,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @type node_key :: Favn.Plan.node_key()
   @type entry :: map()
   @type result ::
-          {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term())}
+          {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()]}
           | {:error, RunState.t(), [term()], [node_key()]}
 
   @spec submit(map()) :: result()
@@ -41,7 +41,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       request.runner_client,
       request.runner_opts,
       [],
-      queued_steps
+      queued_steps,
+      []
     )
   end
 
@@ -82,9 +83,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          _runner_client,
          _runner_opts,
          entries,
-         queued_steps
+         queued_steps,
+         waiters
        ) do
-    {:ok, run_state, entries, [], queued_steps}
+    {:ok, run_state, entries, [], queued_steps, waiters}
   end
 
   defp do_submit(
@@ -98,7 +100,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          runner_client,
          runner_opts,
          acc,
-         queued_steps
+         queued_steps,
+         waiters
        ) do
     if Persistence.externally_cancelled?(current_run.id) do
       {:error, Snapshots.cancelled_snapshot(current_run), [], Enum.map(acc, & &1.node_key)}
@@ -106,10 +109,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       work = stage_work(current_run, version, node_key, stage, attempt)
       asset_step_id = work.asset_step_id
 
-      case ExecutionAdmission.acquire(current_run, %{
-             asset_step_id: asset_step_id,
-             execution_pool: RunnerWork.execution_pool(work)
-           }) do
+      case ExecutionAdmission.acquire_or_wait(
+             current_run,
+             %{
+               asset_step_id: asset_step_id,
+               execution_pool: RunnerWork.execution_pool(work)
+             }, stage: stage, attempt: attempt) do
         {:ok, lease} ->
           handle_admitted_entry(%{
             rest: rest,
@@ -124,23 +129,27 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
             runner_opts: runner_opts,
             acc: acc,
             queued_steps: queued_steps,
+            waiters: waiters,
             node_key: node_key,
             work: work,
             lease: lease
           })
 
-        {:queued, queue_reason, scope} ->
+        {:waiting, waiter} ->
           persist_or_defer_queued_entry(%{
             queued_steps: queued_steps,
-            queue_signature: queue_signature(asset_step_id, queue_reason, scope),
+            queue_signature:
+              queue_signature(asset_step_id, waiter.queue_reason, waiter.blocked_scope),
             current_run: current_run,
             work: work,
             stage: stage,
             attempt: attempt,
-            queue_reason: queue_reason,
-            scope: scope,
+            queue_reason: waiter.queue_reason,
+            scope: waiter.blocked_scope,
             acc: acc,
-            node_keys: node_keys
+            node_keys: node_keys,
+            waiters: waiters,
+            waiter: waiter
           })
 
         {:error, reason} ->
@@ -183,7 +192,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           queue_reason: queue_reason,
           scope: scope,
           acc: ctx.acc,
-          node_keys: ctx.node_keys
+          node_keys: ctx.node_keys,
+          waiters: ctx.waiters
         })
 
       {:error, reason} ->
@@ -223,7 +233,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
             ctx.runner_client,
             ctx.runner_opts,
             ctx.acc,
-            ctx.queued_steps
+            ctx.queued_steps,
+            ctx.waiters
           )
 
         {:error, :external_cancel} ->
@@ -257,10 +268,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
            ctx.scope
          ) do
       {:ok, queued_run, next_queued_steps} when ctx.acc == [] ->
-        {:ok, queued_run, [], ctx.node_keys, next_queued_steps}
+        {:ok, queued_run, [], ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx)}
 
       {:ok, queued_run, next_queued_steps} ->
-        {:ok, queued_run, ctx.acc, ctx.node_keys, next_queued_steps}
+        {:ok, queued_run, ctx.acc, ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx)}
 
       {:error, :external_cancel} ->
         {:error, Snapshots.cancelled_snapshot(ctx.current_run), [],
@@ -271,6 +282,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
     end
   end
+
+  defp maybe_add_waiter(%{waiters: waiters, waiter: waiter}), do: waiters ++ [waiter]
+  defp maybe_add_waiter(%{waiters: waiters}), do: waiters
+  defp maybe_add_waiter(_ctx), do: []
 
   defp submit_admitted_entry(ctx) do
     asset_ref = ctx.work.asset_ref
@@ -327,7 +342,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
               ctx.runner_client,
               ctx.runner_opts,
               ctx.acc ++ [entry],
-              ctx.queued_steps
+              ctx.queued_steps,
+              ctx.waiters
             )
 
           {:error, :external_cancel} ->

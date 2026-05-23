@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
 
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
   setup do
@@ -74,6 +75,32 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
                asset_step_id: "step-1",
                execution_pool: :missing_pool
              })
+  end
+
+  test "acquire_or_wait persists waiter and release wakes registered owner" do
+    run = run(max_concurrency: 1)
+    entry = %{asset_step_id: "step-1"}
+
+    assert {:ok, lease} = ExecutionAdmission.acquire(run, entry)
+
+    assert {:waiting, waiter} =
+             ExecutionAdmission.acquire_or_wait(run, %{entry | asset_step_id: "step-2"},
+               stage: 0,
+               attempt: 1
+             )
+
+    assert waiter.queue_reason == :pipeline_concurrency
+
+    assert {:ok, [^waiter]} =
+             Storage.list_execution_admission_waiters_for_scope(waiter.blocked_scope)
+
+    assert :ok = ExecutionAdmission.release(lease)
+    assert_receive {:execution_admission_wakeup, waiter_id, generation}, 1_000
+    assert waiter_id == waiter.waiter_id
+    assert generation == waiter.wake_generation
+
+    assert :ok = ExecutionAdmission.cancel_wait(waiter)
+    assert {:ok, []} = Storage.list_execution_admission_waiters_for_scope(waiter.blocked_scope)
   end
 
   defp run(opts) do
