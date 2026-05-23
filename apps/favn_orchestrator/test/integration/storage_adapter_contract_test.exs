@@ -438,6 +438,9 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert :ok = Storage.put_backfill_window(first_window)
     assert :ok = Storage.put_backfill_window(second_window)
 
+    assert {:error, {:unsupported_filter, :unknown}} =
+             Storage.scan_backfill_windows([unknown: :value], limit: 1)
+
     assert {:ok, first_page} =
              Storage.scan_backfill_windows([backfill_run_id: backfill_run_id], limit: 1)
 
@@ -488,6 +491,9 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert :ok = Storage.put_asset_freshness_state(first_state)
     assert :ok = Storage.put_asset_freshness_state(second_state)
+
+    assert {:error, {:unsupported_filter, :unknown}} =
+             Storage.scan_asset_freshness_states([unknown: :value], limit: 1)
 
     assert {:ok, first_page} =
              Storage.scan_asset_freshness_states([manifest_version_id: manifest_version_id],

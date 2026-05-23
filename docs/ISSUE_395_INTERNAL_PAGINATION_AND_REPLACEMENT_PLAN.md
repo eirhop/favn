@@ -2,7 +2,7 @@
 
 Issue: #395
 
-Status: planned.
+Status: implemented by PR #411.
 
 ## Goal
 

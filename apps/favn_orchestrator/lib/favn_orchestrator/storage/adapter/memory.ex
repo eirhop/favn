@@ -80,6 +80,16 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     :manifest_content_hash
   ]
 
+  @backfill_window_filters [
+    :backfill_run_id,
+    :pipeline_module,
+    :window_key,
+    :window_kind,
+    :status,
+    :coverage_baseline_id,
+    :manifest_version_id
+  ]
+
   @materialization_claim_filters [
     :claim_key,
     :asset_ref_module,
@@ -1225,21 +1235,20 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   def handle_call({:scan_backfill_windows, filters, scan_opts}, _from, state) do
-    case backfill_window_cursor(Keyword.get(scan_opts, :after)) do
-      {:ok, after_key} ->
-        rows =
-          state.backfill_windows
-          |> Map.values()
-          |> filter_by(filters)
-          |> Enum.sort_by(&backfill_window_sort_key/1)
-          |> cursor_drop(after_key, &backfill_window_sort_key/1)
-          |> Enum.take(Keyword.fetch!(scan_opts, :limit) + 1)
+    with :ok <- validate_filters(filters, @backfill_window_filters),
+         {:ok, after_key} <- backfill_window_cursor(Keyword.get(scan_opts, :after)) do
+      rows =
+        state.backfill_windows
+        |> Map.values()
+        |> filter_by(filters)
+        |> Enum.sort_by(&backfill_window_sort_key/1)
+        |> cursor_drop(after_key, &backfill_window_sort_key/1)
+        |> Enum.take(Keyword.fetch!(scan_opts, :limit) + 1)
 
-        page = CursorPage.from_fetched(rows, scan_opts, &backfill_window_cursor!/1)
-        {:reply, {:ok, page}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+      page = CursorPage.from_fetched(rows, scan_opts, &backfill_window_cursor!/1)
+      {:reply, {:ok, page}, state}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
