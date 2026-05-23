@@ -963,26 +963,28 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   def handle_call({:list_run_events, run_id, run_event_opts}, _from, state) do
-    events =
+    reply =
       state.run_events
       |> Map.get(run_id, [])
       |> filter_run_events(run_event_opts)
+      |> event_filter_reply()
 
-    {:reply, {:ok, events}, state}
+    {:reply, reply, state}
   end
 
   def handle_call({:list_execution_group_events, group_id, run_event_opts}, _from, state) do
     run_ids = MapSet.new(Enum.map(execution_group_runs(state.runs, group_id), & &1.id))
 
-    events =
+    reply =
       state.run_events
       |> Map.values()
       |> List.flatten()
       |> Enum.filter(&(Map.get(&1, :run_id) in run_ids))
       |> Enum.sort_by(&event_sort_key/1)
       |> filter_execution_group_events(run_event_opts)
+      |> event_filter_reply()
 
-    {:reply, {:ok, events}, state}
+    {:reply, reply, state}
   end
 
   def handle_call({:list_global_run_events, opts}, _from, state) do
@@ -1862,32 +1864,55 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   defp filter_run_events(events, opts) do
-    events
-    |> Enum.filter(fn event ->
-      case Keyword.get(opts, :after_sequence) do
-        sequence when is_integer(sequence) and sequence >= 0 ->
-          Map.get(event, :sequence) > sequence
+    with :ok <- validate_event_order(opts) do
+      events
+      |> Enum.filter(fn event ->
+        case Keyword.get(opts, :after_sequence) do
+          sequence when is_integer(sequence) and sequence >= 0 ->
+            Map.get(event, :sequence) > sequence
 
-        _other ->
-          true
-      end
-    end)
-    |> maybe_limit_events(opts)
+          _other ->
+            true
+        end
+      end)
+      |> order_events(opts)
+      |> maybe_limit_events(opts)
+    end
   end
 
   defp filter_execution_group_events(events, opts) do
-    events
-    |> Enum.filter(fn event ->
-      case Keyword.get(opts, :after_global_sequence) do
-        sequence when is_integer(sequence) and sequence >= 0 ->
-          Map.get(event, :global_sequence, 0) > sequence
+    with :ok <- validate_event_order(opts) do
+      events
+      |> Enum.filter(fn event ->
+        case Keyword.get(opts, :after_global_sequence) do
+          sequence when is_integer(sequence) and sequence >= 0 ->
+            Map.get(event, :global_sequence, 0) > sequence
 
-        _other ->
-          true
-      end
-    end)
-    |> maybe_limit_events(opts)
+          _other ->
+            true
+        end
+      end)
+      |> order_events(opts)
+      |> maybe_limit_events(opts)
+    end
   end
+
+  defp validate_event_order(opts) do
+    case Keyword.get(opts, :order, :asc) do
+      order when order in [:asc, :desc] -> :ok
+      _order -> {:error, :invalid_opts}
+    end
+  end
+
+  defp order_events(events, opts) do
+    case Keyword.get(opts, :order, :asc) do
+      :desc -> Enum.reverse(events)
+      _order -> events
+    end
+  end
+
+  defp event_filter_reply({:error, _reason} = error), do: error
+  defp event_filter_reply(events) when is_list(events), do: {:ok, events}
 
   defp maybe_limit_events(events, opts) do
     case Keyword.get(opts, :limit) do

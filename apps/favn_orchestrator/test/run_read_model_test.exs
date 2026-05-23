@@ -1030,7 +1030,18 @@ defmodule FavnOrchestrator.RunReadModelTest do
 
     assert length(detail.events) == 3
     assert Enum.map(detail.events, & &1.sequence) == [1, 2, 3]
-    assert detail.latest_event.sequence == 3
+    assert detail.latest_event.sequence == 10
+  end
+
+  test "operator run detail rejects run-scoped cursors for grouped events" do
+    run = run("operator_detail_invalid_cursor", submit_kind: :pipeline)
+    assert :ok = Storage.put_run(run)
+
+    assert {:error, :invalid_opts} =
+             FavnOrchestrator.get_operator_run_detail(run.id,
+               include: [:events],
+               after_sequence: 1
+             )
   end
 
   test "execution group attempt filters apply on orchestrator read model" do

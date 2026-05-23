@@ -685,7 +685,7 @@ defmodule FavnOrchestrator.RunReadModel do
       backfill_failures: backfill_failures,
       backfill_failure_count: backfill_failure_count,
       latest_event_sequence: group.root.event_seq,
-      latest_event: List.last(events)
+      latest_event: latest_operator_event(group.id)
     }
 
     if event_opts.include_events? do
@@ -702,7 +702,6 @@ defmodule FavnOrchestrator.RunReadModel do
     limit =
       Keyword.get(opts, :event_limit, Keyword.get(opts, :limit, @operator_event_default_limit))
 
-    after_sequence = Keyword.get(opts, :after_sequence)
     after_global_sequence = Keyword.get(opts, :after_global_sequence)
 
     cond do
@@ -712,7 +711,7 @@ defmodule FavnOrchestrator.RunReadModel do
       limit > @operator_event_max_limit ->
         {:error, :invalid_opts}
 
-      not is_nil(after_sequence) and (not is_integer(after_sequence) or after_sequence < 0) ->
+      Keyword.has_key?(opts, :after_sequence) ->
         {:error, :invalid_opts}
 
       not is_nil(after_global_sequence) and
@@ -724,7 +723,6 @@ defmodule FavnOrchestrator.RunReadModel do
          %{
            include_events?: include_events?,
            limit: limit,
-           after_sequence: after_sequence,
            after_global_sequence: after_global_sequence
          }}
     end
@@ -735,12 +733,19 @@ defmodule FavnOrchestrator.RunReadModel do
   defp operator_events(group_id, event_opts) do
     opts =
       [limit: event_opts.limit]
-      |> maybe_put_event_opt(:after_sequence, event_opts.after_sequence)
       |> maybe_put_event_opt(:after_global_sequence, event_opts.after_global_sequence)
 
     case list_execution_group_events(group_id, opts) do
       {:ok, events} -> events
       {:error, _reason} -> []
+    end
+  end
+
+  defp latest_operator_event(group_id) do
+    case list_execution_group_events(group_id, limit: 1, order: :desc) do
+      {:ok, [event]} -> event
+      {:ok, []} -> nil
+      {:error, _reason} -> nil
     end
   end
 
@@ -1056,8 +1061,8 @@ defmodule FavnOrchestrator.RunReadModel do
   defp run_events(run_id, mode \\ :detail)
 
   defp run_events(run_id, :operator) do
-    case Storage.list_run_events(run_id, limit: @operator_step_event_limit) do
-      {:ok, events} -> Enum.map(events, &RunEvent.from_map/1)
+    case Storage.list_run_events(run_id, limit: @operator_step_event_limit, order: :desc) do
+      {:ok, events} -> events |> Enum.map(&RunEvent.from_map/1) |> Enum.reverse()
       {:error, _reason} -> []
     end
   end
