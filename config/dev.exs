@@ -7,10 +7,8 @@ import Config
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
 config :favn_view, FavnView.Endpoint,
-  # Bind to all interfaces so Storybook can be viewed from devices on the
-  # same local network, such as a phone on Wi-Fi.
   http: [
-    ip: {0, 0, 0, 0},
+    ip: {127, 0, 0, 1},
     port: System.get_env("FAVN_VIEW_PORT", System.get_env("PORT", "4173")) |> String.to_integer()
   ],
   check_origin: false,

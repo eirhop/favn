@@ -33,8 +33,9 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   plug(Plug.Parsers,
-    parsers: [:urlencoded, :multipart, :json],
-    pass: ["*/*"],
+    parsers: [:json],
+    pass: ["application/json"],
+    length: 1_000_000,
     json_decoder: Jason
   )
 
@@ -420,12 +421,12 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/manifests/:manifest_version_id/activate" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, actor_id, session_id} <- ensure_activation_context(conn) do
+         {:ok, session, actor} <- ensure_actor_context(conn, :operator) do
       run_idempotent_command(
         conn,
         "manifest.activate",
-        actor_id,
-        session_id,
+        actor.id,
+        session.id,
         %{manifest_version_id: manifest_version_id},
         fn idempotency ->
           with :ok <- FavnOrchestrator.activate_manifest(manifest_version_id),
@@ -434,8 +435,8 @@ defmodule FavnOrchestrator.API.Router do
                  Auth.put_audit(
                    %{
                      action: "manifest.activate",
-                     actor_id: actor_id,
-                     session_id: session_id,
+                     actor_id: actor.id,
+                     session_id: session.id,
                      resource_type: "manifest",
                      resource_id: manifest_version_id,
                      outcome: "accepted",
@@ -460,6 +461,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
     end
   end
 
@@ -705,16 +709,16 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/runs/:run_id/cancel" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, actor_id, session_id} <- ensure_operator_context(conn) do
-      run_idempotent_command(conn, "run.cancel", actor_id, session_id, %{run_id: run_id}, fn
+         {:ok, session, actor} <- ensure_actor_context(conn, :operator) do
+      run_idempotent_command(conn, "run.cancel", actor.id, session.id, %{run_id: run_id}, fn
         idempotency ->
-          with :ok <- FavnOrchestrator.cancel_run(run_id, %{actor_id: actor_id}),
+          with :ok <- FavnOrchestrator.cancel_run(run_id, %{actor_id: actor.id}),
                :ok <-
                  Auth.put_audit(
                    %{
                      action: "run.cancel",
-                     actor_id: actor_id,
-                     session_id: session_id,
+                     actor_id: actor.id,
+                     session_id: session.id,
                      resource_type: "run",
                      resource_id: run_id,
                      outcome: "accepted",
@@ -741,6 +745,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
     end
   end
 
@@ -1427,22 +1434,6 @@ defmodule FavnOrchestrator.API.Router do
 
       _other ->
         {:error, :local_dev_actor_not_found}
-    end
-  end
-
-  defp ensure_activation_context(conn) do
-    case ensure_actor_context(conn, :operator) do
-      {:ok, session, actor} -> {:ok, actor.id, session.id}
-      {:error, :unauthenticated} -> {:ok, nil, nil}
-      {:error, :forbidden} = error -> error
-    end
-  end
-
-  defp ensure_operator_context(conn) do
-    case ensure_actor_context(conn, :operator) do
-      {:ok, session, actor} -> {:ok, actor.id, session.id}
-      {:error, :unauthenticated} -> {:ok, nil, nil}
-      {:error, :forbidden} = error -> error
     end
   end
 

@@ -49,13 +49,17 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     assert_ready!(runtime.port)
     assert_runtime_paths!(runtime.runtime_home, runtime.sqlite_path)
 
-    assert {bootstrap_output, 0} = run_bootstrap(artifact.project_dir, artifact.manifest_path, base_url)
+    assert {bootstrap_output, 0} =
+             run_bootstrap(artifact.project_dir, artifact.manifest_path, base_url)
+
     assert bootstrap_output =~ "Favn single-node bootstrap complete"
     assert bootstrap_output =~ "manifest registration: already_published"
     assert bootstrap_output =~ "runner registration: accepted"
     assert bootstrap_output =~ "active manifest verification: matched"
 
-    assert {repeat_output, 0} = run_bootstrap(artifact.project_dir, artifact.manifest_path, base_url)
+    assert {repeat_output, 0} =
+             run_bootstrap(artifact.project_dir, artifact.manifest_path, base_url)
+
     assert repeat_output =~ "manifest registration: already_published"
     assert repeat_output =~ "runner registration: accepted"
 
@@ -79,7 +83,9 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
 
     assert {:ok, terminal_run} = await_terminal_run(base_url, session_context, run["id"])
     assert terminal_run["status"] == "ok", backend_log(runtime.runtime_home)
-    assert terminal_run["manifest_version_id"] == artifact.manifest_metadata["manifest_version_id"]
+
+    assert terminal_run["manifest_version_id"] ==
+             artifact.manifest_metadata["manifest_version_id"]
 
     assert {:ok, diagnostics} = OrchestratorClient.diagnostics(base_url, @service_token)
     assert diagnostics["status"] == "ok"
@@ -95,7 +101,10 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     assert_ready!(runtime.port)
 
     assert_active_manifest!(base_url, artifact.manifest_metadata)
-    assert {:ok, persisted_run} = OrchestratorClient.get_run(base_url, @service_token, session_context, run["id"])
+
+    assert {:ok, persisted_run} =
+             OrchestratorClient.get_run(base_url, @service_token, session_context, run["id"])
+
     assert persisted_run["status"] == "ok"
 
     assert {:ok, _new_session_context} = login(base_url)
@@ -159,7 +168,9 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     assert start_output =~ "Favn backend started with PID"
     assert_ready!(runtime.port)
 
-    assert {bootstrap_output, 0} = run_bootstrap(artifact.project_dir, artifact.manifest_path, base_url)
+    assert {bootstrap_output, 0} =
+             run_bootstrap(artifact.project_dir, artifact.manifest_path, base_url)
+
     assert bootstrap_output =~ "Favn single-node bootstrap complete"
 
     assert {:ok, session_context} = login(base_url)
@@ -224,7 +235,11 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
       "--orchestrator-url",
       base_url,
       "--service-token",
-      @service_token
+      @service_token,
+      "--operator-username",
+      @admin_username,
+      "--operator-password",
+      @admin_password
     ])
   end
 
@@ -246,7 +261,8 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
   end
 
   defp assert_active_manifest!(base_url, manifest_metadata) do
-    assert {:ok, active_manifest} = OrchestratorClient.bootstrap_active_manifest(base_url, @service_token)
+    assert {:ok, active_manifest} =
+             OrchestratorClient.bootstrap_active_manifest(base_url, @service_token)
 
     assert get_in(active_manifest, ["manifest", "manifest_version_id"]) ==
              manifest_metadata["manifest_version_id"]
@@ -274,7 +290,8 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
 
   defp await_terminal_run(base_url, session_context, run_id, attempts) when attempts > 0 do
     case OrchestratorClient.get_run(base_url, @service_token, session_context, run_id) do
-      {:ok, %{"status" => status} = run} when status in ["ok", "error", "cancelled", "timed_out"] ->
+      {:ok, %{"status" => status} = run}
+      when status in ["ok", "error", "cancelled", "timed_out"] ->
         {:ok, run}
 
       {:ok, _run} ->
@@ -336,7 +353,9 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
       assert output =~ "Favn backend exited before readiness"
       refute File.exists?(pid_path(runtime.runtime_home))
       assert {:error, _reason} = fetch_json(live_url(runtime.port))
-      assert backend_log(runtime.runtime_home) =~ "invalid Favn backend production runtime config or startup"
+
+      assert backend_log(runtime.runtime_home) =~
+               "invalid Favn backend production runtime config or startup"
 
       cleanup_runtime!(runtime)
     end)

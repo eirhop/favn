@@ -228,13 +228,13 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     end
   end
 
-  test "mix favn.bootstrap.single requires manifest, orchestrator URL, and service token" do
+  test "mix favn.bootstrap.single requires activation inputs by default" do
     previous_env = bootstrap_env()
     clear_bootstrap_env()
     on_exit(fn -> restore_bootstrap_env(previous_env) end)
 
     assert_raise Mix.Error,
-                 ~r/missing required option\(s\): --manifest, --orchestrator-url, --service-token/,
+                 ~r/missing required option\(s\): --manifest, --orchestrator-url, --service-token, --operator-username, --operator-password/,
                  fn -> BootstrapSingleTask.parse_args([]) end
   end
 
@@ -245,6 +245,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     System.put_env("FAVN_BOOTSTRAP_MANIFEST_PATH", "/env/manifest.json")
     System.put_env("FAVN_VIEW_ORCHESTRATOR_BASE_URL", "http://127.0.0.1:4000")
     System.put_env("FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN", "env-token")
+    System.put_env("FAVN_BOOTSTRAP_OPERATOR_USERNAME", "env-admin")
+    System.put_env("FAVN_BOOTSTRAP_OPERATOR_PASSWORD", "env-password-long")
 
     on_exit(fn -> restore_bootstrap_env(previous_env) end)
 
@@ -253,6 +255,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert Keyword.fetch!(opts, :manifest_path) == "/flag/manifest.json"
     assert Keyword.fetch!(opts, :orchestrator_url) == "http://127.0.0.1:4000"
     assert Keyword.fetch!(opts, :service_token) == "env-token"
+    assert Keyword.fetch!(opts, :operator_username) == "env-admin"
+    assert Keyword.fetch!(opts, :operator_password) == "env-password-long"
   end
 
   test "mix favn.bootstrap.single parses activation flag" do
@@ -1238,7 +1242,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       "--orchestrator-url",
       base_url,
       "--service-token",
-      "token-1"
+      "token-1",
+      "--operator-username",
+      "admin",
+      "--operator-password",
+      "admin-password-long"
     ]
   end
 
@@ -1248,7 +1256,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     server =
       spawn_link(fn ->
-        serve_bootstrap_requests(socket, verification, 5)
+        serve_bootstrap_requests(socket, verification, 6)
       end)
 
     {:ok, "http://127.0.0.1:#{port}", server}
@@ -1302,6 +1310,15 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
       path == "/api/orchestrator/v1/manifests" ->
         send_manifest_publish_response(client, verification)
+
+      path == "/api/orchestrator/v1/auth/password/sessions" ->
+        send_json(client, 201, %{
+          data: %{
+            session: %{id: "ses_1"},
+            session_token: "raw_session_token_1",
+            actor: %{id: "act_1"}
+          }
+        })
 
       path == "/api/orchestrator/v1/bootstrap/active-manifest" ->
         send_active_manifest_response(client, verification)
@@ -1415,7 +1432,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       "FAVN_VIEW_ORCHESTRATOR_BASE_URL",
       "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN",
       "FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN",
-      "FAVN_ORCHESTRATOR_SERVICE_TOKEN"
+      "FAVN_ORCHESTRATOR_SERVICE_TOKEN",
+      "FAVN_BOOTSTRAP_OPERATOR_USERNAME",
+      "FAVN_BOOTSTRAP_OPERATOR_PASSWORD",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD"
     ]
   end
 end

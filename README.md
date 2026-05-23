@@ -900,12 +900,15 @@ available at `/api/web/v1/health/live` and `/api/web/v1/health/ready`.
 `mix favn.bootstrap.single` bootstraps the backend control-plane side of the
 single-node shape through orchestrator APIs. Required inputs can be passed as
 `--manifest`, `--orchestrator-url`, and `--service-token`, or by the supported
-environment defaults documented by the task. Bootstrap uses
+environment defaults documented by the task. When activation is enabled, which
+is the default, `--operator-username` and `--operator-password` or their
+environment fallbacks are also required. Bootstrap uses
 `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN` or
 `FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN` for service auth, with
 `FAVN_ORCHESTRATOR_SERVICE_TOKEN` accepted only as a legacy fallback.
-The command verifies service-token auth, reads and verifies the manifest JSON,
-registers the manifest, activates it by default, and calls
+The command verifies service-token auth, logs in the bootstrap operator when
+activation is enabled, reads and verifies the manifest JSON, registers the
+manifest, activates it by default with operator actor context, and calls
 `/api/orchestrator/v1/manifests/:manifest_version_id/runner/register` so the
 orchestrator registers the persisted manifest with the local runner. Repeating
 the command with the same manifest and runner registration is safe and

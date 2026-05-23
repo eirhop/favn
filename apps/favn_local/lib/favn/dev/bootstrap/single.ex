@@ -17,18 +17,20 @@ defmodule Favn.Dev.Bootstrap.Single do
           manifest_path: Path.t(),
           orchestrator_url: String.t(),
           service_token: String.t(),
+          operator_username: String.t(),
+          operator_password: String.t(),
           activate?: boolean(),
           client: module()
         ]
 
   @type summary :: %{
-           manifest_version_id: String.t(),
-           content_hash: String.t(),
-           manifest_registration: String.t(),
-           runner_registration: String.t(),
-           activated?: boolean(),
-           active_manifest_verification: :matched | {:mismatch, term()} | {:skipped, term()}
-         }
+          manifest_version_id: String.t(),
+          content_hash: String.t(),
+          manifest_registration: String.t(),
+          runner_registration: String.t(),
+          activated?: boolean(),
+          active_manifest_verification: :matched | {:mismatch, term()} | {:skipped, term()}
+        }
 
   @spec run(opts()) :: {:ok, summary()} | {:error, term()}
   def run(opts) when is_list(opts) do
@@ -39,12 +41,21 @@ defmodule Favn.Dev.Bootstrap.Single do
          {:ok, orchestrator_url} <- required_string(opts, :orchestrator_url),
          {:ok, service_token} <- required_string(opts, :service_token),
          :ok <- client.verify_service_token(orchestrator_url, service_token),
+         {:ok, session_context} <-
+           maybe_operator_session(client, orchestrator_url, service_token, opts),
          {:ok, version} <- read_manifest_version(manifest_path),
          {:ok, registration} <-
            client.publish_manifest(orchestrator_url, service_token, manifest_payload(version)),
          manifest_registration <- registration_status(registration, "manifest"),
          {:ok, activated?} <-
-           maybe_activate(client, orchestrator_url, service_token, version, activate?),
+           maybe_activate(
+             client,
+             orchestrator_url,
+             service_token,
+             session_context,
+             version,
+             activate?
+           ),
          {:ok, runner} <-
            client.register_runner(
              orchestrator_url,
@@ -125,8 +136,10 @@ defmodule Favn.Dev.Bootstrap.Single do
        when is_map(manifest) do
     Version.from_published(manifest,
       manifest_version_id:
-        Keyword.get(metadata_opts, :manifest_version_id) || Map.get(envelope, "manifest_version_id"),
-      content_hash: Keyword.get(metadata_opts, :content_hash) || Map.get(envelope, "content_hash"),
+        Keyword.get(metadata_opts, :manifest_version_id) ||
+          Map.get(envelope, "manifest_version_id"),
+      content_hash:
+        Keyword.get(metadata_opts, :content_hash) || Map.get(envelope, "content_hash"),
       schema_version: Map.get(envelope, "schema_version"),
       runner_contract_version: Map.get(envelope, "runner_contract_version"),
       serialization_format: Map.get(envelope, "serialization_format", "json-v1")
@@ -177,10 +190,26 @@ defmodule Favn.Dev.Bootstrap.Single do
 
   defp registration_status(_payload, _key), do: "unknown"
 
-  defp maybe_activate(_client, _url, _token, _version, false), do: {:ok, false}
+  defp maybe_operator_session(client, orchestrator_url, service_token, opts) do
+    if Keyword.get(opts, :activate?, true) do
+      with {:ok, username} <- required_string(opts, :operator_username),
+           {:ok, password} <- required_string(opts, :operator_password) do
+        client.password_login(orchestrator_url, service_token, username, password)
+      end
+    else
+      {:ok, nil}
+    end
+  end
 
-  defp maybe_activate(client, orchestrator_url, service_token, version, true) do
-    case client.activate_manifest(orchestrator_url, service_token, version.manifest_version_id) do
+  defp maybe_activate(_client, _url, _token, _session_context, _version, false), do: {:ok, false}
+
+  defp maybe_activate(client, orchestrator_url, service_token, session_context, version, true) do
+    case client.activate_manifest(
+           orchestrator_url,
+           service_token,
+           version.manifest_version_id,
+           session_context
+         ) do
       {:ok, _result} -> {:ok, true}
       {:error, _reason} = error -> error
     end

@@ -822,7 +822,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"data" => %{"activated" => true}} = Jason.decode!(response.resp_body)
   end
 
-  test "service token can activate manifest without actor headers" do
+  test "manifest activation without actor context returns unauthenticated" do
     version = schedule_manifest_version("mv_activate_service")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
@@ -832,8 +832,8 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_idempotency_key("activate-service")
       |> Router.call(@opts)
 
-    assert response.status == 200
-    assert %{"data" => %{"activated" => true}} = Jason.decode!(response.resp_body)
+    assert response.status == 401
+    assert %{"error" => %{"code" => "unauthenticated"}} = Jason.decode!(response.resp_body)
   end
 
   test "manifest activation duplicate replays without duplicate audit" do
@@ -2259,7 +2259,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"data" => %{"run" => %{"id" => ^rerun_id}}} = Jason.decode!(duplicate.resp_body)
   end
 
-  test "service token can cancel run without actor headers" do
+  test "run cancellation without actor context returns unauthenticated" do
     seed_run_events!("run_cancel_service", [1])
 
     response =
@@ -2268,10 +2268,8 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_idempotency_key("cancel-service")
       |> Router.call(@opts)
 
-    assert response.status == 200
-
-    assert %{"data" => %{"cancelled" => true, "run_id" => "run_cancel_service"}} =
-             Jason.decode!(response.resp_body)
+    assert response.status == 401
+    assert %{"error" => %{"code" => "unauthenticated"}} = Jason.decode!(response.resp_body)
   end
 
   test "cancel duplicate replays without duplicate audit" do
