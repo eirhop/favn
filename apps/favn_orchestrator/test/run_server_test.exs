@@ -310,6 +310,11 @@ defmodule FavnOrchestrator.RunServerTest do
     defdelegate release_execution_lease(lease_id, opts), to: Memory
     defdelegate expire_execution_leases(now, opts), to: Memory
     defdelegate list_execution_leases(opts), to: Memory
+    defdelegate upsert_execution_admission_waiter(waiter, opts), to: Memory
+    defdelegate delete_execution_admission_waiter(waiter_id, opts), to: Memory
+    defdelegate delete_execution_admission_waiters_for_run(run_id, opts), to: Memory
+    defdelegate list_execution_admission_waiters_for_scope(scope, waiter_opts, opts), to: Memory
+    defdelegate expire_execution_admission_waiters(now, opts), to: Memory
     defdelegate persist_log_entries(entries, opts), to: Memory
     defdelegate list_logs(filter, opts, adapter_opts), to: Memory
     defdelegate replay_logs_after(cursor, filter, opts, adapter_opts), to: Memory
@@ -980,6 +985,76 @@ defmodule FavnOrchestrator.RunServerTest do
     assert stored.status == :ok
   end
 
+  test "pipeline admission wait progresses after coordinator restart" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientBlockingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, parent: self())
+
+    refs =
+      Enum.map(1..2, fn index ->
+        {Module.concat([MyApp.Assets.PipelineCoordinatorRestart, "Asset#{index}"]), :asset}
+      end)
+
+    plan = same_stage_plan(refs)
+    version = manifest_version_for_refs("mv_pipeline_coordinator_restart", refs)
+
+    run_state =
+      "run_pipeline_coordinator_restart"
+      |> pipeline_run_state(version, plan, refs)
+      |> RunState.transition(metadata: %{pipeline_execution_policy: %{max_concurrency: 1}})
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    [first_submission] = receive_submissions(1)
+    first_awaiters = receive_awaiters([first_submission])
+    assert {:ok, [_waiter]} = wait_for_admission_waiters(run_state)
+
+    restart_admission_coordinator()
+    release_submission(first_submission, first_awaiters)
+
+    second_ref = List.last(refs)
+    assert_receive {:submitted, ^second_ref, second_execution_id}, 2_500
+
+    second_awaiters = receive_awaiters([{second_ref, second_execution_id}])
+    release_submission({second_ref, second_execution_id}, second_awaiters)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :ok
+  end
+
+  test "pipeline cancellation while admission queued deletes durable waiters" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, submit_log: submit_log)
+
+    ref = {MyApp.Assets.PipelineQueuedCancel.Asset, :asset}
+    refs = [ref]
+    plan = same_stage_plan(refs)
+    version = manifest_version_for_refs("mv_pipeline_queued_cancel", refs)
+
+    run_state =
+      "run_pipeline_queued_cancel"
+      |> pipeline_run_state(version, plan, refs)
+      |> RunState.transition(metadata: %{pipeline_execution_policy: %{max_concurrency: 1}})
+
+    hold_execution_slot(run_state)
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    monitor_ref = Process.monitor(pid)
+    assert {:ok, [_waiter]} = wait_for_admission_waiters(run_state)
+
+    send(pid, {:favn_run_cancel_requested, :test_cancel})
+
+    assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}, 1_000
+    assert Agent.get(submit_log, & &1) == []
+    assert {:ok, []} = Storage.list_execution_admission_waiters_for_scope(run_scope(run_state))
+    assert {:ok, []} = Storage.list_execution_leases()
+  end
+
   test "pipeline max concurrency does not refill same-stage work after terminal failure" do
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientBlockingStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, parent: self())
@@ -1489,6 +1564,78 @@ defmodule FavnOrchestrator.RunServerTest do
     {_execution_id, awaiter} = awaiter_for_submission(submission, awaiters)
     send(awaiter, {:release_runner_result, execution_id, status})
   end
+
+  defp hold_execution_slot(%RunState{} = run_state, asset_step_id \\ "held") do
+    now = DateTime.utc_now()
+
+    assert {:ok, _lease} =
+             Storage.try_acquire_execution_lease(%{
+               lease_id: "#{run_state.id}:#{asset_step_id}",
+               run_id: run_state.id,
+               asset_step_id: asset_step_id,
+               scopes: [run_scope(run_state)],
+               acquired_at: now,
+               expires_at: DateTime.add(now, 60_000, :millisecond)
+             })
+  end
+
+  defp wait_for_admission_waiters(%RunState{} = run_state, timeout_ms \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    wait_for_admission_waiters_until(run_state, deadline)
+  end
+
+  defp wait_for_admission_waiters_until(%RunState{} = run_state, deadline) do
+    case Storage.list_execution_admission_waiters_for_scope(run_scope(run_state)) do
+      {:ok, []} ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error, :timeout}
+        else
+          Process.sleep(10)
+          wait_for_admission_waiters_until(run_state, deadline)
+        end
+
+      {:ok, waiters} ->
+        {:ok, waiters}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp restart_admission_coordinator do
+    case Process.whereis(FavnOrchestrator.ExecutionAdmission.Coordinator) do
+      nil ->
+        :ok
+
+      pid ->
+        monitor_ref = Process.monitor(pid)
+        Process.exit(pid, :kill)
+        assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :killed}, 1_000
+        assert :ok = wait_for_admission_coordinator_restart(pid)
+    end
+  end
+
+  defp wait_for_admission_coordinator_restart(old_pid) do
+    deadline = System.monotonic_time(:millisecond) + 1_000
+    wait_for_admission_coordinator_restart_until(old_pid, deadline)
+  end
+
+  defp wait_for_admission_coordinator_restart_until(old_pid, deadline) do
+    case Process.whereis(FavnOrchestrator.ExecutionAdmission.Coordinator) do
+      pid when is_pid(pid) and pid != old_pid ->
+        :ok
+
+      _other ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error, :timeout}
+        else
+          Process.sleep(10)
+          wait_for_admission_coordinator_restart_until(old_pid, deadline)
+        end
+    end
+  end
+
+  defp run_scope(%RunState{} = run_state), do: %{kind: :run, key: run_state.id, limit: 1}
 
   defp wait_for_run_event(run_id, event_type, timeout_ms \\ 1_000) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms

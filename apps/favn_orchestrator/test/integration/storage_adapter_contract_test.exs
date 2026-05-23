@@ -267,6 +267,48 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, 1} = Storage.expire_execution_leases(DateTime.add(now, 6, :second))
     assert {:ok, []} = Storage.list_execution_leases()
 
+    waiter =
+      execution_admission_waiter(run.id, "step-2", now, %{kind: :run, key: run.id, limit: 1})
+
+    later_waiter =
+      execution_admission_waiter(run.id, "step-3", DateTime.add(now, 1, :second), %{
+        kind: :run,
+        key: run.id,
+        limit: 1
+      })
+
+    assert {:ok, stored_waiter} = Storage.upsert_execution_admission_waiter(waiter)
+    assert stored_waiter.wake_generation == 0
+    assert {:ok, updated_waiter} = Storage.upsert_execution_admission_waiter(waiter)
+    assert updated_waiter.wake_generation == 1
+    assert updated_waiter.inserted_at == stored_waiter.inserted_at
+    assert {:ok, ^later_waiter} = Storage.upsert_execution_admission_waiter(later_waiter)
+
+    assert {:ok, [^updated_waiter, ^later_waiter]} =
+             Storage.list_execution_admission_waiters_for_scope(%{
+               kind: :run,
+               key: run.id,
+               limit: 1
+             })
+
+    assert :ok = Storage.delete_execution_admission_waiter(updated_waiter.waiter_id)
+
+    assert {:ok, [^later_waiter]} =
+             Storage.list_execution_admission_waiters_for_scope(%{
+               kind: :run,
+               key: run.id,
+               limit: 1
+             })
+
+    assert {:ok, 1} = Storage.expire_execution_admission_waiters(DateTime.add(now, 10, :second))
+
+    assert {:ok, []} =
+             Storage.list_execution_admission_waiters_for_scope(%{
+               kind: :run,
+               key: run.id,
+               limit: 1
+             })
+
     assert_materialization_claim_contract(label, run)
 
     concurrent_now = DateTime.utc_now()
@@ -377,6 +419,23 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
       scopes: scopes,
       acquired_at: now,
       expires_at: DateTime.add(now, 5, :second)
+    }
+  end
+
+  defp execution_admission_waiter(run_id, asset_step_id, now, scope) do
+    %FavnOrchestrator.ExecutionAdmission.Waiter{
+      waiter_id: "waiter_#{asset_step_id}",
+      run_id: run_id,
+      asset_step_id: asset_step_id,
+      queue_reason: :pipeline_concurrency,
+      blocked_scope: scope,
+      requested_scopes: [scope],
+      stage: 0,
+      attempt: 1,
+      inserted_at: now,
+      updated_at: now,
+      deadline_at: DateTime.add(now, 5, :second),
+      wake_generation: 0
     }
   end
 

@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.LogEntryCodec
+  alias FavnOrchestrator.Storage.ExecutionAdmissionWaiterCodec
   alias FavnOrchestrator.Storage.MaterializationClaimCodec
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunQuery
@@ -47,6 +48,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           run_events: %{required(String.t()) => [map()]},
           run_event_global_sequence: non_neg_integer(),
           execution_leases: %{required(String.t()) => map()},
+          execution_admission_waiters: %{required(String.t()) => map()},
           materialization_claims: %{required(String.t()) => MaterializationClaim.t()},
           log_entries: [Favn.Log.Entry.t()],
           log_global_sequence: non_neg_integer(),
@@ -308,6 +310,47 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def list_execution_leases(opts) when is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, :list_execution_leases)
+  end
+
+  @impl true
+  def upsert_execution_admission_waiter(waiter, opts) when is_map(waiter) and is_list(opts) do
+    with {:ok, normalized} <- ExecutionAdmissionWaiterCodec.normalize(waiter) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:upsert_execution_admission_waiter, normalized})
+    end
+  end
+
+  @impl true
+  def delete_execution_admission_waiter(waiter_id, opts)
+      when is_binary(waiter_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:delete_execution_admission_waiter, waiter_id})
+  end
+
+  @impl true
+  def delete_execution_admission_waiters_for_run(run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:delete_execution_admission_waiters_for_run, run_id})
+  end
+
+  @impl true
+  def list_execution_admission_waiters_for_scope(scope, waiter_opts, opts)
+      when is_map(scope) and is_list(waiter_opts) and is_list(opts) do
+    with {:ok, normalized_scope} <- normalize_execution_lease_scope(scope) do
+      server = Keyword.get(opts, :server, __MODULE__)
+
+      GenServer.call(
+        server,
+        {:list_execution_admission_waiters_for_scope, normalized_scope, waiter_opts}
+      )
+    end
+  end
+
+  @impl true
+  def expire_execution_admission_waiters(%DateTime{} = now, opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:expire_execution_admission_waiters, now})
   end
 
   @impl true
@@ -699,6 +742,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       run_events: %{},
       run_event_global_sequence: 0,
       execution_leases: %{},
+      execution_admission_waiters: %{},
       materialization_claims: %{},
       log_entries: [],
       log_global_sequence: 0,
@@ -1011,6 +1055,51 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def handle_call(:list_execution_leases, _from, state) do
     leases = state.execution_leases |> Map.values() |> Enum.sort_by(& &1.lease_id)
     {:reply, {:ok, leases}, state}
+  end
+
+  def handle_call({:upsert_execution_admission_waiter, waiter}, _from, state) do
+    next_waiter = next_execution_admission_waiter(waiter, state.execution_admission_waiters)
+
+    {:reply, {:ok, next_waiter},
+     %{
+       state
+       | execution_admission_waiters:
+           Map.put(state.execution_admission_waiters, next_waiter.waiter_id, next_waiter)
+     }}
+  end
+
+  def handle_call({:delete_execution_admission_waiter, waiter_id}, _from, state) do
+    {:reply, :ok,
+     %{
+       state
+       | execution_admission_waiters: Map.delete(state.execution_admission_waiters, waiter_id)
+     }}
+  end
+
+  def handle_call({:delete_execution_admission_waiters_for_run, run_id}, _from, state) do
+    {deleted, waiters} =
+      pop_execution_admission_waiters_for_run(state.execution_admission_waiters, run_id)
+
+    {:reply, {:ok, deleted}, %{state | execution_admission_waiters: waiters}}
+  end
+
+  def handle_call({:list_execution_admission_waiters_for_scope, scope, opts}, _from, state) do
+    limit = waiter_limit(opts)
+    identity = execution_scope_identity(scope)
+
+    waiters =
+      state.execution_admission_waiters
+      |> Map.values()
+      |> Enum.filter(&(execution_scope_identity(&1.blocked_scope) == identity))
+      |> sort_execution_admission_waiters()
+      |> Enum.take(limit)
+
+    {:reply, {:ok, waiters}, state}
+  end
+
+  def handle_call({:expire_execution_admission_waiters, now}, _from, state) do
+    {expired, active} = prune_execution_admission_waiters(state.execution_admission_waiters, now)
+    {:reply, {:ok, expired}, %{state | execution_admission_waiters: active}}
   end
 
   def handle_call({:try_acquire_materialization_claim, claim}, _from, state) do
@@ -2341,6 +2430,57 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
         {expired_count, Map.put(active, lease_id, lease)}
       else
         {expired_count + 1, active}
+      end
+    end)
+  end
+
+  defp next_execution_admission_waiter(waiter, waiters) do
+    case Map.get(waiters, waiter.waiter_id) do
+      nil ->
+        waiter
+
+      existing ->
+        %{
+          waiter
+          | inserted_at: existing.inserted_at,
+            wake_generation: existing.wake_generation + 1
+        }
+    end
+  end
+
+  defp pop_execution_admission_waiters_for_run(waiters, run_id) do
+    Enum.reduce(waiters, {0, %{}}, fn {waiter_id, waiter}, {deleted, active} ->
+      if waiter.run_id == run_id do
+        {deleted + 1, active}
+      else
+        {deleted, Map.put(active, waiter_id, waiter)}
+      end
+    end)
+  end
+
+  defp prune_execution_admission_waiters(waiters, %DateTime{} = now) do
+    Enum.reduce(waiters, {0, %{}}, fn {waiter_id, waiter}, {expired_count, active} ->
+      if is_nil(waiter.deadline_at) or DateTime.compare(waiter.deadline_at, now) == :gt do
+        {expired_count, Map.put(active, waiter_id, waiter)}
+      else
+        {expired_count + 1, active}
+      end
+    end)
+  end
+
+  defp waiter_limit(opts) do
+    case Keyword.get(opts, :limit, 50) do
+      limit when is_integer(limit) and limit > 0 -> limit
+      _other -> 50
+    end
+  end
+
+  defp sort_execution_admission_waiters(waiters) do
+    Enum.sort(waiters, fn left, right ->
+      case DateTime.compare(left.inserted_at, right.inserted_at) do
+        :lt -> true
+        :gt -> false
+        :eq -> left.waiter_id <= right.waiter_id
       end
     end)
   end

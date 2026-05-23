@@ -103,6 +103,21 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     def list_execution_leases(_opts), do: {:ok, []}
 
     @impl true
+    def upsert_execution_admission_waiter(waiter, _opts), do: {:ok, waiter}
+
+    @impl true
+    def delete_execution_admission_waiter(_waiter_id, _opts), do: :ok
+
+    @impl true
+    def delete_execution_admission_waiters_for_run(_run_id, _opts), do: {:ok, 0}
+
+    @impl true
+    def list_execution_admission_waiters_for_scope(_scope, _waiter_opts, _opts), do: {:ok, []}
+
+    @impl true
+    def expire_execution_admission_waiters(_now, _opts), do: {:ok, 0}
+
+    @impl true
     def persist_log_entries(entries, _opts), do: {:ok, entries}
 
     @impl true

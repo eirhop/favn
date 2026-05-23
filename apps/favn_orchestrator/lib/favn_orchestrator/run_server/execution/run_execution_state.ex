@@ -53,6 +53,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           await_timers: %{optional(reference()) => String.t()},
           retry_timers: %{optional(reference()) => timer_entry()},
           admission_timers: %{optional(reference()) => timer_entry()},
+          admission_waiters: %{optional(String.t()) => map()},
           accumulated_results: [term()],
           sequential_refs: [{Favn.Ref.t(), Favn.Plan.node_key(), non_neg_integer()}],
           sequential_index: non_neg_integer(),
@@ -83,6 +84,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             await_timers: %{},
             retry_timers: %{},
             admission_timers: %{},
+            admission_waiters: %{},
             accumulated_results: [],
             sequential_refs: [],
             sequential_index: 0,
@@ -192,6 +194,37 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
     {retry, %{state | admission_timers: timers}}
   end
 
+  @doc "Stores persisted admission waiters owned by this run server."
+  @spec put_admission_waiters(t(), [map()]) :: t()
+  def put_admission_waiters(%__MODULE__{} = state, waiters) when is_list(waiters) do
+    next_waiters = Map.new(waiters, &{&1.waiter_id, &1})
+    %{state | admission_waiters: Map.merge(state.admission_waiters, next_waiters)}
+  end
+
+  @doc "Removes an admission waiter by id."
+  @spec pop_admission_waiter(t(), String.t()) :: {map() | nil, t()}
+  def pop_admission_waiter(%__MODULE__{} = state, waiter_id) when is_binary(waiter_id) do
+    {waiter, waiters} = Map.pop(state.admission_waiters, waiter_id)
+    {waiter, %{state | admission_waiters: waiters}}
+  end
+
+  @doc "Clears process-owned admission waiter state."
+  @spec clear_admission_waiters(t()) :: {[map()], t()}
+  def clear_admission_waiters(%__MODULE__{} = state) do
+    waiters = Map.values(state.admission_waiters)
+    {waiters, %{state | admission_waiters: %{}}}
+  end
+
+  @doc "Cancels admission deadline timers."
+  @spec cancel_admission_timers(t()) :: t()
+  def cancel_admission_timers(%__MODULE__{} = state) do
+    state.admission_timers
+    |> Map.values()
+    |> Enum.each(&Process.cancel_timer(&1.timer_ref))
+
+    %{state | admission_timers: %{}}
+  end
+
   @doc "Cancels all owned timers and clears timer indexes."
   @spec cancel_timers(t()) :: t()
   def cancel_timers(%__MODULE__{} = state) do
@@ -207,6 +240,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
     |> Map.values()
     |> Enum.each(&Process.cancel_timer(&1.timer_ref))
 
-    %{state | await_timers: %{}, retry_timers: %{}, admission_timers: %{}}
+    %{state | await_timers: %{}, retry_timers: %{}, admission_timers: %{}, admission_waiters: %{}}
   end
 end

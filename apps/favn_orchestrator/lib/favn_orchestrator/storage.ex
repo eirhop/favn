@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.Storage do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
+  alias FavnOrchestrator.ExecutionAdmission.Waiter, as: AdmissionWaiter
   alias FavnOrchestrator.CursorPage
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
@@ -202,6 +203,42 @@ defmodule FavnOrchestrator.Storage do
   @spec list_execution_leases() :: {:ok, [map()]} | {:error, term()}
   def list_execution_leases do
     adapter_call(fn adapter, opts -> adapter.list_execution_leases(opts) end)
+  end
+
+  @spec upsert_execution_admission_waiter(map() | AdmissionWaiter.t()) ::
+          {:ok, AdmissionWaiter.t()} | {:error, term()}
+  def upsert_execution_admission_waiter(waiter) when is_map(waiter) do
+    adapter_call(fn adapter, opts -> adapter.upsert_execution_admission_waiter(waiter, opts) end)
+  end
+
+  @spec delete_execution_admission_waiter(String.t()) :: :ok | {:error, term()}
+  def delete_execution_admission_waiter(waiter_id) when is_binary(waiter_id) do
+    adapter_call(fn adapter, opts ->
+      adapter.delete_execution_admission_waiter(waiter_id, opts)
+    end)
+  end
+
+  @spec delete_execution_admission_waiters_for_run(String.t()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def delete_execution_admission_waiters_for_run(run_id) when is_binary(run_id) do
+    adapter_call(fn adapter, opts ->
+      adapter.delete_execution_admission_waiters_for_run(run_id, opts)
+    end)
+  end
+
+  @spec list_execution_admission_waiters_for_scope(map(), keyword()) ::
+          {:ok, [AdmissionWaiter.t()]} | {:error, term()}
+  def list_execution_admission_waiters_for_scope(scope, waiter_opts \\ [])
+      when is_map(scope) and is_list(waiter_opts) do
+    adapter_call(fn adapter, opts ->
+      adapter.list_execution_admission_waiters_for_scope(scope, waiter_opts, opts)
+    end)
+  end
+
+  @spec expire_execution_admission_waiters(DateTime.t()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def expire_execution_admission_waiters(%DateTime{} = now) do
+    adapter_call(fn adapter, opts -> adapter.expire_execution_admission_waiters(now, opts) end)
   end
 
   @spec try_acquire_materialization_claim(MaterializationClaim.t() | map()) ::

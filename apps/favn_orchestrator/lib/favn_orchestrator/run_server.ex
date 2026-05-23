@@ -71,8 +71,11 @@ defmodule FavnOrchestrator.RunServer do
   def handle_info({:retry_attempt, timer_ref}, state),
     do: handle_execution_event(state, {:retry_attempt, timer_ref})
 
-  def handle_info({:stage_admission_retry, timer_ref}, state),
-    do: handle_execution_event(state, {:stage_admission_retry, timer_ref})
+  def handle_info({:stage_admission_timeout, timer_ref}, state),
+    do: handle_execution_event(state, {:stage_admission_timeout, timer_ref})
+
+  def handle_info({:execution_admission_wakeup, waiter_id, generation}, state),
+    do: handle_execution_event(state, {:execution_admission_wakeup, waiter_id, generation})
 
   def handle_info(
         {:favn_run_cancel_requested, reason},
@@ -109,9 +112,11 @@ defmodule FavnOrchestrator.RunServer do
   defp finalize_terminal(state, %RunState{} = terminal) do
     if Persistence.externally_cancelled?(terminal.id) do
       :ok = ExecutionAdmission.release_run(terminal.id)
+      :ok = ExecutionAdmission.cancel_run_waits(terminal.id)
       {:stop, :normal, state |> Map.put(:run_state, terminal) |> Map.put(:execution_state, nil)}
     else
       :ok = ExecutionAdmission.release_run(terminal.id)
+      :ok = ExecutionAdmission.cancel_run_waits(terminal.id)
       terminal_event_type = Persistence.terminal_event_type(terminal)
 
       finalized =
