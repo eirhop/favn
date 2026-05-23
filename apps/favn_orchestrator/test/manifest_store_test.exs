@@ -5,10 +5,14 @@ defmodule FavnOrchestrator.ManifestStoreTest do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
   alias Favn.Window.Policy
+  alias Favn.Window.Runtime, as: RuntimeWindow
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator
+  alias FavnOrchestrator.AssetWindowProjector
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -443,6 +447,194 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert refresh_window = Enum.find(detail.refresh_timeline, &(&1.value == "2026-05-19"))
     assert refresh_window.status == :fresh
     assert refresh_window.latest_run_id == "run_daily_sales"
+  end
+
+  test "asset detail data coverage timeline uses asset window state" do
+    now = ~U[2026-05-20 12:00:00Z]
+    ref = {MyApp.MonthlyCoverageAsset, :asset}
+    window_spec = WindowSpec.new!(:month, required: true)
+
+    version =
+      manifest_version(
+        "mv_asset_window_state",
+        ref,
+        [
+          %Pipeline{
+            module: MyApp.MonthlyCoveragePipeline,
+            name: :monthly_coverage_pipeline,
+            selectors: [ref],
+            deps: :all,
+            window: Policy.new!(:monthly),
+            source: :dsl,
+            outputs: [],
+            config: %{},
+            metadata: %{}
+          }
+        ],
+        window_spec
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_asset_window_state")
+
+    {:ok, state} =
+      AssetWindowState.new(%{
+        asset_ref_module: elem(ref, 0),
+        asset_ref_name: elem(ref, 1),
+        manifest_version_id: "mv_asset_window_state",
+        window_kind: :month,
+        window_start_at: ~U[2026-01-01 00:00:00Z],
+        window_end_at: ~U[2026-02-01 00:00:00Z],
+        timezone: "Etc/UTC",
+        window_key: "month:2026-01",
+        status: :ok,
+        latest_run_id: "run_monthly_jan",
+        latest_success_run_id: "run_monthly_jan",
+        updated_at: now
+      })
+
+    assert :ok = Storage.put_asset_window_state(state)
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_asset_detail(
+               "asset:Elixir.MyApp.MonthlyCoverageAsset:asset",
+               now: now
+             )
+
+    assert jan_window = Enum.find(detail.data_coverage_timeline, &(&1.value == "2026-01"))
+    assert jan_window.status == :covered
+    assert jan_window.latest_run_id == "run_monthly_jan"
+  end
+
+  test "terminal windowed asset runs project asset window state" do
+    now = ~U[2026-01-02 00:00:00Z]
+    ref = {MyApp.ProjectedWindowAsset, :asset}
+    key = Favn.Window.Key.new!(:month, ~U[2026-01-01 00:00:00Z], "Etc/UTC")
+
+    runtime_window =
+      RuntimeWindow.new!(
+        :month,
+        ~U[2026-01-01 00:00:00Z],
+        ~U[2026-02-01 00:00:00Z],
+        key,
+        timezone: "Etc/UTC"
+      )
+
+    run_state =
+      RunState.new(
+        id: "run_project_window",
+        manifest_version_id: "mv_project_window",
+        manifest_content_hash: "hash_project_window",
+        asset_ref: ref,
+        target_refs: [ref]
+      )
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: {ref, key},
+              ref: ref,
+              window: runtime_window,
+              status: :ok,
+              finished_at: now
+            })
+          ]
+        }
+      )
+      |> Map.put(:updated_at, now)
+
+    assert :ok = AssetWindowProjector.project_transition(run_state, :run_finished, %{})
+
+    assert {:ok, state} =
+             Storage.get_asset_window_state(
+               elem(ref, 0),
+               elem(ref, 1),
+               Favn.Window.Key.encode(key)
+             )
+
+    assert state.status == :ok
+    assert state.latest_success_run_id == "run_project_window"
+  end
+
+  test "asset window projection preserves prior success on failed attempts" do
+    now = ~U[2026-01-03 00:00:00Z]
+    ref = {MyApp.ProjectedFailedWindowAsset, :asset}
+    key = Favn.Window.Key.new!(:month, ~U[2026-01-01 00:00:00Z], "Etc/UTC")
+    window_key = Favn.Window.Key.encode(key)
+
+    {:ok, existing} =
+      AssetWindowState.new(%{
+        asset_ref_module: elem(ref, 0),
+        asset_ref_name: elem(ref, 1),
+        manifest_version_id: "mv_project_window",
+        window_kind: :month,
+        window_start_at: ~U[2026-01-01 00:00:00Z],
+        window_end_at: ~U[2026-02-01 00:00:00Z],
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: :ok,
+        latest_run_id: "run_previous_success",
+        latest_success_run_id: "run_previous_success",
+        updated_at: ~U[2026-01-02 00:00:00Z]
+      })
+
+    assert :ok = Storage.put_asset_window_state(existing)
+
+    run_state = projected_window_run_state("run_failed_window", ref, key, :error, now)
+
+    assert :ok = AssetWindowProjector.project_transition(run_state, :run_failed, %{})
+    assert {:ok, state} = Storage.get_asset_window_state(elem(ref, 0), elem(ref, 1), window_key)
+    assert state.status == :error
+    assert state.latest_run_id == "run_failed_window"
+    assert state.latest_success_run_id == "run_previous_success"
+  end
+
+  test "asset window projection stops when existing state lookup fails" do
+    now = ~U[2026-01-03 00:00:00Z]
+    ref = {MyApp.ProjectedLookupFailureAsset, :asset}
+    key = Favn.Window.Key.new!(:month, ~U[2026-01-01 00:00:00Z], "Etc/UTC")
+    window_key = Favn.Window.Key.encode(key)
+
+    {:ok, existing} =
+      AssetWindowState.new(%{
+        asset_ref_module: elem(ref, 0),
+        asset_ref_name: elem(ref, 1),
+        manifest_version_id: "mv_project_window",
+        window_kind: :month,
+        window_start_at: ~U[2026-01-01 00:00:00Z],
+        window_end_at: ~U[2026-02-01 00:00:00Z],
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: :ok,
+        latest_run_id: "run_previous_success",
+        latest_success_run_id: "run_previous_success",
+        updated_at: ~U[2026-01-02 00:00:00Z]
+      })
+
+    assert :ok = Storage.put_asset_window_state(existing)
+
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
+
+    try do
+      Application.put_env(:favn_orchestrator, :storage_adapter, String)
+      Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+      assert {:error, _reason} =
+               AssetWindowProjector.project_transition(
+                 projected_window_run_state("run_lookup_failed", ref, key, :error, now),
+                 :run_failed,
+                 %{}
+               )
+    after
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :storage_adapter_opts, previous_opts)
+    end
+
+    assert {:ok, state} = Storage.get_asset_window_state(elem(ref, 0), elem(ref, 1), window_key)
+    assert state.status == :ok
+    assert state.latest_run_id == "run_previous_success"
   end
 
   test "hourly asset detail timeline uses hours without collapsing same-day freshness" do
@@ -953,6 +1145,44 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     |> Map.put(:updated_at, finished_at)
     |> RunState.with_snapshot_hash()
   end
+
+  defp projected_window_run_state(id, ref, key, status, finished_at) do
+    runtime_window =
+      RuntimeWindow.new!(
+        key.kind,
+        DateTime.from_unix!(key.start_at_us, :microsecond),
+        DateTime.from_unix!(key.start_at_us, :microsecond) |> Favn.TimePeriod.shift!(key.kind, 1),
+        key,
+        timezone: key.timezone
+      )
+
+    RunState.new(
+      id: id,
+      manifest_version_id: "mv_project_window",
+      manifest_content_hash: "hash_project_window",
+      asset_ref: ref,
+      target_refs: [ref]
+    )
+    |> RunState.transition(
+      status: if(status == :ok, do: :ok, else: :error),
+      result: %{
+        node_results: [
+          NodeResult.new(%{
+            node_key: {ref, key},
+            ref: ref,
+            window: runtime_window,
+            status: status,
+            finished_at: finished_at,
+            error: if(status == :ok, do: nil, else: :failed)
+          })
+        ]
+      }
+    )
+    |> Map.put(:updated_at, finished_at)
+  end
+
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
 
   defp pipeline_run_state(
          id,

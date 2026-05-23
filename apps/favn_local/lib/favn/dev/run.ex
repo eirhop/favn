@@ -26,11 +26,11 @@ defmodule Favn.Dev.Run do
           poll_interval_ms: pos_integer()
         ]
 
-  @spec pipeline(module() | String.t(), run_opts()) :: {:ok, map()} | {:error, term()}
-  def pipeline(pipeline_module, opts \\ [])
+  @spec submit(module() | String.t(), run_opts()) :: {:ok, map()} | {:error, term()}
+  def submit(target, opts \\ [])
 
-  def pipeline(pipeline_module, opts)
-      when is_atom(pipeline_module) or is_binary(pipeline_module) do
+  def submit(target, opts)
+      when is_atom(target) or is_binary(target) do
     with :ok <- validate_opts(opts),
          {:ok, window_request} <- parse_window_request(opts),
          :ok <- ensure_running(opts),
@@ -43,12 +43,12 @@ defmodule Favn.Dev.Run do
              credentials.service_token,
              session_context
            ),
-         {:ok, target} <- resolve_pipeline_target(active_manifest, pipeline_module),
-         {:ok, run} <-
-           submit_pipeline_run(
-             base_url(runtime, opts),
-             credentials.service_token,
-             session_context,
+          {:ok, target} <- resolve_run_target(active_manifest, target),
+          {:ok, run} <-
+            submit_run(
+              base_url(runtime, opts),
+              credentials.service_token,
+              session_context,
              target,
              window_request,
              run_idempotency_key(opts),
@@ -61,7 +61,7 @@ defmodule Favn.Dev.Run do
     end
   end
 
-  def pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
+  def submit(_target, _opts), do: {:error, :invalid_target}
 
   defp validate_opts(opts) do
     case validate_timezone_without_window(opts) do
@@ -126,6 +126,27 @@ defmodule Favn.Dev.Run do
     end
   end
 
+  @doc false
+  @spec resolve_run_target(map(), module() | String.t()) :: {:ok, map()} | {:error, term()}
+  def resolve_run_target(active_manifest, target)
+      when is_map(active_manifest) and (is_atom(target) or is_binary(target)) do
+    requested = normalize_pipeline_name(target)
+    targets = active_manifest["targets"] || %{}
+    pipelines = Map.get(targets, "pipelines", [])
+    assets = Map.get(targets, "assets", [])
+
+    cond do
+      pipeline = Enum.find(pipelines, &pipeline_target_match?(&1, requested)) ->
+        {:ok, Map.put(pipeline, "target_type", "pipeline")}
+
+      asset = Enum.find(assets, &asset_target_match?(&1, requested)) ->
+        {:ok, Map.put(asset, "target_type", "asset")}
+
+      true ->
+        {:error, {:target_not_found, requested, available_target_labels(pipelines, assets)}}
+    end
+  end
+
   defp ensure_running(opts) do
     case Status.inspect_stack(opts).stack_status do
       :running -> :ok
@@ -163,7 +184,7 @@ defmodule Favn.Dev.Run do
     end
   end
 
-  defp submit_pipeline_run(
+  defp submit_run(
          base_url,
          service_token,
          session_context,
@@ -173,10 +194,11 @@ defmodule Favn.Dev.Run do
          timeout_ms
        ) do
     case target do
-      %{"target_id" => target_id} when is_binary(target_id) and target_id != "" ->
+      %{"target_id" => target_id, "target_type" => target_type}
+      when target_type in ["asset", "pipeline"] and is_binary(target_id) and target_id != "" ->
         payload =
           %{
-            target: %{type: "pipeline", id: target_id},
+            target: %{type: target_type, id: target_id},
             manifest_selection: %{mode: "active"}
           }
           |> maybe_put_window(window_request)
@@ -190,7 +212,7 @@ defmodule Favn.Dev.Run do
         end
 
       _other ->
-        {:error, :invalid_pipeline_target}
+        {:error, :invalid_target}
     end
   end
 
@@ -345,4 +367,24 @@ defmodule Favn.Dev.Run do
     end)
     |> Enum.reject(&is_nil/1)
   end
+
+  defp available_target_labels(pipelines, assets) do
+    asset_labels =
+      Enum.flat_map(assets, fn asset ->
+        [asset["asset_ref"], asset["target_id"], asset["label"]]
+        |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      end)
+
+    pipelines
+    |> available_pipeline_labels()
+    |> Kernel.++(asset_labels)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp asset_target_match?(asset, requested) when is_map(asset) do
+    requested in [asset["asset_ref"], asset["target_id"], asset["label"]]
+  end
+
+  defp asset_target_match?(_asset, _requested), do: false
 end

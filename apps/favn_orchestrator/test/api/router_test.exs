@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   alias Favn.Window.Anchor
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Policy
+  alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Auth
@@ -1242,7 +1243,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert response.status == 201
     assert %{"data" => %{"run" => %{"id" => run_id}}} = Jason.decode!(response.resp_body)
 
-    assert [%{action: "run.submit", actor_id: "local-dev-cli", session_id: "local-dev-cli"}] =
+    assert [%{action: "run.submit", service_identity: "local-dev-cli"}] =
              Auth.list_audit(limit: 1)
 
     assert {:ok, run} = FavnOrchestrator.get_run(run_id)
@@ -1452,6 +1453,92 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
   end
 
+  test "run submission rejects malformed asset window payload" do
+    version = windowed_asset_manifest_version("mv_bad_asset_window")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Monthly:asset"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        window: %{kind: "month"}
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-bad-asset-window")
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{"error" => %{"message" => "Invalid run window request"}} =
+             Jason.decode!(response.resp_body)
+  end
+
+  test "run submission maps asset window payload to data coverage selection" do
+    version = windowed_asset_manifest_version("mv_asset_window_payload")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Monthly:asset"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        dependencies: "none",
+        window: %{kind: "month", value: "2026-01", timezone: "Etc/UTC"}
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-asset-window-payload")
+      |> Router.call(@opts)
+
+    assert response.status == 201
+    assert %{"data" => %{"run" => %{"id" => run_id}}} = Jason.decode!(response.resp_body)
+    assert {:ok, run} = FavnOrchestrator.get_run(run_id)
+    assert run.metadata.timeline_selection.source == :data_coverage_timeline
+    assert run.metadata.selected_window.id == "window:month:2026-01"
+    assert [{{MyApp.Assets.Monthly, :asset}, window_key}] = run.plan.target_node_keys
+    assert window_key.kind == :month
+    assert window_key.start_at_us == DateTime.to_unix(~U[2026-01-01 00:00:00Z], :microsecond)
+  end
+
+  test "run submission rejects invalid timeout before generic run validation" do
+    asset_version = dependency_manifest_version("mv_invalid_asset_timeout")
+    pipeline_version = schedule_manifest_version("mv_invalid_pipeline_timeout")
+    assert :ok = FavnOrchestrator.register_manifest(asset_version)
+    assert :ok = FavnOrchestrator.register_manifest(pipeline_version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    for {target, manifest_version_id, key} <- [
+          {%{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+           asset_version.manifest_version_id, "asset"},
+          {%{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+           pipeline_version.manifest_version_id, "pipeline"}
+        ] do
+      response =
+        conn(:post, "/api/orchestrator/v1/runs", %{
+          target: target,
+          manifest_selection: %{mode: "version", manifest_version_id: manifest_version_id},
+          timeout_ms: 0
+        })
+        |> put_req_header("authorization", "Bearer test-service-token")
+        |> put_req_header("x-favn-actor-id", actor.id)
+        |> put_req_header("x-favn-session-token", session.token)
+        |> put_idempotency_key("run-invalid-timeout-#{key}")
+        |> Router.call(@opts)
+
+      assert response.status == 422
+
+      assert %{"error" => %{"message" => "Invalid timeout_ms"}} =
+               Jason.decode!(response.resp_body)
+    end
+  end
+
   test "run submission rejects request-level dependency mode for pipeline targets" do
     version = schedule_manifest_version("mv_pipeline_dependency_rejected")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -1497,6 +1584,34 @@ defmodule FavnOrchestrator.API.RouterTest do
              "error" => %{
                "code" => "validation_failed",
                "message" => "Pipeline requires an explicit day window"
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
+  test "run submission rejects malformed pipeline window payload" do
+    version = schedule_manifest_version("mv_pipeline_window_malformed")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        window: %{mode: "bad"}
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("pipeline-window-malformed")
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "Invalid run window request"
              }
            } = Jason.decode!(response.resp_body)
   end
@@ -2667,6 +2782,23 @@ defmodule FavnOrchestrator.API.RouterTest do
           runtime_config: %{source_system: %{segment_id: Ref.env!("SOURCE_SYSTEM_SEGMENT_ID")}},
           materialization: %Favn.Manifest.SQLExecution{sql: "select 1", template: nil},
           metadata: %{owner: "analytics", api_token: "manifest-target-secret"}
+        }
+      ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
+  defp windowed_asset_manifest_version(manifest_version_id) do
+    manifest = %Manifest{
+      assets: [
+        %Favn.Manifest.Asset{
+          ref: {MyApp.Assets.Monthly, :asset},
+          module: MyApp.Assets.Monthly,
+          name: :asset,
+          type: :elixir,
+          window: WindowSpec.new!(:month, required: true)
         }
       ]
     }

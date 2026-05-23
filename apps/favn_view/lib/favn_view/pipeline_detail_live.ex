@@ -50,10 +50,10 @@ defmodule FavnView.PipelineDetailLive do
   def handle_event("run_pipeline", _params, socket) do
     pipeline = socket.assigns.pipeline
 
-    case FavnOrchestrator.submit_operator_pipeline_run(
+    case FavnOrchestrator.submit_operator_run(
            actor_context(socket),
            pipeline.manifest_version_id,
-           pipeline.id
+           %{type: :pipeline, id: pipeline.id}
          ) do
       {:ok, run_id} ->
         {:noreply,

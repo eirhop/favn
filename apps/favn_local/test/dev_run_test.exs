@@ -44,7 +44,28 @@ defmodule Favn.Dev.RunTest do
     }
 
     assert {:error, {:pipeline_not_found, "Missing.Pipeline", ["Other"]}} =
-             Run.resolve_pipeline_target(active_manifest, "Missing.Pipeline")
+              Run.resolve_pipeline_target(active_manifest, "Missing.Pipeline")
+  end
+
+  test "resolve_run_target/2 finds active manifest asset by ref" do
+    active_manifest = %{
+      "targets" => %{
+        "assets" => [
+          %{
+            "target_id" => "asset:Elixir.MyApp.Asset:asset",
+            "asset_ref" => "Elixir.MyApp.Asset:asset",
+            "label" => "Elixir.MyApp.Asset:asset"
+          }
+        ],
+        "pipelines" => []
+      }
+    }
+
+    assert {:ok,
+            %{
+              "target_id" => "asset:Elixir.MyApp.Asset:asset",
+              "target_type" => "asset"
+            }} = Run.resolve_run_target(active_manifest, "Elixir.MyApp.Asset:asset")
   end
 
   test "run_pipeline/2 submits with local-dev context and no password login", %{

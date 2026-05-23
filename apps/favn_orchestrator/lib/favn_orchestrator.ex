@@ -21,6 +21,7 @@ defmodule FavnOrchestrator do
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.Repair, as: BackfillRepair
   alias FavnOrchestrator.BackfillManager
   alias FavnOrchestrator.Diagnostics
@@ -443,8 +444,16 @@ defmodule FavnOrchestrator do
     with {:ok, manifest_version_id} <- active_manifest(),
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, freshness_states} <- detail_freshness_states(manifest_version_id),
+         {:ok, asset_window_states} <- detail_asset_window_states(manifest_version_id),
          {:ok, runs} <- catalogue_runs(manifest_version_id) do
-      case asset_detail_entry(version, target_id, freshness_states, runs, opts) do
+      case asset_detail_entry(
+             version,
+             target_id,
+             freshness_states,
+             asset_window_states,
+             runs,
+             opts
+           ) do
         nil -> {:error, :not_found}
         detail -> {:ok, detail}
       end
@@ -562,6 +571,27 @@ defmodule FavnOrchestrator do
          {:ok, asset} <- resolve_asset_target(version, target_id),
          {:ok, opts} <- operator_asset_run_opts(asset, request) do
       submit_asset_run(asset.ref, Keyword.put(opts, :manifest_version_id, manifest_version_id))
+    end
+  end
+
+  @doc """
+  Submits one manifest target run for an authenticated operator actor context.
+
+  This is the shared command boundary for browser, API, and CLI callers. The
+  target decides whether the request is normalized as an asset run or a pipeline
+  run; callers should not dispatch to asset/pipeline-specific submit functions.
+  """
+  @spec submit_operator_run(
+          operator_actor_context(),
+          String.t(),
+          map(),
+          AssetRunRequest.t() | PipelineRunRequest.t() | map() | keyword() | nil
+        ) :: {:ok, run_id()} | {:error, term()}
+  def submit_operator_run(actor_context, manifest_version_id, target, command_input \\ %{}) do
+    with :ok <- require_operator_context(actor_context),
+         {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, normalized_target} <- normalize_operator_run_target(version, target) do
+      submit_operator_run_target(version, normalized_target, command_input)
     end
   end
 
@@ -809,6 +839,55 @@ defmodule FavnOrchestrator do
       |> maybe_put_opt(:timeout_ms, request.timeout_ms)
 
     {:ok, opts}
+  end
+
+  defp normalize_operator_run_target(%Version{} = version, %{type: type, id: target_id})
+       when type in [:asset, "asset"] and is_binary(target_id) do
+    with {:ok, asset} <- resolve_asset_target(version, target_id) do
+      {:ok, %{type: :asset, asset: asset}}
+    end
+  end
+
+  defp normalize_operator_run_target(%Version{} = version, %{type: type, id: target_id})
+       when type in [:pipeline, "pipeline"] and is_binary(target_id) do
+    with {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id) do
+      {:ok, %{type: :pipeline, pipeline_module: pipeline_module}}
+    end
+  end
+
+  defp normalize_operator_run_target(%Version{} = version, %{type: type, module: pipeline_module})
+       when type in [:pipeline, "pipeline"] and is_atom(pipeline_module) do
+    if Enum.any?(List.wrap(version.manifest.pipelines), &(&1.module == pipeline_module)) do
+      {:ok, %{type: :pipeline, pipeline_module: pipeline_module}}
+    else
+      {:error, :invalid_pipeline_target}
+    end
+  end
+
+  defp normalize_operator_run_target(_version, _target), do: {:error, :invalid_target}
+
+  defp submit_operator_run_target(%Version{} = version, %{type: :asset, asset: asset}, input) do
+    with {:ok, request} <- AssetRunRequest.from_input(input),
+         {:ok, opts} <- operator_asset_run_opts(asset, request) do
+      submit_asset_run(
+        asset.ref,
+        Keyword.put(opts, :manifest_version_id, version.manifest_version_id)
+      )
+    end
+  end
+
+  defp submit_operator_run_target(
+         %Version{} = version,
+         %{type: :pipeline, pipeline_module: pipeline_module},
+         input
+       ) do
+    with {:ok, request} <- PipelineRunRequest.from_input(input),
+         {:ok, opts} <- operator_pipeline_run_opts(request) do
+      submit_pipeline_run(
+        pipeline_module,
+        Keyword.put(opts, :manifest_version_id, version.manifest_version_id)
+      )
+    end
   end
 
   defp operator_pipeline_backfill_opts(%PipelineBackfillRequest{} = request) do
@@ -1799,6 +1878,16 @@ defmodule FavnOrchestrator do
     end
   end
 
+  defp detail_asset_window_states(manifest_version_id) do
+    case list_asset_window_states(
+           manifest_version_id: manifest_version_id,
+           limit: Page.max_limit()
+         ) do
+      {:ok, page} -> {:ok, page.items}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp asset_catalogue_entries(%Version{} = version, freshness_states, runs) do
     freshness_by_ref = Map.new(freshness_states, &{freshness_ref_string(&1), &1})
 
@@ -1866,7 +1955,14 @@ defmodule FavnOrchestrator do
     end
   end
 
-  defp asset_detail_entry(%Version{} = version, target_id, freshness_states, runs, opts) do
+  defp asset_detail_entry(
+         %Version{} = version,
+         target_id,
+         freshness_states,
+         asset_window_states,
+         runs,
+         opts
+       ) do
     version.manifest.assets
     |> List.wrap()
     |> Enum.find(&(manifest_asset_target(&1).target_id == target_id))
@@ -1900,6 +1996,7 @@ defmodule FavnOrchestrator do
             latest_freshness,
             latest_run,
             freshness_states,
+            asset_window_states,
             runs_by_id,
             opts
           )
@@ -2234,6 +2331,7 @@ defmodule FavnOrchestrator do
          _latest_freshness,
          _latest_run,
          _freshness_states,
+         _asset_window_states,
          _runs_by_id,
          _opts
        ),
@@ -2244,6 +2342,7 @@ defmodule FavnOrchestrator do
          latest_freshness,
          latest_run,
          freshness_states,
+         asset_window_states,
          runs_by_id,
          opts
        ) do
@@ -2252,7 +2351,8 @@ defmodule FavnOrchestrator do
     selected_value =
       detail_timeline_selected_value(kind, timezone, latest_freshness, latest_run, opts)
 
-    window_states = asset_window_freshness_by_date(asset, freshness_states, kind)
+    window_states = asset_window_state_by_date(asset, asset_window_states, kind, timezone)
+    freshness_states = asset_window_freshness_by_date(asset, freshness_states, kind)
 
     latest_run_value =
       latest_run_at(latest_freshness, latest_run)
@@ -2261,7 +2361,8 @@ defmodule FavnOrchestrator do
     for offset <- 0..29 do
       value = shift_timeline_value(kind, timezone, selected_value, offset - 29)
       date = timeline_value_date(kind, value)
-      window_freshness = Map.get(window_states, value)
+      window_state = Map.get(window_states, value)
+      window_freshness = Map.get(freshness_states, value)
 
       %{
         id: timeline_window_id(kind, value),
@@ -2272,10 +2373,20 @@ defmodule FavnOrchestrator do
         date: date,
         range: timeline_window_range(kind, value),
         status:
-          timeline_status(window_freshness, latest_freshness, latest_run, value, latest_run_value),
-        latest_run_id: latest_run_id(window_freshness, nil),
-        latest_run_status: latest_run_status(window_freshness, nil),
-        latest_run_at: latest_run_at(window_freshness, nil),
+          data_coverage_timeline_status(
+            window_state,
+            window_freshness,
+            latest_freshness,
+            latest_run,
+            value,
+            latest_run_value
+          ),
+        latest_run_id:
+          asset_window_latest_run_id(window_state) || latest_run_id(window_freshness, nil),
+        latest_run_status:
+          asset_window_latest_run_status(window_state) || latest_run_status(window_freshness, nil),
+        latest_run_at:
+          asset_window_latest_run_at(window_state) || latest_run_at(window_freshness, nil),
         run_label: "Run this window"
       }
       |> put_window_run_state(asset)
@@ -2528,6 +2639,85 @@ defmodule FavnOrchestrator do
     end)
     |> Map.new(fn {date, state} -> {date, state} end)
   end
+
+  defp asset_window_state_by_date(asset, asset_window_states, timeline_kind, timezone) do
+    {asset_ref_module, asset_ref_name} = asset.ref
+
+    asset_window_states
+    |> Enum.filter(fn
+      %AssetWindowState{
+        asset_ref_module: ^asset_ref_module,
+        asset_ref_name: ^asset_ref_name,
+        window_kind: ^timeline_kind
+      } ->
+        true
+
+      _other ->
+        false
+    end)
+    |> Map.new(fn %AssetWindowState{} = state ->
+      {timeline_value_from_datetime(timeline_kind, timezone, state.window_start_at), state}
+    end)
+  end
+
+  defp data_coverage_timeline_status(
+         %AssetWindowState{status: :ok},
+         _window_freshness,
+         _latest_freshness,
+         _latest_run,
+         _value,
+         _latest_run_value
+       ),
+       do: :covered
+
+  defp data_coverage_timeline_status(
+         %AssetWindowState{status: status},
+         _window_freshness,
+         _latest_freshness,
+         _latest_run,
+         _value,
+         _latest_run_value
+       )
+       when status in [:running, :pending],
+       do: :running
+
+  defp data_coverage_timeline_status(
+         %AssetWindowState{status: status},
+         _window_freshness,
+         _latest_freshness,
+         _latest_run,
+         _value,
+         _latest_run_value
+       )
+       when status in [:partial, :error, :cancelled, :timed_out],
+       do: :failed
+
+  defp data_coverage_timeline_status(
+         _window_state,
+         window_freshness,
+         latest_freshness,
+         latest_run,
+         value,
+         latest_run_value
+       ) do
+    timeline_status(window_freshness, latest_freshness, latest_run, value, latest_run_value)
+  end
+
+  defp asset_window_latest_run_id(%AssetWindowState{latest_run_id: run_id})
+       when is_binary(run_id),
+       do: run_id
+
+  defp asset_window_latest_run_id(_state), do: nil
+
+  defp asset_window_latest_run_status(%AssetWindowState{status: status}) when not is_nil(status),
+    do: status
+
+  defp asset_window_latest_run_status(_state), do: nil
+
+  defp asset_window_latest_run_at(%AssetWindowState{updated_at: %DateTime{} = updated_at}),
+    do: updated_at
+
+  defp asset_window_latest_run_at(_state), do: nil
 
   defp window_date_from_freshness_key("calendar:day:" <> rest) do
     rest

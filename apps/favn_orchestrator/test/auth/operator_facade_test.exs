@@ -87,26 +87,26 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
     viewer_context = %{actor: viewer, session: viewer_session}
 
     assert {:error, :unauthenticated} =
-             FavnOrchestrator.submit_operator_asset_run(
+             FavnOrchestrator.submit_operator_run(
                %{},
                "missing_manifest",
-               "asset:missing",
+               %{type: :asset, id: "asset:missing"},
                []
              )
 
     assert {:error, :forbidden} =
-             FavnOrchestrator.submit_operator_asset_run(
+             FavnOrchestrator.submit_operator_run(
                viewer_context,
                "missing_manifest",
-               "asset:missing",
+               %{type: :asset, id: "asset:missing"},
                []
              )
 
     assert {:error, :forbidden} =
-             FavnOrchestrator.submit_operator_pipeline_run(
+             FavnOrchestrator.submit_operator_run(
                viewer_context,
                "missing_manifest",
-               "pipeline:missing",
+               %{type: :pipeline, id: "pipeline:missing"},
                []
              )
 
@@ -127,18 +127,18 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
     operator_context = %{actor: operator, session: operator_session}
 
     assert {:error, :manifest_version_not_found} =
-             FavnOrchestrator.submit_operator_asset_run(
+             FavnOrchestrator.submit_operator_run(
                operator_context,
                "missing_manifest",
-               "asset:missing",
+               %{type: :asset, id: "asset:missing"},
                []
              )
 
     assert {:error, :manifest_version_not_found} =
-             FavnOrchestrator.submit_operator_pipeline_run(
+             FavnOrchestrator.submit_operator_run(
                operator_context,
                "missing_manifest",
-               "pipeline:missing",
+               %{type: :pipeline, id: "pipeline:missing"},
                []
              )
 
@@ -189,6 +189,22 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
                %{actor: operator, session: operator_session},
                "missing_manifest",
                "pipeline:missing",
+               []
+             )
+  end
+
+  test "unified operator run cannot be bypassed with forged context maps" do
+    forged_context = %{
+      actor: %{id: "actor_fake", roles: [:admin]},
+      session: %{id: "session_fake"},
+      __trusted_operator_context__: true
+    }
+
+    assert {:error, :unauthenticated} =
+             FavnOrchestrator.submit_operator_run(
+               forged_context,
+               "missing_manifest",
+               %{type: :asset, id: "asset:missing"},
                []
              )
   end

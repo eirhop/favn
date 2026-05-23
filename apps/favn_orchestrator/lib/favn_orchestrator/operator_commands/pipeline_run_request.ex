@@ -35,13 +35,14 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineRunRequest do
     refresh_value = Input.field(input, :refresh_mode, Input.field(input, :refresh, :auto))
 
     with {:ok, refresh_mode} <- Input.pipeline_refresh_mode(refresh_value),
-         {:ok, window} <- Input.window(Input.field(input, :window)) do
+         {:ok, window} <- Input.window(Input.field(input, :window)),
+         {:ok, timeout_ms} <- Input.timeout_ms(Input.field(input, :timeout_ms)) do
       {:ok,
        %__MODULE__{
          refresh_mode: refresh_mode,
          window: window,
          metadata: Input.field(input, :metadata),
-         timeout_ms: Input.field(input, :timeout_ms)
+         timeout_ms: timeout_ms
        }}
     end
   end

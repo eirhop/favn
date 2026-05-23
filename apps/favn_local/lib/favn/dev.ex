@@ -167,11 +167,17 @@ defmodule Favn.Dev do
   def reload(opts \\ []) when is_list(opts), do: Reload.run(opts)
 
   @doc """
+  Submits an asset or pipeline run to the running local stack.
+  """
+  @spec run(module() | String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def run(target, opts \\ []) when is_list(opts), do: Run.submit(target, opts)
+
+  @doc """
   Submits a pipeline run to the running local stack.
   """
   @spec run_pipeline(module() | String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_pipeline(pipeline_module, opts \\ []) when is_list(opts),
-    do: Run.pipeline(pipeline_module, opts)
+    do: Run.submit(pipeline_module, opts)
 
   @doc """
   Lists persisted runs from the running local stack.

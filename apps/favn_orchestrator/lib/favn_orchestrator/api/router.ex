@@ -8,7 +8,6 @@ defmodule FavnOrchestrator.API.Router do
   require Logger
 
   alias Favn.Manifest.Version
-  alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator
   alias FavnOrchestrator.API.Config
   alias FavnOrchestrator.API.DTO
@@ -632,7 +631,7 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, session, actor} <- ensure_actor_context(conn, :operator),
          {:ok, params} <- fetch_json_body(conn) do
       run_idempotent_command(conn, "run.submit", actor.id, session.id, params, fn idempotency ->
-        with {:ok, run_id} <- submit_run_from_request(params) do
+        with {:ok, run_id} <- submit_run_from_request(params, %{actor: actor, session: session}) do
           put_audit_best_effort(
             %{
               action: "run.submit",
@@ -656,6 +655,24 @@ defmodule FavnOrchestrator.API.Router do
 
           {:error, :invalid_dependencies} ->
             {:error, 422, "validation_failed", "Invalid dependency mode", %{}}
+
+          {:error, {:invalid_operator_dependency_mode, _value}} ->
+            {:error, 422, "validation_failed", "Invalid dependency mode", %{}}
+
+          {:error, {:invalid_operator_timeout_ms, _value}} ->
+            {:error, 422, "validation_failed", "Invalid timeout_ms", %{}}
+
+          {:error, {:invalid_operator_selection_source, _value}} ->
+            {:error, 422, "validation_failed", "Invalid run window request", %{}}
+
+          {:error, {:invalid_operator_selection_id, _value}} ->
+            {:error, 422, "validation_failed", "Invalid run window request", %{}}
+
+          {:error, {:invalid_operator_window, _value}} ->
+            {:error, 422, "validation_failed", "Invalid run window request", %{}}
+
+          {:error, :invalid_window_request} ->
+            {:error, 422, "validation_failed", "Invalid run window request", %{}}
 
           {:error, :invalid_asset_target} ->
             {:error, 422, "validation_failed", "Invalid asset target id", %{}}
@@ -1376,28 +1393,41 @@ defmodule FavnOrchestrator.API.Router do
   defp loopback_peer?(_remote_ip), do: false
 
   defp local_dev_actor_context(required_role) do
-    now = DateTime.utc_now()
+    password = "local-dev-cli-password-long"
 
-    session = %{
-      id: "local-dev-cli",
-      actor_id: "local-dev-cli",
-      provider: "local_dev_trusted",
-      issued_at: now,
-      expires_at: DateTime.add(now, 86_400, :second),
-      revoked_at: nil
-    }
+    case Auth.create_actor("local-dev-cli", password, "Local Dev CLI", [:admin]) do
+      {:ok, _actor} ->
+        :ok
 
-    actor = %{
-      id: "local-dev-cli",
-      username: "local-dev-cli",
-      display_name: "Local Dev CLI",
-      roles: [:admin],
-      status: :active,
-      inserted_at: now,
-      updated_at: now
-    }
+      {:error, :username_taken} ->
+        reset_local_dev_actor(password)
 
-    if Auth.has_role?(actor, required_role), do: {:ok, session, actor}, else: {:error, :forbidden}
+      {:error, reason} ->
+        {:error, reason}
+    end
+    |> case do
+      :ok ->
+        with {:ok, session, actor} <- Auth.password_login("local-dev-cli", password) do
+          if Auth.has_role?(actor, required_role),
+            do: {:ok, session, actor},
+            else: {:error, :forbidden}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp reset_local_dev_actor(password) do
+    case Enum.find(Auth.list_actors(), &(&1.username == "local-dev-cli")) do
+      %{id: actor_id} ->
+        with {:ok, _actor} <- Auth.update_actor_roles(actor_id, [:admin]) do
+          Auth.set_actor_password(actor_id, password)
+        end
+
+      _other ->
+        {:error, :local_dev_actor_not_found}
+    end
   end
 
   defp ensure_activation_context(conn) do
@@ -1784,36 +1814,63 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
-  defp submit_run_from_request(params) do
+  defp submit_run_from_request(params, actor_context) do
     with {:ok, target} <- fetch_target(params),
          {:ok, manifest_version_id} <- select_manifest_version(params),
-         {:ok, dependencies} <- fetch_dependencies(params, target),
-         {:ok, window_request} <- fetch_window_request(params, target),
-         {:ok, run_opts} <- run_submit_opts(params) do
-      case target do
-        %{type: "asset", id: target_id} ->
-          FavnOrchestrator.submit_asset_run_for_manifest(
-            manifest_version_id,
-            target_id,
-            Keyword.put(run_opts, :dependencies, dependencies)
-          )
-
-        %{type: "pipeline", id: target_id} ->
-          FavnOrchestrator.submit_pipeline_run_for_manifest(
-            manifest_version_id,
-            target_id,
-            Keyword.put(run_opts, :window_request, window_request)
-          )
-
-        _ ->
-          {:error, :invalid_target}
-      end
+         {:ok, command_input} <- run_command_input(params, target) do
+      FavnOrchestrator.submit_operator_run(
+        actor_context,
+        manifest_version_id,
+        target,
+        command_input
+      )
     end
   end
 
-  defp run_submit_opts(params) when is_map(params) do
-    {:ok, maybe_put_positive_int_opt([], :timeout_ms, Map.get(params, "timeout_ms"))}
+  defp run_command_input(params, %{type: "asset"}) when is_map(params) do
+    with {:ok, selection} <- asset_run_selection(params) do
+      {:ok,
+       []
+       |> maybe_put_opt(:selection, selection)
+       |> maybe_put_opt(:dependency_mode, Map.get(params, "dependencies"))
+       |> maybe_put_opt(:refresh_mode, Map.get(params, "refresh"))
+       |> maybe_put_opt(:metadata, Map.get(params, "metadata"))
+       |> maybe_put_opt(:timeout_ms, Map.get(params, "timeout_ms"))}
+    end
   end
+
+  defp run_command_input(params, %{type: "pipeline"}) when is_map(params) do
+    if Map.has_key?(params, "dependencies") do
+      {:error, :invalid_dependencies}
+    else
+      {:ok,
+       []
+       |> maybe_put_opt(:window, Map.get(params, "window"))
+       |> maybe_put_opt(:refresh_mode, Map.get(params, "refresh"))
+       |> maybe_put_opt(:metadata, Map.get(params, "metadata"))
+       |> maybe_put_opt(:timeout_ms, Map.get(params, "timeout_ms"))}
+    end
+  end
+
+  defp asset_run_selection(%{"window" => _window} = params) do
+    asset_selection_from_window(params)
+  end
+
+  defp asset_run_selection(params), do: {:ok, Map.get(params, "selection")}
+
+  defp asset_selection_from_window(%{"window" => %{} = window}) do
+    kind = Map.get(window, "kind") || Map.get(window, :kind)
+    value = Map.get(window, "value") || Map.get(window, :value)
+    timezone = Map.get(window, "timezone") || Map.get(window, :timezone) || "Etc/UTC"
+
+    if is_binary(kind) and kind != "" and is_binary(value) and value != "" do
+      {:ok, %{source: :data_coverage_timeline, kind: kind, value: value, timezone: timezone}}
+    else
+      {:error, :invalid_window_request}
+    end
+  end
+
+  defp asset_selection_from_window(_params), do: {:error, :invalid_window_request}
 
   defp submit_backfill_from_request(params) do
     with :ok <- reject_backfill_lookback_params(params),
@@ -2005,45 +2062,6 @@ defmodule FavnOrchestrator.API.Router do
         [] -> {:error, :not_found}
         [window | _rest] -> {:ok, window}
       end
-    end
-  end
-
-  defp fetch_window_request(params, %{type: "asset"}) when is_map(params) do
-    if Map.has_key?(params, "window") do
-      {:error, :invalid_window_request}
-    else
-      {:ok, nil}
-    end
-  end
-
-  defp fetch_window_request(params, %{type: "pipeline"}) when is_map(params) do
-    case Map.get(params, "window") do
-      nil ->
-        {:ok, nil}
-
-      %{} = window ->
-        WindowRequest.from_value(window)
-
-      _other ->
-        {:error, :invalid_window_request}
-    end
-  end
-
-  defp fetch_dependencies(params, %{type: "pipeline"}) when is_map(params) do
-    if Map.has_key?(params, "dependencies") do
-      {:error, :invalid_dependencies}
-    else
-      {:ok, nil}
-    end
-  end
-
-  defp fetch_dependencies(params, %{type: "asset"}) when is_map(params) do
-    case Map.get(params, "dependencies", "all") do
-      "all" -> {:ok, :all}
-      "none" -> {:ok, :none}
-      :all -> {:ok, :all}
-      :none -> {:ok, :none}
-      _other -> {:error, :invalid_dependencies}
     end
   end
 

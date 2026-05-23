@@ -1,12 +1,13 @@
 defmodule Mix.Tasks.Favn.Run do
   use Mix.Task
 
-  @shortdoc "Submits a pipeline run to the local Favn dev stack"
+  @shortdoc "Submits an asset or pipeline run to the local Favn dev stack"
 
   @moduledoc """
-  Submits a pipeline run to the running local Favn dev stack.
+  Submits an asset or pipeline run to the running local Favn dev stack.
 
       mix favn.run MyApp.Pipelines.Daily
+      mix favn.run MyApp.Assets.RawEvents:events --window month:2026-01
 
   By default the task waits for the run to finish. Use `--no-wait` to return
   after submission. Use `--wait-timeout-ms` for local polling and
@@ -37,23 +38,23 @@ defmodule Mix.Tasks.Favn.Run do
         run_pipeline(pipeline_module, opts)
 
       {[], []} ->
-        Mix.raise("missing pipeline module; usage: mix favn.run MyApp.Pipelines.Daily")
+        Mix.raise("missing target; usage: mix favn.run MyApp.Pipelines.Daily")
 
       {[], _many} ->
-        Mix.raise("expected one pipeline module; usage: mix favn.run MyApp.Pipelines.Daily")
+        Mix.raise("expected one target; usage: mix favn.run MyApp.Pipelines.Daily")
 
       {_invalid, _rest} ->
         Mix.raise("invalid option for mix favn.run")
     end
   end
 
-  defp run_pipeline(pipeline_module, opts) do
-    case Dev.run_pipeline(pipeline_module, opts) do
+  defp run_pipeline(target, opts) do
+    case Dev.run(target, opts) do
       {:ok, run} ->
-        print_run(run, pipeline_module)
+        print_run(run, target)
 
       {:error, {:run_failed, run}} ->
-        print_run(run, pipeline_module)
+        print_run(run, target)
         Mix.raise(terminal_run_error_message(run))
 
       {:error, reason} ->
@@ -61,8 +62,11 @@ defmodule Mix.Tasks.Favn.Run do
     end
   end
 
+  defp error_message({:target_not_found, requested, available}),
+    do: target_not_found_message(requested, available)
+
   defp error_message({:pipeline_not_found, requested, available}),
-    do: pipeline_not_found_message(requested, available)
+    do: target_not_found_message(requested, available)
 
   defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
 
@@ -171,9 +175,9 @@ defmodule Mix.Tasks.Favn.Run do
 
   defp format_orchestrator_details(_details), do: ""
 
-  defp print_run(run, pipeline_module) do
-    IO.puts("Submitted pipeline run")
-    IO.puts("pipeline: #{pipeline_module}")
+  defp print_run(run, target) do
+    IO.puts("Submitted run")
+    IO.puts("target: #{target}")
     IO.puts("manifest: #{run["manifest_version_id"] || "unknown"}")
     IO.puts("run: #{run["id"] || "unknown"}")
     IO.puts("status: #{run["status"] || "unknown"}")
@@ -184,15 +188,18 @@ defmodule Mix.Tasks.Favn.Run do
     end
   end
 
-  defp pipeline_not_found_message(requested, available) do
+  defp target_not_found_message(requested, available) do
     lines = [
-      "pipeline is not present in the active manifest: #{requested}",
-      "hint: run mix favn.reload if the pipeline was added or changed after mix favn.dev started"
+      "target is not present in the active manifest: #{requested}",
+      "hint: run mix favn.reload if the target was added or changed after mix favn.dev started"
     ]
 
     case available do
-      [] -> Enum.join(lines, "\n")
-      _ -> Enum.join(lines ++ ["available pipelines:" | Enum.map(available, &"  - #{&1}")], "\n")
+      [] ->
+        Enum.join(lines, "\n")
+
+      _ ->
+        Enum.join(lines ++ ["available targets:" | Enum.map(available, &"  - #{&1}")], "\n")
     end
   end
 end

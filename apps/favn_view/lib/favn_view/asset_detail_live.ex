@@ -219,10 +219,10 @@ defmodule FavnView.AssetDetailLive do
       refresh_mode: run_config.refresh
     }
 
-    case FavnOrchestrator.submit_operator_asset_run(
+    case FavnOrchestrator.submit_operator_run(
            actor_context(socket),
            asset.manifest_version_id,
-           asset.target_id,
+           %{type: :asset, id: asset.target_id},
            request
          ) do
       {:ok, run_id} -> {:ok, run_id, :single}
