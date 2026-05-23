@@ -668,6 +668,9 @@ defmodule FavnOrchestrator.API.Router do
           {:error, {:invalid_operator_selection_id, _value}} ->
             {:error, 422, "validation_failed", "Invalid run window request", %{}}
 
+          {:error, {:invalid_operator_window, _value}} ->
+            {:error, 422, "validation_failed", "Invalid run window request", %{}}
+
           {:error, :invalid_window_request} ->
             {:error, 422, "validation_failed", "Invalid run window request", %{}}
 

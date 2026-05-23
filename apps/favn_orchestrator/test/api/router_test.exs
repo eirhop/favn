@@ -1588,6 +1588,34 @@ defmodule FavnOrchestrator.API.RouterTest do
            } = Jason.decode!(response.resp_body)
   end
 
+  test "run submission rejects malformed pipeline window payload" do
+    version = schedule_manifest_version("mv_pipeline_window_malformed")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        window: %{mode: "bad"}
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("pipeline-window-malformed")
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "Invalid run window request"
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
   test "run submission reports pipeline window kind mismatch clearly" do
     version = schedule_manifest_version("mv_pipeline_window_mismatch")
     assert :ok = FavnOrchestrator.register_manifest(version)
