@@ -14,8 +14,13 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
       {:ok, %{"data" => %{"manifest" => %{}, "registration" => %{"status" => "accepted"}}}}
     end
 
-    def activate_manifest(url, token, manifest_version_id) do
-      send(test_pid(), {:activate_manifest, url, token, manifest_version_id})
+    def password_login(url, token, username, password) do
+      send(test_pid(), {:password_login, url, token, username, password})
+      {:ok, %{"actor_id" => "act_1", "session_id" => "ses_1", "session_token" => "raw_1"}}
+    end
+
+    def activate_manifest(url, token, manifest_version_id, session_context) do
+      send(test_pid(), {:activate_manifest, url, token, manifest_version_id, session_context})
       {:ok, %{"data" => %{"activated" => true}}}
     end
 
@@ -41,7 +46,8 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
   defmodule RunnerConflictClient do
     def verify_service_token(_url, _token), do: :ok
     def publish_manifest(_url, _token, _payload), do: {:ok, %{}}
-    def activate_manifest(_url, _token, _manifest_version_id), do: {:ok, %{}}
+    def password_login(_url, _token, _username, _password), do: {:ok, %{}}
+    def activate_manifest(_url, _token, _manifest_version_id, _session_context), do: {:ok, %{}}
     def bootstrap_active_manifest(_url, _token), do: {:ok, %{}}
 
     def register_runner(_url, _token, _payload) do
@@ -84,6 +90,8 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
       manifest_path: manifest_path,
       orchestrator_url: "http://127.0.0.1:4000",
       service_token: "token-1",
+      operator_username: "admin",
+      operator_password: "admin-password-long",
       client: FakeClient
     ]
 
@@ -95,11 +103,14 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
     assert summary.active_manifest_verification == :matched
 
     assert_receive {:verify_service_token, "http://127.0.0.1:4000", "token-1"}
+    assert_receive {:password_login, _url, _token, "admin", "admin-password-long"}
     assert_receive {:publish_manifest, _url, _token, manifest_payload}
-    assert_receive {:activate_manifest, _url, _token, manifest_version_id}
+    assert_receive {:activate_manifest, _url, _token, manifest_version_id, session_context}
     assert_receive {:register_runner, _url, _token, runner_payload}
     assert_receive {:bootstrap_active_manifest, _url, _token}
 
+    assert session_context["actor_id"] == "act_1"
+    assert session_context["session_token"] == "raw_1"
     assert manifest_payload.manifest_version_id == summary.manifest_version_id
     assert manifest_payload.content_hash == summary.content_hash
     assert manifest_version_id == summary.manifest_version_id
@@ -122,8 +133,10 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
                manifest_path: manifest_path,
                orchestrator_url: "http://127.0.0.1:4000",
                service_token: "token-1",
+               operator_username: "admin",
+               operator_password: "admin-password-long",
                client: RunnerConflictClient
-              )
+             )
   end
 
   test "missing manifest file fails with structured read error", %{manifest_path: manifest_path} do

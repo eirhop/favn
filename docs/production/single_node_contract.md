@@ -308,6 +308,11 @@ At minimum, the production single-node runtime needs:
 - `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN`, required by first-run bootstrap
   tooling unless `--service-token` is passed, at least 32 characters, and present
   as the token value of one `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` entry.
+- `FAVN_BOOTSTRAP_OPERATOR_USERNAME` and `FAVN_BOOTSTRAP_OPERATOR_PASSWORD`, or
+  `--operator-username`/`--operator-password`, for first-run bootstrap operator
+  login before activation. When unset, bootstrap tooling falls back to
+  `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME` and
+  `FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD`.
 - Durable first-admin/browser-login setup, durable sessions, actors,
   credentials, and audit logs. Password credentials are stored as encoded
   Argon2id hash strings, accepted passwords must be 15 to 1,024 characters,

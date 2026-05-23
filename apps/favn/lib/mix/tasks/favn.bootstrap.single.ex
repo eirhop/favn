@@ -14,6 +14,10 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
   - `--orchestrator-url` or `FAVN_VIEW_ORCHESTRATOR_BASE_URL`
   - `--service-token` or `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN` /
     `FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN`
+  - `--operator-username` or `FAVN_BOOTSTRAP_OPERATOR_USERNAME` /
+    `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME`
+  - `--operator-password` or `FAVN_BOOTSTRAP_OPERATOR_PASSWORD` /
+    `FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD`
   """
 
   alias Favn.Dev
@@ -68,6 +72,8 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
       manifest: :string,
       orchestrator_url: :string,
       service_token: :string,
+      operator_username: :string,
+      operator_password: :string,
       activate: :boolean
     )
     |> with_env_defaults()
@@ -98,6 +104,16 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
       Keyword.get(opts, :service_token) || env("FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN") ||
         env("FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN") || env("FAVN_ORCHESTRATOR_SERVICE_TOKEN")
     )
+    |> put_default(
+      :operator_username,
+      Keyword.get(opts, :operator_username) || env("FAVN_BOOTSTRAP_OPERATOR_USERNAME") ||
+        env("FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME")
+    )
+    |> put_default(
+      :operator_password,
+      Keyword.get(opts, :operator_password) || env("FAVN_BOOTSTRAP_OPERATOR_PASSWORD") ||
+        env("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD")
+    )
   end
 
   defp put_default(opts, key, value) when is_binary(value) and value != "",
@@ -107,7 +123,7 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
 
   defp validate_required!(opts) do
     missing =
-      [:manifest_path, :orchestrator_url, :service_token]
+      required_keys(opts)
       |> Enum.reject(fn key -> present?(Keyword.get(opts, key)) end)
       |> Enum.map(&option_name/1)
 
@@ -118,6 +134,16 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
   end
 
   defp present?(value), do: is_binary(value) and value != ""
+
+  defp required_keys(opts) do
+    base = [:manifest_path, :orchestrator_url, :service_token]
+
+    if Keyword.get(opts, :activate?, true) do
+      base ++ [:operator_username, :operator_password]
+    else
+      base
+    end
+  end
 
   defp option_name(:manifest_path), do: "--manifest"
   defp option_name(:orchestrator_url), do: "--orchestrator-url"

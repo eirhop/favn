@@ -111,6 +111,10 @@ Supported backend environment keys are:
   `service_identity:token` entries.
 - `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN`, used by bootstrap tooling unless
   `--service-token` is passed.
+- `FAVN_BOOTSTRAP_OPERATOR_USERNAME`, optional bootstrap-tooling override for
+  operator login; defaults to `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME`.
+- `FAVN_BOOTSTRAP_OPERATOR_PASSWORD`, optional bootstrap-tooling override for
+  operator login; defaults to `FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD`.
 - `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME`, first admin username.
 - `FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD`, first admin password, 15 to 1,024
   characters.
@@ -179,9 +183,9 @@ mix favn.bootstrap.single \
 ```
 
 `mix favn.bootstrap.single` verifies service-token auth, validates the manifest,
-registers the manifest, activates it by default, asks the orchestrator to
-register the persisted manifest with the local runner, and verifies active
-manifest selection.
+logs in the bootstrap operator, registers the manifest, activates it by default
+with operator actor context, asks the orchestrator to register the persisted
+manifest with the local runner, and verifies active manifest selection.
 
 The bootstrap workflow uses orchestrator APIs. It does not write SQLite directly.
 
