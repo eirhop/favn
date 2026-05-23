@@ -84,17 +84,17 @@ defmodule FavnOrchestrator.Freshness.Query do
   defp current_upstream_states(upstream_node_keys) do
     upstream_node_keys
     |> MapSet.new()
-    |> fetch_current_upstream_states(0, %{})
+    |> fetch_current_upstream_states(nil, %{})
   end
 
-  defp fetch_current_upstream_states(upstream_node_keys, offset, acc) do
+  defp fetch_current_upstream_states(upstream_node_keys, cursor, acc) do
     with {:ok, page} <-
-           Storage.list_asset_freshness_states(limit: Page.max_limit(), offset: offset) do
+           Storage.scan_asset_freshness_states([], [{:limit, Page.max_limit()}, {:after, cursor}]) do
       acc = collect_current_upstream_states(page.items, upstream_node_keys, acc)
 
       cond do
         MapSet.size(upstream_node_keys) == map_size(acc) -> {:ok, acc}
-        page.has_more? -> fetch_current_upstream_states(upstream_node_keys, page.next_offset, acc)
+        page.has_more? -> fetch_current_upstream_states(upstream_node_keys, page.next_cursor, acc)
         true -> {:ok, acc}
       end
     end

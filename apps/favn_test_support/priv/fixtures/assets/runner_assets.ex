@@ -340,6 +340,9 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def list_backfill_windows(filters, _opts), do: {:ok, empty_page(filters)}
 
   @impl true
+  def scan_backfill_windows(_filters, scan_opts, _opts), do: {:ok, empty_cursor_page(scan_opts)}
+
+  @impl true
   def apply_backfill_child_projection(_window, _states, _opts), do: {:error, :not_found}
 
   @impl true
@@ -362,6 +365,9 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def get_asset_freshness_states_by_keys(_keys, _opts), do: {:ok, %{}}
 
   @impl true
+  def scan_asset_freshness_states(_filters, scan_opts, _opts), do: {:ok, empty_cursor_page(scan_opts)}
+
+  @impl true
   def replace_backfill_read_models(
         _scope,
         _coverage_baselines,
@@ -378,5 +384,9 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
       limit: Keyword.fetch!(filters, :limit),
       offset: Keyword.fetch!(filters, :offset)
     )
+  end
+
+  defp empty_cursor_page(scan_opts) do
+    FavnOrchestrator.CursorPage.from_fetched([], scan_opts, fn _item -> nil end)
   end
 end

@@ -31,11 +31,13 @@ defmodule FavnOrchestrator.Backfill.Repair do
   def repair(opts \\ []) when is_list(opts) do
     apply? = Keyword.get(opts, :apply, false)
 
-    with {:ok, raw_scope} <- normalize_scope(opts),
+    with :ok <- validate_scope_selection(opts),
+         {:ok, raw_scope} <- normalize_scope(opts),
          {:ok, runs} <- Storage.list_runs(),
          {:ok, scope} <- resolve_scope(raw_scope, runs),
          {:ok, plan} <- plan(runs, scope),
-         :ok <- maybe_apply(apply?, scope, plan) do
+         {:ok, replacement_scope} <- replacement_scope(apply?, scope, opts),
+         :ok <- maybe_apply(apply?, replacement_scope, plan) do
       {:ok, report(apply?, scope, plan)}
     end
   end
@@ -69,6 +71,17 @@ defmodule FavnOrchestrator.Backfill.Repair do
     )
   end
 
+  defp validate_scope_selection(opts) do
+    count =
+      Enum.count([:all, :backfill_run_id, :pipeline_module], fn key ->
+        value = Keyword.get(opts, key)
+        not (is_nil(value) or value == false or value == "")
+      end) +
+        if(Keyword.get(opts, :scope) == :all, do: 1, else: 0)
+
+    if count <= 1, do: :ok, else: {:error, :invalid_repair_scope}
+  end
+
   defp normalize_scope(opts) do
     scope =
       []
@@ -76,6 +89,30 @@ defmodule FavnOrchestrator.Backfill.Repair do
       |> maybe_put_scope(:pipeline_module, Keyword.get(opts, :pipeline_module))
 
     if length(scope) <= 1, do: {:ok, scope}, else: {:error, :invalid_repair_scope}
+  end
+
+  defp replacement_scope(false, _scope, _opts), do: {:ok, nil}
+
+  defp replacement_scope(true, scope, opts) do
+    cond do
+      Keyword.get(opts, :all, false) ->
+        {:ok, :all}
+
+      Keyword.get(opts, :scope) == :all ->
+        {:ok, :all}
+
+      match?([backfill_run_id: _id], scope) ->
+        {:ok, {:backfill_run, Keyword.fetch!(scope, :backfill_run_id)}}
+
+      match?([pipeline_module: _module], scope) ->
+        {:ok, {:pipeline, Keyword.fetch!(scope, :pipeline_module)}}
+
+      scope == [] ->
+        {:error, :replacement_scope_required}
+
+      true ->
+        {:error, {:unsupported_replacement_scope, scope}}
+    end
   end
 
   defp maybe_put_scope(scope, _key, nil), do: scope

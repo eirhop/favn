@@ -321,6 +321,7 @@ defmodule FavnOrchestrator.RunServerTest do
     defdelegate put_backfill_window(window, opts), to: Memory
     defdelegate get_backfill_window(backfill_id, module, window_key, opts), to: Memory
     defdelegate list_backfill_windows(filters, opts), to: Memory
+    defdelegate scan_backfill_windows(filters, scan_opts, opts), to: Memory
     defdelegate apply_backfill_child_projection(window, states, opts), to: Memory
     defdelegate get_backfill_progress(backfill_id, opts), to: Memory
     defdelegate rebuild_backfill_progress(backfill_id, opts), to: Memory
@@ -329,6 +330,9 @@ defmodule FavnOrchestrator.RunServerTest do
     defdelegate list_asset_window_states(filters, opts), to: Memory
 
     def get_asset_freshness_states_by_keys(_keys, _opts),
+      do: {:error, :freshness_lookup_unavailable}
+
+    def scan_asset_freshness_states(_filters, _scan_opts, _opts),
       do: {:error, :freshness_lookup_unavailable}
 
     defdelegate replace_backfill_read_models(filters, baselines, windows, states, opts),

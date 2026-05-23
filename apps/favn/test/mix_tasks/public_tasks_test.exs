@@ -749,7 +749,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
                "Example.Pipeline"
              ])
 
-    assert message == "expected at most one repair scope: --backfill-run-id or --pipeline-module"
+    assert message ==
+             "expected at most one repair scope: --all, --backfill-run-id, or --pipeline-module"
 
     assert {:error, message} = BackfillTask.parse_args(["repair", "extra"])
     assert message == "unexpected argument for mix favn.backfill repair"
