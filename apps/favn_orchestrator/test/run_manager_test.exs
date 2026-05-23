@@ -897,6 +897,7 @@ defmodule FavnOrchestrator.RunManagerTest do
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+    previous_timeout = Application.get_env(:favn_orchestrator, :run_manager_call_timeout_ms)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
@@ -906,6 +907,13 @@ defmodule FavnOrchestrator.RunManagerTest do
     on_exit(fn ->
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      if is_nil(previous_timeout) do
+        Application.delete_env(:favn_orchestrator, :run_manager_call_timeout_ms)
+      else
+        Application.put_env(:favn_orchestrator, :run_manager_call_timeout_ms, previous_timeout)
+      end
+
       Memory.reset()
     end)
 
@@ -2352,6 +2360,21 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert {:ok, persisted} = Storage.get_run(running.id)
     assert persisted.status == :running
     assert persisted.error == nil
+  end
+
+  test "run manager calls return a finite timeout error when admission cannot reply" do
+    Application.put_env(:favn_orchestrator, :run_manager_call_timeout_ms, 10)
+
+    :sys.suspend(FavnOrchestrator.RunManager)
+
+    on_exit(fn ->
+      if Process.whereis(FavnOrchestrator.RunManager) do
+        :sys.resume(FavnOrchestrator.RunManager)
+      end
+    end)
+
+    assert {:error, :run_manager_timeout} =
+             FavnOrchestrator.cancel_run("run_timeout_missing", %{requested_by: :test})
   end
 
   test "cancel keeps run in-flight when runner cancellation failure is unconfirmed" do
