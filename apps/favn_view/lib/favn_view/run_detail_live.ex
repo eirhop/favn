@@ -295,7 +295,7 @@ defmodule FavnView.RunDetailLive do
         existing_back_asset_href || back_asset_href(List.first(summary.target_assets)),
       raw_run: inspect(detail, pretty: true, limit: 50, printable_limit: 2_000),
       raw_events: inspect(events, pretty: true, limit: 50, printable_limit: 2_000),
-      root_event_sequence: Map.get(detail, :latest_event_sequence)
+      root_event_sequence: Map.get(detail, :root_event_sequence)
     }
   end
 

@@ -196,7 +196,8 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:counts) => map(),
           required(:backfill_failures) => [backfill_failure()],
           required(:backfill_failure_count) => non_neg_integer(),
-          required(:latest_event_sequence) => non_neg_integer() | nil,
+          required(:root_event_sequence) => non_neg_integer() | nil,
+          required(:latest_global_event_sequence) => non_neg_integer() | nil,
           required(:latest_event) => RunEvent.t() | nil,
           optional(:events) => [RunEvent.t()]
         }
@@ -671,6 +672,7 @@ defmodule FavnOrchestrator.RunReadModel do
       backfill_failures(group.root, detail_backfill_windows(group.root))
 
     events = operator_events(group.id, event_opts)
+    latest_event = latest_operator_event(group.id)
 
     detail = %{
       summary: group_summary,
@@ -684,8 +686,9 @@ defmodule FavnOrchestrator.RunReadModel do
       counts: group_summary.summary_totals,
       backfill_failures: backfill_failures,
       backfill_failure_count: backfill_failure_count,
-      latest_event_sequence: group.root.event_seq,
-      latest_event: latest_operator_event(group.id)
+      root_event_sequence: group.root.event_seq,
+      latest_global_event_sequence: latest_event && latest_event.global_sequence,
+      latest_event: latest_event
     }
 
     if event_opts.include_events? do

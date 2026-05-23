@@ -998,7 +998,8 @@ defmodule FavnOrchestrator.RunReadModelTest do
     refute Map.has_key?(detail, :events)
     assert detail.summary.id == parent.id
     assert [%{id: "operator-step"}] = detail.asset_attempts
-    assert detail.latest_event_sequence == parent.event_seq
+    assert detail.root_event_sequence == parent.event_seq
+    assert detail.latest_global_event_sequence == 25
   end
 
   test "operator run detail includes only explicitly bounded events" do
@@ -1031,6 +1032,7 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert length(detail.events) == 3
     assert Enum.map(detail.events, & &1.sequence) == [1, 2, 3]
     assert detail.latest_event.sequence == 10
+    assert detail.latest_global_event_sequence == 10
   end
 
   test "operator run detail rejects run-scoped cursors for grouped events" do
