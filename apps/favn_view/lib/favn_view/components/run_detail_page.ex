@@ -46,6 +46,19 @@ defmodule FavnView.Components.RunDetailPage do
       back_label={if(@run[:back_asset_href], do: "Back to asset", else: nil)}
       facts={run_facts(@run)}
     >
+      <:compact_header_action :if={@run[:cancellable?]}>
+        <button
+          type="button"
+          class="btn btn-error btn-soft btn-sm gap-2 rounded-box border-error/30"
+          phx-click="cancel_run"
+          phx-disable-with="Cancelling..."
+          data-confirm="Cancel this run? Active runner work will be asked to stop."
+          data-testid="cancel-run-button"
+        >
+          <.icon name="hero-no-symbol" class="size-4" /> Cancel run
+        </button>
+      </:compact_header_action>
+
       <NotFound.not_found_panel :if={!@run[:found?]} run={@run} />
       <.execution_group_page
         :if={@run[:found?]}

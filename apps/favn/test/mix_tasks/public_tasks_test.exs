@@ -586,7 +586,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     message = ReloadTask.in_flight_runs_message(["run_pending", "run_running"])
 
     assert message =~ "reload blocked: in-flight runs exist"
-    assert message =~ "cancel them from the Favn UI/API"
+    assert message =~ "mix favn.runs cancel RUN_ID"
     assert message =~ "if these runs are stale"
     assert message =~ "mix favn.reset"
   end
@@ -921,7 +921,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert message =~ "RUN_ID cannot be combined"
   end
 
-  test "mix favn.runs parses list and show subcommands" do
+  test "mix favn.runs parses list show and cancel subcommands" do
     assert {:ok, {:list, opts}} =
              RunsTask.parse_args(["list", "--status", "error", "--limit", "5"])
 
@@ -929,6 +929,22 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert Keyword.fetch!(opts, :limit) == 5
 
     assert {:ok, {:show, "run_1", []}} = RunsTask.parse_args(["show", "run_1"])
+
+    assert {:ok, {:cancel, "run_1", opts}} =
+             RunsTask.parse_args([
+               "cancel",
+               "run_1",
+               "--wait",
+               "--wait-timeout-ms",
+               "5000",
+               "--poll-interval-ms",
+               "100"
+             ])
+
+    assert Keyword.fetch!(opts, :wait) == true
+    assert Keyword.fetch!(opts, :wait_timeout_ms) == 5000
+    assert Keyword.fetch!(opts, :poll_interval_ms) == 100
+
     assert {:error, message} = RunsTask.parse_args([])
     assert message =~ "missing subcommand"
   end

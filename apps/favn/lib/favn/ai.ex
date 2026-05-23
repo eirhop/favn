@@ -126,10 +126,13 @@ defmodule Favn.AI do
     `Favn.Pipeline.Resolver` if needed.
   - To plan execution order, read `Favn plan_asset_run`, then
     `Favn.Assets.Planner` if needed.
-  - To inspect local runs, run events, relation metadata, relation partitions, or
-    ad hoc read-only SQL, read `Favn.Dev.Runs`, `Favn.Dev.DataInspection`,
-    `Mix.Tasks.Favn.Runs`, `Mix.Tasks.Favn.Logs`, `Mix.Tasks.Favn.Inspect`, and
-    `Mix.Tasks.Favn.Query`. `mix favn.inspect ...` and `mix favn.query
+  - To inspect or cancel local runs, inspect run events, inspect relation
+    metadata, inspect relation partitions, or run ad hoc read-only SQL, read
+    `Favn.Dev.Runs`, `Favn.Dev.DataInspection`, `Mix.Tasks.Favn.Runs`,
+    `Mix.Tasks.Favn.Logs`, `Mix.Tasks.Favn.Inspect`, and `Mix.Tasks.Favn.Query`.
+    `mix favn.runs cancel RUN_ID` requests cancellation through the local
+    orchestrator HTTP boundary; add `--wait` to poll the run until it is
+    terminal. `mix favn.inspect ...` and `mix favn.query
     "select ..."` are direct local operator entrypoints: their Mix tasks start
     the app, and `Favn.Dev.DataInspection` starts `:favn_sql_runtime` before
     connecting, so users do not need `mix do app.start + ...`.
@@ -244,12 +247,14 @@ defmodule Favn.AI do
     Read `FavnOrchestrator.Backfill.*` only for internal control-plane
     persistence, projection, and parent/child orchestration work.
   - Read `Favn.Dev` and `apps/favn_local/README.md` when the task is about local
-    lifecycle, local pipeline submission, local run investigation, local SQL
-    inspection/querying, docs lookup, or packaging, not asset authoring. Read
+    lifecycle, local pipeline submission, local run investigation or
+    cancellation, local SQL inspection/querying, docs lookup, or packaging, not
+    asset authoring. Read
     `Favn.Dev.Backfill` for the local `mix favn.backfill` workflow over the
     private orchestrator backfill endpoints. Read `Favn.Dev.Run` for
     `mix favn.run`. Read
-    `Favn.Dev.Runs` for `mix favn.runs` and `mix favn.logs RUN_ID`. Read
+    `Favn.Dev.Runs` for `mix favn.runs` list/show/cancel behavior and
+    `mix favn.logs RUN_ID`. Read
     `Favn.Dev.DataInspection` for `mix favn.inspect` and `mix favn.query`.
     `Mix.Tasks.Favn.Inspect` and `Mix.Tasks.Favn.Query` own CLI app startup for
     local SQL inspection; `Favn.Dev.DataInspection` owns SQL runtime startup

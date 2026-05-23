@@ -35,6 +35,9 @@ Based on the current feature audit, the main path to a stable production `v1` is
 ### 3a. Rebuild The Phoenix/LiveView UI
 
 - Recreate the operator UI behind the public orchestrator facade only. Start with auth/session boundaries, runs, assets, backfills, and live updates in separate focused PRs.
+- Extend run cancellation beyond the implemented CLI and run-detail action with
+  explicit whole-backfill parent cancellation semantics when the product needs
+  it. See `docs/RUN_CANCELLATION_PLAN.md`.
 
 ### 4. Finish The Live Event And Command Safety Model
 

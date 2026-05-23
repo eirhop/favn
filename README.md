@@ -601,6 +601,8 @@ mix favn.backfill rerun-window RUN_ID --window-key day:Etc/UTC:2026-04-01T00:00:
 mix favn.backfill repair --pipeline-module MyApp.Pipelines.DailySales --apply
 mix favn.runs list --status error --limit 20
 mix favn.runs show RUN_ID
+mix favn.runs cancel RUN_ID
+mix favn.runs cancel RUN_ID --wait --wait-timeout-ms 30000
 mix favn.logs RUN_ID
 mix favn.inspect relation raw.sales.orders
 mix favn.query "select count(*) from raw.sales.orders"
@@ -792,10 +794,13 @@ mix favn.backfill submit MyApp.Pipelines.InventoryByDayBackfill \
   --run-timeout-ms 300000
 ```
 
-`mix favn.runs list`, `mix favn.runs show RUN_ID`, and `mix favn.logs RUN_ID`
-provide lightweight run investigation through the orchestrator HTTP boundary.
-`mix favn.status` includes active-run counts and recent failed run ids when the
-local stack is running. `mix favn.inspect relation RELATION`,
+`mix favn.runs list`, `mix favn.runs show RUN_ID`, `mix favn.runs cancel
+RUN_ID`, and `mix favn.logs RUN_ID` provide lightweight run investigation and
+run cancellation through the orchestrator HTTP boundary. Add `--wait` to
+`mix favn.runs cancel RUN_ID` when the CLI should poll that run until it reaches
+a terminal status or the local wait timeout expires. `mix favn.status` includes
+active-run counts and recent failed run ids when the local stack is running.
+`mix favn.inspect relation RELATION`,
 `mix favn.inspect partitions RELATION`, and `mix favn.query "select ..."`
 provide local SQL inspection without ad-hoc `mix run -e` snippets. `mix
 favn.query` uses a best-effort read-only guardrail by default; it is not a SQL
@@ -981,6 +986,8 @@ manifest/JSON-shaped unless Favn explicitly supports that key.
 
 - `docs/FEATURES.md` tracks the implemented feature set today
 - `docs/ROADMAP.md` tracks planned next work and later ideas
+- `docs/RUN_CANCELLATION_PLAN.md` documents implemented single-run cancellation
+  and remaining whole-backfill cancellation follow-up work
 - `docs/production/public_api_boundary.md` defines the intended package and
   stable public API boundary for `v1`
 - `docs/production/single_node_contract.md` defines the first `v1` production deployment contract

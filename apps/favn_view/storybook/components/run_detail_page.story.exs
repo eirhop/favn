@@ -14,7 +14,9 @@ defmodule FavnView.Storybook.Components.RunDetailPage do
       %Variation{
         id: :backfill_overview_matrix,
         attributes: %{
-          run: RunDetailPage.sample_run(:running),
+          run:
+            RunDetailPage.sample_run(:running)
+            |> Map.merge(%{cancellable?: true, cancel_run_id: "run_backfill_8f2c9d1"}),
           run_id: "run_backfill_8f2c9d1",
           nav_items: RunDetailPage.sample_nav_items(),
           active_mode: :overview

@@ -12,8 +12,9 @@ Code:
   loopback and EPMD preflight
 - `apps/favn_local/lib/favn/dev/local_context.ex` for the shared trusted local-dev
   API context used by local CLI commands
-- `apps/favn_local/lib/favn/dev/run.ex` and `apps/favn_local/lib/favn/dev/backfill.ex`
-  for local operator run/backfill payloads, including timeout, refresh-policy,
+- `apps/favn_local/lib/favn/dev/run.ex`, `apps/favn_local/lib/favn/dev/runs.ex`,
+  and `apps/favn_local/lib/favn/dev/backfill.ex` for local operator run/backfill
+  payloads and run operations, including timeout, cancellation, refresh-policy,
   successful-window rerun, and concurrency option forwarding
 - `apps/favn_local/lib/favn/dev/init.ex` for generated local sample files; keep
   its lakehouse sample aligned with the convention that connections are
@@ -58,8 +59,8 @@ Single-node artifact invariant:
 
 Use when changing `mix favn.*` local behavior, local runtime state, local HTTP
 client behavior, consumer config transport, install/runtime workspaces,
-single-node bootstrap, operator diagnostics, local run/data inspection, local
-run/backfill admission options, or local packaging outputs.
+single-node bootstrap, operator diagnostics, local run/data inspection, local run
+cancellation, local run/backfill admission options, or local packaging outputs.
 
 Breadcrumbs:
 - `Mix.Tasks.Favn.Inspect` and `Mix.Tasks.Favn.Query` own CLI app startup for

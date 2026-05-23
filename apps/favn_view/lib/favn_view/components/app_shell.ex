@@ -22,6 +22,7 @@ defmodule FavnView.Components.AppShell do
 
   slot :inner_block, required: true
   slot :mode_rail
+  slot :compact_header_action
 
   def app_shell(assigns) do
     ~H"""
@@ -101,20 +102,32 @@ defmodule FavnView.Components.AppShell do
           if(@content_scroll?, do: "overflow-y-auto", else: "overflow-hidden"),
           if(@compact_header?, do: "py-2 md:py-3", else: "py-4 md:py-6")
         ]}>
-          <dl
-            :if={@compact_header? && !@show_header? && @facts != []}
-            class="mb-3 grid shrink-0 gap-3 border-b border-base-content/10 pb-3 text-xs sm:grid-cols-3"
+          <div
+            :if={@compact_header? && !@show_header? && (@facts != [] || @compact_header_action != [])}
+            class="mb-3 flex shrink-0 flex-col gap-3 border-b border-base-content/10 pb-3 sm:flex-row sm:items-end sm:justify-between"
           >
-            <div
-              :for={fact <- @facts}
-              class="border-base-content/10 sm:border-l sm:pl-4 first:border-l-0 first:pl-0"
+            <dl
+              :if={@facts != []}
+              class="grid flex-1 gap-3 text-xs sm:grid-cols-3"
             >
-              <dt class="text-base-content/45">{fact.label}</dt>
-              <dd class="mt-0.5 truncate font-medium text-base-content" title={to_string(fact.value)}>
-                {fact.value}
-              </dd>
+              <div
+                :for={fact <- @facts}
+                class="border-base-content/10 sm:border-l sm:pl-4 first:border-l-0 first:pl-0"
+              >
+                <dt class="text-base-content/45">{fact.label}</dt>
+                <dd
+                  class="mt-0.5 truncate font-medium text-base-content"
+                  title={to_string(fact.value)}
+                >
+                  {fact.value}
+                </dd>
+              </div>
+            </dl>
+
+            <div :if={@compact_header_action != []} class="flex shrink-0 justify-start sm:justify-end">
+              {render_slot(@compact_header_action)}
             </div>
-          </dl>
+          </div>
 
           <section
             :if={@show_header?}

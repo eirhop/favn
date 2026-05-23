@@ -906,6 +906,20 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(view, ~s([data-testid="execution-group-header"]))
     refute has_element?(view, ~s([data-testid="run-detail-tabs"]))
+    refute has_element?(view, ~s([data-testid="cancel-run-button"]))
+  end
+
+  test "run detail can cancel an active run", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="cancel-run-button"]), "Cancel run")
+
+    view
+    |> element(~s([data-testid="cancel-run-button"]))
+    |> render_click()
+
+    assert {:ok, run} = Storage.get_run("run_empty_running")
+    assert run.status == :cancelled
   end
 
   test "run detail renders events mode when present", %{conn: conn} do

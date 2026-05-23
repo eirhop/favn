@@ -225,6 +225,26 @@ defmodule Favn.Dev.OrchestratorClientTest do
     end)
   end
 
+  test "cancel_run/4 parses cancel response and encodes run id" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"cancelled":true,"run_id":"run 1"}}), 200, parent: parent)
+
+    assert {:ok, %{"cancelled" => true, "run_id" => "run 1"}} =
+             OrchestratorClient.cancel_run(
+               base_url,
+               "token",
+               "run 1",
+               %{"local_dev_context" => "trusted"}
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/runs/run%201/cancel"}
+    assert_receive {:request_headers, headers}
+    assert headers["x-favn-local-dev-context"] == "trusted"
+    assert_idempotency_header(headers)
+  end
+
   test "backfill list helpers parse item responses and encode filters" do
     parent = self()
 
