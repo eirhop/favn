@@ -30,31 +30,25 @@ defmodule FavnOrchestrator.RunManager do
   @spec submit_asset_run(Favn.Ref.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def submit_asset_run({module, name} = asset_ref, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    with {:ok, submission} <- SubmissionBuilder.asset(asset_ref, opts) do
-      call_manager({:admit_submission, submission})
-    end
+    prepare_and_admit(:manual, fn -> SubmissionBuilder.asset(asset_ref, opts) end)
   end
 
   @spec submit_pipeline_run([Favn.Ref.t()], keyword()) :: {:ok, String.t()} | {:error, term()}
   def submit_pipeline_run(target_refs, opts \\ []) when is_list(target_refs) and is_list(opts) do
-    with {:ok, submission} <- SubmissionBuilder.pipeline(target_refs, opts) do
-      call_manager({:admit_submission, submission})
-    end
+    prepare_and_admit(:pipeline, fn -> SubmissionBuilder.pipeline(target_refs, opts) end)
   end
 
   @spec submit_pipeline_module_run(module(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def submit_pipeline_module_run(pipeline_module, opts \\ [])
       when is_atom(pipeline_module) and is_list(opts) do
-    with {:ok, submission} <- SubmissionBuilder.pipeline_module(pipeline_module, opts) do
-      call_manager({:admit_submission, submission})
-    end
+    prepare_and_admit(:pipeline, fn ->
+      SubmissionBuilder.pipeline_module(pipeline_module, opts)
+    end)
   end
 
   @spec rerun(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def rerun(source_run_id, opts \\ []) when is_binary(source_run_id) and is_list(opts) do
-    with {:ok, submission} <- SubmissionBuilder.rerun(source_run_id, opts) do
-      call_manager({:admit_submission, submission})
-    end
+    prepare_and_admit(:rerun, fn -> SubmissionBuilder.rerun(source_run_id, opts) end)
   end
 
   @spec cancel_run(String.t(), map()) :: :ok | {:error, term()}
@@ -152,10 +146,31 @@ defmodule FavnOrchestrator.RunManager do
     GenServer.call(__MODULE__, message, run_manager_call_timeout())
   catch
     :exit, :timeout ->
-      {:error, :run_manager_timeout}
+      run_manager_timeout_error()
 
     :exit, {:timeout, _call} ->
-      {:error, :run_manager_timeout}
+      run_manager_timeout_error()
+  end
+
+  defp prepare_and_admit(submit_kind, prepare) when is_function(prepare, 0) do
+    case prepare.() do
+      {:ok, %Submission{} = submission} ->
+        call_manager({:admit_submission, submission})
+
+      {:error, reason} = error ->
+        OperationalEvents.emit(
+          :run_submission_failed,
+          %{},
+          %{submit_kind: submit_kind, reason: reason},
+          level: :warning
+        )
+
+        error
+    end
+  end
+
+  defp run_manager_timeout_error do
+    {:error, {:run_manager_timeout, :admission_state_unknown}}
   end
 
   defp run_manager_call_timeout do

@@ -1,13 +1,14 @@
 defmodule FavnOrchestrator.RunManager.Submission do
   @moduledoc false
 
+  alias Favn.Manifest.Version
   alias FavnOrchestrator.RunState
 
   @type submit_kind :: :manual | :pipeline | :rerun
 
   @type t :: %__MODULE__{
           run_state: RunState.t(),
-          manifest_version: term(),
+          manifest_version: Version.t(),
           submit_kind: submit_kind(),
           transition_metadata: map(),
           event_metadata: map()
