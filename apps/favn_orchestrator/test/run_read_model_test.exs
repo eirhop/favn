@@ -973,6 +973,79 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert Enum.map(detail.events, & &1.run_id) == [parent.id, child.id]
   end
 
+  test "operator run detail is bounded by default and omits full event history" do
+    parent = run("operator_detail_parent", submit_kind: :backfill_pipeline)
+    anchor = anchor(~U[2026-07-01 00:00:00Z])
+    child = child_run(parent, "operator_detail_child", anchor, :running, result_status: nil)
+
+    Enum.each([parent, child], &assert(:ok = Storage.put_run(&1)))
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, anchor, :running))
+
+    Enum.each(1..25, fn sequence ->
+      assert :ok =
+               Storage.append_run_event(child.id, %{
+                 run_id: child.id,
+                 sequence: sequence,
+                 event_type: :step_started,
+                 occurred_at: DateTime.add(~U[2026-07-01 00:00:00Z], sequence, :second),
+                 status: :running,
+                 data: %{asset_step_id: "operator-step", asset_ref: {MyApp.Assets.Gold, :asset}}
+               })
+    end)
+
+    assert {:ok, detail} = FavnOrchestrator.get_operator_run_detail(child.id)
+
+    refute Map.has_key?(detail, :events)
+    assert detail.summary.id == parent.id
+    assert [%{id: "operator-step"}] = detail.asset_attempts
+    assert detail.root_event_sequence == parent.event_seq
+    assert detail.latest_global_event_sequence == 25
+  end
+
+  test "operator run detail includes only explicitly bounded events" do
+    parent = run("operator_detail_events_parent", submit_kind: :backfill_pipeline)
+    anchor = anchor(~U[2026-07-01 00:00:00Z])
+
+    child =
+      child_run(parent, "operator_detail_events_child", anchor, :running, result_status: nil)
+
+    Enum.each([parent, child], &assert(:ok = Storage.put_run(&1)))
+
+    Enum.each(1..10, fn sequence ->
+      assert :ok =
+               Storage.append_run_event(child.id, %{
+                 run_id: child.id,
+                 sequence: sequence,
+                 event_type: :step_started,
+                 occurred_at: DateTime.add(~U[2026-07-01 00:00:00Z], sequence, :second),
+                 status: :running,
+                 data: %{asset_step_id: "operator-step-#{sequence}"}
+               })
+    end)
+
+    assert {:ok, detail} =
+             FavnOrchestrator.get_operator_run_detail(parent.id,
+               include: [:events],
+               event_limit: 3
+             )
+
+    assert length(detail.events) == 3
+    assert Enum.map(detail.events, & &1.sequence) == [1, 2, 3]
+    assert detail.latest_event.sequence == 10
+    assert detail.latest_global_event_sequence == 10
+  end
+
+  test "operator run detail rejects run-scoped cursors for grouped events" do
+    run = run("operator_detail_invalid_cursor", submit_kind: :pipeline)
+    assert :ok = Storage.put_run(run)
+
+    assert {:error, :invalid_opts} =
+             FavnOrchestrator.get_operator_run_detail(run.id,
+               include: [:events],
+               after_sequence: 1
+             )
+  end
+
   test "execution group attempt filters apply on orchestrator read model" do
     parent = run("exec_group_filter_parent", submit_kind: :backfill_pipeline)
     ok_anchor = anchor(~U[2026-08-01 00:00:00Z])

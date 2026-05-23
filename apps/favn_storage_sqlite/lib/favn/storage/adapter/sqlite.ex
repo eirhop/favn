@@ -3293,12 +3293,16 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp run_events_query(run_id, opts) do
     after_sequence = Keyword.get(opts, :after_sequence)
     limit = Keyword.get(opts, :limit)
+    order = event_order(opts)
 
     cond do
       not is_nil(after_sequence) and (not is_integer(after_sequence) or after_sequence < 0) ->
         {:error, :invalid_opts}
 
       not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->
+        {:error, :invalid_opts}
+
+      is_nil(order) ->
         {:error, :invalid_opts}
 
       true ->
@@ -3308,7 +3312,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         {limit_sql, params} = maybe_limit_clause(params, limit)
 
         {:ok,
-         "SELECT global_sequence, event_blob FROM favn_run_events WHERE #{Enum.join(clauses, " AND ")} ORDER BY sequence ASC#{limit_sql}",
+         "SELECT global_sequence, event_blob FROM favn_run_events WHERE #{Enum.join(clauses, " AND ")} ORDER BY sequence #{order}#{limit_sql}",
          params}
     end
   end
@@ -3316,6 +3320,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp execution_group_events_query(group_id, opts) do
     after_global_sequence = Keyword.get(opts, :after_global_sequence)
     limit = Keyword.get(opts, :limit)
+    order = event_order(opts)
 
     cond do
       not is_nil(after_global_sequence) and
@@ -3323,6 +3328,9 @@ defmodule Favn.Storage.Adapter.SQLite do
         {:error, :invalid_opts}
 
       not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->
+        {:error, :invalid_opts}
+
+      is_nil(order) ->
         {:error, :invalid_opts}
 
       true ->
@@ -3346,8 +3354,16 @@ defmodule Favn.Storage.Adapter.SQLite do
          FROM favn_run_events AS e
          INNER JOIN favn_runs AS r ON r.run_id = e.run_id
          WHERE #{Enum.join(clauses, " AND ")}
-         ORDER BY e.global_sequence ASC, e.run_id ASC, e.sequence ASC#{limit_sql}
+         ORDER BY e.global_sequence #{order}, e.run_id ASC, e.sequence ASC#{limit_sql}
          """, params}
+    end
+  end
+
+  defp event_order(opts) do
+    case Keyword.get(opts, :order, :asc) do
+      :asc -> "ASC"
+      :desc -> "DESC"
+      _order -> nil
     end
   end
 

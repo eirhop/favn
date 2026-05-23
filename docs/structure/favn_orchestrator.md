@@ -18,8 +18,9 @@ Code:
 - Runner cancellation envelope and best-effort dispatch under
   `apps/favn_orchestrator/lib/favn_orchestrator/run_server/cancellation.ex`
 - Run read models in `apps/favn_orchestrator/lib/favn_orchestrator/run_read_model.ex`,
-  including execution-group summaries/details, asset attempts, windows, and
-  timeline entries for thin operator clients.
+  including bounded operator run detail, execution-group summaries/details,
+  asset attempts, windows, event cursors, and timeline entries for thin operator
+  clients.
 - Freshness execution/query helpers under `apps/favn_orchestrator/lib/favn_orchestrator/freshness/`
 - Reusable runtime-state repair passes under `apps/favn_orchestrator/lib/favn_orchestrator/repair/`
 - Refresh policy normalization and forced-run selection in
