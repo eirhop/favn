@@ -36,7 +36,7 @@ defmodule Mix.Tasks.Favn.Reload do
   @doc false
   def in_flight_runs_message(run_ids) do
     "reload blocked: in-flight runs exist #{inspect(run_ids)}\n" <>
-      "wait for the runs to finish, or cancel them from the Favn UI/API before retrying.\n" <>
+      "wait for the runs to finish, or cancel them with mix favn.runs cancel RUN_ID or from the Favn UI before retrying.\n" <>
       "if these runs are stale after a crashed local stack, run mix favn.stop then mix favn.dev; " <>
       "if they still remain stale, reset local state with mix favn.reset and restart with mix favn.dev."
   end

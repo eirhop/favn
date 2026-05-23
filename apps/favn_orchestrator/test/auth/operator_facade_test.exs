@@ -94,6 +94,8 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
                []
              )
 
+    assert {:error, :unauthenticated} = FavnOrchestrator.cancel_operator_run(%{}, "run_1")
+
     assert {:error, :forbidden} =
              FavnOrchestrator.submit_operator_run(
                viewer_context,
@@ -117,6 +119,9 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
                "pipeline:missing",
                []
              )
+
+    assert {:error, :forbidden} =
+             FavnOrchestrator.cancel_operator_run(viewer_context, "run_1")
 
     assert {:ok, operator} =
              Auth.create_actor("operator", "operator-password-long", "Operator", [:operator])

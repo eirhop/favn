@@ -4,6 +4,7 @@ defmodule FavnView.RunDetailLive do
   use FavnView, :live_view
 
   alias FavnView.AssetRoute
+  alias FavnView.Auth.Scope
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.RunDetailPage
   alias FavnView.LogsViewModel
@@ -124,6 +125,25 @@ defmodule FavnView.RunDetailLive do
      )}
   end
 
+  def handle_event("cancel_run", _params, socket) do
+    case socket.assigns.run do
+      %{cancellable?: true, cancel_run_id: run_id} when is_binary(run_id) ->
+        case FavnOrchestrator.cancel_operator_run(actor_context(socket), run_id) do
+          :ok ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Run cancellation requested")
+             |> reload_run_from_event(socket.assigns.run_event_sequence)}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, cancel_error_label(reason))}
+        end
+
+      _run ->
+        {:noreply, socket}
+    end
+  end
+
   def handle_event("timeline_filter", %{"timeline" => filters}, socket) do
     timeline_state =
       socket.assigns.timeline_state
@@ -201,7 +221,7 @@ defmodule FavnView.RunDetailLive do
 
   defp detail_from_execution_group(
          %{summary: summary, root_run: root_run} = detail,
-         _run_id,
+         run_id,
          existing_back_asset_href
        ) do
     root_detail = root_detail(summary.id)
@@ -210,6 +230,7 @@ defmodule FavnView.RunDetailLive do
     windows = Enum.map(Map.get(detail, :windows, []), &window_from_public/1)
     events = Map.get(detail, :events, root_detail.events)
     child_runs = child_runs_from_public(Map.get(detail, :child_runs, []), attempts, windows)
+    cancel_target = cancel_target(summary, root_run, child_runs, run_id)
     timeline = Enum.map(Map.get(detail, :timeline, []), &timeline_from_public(&1, attempts))
     matrix = matrix(attempts, windows)
     failures = Enum.filter(attempts, &(&1.status_tone == :error))
@@ -226,6 +247,9 @@ defmodule FavnView.RunDetailLive do
       subscribed_run_id: root_run.id,
       raw_status: status,
       active?: active_group?(summary),
+      cancellable?: !is_nil(cancel_target),
+      cancel_run_id: cancel_target && cancel_target.id,
+      cancel_label: cancel_target && cancel_target.label,
       short_id: short_id(summary.id),
       title: group_title(summary),
       subtitle: subtitle([target, window_range_label(windows)]),
@@ -303,6 +327,11 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp maybe_subscribe_run(socket), do: socket
+
+  defp actor_context(socket) do
+    %Scope{} = scope = socket.assigns.current_scope
+    %{actor: scope.actor, session: scope.session}
+  end
 
   defp replay_run_event_gap(socket) do
     after_sequence = socket.assigns.run_event_sequence || 0
@@ -711,7 +740,26 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
-  defp active_group?(summary), do: group_status(summary) in @active_statuses
+  defp active_group?(summary), do: Map.get(summary, :active?, false)
+
+  defp cancel_target(summary, root_run, child_runs, run_id) do
+    cond do
+      active_child = active_child_run(child_runs, run_id) ->
+        %{id: active_child.id, label: "Cancel window run"}
+
+      active_group?(summary) and Map.get(root_run, :submit_kind) != :backfill_pipeline ->
+        %{id: root_run.id, label: "Cancel run"}
+
+      true ->
+        nil
+    end
+  end
+
+  defp active_child_run(child_runs, run_id) do
+    Enum.find(child_runs, fn child ->
+      child.id == run_id and child.raw_status in @active_statuses
+    end)
+  end
 
   defp target_label([single]), do: LogsViewModel.ref_label(single)
 
@@ -749,6 +797,17 @@ defmodule FavnView.RunDetailLive do
       _other -> nil
     end
   end
+
+  defp cancel_error_label(:forbidden), do: "Operator role required to cancel runs."
+  defp cancel_error_label(:unauthenticated), do: "Sign in again to cancel runs."
+  defp cancel_error_label(:not_found), do: "Run was not found."
+  defp cancel_error_label(:run_already_terminal), do: "Run is already finished."
+
+  defp cancel_error_label(:backfill_parent_cancel_not_supported),
+    do:
+      "Backfill parent cancellation is not supported yet. Cancel active window runs individually."
+
+  defp cancel_error_label(reason), do: "Run cancellation failed: #{inspect(reason)}"
 
   defp duration_or_elapsed(%{duration_ms: duration_ms}) when is_integer(duration_ms),
     do: LogsViewModel.duration_ms_label(duration_ms)
