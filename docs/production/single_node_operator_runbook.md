@@ -179,13 +179,19 @@ set +a
 mix favn.bootstrap.single \
   --manifest "$artifact_dir/runner/manifest.json" \
   --orchestrator-url http://127.0.0.1:4101 \
-  --service-token "$FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN"
+  --service-token "$FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN" \
+  --operator-username "$FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" \
+  --operator-password "$FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD"
 ```
 
 `mix favn.bootstrap.single` verifies service-token auth, validates the manifest,
 logs in the bootstrap operator, registers the manifest, activates it by default
 with operator actor context, asks the orchestrator to register the persisted
 manifest with the local runner, and verifies active manifest selection.
+After sourcing `env/backend.env`, operator credentials may also be omitted from
+the command when `FAVN_BOOTSTRAP_OPERATOR_USERNAME` /
+`FAVN_BOOTSTRAP_OPERATOR_PASSWORD` or the `FAVN_ORCHESTRATOR_BOOTSTRAP_*`
+fallbacks are present.
 
 The bootstrap workflow uses orchestrator APIs. It does not write SQLite directly.
 

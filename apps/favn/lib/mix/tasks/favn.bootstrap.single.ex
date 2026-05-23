@@ -14,10 +14,16 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
   - `--orchestrator-url` or `FAVN_VIEW_ORCHESTRATOR_BASE_URL`
   - `--service-token` or `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN` /
     `FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN`
+
+  When activation is enabled, which is the default, operator credentials are
+  also required so activation has an operator actor context:
+
   - `--operator-username` or `FAVN_BOOTSTRAP_OPERATOR_USERNAME` /
     `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME`
   - `--operator-password` or `FAVN_BOOTSTRAP_OPERATOR_PASSWORD` /
     `FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD`
+
+  `--no-activate` skips operator login and activation.
   """
 
   alias Favn.Dev

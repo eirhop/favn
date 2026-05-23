@@ -309,8 +309,9 @@ At minimum, the production single-node runtime needs:
   tooling unless `--service-token` is passed, at least 32 characters, and present
   as the token value of one `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` entry.
 - `FAVN_BOOTSTRAP_OPERATOR_USERNAME` and `FAVN_BOOTSTRAP_OPERATOR_PASSWORD`, or
-  `--operator-username`/`--operator-password`, for first-run bootstrap operator
-  login before activation. When unset, bootstrap tooling falls back to
+  `--operator-username`/`--operator-password`, required for first-run bootstrap
+  operator login before activation unless `--no-activate` is used. When unset,
+  bootstrap tooling falls back to
   `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME` and
   `FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD`.
 - Durable first-admin/browser-login setup, durable sessions, actors,

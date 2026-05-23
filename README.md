@@ -899,9 +899,10 @@ available at `/api/web/v1/health/live` and `/api/web/v1/health/ready`.
 
 `mix favn.bootstrap.single` bootstraps the backend control-plane side of the
 single-node shape through orchestrator APIs. Required inputs can be passed as
-`--manifest`, `--orchestrator-url`, `--service-token`, `--operator-username`,
-and `--operator-password`, or by the supported environment defaults documented
-by the task. Bootstrap uses
+`--manifest`, `--orchestrator-url`, and `--service-token`, or by the supported
+environment defaults documented by the task. When activation is enabled, which
+is the default, `--operator-username` and `--operator-password` or their
+environment fallbacks are also required. Bootstrap uses
 `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN` or
 `FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN` for service auth, with
 `FAVN_ORCHESTRATOR_SERVICE_TOKEN` accepted only as a legacy fallback.
