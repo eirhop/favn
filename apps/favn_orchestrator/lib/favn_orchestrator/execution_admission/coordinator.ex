@@ -12,7 +12,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
   alias FavnOrchestrator.Storage
 
   @name __MODULE__
-  @candidate_limit 20
+  @candidate_limit 100
 
   @type state :: %{
           subscribers: %{optional(String.t()) => map()},
@@ -68,6 +68,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
 
     state =
       Enum.reduce(waiter_ids, state, fn waiter_id, acc ->
+        :ok = Storage.delete_execution_admission_waiter(waiter_id)
         %{acc | subscribers: Map.delete(acc.subscribers, waiter_id)}
       end)
 
@@ -107,7 +108,8 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
   end
 
   defp wake_scope(scope, state) do
-    with {:ok, waiters} <-
+    with {:ok, _expired} <- Storage.expire_execution_admission_waiters(DateTime.utc_now()),
+         {:ok, waiters} <-
            Storage.list_execution_admission_waiters_for_scope(scope, limit: @candidate_limit),
          %Waiter{} = waiter <- first_registered_waiter(waiters, state.subscribers) do
       subscriber = Map.fetch!(state.subscribers, waiter.waiter_id)

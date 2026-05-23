@@ -42,6 +42,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.Storage
 
   @stage_admission_timeout_buffer_ms 2_000
+  @stage_admission_backstop_retry_ms 1_000
   @deferred_stage_retry_ms 100
   @await_task_timeout_buffer_ms 2_000
 
@@ -203,6 +204,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {%{payload: _timer}, state} when map_size(state.awaits) > 0 ->
         {:cont, %{state | status: :awaiting}}
+
+      {%{payload: %{kind: :admission_retry}}, state} ->
+        refill_or_schedule_admission(state)
 
       {%{payload: %{kind: :retry}}, state} ->
         after_pipeline_progress(state)
@@ -896,17 +900,19 @@ defmodule FavnOrchestrator.RunServer.Execution do
       deadline =
         state.stage_admission_deadline_ms || stage_admission_deadline(state.run.timeout_ms)
 
-      wait_ms = max(deadline - now, 0)
+      remaining_ms = max(deadline - now, 0)
+      wait_ms = min(@stage_admission_backstop_retry_ms, remaining_ms)
 
       if wait_ms == 0 do
         timeout_admission_wait(state)
       else
         timer_token = make_ref()
         timer_ref = Process.send_after(self(), {:stage_admission_timeout, timer_token}, wait_ms)
+        kind = if wait_ms == remaining_ms, do: :deadline, else: :admission_retry
 
         {:cont,
          RunExecutionState.put_admission_timer(state, timer_token, timer_ref, %{
-           kind: :deadline,
+           kind: kind,
            stage_index: state.stage_index
          })}
       end
@@ -944,7 +950,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp clear_admission_waiters(%RunExecutionState{} = state) do
     {waiters, state} = RunExecutionState.clear_admission_waiters(state)
-    Enum.each(waiters, &ExecutionAdmission.cancel_wait/1)
+
+    Enum.each(waiters, fn waiter ->
+      :ok = ExecutionAdmission.cancel_wait(waiter)
+    end)
+
     RunExecutionState.cancel_admission_timers(state)
   end
 

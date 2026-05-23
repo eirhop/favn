@@ -43,7 +43,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
         with {:ok, waiter} <- Waiter.new(run, entry, requested_scopes, queue_reason, scope, opts),
              {:ok, waiter} <- Storage.upsert_execution_admission_waiter(waiter) do
           :ok = Coordinator.register(waiter, self())
-          {:waiting, waiter}
+          acquire_after_waiter_registration(run, entry, waiter)
         end
 
       {:error, reason} ->
@@ -101,27 +101,23 @@ defmodule FavnOrchestrator.ExecutionAdmission do
     end
   end
 
-  @spec cancel_wait(String.t() | Waiter.t()) :: :ok
+  @spec cancel_wait(String.t() | Waiter.t()) :: :ok | {:error, term()}
   def cancel_wait(%Waiter{waiter_id: waiter_id}), do: cancel_wait(waiter_id)
 
   def cancel_wait(waiter_id) when is_binary(waiter_id) do
     :ok = Coordinator.cancel(waiter_id)
-
-    case Storage.delete_execution_admission_waiter(waiter_id) do
-      :ok -> :ok
-      {:error, _reason} -> :ok
-    end
+    Storage.delete_execution_admission_waiter(waiter_id)
   end
 
-  @spec cancel_run_waits(String.t()) :: :ok
+  @spec cancel_run_waits(String.t()) :: :ok | {:error, term()}
   def cancel_run_waits(run_id) when is_binary(run_id) do
     case Storage.delete_execution_admission_waiters_for_run(run_id) do
       {:ok, _count} -> :ok
-      {:error, _reason} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  @spec release_run(String.t()) :: :ok
+  @spec release_run(String.t()) :: :ok | {:error, term()}
   def release_run(run_id) when is_binary(run_id) do
     case Storage.list_execution_leases() do
       {:ok, leases} ->
@@ -135,12 +131,31 @@ defmodule FavnOrchestrator.ExecutionAdmission do
           end
         end)
 
-        :ok = cancel_run_waits(run_id)
-        :ok
+        cancel_run_waits(run_id)
 
       {:error, _reason} ->
-        :ok = cancel_run_waits(run_id)
-        :ok
+        cancel_run_waits(run_id)
+    end
+  end
+
+  defp acquire_after_waiter_registration(%RunState{} = run, entry, %Waiter{} = waiter) do
+    case acquire_result(run, entry) do
+      {:ok, lease} ->
+        case cancel_wait(waiter) do
+          :ok ->
+            {:ok, lease}
+
+          {:error, reason} ->
+            :ok = release(lease)
+            {:error, {:execution_admission_waiter_cleanup_failed, reason}}
+        end
+
+      {:queued, _queue_reason, _scope, _requested_scopes} ->
+        {:waiting, waiter}
+
+      {:error, reason} ->
+        _cleanup_result = cancel_wait(waiter)
+        {:error, reason}
     end
   end
 
