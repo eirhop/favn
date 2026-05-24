@@ -1935,12 +1935,14 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp execution_group_ids_for_rebuild(repo) do
-    sql =
-      "SELECT DISTINCT root_execution_group_id FROM favn_runs WHERE root_execution_group_id IS NOT NULL ORDER BY root_execution_group_id"
+    with :ok <- repair_missing_run_query_metadata(repo) do
+      sql =
+        "SELECT DISTINCT root_execution_group_id FROM favn_runs WHERE root_execution_group_id IS NOT NULL ORDER BY root_execution_group_id"
 
-    case SQL.query(repo, sql, []) do
-      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, fn [group_id] -> group_id end)}
-      {:error, reason} -> {:error, reason}
+      case SQL.query(repo, sql, []) do
+        {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, fn [group_id] -> group_id end)}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
