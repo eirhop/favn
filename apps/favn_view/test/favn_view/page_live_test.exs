@@ -90,6 +90,7 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="execution-groups-table"]))
     assert has_element?(view, ~s([data-testid="execution-group-card-list"]))
     assert has_element?(view, ~s([data-testid="runs-summary-band"]))
+    assert html =~ ~s(phx-debounce="250")
 
     assert has_element?(view, ~s(a[href="/runs/run_customer_orders_daily"]), "run_custo..._daily")
     assert html =~ "customer_orders_daily"
@@ -234,6 +235,43 @@ defmodule FavnView.PageLiveTest do
              ~s([data-testid="runs-filtered-empty-state"]),
              "No runs found"
            )
+  end
+
+  test "runs list does not poll when run event subscription succeeds", %{conn: conn} do
+    counter = start_counter!()
+
+    put_test_env(:runs_subscribe_fun, fn -> :ok end)
+
+    put_test_env(:page_execution_groups_fun, fn opts ->
+      bump_counter(counter)
+      FavnOrchestrator.page_execution_groups(opts)
+    end)
+
+    {:ok, _view, _html} = live(conn, ~p"/runs")
+    Process.sleep(150)
+    baseline = counter_value(counter)
+
+    Process.sleep(1_700)
+
+    assert counter_value(counter) == baseline
+  end
+
+  test "runs list uses fallback polling when run event subscription fails", %{conn: conn} do
+    counter = start_counter!()
+
+    put_test_env(:runs_subscribe_fun, fn -> {:error, :unavailable} end)
+
+    put_test_env(:page_execution_groups_fun, fn opts ->
+      bump_counter(counter)
+      FavnOrchestrator.page_execution_groups(opts)
+    end)
+
+    {:ok, _view, _html} = live(conn, ~p"/runs")
+    baseline = counter_value(counter)
+
+    Process.sleep(1_700)
+
+    assert counter_value(counter) > baseline
   end
 
   test "renders the pipelines list", %{conn: conn} do
@@ -1016,6 +1054,49 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="run-overview-panel"][data-run-active="false"]))
   end
 
+  test "run detail does not poll when run event subscription succeeds", %{conn: conn} do
+    counter = start_counter!()
+
+    put_test_env(:run_subscribe_fun, fn _run_id -> :ok end)
+    put_test_env(:run_stream_events_fun, fn _run_id, _opts -> {:ok, []} end)
+
+    put_test_env(:operator_run_detail_fun, fn run_id, opts ->
+      bump_counter(counter)
+      operator_run_detail(run_id, opts)
+    end)
+
+    {:ok, _view, html} = live(conn, ~p"/runs/run_empty_running?view=timeline")
+    assert html =~ ~s(phx-debounce="250")
+
+    baseline = counter_value(counter)
+
+    Process.sleep(1_700)
+
+    assert counter_value(counter) == baseline
+  end
+
+  test "run detail coalesces live run event bursts", %{conn: conn} do
+    counter = start_counter!()
+
+    put_test_env(:run_subscribe_fun, fn _run_id -> :ok end)
+    put_test_env(:run_stream_events_fun, fn _run_id, _opts -> {:ok, []} end)
+
+    put_test_env(:operator_run_detail_fun, fn run_id, opts ->
+      bump_counter(counter)
+      operator_run_detail(run_id, opts)
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+    baseline = counter_value(counter)
+
+    send(view.pid, {:favn_run_event, %{run_id: "run_empty_running", sequence: 100}})
+    send(view.pid, {:favn_run_event, %{run_id: "run_empty_running", sequence: 101}})
+
+    Process.sleep(150)
+
+    assert counter_value(counter) == baseline + 1
+  end
+
   test "run detail reloads from live run events", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
 
@@ -1040,6 +1121,7 @@ defmodule FavnView.PageLiveTest do
 
     assert :ok = Storage.persist_run_transition(terminal_run, event)
     send(view.pid, {:favn_run_event, RunEvent.from_map(event)})
+    Process.sleep(150)
 
     assert render(view) =~ "Succeeded"
     assert has_element?(view, ~s([data-testid="run-overview-panel"][data-run-active="false"]))
@@ -2412,6 +2494,9 @@ defmodule FavnView.PageLiveTest do
 
     html = render(view)
     assert html =~ "live append"
+    refute html =~ ~s(id="log-copy-text")
+    assert html =~ "data-log-copy-row"
+    assert html =~ "data-log-copy-text"
     assert Regex.scan(~r/data-testid="log-row"/, html) |> length() == 1
   end
 
@@ -3263,6 +3348,29 @@ defmodule FavnView.PageLiveTest do
     view
     |> element(~s([data-testid="run-selected-window"]), "Run asset")
     |> render_click()
+  end
+
+  defp start_counter! do
+    start_supervised!({Agent, fn -> 0 end})
+  end
+
+  defp bump_counter(counter), do: Agent.update(counter, &(&1 + 1))
+  defp counter_value(counter), do: Agent.get(counter, & &1)
+
+  defp put_test_env(key, value) do
+    original = Application.get_env(:favn_view, key, :__missing__)
+    Application.put_env(:favn_view, key, value)
+
+    on_exit(fn ->
+      case original do
+        :__missing__ -> Application.delete_env(:favn_view, key)
+        value -> Application.put_env(:favn_view, key, value)
+      end
+    end)
+  end
+
+  defp operator_run_detail(run_id, opts) do
+    apply(FavnOrchestrator, :get_operator_run_detail, [run_id, opts])
   end
 
   defp assert_submitted_refresh(run_path, dependencies, refresh_policy) do

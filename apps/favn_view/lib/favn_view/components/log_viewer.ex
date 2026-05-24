@@ -31,7 +31,6 @@ defmodule FavnView.Components.LogViewer do
       assigns
       |> assign(:levels, LogsViewModel.levels())
       |> assign(:sources, LogsViewModel.sources())
-      |> assign(:copy_text, LogsViewModel.plain_text(assigns.visible_logs))
 
     ~H"""
     <section
@@ -97,11 +96,8 @@ defmodule FavnView.Components.LogViewer do
           id="log-terminal"
           phx-hook="FavnLogViewer"
           data-live-tail={to_string(@live_tail?)}
-          data-copy-source="log-copy-text"
           class="relative flex min-h-0 flex-1 flex-col border-t border-base-content/10 bg-base-100/55 p-4 sm:p-5"
         >
-          <textarea id="log-copy-text" class="hidden" readonly>{@copy_text}</textarea>
-
           <div
             :if={@status == :loading}
             class="flex min-h-[16rem] flex-1 items-center justify-center rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm text-base-content/55"
@@ -137,7 +133,7 @@ defmodule FavnView.Components.LogViewer do
             ]}
             data-testid="log-terminal-window"
           >
-            <div class="min-w-max space-y-5">
+            <div class="min-w-max space-y-5" data-log-copy-rows>
               <.log_row :for={log <- @visible_logs} log={log} wrap?={@wrap?} />
             </div>
           </div>
@@ -170,6 +166,7 @@ defmodule FavnView.Components.LogViewer do
             value={@search_query}
             placeholder="Search logs..."
             class="grow"
+            phx-debounce="250"
             data-testid="log-search-input"
           />
         </label>
@@ -319,6 +316,8 @@ defmodule FavnView.Components.LogViewer do
     <article
       class="grid gap-2 text-slate-100/90 sm:grid-cols-[9.5rem_4.5rem_13rem_minmax(0,1fr)]"
       data-testid="log-row"
+      data-log-copy-row
+      data-log-copy-text={log_copy_text(@log)}
       title={sequence_title(@log)}
     >
       <time class="text-slate-400">{@log.timestamp}</time>

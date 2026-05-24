@@ -7,9 +7,11 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.Auth.Scope
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.RunDetailPage
+  alias FavnView.LiveRefresh
   alias FavnView.LogsViewModel
 
   @refresh_interval_ms 1_500
+  @coalesce_refresh_ms 100
   @active_statuses [:pending, :running]
   @valid_modes ~w(overview timeline failures windows events)
   @timeline_zoom_levels ~w(5m 15m 30m 1h 6h full)
@@ -23,6 +25,7 @@ defmodule FavnView.RunDetailLive do
         run_id: run_id,
         run: run,
         run_event_sequence: latest_event_sequence(run),
+        pending_run_event_sequence: nil,
         run_events_live?: false,
         active_mode: :overview,
         timeline_state: default_timeline_state(run),
@@ -30,21 +33,40 @@ defmodule FavnView.RunDetailLive do
         selected_attempt_id: nil,
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
+      |> LiveRefresh.init([:refresh_timer_ref, :fallback_poll_ref])
       |> maybe_subscribe_run()
-      |> maybe_schedule_refresh()
+      |> maybe_schedule_fallback_poll()
 
     {:ok, socket}
   end
 
   @impl true
-  def handle_info(:refresh_run, socket) do
-    run = load_run(socket.assigns.run_id, socket.assigns.run[:back_asset_href])
+  def handle_info({:refresh_run, token}, socket) do
+    case LiveRefresh.take(socket, :refresh_timer_ref, token) do
+      {:ok, socket} ->
+        {:noreply, refresh_run(socket)}
 
-    {:noreply,
-     socket
-     |> assign(:run, run)
-     |> assign(:run_event_sequence, latest_event_sequence(run, socket.assigns.run_event_sequence))
-     |> maybe_schedule_refresh()}
+      {:stale, socket} ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info({:poll_run, token}, socket) do
+    case LiveRefresh.take(socket, :fallback_poll_ref, token) do
+      {:ok, socket} ->
+        {:noreply, socket |> refresh_run() |> maybe_schedule_fallback_poll()}
+
+      {:stale, socket} ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info(:refresh_run, socket) do
+    {:noreply, refresh_run(socket)}
+  end
+
+  def handle_info(:poll_run, socket) do
+    {:noreply, socket |> refresh_run() |> maybe_schedule_fallback_poll()}
   end
 
   def handle_info(
@@ -53,7 +75,12 @@ defmodule FavnView.RunDetailLive do
       ) do
     socket =
       if fresh_run_event?(event, socket.assigns.run_event_sequence) do
-        reload_run_from_event(socket, Map.get(event, :sequence))
+        socket
+        |> assign(
+          :pending_run_event_sequence,
+          latest_sequence([event], socket.assigns.pending_run_event_sequence)
+        )
+        |> schedule_coalesced_refresh()
       else
         socket
       end
@@ -62,6 +89,19 @@ defmodule FavnView.RunDetailLive do
   end
 
   def handle_info({:favn_run_event, _event}, socket), do: {:noreply, socket}
+
+  defp refresh_run(socket) do
+    event_sequence =
+      socket.assigns.pending_run_event_sequence || socket.assigns.run_event_sequence
+
+    run = load_run(socket.assigns.run_id, socket.assigns.run[:back_asset_href])
+
+    socket
+    |> assign(:run, run)
+    |> assign(:pending_run_event_sequence, nil)
+    |> assign(:run_event_sequence, latest_event_sequence(run, event_sequence))
+    |> maybe_schedule_fallback_poll()
+  end
 
   @impl true
   def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
@@ -206,14 +246,14 @@ defmodule FavnView.RunDetailLive do
   @impl true
   def terminate(_reason, socket) do
     if socket.assigns[:run_events_live?] do
-      FavnOrchestrator.unsubscribe_run(socket.assigns.run.subscribed_run_id)
+      unsubscribe_run(socket.assigns.run.subscribed_run_id)
     end
 
     :ok
   end
 
   defp load_run(run_id, existing_back_asset_href \\ nil) do
-    case FavnOrchestrator.get_operator_run_detail(run_id, include: [:events], event_limit: 200) do
+    case get_operator_run_detail(run_id, include: [:events], event_limit: 200) do
       {:ok, detail} -> detail_from_execution_group(detail, run_id, existing_back_asset_href)
       {:error, reason} -> %{id: run_id, found?: false, error: error_label(reason)}
     end
@@ -299,16 +339,29 @@ defmodule FavnView.RunDetailLive do
     }
   end
 
-  defp maybe_schedule_refresh(%{assigns: %{run: %{active?: true}}} = socket) do
-    if connected?(socket), do: Process.send_after(self(), :refresh_run, @refresh_interval_ms)
-    socket
+  defp schedule_coalesced_refresh(socket) do
+    if connected?(socket) do
+      LiveRefresh.schedule_once(socket, :refresh_timer_ref, :refresh_run, @coalesce_refresh_ms)
+    else
+      socket
+    end
   end
 
-  defp maybe_schedule_refresh(socket), do: socket
+  defp maybe_schedule_fallback_poll(%{assigns: %{run_events_live?: true}} = socket), do: socket
+
+  defp maybe_schedule_fallback_poll(%{assigns: %{run: %{active?: true}}} = socket) do
+    if connected?(socket) do
+      LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_run, @refresh_interval_ms)
+    else
+      socket
+    end
+  end
+
+  defp maybe_schedule_fallback_poll(socket), do: socket
 
   defp maybe_subscribe_run(%{assigns: %{run: %{subscribed_run_id: run_id}}} = socket) do
     if connected?(socket) do
-      case FavnOrchestrator.subscribe_run(run_id) do
+      case subscribe_run(run_id) do
         :ok -> socket |> assign(:run_events_live?, true) |> replay_run_event_gap()
         {:error, _reason} -> socket
       end
@@ -327,23 +380,44 @@ defmodule FavnView.RunDetailLive do
   defp replay_run_event_gap(socket) do
     after_sequence = socket.assigns.run_event_sequence || 0
 
-    case FavnOrchestrator.list_run_stream_events(socket.assigns.run.subscribed_run_id,
+    case list_run_stream_events(socket.assigns.run.subscribed_run_id,
            after_sequence: after_sequence,
            limit: 200
          ) do
       {:ok, []} -> socket
       {:ok, events} -> reload_run_from_event(socket, latest_sequence(events, after_sequence))
-      {:error, _reason} -> socket
+      {:error, _reason} -> refresh_run(socket)
     end
   end
 
   defp reload_run_from_event(socket, event_sequence) do
-    run = load_run(socket.assigns.run_id, socket.assigns.run[:back_asset_href])
-
     socket
-    |> assign(:run, run)
-    |> assign(:run_event_sequence, latest_event_sequence(run, event_sequence))
-    |> maybe_schedule_refresh()
+    |> assign(:pending_run_event_sequence, event_sequence)
+    |> refresh_run()
+  end
+
+  defp get_operator_run_detail(run_id, opts) do
+    Application.get_env(
+      :favn_view,
+      :operator_run_detail_fun,
+      &FavnOrchestrator.get_operator_run_detail/2
+    ).(run_id, opts)
+  end
+
+  defp subscribe_run(run_id) do
+    Application.get_env(:favn_view, :run_subscribe_fun, &FavnOrchestrator.subscribe_run/1).(
+      run_id
+    )
+  end
+
+  defp unsubscribe_run(run_id), do: FavnOrchestrator.unsubscribe_run(run_id)
+
+  defp list_run_stream_events(run_id, opts) do
+    Application.get_env(
+      :favn_view,
+      :run_stream_events_fun,
+      &FavnOrchestrator.list_run_stream_events/2
+    ).(run_id, opts)
   end
 
   defp patch_run_state(socket, updates) do

@@ -49,10 +49,9 @@ const Hooks = {
         const button = event.target.closest("[data-copy-logs]")
         if (!button) return
 
-        const source = document.getElementById(this.el.dataset.copySource)
-        if (!source) return
-
-        navigator.clipboard?.writeText(source.value)
+        const rows = Array.from(this.el.querySelectorAll("[data-log-copy-row]"))
+        const text = rows.map(row => row.dataset.logCopyText || "").filter(Boolean).join("\n\n")
+        navigator.clipboard?.writeText(text)
       })
     },
     updated() {

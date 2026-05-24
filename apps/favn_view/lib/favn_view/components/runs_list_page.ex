@@ -174,6 +174,7 @@ defmodule FavnView.Components.RunsListPage do
             value={@filters["search"]}
             placeholder="Search runs..."
             class="grow"
+            phx-debounce="250"
             data-testid="execution-group-search"
           />
         </label>

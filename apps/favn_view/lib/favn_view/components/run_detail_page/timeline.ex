@@ -111,6 +111,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
           value={@timeline_state.search}
           placeholder="Search assets..."
           class="grow"
+          phx-debounce="250"
         />
       </label>
       <select
