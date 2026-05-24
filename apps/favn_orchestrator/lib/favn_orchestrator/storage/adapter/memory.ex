@@ -260,6 +260,12 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def rebuild_execution_group_summaries(opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, :rebuild_execution_group_summaries)
+  end
+
+  @impl true
   def append_run_event(run_id, event, opts \\ [])
       when is_binary(run_id) and is_map(event) and is_list(opts) do
     with {:ok, normalized} <- RunEventCodec.normalize(run_id, event) do
@@ -985,6 +991,18 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       |> Page.from_fetched(page_opts)
 
     {:reply, {:ok, page}, state}
+  end
+
+  def handle_call(:rebuild_execution_group_summaries, _from, state) do
+    group_ids =
+      state.runs
+      |> Map.values()
+      |> Enum.map(&RunQuery.root_execution_group_id/1)
+      |> Enum.uniq()
+
+    next_state = refresh_execution_group_summaries(state, group_ids)
+
+    {:reply, {:ok, length(group_ids)}, next_state}
   end
 
   def handle_call({:append_run_event, run_id, event}, _from, state) do

@@ -346,6 +346,17 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   @impl true
+  def rebuild_execution_group_summaries(opts) when is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, group_ids} <- execution_group_ids_for_rebuild(repo) do
+      case refresh_execution_group_summaries(repo, group_ids) do
+        :ok -> {:ok, length(group_ids)}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
   def append_run_event(run_id, event, opts)
       when is_binary(run_id) and is_map(event) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
@@ -1923,6 +1934,16 @@ defmodule Favn.Storage.Adapter.Postgres do
     end)
   end
 
+  defp execution_group_ids_for_rebuild(repo) do
+    sql =
+      "SELECT DISTINCT root_execution_group_id FROM favn_runs WHERE root_execution_group_id IS NOT NULL ORDER BY root_execution_group_id"
+
+    case SQL.query(repo, sql, []) do
+      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, fn [group_id] -> group_id end)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp refresh_execution_group_summary(_repo, nil), do: :ok
 
   defp refresh_execution_group_summary(repo, group_id) when is_binary(group_id) do
@@ -2748,8 +2769,8 @@ defmodule Favn.Storage.Adapter.Postgres do
 
         {clauses ++
            [
-             "(group_id LIKE #{placeholder} OR target_refs_text LIKE #{placeholder} OR trigger_type LIKE #{placeholder})"
-           ], params ++ ["%#{search}%"]}
+             "(LOWER(group_id) LIKE #{placeholder} OR LOWER(target_refs_text) LIKE #{placeholder} OR LOWER(trigger_type) LIKE #{placeholder})"
+           ], params ++ ["%#{String.downcase(search)}%"]}
 
       {:window, :has_window}, {clauses, params} ->
         {clauses ++ ["has_window = TRUE"], params}

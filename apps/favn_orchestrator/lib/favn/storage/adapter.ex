@@ -87,6 +87,8 @@ defmodule Favn.Storage.Adapter do
               {:ok, Page.t(String.t())} | {:error, error()}
   @callback list_execution_group_summaries(filter_opts(), adapter_opts()) ::
               {:ok, Page.t(map())} | {:error, error()}
+  @callback rebuild_execution_group_summaries(adapter_opts()) ::
+              {:ok, non_neg_integer()} | {:error, error()}
   @callback persist_run_transition(RunState.t(), map(), adapter_opts()) ::
               :ok | :idempotent | {:error, error()}
 
@@ -264,6 +266,7 @@ defmodule Favn.Storage.Adapter do
                       list_execution_group_run_ids: 2,
                       list_execution_groups: 2,
                       list_execution_group_summaries: 2,
+                      rebuild_execution_group_summaries: 1,
                       list_run_events: 3,
                       list_execution_group_events: 3,
                       put_backfill_windows: 2,

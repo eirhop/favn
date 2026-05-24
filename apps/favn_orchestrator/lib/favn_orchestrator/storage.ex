@@ -161,6 +161,17 @@ defmodule FavnOrchestrator.Storage do
     end)
   end
 
+  @spec rebuild_execution_group_summaries() :: {:ok, non_neg_integer()} | {:error, term()}
+  def rebuild_execution_group_summaries do
+    adapter_call(fn adapter, opts ->
+      if function_exported?(adapter, :rebuild_execution_group_summaries, 1) do
+        adapter.rebuild_execution_group_summaries(opts)
+      else
+        {:error, :execution_group_summary_reads_not_supported}
+      end
+    end)
+  end
+
   @spec append_run_event(String.t(), map()) :: :ok | {:error, term()}
   def append_run_event(run_id, event) when is_binary(run_id) and is_map(event) do
     adapter_call(fn adapter, opts -> adapter.append_run_event(run_id, event, opts) end)

@@ -105,6 +105,23 @@ defmodule Favn.SQLiteStorageTest do
     assert Enum.map(limited, & &1.id) == ["aaa-second-id"]
   end
 
+  test "rebuilds execution group summaries when upgraded databases have runs but no summaries" do
+    run = sample_run("sqlite-summary-upgrade-run", :running)
+
+    assert :ok = Storage.put_run(run)
+    assert %{} = SQL.query!(Repo, "DELETE FROM favn_execution_group_summaries", [])
+
+    assert {:ok, empty_page} = OrchestratorStorage.list_execution_group_summaries(limit: 10)
+    assert empty_page.items == []
+
+    assert {:ok, page} =
+             FavnOrchestrator.page_execution_groups(search: "SUMMARY-UPGRADE", limit: 10)
+
+    assert Enum.any?(page.items, &(&1.id == run.id))
+    assert {:ok, rebuilt_page} = OrchestratorStorage.list_execution_group_summaries(limit: 10)
+    assert Enum.any?(rebuilt_page.items, &(&1.id == run.id))
+  end
+
   test "returns :not_found for missing run id" do
     assert {:error, :not_found} = Storage.get_run("missing-sqlite-run")
   end

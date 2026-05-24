@@ -302,6 +302,9 @@ defmodule FavnOrchestrator.RunReadModel do
     normalized_filters = normalize_execution_group_filters(filters)
 
     case Storage.list_execution_group_summaries(normalized_filters) do
+      {:ok, %Page{items: []} = page} ->
+        maybe_rebuild_empty_execution_group_summary_page(page, normalized_filters, filters)
+
       {:ok, %Page{} = page} ->
         {:ok, page}
 
@@ -311,6 +314,40 @@ defmodule FavnOrchestrator.RunReadModel do
       {:error, _reason} = error ->
         error
     end
+  end
+
+  defp maybe_rebuild_empty_execution_group_summary_page(
+         %Page{offset: 0, items: []} = page,
+         normalized_filters,
+         original_filters
+       ) do
+    case Storage.rebuild_execution_group_summaries() do
+      {:ok, count} when count > 0 ->
+        case Storage.list_execution_group_summaries(normalized_filters) do
+          {:ok, %Page{items: [_ | _]} = rebuilt_page} ->
+            {:ok, rebuilt_page}
+
+          {:ok, %Page{items: []}} ->
+            page_execution_groups_from_group_ids(normalized_filters, original_filters)
+
+          {:error, _reason} ->
+            page_execution_groups_from_group_ids(normalized_filters, original_filters)
+        end
+
+      {:ok, 0} ->
+        {:ok, page}
+
+      {:error, _reason} ->
+        page_execution_groups_from_group_ids(normalized_filters, original_filters)
+    end
+  end
+
+  defp maybe_rebuild_empty_execution_group_summary_page(
+         page,
+         _normalized_filters,
+         _original_filters
+       ) do
+    {:ok, page}
   end
 
   defp page_execution_groups_from_group_ids(normalized_filters, original_filters) do
