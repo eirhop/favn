@@ -117,7 +117,7 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
 
     for status <- [:ok, :partial, :error, :cancelled, :timed_out] do
       run = run(id: "run-terminal-#{status}", max_concurrency: 1)
-      terminal = RunState.transition(run, status: status)
+      terminal = terminal_run(run, status)
       run_id = terminal.id
 
       assert {:error, {:run_not_admissible, ^run_id, ^status}} =
@@ -134,6 +134,14 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
     end
   end
 
+  test "intermediate step outcome statuses remain admissible before terminalization" do
+    run = run(max_concurrency: 1)
+    intermediate = RunState.transition(run, status: :ok)
+
+    assert {:ok, lease} = ExecutionAdmission.acquire(intermediate, %{asset_step_id: "step-1"})
+    assert lease.run_id == intermediate.id
+  end
+
   test "run lease cleanup is idempotent and does not reopen terminal admission" do
     run = run(max_concurrency: 1)
 
@@ -142,7 +150,7 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
     assert :ok = ExecutionAdmission.release_run(run.id)
     assert {:ok, []} = Storage.list_execution_leases()
 
-    terminal = RunState.transition(run, status: :cancelled)
+    terminal = terminal_run(run, :cancelled)
     run_id = terminal.id
 
     assert {:error, {:run_not_admissible, ^run_id, :cancelled}} =
@@ -258,6 +266,19 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
   end
 
   defp run_scope(%RunState{} = run), do: %{kind: :run, key: run.id, limit: 1}
+
+  defp terminal_run(%RunState{} = run, status) do
+    RunState.transition(run,
+      status: status,
+      result: %{status: status, asset_results: [], metadata: run.metadata},
+      metadata: Map.put(run.metadata, :terminal_event_type, terminal_event_type(status))
+    )
+  end
+
+  defp terminal_event_type(:ok), do: :run_finished
+  defp terminal_event_type(:cancelled), do: :run_cancelled
+  defp terminal_event_type(:timed_out), do: :run_timed_out
+  defp terminal_event_type(_status), do: :run_failed
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)

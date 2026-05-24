@@ -14,7 +14,6 @@ defmodule FavnOrchestrator.ExecutionAdmission do
 
   @default_lease_ttl_ms 300_000
   @lease_timeout_buffer_ms 60_000
-  @terminal_statuses [:ok, :partial, :error, :cancelled, :timed_out]
 
   @type lease :: map()
   @type queue_reason :: :pipeline_concurrency | :execution_pool | :global_concurrency
@@ -86,11 +85,13 @@ defmodule FavnOrchestrator.ExecutionAdmission do
     end
   end
 
-  defp validate_run_admissible(%RunState{id: run_id, status: status})
-       when status in @terminal_statuses,
-       do: {:error, {:run_not_admissible, run_id, status}}
-
-  defp validate_run_admissible(%RunState{}), do: :ok
+  defp validate_run_admissible(%RunState{id: run_id, status: status} = run) do
+    if RunState.terminal?(run) do
+      {:error, {:run_not_admissible, run_id, status}}
+    else
+      :ok
+    end
+  end
 
   @spec release(lease() | nil) :: :ok | {:error, term()}
   def release(nil), do: :ok

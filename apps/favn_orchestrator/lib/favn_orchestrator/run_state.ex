@@ -4,6 +4,8 @@ defmodule FavnOrchestrator.RunState do
   """
 
   @default_timeout_ms 30 * 60 * 1000
+  @terminal_statuses [:ok, :partial, :error, :cancelled, :timed_out]
+  @terminal_event_types [:run_finished, :run_failed, :run_cancelled, :run_timed_out]
 
   @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
 
@@ -98,6 +100,35 @@ defmodule FavnOrchestrator.RunState do
   @doc false
   @spec default_timeout_ms() :: pos_integer()
   def default_timeout_ms, do: @default_timeout_ms
+
+  @doc "Returns true when a persisted run snapshot has been terminalized."
+  @spec terminal?(t()) :: boolean()
+  def terminal?(%__MODULE__{status: status, metadata: metadata, result: result}) do
+    terminal_metadata?(metadata) or terminal_result?(status, result)
+  end
+
+  @doc "Returns true when the status represents terminal persisted run state."
+  @spec terminal_status?(status() | term()) :: boolean()
+  def terminal_status?(status), do: status in @terminal_statuses
+
+  defp terminal_metadata?(metadata) when is_map(metadata) do
+    terminal_event_type =
+      Map.get(metadata, :terminal_event_type) || Map.get(metadata, "terminal_event_type")
+
+    cancelled? = Map.get(metadata, :cancelled) || Map.get(metadata, "cancelled")
+
+    terminal_event_type in @terminal_event_types or cancelled? == true
+  end
+
+  defp terminal_metadata?(_metadata), do: false
+
+  defp terminal_result?(status, result) when is_map(result) do
+    result_status = Map.get(result, :status) || Map.get(result, "status")
+
+    terminal_status?(status) and result_status == status
+  end
+
+  defp terminal_result?(_status, _result), do: false
 
   @spec transition(t(), keyword()) :: t()
   def transition(%__MODULE__{} = run, attrs) when is_list(attrs) do

@@ -26,23 +26,28 @@ defmodule FavnOrchestrator.RunServer do
 
   @impl true
   def handle_continue(:execute, %{run_state: run_state, version: version} = state) do
-    running = RunState.transition(run_state, status: :running)
+    if RunState.terminal?(run_state) do
+      :ok = ExecutionAdmission.release_run(run_state.id)
+      {:stop, :normal, state |> Map.put(:run_state, run_state) |> Map.put(:execution_state, nil)}
+    else
+      running = RunState.transition(run_state, status: :running)
 
-    case Persistence.persist_run_step(running, :run_started, %{status: running.status}) do
-      :ok ->
-        case Execution.start_state(running, version) do
-          {:ok, execution_state} ->
-            state
-            |> Map.put(:run_state, running)
-            |> Map.put(:execution_state, execution_state)
-            |> continue_execution()
+      case Persistence.persist_run_step(running, :run_started, %{status: running.status}) do
+        :ok ->
+          case Execution.start_state(running, version) do
+            {:ok, execution_state} ->
+              state
+              |> Map.put(:run_state, running)
+              |> Map.put(:execution_state, execution_state)
+              |> continue_execution()
 
-          {:terminal, terminal} ->
-            finalize_terminal(state, terminal)
-        end
+            {:terminal, terminal} ->
+              finalize_terminal(state, terminal)
+          end
 
-      {:error, :external_cancel} ->
-        {:stop, :normal, %{state | run_state: Snapshots.cancelled_snapshot(running)}}
+        {:error, :external_cancel} ->
+          {:stop, :normal, %{state | run_state: Snapshots.cancelled_snapshot(running)}}
+      end
     end
   end
 
