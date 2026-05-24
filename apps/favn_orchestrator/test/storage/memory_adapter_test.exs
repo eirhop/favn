@@ -93,6 +93,79 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
              Storage.put_scheduler_state(key, %{last_due_at: "bad", version: 2})
   end
 
+  test "stores execution group summaries as a paged read model" do
+    parent =
+      RunState.new(
+        id: "group_parent",
+        manifest_version_id: "mv_a",
+        manifest_content_hash: "hash",
+        asset_ref: {MyApp.Asset, :asset},
+        target_refs: [{MyApp.Asset, :asset}]
+      )
+
+    child =
+      RunState.new(
+        id: "group_child",
+        manifest_version_id: "mv_a",
+        manifest_content_hash: "hash",
+        asset_ref: {MyApp.Asset, :asset},
+        target_refs: [{MyApp.Asset, :asset}],
+        parent_run_id: parent.id,
+        root_run_id: parent.id,
+        lineage_depth: 1
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(child)
+
+    assert {:ok, page} = Storage.list_execution_group_summaries(limit: 10)
+    assert [summary] = page.items
+    assert summary.id == parent.id
+    assert summary.child_run_ids == [child.id]
+    assert summary.target_assets == ["MyApp.Asset.asset"]
+  end
+
+  test "scans logs with cursor pagination" do
+    now = DateTime.utc_now()
+
+    entries = [
+      Favn.Log.Entry.normalize(%{
+        run_id: "scan_logs_run",
+        runner_execution_id: "runner_a",
+        producer_id: "memory-scan",
+        producer_sequence: 1,
+        occurred_at: now,
+        stream: :stdout,
+        message: "first"
+      }),
+      Favn.Log.Entry.normalize(%{
+        run_id: "scan_logs_run",
+        runner_execution_id: "runner_a",
+        producer_id: "memory-scan",
+        producer_sequence: 2,
+        occurred_at: DateTime.add(now, 1, :second),
+        stream: :stderr,
+        message: "second"
+      })
+    ]
+
+    assert {:ok, [_first, _second]} = Storage.persist_log_entries(entries)
+
+    assert {:ok, page} =
+             Storage.scan_logs([runner_execution_id: "runner_a", stream: :stdout], limit: 1)
+
+    assert Enum.map(page.items, & &1.message) == ["first"]
+    refute page.has_more?
+
+    assert {:ok, next_page} =
+             Storage.scan_logs([runner_execution_id: "runner_a"],
+               after: %{global_sequence: 1},
+               limit: 10
+             )
+
+    assert Enum.map(next_page.items, & &1.message) == ["second"]
+  end
+
   test "uses nil scheduler schedule ids as exact keys" do
     daily_key = {MyApp.Pipeline, :daily}
     hourly_key = {MyApp.Pipeline, :hourly}

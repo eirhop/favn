@@ -143,6 +143,13 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, group_page} = Storage.list_execution_groups(search: run.id, limit: 10, offset: 0)
     assert run.id in group_page.items
 
+    assert {:ok, summary_page} =
+             Storage.list_execution_group_summaries(search: run.id, limit: 10, offset: 0)
+
+    assert [%{id: summary_id, child_run_ids: [child_id]}] = summary_page.items
+    assert summary_id == run.id
+    assert child_id == child.id
+
     schedule =
       RunState.new(
         id: "run_contract_#{label}_schedule_#{System.unique_integer([:positive])}",

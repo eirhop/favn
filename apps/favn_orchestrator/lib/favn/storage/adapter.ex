@@ -85,6 +85,8 @@ defmodule Favn.Storage.Adapter do
               {:ok, [String.t()]} | {:error, error()}
   @callback list_execution_groups(filter_opts(), adapter_opts()) ::
               {:ok, Page.t(String.t())} | {:error, error()}
+  @callback list_execution_group_summaries(filter_opts(), adapter_opts()) ::
+              {:ok, Page.t(map())} | {:error, error()}
   @callback persist_run_transition(RunState.t(), map(), adapter_opts()) ::
               :ok | :idempotent | {:error, error()}
 
@@ -134,6 +136,11 @@ defmodule Favn.Storage.Adapter do
               {:ok, [Favn.Log.Entry.t()]} | {:error, error()}
   @callback list_logs(Favn.Log.Filter.t() | map() | keyword(), keyword(), adapter_opts()) ::
               {:ok, Page.t(Favn.Log.Entry.t())} | {:error, error()}
+  @callback scan_logs(
+              Favn.Log.Filter.t() | map() | keyword(),
+              cursor_scan_opts(),
+              adapter_opts()
+            ) :: {:ok, CursorPage.t(Favn.Log.Entry.t())} | {:error, error()}
   @callback replay_logs_after(
               Favn.Log.Cursor.t() | String.t() | nil,
               Favn.Log.Filter.t() | map() | keyword(),
@@ -252,9 +259,11 @@ defmodule Favn.Storage.Adapter do
                       reserve_idempotency_record: 2,
                       complete_idempotency_record: 3,
                       get_idempotency_record: 2,
+                      scan_logs: 3,
                       list_execution_group_runs: 2,
                       list_execution_group_run_ids: 2,
                       list_execution_groups: 2,
+                      list_execution_group_summaries: 2,
                       list_run_events: 3,
                       list_execution_group_events: 3,
                       put_backfill_windows: 2,

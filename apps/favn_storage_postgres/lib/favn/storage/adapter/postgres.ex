@@ -21,6 +21,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
   alias FavnOrchestrator.Storage.Backfill.ProgressCodec
   alias FavnOrchestrator.Storage.ExecutionAdmissionWaiterCodec
+  alias FavnOrchestrator.Storage.ExecutionGroupSummary
   alias FavnOrchestrator.Storage.ExecutionLeaseCodec
   alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
   alias FavnOrchestrator.Storage.JsonSafe
@@ -209,8 +210,17 @@ defmodule Favn.Storage.Adapter.Postgres do
         case guarded_put_run(repo, normalized_run) do
           :ok ->
             case guarded_append_run_event(repo, run.id, normalized_event) do
-              result when result in [:ok, :idempotent] -> {:ok, result}
-              {:error, reason} -> repo.rollback(reason)
+              result when result in [:ok, :idempotent] ->
+                case refresh_execution_group_summary(
+                       repo,
+                       RunQuery.root_execution_group_id(normalized_run)
+                     ) do
+                  :ok -> {:ok, result}
+                  {:error, reason} -> repo.rollback(reason)
+                end
+
+              {:error, reason} ->
+                repo.rollback(reason)
             end
 
           {:error, reason} ->
@@ -303,6 +313,31 @@ defmodule Favn.Storage.Adapter.Postgres do
           |> Enum.map(fn [group_id] -> group_id end)
           |> Page.from_fetched(page_opts)
           |> then(&{:ok, &1})
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_execution_group_summaries(group_opts, opts)
+      when is_list(group_opts) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, query, params, page_opts} <- execution_group_summaries_query(group_opts) do
+      case SQL.query(repo, query, params) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> Enum.reduce_while({:ok, []}, fn [payload], {:ok, acc} ->
+            case ExecutionGroupSummary.decode(payload) do
+              {:ok, summary} -> {:cont, {:ok, [summary | acc]}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+          |> case do
+            {:ok, summaries} -> {:ok, Page.from_fetched(Enum.reverse(summaries), page_opts)}
+            {:error, reason} -> {:error, reason}
+          end
 
         {:error, reason} ->
           {:error, reason}
@@ -665,6 +700,23 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   @impl true
+  def scan_logs(filter, scan_opts, adapter_opts)
+      when is_list(scan_opts) and is_list(adapter_opts) do
+    with {:ok, after_sequence} <- log_cursor_sequence(Keyword.get(scan_opts, :after)),
+         {:ok, repo} <- resolve_repo(adapter_opts),
+         {:ok, sql, params} <- scan_logs_query(filter, after_sequence) do
+      query_and_decode_cursor_page(
+        repo,
+        sql,
+        params,
+        scan_opts,
+        &decode_log_entry_row/1,
+        &log_entry_cursor!/1
+      )
+    end
+  end
+
+  @impl true
   def replay_logs_after(cursor, filter, opts, adapter_opts)
       when is_list(opts) and is_list(adapter_opts) do
     with {:ok, after_sequence} <- log_cursor_sequence(cursor),
@@ -751,14 +803,18 @@ defmodule Favn.Storage.Adapter.Postgres do
   @impl true
   def put_backfill_window(%BackfillWindow{} = window, opts) when is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts) do
-      upsert_backfill_windows(repo, [window])
+      with :ok <- upsert_backfill_windows(repo, [window]) do
+        refresh_execution_group_summary(repo, window.backfill_run_id)
+      end
     end
   end
 
   @impl true
   def put_backfill_windows(windows, opts) when is_list(windows) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts) do
-      upsert_backfill_windows(repo, windows)
+      with :ok <- upsert_backfill_windows(repo, windows) do
+        refresh_execution_group_summaries(repo, Enum.map(windows, & &1.backfill_run_id))
+      end
     end
   end
 
@@ -1856,11 +1912,114 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp decode_log_entry_row([payload]), do: LogEntryCodec.decode(payload)
 
+  defp refresh_execution_group_summaries(repo, group_ids) do
+    group_ids
+    |> Enum.uniq()
+    |> Enum.reduce_while(:ok, fn group_id, :ok ->
+      case refresh_execution_group_summary(repo, group_id) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp refresh_execution_group_summary(_repo, nil), do: :ok
+
+  defp refresh_execution_group_summary(repo, group_id) when is_binary(group_id) do
+    with {:ok, runs} <- fetch_execution_group_runs(repo, group_id),
+         {:ok, windows} <- fetch_execution_group_windows(repo, group_id) do
+      case ExecutionGroupSummary.build(runs, windows) do
+        {:ok, summary} -> upsert_execution_group_summary(repo, summary)
+        {:error, :empty_execution_group} -> delete_execution_group_summary(repo, group_id)
+      end
+    else
+      {:error, {:missing_manifest_version, _manifest_version_id}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_execution_group_runs(repo, group_id) do
+    sql =
+      run_snapshot_select() <>
+        " WHERE r.root_execution_group_id = $1 ORDER BY CASE WHEN r.run_id = r.root_execution_group_id THEN 0 ELSE 1 END, r.inserted_at ASC, r.run_id ASC"
+
+    case SQL.query(repo, sql, [group_id]) do
+      {:ok, %{rows: rows}} -> decode_run_rows(rows)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_execution_group_windows(repo, group_id) do
+    sql = backfill_window_select() <> "\nWHERE backfill_run_id = $1"
+    query_and_decode_rows(repo, sql, [group_id], &decode_backfill_window_row/1)
+  end
+
+  defp upsert_execution_group_summary(repo, summary) do
+    with {:ok, activity_seq} <- execution_group_activity_seq(repo, summary.id) do
+      sql = """
+      INSERT INTO favn_execution_group_summaries (
+        group_id, root_run_id, root_status, status, trigger_type, target_refs_text,
+        has_window, failed, running, activity_seq, summary_blob, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      ON CONFLICT(group_id) DO UPDATE SET
+        root_run_id = EXCLUDED.root_run_id,
+        root_status = EXCLUDED.root_status,
+        status = EXCLUDED.status,
+        trigger_type = EXCLUDED.trigger_type,
+        target_refs_text = EXCLUDED.target_refs_text,
+        has_window = EXCLUDED.has_window,
+        failed = EXCLUDED.failed,
+        running = EXCLUDED.running,
+        activity_seq = EXCLUDED.activity_seq,
+        summary_blob = EXCLUDED.summary_blob,
+        updated_at = EXCLUDED.updated_at
+      """
+
+      params = [
+        summary.id,
+        summary.root_execution_group_id,
+        Atom.to_string(summary.root_status),
+        Atom.to_string(summary.status),
+        Atom.to_string(summary.trigger_type),
+        Enum.join(summary.target_assets, "\n"),
+        summary.total_windows > 0,
+        summary.failure_count > 0,
+        summary.active?,
+        activity_seq,
+        ExecutionGroupSummary.encode(summary),
+        DateTime.utc_now()
+      ]
+
+      query_ok(repo, sql, params)
+    end
+  end
+
+  defp execution_group_activity_seq(repo, group_id) do
+    case SQL.query(
+           repo,
+           "SELECT COALESCE(MAX(updated_seq), 0) FROM favn_runs WHERE root_execution_group_id = $1",
+           [group_id]
+         ) do
+      {:ok, %{rows: [[seq]]}} when is_integer(seq) -> {:ok, seq}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_execution_group_summary(repo, group_id) do
+    query_ok(repo, "DELETE FROM favn_execution_group_summaries WHERE group_id = $1", [group_id])
+  end
+
   defp persist_run(repo, run) do
     repo.transact(fn ->
       case guarded_put_run(repo, run) do
-        :ok -> {:ok, :ok}
-        {:error, reason} -> repo.rollback(reason)
+        :ok ->
+          case refresh_execution_group_summary(repo, RunQuery.root_execution_group_id(run)) do
+            :ok -> {:ok, :ok}
+            {:error, reason} -> repo.rollback(reason)
+          end
+
+        {:error, reason} ->
+          repo.rollback(reason)
       end
     end)
     |> case do
@@ -2548,6 +2707,82 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
+  defp execution_group_summaries_query(group_opts) do
+    with {:ok, page_opts} <- Page.normalize_opts(group_opts) do
+      filters = Keyword.drop(group_opts, [:limit, :offset, :sort])
+      {where_sql, params} = execution_group_summary_filter_sql(filters)
+      sort_sql = execution_group_summary_sort_sql(Keyword.get(group_opts, :sort, :started_desc))
+      limit_placeholder = "$#{length(params) + 1}"
+      offset_placeholder = "$#{length(params) + 2}"
+
+      {:ok,
+       """
+       SELECT summary_blob
+       FROM favn_execution_group_summaries
+       #{where_sql}
+       ORDER BY #{sort_sql}, group_id DESC
+       LIMIT #{limit_placeholder} OFFSET #{offset_placeholder}
+       """, params ++ [Keyword.fetch!(page_opts, :limit) + 1, Keyword.fetch!(page_opts, :offset)],
+       page_opts}
+    end
+  end
+
+  defp execution_group_summary_filter_sql(filters) do
+    filters
+    |> Enum.reduce({[], []}, fn
+      {:status, status}, {clauses, params} when not is_nil(status) ->
+        {clauses ++ ["root_status = $#{length(params) + 1}"], params ++ [Atom.to_string(status)]}
+
+      {:trigger_type, trigger}, {clauses, params} when not is_nil(trigger) ->
+        {clauses ++ ["trigger_type = $#{length(params) + 1}"],
+         params ++ [Atom.to_string(trigger)]}
+
+      {:target_asset, target}, {clauses, params} when is_binary(target) and target != "" ->
+        {clauses ++
+           [
+             "POSITION(E'\\n' || $#{length(params) + 1} || E'\\n' IN E'\\n' || target_refs_text || E'\\n') > 0"
+           ], params ++ [target]}
+
+      {:search, search}, {clauses, params} when is_binary(search) and search != "" ->
+        placeholder = "$#{length(params) + 1}"
+
+        {clauses ++
+           [
+             "(group_id LIKE #{placeholder} OR target_refs_text LIKE #{placeholder} OR trigger_type LIKE #{placeholder})"
+           ], params ++ ["%#{search}%"]}
+
+      {:window, :has_window}, {clauses, params} ->
+        {clauses ++ ["has_window = TRUE"], params}
+
+      {:window, :no_window}, {clauses, params} ->
+        {clauses ++ ["has_window = FALSE"], params}
+
+      {:only_failed, true}, {clauses, params} ->
+        {clauses ++ ["failed = TRUE"], params}
+
+      {:only_running, true}, {clauses, params} ->
+        {clauses ++ ["running = TRUE"], params}
+
+      {:only_incomplete, true}, {clauses, params} ->
+        {clauses ++ ["running = TRUE"], params}
+
+      _other, acc ->
+        acc
+    end)
+    |> case do
+      {[], params} -> {"", params}
+      {clauses, params} -> {"WHERE " <> Enum.join(clauses, " AND "), params}
+    end
+  end
+
+  defp execution_group_summary_sort_sql(:failed_first), do: "failed DESC, activity_seq DESC"
+  defp execution_group_summary_sort_sql(:running_first), do: "running DESC, activity_seq DESC"
+
+  defp execution_group_summary_sort_sql(:status_priority),
+    do: "failed DESC, running DESC, activity_seq DESC"
+
+  defp execution_group_summary_sort_sql(_sort), do: "activity_seq DESC"
+
   defp execution_group_filter_sql(filters) do
     filters
     |> Enum.reduce({[], []}, fn
@@ -2803,6 +3038,25 @@ defmodule Favn.Storage.Adapter.Postgres do
        LIMIT #{limit_placeholder}
        """, params ++ [after_sequence, limit]}
     end
+  end
+
+  defp scan_logs_query(filter, after_sequence) do
+    with {:ok, {where_sql, params}} <- build_log_filter_sql(filter) do
+      prefix = if where_sql == "", do: " WHERE ", else: where_sql <> " AND "
+      after_placeholder = "$#{length(params) + 1}"
+
+      {:ok,
+       """
+       SELECT log_blob
+       FROM favn_log_entries
+       #{prefix}global_sequence > #{after_placeholder}
+       ORDER BY global_sequence ASC
+       """, params ++ [after_sequence]}
+    end
+  end
+
+  defp log_entry_cursor!(%Favn.Log.Entry{} = entry) do
+    %{kind: :log_entry, global_sequence: entry.global_sequence}
   end
 
   defp build_log_filter_sql(filter) do

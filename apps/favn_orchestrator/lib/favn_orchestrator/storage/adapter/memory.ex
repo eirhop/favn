@@ -18,6 +18,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.LogEntryCodec
   alias FavnOrchestrator.Storage.ExecutionAdmissionWaiterCodec
+  alias FavnOrchestrator.Storage.ExecutionGroupSummary
   alias FavnOrchestrator.Storage.MaterializationClaimCodec
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunQuery
@@ -45,6 +46,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           manifests: %{required(String.t()) => Version.t()},
           active_manifest_version_id: String.t() | nil,
           runs: %{required(String.t()) => RunState.t()},
+          execution_group_summaries: %{required(String.t()) => map()},
           run_events: %{required(String.t()) => [map()]},
           run_event_global_sequence: non_neg_integer(),
           execution_leases: %{required(String.t()) => map()},
@@ -251,6 +253,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def list_execution_group_summaries(group_opts, opts)
+      when is_list(group_opts) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_execution_group_summaries, group_opts})
+  end
+
+  @impl true
   def append_run_event(run_id, event, opts \\ [])
       when is_binary(run_id) and is_map(event) and is_list(opts) do
     with {:ok, normalized} <- RunEventCodec.normalize(run_id, event) do
@@ -407,6 +416,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def list_logs(filter, opts, adapter_opts) when is_list(opts) and is_list(adapter_opts) do
     server = Keyword.get(adapter_opts, :server, __MODULE__)
     GenServer.call(server, {:list_logs, filter, opts})
+  end
+
+  @impl true
+  def scan_logs(filter, scan_opts, adapter_opts)
+      when is_list(scan_opts) and is_list(adapter_opts) do
+    server = Keyword.get(adapter_opts, :server, __MODULE__)
+    GenServer.call(server, {:scan_logs, filter, scan_opts})
   end
 
   @impl true
@@ -751,6 +767,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       manifests: %{},
       active_manifest_version_id: nil,
       runs: %{},
+      execution_group_summaries: %{},
       run_events: %{},
       run_event_global_sequence: 0,
       execution_leases: %{},
@@ -867,7 +884,9 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
     normalized_reply = if reply == :idempotent, do: :ok, else: reply
 
-    {:reply, normalized_reply, %{state | runs: runs}}
+    next_state = %{state | runs: runs} |> refresh_execution_group_summary(incoming)
+
+    {:reply, normalized_reply, next_state}
   end
 
   def handle_call({:persist_run_transition, %RunState{} = run, event}, _from, state) do
@@ -879,12 +898,14 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
         case append_event_with_semantics(current, event, state.run_event_global_sequence) do
           {:ok, event_write_result, next_events, next_global_sequence} ->
-            next_state = %{
-              state
-              | runs: runs,
-                run_events: Map.put(state.run_events, run.id, next_events),
-                run_event_global_sequence: next_global_sequence
-            }
+            next_state =
+              %{
+                state
+                | runs: runs,
+                  run_events: Map.put(state.run_events, run.id, next_events),
+                  run_event_global_sequence: next_global_sequence
+              }
+              |> refresh_execution_group_summary(run)
 
             result =
               case {run_write_result, event_write_result} do
@@ -944,6 +965,21 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     page =
       state.runs
       |> execution_group_ids(group_opts)
+      |> Enum.drop(Keyword.fetch!(page_opts, :offset))
+      |> Enum.take(Keyword.fetch!(page_opts, :limit) + 1)
+      |> Page.from_fetched(page_opts)
+
+    {:reply, {:ok, page}, state}
+  end
+
+  def handle_call({:list_execution_group_summaries, group_opts}, _from, state) do
+    page_opts = page_opts(group_opts)
+
+    page =
+      state.execution_group_summaries
+      |> Map.values()
+      |> filter_execution_group_summaries(group_opts)
+      |> sort_execution_group_summaries(Keyword.get(group_opts, :sort, :started_desc))
       |> Enum.drop(Keyword.fetch!(page_opts, :offset))
       |> Enum.take(Keyword.fetch!(page_opts, :limit) + 1)
       |> Page.from_fetched(page_opts)
@@ -1227,6 +1263,22 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, {:ok, Page.from_fetched(rows, page_opts)}, state}
   end
 
+  def handle_call({:scan_logs, filter, scan_opts}, _from, state) do
+    reply =
+      with {:ok, after_sequence} <- log_cursor_sequence(Keyword.get(scan_opts, :after)) do
+        rows =
+          log_entries(state)
+          |> filter_logs(filter)
+          |> Enum.filter(&(Map.get(&1, :global_sequence, 0) > after_sequence))
+          |> Enum.sort_by(&Map.get(&1, :global_sequence, 0))
+          |> Enum.take(Keyword.fetch!(scan_opts, :limit) + 1)
+
+        {:ok, CursorPage.from_fetched(rows, scan_opts, &log_entry_cursor!/1)}
+      end
+
+    {:reply, reply, state}
+  end
+
   def handle_call({:replay_logs_after, cursor, filter, opts}, _from, state) do
     limit = Keyword.get(opts, :limit, 200)
 
@@ -1316,12 +1368,21 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   def handle_call({:put_backfill_window, %BackfillWindow{} = window}, _from, state) do
     key = {window.backfill_run_id, window.pipeline_module, window.window_key}
-    {:reply, :ok, put_in(state, [:backfill_windows, key], window)}
+
+    next_state =
+      state
+      |> put_in([:backfill_windows, key], window)
+      |> refresh_execution_group_summary(window.backfill_run_id)
+
+    {:reply, :ok, next_state}
   end
 
   def handle_call({:put_backfill_windows, windows}, _from, state) do
-    {:reply, :ok,
-     %{state | backfill_windows: put_backfill_window_values(state.backfill_windows, windows)}}
+    next_state =
+      %{state | backfill_windows: put_backfill_window_values(state.backfill_windows, windows)}
+      |> refresh_execution_group_summaries(Enum.map(windows, & &1.backfill_run_id))
+
+    {:reply, :ok, next_state}
   end
 
   def handle_call({:get_backfill_window, key}, _from, state) do
@@ -1791,6 +1852,104 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     |> Enum.map(& &1.id)
   end
 
+  defp refresh_execution_group_summary(state, %RunState{} = run) do
+    refresh_execution_group_summary(state, RunQuery.root_execution_group_id(run))
+  end
+
+  defp refresh_execution_group_summary(state, group_id) when is_binary(group_id) do
+    runs = execution_group_runs(state.runs, group_id)
+    windows = execution_group_windows(state.backfill_windows, group_id)
+
+    case ExecutionGroupSummary.build(runs, windows) do
+      {:ok, summary} ->
+        put_in(state, [:execution_group_summaries, group_id], summary)
+
+      {:error, :empty_execution_group} ->
+        update_in(state, [:execution_group_summaries], &Map.delete(&1, group_id))
+    end
+  end
+
+  defp refresh_execution_group_summaries(state, group_ids) do
+    group_ids
+    |> Enum.uniq()
+    |> Enum.reduce(state, &refresh_execution_group_summary(&2, &1))
+  end
+
+  defp execution_group_windows(windows, group_id) when is_map(windows) do
+    windows
+    |> Map.values()
+    |> Enum.filter(&(&1.backfill_run_id == group_id))
+  end
+
+  defp filter_execution_group_summaries(summaries, group_opts) do
+    Enum.filter(summaries, fn summary ->
+      matches_summary_status?(summary, Keyword.get(group_opts, :status)) and
+        matches_summary_trigger?(summary, Keyword.get(group_opts, :trigger_type)) and
+        matches_summary_target?(summary, Keyword.get(group_opts, :target_asset)) and
+        matches_summary_search?(summary, Keyword.get(group_opts, :search)) and
+        matches_summary_window?(summary, Keyword.get(group_opts, :window)) and
+        matches_summary_only_filters?(summary, group_opts)
+    end)
+  end
+
+  defp sort_execution_group_summaries(summaries, :failed_first),
+    do:
+      Enum.sort_by(summaries, &{if(&1.failure_count > 0, do: 0, else: 1), -summary_activity(&1)})
+
+  defp sort_execution_group_summaries(summaries, :running_first),
+    do: Enum.sort_by(summaries, &{if(&1.active?, do: 0, else: 1), -summary_activity(&1)})
+
+  defp sort_execution_group_summaries(summaries, :status_priority),
+    do: Enum.sort_by(summaries, &{summary_status_priority(&1), -summary_activity(&1)})
+
+  defp sort_execution_group_summaries(summaries, _sort),
+    do: Enum.sort_by(summaries, &summary_activity/1, :desc)
+
+  defp matches_summary_status?(_summary, nil), do: true
+  defp matches_summary_status?(summary, status), do: summary.root_status == status
+
+  defp matches_summary_trigger?(_summary, nil), do: true
+  defp matches_summary_trigger?(summary, trigger), do: summary.trigger_type == trigger
+
+  defp matches_summary_target?(_summary, nil), do: true
+  defp matches_summary_target?(summary, target), do: target in summary.target_assets
+
+  defp matches_summary_search?(_summary, value) when value in [nil, ""], do: true
+
+  defp matches_summary_search?(summary, search) do
+    search = String.downcase(to_string(search))
+
+    [summary.id, summary.trigger_type | summary.target_assets]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+    |> String.downcase()
+    |> String.contains?(search)
+  end
+
+  defp matches_summary_window?(_summary, nil), do: true
+  defp matches_summary_window?(summary, :has_window), do: summary.total_windows > 0
+  defp matches_summary_window?(summary, :no_window), do: summary.total_windows == 0
+  defp matches_summary_window?(_summary, _window), do: true
+
+  defp matches_summary_only_filters?(summary, opts) do
+    (not Keyword.get(opts, :only_failed, false) or summary.failure_count > 0) and
+      (not Keyword.get(opts, :only_running, false) or summary.active?) and
+      (not Keyword.get(opts, :only_incomplete, false) or summary.active?)
+  end
+
+  defp summary_activity(summary), do: datetime_sort_value(summary.last_activity_at)
+
+  defp summary_status_priority(summary) do
+    cond do
+      summary.failure_count > 0 -> 0
+      summary.active? -> 1
+      true -> 2
+    end
+  end
+
+  defp datetime_sort_value(%DateTime{} = datetime), do: DateTime.to_unix(datetime, :microsecond)
+  defp datetime_sort_value(_datetime), do: 0
+
   defp matches_execution_group_filters?(group, opts) do
     matches_execution_group_status?(group, Keyword.get(opts, :status)) and
       matches_execution_group_trigger?(group, Keyword.get(opts, :trigger_type)) and
@@ -2147,6 +2306,10 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   defp log_cursor_sequence(_cursor), do: {:error, :cursor_invalid}
+
+  defp log_entry_cursor!(%Favn.Log.Entry{} = entry) do
+    %{kind: :log_entry, global_sequence: entry.global_sequence}
+  end
 
   defp validate_replay_limit(limit) when is_integer(limit) and limit > 0, do: :ok
   defp validate_replay_limit(_limit), do: {:error, :cursor_invalid}
