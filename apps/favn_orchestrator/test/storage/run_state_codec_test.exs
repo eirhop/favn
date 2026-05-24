@@ -50,6 +50,20 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
     assert asset_run_state.submit_kind == :backfill_asset
   end
 
+  test "terminal detection accepts JSON-restored metadata values" do
+    run_state =
+      RunState.new(
+        id: "run_codec_terminal_metadata",
+        manifest_version_id: "mv_codec",
+        manifest_content_hash: "hash_codec",
+        asset_ref: {MyApp.Asset, :asset},
+        metadata: %{"terminal_event_type" => "run_failed"}
+      )
+      |> RunState.transition(status: :error, result: nil)
+
+    assert RunState.terminal?(run_state)
+  end
+
   test "rejects invalid run identity" do
     run_state =
       RunState.new(

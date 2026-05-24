@@ -136,7 +136,7 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
 
   test "intermediate step outcome statuses remain admissible before terminalization" do
     run = run(max_concurrency: 1)
-    intermediate = RunState.transition(run, status: :ok)
+    intermediate = RunState.transition(run, status: :error, result: %{status: :error})
 
     assert {:ok, lease} = ExecutionAdmission.acquire(intermediate, %{asset_step_id: "step-1"})
     assert lease.run_id == intermediate.id

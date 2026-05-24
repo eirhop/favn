@@ -5,7 +5,9 @@ defmodule FavnOrchestrator.RunState do
 
   @default_timeout_ms 30 * 60 * 1000
   @terminal_statuses [:ok, :partial, :error, :cancelled, :timed_out]
+  @terminal_status_strings Enum.map(@terminal_statuses, &Atom.to_string/1)
   @terminal_event_types [:run_finished, :run_failed, :run_cancelled, :run_timed_out]
+  @terminal_event_type_strings Enum.map(@terminal_event_types, &Atom.to_string/1)
 
   @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
 
@@ -103,13 +105,13 @@ defmodule FavnOrchestrator.RunState do
 
   @doc "Returns true when a persisted run snapshot has been terminalized."
   @spec terminal?(t()) :: boolean()
-  def terminal?(%__MODULE__{status: status, metadata: metadata, result: result}) do
-    terminal_metadata?(metadata) or terminal_result?(status, result)
-  end
+  def terminal?(%__MODULE__{metadata: metadata}), do: terminal_metadata?(metadata)
 
   @doc "Returns true when the status represents terminal persisted run state."
   @spec terminal_status?(status() | term()) :: boolean()
-  def terminal_status?(status), do: status in @terminal_statuses
+  def terminal_status?(status) when is_atom(status), do: status in @terminal_statuses
+  def terminal_status?(status) when is_binary(status), do: status in @terminal_status_strings
+  def terminal_status?(_status), do: false
 
   defp terminal_metadata?(metadata) when is_map(metadata) do
     terminal_event_type =
@@ -117,18 +119,17 @@ defmodule FavnOrchestrator.RunState do
 
     cancelled? = Map.get(metadata, :cancelled) || Map.get(metadata, "cancelled")
 
-    terminal_event_type in @terminal_event_types or cancelled? == true
+    terminal_event_type?(terminal_event_type) or cancelled? == true
   end
 
   defp terminal_metadata?(_metadata), do: false
 
-  defp terminal_result?(status, result) when is_map(result) do
-    result_status = Map.get(result, :status) || Map.get(result, "status")
+  defp terminal_event_type?(value) when is_atom(value), do: value in @terminal_event_types
 
-    terminal_status?(status) and result_status == status
-  end
+  defp terminal_event_type?(value) when is_binary(value),
+    do: value in @terminal_event_type_strings
 
-  defp terminal_result?(_status, _result), do: false
+  defp terminal_event_type?(_value), do: false
 
   @spec transition(t(), keyword()) :: t()
   def transition(%__MODULE__{} = run, attrs) when is_list(attrs) do
