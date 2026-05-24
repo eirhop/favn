@@ -151,6 +151,28 @@ defmodule FavnOrchestrator.Storage do
     end)
   end
 
+  @spec list_execution_group_summaries(keyword()) :: {:ok, Page.t(map())} | {:error, term()}
+  def list_execution_group_summaries(group_opts \\ []) when is_list(group_opts) do
+    paginated_adapter_call(group_opts, fn adapter, filters, opts ->
+      if function_exported?(adapter, :list_execution_group_summaries, 2) do
+        adapter.list_execution_group_summaries(filters, opts)
+      else
+        {:error, :execution_group_summary_reads_not_supported}
+      end
+    end)
+  end
+
+  @spec rebuild_execution_group_summaries() :: {:ok, non_neg_integer()} | {:error, term()}
+  def rebuild_execution_group_summaries do
+    adapter_call(fn adapter, opts ->
+      if function_exported?(adapter, :rebuild_execution_group_summaries, 1) do
+        adapter.rebuild_execution_group_summaries(opts)
+      else
+        {:error, :execution_group_summary_reads_not_supported}
+      end
+    end)
+  end
+
   @spec append_run_event(String.t(), map()) :: :ok | {:error, term()}
   def append_run_event(run_id, event) when is_binary(run_id) and is_map(event) do
     adapter_call(fn adapter, opts -> adapter.append_run_event(run_id, event, opts) end)
@@ -325,6 +347,20 @@ defmodule FavnOrchestrator.Storage do
     with {:ok, page_opts} <- Page.normalize_opts(opts) do
       adapter_call(fn adapter, adapter_opts ->
         adapter.list_logs(filter, Keyword.merge(opts, page_opts), adapter_opts)
+      end)
+    end
+  end
+
+  @spec scan_logs(Favn.Log.Filter.t() | map() | keyword(), keyword()) ::
+          {:ok, CursorPage.t(Favn.Log.Entry.t())} | {:error, term()}
+  def scan_logs(filter \\ [], scan_opts \\ []) when is_list(scan_opts) do
+    with {:ok, normalized_opts} <- CursorPage.normalize_opts(scan_opts) do
+      adapter_call(fn adapter, adapter_opts ->
+        if function_exported?(adapter, :scan_logs, 3) do
+          adapter.scan_logs(filter, normalized_opts, adapter_opts)
+        else
+          {:error, :log_cursor_reads_not_supported}
+        end
       end)
     end
   end

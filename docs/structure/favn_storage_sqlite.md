@@ -3,7 +3,9 @@
 Purpose: SQLite implementation of the orchestrator storage adapter, including
 schema migrations, command idempotency records, JSON-safe run/event/backfill,
 freshness, and materialization-claim DTO persistence, and canonical payload
-persistence.
+persistence. High-growth operator reads use indexed log cursor scans and a
+persisted execution-group summary read model rather than repeated full run
+aggregation.
 
 Code:
 - `apps/favn_storage_sqlite/lib/favn/storage/adapter/sqlite.ex`
@@ -13,6 +15,7 @@ Code:
 - Run-event global sequence migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_run_event_global_sequence.ex`
 - Asset freshness state migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_asset_freshness_state.ex`
 - Materialization claim migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_materialization_claims.ex`
+- Execution-group summaries and log cursor indexes: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_execution_group_summaries.ex`
 - `apps/favn_storage_sqlite/lib/favn_storage_sqlite/diagnostics.ex`
 
 Tests:
