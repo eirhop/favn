@@ -4,9 +4,11 @@ defmodule FavnView.RunsListLive do
   use FavnView, :live_view
 
   alias FavnView.Components.RunsListPage
+  alias FavnView.LiveRefresh
   alias FavnView.LogsViewModel
 
   @refresh_interval_ms 1_500
+  @coalesce_refresh_ms 100
   @active_statuses [:queued, :running, :incomplete]
   @valid_modes ~w(list)
   @default_filters %{
@@ -41,31 +43,53 @@ defmodule FavnView.RunsListLive do
         run_events_live?: false,
         nav_items: RunsListPage.nav_items(:runs)
       )
+      |> LiveRefresh.init([:refresh_timer_ref, :fallback_poll_ref])
       |> maybe_subscribe_runs()
-      |> maybe_schedule_refresh()
+      |> maybe_schedule_fallback_poll()
 
     {:ok, socket}
   end
 
   @impl true
-  def handle_info(:refresh_runs, socket) do
-    {groups, error} = load_groups(socket.assigns.filters)
+  def handle_info({:refresh_runs, token}, socket) do
+    case LiveRefresh.take(socket, :refresh_timer_ref, token) do
+      {:ok, socket} ->
+        {:noreply, refresh_runs(socket)}
 
-    {:noreply,
-     socket
-     |> assign_groups(groups, error)
-     |> refresh_expanded_details()
-     |> maybe_schedule_refresh()}
+      {:stale, socket} ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info({:poll_runs, token}, socket) do
+    case LiveRefresh.take(socket, :fallback_poll_ref, token) do
+      {:ok, socket} ->
+        {:noreply, socket |> refresh_runs() |> maybe_schedule_fallback_poll()}
+
+      {:stale, socket} ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info(:refresh_runs, socket) do
+    {:noreply, refresh_runs(socket)}
+  end
+
+  def handle_info(:poll_runs, socket) do
+    {:noreply, socket |> refresh_runs() |> maybe_schedule_fallback_poll()}
   end
 
   def handle_info({:favn_run_event, _event}, socket) do
+    {:noreply, schedule_coalesced_refresh(socket)}
+  end
+
+  defp refresh_runs(socket) do
     {groups, error} = load_groups(socket.assigns.filters)
 
-    {:noreply,
-     socket
-     |> assign_groups(groups, error)
-     |> refresh_expanded_details()
-     |> maybe_schedule_refresh()}
+    socket
+    |> assign_groups(groups, error)
+    |> refresh_expanded_details()
+    |> maybe_schedule_fallback_poll()
   end
 
   @impl true
@@ -134,32 +158,42 @@ defmodule FavnView.RunsListLive do
   @impl true
   def terminate(_reason, socket) do
     if socket.assigns[:run_events_live?] do
-      FavnOrchestrator.unsubscribe_runs()
+      unsubscribe_runs()
     end
 
     :ok
   end
 
   defp load_groups(filters) do
-    case FavnOrchestrator.page_execution_groups(orchestrator_filters(filters)) do
+    case page_execution_groups(orchestrator_filters(filters)) do
       {:ok, %{items: groups}} -> {Enum.map(groups, &group_from_public/1), nil}
       {:error, reason} -> {[], inspect(reason)}
     end
   end
 
-  defp maybe_schedule_refresh(%{assigns: %{groups: groups}} = socket) do
-    if connected?(socket) and Enum.any?(groups, &active_status?(&1.status)) do
-      Process.send_after(self(), :refresh_runs, @refresh_interval_ms)
+  defp schedule_coalesced_refresh(socket) do
+    if connected?(socket) do
+      LiveRefresh.schedule_once(socket, :refresh_timer_ref, :refresh_runs, @coalesce_refresh_ms)
+    else
+      socket
     end
-
-    socket
   end
 
-  defp maybe_schedule_refresh(socket), do: socket
+  defp maybe_schedule_fallback_poll(%{assigns: %{run_events_live?: true}} = socket), do: socket
+
+  defp maybe_schedule_fallback_poll(%{assigns: %{groups: groups}} = socket) do
+    if connected?(socket) and Enum.any?(groups, &active_status?(&1.status)) do
+      LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_runs, @refresh_interval_ms)
+    else
+      socket
+    end
+  end
+
+  defp maybe_schedule_fallback_poll(socket), do: socket
 
   defp maybe_subscribe_runs(socket) do
     if connected?(socket) do
-      case FavnOrchestrator.subscribe_runs() do
+      case subscribe_runs() do
         :ok -> assign(socket, :run_events_live?, true)
         {:error, _reason} -> socket
       end
@@ -167,6 +201,20 @@ defmodule FavnView.RunsListLive do
       socket
     end
   end
+
+  defp page_execution_groups(opts) do
+    Application.get_env(
+      :favn_view,
+      :page_execution_groups_fun,
+      &FavnOrchestrator.page_execution_groups/1
+    ).(opts)
+  end
+
+  defp subscribe_runs do
+    Application.get_env(:favn_view, :runs_subscribe_fun, &FavnOrchestrator.subscribe_runs/0).()
+  end
+
+  defp unsubscribe_runs, do: FavnOrchestrator.unsubscribe_runs()
 
   defp assign_groups(socket, groups, error) do
     assign(socket,
