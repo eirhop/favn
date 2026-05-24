@@ -23,8 +23,26 @@ defmodule FavnOrchestrator.BoundedDispatcherTest do
 
                  Agent.update(tracker, fn state -> %{state | active: state.active - 1} end)
                  :ok
-               end, max_concurrency: 2)
+               end,
+               max_concurrency: 2
+             )
 
     assert Agent.get(tracker, & &1.max_active) <= 2
+  end
+
+  test "run returns explicit timeout error" do
+    assert {:error, {:dispatcher_timeout, 1}} =
+             BoundedDispatcher.run(
+               fn ->
+                 Process.sleep(50)
+                 :ok
+               end,
+               timeout_ms: 1
+             )
+  end
+
+  test "run returns task exit error" do
+    assert {:error, {:dispatcher_task_exit, {%RuntimeError{message: "boom"}, _stack}}} =
+             BoundedDispatcher.run(fn -> raise "boom" end, timeout_ms: 1_000)
   end
 end

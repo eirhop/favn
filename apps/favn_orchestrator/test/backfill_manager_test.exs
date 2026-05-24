@@ -321,6 +321,44 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert Agent.get(tracker, & &1.max_active) <= 2
   end
 
+  test "concurrent child submission failure only compensates failed windows" do
+    version = manifest_version("mv_backfill_concurrent_partial_compensation")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    submitter = fn pipeline_module, child_opts ->
+      anchor = Keyword.fetch!(child_opts, :anchor_window)
+
+      if DateTime.compare(anchor.start_at, ~U[2026-04-26 00:00:00Z]) == :eq do
+        RunManager.submit_pipeline_module_run(pipeline_module, child_opts)
+      else
+        {:error, :synthetic_concurrent_child_submit_failed}
+      end
+    end
+
+    assert {:error, :synthetic_concurrent_child_submit_failed} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_concurrent_partial_compensation",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+               dispatch_concurrency: 2,
+               _child_submitter: submitter
+             )
+
+    eventually(fn ->
+      assert {:ok, parent} = Storage.get_run("run_backfill_concurrent_partial_compensation")
+      assert parent.status == :partial
+
+      windows = list_backfill_windows(backfill_run_id: parent.id)
+      assert Enum.map(windows, & &1.status) |> Enum.sort() == [:error, :ok]
+
+      ok_window = Enum.find(windows, &(&1.status == :ok))
+      error_window = Enum.find(windows, &(&1.status == :error))
+
+      assert is_binary(ok_window.child_run_id)
+      assert is_nil(error_window.child_run_id)
+    end)
+  end
+
   for option <- [:lookback, :lookback_policy] do
     @option option
 

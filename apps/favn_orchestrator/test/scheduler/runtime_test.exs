@@ -380,6 +380,19 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
 
     budgeted_runs = Enum.filter(runs, &(&1.manifest_version_id == version.manifest_version_id))
     assert length(budgeted_runs) == 2
+
+    first_occurrence_keys = occurrence_keys(budgeted_runs)
+    assert length(first_occurrence_keys) == 2
+
+    assert :ok = Runtime.tick(name)
+    assert {:ok, runs} = Storage.list_runs()
+
+    continued_runs = Enum.filter(runs, &(&1.manifest_version_id == version.manifest_version_id))
+    continued_occurrence_keys = occurrence_keys(continued_runs)
+
+    assert length(continued_runs) == 4
+    assert length(continued_occurrence_keys) == 4
+    assert Enum.uniq(continued_occurrence_keys) == continued_occurrence_keys
   end
 
   test "windowed scheduled pipelines carry anchor window into run pipeline context" do
@@ -551,6 +564,12 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     {:ok, runs} = Storage.list_runs()
     GenServer.stop(pid)
     length(runs)
+  end
+
+  defp occurrence_keys(runs) do
+    runs
+    |> Enum.map(& &1.trigger.occurrence.occurrence_key)
+    |> Enum.sort()
   end
 
   defp running_run_state(run_id, version, trigger) do
