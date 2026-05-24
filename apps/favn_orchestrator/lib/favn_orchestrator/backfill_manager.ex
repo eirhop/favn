@@ -23,6 +23,7 @@ defmodule FavnOrchestrator.BackfillManager do
   alias Favn.Manifest.PipelineResolver
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Runtime, as: RuntimeWindow
+  alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Projector, as: BackfillProjector
@@ -33,6 +34,7 @@ defmodule FavnOrchestrator.BackfillManager do
   alias FavnOrchestrator.TransitionWriter
 
   @default_max_windows 500
+  @default_dispatch_concurrency 4
 
   @doc """
   Submits a parent pipeline backfill run and one child pipeline run per resolved anchor.
@@ -66,9 +68,8 @@ defmodule FavnOrchestrator.BackfillManager do
              version.manifest_version_id,
              range,
              opts
-           ),
-         :ok <- submit_child_runs(parent, pipeline_module, range, opts) do
-      {:ok, parent.id}
+           ) do
+      submit_backfill_children(parent, pipeline_module, range, opts)
     else
       {:error, reason} = error ->
         case maybe_compensate_submit_failure(run_id, pipeline_module, reason, opts) do
@@ -107,9 +108,8 @@ defmodule FavnOrchestrator.BackfillManager do
              version.manifest_version_id,
              range,
              opts
-           ),
-         :ok <- submit_asset_child_runs(parent, asset, range, opts) do
-      {:ok, parent.id}
+           ) do
+      submit_asset_backfill_children(parent, asset, range, opts)
     else
       {:error, reason} = error ->
         case maybe_compensate_submit_failure(run_id, module, reason, opts) do
@@ -349,44 +349,126 @@ defmodule FavnOrchestrator.BackfillManager do
   end
 
   defp submit_child_runs(%RunState{} = parent, pipeline_module, range, opts) do
-    Enum.reduce_while(range.anchors, :ok, fn anchor, :ok ->
-      submit_child_run_for_anchor(parent, pipeline_module, anchor, opts)
-    end)
+    range.anchors
+    |> BoundedDispatcher.run_many_results(
+      fn anchor ->
+        submit_child_run_for_anchor(parent, pipeline_module, anchor, opts)
+      end,
+      max_concurrency: backfill_dispatch_concurrency(opts)
+    )
+    |> dispatch_results_to_submit_result()
   end
 
   defp submit_asset_child_runs(%RunState{} = parent, %Asset{} = asset, range, opts) do
-    Enum.reduce_while(range.anchors, :ok, fn anchor, :ok ->
-      window_key = WindowKey.encode(anchor.key)
+    range.anchors
+    |> BoundedDispatcher.run_many_results(
+      fn anchor ->
+        submit_asset_child_run_for_anchor(parent, asset, anchor, opts)
+      end,
+      max_concurrency: backfill_dispatch_concurrency(opts)
+    )
+    |> dispatch_results_to_submit_result()
+  end
 
-      child_opts =
+  defp submit_backfill_children(%RunState{} = parent, pipeline_module, range, opts) do
+    case submit_child_runs(parent, pipeline_module, range, opts) do
+      :ok ->
+        {:ok, parent.id}
+
+      {:error, reason, failures} ->
+        handle_child_dispatch_failure(parent, pipeline_module, reason, failures, opts)
+    end
+  end
+
+  defp submit_asset_backfill_children(%RunState{} = parent, %Asset{} = asset, range, opts) do
+    case submit_asset_child_runs(parent, asset, range, opts) do
+      :ok ->
+        {:ok, parent.id}
+
+      {:error, reason, failures} ->
+        handle_child_dispatch_failure(parent, asset.module, reason, failures, opts)
+    end
+  end
+
+  defp handle_child_dispatch_failure(parent, pipeline_module, reason, failures, opts) do
+    case compensate_existing_backfill(parent, pipeline_module, reason, opts, failures) do
+      :ok -> {:error, reason}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp submit_asset_child_run_for_anchor(%RunState{} = parent, %Asset{} = asset, anchor, opts) do
+    window_key = WindowKey.encode(anchor.key)
+
+    child_opts =
+      opts
+      |> Keyword.drop([:range_request, :run_id, :coverage_baseline_id, :dispatch_concurrency])
+      |> default_child_refresh()
+      |> Keyword.put(:manifest_version_id, parent.manifest_version_id)
+      |> Keyword.put(:anchor_window, anchor)
+      |> Keyword.put(:exact_windows, %{asset.ref => [runtime_window!(anchor)]})
+      |> Keyword.put(:parent_run_id, parent.id)
+      |> Keyword.put(:root_run_id, parent.id)
+      |> Keyword.put(:lineage_depth, 1)
+      |> Keyword.put(:trigger, %{
+        kind: :backfill,
+        backfill_run_id: parent.id,
+        pipeline_module: asset.module,
+        window_key: window_key
+      })
+      |> Keyword.update(
+        :metadata,
+        asset_child_metadata(asset, anchor, window_key),
+        fn metadata ->
+          Map.merge(metadata, asset_child_metadata(asset, anchor, window_key))
+        end
+      )
+
+    with {:ok, _child_run_id} <- submit_asset_child_run(asset.ref, child_opts, opts) do
+      {:ok, window_key}
+    end
+  end
+
+  defp dispatch_results_to_submit_result({:ok, results}) do
+    failures =
+      results
+      |> Enum.filter(&(&1.status == :error))
+      |> Enum.map(fn %{item: anchor, reason: reason} ->
+        %{window_key: WindowKey.encode(anchor.key), reason: reason}
+      end)
+
+    case failures do
+      [] -> :ok
+      [%{reason: reason} | _rest] -> {:error, reason, failures}
+    end
+  end
+
+  defp backfill_dispatch_concurrency(opts) do
+    opts
+    |> Keyword.get(:dispatch_concurrency, configured_backfill_dispatch_concurrency())
+    |> positive_integer(@default_dispatch_concurrency)
+  end
+
+  defp configured_backfill_dispatch_concurrency do
+    case Application.get_env(:favn_orchestrator, :backfill, []) do
+      opts when is_list(opts) ->
         opts
-        |> Keyword.drop([:range_request, :run_id, :coverage_baseline_id])
-        |> default_child_refresh()
-        |> Keyword.put(:manifest_version_id, parent.manifest_version_id)
-        |> Keyword.put(:anchor_window, anchor)
-        |> Keyword.put(:exact_windows, %{asset.ref => [runtime_window!(anchor)]})
-        |> Keyword.put(:parent_run_id, parent.id)
-        |> Keyword.put(:root_run_id, parent.id)
-        |> Keyword.put(:lineage_depth, 1)
-        |> Keyword.put(:trigger, %{
-          kind: :backfill,
-          backfill_run_id: parent.id,
-          pipeline_module: asset.module,
-          window_key: window_key
-        })
-        |> Keyword.update(
-          :metadata,
-          asset_child_metadata(asset, anchor, window_key),
-          fn metadata ->
-            Map.merge(metadata, asset_child_metadata(asset, anchor, window_key))
-          end
-        )
+        |> Keyword.get(:dispatch_concurrency, @default_dispatch_concurrency)
+        |> positive_integer(@default_dispatch_concurrency)
 
-      case submit_asset_child_run(asset.ref, child_opts, opts) do
-        {:ok, _child_run_id} -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+      _other ->
+        @default_dispatch_concurrency
+    end
+  end
+
+  defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive_integer(_value, default), do: default
+
+  defp submit_child_run_for_anchor(%RunState{} = parent, pipeline_module, anchor, opts) do
+    with {:ok, _child_run_id} <-
+           submit_child_run(pipeline_module, child_opts(parent, anchor, opts), opts) do
+      {:ok, WindowKey.encode(anchor.key)}
+    end
   end
 
   defp runtime_window!(anchor) do
@@ -423,13 +505,6 @@ defmodule FavnOrchestrator.BackfillManager do
     end
   end
 
-  defp submit_child_run_for_anchor(%RunState{} = parent, pipeline_module, anchor, opts) do
-    case submit_child_run(pipeline_module, child_opts(parent, anchor, opts), opts) do
-      {:ok, _child_run_id} -> {:cont, :ok}
-      {:error, _reason} = error -> {:halt, error}
-    end
-  end
-
   defp child_opts(%RunState{} = parent, anchor, opts) do
     window_key = WindowKey.encode(anchor.key)
 
@@ -437,7 +512,8 @@ defmodule FavnOrchestrator.BackfillManager do
     |> Keyword.drop([
       :range_request,
       :run_id,
-      :coverage_baseline_id
+      :coverage_baseline_id,
+      :dispatch_concurrency
     ])
     |> default_child_refresh()
     |> Keyword.put(:manifest_version_id, parent.manifest_version_id)
@@ -673,13 +749,16 @@ defmodule FavnOrchestrator.BackfillManager do
     end
   end
 
-  defp compensate_existing_backfill(%RunState{} = parent, pipeline_module, reason, opts) do
+  defp compensate_existing_backfill(parent, pipeline_module, reason, opts, failures \\ :all)
+
+  defp compensate_existing_backfill(%RunState{} = parent, pipeline_module, reason, opts, failures) do
     with {:ok, windows} <- BackfillProjector.list_all_backfill_windows(backfill_run_id: parent.id),
          now <- DateTime.utc_now(),
          error <- {:backfill_child_submission_failed, reason},
          {:ok, updated_windows} <-
-           windows_with_compensation(windows, pipeline_module, error, now, opts) do
-      status = BackfillProjector.parent_status(updated_windows)
+           windows_with_compensation(windows, pipeline_module, error, now, opts, failures),
+         {:ok, parent} <- Storage.get_run(parent.id) do
+      status = compensated_parent_status(updated_windows, pipeline_module, failures)
 
       parent
       |> RunState.transition(
@@ -697,10 +776,12 @@ defmodule FavnOrchestrator.BackfillManager do
     end
   end
 
-  defp windows_with_compensation(windows, pipeline_module, error, now, opts) do
+  defp windows_with_compensation(windows, pipeline_module, error, now, opts, failures) do
     result =
       Enum.reduce_while(windows, {:ok, []}, fn window, {:ok, acc} ->
-        if window.pipeline_module == pipeline_module and window.status in [:pending, :running] do
+        if compensate_window?(window, pipeline_module, failures) do
+          error = window_compensation_error(error, window.window_key, failures)
+
           updated = %{
             window
             | status: :error,
@@ -722,6 +803,46 @@ defmodule FavnOrchestrator.BackfillManager do
     case result do
       {:ok, windows} -> {:ok, Enum.reverse(windows)}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp compensated_parent_status(windows, _pipeline_module, :all) do
+    BackfillProjector.parent_status(windows)
+  end
+
+  defp compensated_parent_status(windows, pipeline_module, failures) when is_list(failures) do
+    failed_window_keys = MapSet.new(failures, & &1.window_key)
+
+    submitted_or_pending_count =
+      Enum.count(windows, fn window ->
+        window.pipeline_module == pipeline_module and
+          not MapSet.member?(failed_window_keys, window.window_key)
+      end)
+
+    if submitted_or_pending_count > 0 do
+      :partial
+    else
+      BackfillProjector.parent_status(windows)
+    end
+  end
+
+  defp compensate_window?(%BackfillWindow{} = window, pipeline_module, :all) do
+    window.pipeline_module == pipeline_module and window.status in [:pending, :running]
+  end
+
+  defp compensate_window?(%BackfillWindow{} = window, pipeline_module, failures)
+       when is_list(failures) do
+    window.pipeline_module == pipeline_module and
+      window.status in [:pending, :running] and
+      Enum.any?(failures, &(&1.window_key == window.window_key))
+  end
+
+  defp window_compensation_error(error, _window_key, :all), do: error
+
+  defp window_compensation_error(_error, window_key, failures) when is_list(failures) do
+    case Enum.find(failures, &(&1.window_key == window_key)) do
+      %{reason: reason} -> {:backfill_child_submission_failed, reason}
+      nil -> {:backfill_child_submission_failed, :unknown_child_submission_failure}
     end
   end
 

@@ -146,7 +146,7 @@ defmodule FavnOrchestrator.Backfill.Projector do
 
   defp project_parent_from_progress(%BackfillProgress{} = progress) do
     with {:ok, parent} <- Storage.get_run(progress.backfill_run_id),
-         status <- progress.status,
+         status <- projected_parent_status(progress.status, parent.status),
          error <- parent_error(status, parent),
          true <- status != parent.status or error != parent.error do
       event_type = parent_event_type(status)
@@ -198,13 +198,19 @@ defmodule FavnOrchestrator.Backfill.Projector do
     statuses = Enum.map(windows, & &1.status)
 
     cond do
-      Enum.any?(statuses, &(&1 in [:pending, :running])) -> :running
       Enum.all?(statuses, &(&1 == :ok)) -> :ok
       Enum.all?(statuses, &(&1 == :cancelled)) -> :cancelled
       Enum.all?(statuses, &(&1 == :timed_out)) -> :timed_out
       Enum.any?(statuses, &(&1 == :ok)) -> :partial
+      mixed_terminal_failure?(statuses) -> :partial
+      Enum.any?(statuses, &(&1 in [:pending, :running])) -> :running
       true -> :error
     end
+  end
+
+  defp mixed_terminal_failure?(statuses) do
+    Enum.any?(statuses, &(&1 in [:error, :cancelled, :timed_out])) and
+      Enum.any?(statuses, &(&1 in [:pending, :running]))
   end
 
   defp parent_event_type(:running), do: :backfill_progressed
@@ -216,6 +222,12 @@ defmodule FavnOrchestrator.Backfill.Projector do
 
   defp parent_error(:ok, _parent), do: nil
   defp parent_error(_status, %RunState{} = parent), do: parent.error
+
+  defp projected_parent_status(:running, status)
+       when status in [:partial, :error, :cancelled, :timed_out],
+       do: status
+
+  defp projected_parent_status(status, _parent_status), do: status
 
   defp build_asset_window_states(%BackfillWindow{} = window, %RunState{} = run_state) do
     run_state

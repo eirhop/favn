@@ -344,6 +344,57 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert length(capped_runs) == 3
   end
 
+  test "missed all honors per-tick submission budget below catch-up cap" do
+    Application.put_env(:favn_orchestrator, :scheduler,
+      max_missed_all_occurrences: 10,
+      submission_budget: 2
+    )
+
+    version =
+      scheduler_manifest_version("mv_scheduler_submission_budget",
+        cron: "* * * * * *",
+        missed: :all,
+        overlap: :allow
+      )
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+    [entry] = Runtime.scheduled(name)
+
+    state = %State{
+      pipeline_module: entry.module,
+      schedule_id: entry.schedule.name,
+      schedule_fingerprint: entry.schedule_fingerprint,
+      last_due_at: DateTime.add(DateTime.utc_now(), -10, :second),
+      version: 1
+    }
+
+    assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
+    assert :ok = Runtime.reload(name)
+    assert :ok = Runtime.tick(name)
+
+    assert {:ok, runs} = Storage.list_runs()
+
+    budgeted_runs = Enum.filter(runs, &(&1.manifest_version_id == version.manifest_version_id))
+    assert length(budgeted_runs) == 2
+
+    first_occurrence_keys = occurrence_keys(budgeted_runs)
+    assert length(first_occurrence_keys) == 2
+
+    assert :ok = Runtime.tick(name)
+    assert {:ok, runs} = Storage.list_runs()
+
+    continued_runs = Enum.filter(runs, &(&1.manifest_version_id == version.manifest_version_id))
+    continued_occurrence_keys = occurrence_keys(continued_runs)
+
+    assert length(continued_runs) == 4
+    assert length(continued_occurrence_keys) == 4
+    assert Enum.uniq(continued_occurrence_keys) == continued_occurrence_keys
+  end
+
   test "windowed scheduled pipelines carry anchor window into run pipeline context" do
     version = scheduler_manifest_version("mv_scheduler_window", window: :hour)
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -513,6 +564,12 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     {:ok, runs} = Storage.list_runs()
     GenServer.stop(pid)
     length(runs)
+  end
+
+  defp occurrence_keys(runs) do
+    runs
+    |> Enum.map(& &1.trigger.occurrence.occurrence_key)
+    |> Enum.sort()
   end
 
   defp running_run_state(run_id, version, trigger) do
