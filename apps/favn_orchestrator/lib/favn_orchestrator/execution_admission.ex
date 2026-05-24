@@ -119,22 +119,21 @@ defmodule FavnOrchestrator.ExecutionAdmission do
 
   @spec release_run(String.t()) :: :ok | {:error, term()}
   def release_run(run_id) when is_binary(run_id) do
-    case Storage.list_execution_leases() do
-      {:ok, leases} ->
-        leases
-        |> Enum.filter(&(Map.get(&1, :run_id) == run_id || Map.get(&1, "run_id") == run_id))
-        |> Enum.each(fn lease ->
-          lease_id = Map.get(lease, :lease_id) || Map.get(lease, "lease_id")
+    wait_cleanup = cancel_run_waits(run_id)
 
-          if is_binary(lease_id) do
-            release(lease)
-          end
-        end)
+    case Storage.release_execution_leases_for_run(run_id) do
+      {:ok, release} ->
+        Coordinator.notify_scopes(release.scopes)
+        wait_cleanup
 
-        cancel_run_waits(run_id)
+      {:error, reason} ->
+        case wait_cleanup do
+          :ok ->
+            {:error, reason}
 
-      {:error, _reason} ->
-        cancel_run_waits(run_id)
+          {:error, wait_reason} ->
+            {:error, {:execution_admission_release_failed, reason, wait_reason}}
+        end
     end
   end
 

@@ -37,6 +37,81 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
     end
   end
 
+  defmodule NoGlobalLeaseScanStorageAdapter do
+    @moduledoc false
+    @behaviour Favn.Storage.Adapter
+
+    callbacks =
+      Favn.Storage.Adapter.behaviour_info(:callbacks) --
+        Favn.Storage.Adapter.behaviour_info(:optional_callbacks)
+
+    excluded = [:list_execution_leases, :release_execution_leases_for_run]
+
+    for {name, arity} <- callbacks, name not in excluded do
+      args = Macro.generate_arguments(arity, __MODULE__)
+
+      @impl true
+      def unquote(name)(unquote_splicing(args)) do
+        apply(FavnOrchestrator.Storage.Adapter.Memory, unquote(name), [unquote_splicing(args)])
+      end
+    end
+
+    @impl true
+    def list_execution_leases(opts) when is_list(opts) do
+      if owner = Keyword.get(opts, :owner), do: send(owner, :global_lease_scan)
+      {:error, :global_lease_scan_not_allowed}
+    end
+
+    @impl true
+    def release_execution_leases_for_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
+      if owner = Keyword.get(opts, :owner), do: send(owner, {:release_leases_for_run, run_id})
+      FavnOrchestrator.Storage.Adapter.Memory.release_execution_leases_for_run(run_id, opts)
+    end
+  end
+
+  defmodule WakeCountingStorageAdapter do
+    @moduledoc false
+    @behaviour Favn.Storage.Adapter
+
+    callbacks =
+      Favn.Storage.Adapter.behaviour_info(:callbacks) --
+        Favn.Storage.Adapter.behaviour_info(:optional_callbacks)
+
+    excluded = [
+      :expire_execution_admission_waiters,
+      :list_execution_admission_waiters_for_scope
+    ]
+
+    for {name, arity} <- callbacks, name not in excluded do
+      args = Macro.generate_arguments(arity, __MODULE__)
+
+      @impl true
+      def unquote(name)(unquote_splicing(args)) do
+        apply(FavnOrchestrator.Storage.Adapter.Memory, unquote(name), [unquote_splicing(args)])
+      end
+    end
+
+    @impl true
+    def expire_execution_admission_waiters(now, opts) when is_list(opts) do
+      if owner = Keyword.get(opts, :owner), do: send(owner, :expired_waiters)
+      FavnOrchestrator.Storage.Adapter.Memory.expire_execution_admission_waiters(now, opts)
+    end
+
+    @impl true
+    def list_execution_admission_waiters_for_scope(scope, waiter_opts, opts)
+        when is_map(scope) and is_list(waiter_opts) and is_list(opts) do
+      if owner = Keyword.get(opts, :owner) do
+        send(owner, {:listed_waiters, {to_string(scope.kind), scope.key}})
+      end
+
+      FavnOrchestrator.Storage.Adapter.Memory.list_execution_admission_waiters_for_scope(
+        scope,
+        waiter_opts,
+        opts
+      )
+    end
+  end
+
   setup do
     Memory.reset()
 
@@ -136,6 +211,69 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
 
     assert :ok = ExecutionAdmission.cancel_wait(waiter)
     assert {:ok, []} = Storage.list_execution_admission_waiters_for_scope(waiter.blocked_scope)
+  end
+
+  test "release_run releases keyed leases without listing every lease" do
+    Application.put_env(:favn_orchestrator, :storage_adapter, NoGlobalLeaseScanStorageAdapter)
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, owner: self())
+
+    run_a = run(id: "run-a", max_concurrency: 3)
+    run_b = run(id: "run-b", max_concurrency: 3)
+
+    assert {:ok, _lease_a1} = ExecutionAdmission.acquire(run_a, %{asset_step_id: "step-a1"})
+    assert {:ok, _lease_a2} = ExecutionAdmission.acquire(run_a, %{asset_step_id: "step-a2"})
+    assert {:ok, lease_b} = ExecutionAdmission.acquire(run_b, %{asset_step_id: "step-b"})
+
+    assert :ok = ExecutionAdmission.release_run(run_a.id)
+    assert_receive {:release_leases_for_run, "run-a"}, 1_000
+    refute_received :global_lease_scan
+
+    assert {:ok, [remaining]} = Memory.list_execution_leases([])
+    assert remaining.lease_id == lease_b.lease_id
+  end
+
+  test "release_run wakes waiters blocked by scopes freed by the run" do
+    Application.put_env(:favn, :execution_pools, github_api: [max_concurrency: 1])
+
+    run_a = run(id: "run-a", max_concurrency: 10)
+    run_b = run(id: "run-b", max_concurrency: 10)
+    entry = %{asset_step_id: "step-1", execution_pool: :github_api}
+
+    assert {:ok, _lease} = ExecutionAdmission.acquire(run_a, entry)
+
+    assert {:waiting, waiter} =
+             ExecutionAdmission.acquire_or_wait(run_b, %{entry | asset_step_id: "step-2"},
+               stage: 0,
+               attempt: 1
+             )
+
+    assert waiter.queue_reason == :execution_pool
+    assert :ok = ExecutionAdmission.release_run(run_a.id)
+
+    assert_receive {:execution_admission_wakeup, waiter_id, generation}, 1_000
+    assert waiter_id == waiter.waiter_id
+    assert generation == waiter.wake_generation
+
+    assert :ok = ExecutionAdmission.cancel_wait(waiter)
+  end
+
+  test "coordinator dedupes duplicate notification scopes and expires once per batch" do
+    Application.put_env(:favn_orchestrator, :storage_adapter, WakeCountingStorageAdapter)
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, owner: self())
+
+    scope = %{kind: :pool, key: "github_api", limit: 1}
+    duplicate_scope = %{kind: "pool", key: "github_api", limit: 1}
+
+    FavnOrchestrator.ExecutionAdmission.Coordinator.notify_scopes([
+      scope,
+      duplicate_scope,
+      scope
+    ])
+
+    assert_receive :expired_waiters, 1_000
+    assert_receive {:listed_waiters, {"pool", "github_api"}}, 1_000
+    refute_received :expired_waiters
+    refute_received {:listed_waiters, {"pool", "github_api"}}
   end
 
   test "acquire_or_wait rechecks admission after registering waiter" do

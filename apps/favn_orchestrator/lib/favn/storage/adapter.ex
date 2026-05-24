@@ -36,7 +36,8 @@ defmodule Favn.Storage.Adapter do
 
   Execution lease callbacks are required. They enforce orchestrator-owned asset
   execution admission across run concurrency and shared execution pools before
-  runner work is submitted.
+  runner work is submitted. Run-scoped release must use keyed storage operations
+  and return released scopes so wakeups stay targeted without global lease scans.
   """
 
   alias Favn.Manifest.Version
@@ -46,6 +47,7 @@ defmodule Favn.Storage.Adapter do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
   alias FavnOrchestrator.CursorPage
+  alias FavnOrchestrator.ExecutionAdmission.LeaseRelease
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
@@ -100,6 +102,8 @@ defmodule Favn.Storage.Adapter do
   @callback try_acquire_execution_lease(map(), adapter_opts()) ::
               {:ok, map()} | {:error, {:execution_capacity_exceeded, map()} | error()}
   @callback release_execution_lease(String.t(), adapter_opts()) :: :ok | {:error, error()}
+  @callback release_execution_leases_for_run(String.t(), adapter_opts()) ::
+              {:ok, LeaseRelease.t()} | {:error, error()}
   @callback expire_execution_leases(DateTime.t(), adapter_opts()) ::
               {:ok, non_neg_integer()} | {:error, error()}
   @callback list_execution_leases(adapter_opts()) :: {:ok, [map()]} | {:error, error()}

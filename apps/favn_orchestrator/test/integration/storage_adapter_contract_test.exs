@@ -264,6 +264,14 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert :ok = Storage.release_execution_lease(lease.lease_id)
     assert {:ok, ^blocked} = Storage.try_acquire_execution_lease(blocked)
     assert {:ok, [^blocked]} = Storage.list_execution_leases()
+
+    assert {:ok, release} = Storage.release_execution_leases_for_run(run.id)
+    assert release.run_id == run.id
+    assert release.released_count == 1
+    assert release.scopes == [%{kind: :run, key: run.id, limit: 1}]
+    assert {:ok, []} = Storage.list_execution_leases()
+
+    assert {:ok, ^blocked} = Storage.try_acquire_execution_lease(blocked)
     assert {:ok, 1} = Storage.expire_execution_leases(DateTime.add(now, 6, :second))
     assert {:ok, []} = Storage.list_execution_leases()
 

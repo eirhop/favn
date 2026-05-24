@@ -62,6 +62,11 @@ defmodule Favn.StorageFacadeTest do
     def release_execution_lease(_lease_id, _opts), do: :ok
 
     @impl true
+    def release_execution_leases_for_run(run_id, _opts) do
+      {:ok, FavnOrchestrator.ExecutionAdmission.LeaseRelease.new(run_id, 0, [])}
+    end
+
+    @impl true
     def expire_execution_leases(_now, _opts), do: {:ok, 0}
 
     @impl true
@@ -247,6 +252,11 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def release_execution_lease(_lease_id, _opts), do: :ok
+
+    @impl true
+    def release_execution_leases_for_run(run_id, _opts) do
+      {:ok, FavnOrchestrator.ExecutionAdmission.LeaseRelease.new(run_id, 0, [])}
+    end
 
     @impl true
     def expire_execution_leases(_now, _opts), do: {:ok, 0}
