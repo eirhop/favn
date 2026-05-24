@@ -12,6 +12,12 @@ defmodule Favn.Storage.Adapter do
   state. Adapters should preserve the same upsert and filtering semantics across
   memory, SQLite, and Postgres.
 
+  Bulk read-model callbacks must be semantically equivalent to applying the
+  corresponding single-row put callback to each row in list order. When a bulk
+  input contains duplicate natural keys, the last row in the list wins. Adapters
+  may coalesce duplicates before writing, but the externally visible result must
+  not depend on chunk size or database-specific duplicate handling.
+
   Adapter startup is optional. `child_spec/1` returns `:none` when no supervised
   process is required or when the adapter runtime is already started, and may
   return `{:error, reason}` for recoverable configuration errors.
@@ -150,6 +156,8 @@ defmodule Favn.Storage.Adapter do
 
   @callback put_backfill_window(BackfillWindow.t(), adapter_opts()) ::
               :ok | {:error, error()}
+  @callback put_backfill_windows([BackfillWindow.t()], adapter_opts()) ::
+              :ok | {:error, error()}
   @callback get_backfill_window(String.t(), module(), String.t(), adapter_opts()) ::
               {:ok, BackfillWindow.t()} | {:error, error()}
   @callback list_backfill_windows(filter_opts(), adapter_opts()) ::
@@ -167,6 +175,8 @@ defmodule Favn.Storage.Adapter do
               {:ok, BackfillProgress.t()} | {:error, error()}
 
   @callback put_asset_window_state(AssetWindowState.t(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback put_asset_window_states([AssetWindowState.t()], adapter_opts()) ::
               :ok | {:error, error()}
   @callback get_asset_window_state(module(), atom(), String.t(), adapter_opts()) ::
               {:ok, AssetWindowState.t()} | {:error, error()}
@@ -247,6 +257,8 @@ defmodule Favn.Storage.Adapter do
                       list_execution_groups: 2,
                       list_run_events: 3,
                       list_execution_group_events: 3,
+                      put_backfill_windows: 2,
+                      put_asset_window_states: 2,
                       put_asset_freshness_state: 2,
                       get_asset_freshness_state: 4,
                       list_asset_freshness_states: 2,

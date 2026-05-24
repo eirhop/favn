@@ -59,6 +59,7 @@ defmodule Favn.Storage.Adapter.SQLite do
     :asset_ref,
     :node_key
   ]
+  @read_model_chunk_size 50
 
   @impl true
   def child_spec(opts) when is_list(opts) do
@@ -727,52 +728,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def put_coverage_baseline(%CoverageBaseline{} = baseline, opts) when is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
-      sql =
-        """
-        INSERT INTO favn_pipeline_coverage_baselines (
-          baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted,
-          window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id,
-          manifest_version_id, status, record_payload, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
-        ON CONFLICT(baseline_id) DO UPDATE SET
-          pipeline_module = excluded.pipeline_module,
-          source_key = excluded.source_key,
-          segment_key_hash = excluded.segment_key_hash,
-          segment_key_redacted = excluded.segment_key_redacted,
-          window_kind = excluded.window_kind,
-          timezone = excluded.timezone,
-          coverage_start_at = excluded.coverage_start_at,
-          coverage_until = excluded.coverage_until,
-          created_by_run_id = excluded.created_by_run_id,
-          manifest_version_id = excluded.manifest_version_id,
-          status = excluded.status,
-          record_payload = excluded.record_payload,
-          created_at = excluded.created_at,
-          updated_at = excluded.updated_at
-        """
-
-      params = [
-        baseline.baseline_id,
-        encode_atom(baseline.pipeline_module),
-        baseline.source_key,
-        baseline.segment_key_hash,
-        baseline.segment_key_redacted,
-        encode_atom(baseline.window_kind),
-        baseline.timezone,
-        encode_datetime(baseline.coverage_start_at),
-        encode_datetime(baseline.coverage_until),
-        baseline.created_by_run_id,
-        baseline.manifest_version_id,
-        encode_atom(baseline.status),
-        encode_coverage_baseline(baseline),
-        encode_datetime(baseline.created_at),
-        encode_datetime(baseline.updated_at)
-      ]
-
-      case SQL.query(repo, sql, params) do
-        {:ok, _} -> :ok
-        {:error, reason} -> {:error, reason}
-      end
+      upsert_coverage_baselines(repo, [baseline])
     end
   end
 
@@ -806,59 +762,14 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def put_backfill_window(%BackfillWindow{} = window, opts) when is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
-      sql =
-        """
-        INSERT INTO favn_backfill_windows (
-          backfill_run_id, child_run_id, pipeline_module, manifest_version_id,
-          coverage_baseline_id, window_kind, window_start_at, window_end_at, timezone,
-          window_key, status, attempt_count, latest_attempt_run_id, last_success_run_id,
-          record_payload, started_at, finished_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
-        ON CONFLICT(backfill_run_id, pipeline_module, window_key) DO UPDATE SET
-          child_run_id = excluded.child_run_id,
-          manifest_version_id = excluded.manifest_version_id,
-          coverage_baseline_id = excluded.coverage_baseline_id,
-          window_kind = excluded.window_kind,
-          window_start_at = excluded.window_start_at,
-          window_end_at = excluded.window_end_at,
-          timezone = excluded.timezone,
-          status = excluded.status,
-          attempt_count = excluded.attempt_count,
-          latest_attempt_run_id = excluded.latest_attempt_run_id,
-          last_success_run_id = excluded.last_success_run_id,
-          record_payload = excluded.record_payload,
-          started_at = excluded.started_at,
-          finished_at = excluded.finished_at,
-          created_at = excluded.created_at,
-          updated_at = excluded.updated_at
-        """
+      upsert_backfill_windows(repo, [window])
+    end
+  end
 
-      params = [
-        window.backfill_run_id,
-        window.child_run_id,
-        encode_atom(window.pipeline_module),
-        window.manifest_version_id,
-        window.coverage_baseline_id,
-        encode_atom(window.window_kind),
-        encode_datetime(window.window_start_at),
-        encode_datetime(window.window_end_at),
-        window.timezone,
-        window.window_key,
-        encode_atom(window.status),
-        window.attempt_count,
-        window.latest_attempt_run_id,
-        window.last_success_run_id,
-        encode_backfill_window(window),
-        encode_datetime(window.started_at),
-        encode_datetime(window.finished_at),
-        encode_datetime(window.created_at),
-        encode_datetime(window.updated_at)
-      ]
-
-      case SQL.query(repo, sql, params) do
-        {:ok, _} -> :ok
-        {:error, reason} -> {:error, reason}
-      end
+  @impl true
+  def put_backfill_windows(windows, opts) when is_list(windows) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      upsert_backfill_windows(repo, windows)
     end
   end
 
@@ -923,8 +834,8 @@ defmodule Favn.Storage.Adapter.SQLite do
       repo.transact(fn ->
         with :ok <- lock_backfill_window(repo, window),
              old_status <- fetch_backfill_window_status(repo, window),
-             :ok <- put_backfill_window(window, opts),
-             :ok <- put_all(asset_window_states, &put_asset_window_state(&1, opts)),
+             :ok <- upsert_backfill_windows(repo, [window]),
+             :ok <- upsert_asset_window_states(repo, asset_window_states),
              {:ok, progress} <-
                upsert_backfill_progress_after_window_change(repo, window, old_status) do
           {:ok, progress}
@@ -958,53 +869,14 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def put_asset_window_state(%AssetWindowState{} = state, opts) when is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
-      sql =
-        """
-        INSERT INTO favn_asset_window_states (
-          asset_ref_module, asset_ref_name, pipeline_module, manifest_version_id,
-          window_kind, window_start_at, window_end_at, timezone, window_key, status,
-          latest_run_id, latest_parent_run_id, latest_success_run_id, rows_written,
-          record_payload, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-        ON CONFLICT(asset_ref_module, asset_ref_name, window_key) DO UPDATE SET
-          pipeline_module = excluded.pipeline_module,
-          manifest_version_id = excluded.manifest_version_id,
-          window_kind = excluded.window_kind,
-          window_start_at = excluded.window_start_at,
-          window_end_at = excluded.window_end_at,
-          timezone = excluded.timezone,
-          status = excluded.status,
-          latest_run_id = excluded.latest_run_id,
-          latest_parent_run_id = excluded.latest_parent_run_id,
-          latest_success_run_id = excluded.latest_success_run_id,
-          rows_written = excluded.rows_written,
-          record_payload = excluded.record_payload,
-          updated_at = excluded.updated_at
-        """
+      upsert_asset_window_states(repo, [state])
+    end
+  end
 
-      params = [
-        encode_atom(state.asset_ref_module),
-        encode_atom(state.asset_ref_name),
-        encode_atom(state.pipeline_module),
-        state.manifest_version_id,
-        encode_atom(state.window_kind),
-        encode_datetime(state.window_start_at),
-        encode_datetime(state.window_end_at),
-        state.timezone,
-        state.window_key,
-        encode_atom(state.status),
-        state.latest_run_id,
-        state.latest_parent_run_id,
-        state.latest_success_run_id,
-        state.rows_written,
-        encode_asset_window_state(state),
-        encode_datetime(state.updated_at)
-      ]
-
-      case SQL.query(repo, sql, params) do
-        {:ok, _} -> :ok
-        {:error, reason} -> {:error, reason}
-      end
+  @impl true
+  def put_asset_window_states(states, opts) when is_list(states) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      upsert_asset_window_states(repo, states)
     end
   end
 
@@ -1178,9 +1050,9 @@ defmodule Favn.Storage.Adapter.SQLite do
              :ok <-
                delete_replacement_scope(repo, "favn_asset_window_states", :asset_state, scope),
              :ok <- delete_replacement_progress(repo, scope),
-             :ok <- put_all(coverage_baselines, &put_coverage_baseline(&1, opts)),
-             :ok <- put_all(backfill_windows, &put_backfill_window(&1, opts)),
-             :ok <- put_all(asset_window_states, &put_asset_window_state(&1, opts)),
+             :ok <- upsert_coverage_baselines(repo, coverage_baselines),
+             :ok <- upsert_backfill_windows(repo, backfill_windows),
+             :ok <- upsert_asset_window_states(repo, asset_window_states),
              :ok <-
                rebuild_backfill_progress_for_ids(
                  repo,
@@ -2022,13 +1894,193 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp read_filters(filters), do: Keyword.drop(filters, [:limit, :offset])
 
-  defp put_all(items, fun) when is_list(items) and is_function(fun, 1) do
-    Enum.reduce_while(items, :ok, fn item, :ok ->
-      case fun.(item) do
-        :ok -> {:cont, :ok}
+  defp upsert_coverage_baselines(_repo, []), do: :ok
+
+  defp upsert_coverage_baselines(repo, baselines) do
+    sql = """
+    INSERT INTO favn_pipeline_coverage_baselines (
+      baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted,
+      window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id,
+      manifest_version_id, status, record_payload, created_at, updated_at
+    ) VALUES __VALUES__
+    ON CONFLICT(baseline_id) DO UPDATE SET
+      pipeline_module = excluded.pipeline_module,
+      source_key = excluded.source_key,
+      segment_key_hash = excluded.segment_key_hash,
+      segment_key_redacted = excluded.segment_key_redacted,
+      window_kind = excluded.window_kind,
+      timezone = excluded.timezone,
+      coverage_start_at = excluded.coverage_start_at,
+      coverage_until = excluded.coverage_until,
+      created_by_run_id = excluded.created_by_run_id,
+      manifest_version_id = excluded.manifest_version_id,
+      status = excluded.status,
+      record_payload = excluded.record_payload,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at
+    """
+
+    baselines = dedupe_last_by(baselines, & &1.baseline_id)
+    bulk_query_ok(repo, sql, baselines, &coverage_baseline_params/1)
+  end
+
+  defp upsert_backfill_windows(_repo, []), do: :ok
+
+  defp upsert_backfill_windows(repo, windows) do
+    sql = """
+    INSERT INTO favn_backfill_windows (
+      backfill_run_id, child_run_id, pipeline_module, manifest_version_id,
+      coverage_baseline_id, window_kind, window_start_at, window_end_at, timezone,
+      window_key, status, attempt_count, latest_attempt_run_id, last_success_run_id,
+      record_payload, started_at, finished_at, created_at, updated_at
+    ) VALUES __VALUES__
+    ON CONFLICT(backfill_run_id, pipeline_module, window_key) DO UPDATE SET
+      child_run_id = excluded.child_run_id,
+      manifest_version_id = excluded.manifest_version_id,
+      coverage_baseline_id = excluded.coverage_baseline_id,
+      window_kind = excluded.window_kind,
+      window_start_at = excluded.window_start_at,
+      window_end_at = excluded.window_end_at,
+      timezone = excluded.timezone,
+      status = excluded.status,
+      attempt_count = excluded.attempt_count,
+      latest_attempt_run_id = excluded.latest_attempt_run_id,
+      last_success_run_id = excluded.last_success_run_id,
+      record_payload = excluded.record_payload,
+      started_at = excluded.started_at,
+      finished_at = excluded.finished_at,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at
+    """
+
+    windows = dedupe_last_by(windows, &{&1.backfill_run_id, &1.pipeline_module, &1.window_key})
+    bulk_query_ok(repo, sql, windows, &backfill_window_params/1)
+  end
+
+  defp upsert_asset_window_states(_repo, []), do: :ok
+
+  defp upsert_asset_window_states(repo, states) do
+    sql = """
+    INSERT INTO favn_asset_window_states (
+      asset_ref_module, asset_ref_name, pipeline_module, manifest_version_id,
+      window_kind, window_start_at, window_end_at, timezone, window_key, status,
+      latest_run_id, latest_parent_run_id, latest_success_run_id, rows_written,
+      record_payload, updated_at
+    ) VALUES __VALUES__
+    ON CONFLICT(asset_ref_module, asset_ref_name, window_key) DO UPDATE SET
+      pipeline_module = excluded.pipeline_module,
+      manifest_version_id = excluded.manifest_version_id,
+      window_kind = excluded.window_kind,
+      window_start_at = excluded.window_start_at,
+      window_end_at = excluded.window_end_at,
+      timezone = excluded.timezone,
+      status = excluded.status,
+      latest_run_id = excluded.latest_run_id,
+      latest_parent_run_id = excluded.latest_parent_run_id,
+      latest_success_run_id = excluded.latest_success_run_id,
+      rows_written = excluded.rows_written,
+      record_payload = excluded.record_payload,
+      updated_at = excluded.updated_at
+    """
+
+    states = dedupe_last_by(states, &{&1.asset_ref_module, &1.asset_ref_name, &1.window_key})
+    bulk_query_ok(repo, sql, states, &asset_window_state_params/1)
+  end
+
+  defp dedupe_last_by(rows, key_fun) when is_function(key_fun, 1) do
+    rows
+    |> Enum.reverse()
+    |> Enum.uniq_by(key_fun)
+    |> Enum.reverse()
+  end
+
+  defp bulk_query_ok(repo, sql_template, rows, params_fun) do
+    rows
+    |> Enum.chunk_every(@read_model_chunk_size)
+    |> Enum.reduce_while(:ok, fn chunk, :ok ->
+      params = Enum.map(chunk, params_fun)
+      sql = String.replace(sql_template, "__VALUES__", sqlite_values_sql(params))
+
+      case SQL.query(repo, sql, List.flatten(params)) do
+        {:ok, _} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp sqlite_values_sql(rows) do
+    rows
+    |> Enum.map_reduce(1, fn row, index ->
+      placeholders = Enum.map(index..(index + length(row) - 1), &"?#{&1}")
+      {"(" <> Enum.join(placeholders, ", ") <> ")", index + length(row)}
+    end)
+    |> elem(0)
+    |> Enum.join(", ")
+  end
+
+  defp coverage_baseline_params(%CoverageBaseline{} = baseline) do
+    [
+      baseline.baseline_id,
+      encode_atom(baseline.pipeline_module),
+      baseline.source_key,
+      baseline.segment_key_hash,
+      baseline.segment_key_redacted,
+      encode_atom(baseline.window_kind),
+      baseline.timezone,
+      encode_datetime(baseline.coverage_start_at),
+      encode_datetime(baseline.coverage_until),
+      baseline.created_by_run_id,
+      baseline.manifest_version_id,
+      encode_atom(baseline.status),
+      encode_coverage_baseline(baseline),
+      encode_datetime(baseline.created_at),
+      encode_datetime(baseline.updated_at)
+    ]
+  end
+
+  defp backfill_window_params(%BackfillWindow{} = window) do
+    [
+      window.backfill_run_id,
+      window.child_run_id,
+      encode_atom(window.pipeline_module),
+      window.manifest_version_id,
+      window.coverage_baseline_id,
+      encode_atom(window.window_kind),
+      encode_datetime(window.window_start_at),
+      encode_datetime(window.window_end_at),
+      window.timezone,
+      window.window_key,
+      encode_atom(window.status),
+      window.attempt_count,
+      window.latest_attempt_run_id,
+      window.last_success_run_id,
+      encode_backfill_window(window),
+      encode_datetime(window.started_at),
+      encode_datetime(window.finished_at),
+      encode_datetime(window.created_at),
+      encode_datetime(window.updated_at)
+    ]
+  end
+
+  defp asset_window_state_params(%AssetWindowState{} = state) do
+    [
+      encode_atom(state.asset_ref_module),
+      encode_atom(state.asset_ref_name),
+      encode_atom(state.pipeline_module),
+      state.manifest_version_id,
+      encode_atom(state.window_kind),
+      encode_datetime(state.window_start_at),
+      encode_datetime(state.window_end_at),
+      state.timezone,
+      state.window_key,
+      encode_atom(state.status),
+      state.latest_run_id,
+      state.latest_parent_run_id,
+      state.latest_success_run_id,
+      state.rows_written,
+      encode_asset_window_state(state),
+      encode_datetime(state.updated_at)
+    ]
   end
 
   defp query_ok(repo, sql, params) do
@@ -2628,9 +2680,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp persist_log_entry(repo, entry) do
-    with {:ok, existing} <- fetch_log_entry_by_producer(repo, entry),
-         nil <- existing,
-         {:ok, global_sequence} <- next_log_global_sequence(repo) do
+    with {:ok, global_sequence} <- next_log_global_sequence(repo) do
       entry = LogEntryCodec.assign_global_sequence(entry, global_sequence)
       {node_key_hash, node_key_blob} = LogEntryCodec.node_key_storage(Map.get(entry, :node_key))
 
@@ -2691,7 +2741,6 @@ defmodule Favn.Storage.Adapter.SQLite do
           {:error, reason}
       end
     else
-      %_{} = existing -> {:ok, existing}
       {:error, reason} -> {:error, reason}
       other -> {:error, {:invalid_log_entry_insert, other}}
     end
