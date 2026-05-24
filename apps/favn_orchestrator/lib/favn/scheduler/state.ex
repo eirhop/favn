@@ -7,11 +7,13 @@ defmodule Favn.Scheduler.State do
           pipeline_module: module(),
           schedule_id: atom() | nil,
           schedule_fingerprint: String.t() | nil,
+          activation_state: :pending_activation | :enabled | :disabled | :needs_review | :retired,
           last_evaluated_at: DateTime.t() | nil,
           last_due_at: DateTime.t() | nil,
           last_submitted_due_at: DateTime.t() | nil,
           in_flight_run_id: String.t() | nil,
           queued_due_at: DateTime.t() | nil,
+          last_scheduler_error: FavnOrchestrator.SchedulerError.t() | nil,
           updated_at: DateTime.t() | nil,
           version: pos_integer() | nil
         }
@@ -19,11 +21,13 @@ defmodule Favn.Scheduler.State do
   defstruct pipeline_module: nil,
             schedule_id: nil,
             schedule_fingerprint: nil,
+            activation_state: :pending_activation,
             last_evaluated_at: nil,
             last_due_at: nil,
             last_submitted_due_at: nil,
             in_flight_run_id: nil,
             queued_due_at: nil,
+            last_scheduler_error: nil,
             updated_at: nil,
             version: nil
 end

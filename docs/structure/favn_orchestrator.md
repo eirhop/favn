@@ -21,6 +21,12 @@ Code:
   including bounded operator run detail, execution-group summaries/details,
   asset attempts, windows, event cursors, and timeline entries for thin operator
   clients.
+- Schedule inspection/read models in `apps/favn_orchestrator/lib/favn_orchestrator/scheduler_entry.ex`
+  and `apps/favn_orchestrator/lib/favn_orchestrator/schedule_list_entry.ex`,
+  including operator activation state, effective-enabled scheduling semantics,
+  runtime state, fingerprint review, next-due calculation, occurrence preview,
+  compact scheduler errors, and public enable/disable commands for thin operator
+  clients.
 - Freshness execution/query helpers under `apps/favn_orchestrator/lib/favn_orchestrator/freshness/`
 - Reusable runtime-state repair passes under `apps/favn_orchestrator/lib/favn_orchestrator/repair/`
 - Refresh policy normalization and forced-run selection in
