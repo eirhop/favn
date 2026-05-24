@@ -616,6 +616,21 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert {:ok, _progress} = Storage.get_backfill_progress(backfill_run_id)
 
+    out_of_scope_window = %{kept_window | window_key: "replace-out-of-scope"}
+
+    assert {:error, {:replacement_row_out_of_scope, {:backfill_run, ^backfill_run_id}}} =
+             Storage.replace_backfill_read_models(
+               {:backfill_run, backfill_run_id},
+               [],
+               [out_of_scope_window],
+               []
+             )
+
+    assert {:ok, ^stale_baseline} = Storage.get_coverage_baseline(stale_baseline.baseline_id)
+
+    assert {:ok, ^stale_window} =
+             Storage.get_backfill_window(backfill_run_id, MyApp.Pipeline, stale_window.window_key)
+
     assert :ok =
              Storage.replace_backfill_read_models({:backfill_run, backfill_run_id}, [], [], [])
 
@@ -653,8 +668,17 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert {:ok, first} = backfill_window(backfill_run_id, run, "window-1", :pending, now)
     assert {:ok, second} = backfill_window(backfill_run_id, run, "window-2", :pending, now)
+    duplicate_first = %{first | attempt_count: 3, latest_attempt_run_id: "duplicate-latest"}
 
-    assert :ok = Storage.put_backfill_windows([first, second])
+    assert {:error, :invalid_backfill_window} = Storage.put_backfill_windows([first, :invalid])
+
+    assert {:error, :not_found} =
+             Storage.get_backfill_window(backfill_run_id, MyApp.Pipeline, first.window_key)
+
+    assert :ok = Storage.put_backfill_windows([first, duplicate_first, second])
+
+    assert {:ok, ^duplicate_first} =
+             Storage.get_backfill_window(backfill_run_id, MyApp.Pipeline, first.window_key)
 
     assert {:ok, progress} = Storage.get_backfill_progress(backfill_run_id)
     assert progress.total_count == 2
@@ -689,9 +713,25 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
              Storage.get_asset_window_state(MyApp.Asset, :asset, ok_window.window_key)
 
     bulk_state = %{asset_state | window_key: "bulk-window-#{label}", updated_at: now}
-    assert :ok = Storage.put_asset_window_states([bulk_state])
 
-    assert {:ok, ^bulk_state} =
+    duplicate_bulk_state = %{
+      bulk_state
+      | latest_run_id: "bulk-latest-#{label}",
+        latest_success_run_id: "bulk-latest-#{label}",
+        rows_written: 123
+    }
+
+    invalid_bulk_state = %{bulk_state | window_key: "invalid-bulk-window-#{label}"}
+
+    assert {:error, :invalid_asset_window_state} =
+             Storage.put_asset_window_states([invalid_bulk_state, :invalid])
+
+    assert {:error, :not_found} =
+             Storage.get_asset_window_state(MyApp.Asset, :asset, invalid_bulk_state.window_key)
+
+    assert :ok = Storage.put_asset_window_states([bulk_state, duplicate_bulk_state])
+
+    assert {:ok, ^duplicate_bulk_state} =
              Storage.get_asset_window_state(MyApp.Asset, :asset, bulk_state.window_key)
 
     assert {:ok, repeated} = Storage.apply_backfill_child_projection(ok_window, [asset_state])

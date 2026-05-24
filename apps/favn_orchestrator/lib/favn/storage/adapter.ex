@@ -12,6 +12,12 @@ defmodule Favn.Storage.Adapter do
   state. Adapters should preserve the same upsert and filtering semantics across
   memory, SQLite, and Postgres.
 
+  Bulk read-model callbacks must be semantically equivalent to applying the
+  corresponding single-row put callback to each row in list order. When a bulk
+  input contains duplicate natural keys, the last row in the list wins. Adapters
+  may coalesce duplicates before writing, but the externally visible result must
+  not depend on chunk size or database-specific duplicate handling.
+
   Adapter startup is optional. `child_spec/1` returns `:none` when no supervised
   process is required or when the adapter runtime is already started, and may
   return `{:error, reason}` for recoverable configuration errors.

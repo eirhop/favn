@@ -1920,6 +1920,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       updated_at = excluded.updated_at
     """
 
+    baselines = dedupe_last_by(baselines, & &1.baseline_id)
     bulk_query_ok(repo, sql, baselines, &coverage_baseline_params/1)
   end
 
@@ -1952,6 +1953,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       updated_at = excluded.updated_at
     """
 
+    windows = dedupe_last_by(windows, &{&1.backfill_run_id, &1.pipeline_module, &1.window_key})
     bulk_query_ok(repo, sql, windows, &backfill_window_params/1)
   end
 
@@ -1981,7 +1983,15 @@ defmodule Favn.Storage.Adapter.SQLite do
       updated_at = excluded.updated_at
     """
 
+    states = dedupe_last_by(states, &{&1.asset_ref_module, &1.asset_ref_name, &1.window_key})
     bulk_query_ok(repo, sql, states, &asset_window_state_params/1)
+  end
+
+  defp dedupe_last_by(rows, key_fun) when is_function(key_fun, 1) do
+    rows
+    |> Enum.reverse()
+    |> Enum.uniq_by(key_fun)
+    |> Enum.reverse()
   end
 
   defp bulk_query_ok(repo, sql_template, rows, params_fun) do
