@@ -112,6 +112,49 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
              })
   end
 
+  test "terminal runs cannot acquire leases or register waiters" do
+    entry = %{asset_step_id: "step-1"}
+
+    for status <- [:ok, :partial, :error, :cancelled, :timed_out] do
+      run = run(id: "run-terminal-#{status}", max_concurrency: 1)
+      terminal = RunState.transition(run, status: status)
+      run_id = terminal.id
+
+      assert {:error, {:run_not_admissible, ^run_id, ^status}} =
+               ExecutionAdmission.acquire(terminal, entry)
+
+      assert {:error, {:run_not_admissible, ^run_id, ^status}} =
+               ExecutionAdmission.acquire_or_wait(terminal, %{entry | asset_step_id: "step-2"},
+                 stage: 0,
+                 attempt: 1
+               )
+
+      assert {:ok, []} = Storage.list_execution_leases()
+      assert {:ok, []} = Storage.list_execution_admission_waiters_for_scope(run_scope(terminal))
+    end
+  end
+
+  test "run lease cleanup is idempotent and does not reopen terminal admission" do
+    run = run(max_concurrency: 1)
+
+    assert {:ok, _lease} = ExecutionAdmission.acquire(run, %{asset_step_id: "step-1"})
+    assert :ok = ExecutionAdmission.release_run(run.id)
+    assert :ok = ExecutionAdmission.release_run(run.id)
+    assert {:ok, []} = Storage.list_execution_leases()
+
+    terminal = RunState.transition(run, status: :cancelled)
+    run_id = terminal.id
+
+    assert {:error, {:run_not_admissible, ^run_id, :cancelled}} =
+             ExecutionAdmission.acquire_or_wait(terminal, %{asset_step_id: "step-2"},
+               stage: 0,
+               attempt: 1
+             )
+
+    assert {:ok, []} = Storage.list_execution_leases()
+    assert {:ok, []} = Storage.list_execution_admission_waiters_for_scope(run_scope(terminal))
+  end
+
   test "acquire_or_wait persists waiter and release wakes registered owner" do
     run = run(max_concurrency: 1)
     entry = %{asset_step_id: "step-1"}
@@ -213,6 +256,8 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
       }
     )
   end
+
+  defp run_scope(%RunState{} = run), do: %{kind: :run, key: run.id, limit: 1}
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)
