@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   alias Favn.Manifest.PipelineResolver
   alias Favn.Scheduler.State
   alias Favn.Window.Policy
+  alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Scheduler.Cron
@@ -16,6 +17,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
   @default_tick_ms 15_000
   @default_max_missed_all_occurrences 1_000
+  @default_submission_budget 25
 
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -297,39 +299,49 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   defp evaluate_all(state) do
     now = DateTime.utc_now()
 
-    next_states =
-      Enum.reduce(state.entries, state.states, fn {pipeline_module, entry}, acc ->
-        current = Map.get(acc, pipeline_module, %State{pipeline_module: pipeline_module})
+    {next_states, _remaining_budget} =
+      Enum.reduce(state.entries, {state.states, configured_submission_budget()}, fn
+        {pipeline_module, entry}, {acc, remaining_budget} ->
+          current = Map.get(acc, pipeline_module, %State{pipeline_module: pipeline_module})
 
-        updated =
-          if entry.schedule.active do
-            evaluate_entry(entry, state.index, state.version, current, now)
-          else
-            %{current | last_evaluated_at: now, updated_at: now}
-          end
+          {updated, remaining_budget} =
+            cond do
+              not entry.schedule.active ->
+                {%{current | last_evaluated_at: now, updated_at: now}, remaining_budget}
 
-        if persist_state_change?(current, updated) do
-          persisted = persisted_scheduler_state(current, updated)
-          :ok = Storage.put_scheduler_state({pipeline_module, entry.schedule.name}, persisted)
-          Map.put(acc, pipeline_module, persisted)
-        else
-          Map.put(acc, pipeline_module, updated)
-        end
+              remaining_budget <= 0 ->
+                {%{current | last_evaluated_at: now, updated_at: now}, remaining_budget}
+
+              true ->
+                evaluate_entry(entry, state.index, state.version, current, now, remaining_budget)
+            end
+
+          next_acc =
+            if persist_state_change?(current, updated) do
+              persisted = persisted_scheduler_state(current, updated)
+              :ok = Storage.put_scheduler_state({pipeline_module, entry.schedule.name}, persisted)
+              Map.put(acc, pipeline_module, persisted)
+            else
+              Map.put(acc, pipeline_module, updated)
+            end
+
+          {next_acc, remaining_budget}
       end)
 
     %{state | states: next_states}
   end
 
-  defp evaluate_entry(entry, index, version, state, now) do
+  defp evaluate_entry(entry, index, version, state, now, remaining_budget) do
     state = reconcile_in_flight(state)
     latest_due = Cron.latest_due(entry.schedule.cron, entry.schedule.timezone, now)
 
     cond do
       is_nil(latest_due) ->
-        %{state | last_evaluated_at: now, updated_at: now}
+        {%{state | last_evaluated_at: now, updated_at: now}, remaining_budget}
 
       is_nil(state.last_due_at) ->
-        %{state | last_due_at: latest_due, last_evaluated_at: now, updated_at: now}
+        {%{state | last_due_at: latest_due, last_evaluated_at: now, updated_at: now},
+         remaining_budget}
 
       true ->
         selected =
@@ -342,28 +354,43 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
             latest_due
           )
 
-        {next_state, submitted_due_ats_reversed} =
+        {next_state, submitted_due_ats_reversed, remaining_budget} =
           state
-          |> maybe_submit_queued(entry, index, version, latest_due, now)
+          |> maybe_submit_queued(entry, index, version, latest_due, now, remaining_budget)
           |> submit_due_occurrences(entry, index, version, selected, latest_due, now)
 
         submitted_due_ats = Enum.reverse(submitted_due_ats_reversed)
 
-        next_state
-        |> Map.put(
-          :last_due_at,
-          next_cursor_due(
-            entry.schedule.missed,
-            state.last_due_at,
-            latest_due,
-            selected,
-            submitted_due_ats
+        next_state =
+          next_state
+          |> Map.put(
+            :last_due_at,
+            next_cursor_due(
+              entry.schedule.missed,
+              state.last_due_at,
+              latest_due,
+              selected,
+              submitted_due_ats
+            )
           )
-        )
-        |> Map.put(:last_evaluated_at, now)
-        |> Map.put(:updated_at, now)
+          |> Map.put(:last_evaluated_at, now)
+          |> Map.put(:updated_at, now)
+
+        {next_state, remaining_budget}
     end
   end
+
+  defp maybe_submit_queued(
+         state,
+         _entry,
+         _index,
+         _version,
+         _latest_due,
+         _now,
+         remaining_budget
+       )
+       when remaining_budget <= 0,
+       do: {state, [], remaining_budget}
 
   defp maybe_submit_queued(
          %State{queued_due_at: nil} = state,
@@ -371,9 +398,10 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
          _index,
          _version,
          _latest_due,
-         _now
+         _now,
+         remaining_budget
        ),
-       do: {state, []}
+       do: {state, [], remaining_budget}
 
   defp maybe_submit_queued(
          %State{in_flight_run_id: run_id} = state,
@@ -381,19 +409,20 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
          _index,
          _version,
          _latest_due,
-         _now
+         _now,
+         remaining_budget
        )
-       when is_binary(run_id), do: {state, []}
+       when is_binary(run_id), do: {state, [], remaining_budget}
 
-  defp maybe_submit_queued(state, entry, index, version, latest_due, now) do
+  defp maybe_submit_queued(state, entry, index, version, latest_due, now, remaining_budget) do
     case submit_occurrence(state, entry, index, version, state.queued_due_at, latest_due, now) do
-      {:ok, next} -> {%{next | queued_due_at: nil}, [state.queued_due_at]}
-      {:error, _reason} -> {state, []}
+      {:ok, next} -> {%{next | queued_due_at: nil}, [state.queued_due_at], remaining_budget - 1}
+      {:error, _reason} -> {state, [], remaining_budget - 1}
     end
   end
 
   defp submit_due_occurrences(
-         {state, submitted_reversed},
+         {state, submitted_reversed, remaining_budget},
          _entry,
          _index,
          _version,
@@ -401,10 +430,22 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
          _latest_due,
          _now
        ),
-       do: {state, submitted_reversed}
+       do: {state, submitted_reversed, remaining_budget}
 
   defp submit_due_occurrences(
-         {state, submitted_reversed},
+         {state, submitted_reversed, remaining_budget},
+         _entry,
+         _index,
+         _version,
+         _occurrences,
+         _latest_due,
+         _now
+       )
+       when remaining_budget <= 0,
+       do: {state, submitted_reversed, remaining_budget}
+
+  defp submit_due_occurrences(
+         {state, submitted_reversed, remaining_budget},
          entry,
          index,
          version,
@@ -425,7 +466,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
           end
 
         submit_due_occurrences(
-          {next, submitted_next},
+          {next, submitted_next, remaining_budget - 1},
           entry,
           index,
           version,
@@ -436,25 +477,26 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
       :forbid ->
         if is_binary(state.in_flight_run_id) do
-          {state, submitted_reversed}
+          {state, submitted_reversed, remaining_budget}
         else
           case submit_occurrence(state, entry, index, version, due, latest_due, now) do
-            {:ok, value} -> {value, [due | submitted_reversed]}
-            {:error, _reason} -> {state, submitted_reversed}
+            {:ok, value} -> {value, [due | submitted_reversed], remaining_budget - 1}
+            {:error, _reason} -> {state, submitted_reversed, remaining_budget - 1}
           end
         end
 
       :queue_one ->
         if is_binary(state.in_flight_run_id) do
-          {%{state | queued_due_at: List.last([due | rest])}, submitted_reversed}
+          {%{state | queued_due_at: List.last([due | rest])}, submitted_reversed,
+           remaining_budget}
         else
           case submit_occurrence(state, entry, index, version, due, latest_due, now) do
             {:ok, value} ->
               next = if rest == [], do: value, else: %{value | queued_due_at: List.last(rest)}
-              {next, [due | submitted_reversed]}
+              {next, [due | submitted_reversed], remaining_budget - 1}
 
             {:error, _reason} ->
-              {state, submitted_reversed}
+              {state, submitted_reversed, remaining_budget - 1}
           end
         end
     end
@@ -469,15 +511,17 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
          {:ok, resolution} <-
            PipelineResolver.resolve(index, entry.pipeline, resolve_opts(trigger, anchor_window)),
          {:ok, run_id} <-
-           FavnOrchestrator.submit_pipeline_run(resolution.target_refs,
-             manifest_version_id: version.manifest_version_id,
-             trigger: trigger,
-             dependencies: resolution.dependencies,
-             anchor_window: anchor_window,
-             _pipeline_context: resolution.pipeline_ctx,
-             _submit_ref: entry.module,
-             _submit_kind: :pipeline
-           ) do
+           BoundedDispatcher.run(fn ->
+             FavnOrchestrator.submit_pipeline_run(resolution.target_refs,
+               manifest_version_id: version.manifest_version_id,
+               trigger: trigger,
+               dependencies: resolution.dependencies,
+               anchor_window: anchor_window,
+               _pipeline_context: resolution.pipeline_ctx,
+               _submit_ref: entry.module,
+               _submit_kind: :pipeline
+             )
+           end) do
       next =
         if track_in_flight? do
           %{state | in_flight_run_id: run_id, last_submitted_due_at: due_at, updated_at: now}
@@ -650,6 +694,19 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
       _other ->
         @default_max_missed_all_occurrences
+    end
+  end
+
+  defp configured_submission_budget do
+    case Application.get_env(:favn_orchestrator, :scheduler, []) do
+      opts when is_list(opts) ->
+        case Keyword.get(opts, :submission_budget, @default_submission_budget) do
+          value when is_integer(value) and value > 0 -> value
+          _other -> @default_submission_budget
+        end
+
+      _other ->
+        @default_submission_budget
     end
   end
 

@@ -287,6 +287,40 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     refute Keyword.has_key?(child_opts, :refresh)
   end
 
+  test "bounds child pipeline submission concurrency" do
+    version = manifest_version("mv_backfill_bounded_child_submission")
+    {:ok, tracker} = Agent.start_link(fn -> %{active: 0, max_active: 0} end)
+
+    on_exit(fn ->
+      if Process.alive?(tracker), do: Agent.stop(tracker)
+    end)
+
+    submitter = fn _pipeline_module, _child_opts ->
+      Agent.update(tracker, fn state ->
+        active = state.active + 1
+        %{active: active, max_active: max(state.max_active, active)}
+      end)
+
+      Process.sleep(20)
+
+      Agent.update(tracker, fn state -> %{state | active: state.active - 1} end)
+      {:ok, "child_#{System.unique_integer([:positive])}"}
+    end
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, "run_backfill_bounded_child_submission"} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_bounded_child_submission",
+               range_request: %{kind: :day, from: "2026-04-24", to: "2026-04-27"},
+               dispatch_concurrency: 2,
+               _child_submitter: submitter
+             )
+
+    assert Agent.get(tracker, & &1.max_active) <= 2
+  end
+
   for option <- [:lookback, :lookback_policy] do
     @option option
 

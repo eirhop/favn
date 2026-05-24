@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.API.Config, as: APIConfig
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
+  alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.ExecutionAdmission.Coordinator, as: AdmissionCoordinator
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ProductionRuntimeConfig
@@ -41,7 +42,8 @@ defmodule FavnOrchestrator.Application do
             {AdmissionCoordinator, []},
             {RunRecovery, []},
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
-            {RunManager, []}
+            {RunManager, []},
+            {BoundedDispatcher, []}
           ] ++ scheduler_children() ++ api_children()
 
       with {:ok, supervisor} <-

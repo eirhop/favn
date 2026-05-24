@@ -23,6 +23,7 @@ defmodule FavnOrchestrator.BackfillManager do
   alias Favn.Manifest.PipelineResolver
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Runtime, as: RuntimeWindow
+  alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Projector, as: BackfillProjector
@@ -33,6 +34,7 @@ defmodule FavnOrchestrator.BackfillManager do
   alias FavnOrchestrator.TransitionWriter
 
   @default_max_windows 500
+  @default_dispatch_concurrency 4
 
   @doc """
   Submits a parent pipeline backfill run and one child pipeline run per resolved anchor.
@@ -328,44 +330,86 @@ defmodule FavnOrchestrator.BackfillManager do
   end
 
   defp submit_child_runs(%RunState{} = parent, pipeline_module, range, opts) do
-    Enum.reduce_while(range.anchors, :ok, fn anchor, :ok ->
-      submit_child_run_for_anchor(parent, pipeline_module, anchor, opts)
-    end)
+    range.anchors
+    |> BoundedDispatcher.run_many(
+      fn anchor ->
+        submit_child_run_for_anchor(parent, pipeline_module, anchor, opts)
+      end,
+      max_concurrency: backfill_dispatch_concurrency(opts)
+    )
+    |> dispatch_result_to_ok()
   end
 
   defp submit_asset_child_runs(%RunState{} = parent, %Asset{} = asset, range, opts) do
-    Enum.reduce_while(range.anchors, :ok, fn anchor, :ok ->
-      window_key = WindowKey.encode(anchor.key)
+    range.anchors
+    |> BoundedDispatcher.run_many(
+      fn anchor ->
+        submit_asset_child_run_for_anchor(parent, asset, anchor, opts)
+      end,
+      max_concurrency: backfill_dispatch_concurrency(opts)
+    )
+    |> dispatch_result_to_ok()
+  end
 
-      child_opts =
+  defp submit_asset_child_run_for_anchor(%RunState{} = parent, %Asset{} = asset, anchor, opts) do
+    window_key = WindowKey.encode(anchor.key)
+
+    child_opts =
+      opts
+      |> Keyword.drop([:range_request, :run_id, :coverage_baseline_id, :dispatch_concurrency])
+      |> default_child_refresh()
+      |> Keyword.put(:manifest_version_id, parent.manifest_version_id)
+      |> Keyword.put(:anchor_window, anchor)
+      |> Keyword.put(:exact_windows, %{asset.ref => [runtime_window!(anchor)]})
+      |> Keyword.put(:parent_run_id, parent.id)
+      |> Keyword.put(:root_run_id, parent.id)
+      |> Keyword.put(:lineage_depth, 1)
+      |> Keyword.put(:trigger, %{
+        kind: :backfill,
+        backfill_run_id: parent.id,
+        pipeline_module: asset.module,
+        window_key: window_key
+      })
+      |> Keyword.update(
+        :metadata,
+        asset_child_metadata(asset, anchor, window_key),
+        fn metadata ->
+          Map.merge(metadata, asset_child_metadata(asset, anchor, window_key))
+        end
+      )
+
+    submit_asset_child_run(asset.ref, child_opts, opts)
+  end
+
+  defp dispatch_result_to_ok({:ok, _values}), do: :ok
+  defp dispatch_result_to_ok({:error, _reason} = error), do: error
+
+  defp backfill_dispatch_concurrency(opts) do
+    opts
+    |> Keyword.get(:dispatch_concurrency, configured_backfill_dispatch_concurrency())
+    |> positive_integer(@default_dispatch_concurrency)
+  end
+
+  defp configured_backfill_dispatch_concurrency do
+    case Application.get_env(:favn_orchestrator, :backfill, []) do
+      opts when is_list(opts) ->
         opts
-        |> Keyword.drop([:range_request, :run_id, :coverage_baseline_id])
-        |> default_child_refresh()
-        |> Keyword.put(:manifest_version_id, parent.manifest_version_id)
-        |> Keyword.put(:anchor_window, anchor)
-        |> Keyword.put(:exact_windows, %{asset.ref => [runtime_window!(anchor)]})
-        |> Keyword.put(:parent_run_id, parent.id)
-        |> Keyword.put(:root_run_id, parent.id)
-        |> Keyword.put(:lineage_depth, 1)
-        |> Keyword.put(:trigger, %{
-          kind: :backfill,
-          backfill_run_id: parent.id,
-          pipeline_module: asset.module,
-          window_key: window_key
-        })
-        |> Keyword.update(
-          :metadata,
-          asset_child_metadata(asset, anchor, window_key),
-          fn metadata ->
-            Map.merge(metadata, asset_child_metadata(asset, anchor, window_key))
-          end
-        )
+        |> Keyword.get(:dispatch_concurrency, @default_dispatch_concurrency)
+        |> positive_integer(@default_dispatch_concurrency)
 
-      case submit_asset_child_run(asset.ref, child_opts, opts) do
-        {:ok, _child_run_id} -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+      _other ->
+        @default_dispatch_concurrency
+    end
+  end
+
+  defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive_integer(_value, default), do: default
+
+  defp submit_child_run_for_anchor(%RunState{} = parent, pipeline_module, anchor, opts) do
+    case submit_child_run(pipeline_module, child_opts(parent, anchor, opts), opts) do
+      {:ok, _child_run_id} -> :ok
+      {:error, _reason} = error -> error
+    end
   end
 
   defp runtime_window!(anchor) do
@@ -402,13 +446,6 @@ defmodule FavnOrchestrator.BackfillManager do
     end
   end
 
-  defp submit_child_run_for_anchor(%RunState{} = parent, pipeline_module, anchor, opts) do
-    case submit_child_run(pipeline_module, child_opts(parent, anchor, opts), opts) do
-      {:ok, _child_run_id} -> {:cont, :ok}
-      {:error, _reason} = error -> {:halt, error}
-    end
-  end
-
   defp child_opts(%RunState{} = parent, anchor, opts) do
     window_key = WindowKey.encode(anchor.key)
 
@@ -416,7 +453,8 @@ defmodule FavnOrchestrator.BackfillManager do
     |> Keyword.drop([
       :range_request,
       :run_id,
-      :coverage_baseline_id
+      :coverage_baseline_id,
+      :dispatch_concurrency
     ])
     |> default_child_refresh()
     |> Keyword.put(:manifest_version_id, parent.manifest_version_id)

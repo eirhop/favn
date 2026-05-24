@@ -344,6 +344,44 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert length(capped_runs) == 3
   end
 
+  test "missed all honors per-tick submission budget below catch-up cap" do
+    Application.put_env(:favn_orchestrator, :scheduler,
+      max_missed_all_occurrences: 10,
+      submission_budget: 2
+    )
+
+    version =
+      scheduler_manifest_version("mv_scheduler_submission_budget",
+        cron: "* * * * * *",
+        missed: :all,
+        overlap: :allow
+      )
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+    [entry] = Runtime.scheduled(name)
+
+    state = %State{
+      pipeline_module: entry.module,
+      schedule_id: entry.schedule.name,
+      schedule_fingerprint: entry.schedule_fingerprint,
+      last_due_at: DateTime.add(DateTime.utc_now(), -10, :second),
+      version: 1
+    }
+
+    assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
+    assert :ok = Runtime.reload(name)
+    assert :ok = Runtime.tick(name)
+
+    assert {:ok, runs} = Storage.list_runs()
+
+    budgeted_runs = Enum.filter(runs, &(&1.manifest_version_id == version.manifest_version_id))
+    assert length(budgeted_runs) == 2
+  end
+
   test "windowed scheduled pipelines carry anchor window into run pipeline context" do
     version = scheduler_manifest_version("mv_scheduler_window", window: :hour)
     assert :ok = FavnOrchestrator.register_manifest(version)
