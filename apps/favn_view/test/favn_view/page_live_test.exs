@@ -248,6 +248,7 @@ defmodule FavnView.PageLiveTest do
     end)
 
     {:ok, _view, _html} = live(conn, ~p"/runs")
+    Process.sleep(150)
     baseline = counter_value(counter)
 
     Process.sleep(1_700)
@@ -2493,8 +2494,9 @@ defmodule FavnView.PageLiveTest do
 
     html = render(view)
     assert html =~ "live append"
-    refute html =~ "log-copy-text"
+    refute html =~ ~s(id="log-copy-text")
     assert html =~ "data-log-copy-row"
+    assert html =~ "data-log-copy-text"
     assert Regex.scan(~r/data-testid="log-row"/, html) |> length() == 1
   end
 

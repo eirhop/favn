@@ -386,7 +386,7 @@ defmodule FavnView.RunDetailLive do
          ) do
       {:ok, []} -> socket
       {:ok, events} -> reload_run_from_event(socket, latest_sequence(events, after_sequence))
-      {:error, _reason} -> socket
+      {:error, _reason} -> refresh_run(socket)
     end
   end
 

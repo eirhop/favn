@@ -50,7 +50,7 @@ const Hooks = {
         if (!button) return
 
         const rows = Array.from(this.el.querySelectorAll("[data-log-copy-row]"))
-        const text = rows.map(row => row.innerText.trim()).filter(Boolean).join("\n\n")
+        const text = rows.map(row => row.dataset.logCopyText || "").filter(Boolean).join("\n\n")
         navigator.clipboard?.writeText(text)
       })
     },

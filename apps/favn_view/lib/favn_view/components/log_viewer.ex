@@ -317,6 +317,7 @@ defmodule FavnView.Components.LogViewer do
       class="grid gap-2 text-slate-100/90 sm:grid-cols-[9.5rem_4.5rem_13rem_minmax(0,1fr)]"
       data-testid="log-row"
       data-log-copy-row
+      data-log-copy-text={log_copy_text(@log)}
       title={sequence_title(@log)}
     >
       <time class="text-slate-400">{@log.timestamp}</time>

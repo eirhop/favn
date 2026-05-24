@@ -194,7 +194,7 @@ defmodule FavnView.RunsListLive do
   defp maybe_subscribe_runs(socket) do
     if connected?(socket) do
       case subscribe_runs() do
-        :ok -> assign(socket, :run_events_live?, true)
+        :ok -> socket |> assign(:run_events_live?, true) |> schedule_coalesced_refresh()
         {:error, _reason} -> socket
       end
     else
