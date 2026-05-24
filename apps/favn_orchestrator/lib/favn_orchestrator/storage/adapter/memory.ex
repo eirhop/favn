@@ -491,6 +491,12 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def put_backfill_windows(windows, opts) when is_list(windows) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_backfill_windows, windows})
+  end
+
+  @impl true
   def get_backfill_window(backfill_run_id, pipeline_module, window_key, opts)
       when is_binary(backfill_run_id) and is_atom(pipeline_module) and is_binary(window_key) and
              is_list(opts) do
@@ -536,6 +542,12 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def put_asset_window_state(%AssetWindowState{} = state, opts) when is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:put_asset_window_state, state})
+  end
+
+  @impl true
+  def put_asset_window_states(states, opts) when is_list(states) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_asset_window_states, states})
   end
 
   @impl true
@@ -1307,6 +1319,11 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, :ok, put_in(state, [:backfill_windows, key], window)}
   end
 
+  def handle_call({:put_backfill_windows, windows}, _from, state) do
+    {:reply, :ok,
+     %{state | backfill_windows: put_backfill_window_values(state.backfill_windows, windows)}}
+  end
+
   def handle_call({:get_backfill_window, key}, _from, state) do
     {:reply, fetch_or_not_found(state.backfill_windows, key), state}
   end
@@ -1355,7 +1372,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       state
       | backfill_windows: Map.put(state.backfill_windows, key, window),
         asset_window_states:
-          put_asset_window_states(state.asset_window_states, asset_window_states)
+          put_asset_window_state_values(state.asset_window_states, asset_window_states)
     }
 
     case next_progress(next_state, window.backfill_run_id, old_status, window.status) do
@@ -1398,6 +1415,15 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def handle_call({:put_asset_window_state, %AssetWindowState{} = window_state}, _from, state) do
     key = {window_state.asset_ref_module, window_state.asset_ref_name, window_state.window_key}
     {:reply, :ok, put_in(state, [:asset_window_states, key], window_state)}
+  end
+
+  def handle_call({:put_asset_window_states, window_states}, _from, state) do
+    {:reply, :ok,
+     %{
+       state
+       | asset_window_states:
+           put_asset_window_state_values(state.asset_window_states, window_states)
+     }}
   end
 
   def handle_call({:get_asset_window_state, key}, _from, state) do
@@ -1497,7 +1523,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
         next_backfill_windows =
           state.backfill_windows
           |> reject_replacement_scope(scope)
-          |> put_backfill_windows(backfill_windows)
+          |> put_backfill_window_values(backfill_windows)
 
         affected_backfill_ids =
           affected_backfill_ids(state.backfill_windows, scope, backfill_windows)
@@ -1507,7 +1533,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           | coverage_baselines:
               state.coverage_baselines
               |> reject_replacement_scope(scope)
-              |> put_coverage_baselines(coverage_baselines),
+              |> put_coverage_baseline_values(coverage_baselines),
             backfill_windows: next_backfill_windows,
             backfill_progress:
               state.backfill_progress
@@ -1516,7 +1542,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
             asset_window_states:
               state.asset_window_states
               |> reject_replacement_scope(scope)
-              |> put_asset_window_states(asset_window_states)
+              |> put_asset_window_state_values(asset_window_states)
         }
 
         {:reply, :ok, next_state}
@@ -2185,19 +2211,19 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     |> Enum.uniq()
   end
 
-  defp put_coverage_baselines(values, baselines) do
+  defp put_coverage_baseline_values(values, baselines) do
     Enum.reduce(baselines, values, fn %CoverageBaseline{} = baseline, acc ->
       Map.put(acc, baseline.baseline_id, baseline)
     end)
   end
 
-  defp put_backfill_windows(values, windows) do
+  defp put_backfill_window_values(values, windows) do
     Enum.reduce(windows, values, fn %BackfillWindow{} = window, acc ->
       Map.put(acc, {window.backfill_run_id, window.pipeline_module, window.window_key}, window)
     end)
   end
 
-  defp put_asset_window_states(values, states) do
+  defp put_asset_window_state_values(values, states) do
     Enum.reduce(states, values, fn %AssetWindowState{} = window_state, acc ->
       Map.put(
         acc,

@@ -23,12 +23,17 @@ defmodule FavnOrchestrator.AssetWindowProjector do
       when event_type in @terminal_events do
     run_state
     |> node_results()
-    |> Enum.reduce_while(:ok, fn result, :ok ->
-      case put_asset_window_state(run_state, result) do
-        :ok -> {:cont, :ok}
+    |> Enum.reduce_while({:ok, []}, fn result, {:ok, acc} ->
+      case asset_window_state(run_state, result) do
+        {:ok, nil} -> {:cont, {:ok, acc}}
+        {:ok, state} -> {:cont, {:ok, [state | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+    |> case do
+      {:ok, states} -> Storage.put_asset_window_states(Enum.reverse(states))
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   def project_transition(%RunState{}, _event_type, _data), do: :ok
@@ -38,25 +43,25 @@ defmodule FavnOrchestrator.AssetWindowProjector do
 
   defp node_results(_run_state), do: []
 
-  defp put_asset_window_state(
+  defp asset_window_state(
          %RunState{} = run_state,
          %NodeResult{window: %Runtime{} = window} = result
        ) do
-    put_asset_window_state(run_state, Map.from_struct(result), window)
+    asset_window_state(run_state, Map.from_struct(result), window)
   end
 
-  defp put_asset_window_state(%RunState{} = run_state, %{window: %Runtime{} = window} = result) do
-    put_asset_window_state(run_state, result, window)
+  defp asset_window_state(%RunState{} = run_state, %{window: %Runtime{} = window} = result) do
+    asset_window_state(run_state, result, window)
   end
 
-  defp put_asset_window_state(_run_state, _result), do: :ok
+  defp asset_window_state(_run_state, _result), do: {:ok, nil}
 
-  defp put_asset_window_state(%RunState{} = run_state, result, %Runtime{} = window) do
+  defp asset_window_state(%RunState{} = run_state, result, %Runtime{} = window) do
     with {:ok, {module, name}} <- result_ref(result),
          {:ok, status} <- result_status(result),
          {:ok, existing} <- existing_state(module, name, Key.encode(window.key)),
          {:ok, state} <- build_state(run_state, result, window, module, name, status, existing) do
-      Storage.put_asset_window_state(state)
+      {:ok, state}
     end
   end
 

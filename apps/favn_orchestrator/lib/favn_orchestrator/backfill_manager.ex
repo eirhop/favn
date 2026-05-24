@@ -298,32 +298,53 @@ defmodule FavnOrchestrator.BackfillManager do
     now = DateTime.utc_now()
     coverage_baseline_id = Keyword.get(opts, :coverage_baseline_id)
 
-    with :ok <-
-           Enum.reduce_while(range.anchors, :ok, fn anchor, :ok ->
-             with {:ok, window} <-
-                    BackfillWindow.new(%{
-                      backfill_run_id: backfill_run_id,
-                      pipeline_module: pipeline_module,
-                      manifest_version_id: manifest_version_id,
-                      coverage_baseline_id: coverage_baseline_id,
-                      window_kind: anchor.kind,
-                      window_start_at: anchor.start_at,
-                      window_end_at: anchor.end_at,
-                      timezone: anchor.timezone,
-                      window_key: WindowKey.encode(anchor.key),
-                      status: :pending,
-                      attempt_count: 0,
-                      created_at: now,
-                      updated_at: now
-                    }),
-                  :ok <- Storage.put_backfill_window(window) do
-               {:cont, :ok}
-             else
-               {:error, _reason} = error -> {:halt, error}
-             end
-           end),
+    with {:ok, windows} <-
+           build_pending_windows(
+             backfill_run_id,
+             pipeline_module,
+             manifest_version_id,
+             range.anchors,
+             coverage_baseline_id,
+             now
+           ),
+         :ok <- Storage.put_backfill_windows(windows),
          {:ok, _progress} <- Storage.rebuild_backfill_progress(backfill_run_id) do
       :ok
+    end
+  end
+
+  defp build_pending_windows(
+         backfill_run_id,
+         pipeline_module,
+         manifest_version_id,
+         anchors,
+         coverage_baseline_id,
+         now
+       ) do
+    anchors
+    |> Enum.reduce_while({:ok, []}, fn anchor, {:ok, acc} ->
+      case BackfillWindow.new(%{
+             backfill_run_id: backfill_run_id,
+             pipeline_module: pipeline_module,
+             manifest_version_id: manifest_version_id,
+             coverage_baseline_id: coverage_baseline_id,
+             window_kind: anchor.kind,
+             window_start_at: anchor.start_at,
+             window_end_at: anchor.end_at,
+             timezone: anchor.timezone,
+             window_key: WindowKey.encode(anchor.key),
+             status: :pending,
+             attempt_count: 0,
+             created_at: now,
+             updated_at: now
+           }) do
+        {:ok, window} -> {:cont, {:ok, [window | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, windows} -> {:ok, Enum.reverse(windows)}
+      {:error, reason} -> {:error, reason}
     end
   end
 

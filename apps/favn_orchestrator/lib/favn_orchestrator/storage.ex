@@ -370,6 +370,21 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.put_backfill_window(window, opts) end)
   end
 
+  @spec put_backfill_windows([BackfillWindow.t()]) :: :ok | {:error, term()}
+  def put_backfill_windows(windows) when is_list(windows) do
+    if Enum.all?(windows, &match?(%BackfillWindow{}, &1)) do
+      adapter_call(fn adapter, opts ->
+        if function_exported?(adapter, :put_backfill_windows, 2) do
+          adapter.put_backfill_windows(windows, opts)
+        else
+          put_all_adapter(windows, &adapter.put_backfill_window(&1, opts))
+        end
+      end)
+    else
+      {:error, :invalid_backfill_window}
+    end
+  end
+
   @spec get_backfill_window(String.t(), module(), String.t()) ::
           {:ok, BackfillWindow.t()} | {:error, term()}
   def get_backfill_window(backfill_run_id, pipeline_module, window_key)
@@ -418,6 +433,21 @@ defmodule FavnOrchestrator.Storage do
   @spec put_asset_window_state(AssetWindowState.t()) :: :ok | {:error, term()}
   def put_asset_window_state(%AssetWindowState{} = state) do
     adapter_call(fn adapter, opts -> adapter.put_asset_window_state(state, opts) end)
+  end
+
+  @spec put_asset_window_states([AssetWindowState.t()]) :: :ok | {:error, term()}
+  def put_asset_window_states(states) when is_list(states) do
+    if Enum.all?(states, &match?(%AssetWindowState{}, &1)) do
+      adapter_call(fn adapter, opts ->
+        if function_exported?(adapter, :put_asset_window_states, 2) do
+          adapter.put_asset_window_states(states, opts)
+        else
+          put_all_adapter(states, &adapter.put_asset_window_state(&1, opts))
+        end
+      end)
+    else
+      {:error, :invalid_asset_window_state}
+    end
   end
 
   @spec get_asset_window_state(module(), atom(), String.t()) ::
@@ -756,6 +786,15 @@ defmodule FavnOrchestrator.Storage do
     with {:ok, scan_opts} <- CursorPage.normalize_opts(scan_opts) do
       adapter_call(fn adapter, opts -> fun.(adapter, filters, scan_opts, opts) end)
     end
+  end
+
+  defp put_all_adapter(items, fun) when is_list(items) and is_function(fun, 1) do
+    Enum.reduce_while(items, :ok, fn item, :ok ->
+      case fun.(item) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   defp normalize_replacement_scope(:all), do: {:ok, :all}

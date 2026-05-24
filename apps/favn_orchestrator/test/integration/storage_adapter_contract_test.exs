@@ -654,8 +654,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, first} = backfill_window(backfill_run_id, run, "window-1", :pending, now)
     assert {:ok, second} = backfill_window(backfill_run_id, run, "window-2", :pending, now)
 
-    assert :ok = Storage.put_backfill_window(first)
-    assert :ok = Storage.put_backfill_window(second)
+    assert :ok = Storage.put_backfill_windows([first, second])
 
     assert {:ok, progress} = Storage.get_backfill_progress(backfill_run_id)
     assert progress.total_count == 2
@@ -688,6 +687,12 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert {:ok, ^asset_state} =
              Storage.get_asset_window_state(MyApp.Asset, :asset, ok_window.window_key)
+
+    bulk_state = %{asset_state | window_key: "bulk-window-#{label}", updated_at: now}
+    assert :ok = Storage.put_asset_window_states([bulk_state])
+
+    assert {:ok, ^bulk_state} =
+             Storage.get_asset_window_state(MyApp.Asset, :asset, bulk_state.window_key)
 
     assert {:ok, repeated} = Storage.apply_backfill_child_projection(ok_window, [asset_state])
     assert repeated.total_count == 2
