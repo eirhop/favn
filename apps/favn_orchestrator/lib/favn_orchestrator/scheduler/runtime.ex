@@ -361,7 +361,9 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   defp evaluate_all(%{index: nil} = state), do: flush_dirty_states(state)
 
   defp evaluate_all(state) do
-    with {:ok, state} <- flush_dirty_states(state) do
+    if map_size(Map.get(state, :dirty_states, %{})) > 0 do
+      flush_dirty_states(state)
+    else
       do_evaluate_all(state)
     end
   end

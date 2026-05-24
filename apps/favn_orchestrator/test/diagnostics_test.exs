@@ -338,7 +338,7 @@ defmodule FavnOrchestrator.DiagnosticsTest do
                  in_flight_run_id: "run_in_flight_scheduler_state",
                  queued_due_at: now,
                  updated_at: now,
-                 version: 1
+                 version: 2
                }
              )
 
