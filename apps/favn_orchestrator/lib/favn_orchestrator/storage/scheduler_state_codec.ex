@@ -144,21 +144,24 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodec do
   end
 
   defp state_from_dto(state) do
-    with {:ok, last_evaluated_at} <- datetime_from_dto(:last_evaluated_at, state),
+    with {:ok, activation_state} <- activation_state_from_dto(Map.get(state, "activation_state")),
+         {:ok, last_evaluated_at} <- datetime_from_dto(:last_evaluated_at, state),
          {:ok, last_due_at} <- datetime_from_dto(:last_due_at, state),
          {:ok, last_submitted_due_at} <- datetime_from_dto(:last_submitted_due_at, state),
          {:ok, queued_due_at} <- datetime_from_dto(:queued_due_at, state),
+         {:ok, last_scheduler_error} <-
+           scheduler_error_from_dto(Map.get(state, "last_scheduler_error")),
          {:ok, updated_at} <- datetime_from_dto(:updated_at, state) do
       {:ok,
        %{
          schedule_fingerprint: Map.get(state, "schedule_fingerprint"),
-         activation_state: activation_state_from_dto(Map.get(state, "activation_state")),
+         activation_state: activation_state,
          last_evaluated_at: last_evaluated_at,
          last_due_at: last_due_at,
          last_submitted_due_at: last_submitted_due_at,
          in_flight_run_id: Map.get(state, "in_flight_run_id"),
          queued_due_at: queued_due_at,
-         last_scheduler_error: scheduler_error_from_dto(Map.get(state, "last_scheduler_error")),
+         last_scheduler_error: last_scheduler_error,
          updated_at: updated_at
        }}
     end
@@ -210,17 +213,21 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodec do
   defp activation_state_to_dto(nil), do: "pending_activation"
   defp activation_state_to_dto(value) when is_atom(value), do: Atom.to_string(value)
 
-  defp activation_state_from_dto(nil), do: nil
+  defp activation_state_from_dto(nil), do: {:ok, nil}
 
   defp activation_state_from_dto(value) when is_binary(value) do
     case value do
-      "enabled" -> :enabled
-      "disabled" -> :disabled
-      "needs_review" -> :needs_review
-      "retired" -> :retired
-      _ -> :pending_activation
+      "pending_activation" -> {:ok, :pending_activation}
+      "enabled" -> {:ok, :enabled}
+      "disabled" -> {:ok, :disabled}
+      "needs_review" -> {:ok, :needs_review}
+      "retired" -> {:ok, :retired}
+      _ -> {:error, {:invalid_scheduler_state_field, :activation_state, value}}
     end
   end
+
+  defp activation_state_from_dto(value),
+    do: {:error, {:invalid_scheduler_state_field, :activation_state, value}}
 
   defp validate_optional_datetime(_field, nil), do: :ok
   defp validate_optional_datetime(_field, %DateTime{}), do: :ok
@@ -258,23 +265,34 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodec do
     }
   end
 
-  defp scheduler_error_from_dto(nil), do: nil
+  defp scheduler_error_from_dto(nil), do: {:ok, nil}
 
   defp scheduler_error_from_dto(%{"occurred_at" => occurred_at, "phase" => phase} = error) do
     with {:ok, occurred_at, _offset} <- DateTime.from_iso8601(occurred_at),
-         {:ok, phase} <- scheduler_error_phase(phase) do
-      %SchedulerError{
-        occurred_at: occurred_at,
-        phase: phase,
-        code: Map.get(error, "code", "scheduler_error"),
-        message: Map.get(error, "message", "Scheduler error")
-      }
+         {:ok, phase} <- scheduler_error_phase(phase),
+         {:ok, code} <- scheduler_error_text(error, "code", "scheduler_error"),
+         {:ok, message} <- scheduler_error_text(error, "message", "Scheduler error") do
+      {:ok,
+       %SchedulerError{
+         occurred_at: occurred_at,
+         phase: phase,
+         code: code,
+         message: message
+       }}
     else
-      _ -> nil
+      _ -> {:error, {:invalid_scheduler_state_field, :last_scheduler_error, error}}
     end
   end
 
-  defp scheduler_error_from_dto(_value), do: nil
+  defp scheduler_error_from_dto(value),
+    do: {:error, {:invalid_scheduler_state_field, :last_scheduler_error, value}}
+
+  defp scheduler_error_text(error, field, default) do
+    case Map.get(error, field, default) do
+      value when is_binary(value) -> {:ok, value}
+      value -> {:error, {:invalid_scheduler_state_field, :last_scheduler_error, value}}
+    end
+  end
 
   defp scheduler_error_phase("evaluate"), do: {:ok, :evaluate}
   defp scheduler_error_phase("compute_due"), do: {:ok, :compute_due}

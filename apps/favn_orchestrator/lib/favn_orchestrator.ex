@@ -1953,20 +1953,29 @@ defmodule FavnOrchestrator do
          {:ok, runtime_entries} <- ManifestEntries.discover(version, index) do
       now = DateTime.utc_now()
 
-      entries =
+      result =
         runtime_entries
         |> Map.values()
-        |> Enum.map(fn runtime_entry ->
-          state = load_schedule_entry_state(runtime_entry, now)
+        |> Enum.reduce_while({:ok, []}, fn runtime_entry, {:ok, acc} ->
+          case load_schedule_entry_state(runtime_entry, now) do
+            {:ok, state} ->
+              runtime_entry =
+                Map.put(runtime_entry, :next_due_at, next_schedule_due_at(runtime_entry, now))
 
-          runtime_entry =
-            Map.put(runtime_entry, :next_due_at, next_schedule_due_at(runtime_entry, now))
+              {:cont, {:ok, [SchedulerEntry.from_runtime(runtime_entry, state) | acc]}}
 
-          SchedulerEntry.from_runtime(runtime_entry, state)
+            {:error, reason} ->
+              {:halt, {:error, reason}}
+          end
         end)
-        |> Enum.sort_by(&{inspect(&1.pipeline_module), inspect(&1.schedule_id)})
 
-      {:ok, entries}
+      case result do
+        {:ok, entries} ->
+          {:ok, Enum.sort_by(entries, &{inspect(&1.pipeline_module), inspect(&1.schedule_id)})}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -1984,8 +1993,9 @@ defmodule FavnOrchestrator do
           version: 1
         }
 
-        :ok = Storage.put_scheduler_state(key, state)
-        state
+        with :ok <- Storage.put_scheduler_state(key, state) do
+          {:ok, state}
+        end
 
       {:ok, %Favn.Scheduler.State{} = state} ->
         reconcile_schedule_entry_state(key, state, entry, now)
@@ -1993,13 +2003,8 @@ defmodule FavnOrchestrator do
       {:ok, state} when is_map(state) ->
         reconcile_schedule_entry_state(key, struct(Favn.Scheduler.State, state), entry, now)
 
-      {:error, _reason} ->
-        %Favn.Scheduler.State{
-          pipeline_module: entry.module,
-          schedule_id: entry.schedule.name,
-          schedule_fingerprint: entry.schedule_fingerprint,
-          activation_state: :pending_activation
-        }
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -2029,10 +2034,12 @@ defmodule FavnOrchestrator do
 
     if next != state do
       persisted = %{next | version: next.version || next_scheduler_version(state)}
-      :ok = Storage.put_scheduler_state(key, persisted)
-      persisted
+
+      with :ok <- Storage.put_scheduler_state(key, persisted) do
+        {:ok, persisted}
+      end
     else
-      next
+      {:ok, next}
     end
   end
 

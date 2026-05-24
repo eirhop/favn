@@ -69,7 +69,13 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     end
   end
 
-  def handle_call(:tick, _from, state), do: {:reply, :ok, evaluate_all(state)}
+  def handle_call(:tick, _from, state) do
+    case evaluate_all(state) do
+      {:ok, next} -> {:reply, :ok, next}
+      {:error, reason, next} -> {:reply, {:error, reason}, next}
+    end
+  end
+
   def handle_call(:scheduled, _from, state), do: {:reply, Map.values(state.entries), state}
 
   def handle_call(:diagnostics, _from, state),
@@ -91,7 +97,12 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
   @impl true
   def handle_info(:tick, state) do
-    next = evaluate_all(state)
+    next =
+      case evaluate_all(state) do
+        {:ok, next} -> next
+        {:error, _reason, next} -> next
+      end
+
     if next.auto_tick?, do: schedule_tick(next_tick_delay_ms(next.tick_ms))
     {:noreply, next}
   end
@@ -269,8 +280,10 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
             version: 1
           }
 
-          :ok = Storage.put_scheduler_state(key, base)
-          {:cont, {:ok, Map.put(acc, pipeline_module, base)}}
+          case Storage.put_scheduler_state(key, base) do
+            :ok -> {:cont, {:ok, Map.put(acc, pipeline_module, base)}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
 
         {:ok, %State{} = stored} ->
           stored = normalize_scheduler_state(stored)
@@ -293,8 +306,11 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
           if stored.schedule_fingerprint != entry.schedule_fingerprint or
                stored.activation_state != value.activation_state do
             persisted = persisted_scheduler_state(stored, value)
-            :ok = Storage.put_scheduler_state(key, persisted)
-            {:cont, {:ok, Map.put(acc, pipeline_module, persisted)}}
+
+            case Storage.put_scheduler_state(key, persisted) do
+              :ok -> {:cont, {:ok, Map.put(acc, pipeline_module, persisted)}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
           else
             {:cont, {:ok, Map.put(acc, pipeline_module, value)}}
           end
@@ -305,8 +321,11 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
           if state.activation_state != value.activation_state do
             persisted = persisted_scheduler_state(state, value)
-            :ok = Storage.put_scheduler_state(key, persisted)
-            {:cont, {:ok, Map.put(acc, pipeline_module, persisted)}}
+
+            case Storage.put_scheduler_state(key, persisted) do
+              :ok -> {:cont, {:ok, Map.put(acc, pipeline_module, persisted)}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
           else
             {:cont, {:ok, Map.put(acc, pipeline_module, value)}}
           end
@@ -317,14 +336,14 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     end)
   end
 
-  defp evaluate_all(%{index: nil} = state), do: state
+  defp evaluate_all(%{index: nil} = state), do: {:ok, state}
 
   defp evaluate_all(state) do
     now = DateTime.utc_now()
 
-    {next_states, _remaining_budget} =
-      Enum.reduce(state.entries, {state.states, configured_submission_budget()}, fn
-        {pipeline_module, entry}, {acc, remaining_budget} ->
+    result =
+      Enum.reduce_while(state.entries, {:ok, state.states, configured_submission_budget()}, fn
+        {pipeline_module, entry}, {:ok, acc, remaining_budget} ->
           current = Map.get(acc, pipeline_module, %State{pipeline_module: pipeline_module})
 
           {updated, remaining_budget} =
@@ -342,16 +361,28 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
           next_acc =
             if persist_state_change?(current, updated) do
               persisted = persisted_scheduler_state(current, updated)
-              :ok = Storage.put_scheduler_state({pipeline_module, entry.schedule.name}, persisted)
-              Map.put(acc, pipeline_module, persisted)
+
+              case Storage.put_scheduler_state({pipeline_module, entry.schedule.name}, persisted) do
+                :ok ->
+                  Map.put(acc, pipeline_module, persisted)
+
+                {:error, reason} ->
+                  {:error, reason, Map.put(acc, pipeline_module, updated)}
+              end
             else
               Map.put(acc, pipeline_module, updated)
             end
 
-          {next_acc, remaining_budget}
+          case next_acc do
+            {:error, reason, failed_acc} -> {:halt, {:error, reason, failed_acc}}
+            next_acc -> {:cont, {:ok, next_acc, remaining_budget}}
+          end
       end)
 
-    %{state | states: next_states}
+    case result do
+      {:ok, next_states, _remaining_budget} -> {:ok, %{state | states: next_states}}
+      {:error, reason, next_states} -> {:error, reason, %{state | states: next_states}}
+    end
   end
 
   defp evaluate_entry(entry, index, version, state, now, remaining_budget) do

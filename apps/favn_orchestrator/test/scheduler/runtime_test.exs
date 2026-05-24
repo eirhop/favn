@@ -56,6 +56,38 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
   end
 
+  defmodule SchedulerStateFailingStorageAdapter do
+    @behaviour Favn.Storage.Adapter
+
+    alias FavnOrchestrator.Storage.Adapter.Memory
+
+    for {name, arity} <- Favn.Storage.Adapter.behaviour_info(:callbacks),
+        {name, arity} not in [put_scheduler_state: 3, get_scheduler_state: 2] do
+      args = Macro.generate_arguments(arity, __MODULE__)
+
+      @impl true
+      def unquote(name)(unquote_splicing(args)) do
+        apply(Memory, unquote(name), [unquote_splicing(args)])
+      end
+    end
+
+    @impl true
+    def put_scheduler_state(key, state, opts) do
+      case Keyword.fetch(opts, :put_error) do
+        {:ok, reason} -> {:error, reason}
+        :error -> Memory.put_scheduler_state(key, state, opts)
+      end
+    end
+
+    @impl true
+    def get_scheduler_state(key, opts) do
+      case Keyword.fetch(opts, :get_error) do
+        {:ok, reason} -> {:error, reason}
+        :error -> Memory.get_scheduler_state(key, opts)
+      end
+    end
+  end
+
   setup do
     previous_storage_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
     previous_storage_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
@@ -207,6 +239,103 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
 
     assert inspection.activation_state == :enabled
     assert inspection.effective_enabled?
+  end
+
+  test "scheduler startup propagates scheduler state bootstrap write errors" do
+    version = scheduler_manifest_version("mv_scheduler_bootstrap_put_error")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, SchedulerStateFailingStorageAdapter)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+      put_error: :scheduler_state_put_failed
+    )
+
+    previous_flag = Process.flag(:trap_exit, true)
+
+    try do
+      assert {:error, :scheduler_state_put_failed} =
+               Runtime.start_link(name: unique_runtime_name(), tick_ms: 60_000, auto_tick?: false)
+    after
+      Process.flag(:trap_exit, previous_flag)
+    end
+  end
+
+  test "scheduler reload propagates scheduler state read errors" do
+    version = scheduler_manifest_version("mv_scheduler_reload_get_error")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, SchedulerStateFailingStorageAdapter)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+      get_error: :scheduler_state_get_failed
+    )
+
+    assert {:error, :scheduler_state_get_failed} = Runtime.reload(name)
+  end
+
+  test "schedule list fallback propagates scheduler state read errors" do
+    version = scheduler_manifest_version("mv_scheduler_list_get_error")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, SchedulerStateFailingStorageAdapter)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+      get_error: :scheduler_state_get_failed
+    )
+
+    assert {:error, :scheduler_state_get_failed} = FavnOrchestrator.list_schedule_entries()
+  end
+
+  test "schedule list fallback propagates scheduler state bootstrap write errors" do
+    version = scheduler_manifest_version("mv_scheduler_list_put_error")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, SchedulerStateFailingStorageAdapter)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+      put_error: :scheduler_state_put_failed
+    )
+
+    assert {:error, :scheduler_state_put_failed} = FavnOrchestrator.list_schedule_entries()
+  end
+
+  test "activation commands propagate scheduler state write errors" do
+    version = scheduler_manifest_version("mv_scheduler_activation_put_error")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+    [entry] = Runtime.scheduled(name)
+
+    assert {:ok, %State{} = stored_state} =
+             Storage.get_scheduler_state({entry.module, entry.schedule.name})
+
+    assert :ok =
+             Storage.put_scheduler_state({entry.module, entry.schedule.name}, %{
+               stored_state
+               | activation_state: :disabled,
+                 version: stored_state.version + 1
+             })
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, SchedulerStateFailingStorageAdapter)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+      put_error: :scheduler_state_put_failed
+    )
+
+    schedule_entry_id = "schedule:#{entry.module}:#{entry.schedule.name}"
+
+    assert {:error, :scheduler_state_put_failed} =
+             FavnOrchestrator.enable_schedule(schedule_entry_id)
   end
 
   test "enable schedule facade changes effective state without catch-up" do

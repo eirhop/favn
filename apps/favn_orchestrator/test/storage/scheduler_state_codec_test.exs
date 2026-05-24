@@ -182,6 +182,33 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
     assert {:error, {:invalid_scheduler_state_field, :last_due_at, "bad"}} =
              SchedulerStateCodec.decode_state(bad_datetime)
 
+    invalid_activation =
+      Jason.encode!(%{
+        "format" => "favn.scheduler_state.storage",
+        "schema_version" => 1,
+        "state" => %{"activation_state" => "surprise"}
+      })
+
+    assert {:error, {:invalid_scheduler_state_field, :activation_state, "surprise"}} =
+             SchedulerStateCodec.decode_state(invalid_activation)
+
+    invalid_scheduler_error =
+      Jason.encode!(%{
+        "format" => "favn.scheduler_state.storage",
+        "schema_version" => 1,
+        "state" => %{
+          "last_scheduler_error" => %{
+            "occurred_at" => "bad",
+            "phase" => "submit_run",
+            "code" => "invalid_window",
+            "message" => "Invalid window"
+          }
+        }
+      })
+
+    assert {:error, {:invalid_scheduler_state_field, :last_scheduler_error, _}} =
+             SchedulerStateCodec.decode_state(invalid_scheduler_error)
+
     assert {:error, {:invalid_scheduler_state_json, _}} =
              SchedulerStateCodec.decode_state("not-json")
 
