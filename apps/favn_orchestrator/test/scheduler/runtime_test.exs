@@ -338,6 +338,66 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
              FavnOrchestrator.enable_schedule(schedule_entry_id)
   end
 
+  test "tick retries dirty scheduler state persistence before advancing" do
+    version = scheduler_manifest_version("mv_scheduler_dirty_retry")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+    [entry] = Runtime.scheduled(name)
+
+    state = %State{
+      pipeline_module: entry.module,
+      schedule_id: entry.schedule.name,
+      schedule_fingerprint: entry.schedule_fingerprint,
+      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second),
+      activation_state: :enabled,
+      version: 2
+    }
+
+    assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
+    assert :ok = Runtime.reload(name)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, SchedulerStateFailingStorageAdapter)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+      put_error: :scheduler_state_put_failed
+    )
+
+    assert {:error, :scheduler_state_put_failed} = Runtime.tick(name)
+    assert {:ok, run} = await_run_submission(version.manifest_version_id)
+
+    assert {:ok, diagnostics} = Runtime.diagnostics(name)
+    assert diagnostics.dirty_scheduler_state_count == 1
+    assert diagnostics.state_summary.dirty_count == 1
+    assert diagnostics.last_scheduler_persist_error.reason == ":scheduler_state_put_failed"
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, Memory)
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+    assert {:ok, %State{} = stale_state} =
+             Storage.get_scheduler_state({entry.module, entry.schedule.name})
+
+    assert stale_state.last_submitted_due_at == nil
+
+    assert :ok = Runtime.tick(name)
+
+    assert {:ok, %State{} = retried_state} =
+             Storage.get_scheduler_state({entry.module, entry.schedule.name})
+
+    assert %DateTime{} = retried_state.last_submitted_due_at
+    assert retried_state.last_submitted_due_at == run.trigger.occurrence.due_at
+
+    assert {:ok, diagnostics} = Runtime.diagnostics(name)
+    assert diagnostics.dirty_scheduler_state_count == 0
+    assert diagnostics.state_summary.dirty_count == 0
+    assert diagnostics.last_scheduler_persist_error == nil
+
+    assert {:ok, runs} = Storage.list_runs()
+    assert Enum.count(runs, &(&1.manifest_version_id == version.manifest_version_id)) == 1
+  end
+
   test "enable schedule facade changes effective state without catch-up" do
     version = scheduler_manifest_version("mv_scheduler_enable_facade")
     assert :ok = FavnOrchestrator.register_manifest(version)

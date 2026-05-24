@@ -51,21 +51,16 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
   @impl true
   def handle_call(:reload, _from, state) do
-    case load_runtime(state.tick_ms, state.auto_tick?) do
-      {:ok, next} ->
-        emit_scheduler_loaded(next)
-        {:reply, :ok, next}
+    with {:ok, state} <- flush_dirty_states(state),
+         {:ok, next} <- load_runtime(state.tick_ms, state.auto_tick?) do
+      emit_scheduler_loaded(next)
+      {:reply, :ok, next}
+    else
+      {:error, reason, next} ->
+        {:reply, {:error, reason}, next}
 
       {:error, reason} ->
-        {:reply, {:error, reason},
-         %{
-           entries: %{},
-           states: %{},
-           tick_ms: state.tick_ms,
-           auto_tick?: state.auto_tick?,
-           index: nil,
-           version: nil
-         }}
+        {:reply, {:error, reason}, failed_runtime_state(state, reason)}
     end
   end
 
@@ -95,12 +90,42 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     {:reply, entries, state}
   end
 
+  defp failed_runtime_state(state, reason) do
+    %{
+      entries: %{},
+      states: %{},
+      dirty_states: %{},
+      last_persist_error: persist_error(reason),
+      tick_ms: state.tick_ms,
+      auto_tick?: state.auto_tick?,
+      index: nil,
+      version: nil
+    }
+  end
+
+  defp empty_runtime_state(tick_ms, auto_tick?) do
+    %{
+      entries: %{},
+      states: %{},
+      dirty_states: %{},
+      last_persist_error: nil,
+      tick_ms: tick_ms,
+      auto_tick?: auto_tick?,
+      index: nil,
+      version: nil
+    }
+  end
+
   @impl true
   def handle_info(:tick, state) do
     next =
       case evaluate_all(state) do
-        {:ok, next} -> next
-        {:error, _reason, next} -> next
+        {:ok, next} ->
+          next
+
+        {:error, reason, next} ->
+          Logger.error("scheduler tick failed", reason: inspect(reason))
+          next
       end
 
     if next.auto_tick?, do: schedule_tick(next_tick_delay_ms(next.tick_ms))
@@ -115,6 +140,8 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
        %{
          entries: entries,
          states: states,
+         dirty_states: %{},
+         last_persist_error: nil,
          tick_ms: tick_ms,
          auto_tick?: auto_tick?,
          index: index,
@@ -122,15 +149,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
        }}
     else
       {:empty, reason} when reason in [:active_manifest_not_set, :manifest_version_not_found] ->
-        {:ok,
-         %{
-           entries: %{},
-           states: %{},
-           tick_ms: tick_ms,
-           auto_tick?: auto_tick?,
-           index: nil,
-           version: nil
-         }}
+        {:ok, empty_runtime_state(tick_ms, auto_tick?)}
 
       {:error, reason} ->
         {:error, reason}
@@ -149,6 +168,8 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
         count_entries(state.entries, fn entry -> not entry.schedule.active end),
       in_flight_schedule_count: Enum.count(states, &is_binary(Map.get(&1, :in_flight_run_id))),
       queued_schedule_count: Enum.count(states, &(not is_nil(Map.get(&1, :queued_due_at)))),
+      dirty_scheduler_state_count: map_size(Map.get(state, :dirty_states, %{})),
+      last_scheduler_persist_error: Map.get(state, :last_persist_error),
       state_summary: scheduler_state_summary(state),
       tick_ms: state.tick_ms,
       auto_tick?: state.auto_tick?
@@ -169,6 +190,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
       submitted_cursor_count: count_states(state.states, &present?(&1.last_submitted_due_at)),
       in_flight_count: count_states(state.states, &is_binary(&1.in_flight_run_id)),
       queued_count: count_states(state.states, &present?(&1.queued_due_at)),
+      dirty_count: map_size(Map.get(state, :dirty_states, %{})),
       updated_count: count_states(state.states, &present?(&1.updated_at)),
       entries: entries
     }
@@ -336,9 +358,15 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     end)
   end
 
-  defp evaluate_all(%{index: nil} = state), do: {:ok, state}
+  defp evaluate_all(%{index: nil} = state), do: flush_dirty_states(state)
 
   defp evaluate_all(state) do
+    with {:ok, state} <- flush_dirty_states(state) do
+      do_evaluate_all(state)
+    end
+  end
+
+  defp do_evaluate_all(state) do
     now = DateTime.utc_now()
 
     result =
@@ -361,29 +389,67 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
           next_acc =
             if persist_state_change?(current, updated) do
               persisted = persisted_scheduler_state(current, updated)
+              key = {pipeline_module, entry.schedule.name}
 
-              case Storage.put_scheduler_state({pipeline_module, entry.schedule.name}, persisted) do
+              case Storage.put_scheduler_state(key, persisted) do
                 :ok ->
                   Map.put(acc, pipeline_module, persisted)
 
                 {:error, reason} ->
-                  {:error, reason, Map.put(acc, pipeline_module, updated)}
+                  {:error, reason, Map.put(acc, pipeline_module, persisted), pipeline_module,
+                   persisted}
               end
             else
               Map.put(acc, pipeline_module, updated)
             end
 
           case next_acc do
-            {:error, reason, failed_acc} -> {:halt, {:error, reason, failed_acc}}
-            next_acc -> {:cont, {:ok, next_acc, remaining_budget}}
+            {:error, reason, failed_acc, dirty_key, dirty_state} ->
+              {:halt, {:error, reason, failed_acc, dirty_key, dirty_state}}
+
+            next_acc ->
+              {:cont, {:ok, next_acc, remaining_budget}}
           end
       end)
 
     case result do
-      {:ok, next_states, _remaining_budget} -> {:ok, %{state | states: next_states}}
-      {:error, reason, next_states} -> {:error, reason, %{state | states: next_states}}
+      {:ok, next_states, _remaining_budget} ->
+        {:ok, %{state | states: next_states, last_persist_error: nil}}
+
+      {:error, reason, next_states, dirty_key, dirty_state} ->
+        next = %{
+          state
+          | states: next_states,
+            dirty_states: Map.put(state.dirty_states, dirty_key, dirty_state),
+            last_persist_error: persist_error(reason)
+        }
+
+        {:error, reason, next}
     end
   end
+
+  defp flush_dirty_states(state) do
+    dirty_states = Map.get(state, :dirty_states, %{})
+
+    Enum.reduce_while(dirty_states, {:ok, state}, fn {pipeline_module, dirty_state}, {:ok, acc} ->
+      case Storage.put_scheduler_state({pipeline_module, dirty_state.schedule_id}, dirty_state) do
+        :ok ->
+          {:cont,
+           {:ok,
+            %{
+              acc
+              | states: Map.put(acc.states, pipeline_module, dirty_state),
+                dirty_states: Map.delete(acc.dirty_states, pipeline_module),
+                last_persist_error: nil
+            }}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason, %{acc | last_persist_error: persist_error(reason)}}}
+      end
+    end)
+  end
+
+  defp persist_error(reason), do: %{reason: inspect(reason), occurred_at: DateTime.utc_now()}
 
   defp evaluate_entry(entry, index, version, state, now, remaining_budget) do
     state = reconcile_in_flight(state)

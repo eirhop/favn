@@ -30,6 +30,9 @@ Code:
 - Schedule list/detail reads may bootstrap missing persisted scheduler state from
   the active manifest when the scheduler runtime is not running; storage read or
   write failures are returned to callers rather than converted to default state.
+- Scheduler ticks keep failed state writes in an explicit dirty set, report them
+  in scheduler diagnostics, and retry dirty writes before evaluating schedules on
+  later ticks.
 - Freshness execution/query helpers under `apps/favn_orchestrator/lib/favn_orchestrator/freshness/`
 - Reusable runtime-state repair passes under `apps/favn_orchestrator/lib/favn_orchestrator/repair/`
 - Refresh policy normalization and forced-run selection in
