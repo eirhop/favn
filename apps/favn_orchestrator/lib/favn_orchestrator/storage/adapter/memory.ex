@@ -16,6 +16,8 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.ExecutionAdmission.LeaseRelease
+  alias FavnOrchestrator.Storage.ExecutionLeaseCodec
   alias FavnOrchestrator.Storage.LogEntryCodec
   alias FavnOrchestrator.Storage.ExecutionAdmissionWaiterCodec
   alias FavnOrchestrator.Storage.MaterializationClaimCodec
@@ -48,6 +50,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           run_events: %{required(String.t()) => [map()]},
           run_event_global_sequence: non_neg_integer(),
           execution_leases: %{required(String.t()) => map()},
+          execution_lease_ids_by_run: %{required(String.t()) => MapSet.t(String.t())},
           execution_admission_waiters: %{required(String.t()) => map()},
           materialization_claims: %{required(String.t()) => MaterializationClaim.t()},
           log_entries: [Favn.Log.Entry.t()],
@@ -298,6 +301,12 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def release_execution_lease(lease_id, opts) when is_binary(lease_id) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:release_execution_lease, lease_id})
+  end
+
+  @impl true
+  def release_execution_leases_for_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:release_execution_leases_for_run, run_id})
   end
 
   @impl true
@@ -754,6 +763,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       run_events: %{},
       run_event_global_sequence: 0,
       execution_leases: %{},
+      execution_lease_ids_by_run: %{},
       execution_admission_waiters: %{},
       materialization_claims: %{},
       log_entries: [],
@@ -1044,26 +1054,75 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {expired_count, active_leases} =
       prune_execution_leases(state.execution_leases, lease.acquired_at)
 
+    active_lease_ids_by_run = execution_lease_ids_by_run(active_leases)
+
     reply = execution_lease_capacity(active_leases, lease.scopes)
 
     case reply do
       :ok ->
         next_leases = Map.put(active_leases, lease.lease_id, lease)
-        {:reply, {:ok, lease}, %{state | execution_leases: next_leases}}
+        next_lease_ids_by_run = put_execution_lease_id(active_lease_ids_by_run, lease)
+
+        {:reply, {:ok, lease},
+         %{
+           state
+           | execution_leases: next_leases,
+             execution_lease_ids_by_run: next_lease_ids_by_run
+         }}
 
       {:error, reason} ->
         _ = expired_count
-        {:reply, {:error, reason}, %{state | execution_leases: active_leases}}
+
+        {:reply, {:error, reason},
+         %{
+           state
+           | execution_leases: active_leases,
+             execution_lease_ids_by_run: active_lease_ids_by_run
+         }}
     end
   end
 
   def handle_call({:release_execution_lease, lease_id}, _from, state) do
-    {:reply, :ok, %{state | execution_leases: Map.delete(state.execution_leases, lease_id)}}
+    {lease, execution_leases} = Map.pop(state.execution_leases, lease_id)
+
+    execution_lease_ids_by_run =
+      if lease do
+        delete_execution_lease_id(state.execution_lease_ids_by_run, lease)
+      else
+        state.execution_lease_ids_by_run
+      end
+
+    {:reply, :ok,
+     %{
+       state
+       | execution_leases: execution_leases,
+         execution_lease_ids_by_run: execution_lease_ids_by_run
+     }}
+  end
+
+  def handle_call({:release_execution_leases_for_run, run_id}, _from, state) do
+    lease_ids = Map.get(state.execution_lease_ids_by_run, run_id, MapSet.new())
+
+    {released, execution_leases} = pop_execution_leases(state.execution_leases, lease_ids)
+    reply = lease_release(run_id, released)
+
+    {:reply, {:ok, reply},
+     %{
+       state
+       | execution_leases: execution_leases,
+         execution_lease_ids_by_run: Map.delete(state.execution_lease_ids_by_run, run_id)
+     }}
   end
 
   def handle_call({:expire_execution_leases, now}, _from, state) do
     {expired_count, active_leases} = prune_execution_leases(state.execution_leases, now)
-    {:reply, {:ok, expired_count}, %{state | execution_leases: active_leases}}
+
+    {:reply, {:ok, expired_count},
+     %{
+       state
+       | execution_leases: active_leases,
+         execution_lease_ids_by_run: execution_lease_ids_by_run(active_leases)
+     }}
   end
 
   def handle_call(:list_execution_leases, _from, state) do
@@ -2483,6 +2542,51 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
         {expired_count + 1, active}
       end
     end)
+  end
+
+  defp execution_lease_ids_by_run(leases) do
+    Enum.reduce(leases, %{}, fn {_lease_id, lease}, index ->
+      put_execution_lease_id(index, lease)
+    end)
+  end
+
+  defp put_execution_lease_id(index, lease) do
+    Map.update(index, lease.run_id, MapSet.new([lease.lease_id]), &MapSet.put(&1, lease.lease_id))
+  end
+
+  defp delete_execution_lease_id(index, lease) do
+    Map.update(index, lease.run_id, MapSet.new(), fn lease_ids ->
+      MapSet.delete(lease_ids, lease.lease_id)
+    end)
+    |> drop_empty_execution_lease_run(lease.run_id)
+  end
+
+  defp drop_empty_execution_lease_run(index, run_id) do
+    case Map.fetch(index, run_id) do
+      {:ok, lease_ids} ->
+        if MapSet.size(lease_ids) == 0, do: Map.delete(index, run_id), else: index
+
+      _other ->
+        index
+    end
+  end
+
+  defp pop_execution_leases(leases, lease_ids) do
+    Enum.reduce(lease_ids, {[], leases}, fn lease_id, {released, active} ->
+      case Map.pop(active, lease_id) do
+        {nil, next_active} -> {released, next_active}
+        {lease, next_active} -> {[lease | released], next_active}
+      end
+    end)
+  end
+
+  defp lease_release(run_id, leases) do
+    scopes =
+      leases
+      |> Enum.flat_map(& &1.scopes)
+      |> Enum.uniq_by(&ExecutionLeaseCodec.scope_identity/1)
+
+    LeaseRelease.new(run_id, length(leases), scopes)
   end
 
   defp next_execution_admission_waiter(waiter, waiters) do

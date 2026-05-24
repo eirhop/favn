@@ -13,6 +13,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
   alias FavnOrchestrator.CursorPage
+  alias FavnOrchestrator.ExecutionAdmission.LeaseRelease
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
@@ -441,6 +442,26 @@ defmodule Favn.Storage.Adapter.Postgres do
       end)
       |> case do
         {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def release_execution_leases_for_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      repo.transact(fn ->
+        with {:ok, leases} <- list_execution_leases_for_run(repo, run_id),
+             lease_ids <- Enum.map(leases, & &1.lease_id),
+             :ok <- delete_execution_lease_scopes(repo, lease_ids),
+             {:ok, released_count} <- delete_execution_leases_by_ids(repo, lease_ids) do
+          {:ok, LeaseRelease.new(run_id, released_count, released_execution_scopes(leases))}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, release} -> {:ok, release}
         {:error, reason} -> {:error, reason}
       end
     end
@@ -1850,6 +1871,8 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp decode_materialization_claim_row([record_payload]),
     do: MaterializationClaimCodec.decode(record_payload)
+
+  defp decode_execution_lease_row([lease_payload]), do: ExecutionLeaseCodec.decode(lease_payload)
 
   defp decode_execution_admission_waiter_row([waiter_payload]),
     do: ExecutionAdmissionWaiterCodec.decode(waiter_payload)
@@ -3364,6 +3387,18 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
+  defp list_execution_leases_for_run(repo, run_id) do
+    sql = "SELECT lease_payload FROM favn_execution_leases WHERE run_id = $1 FOR UPDATE"
+
+    query_and_decode_rows(repo, sql, [run_id], &decode_execution_lease_row/1)
+  end
+
+  defp released_execution_scopes(leases) do
+    leases
+    |> Enum.flat_map(& &1.scopes)
+    |> Enum.uniq_by(&ExecutionLeaseCodec.scope_identity/1)
+  end
+
   defp lock_execution_lease_scopes(repo, scopes) do
     scopes
     |> Enum.map(&ExecutionLeaseCodec.scope_identity/1)
@@ -3516,11 +3551,20 @@ defmodule Favn.Storage.Adapter.Postgres do
   defp delete_execution_leases(_repo, []), do: :ok
 
   defp delete_execution_leases(repo, lease_ids) do
+    case delete_execution_leases_by_ids(repo, lease_ids) do
+      {:ok, _count} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_execution_leases_by_ids(_repo, []), do: {:ok, 0}
+
+  defp delete_execution_leases_by_ids(repo, lease_ids) do
     placeholders = Enum.map_join(1..length(lease_ids), ",", &"$#{&1}")
     sql = "DELETE FROM favn_execution_leases WHERE lease_id IN (#{placeholders})"
 
     case SQL.query(repo, sql, lease_ids) do
-      {:ok, _result} -> :ok
+      {:ok, result} -> {:ok, Map.get(result, :num_rows, 0)}
       {:error, reason} -> {:error, reason}
     end
   end

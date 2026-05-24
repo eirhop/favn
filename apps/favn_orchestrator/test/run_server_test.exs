@@ -308,6 +308,7 @@ defmodule FavnOrchestrator.RunServerTest do
     defdelegate list_global_run_events(filters, opts), to: Memory
     defdelegate try_acquire_execution_lease(lease, opts), to: Memory
     defdelegate release_execution_lease(lease_id, opts), to: Memory
+    defdelegate release_execution_leases_for_run(run_id, opts), to: Memory
     defdelegate expire_execution_leases(now, opts), to: Memory
     defdelegate list_execution_leases(opts), to: Memory
     defdelegate upsert_execution_admission_waiter(waiter, opts), to: Memory

@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
 
   alias FavnOrchestrator.ExecutionAdmission.Waiter
   alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Storage.ExecutionLeaseCodec
 
   @name __MODULE__
   @candidate_limit 100
@@ -58,7 +59,13 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
 
   @impl true
   def handle_cast({:notify_scopes, scopes}, state) do
-    Enum.each(scopes, &wake_scope(&1, state))
+    scopes = unique_scopes(scopes)
+
+    with [_ | _] <- scopes,
+         {:ok, _expired} <- Storage.expire_execution_admission_waiters(DateTime.utc_now()) do
+      Enum.each(scopes, &wake_scope(&1, state))
+    end
+
     {:noreply, state}
   end
 
@@ -108,8 +115,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
   end
 
   defp wake_scope(scope, state) do
-    with {:ok, _expired} <- Storage.expire_execution_admission_waiters(DateTime.utc_now()),
-         {:ok, waiters} <-
+    with {:ok, waiters} <-
            Storage.list_execution_admission_waiters_for_scope(scope, limit: @candidate_limit),
          %Waiter{} = waiter <- first_registered_waiter(waiters, state.subscribers) do
       subscriber = Map.fetch!(state.subscribers, waiter.waiter_id)
@@ -121,6 +127,20 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
     else
       _other -> :ok
     end
+  end
+
+  defp unique_scopes(scopes) do
+    scopes
+    |> Enum.reduce(%{}, fn scope, acc ->
+      case ExecutionLeaseCodec.normalize_scope(scope) do
+        {:ok, normalized} ->
+          Map.put_new(acc, ExecutionLeaseCodec.scope_identity(normalized), normalized)
+
+        {:error, _reason} ->
+          acc
+      end
+    end)
+    |> Map.values()
   end
 
   defp first_registered_waiter(waiters, subscribers) do

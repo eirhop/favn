@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.Storage do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
+  alias FavnOrchestrator.ExecutionAdmission.LeaseRelease
   alias FavnOrchestrator.ExecutionAdmission.Waiter, as: AdmissionWaiter
   alias FavnOrchestrator.CursorPage
   alias FavnOrchestrator.MaterializationClaim
@@ -193,6 +194,11 @@ defmodule FavnOrchestrator.Storage do
   @spec release_execution_lease(String.t()) :: :ok | {:error, term()}
   def release_execution_lease(lease_id) when is_binary(lease_id) do
     adapter_call(fn adapter, opts -> adapter.release_execution_lease(lease_id, opts) end)
+  end
+
+  @spec release_execution_leases_for_run(String.t()) :: {:ok, LeaseRelease.t()} | {:error, term()}
+  def release_execution_leases_for_run(run_id) when is_binary(run_id) do
+    adapter_call(fn adapter, opts -> adapter.release_execution_leases_for_run(run_id, opts) end)
   end
 
   @spec expire_execution_leases(DateTime.t()) :: {:ok, non_neg_integer()} | {:error, term()}
