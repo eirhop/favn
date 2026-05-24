@@ -454,7 +454,7 @@ defmodule Favn.Storage.Adapter.Postgres do
         with {:ok, leases} <- list_execution_leases_for_run(repo, run_id),
              lease_ids <- Enum.map(leases, & &1.lease_id),
              :ok <- delete_execution_lease_scopes(repo, lease_ids),
-             {:ok, released_count} <- delete_execution_leases_for_run(repo, run_id) do
+             {:ok, released_count} <- delete_execution_leases_by_ids(repo, lease_ids) do
           {:ok, LeaseRelease.new(run_id, released_count, released_execution_scopes(leases))}
         else
           {:error, reason} -> repo.rollback(reason)
@@ -3551,17 +3551,19 @@ defmodule Favn.Storage.Adapter.Postgres do
   defp delete_execution_leases(_repo, []), do: :ok
 
   defp delete_execution_leases(repo, lease_ids) do
-    placeholders = Enum.map_join(1..length(lease_ids), ",", &"$#{&1}")
-    sql = "DELETE FROM favn_execution_leases WHERE lease_id IN (#{placeholders})"
-
-    case SQL.query(repo, sql, lease_ids) do
-      {:ok, _result} -> :ok
+    case delete_execution_leases_by_ids(repo, lease_ids) do
+      {:ok, _count} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp delete_execution_leases_for_run(repo, run_id) do
-    case SQL.query(repo, "DELETE FROM favn_execution_leases WHERE run_id = $1", [run_id]) do
+  defp delete_execution_leases_by_ids(_repo, []), do: {:ok, 0}
+
+  defp delete_execution_leases_by_ids(repo, lease_ids) do
+    placeholders = Enum.map_join(1..length(lease_ids), ",", &"$#{&1}")
+    sql = "DELETE FROM favn_execution_leases WHERE lease_id IN (#{placeholders})"
+
+    case SQL.query(repo, sql, lease_ids) do
       {:ok, result} -> {:ok, Map.get(result, :num_rows, 0)}
       {:error, reason} -> {:error, reason}
     end

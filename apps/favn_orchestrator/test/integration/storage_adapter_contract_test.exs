@@ -265,10 +265,37 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, ^blocked} = Storage.try_acquire_execution_lease(blocked)
     assert {:ok, [^blocked]} = Storage.list_execution_leases()
 
+    pool_scope = %{kind: :pool, key: "pool-#{label}", limit: 10}
+    run_a_first = execution_lease(run.id, "step-run-a-first", now, [pool_scope])
+    run_a_second = execution_lease(run.id, "step-run-a-second", now, [pool_scope])
+    run_b_id = "run_contract_other_#{label}_#{System.unique_integer([:positive])}"
+    run_b_lease = execution_lease(run_b_id, "step-run-b", now, [pool_scope])
+
+    assert {:ok, ^run_a_first} = Storage.try_acquire_execution_lease(run_a_first)
+    assert {:ok, ^run_a_second} = Storage.try_acquire_execution_lease(run_a_second)
+    assert {:ok, ^run_b_lease} = Storage.try_acquire_execution_lease(run_b_lease)
+
     assert {:ok, release} = Storage.release_execution_leases_for_run(run.id)
     assert release.run_id == run.id
-    assert release.released_count == 1
-    assert release.scopes == [%{kind: :run, key: run.id, limit: 1}]
+    assert release.released_count == 3
+
+    assert Enum.sort_by(release.scopes, &{to_string(&1.kind), &1.key}) ==
+             Enum.sort_by(
+               [%{kind: :run, key: run.id, limit: 1}, pool_scope],
+               &{
+                 to_string(&1.kind),
+                 &1.key
+               }
+             )
+
+    assert {:ok, [^run_b_lease]} = Storage.list_execution_leases()
+
+    assert {:ok, idempotent_release} = Storage.release_execution_leases_for_run(run.id)
+    assert idempotent_release.released_count == 0
+    assert idempotent_release.scopes == []
+    assert {:ok, [^run_b_lease]} = Storage.list_execution_leases()
+
+    assert :ok = Storage.release_execution_lease(run_b_lease.lease_id)
     assert {:ok, []} = Storage.list_execution_leases()
 
     assert {:ok, ^blocked} = Storage.try_acquire_execution_lease(blocked)
