@@ -42,6 +42,7 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
       |> Enum.sort_by(&run_started_sort_key/1)
 
     windows = Enum.filter(windows, &match?(%BackfillWindow{}, &1))
+    windows_by_child = Map.new(windows, &{&1.latest_attempt_run_id || &1.child_run_id, &1})
     attempt_counts = attempt_counts(root, children, windows)
     window_counts = window_counts(windows)
     public_root_status = public_status(root)
@@ -76,7 +77,8 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
        progress: progress(attempt_counts),
        summary_totals: %{windows: window_counts, asset_attempts: attempt_counts},
        last_activity_at: latest_datetime(Enum.flat_map(runs, &[&1.updated_at, &1.inserted_at])),
-       currently_running_asset_attempts: [],
+       currently_running_asset_attempts:
+         current_running_attempts([root | children], windows_by_child),
        child_run_ids: Enum.map(children, & &1.id)
      }}
   end
@@ -216,6 +218,47 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
   defp target_assets(%RunState{} = run),
     do: Enum.map(RunQuery.target_refs(run), &RunQuery.public_ref/1)
 
+  defp current_running_attempts(runs, windows_by_child) do
+    runs
+    |> Enum.reject(&backfill_parent?/1)
+    |> Enum.flat_map(fn run ->
+      window = Map.get(windows_by_child, run.id)
+
+      run
+      |> run_attempt_statuses(window)
+      |> Enum.filter(&running_status?/1)
+      |> Enum.map(&current_attempt(run, &1, window))
+    end)
+  end
+
+  defp current_attempt(%RunState{} = run, status, window) do
+    asset_key = run |> RunQuery.target_refs() |> List.first() |> RunQuery.public_ref()
+
+    %{
+      id: run.id,
+      root_execution_group_id: RunQuery.root_execution_group_id(run),
+      child_run_id: run.id,
+      run_id: run.id,
+      status: status_name(status),
+      asset_key: asset_key,
+      asset_ref: asset_key,
+      window: public_window(window)
+    }
+  end
+
+  defp public_window(%BackfillWindow{} = window) do
+    %{
+      key: window.window_key,
+      label: label(window.window_kind, window.window_start_at),
+      kind: window.window_kind,
+      start_at: window.window_start_at,
+      end_at: window.window_end_at,
+      timezone: window.timezone
+    }
+  end
+
+  defp public_window(_window), do: nil
+
   defp backfill_parent?(%RunState{submit_kind: kind})
        when kind in [:backfill_asset, :backfill_pipeline],
        do: true
@@ -251,6 +294,12 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
     do: DateTime.diff(finished_at, started_at, :millisecond)
 
   defp duration_ms(_started_at, _finished_at), do: nil
+
+  defp label(:hour, %DateTime{} = start_at), do: Calendar.strftime(start_at, "%b %-d %H:00")
+  defp label(:day, %DateTime{} = start_at), do: Calendar.strftime(start_at, "%b %-d")
+  defp label(:month, %DateTime{} = start_at), do: Calendar.strftime(start_at, "%b %Y")
+  defp label(:year, %DateTime{} = start_at), do: Calendar.strftime(start_at, "%Y")
+  defp label(_kind, _start_at), do: nil
 
   defp earliest_datetime(values), do: datetime_extreme(values, &(DateTime.compare(&1, &2) == :lt))
   defp latest_datetime(values), do: datetime_extreme(values, &(DateTime.compare(&1, &2) == :gt))
