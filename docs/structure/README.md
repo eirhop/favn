@@ -13,6 +13,7 @@ you need ownership or test-location guidance for a specific app.
 - `favn_duckdb.md`: DuckDB adapter and runner plugin runtime
 - `favn_duckdb_adbc.md`: DuckDB ADBC adapter and runner plugin runtime
 - `favn_storage_sqlite.md`: SQLite storage adapter
+- `favn_storage_sqlite_database.md`: SQLite database model, ER diagram, indexes, and usage
 - `favn_storage_postgres.md`: Postgres storage adapter
 - `favn_test_support.md`: shared test fixtures and helpers
 - `favn_view.md`: Phoenix/LiveView UI boundary app
