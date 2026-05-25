@@ -10,6 +10,7 @@ defmodule FavnStorageSqlite.AdapterTest do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.TargetStatus
   alias FavnStorageSqlite.Repo
 
   alias Ecto.Adapters.SQL
@@ -119,6 +120,72 @@ defmodule FavnStorageSqlite.AdapterTest do
     refute payload =~ "__type__"
     refute payload =~ "__struct__"
     refute payload =~ "secret"
+  end
+
+  test "repairs legacy null pipeline submit query metadata once", %{opts: opts} do
+    version = manifest_version("mv_sqlite_pipeline_repair")
+
+    run =
+      RunState.new(
+        id: "run_sqlite_pipeline_repair",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Asset, :asset},
+        target_refs: [{MyApp.Asset, :asset}],
+        submit_kind: :pipeline,
+        metadata: %{pipeline_submit_ref: MyApp.Pipeline}
+      )
+
+    assert :ok = Adapter.put_manifest_version(version, opts)
+    assert :ok = Adapter.put_run(run, opts)
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_runs SET pipeline_submit_ref_text = NULL WHERE run_id = ?1",
+               [
+                 run.id
+               ]
+             )
+
+    assert {:ok, %{rows: [[nil]]}} =
+             SQL.query(Repo, "SELECT pipeline_submit_ref_text FROM favn_runs WHERE run_id = ?1", [
+               run.id
+             ])
+
+    assert {:ok, [stored]} =
+             Adapter.list_target_runs(
+               version.manifest_version_id,
+               :pipeline,
+               MyApp.Pipeline,
+               [limit: 10],
+               opts
+             )
+
+    assert stored.id == run.id
+
+    assert {:ok, %{rows: [["MyApp.Pipeline"]]}} =
+             SQL.query(Repo, "SELECT pipeline_submit_ref_text FROM favn_runs WHERE run_id = ?1", [
+               run.id
+             ])
+
+    assert {:ok, %{rows: [[0]]}} =
+             SQL.query(
+               Repo,
+               "SELECT COUNT(*) FROM favn_runs WHERE run_id = ?1 AND pipeline_submit_ref_text IS NULL",
+               [run.id]
+             )
+
+    assert {:ok, [stored_again]} =
+             Adapter.list_target_runs(
+               version.manifest_version_id,
+               :pipeline,
+               MyApp.Pipeline,
+               [limit: 10],
+               opts
+             )
+
+    assert stored_again.id == run.id
   end
 
   test "persists backfill read models as full JSON-safe DTO records", %{opts: opts} do
@@ -242,6 +309,66 @@ defmodule FavnStorageSqlite.AdapterTest do
       state.freshness_key,
       "favn.freshness.asset_freshness_state.storage.v1"
     )
+  end
+
+  test "persists target statuses as full JSON-safe DTO records", %{opts: opts} do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {:ok, status} =
+      TargetStatus.new(%{
+        manifest_version_id: "mv_target_status",
+        target_kind: :asset,
+        target_id: "asset:Elixir.MyApp.Asset:asset",
+        target_ref_text: "Elixir.MyApp.Asset:asset",
+        status: :failed,
+        latest_run_id: "run_target_status",
+        latest_run_status: :error,
+        latest_run_at: now,
+        latest_failure_run_id: "run_target_status",
+        latest_failure_at: now,
+        freshness_status: :error,
+        freshness_key: "latest",
+        updated_at: now,
+        updated_seq: 4,
+        payload: %{credentials: "secret-password"}
+      })
+
+    assert :ok = Adapter.upsert_target_status(status, opts)
+
+    assert {:ok, stored} =
+             Adapter.get_target_status(
+               "mv_target_status",
+               :asset,
+               "asset:Elixir.MyApp.Asset:asset",
+               opts
+             )
+
+    assert stored.status == :failed
+    assert stored.latest_failure_run_id == "run_target_status"
+
+    assert {:ok, statuses} =
+             Adapter.list_target_statuses(
+               "mv_target_status",
+               :asset,
+               ["asset:Elixir.MyApp.Asset:asset"],
+               opts
+             )
+
+    assert Map.keys(statuses) == ["asset:Elixir.MyApp.Asset:asset"]
+
+    assert {:ok, %{rows: [[payload]]}} =
+             SQL.query(
+               Repo,
+               "SELECT record_payload FROM favn_target_statuses WHERE target_id = ?1",
+               [
+                 status.target_id
+               ]
+             )
+
+    assert Jason.decode!(payload)["format"] == "favn.target_status.storage.v1"
+    refute payload =~ "__type__"
+    refute payload =~ "__struct__"
+    refute payload =~ "secret-password"
   end
 
   test "stores run events and scheduler cursor state", %{opts: opts} do

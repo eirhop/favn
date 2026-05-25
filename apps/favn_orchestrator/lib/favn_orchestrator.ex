@@ -51,6 +51,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.ScheduleListEntry
   alias FavnOrchestrator.SchedulerEntry
   alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.TargetStatus
 
   @type run_id :: String.t()
   @type operator_actor :: Auth.actor()
@@ -387,6 +388,20 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Rebuilds persisted current target statuses for one manifest version.
+
+  The target-status table is a repairable read model for operator catalogue and
+  detail pages. This function rebuilds it from authoritative persisted run and
+  freshness state and replaces rows for the manifest scope.
+  """
+  @spec rebuild_target_statuses(String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def rebuild_target_statuses(manifest_version_id) when is_binary(manifest_version_id) do
+    with {:ok, version} <- get_manifest(manifest_version_id) do
+      TargetStatus.Projector.rebuild_manifest(version)
+    end
+  end
+
+  @doc """
   Returns operator-facing catalogue entries for the currently active manifest.
 
   Entries are manifest target metadata enriched with latest known freshness/run
@@ -397,9 +412,9 @@ defmodule FavnOrchestrator do
   def active_asset_catalogue do
     with {:ok, manifest_version_id} <- active_manifest(),
          {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, freshness_states} <- catalogue_freshness_states(manifest_version_id),
-         {:ok, runs} <- catalogue_runs(manifest_version_id) do
-      {:ok, asset_catalogue_entries(version, freshness_states, runs)}
+         targets <- Enum.map(List.wrap(version.manifest.assets), &manifest_asset_target/1),
+         {:ok, statuses} <- target_statuses(manifest_version_id, :asset, targets) do
+      {:ok, asset_catalogue_entries(version, statuses)}
     end
   end
 
@@ -414,8 +429,10 @@ defmodule FavnOrchestrator do
     with {:ok, manifest_version_id} <- active_manifest(),
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
-         {:ok, runs} <- catalogue_runs(manifest_version_id) do
-      {:ok, pipeline_catalogue_entries(version, index, runs)}
+         targets <-
+           Enum.map(List.wrap(version.manifest.pipelines), &manifest_pipeline_target(index, &1)),
+         {:ok, statuses} <- target_statuses(manifest_version_id, :pipeline, targets) do
+      {:ok, pipeline_catalogue_entries(version, index, statuses)}
     end
   end
 
@@ -431,8 +448,11 @@ defmodule FavnOrchestrator do
     with {:ok, manifest_version_id} <- active_manifest(),
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
-         {:ok, runs} <- catalogue_runs(manifest_version_id) do
-      case pipeline_detail_entry(version, index, target_id, runs) do
+         {:ok, status} <- target_status(manifest_version_id, :pipeline, target_id),
+         {:ok, pipeline} <- pipeline_for_target(version, target_id),
+         {:ok, recent_runs} <-
+           Storage.list_target_runs(manifest_version_id, :pipeline, pipeline.module, limit: 50) do
+      case pipeline_detail_entry(version, index, target_id, status, recent_runs) do
         nil -> {:error, :not_found}
         detail -> {:ok, detail}
       end
@@ -453,13 +473,17 @@ defmodule FavnOrchestrator do
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, freshness_states} <- detail_freshness_states(manifest_version_id),
          {:ok, asset_window_states} <- detail_asset_window_states(manifest_version_id),
-         {:ok, runs} <- catalogue_runs(manifest_version_id) do
+         {:ok, asset} <- asset_for_target(version, target_id),
+         {:ok, recent_runs} <-
+           Storage.list_target_runs(manifest_version_id, :asset, asset.ref, limit: 50),
+         {:ok, status} <- target_status(manifest_version_id, :asset, target_id) do
       case asset_detail_entry(
              version,
              target_id,
+             status,
              freshness_states,
              asset_window_states,
-             runs,
+             recent_runs,
              opts
            ) do
         nil -> {:error, :not_found}
@@ -2320,20 +2344,56 @@ defmodule FavnOrchestrator do
     |> Enum.sort_by(& &1.label)
   end
 
-  defp catalogue_freshness_states(manifest_version_id) do
-    case list_asset_freshness(
-           manifest_version_id: manifest_version_id,
-           freshness_key: Favn.Freshness.Key.latest(),
-           limit: Page.max_limit()
-         ) do
-      {:ok, page} -> {:ok, page.items}
-      {:error, :asset_freshness_state_not_supported} -> {:ok, []}
+  defp target_statuses(manifest_version_id, target_kind, targets) do
+    target_ids = Enum.map(targets, & &1.target_id)
+
+    with {:ok, statuses} <-
+           Storage.list_target_statuses(manifest_version_id, target_kind, target_ids) do
+      {:ok,
+       Map.new(targets, fn target ->
+         status =
+           Map.get(statuses, target.target_id) ||
+             TargetStatus.unknown(
+               manifest_version_id,
+               target_kind,
+               target.target_id,
+               target_ref_text(target_kind, target)
+             )
+
+         {target.target_id, status}
+       end)}
+    end
+  end
+
+  defp target_status(manifest_version_id, target_kind, target_id) do
+    case Storage.get_target_status(manifest_version_id, target_kind, target_id) do
+      {:ok, %TargetStatus{} = status} -> {:ok, status}
+      {:error, :not_found} -> {:ok, nil}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp catalogue_runs(manifest_version_id) do
-    list_runs(manifest_version_id: manifest_version_id)
+  defp target_ref_text(:asset, target), do: Map.fetch!(target, :asset_ref)
+  defp target_ref_text(:pipeline, target), do: Map.fetch!(target, :label)
+
+  defp pipeline_for_target(%Version{} = version, target_id) do
+    version.manifest.pipelines
+    |> List.wrap()
+    |> Enum.find(&(manifest_pipeline_target(&1).target_id == target_id))
+    |> case do
+      nil -> {:error, :not_found}
+      pipeline -> {:ok, pipeline}
+    end
+  end
+
+  defp asset_for_target(%Version{} = version, target_id) do
+    version.manifest.assets
+    |> List.wrap()
+    |> Enum.find(&(manifest_asset_target(&1).target_id == target_id))
+    |> case do
+      nil -> {:error, :not_found}
+      asset -> {:ok, asset}
+    end
   end
 
   defp detail_freshness_states(manifest_version_id) do
@@ -2354,50 +2414,29 @@ defmodule FavnOrchestrator do
     end
   end
 
-  defp asset_catalogue_entries(%Version{} = version, freshness_states, runs) do
-    freshness_by_ref = Map.new(freshness_states, &{freshness_ref_string(&1), &1})
-
-    runs_by_ref =
-      runs
-      |> Enum.flat_map(&run_ref_entries/1)
-      |> Enum.group_by(fn {ref_string, _run} -> ref_string end, fn {_ref_string, run} -> run end)
-      |> Map.new(fn {ref_string, ref_runs} -> {ref_string, latest_run(ref_runs)} end)
-
+  defp asset_catalogue_entries(%Version{} = version, statuses) do
     version.manifest.assets
     |> List.wrap()
     |> Enum.map(fn asset ->
       target = manifest_asset_target(asset)
-      ref_string = ref_to_string(asset.ref)
-      freshness = Map.get(freshness_by_ref, ref_string)
-      run = Map.get(runs_by_ref, ref_string)
-
-      target
-      |> Map.put(:status, catalogue_status(freshness, run))
-      |> Map.put(:latest_run_id, latest_run_id(freshness, run))
-      |> Map.put(:latest_run_status, latest_run_status(freshness, run))
-      |> Map.put(:latest_run_at, latest_run_at(freshness, run))
+      status = Map.fetch!(statuses, target.target_id)
+      put_target_status(target, status)
     end)
     |> Enum.sort_by(& &1.label)
   end
 
-  defp pipeline_catalogue_entries(%Version{} = version, %Index{} = index, runs) do
+  defp pipeline_catalogue_entries(%Version{} = version, %Index{} = index, statuses) do
     version.manifest.pipelines
     |> List.wrap()
     |> Enum.map(fn pipeline ->
       target = manifest_pipeline_target(index, pipeline)
-      latest_run = latest_pipeline_run(pipeline, target, runs)
-
-      target
-      |> Map.put(:status, run_status(latest_run))
-      |> Map.put(:latest_run_id, latest_run_id(nil, latest_run))
-      |> Map.put(:latest_run_status, latest_run_status(nil, latest_run))
-      |> Map.put(:latest_run_at, latest_run_at(nil, latest_run))
-      |> Map.put(:latest_run_duration_ms, run_duration_ms(latest_run))
+      status = Map.fetch!(statuses, target.target_id)
+      put_target_status(target, status)
     end)
     |> Enum.sort_by(& &1.label)
   end
 
-  defp pipeline_detail_entry(%Version{} = version, %Index{} = index, target_id, runs) do
+  defp pipeline_detail_entry(%Version{} = version, %Index{} = index, target_id, status, runs) do
     version.manifest.pipelines
     |> List.wrap()
     |> Enum.find(&(manifest_pipeline_target(&1).target_id == target_id))
@@ -2408,15 +2447,14 @@ defmodule FavnOrchestrator do
       pipeline ->
         target = manifest_pipeline_target(index, pipeline)
         pipeline_runs = pipeline_runs(pipeline, target, runs)
-        latest_run = latest_run(pipeline_runs)
+
+        status =
+          status ||
+            TargetStatus.unknown(version.manifest_version_id, :pipeline, target_id, target.label)
 
         target
         |> Map.put(:manifest_version_id, version.manifest_version_id)
-        |> Map.put(:status, run_status(latest_run))
-        |> Map.put(:latest_run_id, latest_run_id(nil, latest_run))
-        |> Map.put(:latest_run_status, latest_run_status(nil, latest_run))
-        |> Map.put(:latest_run_at, latest_run_at(nil, latest_run))
-        |> Map.put(:latest_run_duration_ms, run_duration_ms(latest_run))
+        |> put_target_status(status)
         |> Map.put(:runs, Enum.map(pipeline_runs, &pipeline_run_history_entry/1))
     end
   end
@@ -2424,6 +2462,7 @@ defmodule FavnOrchestrator do
   defp asset_detail_entry(
          %Version{} = version,
          target_id,
+         status,
          freshness_states,
          asset_window_states,
          runs,
@@ -2442,6 +2481,11 @@ defmodule FavnOrchestrator do
         latest_freshness = latest_freshness_for_ref(freshness_states, ref_string)
         latest_run = latest_run_for_ref(runs, ref_string)
         runs_by_id = Map.new(runs, &{&1.id, &1})
+
+        status =
+          status ||
+            TargetStatus.unknown(version.manifest_version_id, :asset, target_id, ref_string)
+
         {refresh_kind, refresh_timezone} = detail_refresh_policy(version, asset)
         {data_coverage_kind, _data_coverage_timezone} = detail_timeline_policy(asset)
 
@@ -2472,10 +2516,7 @@ defmodule FavnOrchestrator do
         |> Map.put(:manifest_version_id, version.manifest_version_id)
         |> Map.put(:canonical_asset_ref, asset.ref)
         |> Map.put(:name, asset_detail_name(target))
-        |> Map.put(:status, catalogue_status(latest_freshness, latest_run))
-        |> Map.put(:latest_run_id, latest_run_id(latest_freshness, latest_run))
-        |> Map.put(:latest_run_status, latest_run_status(latest_freshness, latest_run))
-        |> Map.put(:latest_run_at, latest_run_at(latest_freshness, latest_run))
+        |> put_target_status(status)
         |> Map.put(:freshness, asset_freshness_detail(asset, version, freshness_states, opts))
         |> Map.put(:refresh_timeline_label, timeline_kind_label(refresh_kind, "refresh periods"))
         |> Map.put(
@@ -2777,19 +2818,19 @@ defmodule FavnOrchestrator do
   defp pluralize(unit, 1), do: Atom.to_string(unit)
   defp pluralize(unit, _amount), do: Atom.to_string(unit) <> "s"
 
+  defp latest_freshness_for_ref(freshness_states, ref_string) do
+    Enum.find(freshness_states, fn state ->
+      freshness_ref_string(state) == ref_string &&
+        state.freshness_key == Favn.Freshness.Key.latest()
+    end)
+  end
+
   defp latest_run_for_ref(runs, ref_string) do
     runs
     |> Enum.flat_map(&run_ref_entries/1)
     |> Enum.filter(fn {run_ref_string, _run} -> run_ref_string == ref_string end)
     |> Enum.map(fn {_run_ref_string, run} -> run end)
     |> latest_run()
-  end
-
-  defp latest_freshness_for_ref(freshness_states, ref_string) do
-    Enum.find(freshness_states, fn state ->
-      freshness_ref_string(state) == ref_string &&
-        state.freshness_key == Favn.Freshness.Key.latest()
-    end)
   end
 
   defp asset_data_coverage_timeline(
@@ -3572,10 +3613,21 @@ defmodule FavnOrchestrator do
     ref_to_string({state.asset_ref_module, state.asset_ref_name})
   end
 
+  defp pipeline_runs(pipeline, %{selected_assets: selected_assets}, runs) do
+    selected_assets = Enum.sort(selected_assets)
+
+    runs
+    |> Enum.filter(fn run ->
+      pipeline_submit_ref_matches?(run, pipeline) ||
+        legacy_pipeline_targets_match?(run, selected_assets)
+    end)
+    |> Enum.sort_by(&DateTime.to_unix(run_time_sort_key(&1), :microsecond), :desc)
+  end
+
   defp run_ref_entries(run) do
     refs =
       [run.asset_ref | List.wrap(run.target_refs)] ++
-        ((run.asset_results || %{})
+        ((Map.get(run, :asset_results) || %{})
          |> Map.keys()
          |> List.wrap())
 
@@ -3592,23 +3644,6 @@ defmodule FavnOrchestrator do
       &>=/2,
       fn -> nil end
     )
-  end
-
-  defp latest_pipeline_run(pipeline, %{selected_assets: selected_assets}, runs) do
-    pipeline
-    |> pipeline_runs(%{selected_assets: selected_assets}, runs)
-    |> latest_run()
-  end
-
-  defp pipeline_runs(pipeline, %{selected_assets: selected_assets}, runs) do
-    selected_assets = Enum.sort(selected_assets)
-
-    runs
-    |> Enum.filter(fn run ->
-      pipeline_submit_ref_matches?(run, pipeline) ||
-        legacy_pipeline_targets_match?(run, selected_assets)
-    end)
-    |> Enum.sort_by(&DateTime.to_unix(run_time_sort_key(&1), :microsecond), :desc)
   end
 
   defp pipeline_run_history_entry(run) do
@@ -3769,7 +3804,10 @@ defmodule FavnOrchestrator do
 
   defp same_pipeline_ref?(_value, _module), do: false
 
-  defp run_time_sort_key(run), do: run.finished_at || run.started_at || DateTime.from_unix!(0)
+  defp run_time_sort_key(run),
+    do:
+      Map.get(run, :finished_at) || Map.get(run, :started_at) || Map.get(run, :updated_at) ||
+        Map.get(run, :inserted_at) || DateTime.from_unix!(0)
 
   defp run_duration_ms(%{
          started_at: %DateTime{} = started_at,
@@ -3800,6 +3838,15 @@ defmodule FavnOrchestrator do
 
   defp run_status(_run), do: :unknown
 
+  defp put_target_status(target, %TargetStatus{} = status) do
+    target
+    |> Map.put(:status, status.status)
+    |> Map.put(:latest_run_id, status.latest_run_id)
+    |> Map.put(:latest_run_status, status.latest_run_status)
+    |> Map.put(:latest_run_at, status.latest_run_at)
+    |> Map.put(:latest_run_duration_ms, status.latest_run_duration_ms)
+  end
+
   defp latest_run_id(%AssetFreshnessState{latest_attempt_run_id: id}, _run) when is_binary(id),
     do: id
 
@@ -3825,7 +3872,7 @@ defmodule FavnOrchestrator do
   defp latest_run_at(%AssetFreshnessState{latest_success_at: at}, _run) when not is_nil(at),
     do: at
 
-  defp latest_run_at(_freshness, run) when not is_nil(run), do: run.finished_at || run.started_at
+  defp latest_run_at(_freshness, run) when not is_nil(run), do: run_time_sort_key(run)
   defp latest_run_at(_freshness, _run), do: nil
 
   defp window_policy_dto(nil), do: nil

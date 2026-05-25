@@ -23,9 +23,11 @@ defmodule FavnOrchestrator.Storage do
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.TargetStatus
 
   @type freshness_state_key :: StorageAdapter.freshness_state_key()
   @type read_model_replacement_scope :: StorageAdapter.read_model_replacement_scope()
+  @type target_status_scope :: StorageAdapter.target_status_scope()
 
   @spec child_specs() :: {:ok, [Supervisor.child_spec()]} | {:error, term()}
   @spec child_specs(RuntimeConfig.t()) :: {:ok, [Supervisor.child_spec()]} | {:error, term()}
@@ -120,6 +122,21 @@ defmodule FavnOrchestrator.Storage do
   @spec list_runs(keyword()) :: {:ok, [RunState.t()]} | {:error, term()}
   def list_runs(run_opts \\ []) when is_list(run_opts) do
     adapter_call(fn adapter, opts -> adapter.list_runs(run_opts, opts) end)
+  end
+
+  @spec list_target_runs(
+          String.t(),
+          TargetStatus.target_kind(),
+          Favn.Ref.t() | module(),
+          keyword()
+        ) ::
+          {:ok, [RunState.t()]} | {:error, term()}
+  def list_target_runs(manifest_version_id, target_kind, target_ref, run_opts \\ [])
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_list(run_opts) do
+    adapter_call(fn adapter, opts ->
+      adapter.list_target_runs(manifest_version_id, target_kind, target_ref, run_opts, opts)
+    end)
   end
 
   @spec list_execution_group_runs(String.t()) :: {:ok, [RunState.t()]} | {:error, term()}
@@ -556,6 +573,50 @@ defmodule FavnOrchestrator.Storage do
     cursor_adapter_call(filters, scan_opts, fn adapter, filters, scan_opts, opts ->
       adapter.scan_asset_freshness_states(filters, scan_opts, opts)
     end)
+  end
+
+  @spec upsert_target_status(TargetStatus.t()) :: :ok | {:error, term()}
+  def upsert_target_status(%TargetStatus{} = status) do
+    optional_adapter_call(:upsert_target_status, [status], :target_statuses_not_supported)
+  end
+
+  @spec get_target_status(String.t(), TargetStatus.target_kind(), String.t()) ::
+          {:ok, TargetStatus.t()} | {:error, term()}
+  def get_target_status(manifest_version_id, target_kind, target_id)
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_binary(target_id) do
+    optional_adapter_call(
+      :get_target_status,
+      [manifest_version_id, target_kind, target_id],
+      :target_statuses_not_supported
+    )
+  end
+
+  @spec list_target_statuses(String.t(), TargetStatus.target_kind(), [String.t()]) ::
+          {:ok, %{String.t() => TargetStatus.t()}} | {:error, term()}
+  def list_target_statuses(manifest_version_id, target_kind, target_ids)
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_list(target_ids) do
+    optional_adapter_call(
+      :list_target_statuses,
+      [manifest_version_id, target_kind, target_ids],
+      :target_statuses_not_supported
+    )
+  end
+
+  @spec replace_target_statuses(target_status_scope(), [TargetStatus.t()]) ::
+          :ok | {:error, term()}
+  def replace_target_statuses(scope, statuses) when is_list(statuses) do
+    optional_adapter_call(
+      :replace_target_statuses,
+      [scope, statuses],
+      :target_statuses_not_supported
+    )
+  end
+
+  @spec delete_target_statuses(target_status_scope()) :: :ok | {:error, term()}
+  def delete_target_statuses(scope) do
+    optional_adapter_call(:delete_target_statuses, [scope], :target_statuses_not_supported)
   end
 
   @spec replace_backfill_read_models(

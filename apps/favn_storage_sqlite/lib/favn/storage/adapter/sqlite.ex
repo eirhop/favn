@@ -36,7 +36,9 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.RunSnapshotCodec
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
+  alias FavnOrchestrator.Storage.TargetStatusCodec
   alias FavnOrchestrator.Storage.WriteSemantics
+  alias FavnOrchestrator.TargetStatus
   alias FavnStorageSqlite.Diagnostics
   alias FavnStorageSqlite.Migrations
   alias FavnStorageSqlite.Repo
@@ -275,6 +277,22 @@ defmodule Favn.Storage.Adapter.SQLite do
 
         {:error, reason} ->
           {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_target_runs(manifest_version_id, target_kind, target_ref, run_opts, opts)
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_list(run_opts) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         :ok <- repair_missing_run_query_metadata(repo) do
+      {sql, params} =
+        list_target_runs_query(manifest_version_id, target_kind, target_ref, run_opts)
+
+      case SQL.query(repo, sql, params) do
+        {:ok, %{rows: rows}} -> decode_run_rows(rows)
+        {:error, reason} -> {:error, reason}
       end
     end
   end
@@ -1113,6 +1131,76 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   @impl true
+  def upsert_target_status(%TargetStatus{} = status, opts) when is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      upsert_target_statuses(repo, [status])
+    end
+  end
+
+  @impl true
+  def get_target_status(manifest_version_id, target_kind, target_id, opts)
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_binary(target_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        "SELECT #{target_status_columns()} FROM favn_target_statuses WHERE manifest_version_id = ?1 AND target_kind = ?2 AND target_id = ?3 LIMIT 1"
+
+      params = [manifest_version_id, encode_atom(target_kind), target_id]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, %{rows: [row]}} -> decode_target_status_row(row)
+        {:ok, %{rows: []}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_target_statuses(manifest_version_id, target_kind, target_ids, opts)
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_list(target_ids) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      target_ids
+      |> Enum.uniq()
+      |> Enum.chunk_every(250)
+      |> Enum.reduce_while({:ok, %{}}, fn chunk, {:ok, acc} ->
+        case list_target_status_chunk(repo, manifest_version_id, target_kind, chunk) do
+          {:ok, rows} -> {:cont, {:ok, Map.merge(acc, rows)}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  @impl true
+  def replace_target_statuses(scope, statuses, opts) when is_list(statuses) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, scope} <- target_status_scope(scope),
+         :ok <- validate_target_status_scope_rows(scope, statuses) do
+      repo.transact(fn ->
+        with :ok <- delete_target_status_scope(repo, scope),
+             :ok <- upsert_target_statuses(repo, statuses) do
+          {:ok, :ok}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def delete_target_statuses(scope, opts) when is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, scope} <- target_status_scope(scope) do
+      delete_target_status_scope(repo, scope)
+    end
+  end
+
+  @impl true
   def replace_backfill_read_models(
         scope,
         coverage_baselines,
@@ -1702,6 +1790,10 @@ defmodule Favn.Storage.Adapter.SQLite do
     "record_payload"
   end
 
+  defp target_status_columns do
+    "record_payload"
+  end
+
   defp coverage_baseline_filter_columns do
     %{
       baseline_id: {:text, "baseline_id"},
@@ -1793,6 +1885,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp decode_asset_freshness_state_row([record_payload]),
     do: AssetFreshnessStateCodec.decode(record_payload)
 
+  defp decode_target_status_row([record_payload]), do: TargetStatusCodec.decode(record_payload)
+
   defp decode_backfill_progress_row([record_payload]),
     do: ProgressCodec.decode(record_payload)
 
@@ -1822,6 +1916,25 @@ defmodule Favn.Storage.Adapter.SQLite do
        Map.new(states, fn %AssetFreshnessState{} = state ->
          {{state.asset_ref_module, state.asset_ref_name, state.freshness_key}, state}
        end)}
+    end
+  end
+
+  defp list_target_status_chunk(_repo, _manifest_version_id, _target_kind, []), do: {:ok, %{}}
+
+  defp list_target_status_chunk(repo, manifest_version_id, target_kind, target_ids) do
+    placeholders =
+      target_ids
+      |> Enum.with_index(3)
+      |> Enum.map(fn {_target_id, index} -> "?#{index}" end)
+      |> Enum.join(", ")
+
+    sql =
+      "SELECT #{target_status_columns()} FROM favn_target_statuses WHERE manifest_version_id = ?1 AND target_kind = ?2 AND target_id IN (#{placeholders})"
+
+    params = [manifest_version_id, encode_atom(target_kind) | target_ids]
+
+    with {:ok, statuses} <- decode_rows(repo, sql, params, &decode_target_status_row/1) do
+      {:ok, Map.new(statuses, &{&1.target_id, &1})}
     end
   end
 
@@ -2077,6 +2190,39 @@ defmodule Favn.Storage.Adapter.SQLite do
     bulk_query_ok(repo, sql, states, &asset_window_state_params/1)
   end
 
+  defp upsert_target_statuses(_repo, []), do: :ok
+
+  defp upsert_target_statuses(repo, statuses) do
+    sql = """
+    INSERT INTO favn_target_statuses (
+      manifest_version_id, target_kind, target_id, target_ref_text, status,
+      latest_run_id, latest_run_status, latest_run_at, latest_success_run_id,
+      latest_success_at, latest_failure_run_id, latest_failure_at,
+      in_flight_run_id, freshness_status, freshness_key, updated_at, updated_seq,
+      record_payload
+    ) VALUES __VALUES__
+    ON CONFLICT(manifest_version_id, target_kind, target_id) DO UPDATE SET
+      target_ref_text = excluded.target_ref_text,
+      status = excluded.status,
+      latest_run_id = excluded.latest_run_id,
+      latest_run_status = excluded.latest_run_status,
+      latest_run_at = excluded.latest_run_at,
+      latest_success_run_id = excluded.latest_success_run_id,
+      latest_success_at = excluded.latest_success_at,
+      latest_failure_run_id = excluded.latest_failure_run_id,
+      latest_failure_at = excluded.latest_failure_at,
+      in_flight_run_id = excluded.in_flight_run_id,
+      freshness_status = excluded.freshness_status,
+      freshness_key = excluded.freshness_key,
+      updated_at = excluded.updated_at,
+      updated_seq = excluded.updated_seq,
+      record_payload = excluded.record_payload
+    """
+
+    statuses = dedupe_last_by(statuses, &{&1.manifest_version_id, &1.target_kind, &1.target_id})
+    bulk_query_ok(repo, sql, statuses, &target_status_params/1)
+  end
+
   defp dedupe_last_by(rows, key_fun) when is_function(key_fun, 1) do
     rows
     |> Enum.reverse()
@@ -2173,6 +2319,29 @@ defmodule Favn.Storage.Adapter.SQLite do
     ]
   end
 
+  defp target_status_params(%TargetStatus{} = status) do
+    [
+      status.manifest_version_id,
+      encode_atom(status.target_kind),
+      status.target_id,
+      status.target_ref_text,
+      encode_atom(status.status),
+      status.latest_run_id,
+      encode_optional_atom(status.latest_run_status),
+      encode_datetime(status.latest_run_at),
+      status.latest_success_run_id,
+      encode_datetime(status.latest_success_at),
+      status.latest_failure_run_id,
+      encode_datetime(status.latest_failure_at),
+      status.in_flight_run_id,
+      encode_optional_atom(status.freshness_status),
+      status.freshness_key,
+      encode_datetime(status.updated_at),
+      status.updated_seq,
+      encode_target_status(status)
+    ]
+  end
+
   defp query_ok(repo, sql, params) do
     case SQL.query(repo, sql, params) do
       {:ok, _} -> :ok
@@ -2186,6 +2355,49 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp replacement_scope(scope),
     do: {:error, {:unsupported_replacement_scope, scope}}
+
+  defp target_status_scope({:manifest_version, manifest_version_id})
+       when is_binary(manifest_version_id),
+       do: {:ok, {:manifest_version, manifest_version_id}}
+
+  defp target_status_scope({:manifest_version, manifest_version_id, target_kind})
+       when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline],
+       do: {:ok, {:manifest_version, manifest_version_id, target_kind}}
+
+  defp target_status_scope(scope), do: {:error, {:unsupported_target_status_scope, scope}}
+
+  defp validate_target_status_scope_rows(scope, statuses) do
+    if Enum.all?(statuses, &target_status_in_scope?(&1, scope)) do
+      :ok
+    else
+      {:error, :target_status_scope_mismatch}
+    end
+  end
+
+  defp target_status_in_scope?(%TargetStatus{manifest_version_id: id}, {:manifest_version, id}),
+    do: true
+
+  defp target_status_in_scope?(
+         %TargetStatus{manifest_version_id: id, target_kind: kind},
+         {:manifest_version, id, kind}
+       ),
+       do: true
+
+  defp target_status_in_scope?(_status, _scope), do: false
+
+  defp delete_target_status_scope(repo, {:manifest_version, manifest_version_id}) do
+    query_ok(repo, "DELETE FROM favn_target_statuses WHERE manifest_version_id = ?1", [
+      manifest_version_id
+    ])
+  end
+
+  defp delete_target_status_scope(repo, {:manifest_version, manifest_version_id, target_kind}) do
+    query_ok(
+      repo,
+      "DELETE FROM favn_target_statuses WHERE manifest_version_id = ?1 AND target_kind = ?2",
+      [manifest_version_id, encode_atom(target_kind)]
+    )
+  end
 
   defp delete_replacement_scope(repo, table, kind, scope) do
     case replacement_scope_filter(kind, scope) do
@@ -2496,8 +2708,9 @@ defmodule Favn.Storage.Adapter.SQLite do
           trigger_type,
           asset_ref_text,
           target_refs_text,
-          window_key
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+          window_key,
+          pipeline_submit_ref_text
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
         ON CONFLICT(run_id) DO UPDATE SET
           manifest_version_id = excluded.manifest_version_id,
           manifest_content_hash = excluded.manifest_content_hash,
@@ -2515,7 +2728,8 @@ defmodule Favn.Storage.Adapter.SQLite do
           trigger_type = excluded.trigger_type,
           asset_ref_text = excluded.asset_ref_text,
           target_refs_text = excluded.target_refs_text,
-          window_key = excluded.window_key
+          window_key = excluded.window_key,
+          pipeline_submit_ref_text = excluded.pipeline_submit_ref_text
         WHERE excluded.event_seq > favn_runs.event_seq
         """
 
@@ -2537,7 +2751,8 @@ defmodule Favn.Storage.Adapter.SQLite do
         query_metadata.trigger_type,
         query_metadata.asset_ref_text,
         query_metadata.target_refs_text,
-        query_metadata.window_key
+        query_metadata.window_key,
+        query_metadata.pipeline_submit_ref_text
       ]
 
       case SQL.query(repo, sql, params) do
@@ -3477,6 +3692,28 @@ defmodule Favn.Storage.Adapter.SQLite do
        where_sql <> " ORDER BY r.updated_seq DESC, r.run_id DESC" <> limit_sql, params}
   end
 
+  defp list_target_runs_query(manifest_version_id, target_kind, target_ref, run_opts) do
+    target_ref_text = RunQuery.public_ref(target_ref)
+    limit = Keyword.get(run_opts, :limit)
+
+    filters =
+      run_opts
+      |> Keyword.take([:status])
+      |> Keyword.put(:manifest_version_id, manifest_version_id)
+
+    {where_sql, params} = run_filter_sql(filters)
+
+    {target_sql, params} =
+      target_run_filter_sql(target_kind, target_ref_text, params)
+
+    limit_sql = if is_integer(limit) and limit > 0, do: " LIMIT ?#{length(params) + 1}", else: ""
+    params = if limit_sql == "", do: params, else: params ++ [limit]
+
+    {run_snapshot_select() <>
+       where_sql <> target_sql <> " ORDER BY r.updated_seq DESC, r.run_id DESC" <> limit_sql,
+     params}
+  end
+
   defp execution_groups_query(group_opts) do
     with {:ok, page_opts} <- Page.normalize_opts(group_opts) do
       filters = Keyword.drop(group_opts, [:limit, :offset, :sort])
@@ -3729,7 +3966,9 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp maybe_limit_clause(params, _limit), do: {"", params}
 
   defp repair_missing_run_query_metadata(repo) do
-    sql = run_snapshot_select() <> " WHERE r.root_execution_group_id IS NULL"
+    sql =
+      run_snapshot_select() <>
+        " WHERE r.root_execution_group_id IS NULL OR r.pipeline_submit_ref_text IS NULL"
 
     case SQL.query(repo, sql, []) do
       {:ok, %{rows: []}} ->
@@ -3763,8 +4002,9 @@ defmodule Favn.Storage.Adapter.SQLite do
           trigger_type = ?5,
           asset_ref_text = ?6,
           target_refs_text = ?7,
-          window_key = ?8
-      WHERE run_id = ?9
+          window_key = ?8,
+          pipeline_submit_ref_text = ?9
+      WHERE run_id = ?10
       """
 
     params = [
@@ -3776,6 +4016,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       metadata.asset_ref_text,
       metadata.target_refs_text,
       metadata.window_key,
+      metadata.pipeline_submit_ref_text,
       run.id
     ]
 
@@ -3799,6 +4040,20 @@ defmodule Favn.Storage.Adapter.SQLite do
       {[], params} -> {"", params}
       {clauses, params} -> {" WHERE " <> Enum.join(clauses, " AND "), params}
     end
+  end
+
+  defp target_run_filter_sql(:asset, target_ref_text, params) do
+    placeholder = "?#{length(params) + 1}"
+
+    {" AND (r.asset_ref_text = #{placeholder} OR r.target_refs_text = #{placeholder} OR r.target_refs_text LIKE #{placeholder} || char(10) || '%' OR r.target_refs_text LIKE '%' || char(10) || #{placeholder} OR r.target_refs_text LIKE '%' || char(10) || #{placeholder} || char(10) || '%')",
+     params ++ [target_ref_text]}
+  end
+
+  defp target_run_filter_sql(:pipeline, target_ref_text, params) do
+    placeholder = "?#{length(params) + 1}"
+
+    {" AND r.pipeline_submit_ref_text != '' AND r.pipeline_submit_ref_text = #{placeholder}",
+     params ++ [target_ref_text]}
   end
 
   defp run_snapshot_select do
@@ -3926,6 +4181,16 @@ defmodule Favn.Storage.Adapter.SQLite do
 
       {:error, reason} ->
         raise ArgumentError, "invalid asset freshness state payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_target_status(%TargetStatus{} = status) do
+    case TargetStatusCodec.encode(status) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid target status payload: #{inspect(reason)}"
     end
   end
 

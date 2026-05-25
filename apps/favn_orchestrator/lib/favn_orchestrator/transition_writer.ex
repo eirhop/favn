@@ -58,6 +58,7 @@ defmodule FavnOrchestrator.TransitionWriter do
     safe_project(Backfill.Projector, run_state, event_type, data)
     safe_project(Backfill.CoverageProjector, run_state, event_type, data)
     safe_project(AssetWindowProjector, run_state, event_type, data)
+    safe_project(FavnOrchestrator.TargetStatus.Projector, run_state, event_type, data)
   end
 
   defp safe_emit_transition_log(%RunEvent{entity: :step} = event) do

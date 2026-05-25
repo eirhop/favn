@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
+  alias FavnOrchestrator.TransitionWriter
 
   setup do
     Memory.reset()
@@ -150,6 +151,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
              })
 
     assert :ok = Storage.put_asset_freshness_state(stale_window_freshness)
+    assert {:ok, _count} = FavnOrchestrator.rebuild_target_statuses("mv_a")
 
     assert {:ok, [entry]} = FavnOrchestrator.active_asset_catalogue()
     assert entry.target_id == "asset:Elixir.MyApp.AssetA:asset"
@@ -169,6 +171,8 @@ defmodule FavnOrchestrator.ManifestStoreTest do
                  "mv_a"
                )
              )
+
+    assert {:ok, _count} = FavnOrchestrator.rebuild_target_statuses("mv_a")
 
     assert {:ok, [pipeline_entry]} = FavnOrchestrator.active_pipeline_catalogue()
     assert pipeline_entry.target_id == "pipeline:Elixir.MyApp.PipelineA"
@@ -995,6 +999,172 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert [%{kind: :no_freshness_policy}] = no_policy_detail.freshness.reasons
   end
 
+  test "catalogue returns unknown when target status projection row is missing" do
+    version = manifest_version("mv_missing_status", {MyApp.AssetA, :asset})
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_missing_status")
+
+    assert {:ok, [entry]} = FavnOrchestrator.active_asset_catalogue()
+    assert entry.status == :unknown
+    assert is_nil(entry.latest_run_id)
+  end
+
+  test "run transitions update target status projection" do
+    run =
+      RunState.new(
+        id: "run_projection_asset",
+        manifest_version_id: "mv_projection",
+        manifest_content_hash: "hash_projection",
+        asset_ref: {MyApp.AssetA, :asset},
+        target_refs: [{MyApp.AssetA, :asset}]
+      )
+
+    assert :ok = TransitionWriter.persist_transition(run, :run_created, %{})
+
+    assert {:ok, running_status} =
+             Storage.get_target_status(
+               "mv_projection",
+               :asset,
+               "asset:Elixir.MyApp.AssetA:asset"
+             )
+
+    assert running_status.status == :running
+    assert running_status.in_flight_run_id == "run_projection_asset"
+
+    finished = RunState.transition(run, status: :ok)
+    assert :ok = TransitionWriter.persist_transition(finished, :run_finished, %{})
+
+    assert {:ok, healthy_status} =
+             Storage.get_target_status(
+               "mv_projection",
+               :asset,
+               "asset:Elixir.MyApp.AssetA:asset"
+             )
+
+    assert healthy_status.status == :healthy
+    assert healthy_status.latest_success_run_id == "run_projection_asset"
+    assert is_nil(healthy_status.in_flight_run_id)
+  end
+
+  test "non-latest freshness states do not overwrite target status projection" do
+    ref = {MyApp.AssetA, :asset}
+    finished_at = ~U[2026-05-10 12:00:00Z]
+
+    run =
+      run_state("run_projection_latest", ref, :ok, finished_at, "mv_projection_freshness")
+
+    assert :ok = TransitionWriter.persist_transition(run, :run_finished, %{})
+
+    window_state =
+      freshness_state(ref, "window:v1", DateTime.add(finished_at, 60, :second),
+        freshness_key: "calendar:day:Etc/UTC:2026-05-10",
+        status: :error,
+        manifest_version_id: "mv_projection_freshness",
+        run_id: "run_projection_window"
+      )
+
+    assert :ok = Storage.put_asset_freshness_state(window_state)
+    assert :ok = FavnOrchestrator.TargetStatus.Projector.project_freshness_state(window_state)
+
+    assert {:ok, status} =
+             Storage.get_target_status(
+               "mv_projection_freshness",
+               :asset,
+               "asset:Elixir.MyApp.AssetA:asset"
+             )
+
+    assert status.status == :healthy
+    assert status.latest_run_id == "run_projection_latest"
+    assert status.latest_run_status == :ok
+  end
+
+  test "pipeline detail history is scoped before applying the run limit" do
+    ref = {MyApp.AssetA, :asset}
+
+    version =
+      manifest_version(
+        "mv_target_history",
+        ref,
+        [
+          %Pipeline{module: MyApp.PipelineA, name: :pipeline_a, selectors: [ref], deps: :all},
+          %Pipeline{module: MyApp.PipelineB, name: :pipeline_b, selectors: [ref], deps: :all}
+        ]
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_target_history")
+
+    assert :ok =
+             Storage.put_run(
+               pipeline_run_state(
+                 "run_quiet_pipeline_a",
+                 MyApp.PipelineA,
+                 [ref],
+                 :ok,
+                 ~U[2026-05-10 12:00:00Z],
+                 "mv_target_history"
+               )
+             )
+
+    for index <- 1..60 do
+      assert :ok =
+               Storage.put_run(
+                 pipeline_run_state(
+                   "run_noisy_pipeline_b_#{index}",
+                   MyApp.PipelineB,
+                   [ref],
+                   :ok,
+                   DateTime.add(~U[2026-05-10 12:00:00Z], index, :second),
+                   "mv_target_history"
+                 )
+               )
+    end
+
+    assert {:ok, _count} = FavnOrchestrator.rebuild_target_statuses("mv_target_history")
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_pipeline_detail("pipeline:Elixir.MyApp.PipelineA")
+
+    assert Enum.map(detail.runs, & &1.id) == ["run_quiet_pipeline_a"]
+  end
+
+  test "explicit target-ref pipeline runs are not attributed to named pipeline targets" do
+    ref = {MyApp.AssetA, :asset}
+
+    version =
+      manifest_version(
+        "mv_explicit_targets",
+        ref,
+        [%Pipeline{module: MyApp.PipelineA, name: :pipeline_a, selectors: [ref], deps: :all}]
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_explicit_targets")
+
+    assert :ok =
+             Storage.put_run(
+               explicit_target_pipeline_run_state(
+                 "run_explicit_targets",
+                 [ref],
+                 :ok,
+                 ~U[2026-05-10 12:00:00Z],
+                 "mv_explicit_targets"
+               )
+             )
+
+    assert {:ok, _count} = FavnOrchestrator.rebuild_target_statuses("mv_explicit_targets")
+
+    assert {:ok, [entry]} = FavnOrchestrator.active_pipeline_catalogue()
+    assert entry.status == :unknown
+    assert is_nil(entry.latest_run_id)
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_pipeline_detail("pipeline:Elixir.MyApp.PipelineA")
+
+    assert detail.runs == []
+  end
+
   test "pipeline catalogue matches runs by pipeline identity before target refs" do
     ref = {MyApp.AssetA, :asset}
 
@@ -1034,6 +1204,8 @@ defmodule FavnOrchestrator.ManifestStoreTest do
                )
              )
 
+    assert {:ok, _count} = FavnOrchestrator.rebuild_target_statuses("mv_same_targets")
+
     assert {:ok, entries} = FavnOrchestrator.active_pipeline_catalogue()
     pipeline_a = Enum.find(entries, &(&1.name == "pipeline_a"))
     pipeline_b = Enum.find(entries, &(&1.name == "pipeline_b"))
@@ -1055,6 +1227,8 @@ defmodule FavnOrchestrator.ManifestStoreTest do
                  submit_kind: :rerun
                )
              )
+
+    assert {:ok, _count} = FavnOrchestrator.rebuild_target_statuses("mv_same_targets")
 
     assert {:ok, entries} = FavnOrchestrator.active_pipeline_catalogue()
     pipeline_a = Enum.find(entries, &(&1.name == "pipeline_a"))
@@ -1204,6 +1378,27 @@ defmodule FavnOrchestrator.ManifestStoreTest do
       submit_kind: Keyword.get(opts, :submit_kind, :pipeline),
       metadata: %{
         pipeline_submit_ref: pipeline_module,
+        pipeline_target_refs: refs,
+        pipeline_dependencies: :all
+      }
+    )
+    |> RunState.transition(status: status, result: %{asset_results: []})
+    |> Map.put(:inserted_at, started_at)
+    |> Map.put(:updated_at, finished_at)
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp explicit_target_pipeline_run_state(id, refs, status, finished_at, manifest_version_id) do
+    started_at = DateTime.add(finished_at, -1, :second)
+
+    RunState.new(
+      id: id,
+      manifest_version_id: manifest_version_id,
+      manifest_content_hash: "hash_a",
+      asset_ref: List.first(refs),
+      target_refs: refs,
+      submit_kind: :pipeline,
+      metadata: %{
         pipeline_target_refs: refs,
         pipeline_dependencies: :all
       }

@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
+  alias FavnOrchestrator.TargetStatus
 
   @memory_server Module.concat(__MODULE__, MemoryServer)
   @sqlite_supervisor Module.concat(__MODULE__, SQLiteSupervisor)
@@ -94,7 +95,11 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert {:ok, stored_version} = Storage.get_manifest_version(manifest_version_id)
     assert %Manifest{} = stored_version.manifest
-    assert [%Favn.Manifest.Asset{ref: {MyApp.Asset, :asset}}] = stored_version.manifest.assets
+
+    assert Enum.any?(
+             stored_version.manifest.assets,
+             &match?(%Favn.Manifest.Asset{ref: {MyApp.Asset, :asset}}, &1)
+           )
 
     assert {:ok, listed_versions} = Storage.list_manifest_versions()
 
@@ -124,6 +129,8 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert {:ok, listed} = Storage.list_runs(status: :pending, limit: 10)
     assert Enum.any?(listed, &(&1.id == run.id))
+
+    assert_target_run_history_contract(label, version, run)
 
     child =
       RunState.new(
@@ -437,6 +444,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, %Favn.Scheduler.State{schedule_id: nil}} = Storage.get_scheduler_state(nil_key)
 
     assert_freshness_lookup_contract(label, run)
+    assert_target_status_contract(label, run)
     assert_backfill_progress_contract(label, run)
     assert_cursor_scan_contract(label, run)
     assert_replacement_scope_contract(label, run)
@@ -445,7 +453,12 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
   defp manifest_version(manifest_version_id) do
     manifest = %Manifest{
       assets: [
-        %Favn.Manifest.Asset{ref: {MyApp.Asset, :asset}, module: MyApp.Asset, name: :asset}
+        %Favn.Manifest.Asset{ref: {MyApp.Asset, :asset}, module: MyApp.Asset, name: :asset},
+        %Favn.Manifest.Asset{
+          ref: {MyApp.Asset, :asset_extra},
+          module: MyApp.Asset,
+          name: :asset_extra
+        }
       ]
     }
 
@@ -527,6 +540,128 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert Map.keys(states) == [key]
     refute Map.has_key?(states, unrelated_key)
     assert {:ok, %{}} = Storage.get_asset_freshness_states_by_keys([])
+  end
+
+  defp assert_target_run_history_contract(label, version, run) do
+    assert {:ok, asset_runs} =
+             Storage.list_target_runs(version.manifest_version_id, :asset, {MyApp.Asset, :asset},
+               limit: 10
+             )
+
+    assert Enum.any?(asset_runs, &(&1.id == run.id))
+
+    quiet_pipeline =
+      RunState.new(
+        id: "run_contract_#{label}_quiet_pipeline_#{System.unique_integer([:positive])}",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Asset, :asset},
+        target_refs: [{MyApp.Asset, :asset}],
+        submit_kind: :pipeline,
+        metadata: %{pipeline_submit_ref: MyApp.Pipeline}
+      )
+      |> Map.put(:updated_at, ~U[2026-05-10 12:00:00Z])
+
+    noisy_pipelines =
+      for index <- 1..3 do
+        RunState.new(
+          id:
+            "run_contract_#{label}_noisy_pipeline_#{index}_#{System.unique_integer([:positive])}",
+          manifest_version_id: version.manifest_version_id,
+          manifest_content_hash: version.content_hash,
+          asset_ref: {MyApp.Asset, :asset},
+          target_refs: [{MyApp.Asset, :asset}],
+          submit_kind: :pipeline,
+          metadata: %{pipeline_submit_ref: MyApp.OtherPipeline}
+        )
+        |> Map.put(:updated_at, DateTime.add(~U[2026-05-10 12:00:00Z], index, :second))
+      end
+
+    Enum.each([quiet_pipeline | noisy_pipelines], &assert(:ok = Storage.put_run(&1)))
+
+    assert {:ok, [target_run]} =
+             Storage.list_target_runs(version.manifest_version_id, :pipeline, MyApp.Pipeline,
+               limit: 1
+             )
+
+    assert target_run.id == quiet_pipeline.id
+  end
+
+  defp assert_target_status_contract(label, run) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    manifest_version_id = run.manifest_version_id
+    asset_target_id = "asset:Elixir.MyApp.Asset:asset"
+    pipeline_target_id = "pipeline:Elixir.MyApp.Pipeline"
+
+    assert {:ok, asset_status} =
+             TargetStatus.new(%{
+               manifest_version_id: manifest_version_id,
+               target_kind: :asset,
+               target_id: asset_target_id,
+               target_ref_text: "Elixir.MyApp.Asset:asset",
+               status: :running,
+               latest_run_id: run.id,
+               latest_run_status: :running,
+               latest_run_at: now,
+               in_flight_run_id: run.id,
+               updated_at: now,
+               updated_seq: 2
+             })
+
+    assert :ok = Storage.upsert_target_status(asset_status)
+
+    assert {:ok, fetched} =
+             Storage.get_target_status(manifest_version_id, :asset, asset_target_id)
+
+    assert fetched.target_id == asset_target_id
+    assert fetched.status == :running
+    assert fetched.in_flight_run_id == run.id
+
+    assert {:error, :not_found} =
+             Storage.get_target_status(manifest_version_id, :asset, "missing-#{label}")
+
+    assert {:ok, statuses} =
+             Storage.list_target_statuses(manifest_version_id, :asset, [
+               asset_target_id,
+               "missing-#{label}"
+             ])
+
+    assert Map.keys(statuses) == [asset_target_id]
+
+    assert {:ok, pipeline_status} =
+             TargetStatus.new(%{
+               manifest_version_id: manifest_version_id,
+               target_kind: :pipeline,
+               target_id: pipeline_target_id,
+               target_ref_text: "Elixir.MyApp.Pipeline",
+               status: :healthy,
+               latest_run_id: "pipeline-run-#{label}",
+               latest_run_status: :ok,
+               latest_run_at: now,
+               latest_success_run_id: "pipeline-run-#{label}",
+               latest_success_at: now,
+               updated_at: now,
+               updated_seq: 1
+             })
+
+    assert :ok =
+             Storage.replace_target_statuses({:manifest_version, manifest_version_id}, [
+               pipeline_status
+             ])
+
+    assert {:error, :not_found} =
+             Storage.get_target_status(manifest_version_id, :asset, asset_target_id)
+
+    assert {:ok, fetched_pipeline} =
+             Storage.get_target_status(manifest_version_id, :pipeline, pipeline_target_id)
+
+    assert fetched_pipeline.status == :healthy
+
+    assert :ok =
+             Storage.delete_target_statuses({:manifest_version, manifest_version_id, :pipeline})
+
+    assert {:error, :not_found} =
+             Storage.get_target_status(manifest_version_id, :pipeline, pipeline_target_id)
   end
 
   defp assert_cursor_scan_contract(label, run) do

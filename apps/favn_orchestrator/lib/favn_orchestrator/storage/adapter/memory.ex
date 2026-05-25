@@ -27,6 +27,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
   alias FavnOrchestrator.Storage.WriteSemantics
+  alias FavnOrchestrator.TargetStatus
 
   @log_filter_keys [
     :run_id,
@@ -64,6 +65,9 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           asset_window_states: %{required({module(), atom(), String.t()}) => AssetWindowState.t()},
           asset_freshness_states: %{
             required({module(), atom(), String.t()}) => AssetFreshnessState.t()
+          },
+          target_statuses: %{
+            required({String.t(), TargetStatus.target_kind(), String.t()}) => TargetStatus.t()
           },
           auth_actors: %{required(String.t()) => map()},
           auth_usernames: %{required(String.t()) => String.t()},
@@ -233,6 +237,24 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       when is_list(run_opts) and is_list(adapter_opts) do
     server = Keyword.get(adapter_opts, :server, __MODULE__)
     GenServer.call(server, {:list_runs, run_opts})
+  end
+
+  @impl true
+  def list_target_runs(
+        manifest_version_id,
+        target_kind,
+        target_ref,
+        run_opts \\ [],
+        adapter_opts \\ []
+      )
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_list(run_opts) and is_list(adapter_opts) do
+    server = Keyword.get(adapter_opts, :server, __MODULE__)
+
+    GenServer.call(
+      server,
+      {:list_target_runs, manifest_version_id, target_kind, target_ref, run_opts}
+    )
   end
 
   @impl true
@@ -637,6 +659,40 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def upsert_target_status(%TargetStatus{} = status, opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:upsert_target_status, status})
+  end
+
+  @impl true
+  def get_target_status(manifest_version_id, target_kind, target_id, opts)
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_binary(target_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_target_status, {manifest_version_id, target_kind, target_id}})
+  end
+
+  @impl true
+  def list_target_statuses(manifest_version_id, target_kind, target_ids, opts)
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_list(target_ids) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_target_statuses, manifest_version_id, target_kind, target_ids})
+  end
+
+  @impl true
+  def replace_target_statuses(scope, statuses, opts) when is_list(statuses) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:replace_target_statuses, scope, statuses})
+  end
+
+  @impl true
+  def delete_target_statuses(scope, opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:delete_target_statuses, scope})
+  end
+
+  @impl true
   def replace_backfill_read_models(
         scope,
         coverage_baselines,
@@ -797,6 +853,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       backfill_progress: %{},
       asset_window_states: %{},
       asset_freshness_states: %{},
+      target_statuses: %{},
       auth_actors: %{},
       auth_usernames: %{},
       auth_credentials: %{},
@@ -955,6 +1012,22 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       state.runs
       |> Map.values()
       |> filter_runs(run_opts)
+      |> Enum.sort_by(&run_sort_key/1, :desc)
+      |> maybe_limit_runs(run_opts)
+
+    {:reply, {:ok, runs}, state}
+  end
+
+  def handle_call(
+        {:list_target_runs, manifest_version_id, target_kind, target_ref, run_opts},
+        _from,
+        state
+      ) do
+    runs =
+      state.runs
+      |> Map.values()
+      |> filter_runs(Keyword.put(run_opts, :manifest_version_id, manifest_version_id))
+      |> Enum.filter(&target_run?(&1, target_kind, target_ref))
       |> Enum.sort_by(&run_sort_key/1, :desc)
       |> maybe_limit_runs(run_opts)
 
@@ -1650,6 +1723,59 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, {:ok, rows}, state}
   end
 
+  def handle_call({:upsert_target_status, %TargetStatus{} = status}, _from, state) do
+    key = target_status_key(status)
+    {:reply, :ok, put_in(state, [:target_statuses, key], status)}
+  end
+
+  def handle_call({:get_target_status, key}, _from, state) do
+    {:reply, fetch_or_not_found(state.target_statuses, key), state}
+  end
+
+  def handle_call(
+        {:list_target_statuses, manifest_version_id, target_kind, target_ids},
+        _from,
+        state
+      ) do
+    target_ids = MapSet.new(target_ids)
+
+    rows =
+      state.target_statuses
+      |> Map.values()
+      |> Enum.filter(fn %TargetStatus{} = status ->
+        status.manifest_version_id == manifest_version_id and status.target_kind == target_kind and
+          MapSet.member?(target_ids, status.target_id)
+      end)
+      |> Map.new(&{&1.target_id, &1})
+
+    {:reply, {:ok, rows}, state}
+  end
+
+  def handle_call({:replace_target_statuses, scope, statuses}, _from, state) do
+    with {:ok, scope} <- target_status_scope(scope),
+         :ok <- validate_target_status_scope_rows(scope, statuses) do
+      target_statuses =
+        state.target_statuses
+        |> reject_target_status_scope(scope)
+        |> put_target_status_values(statuses)
+
+      {:reply, :ok, %{state | target_statuses: target_statuses}}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:delete_target_statuses, scope}, _from, state) do
+    case target_status_scope(scope) do
+      {:ok, scope} ->
+        {:reply, :ok,
+         %{state | target_statuses: reject_target_status_scope(state.target_statuses, scope)}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call(
         {:replace_backfill_read_models, scope, coverage_baselines, backfill_windows,
          asset_window_states},
@@ -1900,6 +2026,28 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           Keyword.get(run_opts, :manifest_version_id)
         )
     end)
+  end
+
+  defp target_run?(%RunState{} = run, :asset, target_ref) do
+    target_ref_text = RunQuery.public_ref(target_ref)
+
+    run
+    |> RunQuery.target_refs()
+    |> Enum.map(&RunQuery.public_ref/1)
+    |> Enum.member?(target_ref_text)
+  end
+
+  defp target_run?(%RunState{} = run, :pipeline, target_ref) do
+    pipeline_submit_ref_text(run) == RunQuery.public_ref(target_ref)
+  end
+
+  defp pipeline_submit_ref_text(%RunState{} = run) do
+    metadata = run.metadata || %{}
+
+    case Map.get(metadata, :pipeline_submit_ref, Map.get(metadata, "pipeline_submit_ref")) do
+      value when is_atom(value) or is_binary(value) -> RunQuery.public_ref(value)
+      _other -> ""
+    end
   end
 
   defp execution_group_runs(runs, group_id) when is_map(runs) do
@@ -2398,6 +2546,41 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   defp replacement_scope(scope),
     do: {:error, {:unsupported_replacement_scope, scope}}
 
+  defp target_status_scope({:manifest_version, manifest_version_id})
+       when is_binary(manifest_version_id),
+       do: {:ok, {:manifest_version, manifest_version_id}}
+
+  defp target_status_scope({:manifest_version, manifest_version_id, target_kind})
+       when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline],
+       do: {:ok, {:manifest_version, manifest_version_id, target_kind}}
+
+  defp target_status_scope(scope), do: {:error, {:unsupported_target_status_scope, scope}}
+
+  defp validate_target_status_scope_rows(scope, statuses) do
+    if Enum.all?(statuses, &target_status_in_scope?(&1, scope)) do
+      :ok
+    else
+      {:error, :target_status_scope_mismatch}
+    end
+  end
+
+  defp reject_target_status_scope(values, scope) when is_map(values) do
+    values
+    |> Enum.reject(fn {_key, status} -> target_status_in_scope?(status, scope) end)
+    |> Map.new()
+  end
+
+  defp target_status_in_scope?(%TargetStatus{manifest_version_id: id}, {:manifest_version, id}),
+    do: true
+
+  defp target_status_in_scope?(
+         %TargetStatus{manifest_version_id: id, target_kind: kind},
+         {:manifest_version, id, kind}
+       ),
+       do: true
+
+  defp target_status_in_scope?(_status, _scope), do: false
+
   defp reject_replacement_scope(_values, :all), do: %{}
 
   defp reject_replacement_scope(values, scope) when is_map(values) do
@@ -2471,6 +2654,16 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
         window_state
       )
     end)
+  end
+
+  defp put_target_status_values(values, statuses) do
+    Enum.reduce(statuses, values, fn %TargetStatus{} = status, acc ->
+      Map.put(acc, target_status_key(status), status)
+    end)
+  end
+
+  defp target_status_key(%TargetStatus{} = status) do
+    {status.manifest_version_id, status.target_kind, status.target_id}
   end
 
   defp next_progress(state, backfill_run_id, old_status, new_status) do

@@ -51,6 +51,7 @@ defmodule Favn.Storage.Adapter do
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.TargetStatus
 
   @type adapter_opts :: keyword()
   @type list_opts :: Favn.list_runs_opts()
@@ -63,6 +64,9 @@ defmodule Favn.Storage.Adapter do
   @type diagnostics :: map()
   @type cursor_scan_opts :: keyword()
   @type read_model_replacement_scope :: :all | {:backfill_run, String.t()} | {:pipeline, module()}
+  @type target_status_scope ::
+          {:manifest_version, String.t()}
+          | {:manifest_version, String.t(), TargetStatus.target_kind()}
 
   @callback child_spec(adapter_opts()) :: child_spec_result()
   @callback readiness(adapter_opts()) :: {:ok, readiness_diagnostics()} | {:error, error()}
@@ -81,6 +85,13 @@ defmodule Favn.Storage.Adapter do
   @callback put_run(RunState.t(), adapter_opts()) :: :ok | {:error, error()}
   @callback get_run(String.t(), adapter_opts()) :: {:ok, RunState.t()} | {:error, error()}
   @callback list_runs(list_opts(), adapter_opts()) :: {:ok, [RunState.t()]} | {:error, error()}
+  @callback list_target_runs(
+              String.t(),
+              TargetStatus.target_kind(),
+              Favn.Ref.t() | module(),
+              list_opts(),
+              adapter_opts()
+            ) :: {:ok, [RunState.t()]} | {:error, error()}
   @callback list_execution_group_runs(String.t(), adapter_opts()) ::
               {:ok, [RunState.t()]} | {:error, error()}
   @callback list_execution_group_run_ids(String.t(), adapter_opts()) ::
@@ -207,6 +218,24 @@ defmodule Favn.Storage.Adapter do
   @callback scan_asset_freshness_states(filter_opts(), cursor_scan_opts(), adapter_opts()) ::
               {:ok, CursorPage.t(AssetFreshnessState.t())} | {:error, error()}
 
+  @callback upsert_target_status(TargetStatus.t(), adapter_opts()) :: :ok | {:error, error()}
+  @callback get_target_status(
+              String.t(),
+              TargetStatus.target_kind(),
+              String.t(),
+              adapter_opts()
+            ) :: {:ok, TargetStatus.t()} | {:error, error()}
+  @callback list_target_statuses(
+              String.t(),
+              TargetStatus.target_kind(),
+              [String.t()],
+              adapter_opts()
+            ) :: {:ok, %{String.t() => TargetStatus.t()}} | {:error, error()}
+  @callback replace_target_statuses(target_status_scope(), [TargetStatus.t()], adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback delete_target_statuses(target_status_scope(), adapter_opts()) ::
+              :ok | {:error, error()}
+
   @callback replace_backfill_read_models(
               read_model_replacement_scope(),
               [CoverageBaseline.t()],
@@ -278,6 +307,11 @@ defmodule Favn.Storage.Adapter do
                       put_asset_freshness_state: 2,
                       get_asset_freshness_state: 4,
                       list_asset_freshness_states: 2,
+                      upsert_target_status: 2,
+                      get_target_status: 4,
+                      list_target_statuses: 4,
+                      replace_target_statuses: 3,
+                      delete_target_statuses: 2,
                       try_acquire_materialization_claim: 2,
                       complete_materialization_claim: 3,
                       fail_materialization_claim: 3,

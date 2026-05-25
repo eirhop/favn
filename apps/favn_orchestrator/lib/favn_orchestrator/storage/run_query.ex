@@ -11,7 +11,8 @@ defmodule FavnOrchestrator.Storage.RunQuery do
           required(:trigger_type) => String.t(),
           required(:asset_ref_text) => String.t(),
           required(:target_refs_text) => String.t(),
-          required(:window_key) => String.t() | nil
+          required(:window_key) => String.t() | nil,
+          required(:pipeline_submit_ref_text) => String.t()
         }
 
   @spec metadata(RunState.t()) :: metadata()
@@ -26,7 +27,8 @@ defmodule FavnOrchestrator.Storage.RunQuery do
       trigger_type: Atom.to_string(trigger_type(run)),
       asset_ref_text: public_ref(run.asset_ref),
       target_refs_text: Enum.join(Enum.map(targets, &public_ref/1), "\n"),
-      window_key: window_key(run)
+      window_key: window_key(run),
+      pipeline_submit_ref_text: pipeline_submit_ref_text(run)
     }
   end
 
@@ -97,6 +99,15 @@ defmodule FavnOrchestrator.Storage.RunQuery do
     |> case do
       context when is_map(context) -> context |> map_get(:anchor_window) |> anchor_key()
       _other -> nil
+    end
+  end
+
+  defp pipeline_submit_ref_text(%RunState{} = run) do
+    run.metadata
+    |> map_get(:pipeline_submit_ref)
+    |> case do
+      value when is_atom(value) or is_binary(value) -> public_ref(value)
+      _other -> ""
     end
   end
 
