@@ -41,6 +41,7 @@ defmodule Favn.SQL.Client do
   alias Favn.SQL.Admission
   alias Favn.SQL.ConcurrencyPolicies
   alias Favn.SQL.ConcurrencyPolicy
+  alias Favn.SQL.Deadline
   alias Favn.SQL.Error
   alias Favn.SQL.Observability
   alias Favn.SQL.PoolConfig
@@ -171,7 +172,7 @@ defmodule Favn.SQL.Client do
     {admission_opts, adapter_opts} = split_operation_opts(opts)
 
     session
-    |> run_session_operation(:query, statement, adapter_opts, fn ->
+    |> run_session_operation(:query, statement, operation_runtime_opts(opts), fn session ->
       run_with_optional_retry(:query, adapter_opts, fn ->
         Admission.with_permit(session, :query, {statement, admission_opts}, fn ->
           session.adapter.query(session.conn, statement, adapter_opts)
@@ -191,7 +192,7 @@ defmodule Favn.SQL.Client do
     {admission_opts, adapter_opts} = split_operation_opts(opts)
 
     session
-    |> run_session_operation(:execute, statement, adapter_opts, fn ->
+    |> run_session_operation(:execute, statement, operation_runtime_opts(opts), fn session ->
       Admission.with_permit(session, :execute, {statement, admission_opts}, fn ->
         session.adapter.execute(session.conn, statement, adapter_opts)
       end)
@@ -207,10 +208,12 @@ defmodule Favn.SQL.Client do
   @spec materialize(Session.t(), WritePlan.t(), keyword()) :: operation_result()
   def materialize(%Session{} = session, %WritePlan{} = write_plan, opts)
       when is_list(opts) do
+    {_admission_opts, adapter_opts} = split_operation_opts(opts)
+
     session
-    |> run_session_operation(:materialize, write_plan, opts, fn ->
+    |> run_session_operation(:materialize, write_plan, operation_runtime_opts(opts), fn session ->
       Admission.with_permit(session, :materialize, write_plan, fn ->
-        session.adapter.materialize(session.conn, write_plan, opts)
+        session.adapter.materialize(session.conn, write_plan, adapter_opts)
       end)
     end)
   rescue
@@ -224,7 +227,7 @@ defmodule Favn.SQL.Client do
   @spec relation(Session.t(), RelationRef.t()) :: operation_result()
   def relation(%Session{} = session, %RelationRef{} = relation_ref) do
     session
-    |> run_session_operation(:relation, relation_ref, [], fn ->
+    |> run_session_operation(:relation, relation_ref, [], fn session ->
       run_with_optional_retry(:relation, [], fn ->
         Admission.with_permit(session, :relation, relation_ref, fn ->
           session.adapter.relation(session.conn, relation_ref, [])
@@ -242,7 +245,7 @@ defmodule Favn.SQL.Client do
   @spec columns(Session.t(), RelationRef.t()) :: operation_result()
   def columns(%Session{} = session, %RelationRef{} = relation_ref) do
     session
-    |> run_session_operation(:columns, relation_ref, [], fn ->
+    |> run_session_operation(:columns, relation_ref, [], fn session ->
       run_with_optional_retry(:columns, [], fn ->
         Admission.with_permit(session, :columns, relation_ref, fn ->
           session.adapter.columns(session.conn, relation_ref, [])
@@ -261,7 +264,7 @@ defmodule Favn.SQL.Client do
   def row_count(%Session{} = session, %RelationRef{} = relation_ref) do
     if function_exported?(session.adapter, :row_count, 3) do
       session
-      |> run_session_operation(:row_count, relation_ref, [], fn ->
+      |> run_session_operation(:row_count, relation_ref, [], fn session ->
         run_with_optional_retry(:row_count, [], fn ->
           Admission.with_permit(session, :row_count, relation_ref, fn ->
             session.adapter.row_count(session.conn, relation_ref, [])
@@ -286,7 +289,7 @@ defmodule Favn.SQL.Client do
     with {:ok, limit} <- sample_limit(opts) do
       if function_exported?(session.adapter, :sample, 3) do
         session
-        |> run_session_operation(:sample, relation_ref, [], fn ->
+        |> run_session_operation(:sample, relation_ref, [], fn session ->
           run_with_optional_retry(:sample, [], fn ->
             Admission.with_permit(session, :sample, relation_ref, fn ->
               session.adapter.sample(session.conn, relation_ref, limit: limit)
@@ -309,7 +312,7 @@ defmodule Favn.SQL.Client do
   def table_metadata(%Session{} = session, %RelationRef{} = relation_ref) do
     if function_exported?(session.adapter, :table_metadata, 3) do
       session
-      |> run_session_operation(:table_metadata, relation_ref, [], fn ->
+      |> run_session_operation(:table_metadata, relation_ref, [], fn session ->
         run_with_optional_retry(:table_metadata, [], fn ->
           Admission.with_permit(session, :table_metadata, relation_ref, fn ->
             session.adapter.table_metadata(session.conn, relation_ref, [])
@@ -342,17 +345,20 @@ defmodule Favn.SQL.Client do
 
   def transaction(_session, _fun, _opts), do: {:error, invalid_session_error()}
 
-  defp run_transaction(%Session{adapter: adapter, conn: conn} = session, fun, opts) do
+  defp run_transaction(%Session{adapter: adapter} = session, fun, opts) do
     {admission_opts, adapter_opts} = split_operation_opts(opts)
     required_catalogs = effective_required_catalogs(session, admission_opts)
 
     if function_exported?(adapter, :transaction, 3) do
       session
-      |> run_session_operation(:transaction, nil, adapter_opts, fn ->
+      |> run_session_operation(:transaction, nil, operation_runtime_opts(opts), fn %Session{} = session ->
         Admission.with_permit(session, :transaction, admission_opts, fn ->
           adapter.transaction(
-            conn,
-            fn tx_conn -> fun.(%Session{session | conn: tx_conn, required_catalogs: required_catalogs}) end,
+            session.conn,
+            fn tx_conn ->
+              tx_session = %Session{session | conn: tx_conn, required_catalogs: required_catalogs}
+              fun.(put_checkout_owner(tx_session, self()))
+            end,
             adapter_opts
           )
         end)
@@ -367,7 +373,7 @@ defmodule Favn.SQL.Client do
   end
 
   defp split_operation_opts(opts) do
-    {operation_admission_opts(opts), Keyword.delete(opts, :admission)}
+    {operation_admission_opts(opts), Keyword.drop(opts, [:admission, :deadline, :timeout_ms])}
   end
 
   defp operation_admission_opts(opts) do
@@ -378,6 +384,10 @@ defmodule Favn.SQL.Client do
       _other ->
         []
     end
+  end
+
+  defp operation_runtime_opts(opts) do
+    Keyword.take(opts, [:deadline, :timeout_ms, :pool_safe?, :read_only?])
   end
 
   defp effective_required_catalogs(%Session{required_catalogs: required_catalogs}, admission_opts) do
@@ -499,7 +509,11 @@ defmodule Favn.SQL.Client do
   defp checkout_or_create_session(key, resolved, concurrency_policies, adapter_opts) do
     max_creating_per_key = checkout_max_creating_per_key(concurrency_policies, adapter_opts)
 
-    case SessionPool.checkout_or_create(key, max_creating_per_key: max_creating_per_key) do
+    case SessionPool.checkout_or_create(
+           key,
+           max_creating_per_key: max_creating_per_key,
+           checkout_timeout_ms: Keyword.get(adapter_opts, :checkout_timeout_ms)
+         ) do
       {:ok, %Session{} = session} ->
         case prepare_warm_session(session, resolved, concurrency_policies, adapter_opts) do
           {:ok, %Session{} = session} -> {:ok, session}
@@ -515,7 +529,9 @@ defmodule Favn.SQL.Client do
   defp prepare_warm_session(%Session{} = session, resolved, concurrency_policies, adapter_opts) do
     case checkout_warm_session_lease(session, concurrency_policies, adapter_opts) do
       {:ok, lease} ->
-        session = put_session_runtime(session, resolved, concurrency_policies, adapter_opts, lease)
+        session =
+          put_session_runtime(session, resolved, concurrency_policies, adapter_opts, lease)
+
         :ok = SessionPool.update_checkout(session)
 
         with :ok <- validate_pooled_session(session, adapter_opts),
@@ -720,7 +736,13 @@ defmodule Favn.SQL.Client do
     :exit, _ -> adapter
   end
 
-  defp put_session_runtime(%Session{} = session, resolved, concurrency_policies, adapter_opts, lease) do
+  defp put_session_runtime(
+         %Session{} = session,
+         resolved,
+         concurrency_policies,
+         adapter_opts,
+         lease
+       ) do
     %Session{
       session
       | resolved: resolved,
@@ -806,12 +828,12 @@ defmodule Favn.SQL.Client do
            adapter: resolved.adapter,
            resolved: resolved,
            conn: conn,
-            capabilities: capabilities,
-            concurrency_policy: singular_policy(concurrency_policies),
-            concurrency_policies: policy_container(concurrency_policies),
-            required_catalogs: normalized_required_catalogs(adapter_opts),
-            admission_lease: lease
-          }}
+           capabilities: capabilities,
+           concurrency_policy: singular_policy(concurrency_policies),
+           concurrency_policies: policy_container(concurrency_policies),
+           required_catalogs: normalized_required_catalogs(adapter_opts),
+           admission_lease: lease
+         }}
 
       {:error, _reason} = error ->
         disconnect_after_connect_error(resolved.adapter, conn, lease, error)
@@ -846,7 +868,7 @@ defmodule Favn.SQL.Client do
   end
 
   defp run_session_operation(%Session{} = session, operation, payload, opts, fun)
-       when is_function(fun, 0) do
+       when is_function(fun, 1) do
     case checkout_owner_error(session, operation) do
       nil ->
         run_owned_session_operation(session, operation, payload, opts, fun)
@@ -858,8 +880,10 @@ defmodule Favn.SQL.Client do
   end
 
   defp run_owned_session_operation(%Session{} = session, operation, payload, opts, fun)
-       when is_function(fun, 0) do
-    case fun.() do
+       when is_function(fun, 1) do
+    deadline = Deadline.from_opts(opts, default_operation_timeout_ms())
+
+    case run_with_deadline(session, operation, deadline, fun) do
       {:ok, _value} = result ->
         maybe_mark_pooled_session_success(session, operation, opts)
         result
@@ -872,6 +896,124 @@ defmodule Favn.SQL.Client do
         other
     end
   end
+
+  defp run_with_deadline(%Session{} = session, operation, %Deadline{} = deadline, fun) do
+    if Deadline.expired?(deadline) do
+      operation_timeout(session, operation, deadline)
+    else
+      parent = self()
+      ref = make_ref()
+      admission_permits = Process.get({Admission, :permits}, %{})
+
+      {pid, monitor} =
+        spawn_monitor(fn ->
+          Process.put({Admission, :permits}, admission_permits)
+          session = put_checkout_owner(session, self())
+
+          result =
+            try do
+              {:ok, fun.(session)}
+            rescue
+              error -> {:error, normalize_runtime_error(operation, error)}
+            catch
+              :exit, reason -> {:error, normalize_runtime_error(operation, reason)}
+              kind, reason -> {:error, normalize_runtime_error(operation, {kind, reason})}
+            end
+
+          send(parent, {ref, result})
+        end)
+
+      Observability.emit(
+        [:operation, :start],
+        %{},
+        operation_metadata(session, operation, deadline)
+      )
+
+      receive do
+        {^ref, {:ok, result}} ->
+          receive do
+            {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+          after
+            0 -> Process.demonitor(monitor, [:flush])
+          end
+
+          Observability.emit(
+            [:operation, :stop],
+            %{duration_ms: elapsed_ms(deadline)},
+            operation_metadata(session, operation, deadline)
+          )
+
+          result
+
+        {^ref, {:error, %Error{} = error}} ->
+          receive do
+            {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+          after
+            0 -> Process.demonitor(monitor, [:flush])
+          end
+
+          Observability.emit(
+            [:operation, :exception],
+            %{duration_ms: elapsed_ms(deadline)},
+            operation_metadata(session, operation, deadline)
+          )
+
+          {:error, error}
+
+        {:DOWN, ^monitor, :process, ^pid, reason} ->
+          error = normalize_runtime_error(operation, reason)
+
+          Observability.emit(
+            [:operation, :exception],
+            %{duration_ms: elapsed_ms(deadline)},
+            operation_metadata(session, operation, deadline)
+          )
+
+          {:error, error}
+      after
+        Deadline.remaining_ms(deadline) ->
+          Process.exit(pid, :kill)
+
+          receive do
+            {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+          after
+            0 -> :ok
+          end
+
+          Observability.emit(
+            [:operation, :timeout],
+            %{duration_ms: elapsed_ms(deadline)},
+            operation_metadata(session, operation, deadline)
+          )
+
+          operation_timeout(session, operation, deadline)
+      end
+    end
+  end
+
+  defp operation_timeout(%Session{} = session, operation, %Deadline{} = deadline) do
+    {:error,
+     %Error{
+       type: :operation_timeout,
+       message: "SQL operation timed out",
+       adapter: session.adapter,
+       connection: connection_name(session),
+       operation: operation,
+       retryable?: nil,
+       details: %{
+         timeout_ms: deadline.timeout_ms,
+         started_at: deadline.started_at,
+         deadline_at: deadline.deadline_at,
+         unknown_outcome?: true
+       }
+     }}
+  end
+
+  defp put_checkout_owner(%Session{pool_checkout: %Checkout{} = checkout} = session, owner) do
+    %Session{session | pool_checkout: %Checkout{checkout | owner: owner}}
+  end
+
+  defp put_checkout_owner(%Session{} = session, _owner), do: session
 
   defp maybe_mark_pooled_session_success(
          %Session{pool_checkout: %Checkout{} = checkout},
@@ -957,6 +1099,8 @@ defmodule Favn.SQL.Client do
 
   defp discard_pooled_session?(_operation, _payload, %Error{type: :connection_error}), do: true
 
+  defp discard_pooled_session?(_operation, _payload, %Error{type: :operation_timeout}), do: true
+
   defp discard_pooled_session?(operation, _payload, %Error{} = error)
        when operation in [:execute, :materialize, :transaction] do
     not retryable_admission_only?(error)
@@ -1037,6 +1181,28 @@ defmodule Favn.SQL.Client do
       details: %{reason: inspect(reason)},
       cause: reason
     }
+  end
+
+  defp operation_metadata(%Session{} = session, operation, %Deadline{} = deadline) do
+    %{
+      operation: operation,
+      connection: connection_name(session),
+      adapter: inspect(session.adapter),
+      timeout_ms: deadline.timeout_ms
+    }
+  end
+
+  defp connection_name(%Session{resolved: %Resolved{name: name}}), do: name
+  defp connection_name(%Session{}), do: nil
+
+  defp elapsed_ms(%Deadline{} = deadline),
+    do: deadline.timeout_ms - Deadline.remaining_ms(deadline)
+
+  defp default_operation_timeout_ms do
+    case Application.get_env(:favn_sql_runtime, :sql_operation_timeout_ms, 30_000) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> 30_000
+    end
   end
 
   defp monotonic_ms, do: System.monotonic_time(:millisecond)

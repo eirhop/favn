@@ -78,6 +78,17 @@ session creation/bootstrap and read-only inspection/query paths. Blind retries o
 SQL writes are not safe, and unknown commit state must be surfaced rather than
 retried.
 
+Pool checkout, admission waits, and SQL operations use finite default timeouts.
+`%Favn.SQL.Deadline{}` carries per-operation budgets through query, execute,
+materialize, transaction, and inspection paths. SQL operation timeouts return a
+typed `%Favn.SQL.Error{type: :operation_timeout}` with `unknown_outcome?: true`
+and discard pooled sessions rather than returning potentially mutated native
+state to the idle pool.
+`%Favn.SQL.CancelToken{}` is the SQL-owned cancellation context passed toward
+adapter operations. Adapters may ignore it when native cancellation is
+unsupported, but runner/orchestrator outcomes must then preserve native
+uncertainty instead of claiming data-plane cancellation certainty.
+
 Local `mix favn.query` read-only validation is a best-effort operator guardrail,
 not a SQL sandbox or security boundary. `mix favn.inspect` and `mix favn.query`
 start `:favn_sql_runtime` before connecting so `Favn.SQL.SessionPool` is

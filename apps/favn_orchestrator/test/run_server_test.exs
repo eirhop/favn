@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.RunServerTest do
   alias Favn.Window.Runtime
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunServer.Execution.StageAdmission
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.MaterializationClaim.Identity, as: MaterializationClaimIdentity
@@ -311,6 +312,10 @@ defmodule FavnOrchestrator.RunServerTest do
     defdelegate append_run_event(run_id, event, opts), to: Memory
     defdelegate list_run_events(run_id, opts), to: Memory
     defdelegate list_global_run_events(filters, opts), to: Memory
+    defdelegate put_execution_ownership(ownership, opts), to: Memory
+    defdelegate get_execution_ownership(ownership_id, opts), to: Memory
+    defdelegate list_execution_ownerships(run_id, opts), to: Memory
+    defdelegate list_active_execution_ownerships(run_id, opts), to: Memory
     defdelegate try_acquire_execution_lease(lease, opts), to: Memory
     defdelegate release_execution_lease(lease_id, opts), to: Memory
     defdelegate release_execution_leases_for_run(run_id, opts), to: Memory
@@ -492,6 +497,13 @@ defmodule FavnOrchestrator.RunServerTest do
              :step_finished,
              :run_finished
            ]
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+
+    assert [%RunExecutionOwnership{status: :completed, runner_execution_id: execution_id}] =
+             RunExecutionOwnership.list(stored)
+
+    assert is_binary(execution_id)
   end
 
   test "sequential cancellation during retry wait wins before next submit" do

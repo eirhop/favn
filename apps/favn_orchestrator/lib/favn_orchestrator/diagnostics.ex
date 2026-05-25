@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Diagnostics do
   alias Favn.Contracts.RunnerClient
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.OperationalEvents
+  alias FavnOrchestrator.ProjectionDiagnostics
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunState
@@ -40,6 +41,7 @@ defmodule FavnOrchestrator.Diagnostics do
       safe_check(:active_manifest, &active_manifest_check/0),
       safe_check(:scheduler, &scheduler_check/0),
       safe_check(:runner, &runner_check/0),
+      safe_check(:projections, &projection_check/0),
       safe_check(:in_flight_runs, &in_flight_runs_check/0),
       safe_check(:recent_failed_runs, fn -> recent_failed_runs_check(recent_limit) end)
     ]
@@ -142,6 +144,16 @@ defmodule FavnOrchestrator.Diagnostics do
 
       {:error, reason} ->
         error(:runner, "Runner client is unavailable", %{}, reason)
+    end
+  end
+
+  defp projection_check do
+    case ProjectionDiagnostics.diagnostics() do
+      %{status: :ok} = details ->
+        ok(:projections, "Derived projections are healthy", details)
+
+      %{status: :degraded} = details ->
+        warning(:projections, "Derived projections are degraded", details, :repair_needed)
     end
   end
 

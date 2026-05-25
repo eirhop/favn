@@ -44,18 +44,19 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Extend command idempotency from the implemented SQLite single-node scope into any future distributed/Postgres production mode when that mode is introduced.
 - Extend the new single-node SSE contract into future distributed/Postgres production modes when those modes are introduced.
 - Add broader end-to-end integration coverage against the live orchestrator stream boundary beyond the focused single-node cursor/replay tests.
-- Complete persisted orchestrator execution admission for pipeline `max_concurrency`, named execution pools, global concurrency, queue reasons, execution leases, lease heartbeat/expiry, and restart recovery across memory, SQLite, and Postgres storage adapters.
+- Complete persisted orchestrator execution admission for pipeline `max_concurrency`, named execution pools, global concurrency, queue reasons, execution leases, lease heartbeat/expiry, and broader restart recovery across memory, SQLite, and Postgres storage adapters.
 
 ### 5. Close Storage And Persistence Gaps
 
 - Extend the new orchestrator production readiness surface into operator-facing migration commands and keep the runbook aligned with separate DuckDB data-plane backups for the single-node production contract.
 - Add Favn-owned backup/restore automation and focused verification beyond the documented stopped-backend SQLite control-plane and separate DuckDB/plugin data-plane procedures.
-- Audit remaining generic `PayloadCodec` persistence outside run snapshots/events/scheduler-state, SQLite auth state, idempotency replay responses, backfill read models, and asset freshness state, then replace each remaining durable storage area with explicit JSON-safe DTO records where the database boundary still stores reconstructed BEAM terms.
+- Audit remaining generic `PayloadCodec` persistence outside run snapshots/events/scheduler-state/execution-ownership, SQLite auth state, idempotency replay responses, backfill read models, and asset freshness state, then replace each remaining durable storage area with explicit JSON-safe DTO records where the database boundary still stores reconstructed BEAM terms.
 - Move Postgres live verification into the next production mode after SQLite single-node readiness, not the first `v1` gate.
 
 ### 6. Harden The Production-Grade Runtime
 
 - Harden the manifest-pinned SQL execution path enough for the `v1` support promise, especially around runtime payload handling and backend failure behavior.
+- Extend the initial SQL cancellation token contract into adapter-native cancellation callbacks where supported; adapters without native cancellation must continue reporting unknown or unsupported data-plane outcome.
 - Add broader production stress, failure-injection, and restore verification for DuckDB/plugin execution under the single-node contract.
 - Extend the initial runtime config contract beyond required env refs if production needs optional values, non-env providers, or provider-specific secret managers.
 - Add broader production stress/failure-injection coverage for the service-authenticated diagnostics surface and keep end-to-end diagnostics coverage aligned with the PR #262 test plan.

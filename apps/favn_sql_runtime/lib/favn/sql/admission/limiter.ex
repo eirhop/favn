@@ -10,13 +10,15 @@ defmodule Favn.SQL.Admission.Limiter do
   @spec acquire(scope(), pos_integer()) :: :ok | {:error, :admission_timeout}
   @spec acquire(scope(), pos_integer(), pos_integer() | :infinity) ::
           :ok | {:error, :admission_timeout}
-  def acquire(scope, limit, timeout_ms \\ :infinity)
+  def acquire(scope, limit, timeout_ms \\ default_timeout_ms())
 
   def acquire(scope, limit, timeout_ms)
       when is_integer(limit) and limit > 0 and
              (timeout_ms == :infinity or (is_integer(timeout_ms) and timeout_ms > 0)) do
     ensure_started()
-    GenServer.call(__MODULE__, {:acquire, scope, limit, timeout_ms}, :infinity)
+    GenServer.call(__MODULE__, {:acquire, scope, limit, timeout_ms}, call_timeout(timeout_ms))
+  catch
+    :exit, {:timeout, _call} -> {:error, :admission_timeout}
   end
 
   @spec release(scope(), pid()) :: :ok
@@ -244,6 +246,17 @@ defmodule Favn.SQL.Admission.Limiter do
 
   defp schedule_timeout(monitor_ref, timeout_ms) do
     Process.send_after(self(), {:admission_timeout, monitor_ref}, timeout_ms)
+  end
+
+  defp call_timeout(:infinity), do: :infinity
+  defp call_timeout(timeout_ms), do: timeout_ms + 1_000
+
+  defp default_timeout_ms do
+    case Application.get_env(:favn_sql_runtime, :sql_admission_timeout_ms, 30_000) do
+      value when is_integer(value) and value > 0 -> value
+      :infinity -> :infinity
+      _other -> 30_000
+    end
   end
 
   defp remove_waiter(state, scope, monitor_ref) do

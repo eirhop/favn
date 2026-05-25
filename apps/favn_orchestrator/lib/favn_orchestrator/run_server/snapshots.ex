@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
     snapshot_update(run_state,
       status: :cancelled,
       runner_execution_id: nil,
+      error: cancelled_error(run_state),
       result: %{status: :cancelled, asset_results: acc_results, metadata: run_state.metadata}
     )
   end
@@ -53,4 +54,19 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
     |> Map.put(:updated_at, DateTime.utc_now())
     |> RunState.with_snapshot_hash()
   end
+
+  defp cancelled_error(%RunState{error: {:cancelled, _reason} = error}), do: error
+
+  defp cancelled_error(%RunState{metadata: metadata}) when is_map(metadata) do
+    reason =
+      Map.get(
+        metadata,
+        :cancel_reason,
+        Map.get(metadata, "cancel_reason", :external_cancel_request)
+      )
+
+    {:cancelled, reason}
+  end
+
+  defp cancelled_error(%RunState{}), do: {:cancelled, %{reason: :external_cancel_request}}
 end

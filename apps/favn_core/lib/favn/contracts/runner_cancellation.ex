@@ -3,7 +3,21 @@ defmodule Favn.Contracts.RunnerCancellation do
   Runner cancellation request and outcome contracts.
   """
 
-  @type status :: :requested | :acknowledged | :already_completed | :not_found | :unsupported
+  @type status ::
+          :requested
+          | :acknowledged
+          | :already_completed
+          | :not_found
+          | :unsupported
+          | :best_effort_failed
+          | :unknown_runner_outcome
+
+  @type native_status ::
+          :native_cancel_acknowledged
+          | :native_cancel_unsupported
+          | :native_cancel_failed
+          | :native_cancel_unknown
+          | :not_applicable
 
   @type t :: %__MODULE__{
           run_id: String.t() | nil,
@@ -14,6 +28,10 @@ defmodule Favn.Contracts.RunnerCancellation do
   @type outcome :: %{
           required(:status) => status(),
           optional(:execution_id) => String.t(),
+          optional(:runner_status) => atom(),
+          optional(:native_status) => native_status(),
+          optional(:reason_class) => atom(),
+          optional(:correlation_id) => String.t(),
           optional(:reason) => term()
         }
 
@@ -44,7 +62,15 @@ defmodule Favn.Contracts.RunnerCancellation do
   """
   @spec outcome(status(), keyword()) :: outcome()
   def outcome(status, fields \\ [])
-      when status in [:requested, :acknowledged, :already_completed, :not_found, :unsupported] do
+      when status in [
+             :requested,
+             :acknowledged,
+             :already_completed,
+             :not_found,
+             :unsupported,
+             :best_effort_failed,
+             :unknown_runner_outcome
+           ] do
     fields |> Map.new() |> Map.put(:status, status)
   end
 end

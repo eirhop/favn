@@ -6,9 +6,9 @@ defmodule FavnOrchestrator.RunManager do
   use GenServer
 
   alias Favn.Contracts.RunnerClient
-  alias Favn.Contracts.RunnerCancellation
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunManager.Submission
   alias FavnOrchestrator.RunManager.SubmissionBuilder
   alias FavnOrchestrator.RunServer
@@ -91,28 +91,15 @@ defmodule FavnOrchestrator.RunManager do
                    reason: reason
                  }) do
             if active_run_server?(state, run_id) do
-              case TransitionWriter.persist_transition(cancelled, :run_cancelled, %{
-                     reason: reason
-                   }) do
-                :ok ->
-                  notify_active_run_server(state, run_id, reason)
-                  :ok
-
-                error ->
-                  error
-              end
+              notify_active_run_server(state, run_id, reason)
+              :ok
             else
               case forward_cancel_result(run, reason) do
                 :ok ->
                   TransitionWriter.persist_transition(cancelled, :run_cancelled, %{reason: reason})
 
-                {:recoverable, cancel_error} ->
-                  cancelled = maybe_put_cancel_forward_error(cancelled, cancel_error)
-
-                  TransitionWriter.persist_transition(cancelled, :run_cancelled, %{
-                    reason: reason,
-                    cancel_forward_error: cancel_error
-                  })
+                {:already_completed, details} ->
+                  {:error, {:runner_cancel_already_completed, details}}
 
                 {:error, cancel_error} ->
                   {:error, {:runner_cancel_failed, cancel_error}}
@@ -223,7 +210,10 @@ defmodule FavnOrchestrator.RunManager do
   defp terminalize_active_run(run_id, error) when is_binary(run_id) and is_map(error) do
     case Storage.get_run(run_id) do
       {:ok, %RunState{status: status} = run} when status in [:pending, :running] ->
-        terminalize_run(run, error)
+        {run, cleanup_statuses} =
+          cleanup_active_runner_ownerships(run, %{kind: :run_server_down, error: error})
+
+        terminalize_run(run, error, cleanup_statuses)
 
       {:ok, %RunState{}} ->
         :ok
@@ -238,11 +228,69 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
-  defp terminalize_run(%RunState{} = run, error) when is_map(error) do
+  defp cleanup_active_runner_ownerships(%RunState{} = run, reason) do
+    case RunExecutionOwnership.fetch_active(run.id) do
+      {:ok, active} ->
+        execution_ids = active |> Enum.map(& &1.runner_execution_id) |> Enum.filter(&is_binary/1)
+        missing_id_result = persist_missing_execution_ids(run.id, reason)
+
+        cleanup_statuses =
+          case missing_id_result do
+            :ok -> []
+            {:error, error} -> [%{status: :unknown_runner_outcome, error: error}]
+          end
+
+        if execution_ids == [] do
+          {run, cleanup_statuses}
+        else
+          runtime_config = RuntimeConfig.current()
+          runner_client = runtime_config.runner_client
+          runner_opts = runtime_config.runner_client_opts
+
+          results =
+            case validate_runner_client(runner_client) do
+              :ok ->
+                FavnOrchestrator.RunServer.Cancellation.dispatch_runner_work(
+                  run,
+                  execution_ids,
+                  reason,
+                  runner_client,
+                  runner_opts
+                )
+
+              {:error, error} ->
+                Enum.map(execution_ids, fn execution_id ->
+                  %{execution_id: execution_id, status: :unknown_runner_outcome, error: error}
+                end)
+            end
+
+          persist_result = RunExecutionOwnership.persist_cancel_outcomes(run.id, results, reason)
+
+          statuses =
+            cleanup_statuses ++
+              cleanup_statuses_from_results(results) ++
+              persist_error_statuses(persist_result)
+
+          {run, statuses}
+        end
+
+      {:error, error} ->
+        {run,
+         [
+           %{
+             runner_execution_id: nil,
+             status: :unknown_runner_outcome,
+             error: {:execution_ownership_read_failed, error}
+           }
+         ]}
+    end
+  end
+
+  defp terminalize_run(%RunState{} = run, error, cleanup_statuses) when is_map(error) do
     failed =
       RunState.transition(run,
         status: :error,
-        error: error,
+        error: Map.put(error, :runner_cleanup, cleanup_statuses),
         runner_execution_id: nil,
         metadata: Map.put(run.metadata, :terminal_event_type, :run_failed)
       )
@@ -251,6 +299,26 @@ defmodule FavnOrchestrator.RunManager do
       status: failed.status,
       error: failed.error
     })
+  end
+
+  defp persist_missing_execution_ids(run_id, reason) do
+    RunExecutionOwnership.persist_unknown_without_execution_id(run_id, reason)
+  end
+
+  defp cleanup_statuses_from_results(results) do
+    Enum.map(results, fn result ->
+      %{
+        runner_execution_id: Map.get(result, :execution_id),
+        status: RunExecutionOwnership.cancel_outcome_status(result),
+        error: Map.get(result, :error)
+      }
+    end)
+  end
+
+  defp persist_error_statuses(:ok), do: []
+
+  defp persist_error_statuses({:error, error}) do
+    [%{runner_execution_id: nil, status: :unknown_runner_outcome, error: error}]
   end
 
   defp run_server_down_error(reason) do
@@ -323,45 +391,33 @@ defmodule FavnOrchestrator.RunManager do
     runtime_config = RuntimeConfig.current()
     runner_client = runtime_config.runner_client
     runner_opts = runtime_config.runner_client_opts
-    execution_ids = inflight_execution_ids(run)
 
-    if execution_ids == [] do
-      :ok
-    else
-      with :ok <- validate_runner_client(runner_client) do
-        execution_ids
-        |> Enum.map(&cancel_execution_id(run.id, &1, reason, runner_client, runner_opts))
-        |> classify_cancel_results()
+    with {:ok, execution_ids} <- inflight_execution_ids(run) do
+      if execution_ids == [] do
+        :ok
+      else
+        with :ok <- validate_runner_client(runner_client) do
+          results =
+            FavnOrchestrator.RunServer.Cancellation.dispatch_runner_work(
+              run,
+              execution_ids,
+              reason,
+              runner_client,
+              runner_opts
+            )
+
+          case RunExecutionOwnership.persist_cancel_outcomes(run.id, results, reason) do
+            :ok -> classify_cancel_results(results)
+            {:error, error} -> {:error, %{type: :cancel_outcome_persist_failed, reason: error}}
+          end
+        end
       end
     end
   end
 
-  defp cancel_execution_id(run_id, execution_id, reason, runner_client, runner_opts) do
-    case runner_client.cancel_work(
-           execution_id,
-           RunnerCancellation.request(run_id, reason),
-           runner_opts
-         ) do
-      {:ok, %{status: status}} when status in [:acknowledged, :already_completed] ->
-        {:ok, execution_id}
-
-      {:ok, %{status: :not_found}} ->
-        {:error, execution_id, :not_found}
-
-      {:ok, %{status: status}} ->
-        {:error, execution_id, status}
-
-      :ok ->
-        {:ok, execution_id}
-
-      {:error, reason} ->
-        {:error, execution_id, reason}
-    end
-  end
-
   defp classify_cancel_results(results) do
-    unconfirmed_failures = Enum.reject(results, &cancel_recoverable?/1)
-    recoverable_failures = Enum.filter(results, &cancel_recovered?/1)
+    already_completed = Enum.filter(results, &(Map.get(&1, :status) == :already_completed))
+    unconfirmed_failures = Enum.reject(results, &cancel_terminalizable?/1)
 
     cond do
       unconfirmed_failures != [] ->
@@ -371,11 +427,11 @@ defmodule FavnOrchestrator.RunManager do
            reasons: Enum.map(unconfirmed_failures, &cancel_failure_reason/1)
          }}
 
-      recoverable_failures != [] ->
-        {:recoverable,
+      already_completed != [] ->
+        {:already_completed,
          %{
-           type: :runner_cancel_recovered,
-           reasons: Enum.map(recoverable_failures, &cancel_failure_reason/1)
+           type: :runner_cancel_already_completed,
+           executions: Enum.map(already_completed, &cancel_failure_reason/1)
          }}
 
       true ->
@@ -383,24 +439,17 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
-  defp cancel_recoverable?({:ok, _execution_id}), do: true
+  defp cancel_terminalizable?(%{status: status}),
+    do: status in [:acknowledged, :already_completed]
 
-  defp cancel_recoverable?({:error, _execution_id, reason}),
-    do: reason in [:stale_execution_id, :not_found]
+  defp cancel_terminalizable?(_result), do: false
 
-  defp cancel_recovered?({:error, _execution_id, reason}),
-    do: reason in [:stale_execution_id, :not_found]
-
-  defp cancel_recovered?(_result), do: false
-
-  defp cancel_failure_reason({:error, execution_id, reason}) do
-    %{execution_id: execution_id, reason: inspect(reason)}
-  end
-
-  defp maybe_put_cancel_forward_error(%RunState{} = run, error) when is_map(error) do
-    run
-    |> Map.put(:metadata, Map.put(run.metadata, :cancel_forward_error, error))
-    |> RunState.with_snapshot_hash()
+  defp cancel_failure_reason(result) when is_map(result) do
+    %{
+      execution_id: Map.get(result, :execution_id),
+      status: Map.get(result, :status),
+      reason: inspect(Map.get(result, :error))
+    }
   end
 
   defp inflight_execution_ids(%RunState{} = run) do
@@ -410,9 +459,21 @@ defmodule FavnOrchestrator.RunManager do
         _other -> []
       end
 
-    [run.runner_execution_id | metadata_ids]
-    |> Enum.filter(&is_binary/1)
-    |> Enum.uniq()
+    case RunExecutionOwnership.fetch_active(run.id) do
+      {:ok, ownerships} ->
+        ledger_ids =
+          ownerships
+          |> Enum.map(& &1.runner_execution_id)
+          |> Enum.filter(&is_binary/1)
+
+        {:ok,
+         [run.runner_execution_id | metadata_ids ++ ledger_ids]
+         |> Enum.filter(&is_binary/1)
+         |> Enum.uniq()}
+
+      {:error, reason} ->
+        {:error, {:execution_ownership_read_failed, reason}}
+    end
   end
 
   defp validate_runner_client(module) when is_atom(module) do

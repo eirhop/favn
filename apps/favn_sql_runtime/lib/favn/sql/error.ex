@@ -25,6 +25,8 @@ defmodule Favn.SQL.Error do
           | :introspection_mismatch
           | :missing_relation
           | :admission_timeout
+          | :pool_timeout
+          | :operation_timeout
 
   @type t :: %__MODULE__{
           type: type(),

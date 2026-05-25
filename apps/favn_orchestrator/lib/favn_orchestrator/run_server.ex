@@ -5,6 +5,8 @@ defmodule FavnOrchestrator.RunServer do
 
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ExecutionAdmission
+  alias FavnOrchestrator.OperationalEvents
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Persistence
@@ -15,6 +17,8 @@ defmodule FavnOrchestrator.RunServer do
           required(:run_state) => RunState.t(),
           required(:version) => Version.t()
         }
+
+  @terminal_persist_retry_ms 1_000
 
   @spec start_link(init_arg()) :: GenServer.on_start()
   def start_link(args) when is_map(args), do: GenServer.start_link(__MODULE__, args)
@@ -83,9 +87,17 @@ defmodule FavnOrchestrator.RunServer do
     do: handle_execution_event(state, {:execution_admission_wakeup, waiter_id, generation})
 
   def handle_info(
+        {:retry_terminal_persist, token},
+        %{terminal_persist_pending: %{token: token} = pending} = state
+      ) do
+    retry_terminal_persist(state, pending)
+  end
+
+  def handle_info(
         {:favn_run_cancel_requested, reason},
         %{execution_state: %RunExecutionState{} = execution_state} = state
       ) do
+    execution_state = %{execution_state | run: latest_run_snapshot(execution_state.run)}
     terminal = Execution.cancel(execution_state, reason)
     finalize_terminal(state, terminal)
   end
@@ -115,34 +127,149 @@ defmodule FavnOrchestrator.RunServer do
   end
 
   defp finalize_terminal(state, %RunState{} = terminal) do
-    if Persistence.externally_cancelled?(terminal.id) do
-      :ok = ExecutionAdmission.release_run(terminal.id)
-      :ok = ExecutionAdmission.cancel_run_waits(terminal.id)
-      {:stop, :normal, state |> Map.put(:run_state, terminal) |> Map.put(:execution_state, nil)}
-    else
-      :ok = ExecutionAdmission.release_run(terminal.id)
-      :ok = ExecutionAdmission.cancel_run_waits(terminal.id)
-      terminal_event_type = Persistence.terminal_event_type(terminal)
+    cond do
+      terminal.status == :cancelled and persisted_cancelled?(terminal.id) ->
+        :ok = ExecutionAdmission.release_run(terminal.id)
+        :ok = ExecutionAdmission.cancel_run_waits(terminal.id)
+        {:stop, :normal, state |> Map.put(:run_state, terminal) |> Map.put(:execution_state, nil)}
 
-      finalized =
-        RunState.transition(terminal,
-          metadata: Map.put(terminal.metadata, :terminal_event_type, terminal_event_type)
+      terminal.status != :cancelled and Persistence.externally_cancelled?(terminal.id) ->
+        :ok = ExecutionAdmission.release_run(terminal.id)
+        :ok = ExecutionAdmission.cancel_run_waits(terminal.id)
+        {:stop, :normal, state |> Map.put(:run_state, terminal) |> Map.put(:execution_state, nil)}
+
+      true ->
+        terminal_event_type = Persistence.terminal_event_type(terminal)
+
+        finalized =
+          RunState.transition(terminal,
+            metadata: Map.put(terminal.metadata, :terminal_event_type, terminal_event_type)
+          )
+
+        persist_terminal_or_retry(state, finalized, terminal_event_type)
+    end
+  end
+
+  defp persist_terminal_or_retry(state, %RunState{} = finalized, terminal_event_type) do
+    data = %{status: finalized.status, error: finalized.error}
+
+    case Persistence.persist_run_step(finalized, terminal_event_type, data) do
+      :ok ->
+        maybe_complete_active_ownerships(finalized.id)
+        :ok = ExecutionAdmission.release_run(finalized.id)
+        :ok = ExecutionAdmission.cancel_run_waits(finalized.id)
+
+        {:stop, :normal,
+         state |> Map.put(:run_state, finalized) |> Map.put(:execution_state, nil)}
+
+      {:error, :external_cancel} ->
+        cancelled = Snapshots.cancelled_snapshot(finalized)
+        :ok = ExecutionAdmission.release_run(cancelled.id)
+        :ok = ExecutionAdmission.cancel_run_waits(cancelled.id)
+
+        {:stop, :normal,
+         state |> Map.put(:run_state, cancelled) |> Map.put(:execution_state, nil)}
+
+      {:error, reason} ->
+        schedule_terminal_persist_retry(state, finalized, terminal_event_type, data, reason, 1)
+    end
+  end
+
+  defp retry_terminal_persist(state, pending) do
+    finalized = pending.terminal
+
+    case Persistence.persist_run_step(finalized, pending.event_type, pending.data) do
+      :ok ->
+        maybe_complete_active_ownerships(finalized.id)
+        :ok = ExecutionAdmission.release_run(finalized.id)
+        :ok = ExecutionAdmission.cancel_run_waits(finalized.id)
+
+        {:stop, :normal,
+         state
+         |> Map.put(:run_state, finalized)
+         |> Map.put(:execution_state, nil)
+         |> Map.delete(:terminal_persist_pending)}
+
+      {:error, :external_cancel} ->
+        cancelled = Snapshots.cancelled_snapshot(finalized)
+        :ok = ExecutionAdmission.release_run(cancelled.id)
+        :ok = ExecutionAdmission.cancel_run_waits(cancelled.id)
+
+        {:stop, :normal,
+         state
+         |> Map.put(:run_state, cancelled)
+         |> Map.put(:execution_state, nil)
+         |> Map.delete(:terminal_persist_pending)}
+
+      {:error, reason} ->
+        schedule_terminal_persist_retry(
+          state,
+          finalized,
+          pending.event_type,
+          pending.data,
+          reason,
+          pending.attempt + 1
+        )
+    end
+  end
+
+  defp maybe_complete_active_ownerships(run_id) do
+    case RunExecutionOwnership.complete_active(run_id) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        OperationalEvents.emit(
+          :run_execution_ownership_completion_failed,
+          %{},
+          %{run_id: run_id, reason: reason},
+          level: :warning
         )
 
-      case Persistence.persist_run_step(finalized, terminal_event_type, %{
-             status: finalized.status,
-             error: finalized.error
-           }) do
-        :ok ->
-          {:stop, :normal,
-           state |> Map.put(:run_state, finalized) |> Map.put(:execution_state, nil)}
+        :ok
+    end
+  end
 
-        {:error, :external_cancel} ->
-          {:stop, :normal,
-           state
-           |> Map.put(:run_state, Snapshots.cancelled_snapshot(finalized))
-           |> Map.put(:execution_state, nil)}
-      end
+  defp schedule_terminal_persist_retry(
+         state,
+         %RunState{} = terminal,
+         event_type,
+         data,
+         reason,
+         attempt
+       ) do
+    token = make_ref()
+    Process.send_after(self(), {:retry_terminal_persist, token}, @terminal_persist_retry_ms)
+
+    OperationalEvents.emit(
+      :run_terminal_persist_retry_scheduled,
+      %{},
+      %{run_id: terminal.id, event_type: event_type, attempt: attempt, reason: reason},
+      level: :warning
+    )
+
+    {:noreply,
+     state
+     |> Map.put(:run_state, terminal)
+     |> Map.put(:execution_state, nil)
+     |> Map.put(:terminal_persist_pending, %{
+       token: token,
+       terminal: terminal,
+       event_type: event_type,
+       data: data,
+       reason: reason,
+       attempt: attempt
+     })}
+  end
+
+  defp persisted_cancelled?(run_id) do
+    match?({:ok, %RunState{status: :cancelled}}, FavnOrchestrator.Storage.get_run(run_id))
+  end
+
+  defp latest_run_snapshot(%RunState{id: run_id} = fallback) do
+    case FavnOrchestrator.Storage.get_run(run_id) do
+      {:ok, %RunState{} = run} -> run
+      _ -> fallback
     end
   end
 end

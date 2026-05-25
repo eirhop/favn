@@ -98,13 +98,20 @@ defmodule Favn.SQL.SessionPool do
   `:max_creating_per_key`. Waiters block until an idle session is available or
   capacity opens for another creator.
   """
-  @spec checkout_or_create(PoolKey.t(), keyword()) :: {:ok, Session.t()} | :create
+  @spec checkout_or_create(PoolKey.t(), keyword()) ::
+          {:ok, Session.t()} | :create | {:error, Favn.SQL.Error.t()}
   def checkout_or_create(%PoolKey{} = key, opts \\ []) do
-    GenServer.call(
-      pool_name(opts),
-      {:checkout_or_create, key, self(), max_creating_per_key(opts)},
-      :infinity
-    )
+    checkout_timeout_ms = checkout_timeout_ms(opts)
+
+    try do
+      GenServer.call(
+        pool_name(opts),
+        {:checkout_or_create, key, self(), max_creating_per_key(opts), checkout_timeout_ms},
+        checkout_timeout_ms + 1_000
+      )
+    catch
+      :exit, {:timeout, _call} -> {:error, pool_timeout_error(key, checkout_timeout_ms)}
+    end
   end
 
   @doc """
@@ -201,12 +208,12 @@ defmodule Favn.SQL.SessionPool do
   end
 
   def handle_call(
-        {:checkout_or_create, %PoolKey{} = key, owner, max_creating_per_key},
+        {:checkout_or_create, %PoolKey{} = key, owner, max_creating_per_key, checkout_timeout_ms},
         from,
         %__MODULE__{} = state
       ) do
     state
-    |> checkout_or_reserve(key, owner, from, max_creating_per_key)
+    |> checkout_or_reserve(key, owner, from, max_creating_per_key, checkout_timeout_ms)
     |> case do
       {:reply, reply, state} -> {:reply, reply, state}
       {:noreply, state} -> {:noreply, state}
@@ -281,12 +288,12 @@ defmodule Favn.SQL.SessionPool do
 
           owner == caller ->
             {:reply, :ok,
-              return_to_idle(
-                state,
-                session,
-                checkout
-              )
-              |> drain_waiters(checkout.key.hash)}
+             return_to_idle(
+               state,
+               session,
+               checkout
+             )
+             |> drain_waiters(checkout.key.hash)}
 
           true ->
             close_session(session)
@@ -368,14 +375,14 @@ defmodule Favn.SQL.SessionPool do
 
               {hash, creator_monitors} ->
                 {:noreply,
-                  %__MODULE__{
-                    state
-                    | monitors: monitors,
-                      waiter_monitors: waiter_monitors,
-                      creator_monitors: creator_monitors,
-                      creating: remove_creator(state.creating, hash, monitor)
-                  }
-                  |> drain_waiters(hash)}
+                 %__MODULE__{
+                   state
+                   | monitors: monitors,
+                     waiter_monitors: waiter_monitors,
+                     creator_monitors: creator_monitors,
+                     creating: remove_creator(state.creating, hash, monitor)
+                 }
+                 |> drain_waiters(hash)}
             end
 
           {hash, waiter_monitors} ->
@@ -411,6 +418,24 @@ defmodule Favn.SQL.SessionPool do
     {:noreply, %__MODULE__{state | idle: idle}}
   end
 
+  def handle_info({:checkout_timeout, monitor}, %__MODULE__{} = state) do
+    case Map.pop(state.waiter_monitors, monitor) do
+      {nil, waiter_monitors} ->
+        {:noreply, %__MODULE__{state | waiter_monitors: waiter_monitors}}
+
+      {hash, waiter_monitors} ->
+        {waiter, waiters} = pop_waiter(state.waiters, hash, monitor)
+        if waiter, do: reply_pool_timeout(waiter, hash, :queue.len(waiters) + 1)
+
+        {:noreply,
+         %__MODULE__{
+           state
+           | waiter_monitors: waiter_monitors,
+             waiters: put_waiters(state.waiters, hash, waiters)
+         }}
+    end
+  end
+
   @impl true
   def terminate(reason, %__MODULE__{} = state) do
     close_all_sessions(state, {:pool_shutdown, reason})
@@ -422,7 +447,8 @@ defmodule Favn.SQL.SessionPool do
          %PoolKey{} = key,
          owner,
          from,
-         max_creating_per_key
+         max_creating_per_key,
+         checkout_timeout_ms
        ) do
     {entry, idle} = pop_idle(state.idle, key)
     state = %__MODULE__{state | idle: idle}
@@ -434,7 +460,7 @@ defmodule Favn.SQL.SessionPool do
         {:reply, {:ok, session}, state}
 
       nil ->
-        reserve_or_wait(state, key, owner, from, max_creating_per_key)
+        reserve_or_wait(state, key, owner, from, max_creating_per_key, checkout_timeout_ms)
     end
   end
 
@@ -465,19 +491,23 @@ defmodule Favn.SQL.SessionPool do
          %PoolKey{hash: hash} = key,
          owner,
          from,
-         max_creating_per_key
+         max_creating_per_key,
+         checkout_timeout_ms
        ) do
     if can_reserve_creator?(state, hash, max_creating_per_key) do
       emit_pool_checkout(:miss, hash, 0)
       {:reply, :create, reserve_creator(state, key, owner)}
     else
       monitor = Process.monitor(owner)
+      timer = Process.send_after(self(), {:checkout_timeout, monitor}, checkout_timeout_ms)
 
       waiter = %{
         from: from,
         key: key,
         owner: owner,
         monitor: monitor,
+        timer: timer,
+        timeout_ms: checkout_timeout_ms,
         wait_started_at: monotonic_ms(),
         max_creating_per_key: max_creating_per_key
       }
@@ -485,10 +515,10 @@ defmodule Favn.SQL.SessionPool do
       {:noreply,
        %__MODULE__{
          state
-          | waiters:
-              Map.update(state.waiters, hash, :queue.from_list([waiter]), &:queue.in(waiter, &1)),
-            waiter_monitors: Map.put(state.waiter_monitors, monitor, hash)
-        }}
+         | waiters:
+             Map.update(state.waiters, hash, :queue.from_list([waiter]), &:queue.in(waiter, &1)),
+           waiter_monitors: Map.put(state.waiter_monitors, monitor, hash)
+       }}
     end
   end
 
@@ -668,16 +698,24 @@ defmodule Favn.SQL.SessionPool do
 
   defp release_waiter_monitor(waiter_monitors, waiter) do
     Process.demonitor(waiter.monitor, [:flush])
+    cancel_timer(waiter.timer)
     {Map.delete(waiter_monitors, waiter.monitor), monotonic_ms() - waiter.wait_started_at}
   end
 
   defp remove_waiter(waiters, hash, monitor) do
-    waiters
-    |> Map.get(hash, :queue.new())
-    |> :queue.to_list()
-    |> Enum.reject(&(&1.monitor == monitor))
-    |> :queue.from_list()
-    |> then(&put_waiters(waiters, hash, &1))
+    {waiter, queue} = pop_waiter(waiters, hash, monitor)
+    if waiter, do: cancel_timer(waiter.timer)
+    put_waiters(waiters, hash, queue)
+  end
+
+  defp pop_waiter(waiters, hash, monitor) do
+    {waiter, remaining} =
+      waiters
+      |> Map.get(hash, :queue.new())
+      |> :queue.to_list()
+      |> pop_first(&(&1.monitor == monitor))
+
+    {waiter, :queue.from_list(remaining)}
   end
 
   defp pop_creator(creating, hash, predicate) do
@@ -776,16 +814,57 @@ defmodule Favn.SQL.SessionPool do
     }
   end
 
-  defp emit_pool_checkout(result, hash, wait_time_ms) do
+  defp emit_pool_checkout(result, hash, wait_time_ms, queue_depth \\ 0) do
     Observability.emit(
       [:pool, :checkout],
       %{wait_time_ms: wait_time_ms},
-      %{result: result, key_hash: hash}
+      %{result: result, key_hash: hash, queue_depth: queue_depth}
     )
+  end
+
+  defp reply_pool_timeout(waiter, hash, queue_depth) do
+    wait_ms = monotonic_ms() - waiter.wait_started_at
+    error = pool_timeout_error(waiter.key, waiter.timeout_ms)
+    Process.demonitor(waiter.monitor, [:flush])
+    GenServer.reply(waiter.from, {:error, error})
+
+    Observability.emit(
+      [:pool, :checkout, :timeout],
+      %{wait_time_ms: wait_ms},
+      %{key_hash: hash, queue_depth: queue_depth}
+    )
+  end
+
+  defp pool_timeout_error(%PoolKey{} = key, timeout_ms) do
+    %Favn.SQL.Error{
+      type: :pool_timeout,
+      message: "SQL session pool checkout timed out",
+      operation: :connect,
+      retryable?: true,
+      details: %{key_hash: key.hash, timeout_ms: timeout_ms}
+    }
+  end
+
+  defp cancel_timer(nil), do: :ok
+
+  defp cancel_timer(timer) do
+    Process.cancel_timer(timer)
+    :ok
   end
 
   defp monotonic_ms, do: System.monotonic_time(:millisecond)
   defp pool_name(opts), do: Keyword.get(opts, :name, __MODULE__)
+
+  defp checkout_timeout_ms(opts) do
+    case Keyword.get(
+           opts,
+           :checkout_timeout_ms,
+           Application.get_env(:favn_sql_runtime, :sql_pool_checkout_timeout_ms, 30_000)
+         ) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> 30_000
+    end
+  end
 
   defp max_creating_per_key(opts) do
     case Keyword.get(opts, :max_creating_per_key, 1) do

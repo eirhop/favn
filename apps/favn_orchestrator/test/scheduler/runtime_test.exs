@@ -88,12 +88,31 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     end
   end
 
+  defmodule SlowSchedulerServer do
+    use GenServer
+
+    def start_link(opts),
+      do: GenServer.start_link(__MODULE__, opts, name: Keyword.fetch!(opts, :name))
+
+    @impl true
+    def init(opts), do: {:ok, opts}
+
+    @impl true
+    def handle_call(_message, _from, state) do
+      Process.sleep(Keyword.fetch!(state, :sleep_ms))
+      {:reply, :ok, state}
+    end
+  end
+
   setup do
     previous_storage_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
     previous_storage_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
     previous_scheduler = Application.get_env(:favn_orchestrator, :scheduler)
+
+    previous_scheduler_call_timeout =
+      Application.get_env(:favn_orchestrator, :scheduler_call_timeout_ms)
 
     Application.put_env(:favn_orchestrator, :storage_adapter, Memory)
     Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
@@ -107,6 +126,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       restore_env(:favn_orchestrator, :runner_client, previous_client)
       restore_env(:favn_orchestrator, :runner_client_opts, previous_opts)
       restore_env(:favn_orchestrator, :scheduler, previous_scheduler)
+      restore_env(:favn_orchestrator, :scheduler_call_timeout_ms, previous_scheduler_call_timeout)
       Memory.reset()
     end)
 
@@ -125,6 +145,19 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert entry.module == MyApp.Pipelines.Daily
     assert entry.schedule.name == :daily
     assert entry.manifest_version_id == version.manifest_version_id
+  end
+
+  test "scheduler public calls are bounded" do
+    server = Module.concat(__MODULE__, "SlowScheduler#{System.unique_integer([:positive])}")
+
+    start_supervised!(%{
+      id: server,
+      start: {SlowSchedulerServer, :start_link, [[name: server, sleep_ms: 100]]}
+    })
+
+    Application.put_env(:favn_orchestrator, :scheduler_call_timeout_ms, 10)
+
+    assert {:error, {:scheduler_call_timeout, :tick}} = Runtime.tick(server)
   end
 
   test "inspect_entries returns stable scheduler entry dto with state" do

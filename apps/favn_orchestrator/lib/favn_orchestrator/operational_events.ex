@@ -30,6 +30,7 @@ defmodule FavnOrchestrator.OperationalEvents do
       "favn.operator.#{event} measurements=#{inspect(safe_measurements)} metadata=#{inspect(safe_metadata)}"
     )
 
+    FavnOrchestrator.Telemetry.emit(event, safe_measurements, safe_metadata)
     emit_metrics_hook(event, safe_measurements, safe_metadata)
     :ok
   end

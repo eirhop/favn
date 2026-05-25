@@ -37,6 +37,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.OperatorCommands.AssetRunRequest
   alias FavnOrchestrator.OperatorCommands.PipelineBackfillRequest
   alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
+  alias FavnOrchestrator.OperatorErrorDTO
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RefreshPolicy
@@ -87,6 +88,13 @@ defmodule FavnOrchestrator do
           required(:assets) => [manifest_target_option()],
           required(:pipelines) => [manifest_target_option()]
         }
+
+  @type operator_error_context ::
+          :load
+          | :schedule_occurrences
+          | :schedule_activation
+          | :run_cancel
+          | :run_failure_detail
 
   @type asset_catalogue_entry :: %{
           required(:target_id) => String.t(),
@@ -1443,6 +1451,19 @@ defmodule FavnOrchestrator do
   end
 
   def cancel_operator_run(_actor_context, _run_id), do: {:error, :unauthenticated}
+
+  @doc "Returns a browser-safe operator error DTO for a public UI context."
+  @spec operator_error(operator_error_context(), term()) :: OperatorErrorDTO.t()
+  def operator_error(:load, reason), do: OperatorErrorDTO.load(reason)
+
+  def operator_error(:schedule_occurrences, reason),
+    do: OperatorErrorDTO.schedule_occurrences(reason)
+
+  def operator_error(:schedule_activation, reason),
+    do: OperatorErrorDTO.schedule_activation(reason)
+
+  def operator_error(:run_cancel, reason), do: OperatorErrorDTO.run_cancel(reason)
+  def operator_error(:run_failure_detail, reason), do: OperatorErrorDTO.run_failure_detail(reason)
 
   @doc """
   Submits a rerun pinned to the source run's manifest version.

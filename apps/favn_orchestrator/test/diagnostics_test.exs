@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.DiagnosticsTest do
   alias Favn.Window.Policy
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.OperationalEvents
+  alias FavnOrchestrator.ProjectionDiagnostics
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
@@ -99,6 +100,18 @@ defmodule FavnOrchestrator.DiagnosticsTest do
 
     @impl true
     def list_global_run_events(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def put_execution_ownership(_ownership, _opts), do: :ok
+
+    @impl true
+    def get_execution_ownership(_ownership_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_execution_ownerships(_run_id, _opts), do: {:ok, []}
+
+    @impl true
+    def list_active_execution_ownerships(_run_id, _opts), do: {:ok, []}
 
     @impl true
     def try_acquire_execution_lease(lease, _opts), do: {:ok, lease}
@@ -245,10 +258,12 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
     Application.delete_env(:favn_orchestrator, :metrics_hook)
     Process.delete(:runner_diagnostics_result)
+    ProjectionDiagnostics.reset()
 
     on_exit(fn ->
       Enum.each(previous, fn {key, value} -> restore_env(key, value) end)
       Process.delete(:runner_diagnostics_result)
+      ProjectionDiagnostics.reset()
     end)
 
     %{memory_server: memory_server}
@@ -456,7 +471,59 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     Application.put_env(:favn_orchestrator, :metrics_hook, hook)
     _report = Diagnostics.report()
 
-    assert_receive {:metrics_hook, :diagnostics_report_generated, %{check_count: 6}, _metadata}
+    assert_receive {:metrics_hook, :diagnostics_report_generated, %{check_count: 7}, _metadata}
+  end
+
+  test "operational events emit standard telemetry with redacted metadata" do
+    parent = self()
+    ref = make_ref()
+
+    :telemetry.attach(
+      {__MODULE__, ref},
+      [:favn, :orchestrator, :storage_failed],
+      fn event, measurements, metadata, _config ->
+        send(parent, {:telemetry_event, event, measurements, metadata})
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach({__MODULE__, ref}) end)
+
+    OperationalEvents.emit(:storage_failed, %{count: 1}, %{api_key: "secret-token"})
+
+    assert_receive {:telemetry_event, [:favn, :orchestrator, :storage_failed], %{count: 1},
+                    metadata}
+
+    refute inspect(metadata) =~ "secret-token"
+  end
+
+  test "diagnostics expose projection degradation and repair-needed status" do
+    run =
+      RunState.new(
+        id: "run_projection_failed",
+        manifest_version_id: "mv",
+        manifest_content_hash: "hash",
+        asset_ref: {MyApp.Asset, :asset}
+      )
+
+    ProjectionDiagnostics.record_failure(
+      FavnOrchestrator.TargetStatus.Projector,
+      run,
+      :run_finished,
+      {:projector_failed, "/var/lib/favn/secret_projection_path"}
+    )
+
+    report = Diagnostics.report()
+    projections = check(report.checks, :projections)
+
+    assert report.status == :degraded
+    assert projections.status == :warning
+    assert projections.details.repair_needed? == true
+
+    assert [%{run_id: "run_projection_failed", event_type: :run_finished}] =
+             projections.details.failures
+
+    refute inspect(projections) =~ "secret_projection_path"
   end
 
   test "operational events redact untrusted reasons, paths, URLs, and key material" do

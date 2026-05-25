@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.TransitionWriter do
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.LogWriter
   alias FavnOrchestrator.OperationalEvents
+  alias FavnOrchestrator.ProjectionDiagnostics
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
@@ -139,15 +140,57 @@ defmodule FavnOrchestrator.TransitionWriter do
         :ok
 
       {:error, reason} ->
+        ProjectionDiagnostics.record_failure(projector, run_state, event_type, reason)
+
+        OperationalEvents.emit(
+          :projection_degraded,
+          %{},
+          %{
+            projector: inspect(projector),
+            run_id: run_state.id,
+            event_type: event_type,
+            reason: reason
+          },
+          level: :warning
+        )
+
         Logger.warning("derived projection failed: #{inspect(projector)} #{inspect(reason)}")
     end
   rescue
     error ->
+      ProjectionDiagnostics.record_failure(projector, run_state, event_type, error)
+
+      OperationalEvents.emit(
+        :projection_degraded,
+        %{},
+        %{
+          projector: inspect(projector),
+          run_id: run_state.id,
+          event_type: event_type,
+          reason: error
+        },
+        level: :warning
+      )
+
       Logger.warning(
         "derived projection raised: #{inspect(projector)} #{Exception.message(error)}"
       )
   catch
     kind, reason ->
+      ProjectionDiagnostics.record_failure(projector, run_state, event_type, {kind, reason})
+
+      OperationalEvents.emit(
+        :projection_degraded,
+        %{},
+        %{
+          projector: inspect(projector),
+          run_id: run_state.id,
+          event_type: event_type,
+          reason: {kind, reason}
+        },
+        level: :warning
+      )
+
       Logger.warning(
         "derived projection exited: #{inspect(projector)} #{inspect({kind, reason})}"
       )

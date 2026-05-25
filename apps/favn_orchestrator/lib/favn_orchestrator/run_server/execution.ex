@@ -30,6 +30,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunnerLogBridge
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
@@ -255,7 +256,29 @@ defmodule FavnOrchestrator.RunServer.Execution do
     :ok = ExecutionAdmission.release_run(cancelled_run.id)
     :ok = ExecutionAdmission.cancel_run_waits(cancelled_run.id)
 
-    Snapshots.cancelled_terminal(cancelled_run, state.accumulated_results)
+    cancellation_terminal(cancelled_run, state.accumulated_results)
+  end
+
+  defp cancellation_terminal(%RunState{} = run_state, accumulated_results) do
+    outcomes = Map.get(run_state.metadata, :cancel_outcomes, [])
+
+    cond do
+      outcomes == [] ->
+        Snapshots.cancelled_terminal(run_state, accumulated_results)
+
+      Enum.all?(outcomes, &(Map.get(&1, :status) == :acknowledged)) ->
+        Snapshots.cancelled_terminal(run_state, accumulated_results)
+
+      true ->
+        failed =
+          RunState.transition(run_state,
+            status: :error,
+            runner_execution_id: nil,
+            error: %{type: :runner_cancel_unconfirmed, outcomes: outcomes}
+          )
+
+        Snapshots.terminalize_failed_run(failed, accumulated_results)
+    end
   end
 
   defp execution_mode(%RunState{submit_kind: :pipeline}), do: :pipeline
@@ -302,39 +325,54 @@ defmodule FavnOrchestrator.RunServer.Execution do
            state.run
            |> StepAttemptLifecycle.new(state.version, node_key, stage, attempt)
            |> StepAttemptLifecycle.build_work(),
-         {:ok, execution_id} <- state.runner_client.submit_work(work, state.runner_opts) do
-      entry = sequential_entry(state, lifecycle, work, execution_id)
-
-      running =
-        RunState.transition(state.run,
-          runner_execution_id: execution_id,
-          metadata: RunnerWork.lifecycle_metadata(work)
-        )
-
-      state = %{state | run: running} |> RunExecutionState.add_work(entry)
-
-      case Persistence.persist_run_step(state.run, :step_started, %{
-             asset_ref: asset_ref,
-             runner_execution_id: execution_id,
-             node_key: node_key,
+         ownership <-
+           RunExecutionOwnership.new(state.run,
              asset_step_id: work.asset_step_id,
+             node_key: node_key,
+             asset_ref: asset_ref,
              stage: stage,
              attempt: attempt,
-             max_attempts: state.run.max_attempts
-           }) do
+             execution_pool: RunnerWork.execution_pool(work),
+             deadline_at: run_deadline_at(state.run)
+           ),
+         work <- attach_ownership_metadata(work, ownership),
+         :ok <- RunExecutionOwnership.persist(ownership),
+         {:ok, execution_id} <- state.runner_client.submit_work(work, state.runner_opts) do
+      submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)
+
+      case persist_submitted_ownership_snapshot(submitted_ownership) do
         :ok ->
-          {:cont, start_await(state, entry, :sequential)}
+          start_submitted_sequential_attempt(
+            state,
+            lifecycle,
+            work,
+            submitted_ownership,
+            execution_id,
+            asset_ref,
+            node_key,
+            stage,
+            attempt
+          )
 
         {:error, :external_cancel} ->
+          state = cancel_work(state, [execution_id], %{kind: :external_cancel})
+          {:terminal, Snapshots.cancelled_snapshot(state.run)}
+
+        {:error, reason} ->
           state =
             cancel_work(state, [execution_id], %{
-              kind: :external_cancel,
-              asset_ref: asset_ref,
-              stage: stage,
-              attempt: attempt
+              kind: :step_submitted_persist_failed,
+              error: reason
             })
 
-          {:terminal, Snapshots.cancelled_snapshot(state.run)}
+          failed =
+            RunState.transition(state.run,
+              status: :error,
+              runner_execution_id: nil,
+              error: reason
+            )
+
+          {:terminal, failed}
       end
     else
       {:error, reason} ->
@@ -362,7 +400,113 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
           {:error, :external_cancel} ->
             {:terminal, elem(Snapshots.cancelled_state(failed), 1)}
+
+          {:error, _persist_reason} ->
+            {:terminal, failed}
         end
+    end
+  end
+
+  defp persist_submitted_ownership_snapshot(%RunExecutionOwnership{} = ownership) do
+    if Persistence.externally_cancelled?(ownership.run_id) do
+      {:error, :external_cancel}
+    else
+      RunExecutionOwnership.persist(ownership)
+    end
+  end
+
+  defp attach_ownership_metadata(%RunnerWork{} = work, %RunExecutionOwnership{} = ownership) do
+    metadata =
+      work.metadata
+      |> Map.put(:ownership_id, ownership.ownership_id)
+      |> Map.put(:dispatch_id, ownership.dispatch_id)
+      |> Map.put(:deadline_at, ownership.deadline_at)
+
+    %{work | metadata: metadata}
+  end
+
+  defp run_deadline_at(%RunState{timeout_ms: timeout_ms})
+       when is_integer(timeout_ms) and timeout_ms > 0 do
+    DateTime.add(DateTime.utc_now(), timeout_ms, :millisecond)
+  end
+
+  defp run_deadline_at(%RunState{}), do: nil
+
+  defp start_submitted_sequential_attempt(
+         state,
+         lifecycle,
+         work,
+         ownership,
+         execution_id,
+         asset_ref,
+         node_key,
+         stage,
+         attempt
+       ) do
+    entry = sequential_entry(state, lifecycle, work, execution_id)
+    started_ownership = RunExecutionOwnership.started(ownership)
+
+    case RunExecutionOwnership.persist(started_ownership) do
+      :ok ->
+        running =
+          RunState.transition(state.run,
+            runner_execution_id: execution_id,
+            metadata: Map.merge(state.run.metadata, RunnerWork.lifecycle_metadata(work))
+          )
+
+        state = %{state | run: running} |> RunExecutionState.add_work(entry)
+
+        case Persistence.persist_run_step(state.run, :step_started, %{
+               asset_ref: asset_ref,
+               runner_execution_id: execution_id,
+               node_key: node_key,
+               asset_step_id: work.asset_step_id,
+               stage: stage,
+               attempt: attempt,
+               max_attempts: state.run.max_attempts
+             }) do
+          :ok ->
+            {:cont, start_await(state, entry, :sequential)}
+
+          {:error, :external_cancel} ->
+            state =
+              cancel_work(state, [execution_id], %{
+                kind: :external_cancel,
+                asset_ref: asset_ref,
+                stage: stage,
+                attempt: attempt
+              })
+
+            {:terminal, Snapshots.cancelled_snapshot(state.run)}
+
+          {:error, reason} ->
+            state =
+              cancel_work(state, [execution_id], %{
+                kind: :step_started_persist_failed,
+                error: reason
+              })
+
+            failed =
+              RunState.transition(state.run,
+                status: :error,
+                runner_execution_id: nil,
+                error: reason
+              )
+
+            {:terminal, failed}
+        end
+
+      {:error, reason} ->
+        state =
+          cancel_work(state, [execution_id], %{
+            kind: :step_started_ownership_persist_failed,
+            error: reason
+          })
+
+        failed =
+          RunState.transition(state.run, status: :error, runner_execution_id: nil, error: reason)
+
+        {:terminal, failed}
     end
   end
 
@@ -417,10 +561,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp handle_await_result(%RunExecutionState{} = state, entry, result, :sequential) do
     state = elem(RunExecutionState.complete_work(state, entry.execution_id), 1)
+    _ = RunExecutionOwnership.mark_finish_persist_pending(state.run.id, entry.execution_id)
     process_sequential_await_result(state, entry, result)
   end
 
   defp handle_await_result(%RunExecutionState{} = state, entry, result, :pipeline) do
+    _ = RunExecutionOwnership.mark_finish_persist_pending(state.run.id, entry.execution_id)
     handle_pipeline_await_result(state, entry, result)
   end
 
@@ -449,6 +595,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
            max_attempts: state.run.max_attempts
          }) do
       :ok ->
+        _ = RunExecutionOwnership.complete_execution(state.run.id, entry.execution_id)
         state = %{state | run: step_finished}
 
         cond do
@@ -505,6 +652,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
            max_attempts: state.run.max_attempts
          }) do
       :ok ->
+        _ = RunExecutionOwnership.complete_execution(state.run.id, entry.execution_id)
+
         maybe_schedule_sequential_retry(
           %{state | run: timeout_state},
           entry.asset_ref,
@@ -542,6 +691,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
            max_attempts: state.run.max_attempts
          }) do
       :ok ->
+        _ = RunExecutionOwnership.complete_execution(state.run.id, entry.execution_id)
+
         maybe_schedule_sequential_retry(
           %{state | run: failed},
           entry.asset_ref,
@@ -1997,8 +2148,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
          runner_opts
        )
        when is_list(execution_ids) do
-    unique_ids =
-      Cancellation.cancel_runner_work(
+    cancel_results =
+      Cancellation.dispatch_runner_work(
         run_state,
         execution_ids,
         reason,
@@ -2006,7 +2157,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         runner_opts
       )
 
-    clear_inflight_executions(run_state, unique_ids)
+    _ = RunExecutionOwnership.persist_cancel_outcomes(run_state.id, cancel_results, reason)
+    clear_inflight_executions(run_state, Enum.map(cancel_results, & &1.execution_id))
   end
 
   defp inflight_ids_from_metadata(%RunState{} = run_state) do

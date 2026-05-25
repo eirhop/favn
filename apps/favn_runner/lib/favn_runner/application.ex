@@ -24,6 +24,7 @@ defmodule FavnRunner.Application do
           {FavnRunner.ManifestStore, name: FavnRunner.ManifestStore},
           {FavnRunner.Server,
            name: FavnRunner.Server,
+           admission: Application.get_env(:favn_runner, :admission, []),
            retention: Application.get_env(:favn_runner, :execution_retention, [])}
         ]
 

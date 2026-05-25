@@ -50,6 +50,7 @@ defmodule Favn.Storage.Adapter do
   alias FavnOrchestrator.ExecutionAdmission.LeaseRelease
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.TargetStatus
 
@@ -113,6 +114,15 @@ defmodule Favn.Storage.Adapter do
               {:ok, [map()]} | {:error, error()}
   @callback list_global_run_events(filter_opts(), adapter_opts()) ::
               {:ok, [map()]} | {:error, error()}
+
+  @callback put_execution_ownership(RunExecutionOwnership.t() | map(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback get_execution_ownership(String.t(), adapter_opts()) ::
+              {:ok, RunExecutionOwnership.t()} | {:error, error()}
+  @callback list_execution_ownerships(String.t(), adapter_opts()) ::
+              {:ok, [RunExecutionOwnership.t()]} | {:error, error()}
+  @callback list_active_execution_ownerships(String.t(), adapter_opts()) ::
+              {:ok, [RunExecutionOwnership.t()]} | {:error, error()}
 
   @callback try_acquire_execution_lease(map(), adapter_opts()) ::
               {:ok, map()} | {:error, {:execution_capacity_exceeded, map()} | error()}

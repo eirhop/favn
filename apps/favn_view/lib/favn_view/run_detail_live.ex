@@ -9,6 +9,7 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.Components.RunDetailPage
   alias FavnView.LiveRefresh
   alias FavnView.LogsViewModel
+  alias FavnView.OperatorErrorLabels
 
   @refresh_interval_ms 1_500
   @coalesce_refresh_ms 100
@@ -614,7 +615,8 @@ defmodule FavnView.RunDetailLive do
       status: status_label(status),
       raw_status: status,
       status_tone: status_tone(status),
-      error_summary: error_summary(Map.get(failure, :error)),
+      error_summary:
+        error_summary(Map.get(failure, :error)) || OperatorErrorLabels.run_failure_detail(nil),
       attempt_count: Map.get(failure, :attempt_count),
       started_at: LogsViewModel.timestamp_label(Map.get(failure, :started_at)),
       finished_at: LogsViewModel.timestamp_label(Map.get(failure, :finished_at)),
@@ -863,16 +865,7 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
-  defp cancel_error_label(:forbidden), do: "Operator role required to cancel runs."
-  defp cancel_error_label(:unauthenticated), do: "Sign in again to cancel runs."
-  defp cancel_error_label(:not_found), do: "Run was not found."
-  defp cancel_error_label(:run_already_terminal), do: "Run is already finished."
-
-  defp cancel_error_label(:backfill_parent_cancel_not_supported),
-    do:
-      "Backfill parent cancellation is not supported yet. Cancel active window runs individually."
-
-  defp cancel_error_label(reason), do: "Run cancellation failed: #{inspect(reason)}"
+  defp cancel_error_label(reason), do: OperatorErrorLabels.run_cancel(reason)
 
   defp duration_or_elapsed(%{duration_ms: duration_ms}) when is_integer(duration_ms),
     do: LogsViewModel.duration_ms_label(duration_ms)
@@ -997,7 +990,7 @@ defmodule FavnView.RunDetailLive do
   defp error_summary(%{"reason" => reason}), do: error_summary(reason)
   defp error_summary(reason) when is_binary(reason), do: reason
   defp error_summary(reason) when is_atom(reason), do: label(reason)
-  defp error_summary(reason), do: inspect(reason, limit: 5, printable_limit: 200)
+  defp error_summary(reason), do: OperatorErrorLabels.run_failure_detail(reason)
 
   defp event_summary(event),
     do:

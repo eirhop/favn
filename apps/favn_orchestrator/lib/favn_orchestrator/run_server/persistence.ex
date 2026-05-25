@@ -14,11 +14,11 @@ defmodule FavnOrchestrator.RunServer.Persistence do
         if externally_cancelled?(run_state.id) do
           {:error, :external_cancel}
         else
-          raise "unexpected run snapshot conflict: #{inspect(reason)}"
+          {:error, reason}
         end
 
       {:error, reason} ->
-        raise "failed to persist run snapshot: #{inspect(reason)}"
+        {:error, reason}
     end
   end
 
@@ -29,8 +29,15 @@ defmodule FavnOrchestrator.RunServer.Persistence do
 
   def externally_cancelled?(run_id) when is_binary(run_id) do
     case Storage.get_run(run_id) do
-      {:ok, %RunState{status: :cancelled}} -> true
-      _ -> false
+      {:ok, %RunState{status: :cancelled}} ->
+        true
+
+      {:ok, %RunState{metadata: metadata}} when is_map(metadata) ->
+        Map.get(metadata, :cancel_requested) == true or
+          Map.get(metadata, "cancel_requested") == true
+
+      _ ->
+        false
     end
   end
 end
