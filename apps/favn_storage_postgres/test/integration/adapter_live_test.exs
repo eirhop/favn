@@ -116,6 +116,80 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     end
   end
 
+  test "repairs legacy null pipeline submit query metadata once", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        version = manifest_version("mv_pg_pipeline_repair_#{System.unique_integer([:positive])}")
+
+        run =
+          RunState.new(
+            id: "run_pg_pipeline_repair_#{System.unique_integer([:positive])}",
+            manifest_version_id: version.manifest_version_id,
+            manifest_content_hash: version.content_hash,
+            asset_ref: {MyApp.Asset, :asset},
+            target_refs: [{MyApp.Asset, :asset}],
+            submit_kind: :pipeline,
+            metadata: %{pipeline_submit_ref: MyApp.Pipeline}
+          )
+
+        assert :ok = Adapter.put_manifest_version(version, opts)
+        assert :ok = Adapter.put_run(run, opts)
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_runs SET pipeline_submit_ref_text = NULL WHERE run_id = $1",
+                   [run.id]
+                 )
+
+        assert {:ok, %{rows: [[nil]]}} =
+                 SQL.query(
+                   Repo,
+                   "SELECT pipeline_submit_ref_text FROM favn_runs WHERE run_id = $1",
+                   [run.id]
+                 )
+
+        assert {:ok, [stored]} =
+                 Adapter.list_target_runs(
+                   version.manifest_version_id,
+                   :pipeline,
+                   MyApp.Pipeline,
+                   [limit: 10],
+                   opts
+                 )
+
+        assert stored.id == run.id
+
+        assert {:ok, %{rows: [["MyApp.Pipeline"]]}} =
+                 SQL.query(
+                   Repo,
+                   "SELECT pipeline_submit_ref_text FROM favn_runs WHERE run_id = $1",
+                   [run.id]
+                 )
+
+        assert {:ok, %{rows: [[0]]}} =
+                 SQL.query(
+                   Repo,
+                   "SELECT COUNT(*) FROM favn_runs WHERE run_id = $1 AND pipeline_submit_ref_text IS NULL",
+                   [run.id]
+                 )
+
+        assert {:ok, [stored_again]} =
+                 Adapter.list_target_runs(
+                   version.manifest_version_id,
+                   :pipeline,
+                   MyApp.Pipeline,
+                   [limit: 10],
+                   opts
+                 )
+
+        assert stored_again.id == run.id
+    end
+  end
+
   test "lists logs in descending global sequence order", context do
     case context[:opts] do
       nil ->

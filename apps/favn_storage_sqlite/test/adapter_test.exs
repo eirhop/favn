@@ -122,6 +122,72 @@ defmodule FavnStorageSqlite.AdapterTest do
     refute payload =~ "secret"
   end
 
+  test "repairs legacy null pipeline submit query metadata once", %{opts: opts} do
+    version = manifest_version("mv_sqlite_pipeline_repair")
+
+    run =
+      RunState.new(
+        id: "run_sqlite_pipeline_repair",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Asset, :asset},
+        target_refs: [{MyApp.Asset, :asset}],
+        submit_kind: :pipeline,
+        metadata: %{pipeline_submit_ref: MyApp.Pipeline}
+      )
+
+    assert :ok = Adapter.put_manifest_version(version, opts)
+    assert :ok = Adapter.put_run(run, opts)
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_runs SET pipeline_submit_ref_text = NULL WHERE run_id = ?1",
+               [
+                 run.id
+               ]
+             )
+
+    assert {:ok, %{rows: [[nil]]}} =
+             SQL.query(Repo, "SELECT pipeline_submit_ref_text FROM favn_runs WHERE run_id = ?1", [
+               run.id
+             ])
+
+    assert {:ok, [stored]} =
+             Adapter.list_target_runs(
+               version.manifest_version_id,
+               :pipeline,
+               MyApp.Pipeline,
+               [limit: 10],
+               opts
+             )
+
+    assert stored.id == run.id
+
+    assert {:ok, %{rows: [["MyApp.Pipeline"]]}} =
+             SQL.query(Repo, "SELECT pipeline_submit_ref_text FROM favn_runs WHERE run_id = ?1", [
+               run.id
+             ])
+
+    assert {:ok, %{rows: [[0]]}} =
+             SQL.query(
+               Repo,
+               "SELECT COUNT(*) FROM favn_runs WHERE run_id = ?1 AND pipeline_submit_ref_text IS NULL",
+               [run.id]
+             )
+
+    assert {:ok, [stored_again]} =
+             Adapter.list_target_runs(
+               version.manifest_version_id,
+               :pipeline,
+               MyApp.Pipeline,
+               [limit: 10],
+               opts
+             )
+
+    assert stored_again.id == run.id
+  end
+
   test "persists backfill read models as full JSON-safe DTO records", %{opts: opts} do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     start_at = DateTime.add(now, -86_400, :second)
