@@ -44,5 +44,15 @@ Ownership rules:
   facade only. UI state may disable buttons, show confirmations, and map stable
   error atoms to labels, but cancellation lifecycle, audit, idempotency, runner
   dispatch, and terminal status semantics remain orchestrator-owned.
+- The schedules list LiveView renders orchestrator-owned schedule list read models
+  through the public facade. It may manage filters and visual formatting, but
+  activation state, runtime state, effective scheduling, fingerprint review, and
+  next-due semantics remain in `favn_orchestrator`.
+- The schedule detail LiveView decodes the route-safe schedule id and calls
+  `FavnOrchestrator.get_schedule_entry/1`. The Occurrences tab renders
+  `FavnOrchestrator.preview_schedule_occurrences/2`; the view must not derive
+  cron, missed, overlap, window, next-due, or failure semantics locally. Detail
+  tabs beyond Overview and Occurrences must stay disabled or backed by new
+  orchestrator read models.
 - Tidewave is plugged only in dev. PhoenixStorybook is mounted under
   `/storybook` when dev routes are enabled.

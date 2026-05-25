@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
   use ExUnit.Case, async: true
 
   alias Favn.Scheduler.State, as: SchedulerState
+  alias FavnOrchestrator.SchedulerError
   alias FavnOrchestrator.Storage.SchedulerStateCodec
 
   test "normalizes scheduler key and map payload" do
@@ -14,6 +15,7 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
       last_submitted_due_at: now,
       in_flight_run_id: "run_1",
       queued_due_at: now,
+      last_scheduler_error: SchedulerError.new(:submit_run, :invalid_window, now),
       updated_at: now,
       version: 2
     }
@@ -24,6 +26,7 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
     assert {:ok, normalized} = SchedulerStateCodec.normalize_state(state)
     assert normalized.version == 2
     assert normalized.in_flight_run_id == "run_1"
+    assert normalized.last_scheduler_error.phase == :submit_run
   end
 
   test "normalizes scheduler struct payload" do
@@ -61,6 +64,7 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
                last_submitted_due_at: now,
                in_flight_run_id: "run_1",
                queued_due_at: now,
+               last_scheduler_error: SchedulerError.new(:submit_run, :invalid_window, now),
                updated_at: now,
                version: 3
              })
@@ -71,6 +75,8 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
     assert decoded["schema_version"] == 1
     assert decoded["state"]["schedule_fingerprint"] == "fp"
     assert decoded["state"]["last_due_at"] == DateTime.to_iso8601(now)
+    assert decoded["state"]["last_scheduler_error"]["phase"] == "submit_run"
+    assert decoded["state"]["last_scheduler_error"]["code"] == "invalid_window"
     refute Map.has_key?(decoded["state"], "pipeline_module")
     refute Map.has_key?(decoded["state"], "schedule_id")
     refute Map.has_key?(decoded["state"], "version")
@@ -88,7 +94,13 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
         "state" => %{
           "schedule_fingerprint" => "fp",
           "last_due_at" => DateTime.to_iso8601(now),
-          "in_flight_run_id" => "run_1"
+          "in_flight_run_id" => "run_1",
+          "last_scheduler_error" => %{
+            "occurred_at" => DateTime.to_iso8601(now),
+            "phase" => "submit_run",
+            "code" => "invalid_window",
+            "message" => "Invalid window"
+          }
         }
       })
 
@@ -96,6 +108,7 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
     assert decoded.schedule_fingerprint == "fp"
     assert decoded.last_due_at == now
     assert decoded.in_flight_run_id == "run_1"
+    assert decoded.last_scheduler_error.phase == :submit_run
     assert decoded.last_evaluated_at == nil
     assert decoded.version == nil
   end
@@ -168,6 +181,33 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
 
     assert {:error, {:invalid_scheduler_state_field, :last_due_at, "bad"}} =
              SchedulerStateCodec.decode_state(bad_datetime)
+
+    invalid_activation =
+      Jason.encode!(%{
+        "format" => "favn.scheduler_state.storage",
+        "schema_version" => 1,
+        "state" => %{"activation_state" => "surprise"}
+      })
+
+    assert {:error, {:invalid_scheduler_state_field, :activation_state, "surprise"}} =
+             SchedulerStateCodec.decode_state(invalid_activation)
+
+    invalid_scheduler_error =
+      Jason.encode!(%{
+        "format" => "favn.scheduler_state.storage",
+        "schema_version" => 1,
+        "state" => %{
+          "last_scheduler_error" => %{
+            "occurred_at" => "bad",
+            "phase" => "submit_run",
+            "code" => "invalid_window",
+            "message" => "Invalid window"
+          }
+        }
+      })
+
+    assert {:error, {:invalid_scheduler_state_field, :last_scheduler_error, _}} =
+             SchedulerStateCodec.decode_state(invalid_scheduler_error)
 
     assert {:error, {:invalid_scheduler_state_json, _}} =
              SchedulerStateCodec.decode_state("not-json")

@@ -51,15 +51,20 @@ defmodule FavnOrchestrator.API.DTO do
       overlap: atom_name(entry.overlap),
       missed: atom_name(entry.missed),
       active: entry.active,
+      activation_state: atom_name(Map.get(entry, :activation_state)),
+      effective_enabled: Map.get(entry, :effective_enabled?),
+      runtime_state: atom_name(Map.get(entry, :runtime_state)),
       window: window_policy(entry.window),
       schedule_fingerprint: entry.schedule_fingerprint,
       manifest_version_id: entry.manifest_version_id,
       manifest_content_hash: entry.manifest_content_hash,
       last_evaluated_at: datetime(entry.last_evaluated_at),
       last_due_at: datetime(entry.last_due_at),
+      next_due_at: datetime(Map.get(entry, :next_due_at)),
       last_submitted_due_at: datetime(entry.last_submitted_due_at),
       in_flight_run_id: entry.in_flight_run_id,
       queued_due_at: datetime(entry.queued_due_at),
+      last_scheduler_error: scheduler_error(Map.get(entry, :last_scheduler_error)),
       updated_at: datetime(entry.updated_at)
     }
   end
@@ -420,6 +425,19 @@ defmodule FavnOrchestrator.API.DTO do
   defp datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp datetime(value) when is_binary(value), do: value
   defp datetime(_value), do: nil
+
+  defp scheduler_error(nil), do: nil
+
+  defp scheduler_error(%{occurred_at: occurred_at, phase: phase, code: code, message: message}) do
+    %{
+      occurred_at: datetime(occurred_at),
+      phase: atom_name(phase),
+      code: atom_name(code) || to_string(code),
+      message: message
+    }
+  end
+
+  defp scheduler_error(_value), do: nil
 
   defp atom_name(nil), do: nil
   defp atom_name(value) when is_atom(value), do: Atom.to_string(value)

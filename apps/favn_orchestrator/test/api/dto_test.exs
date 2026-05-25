@@ -67,15 +67,25 @@ defmodule FavnOrchestrator.API.DTOTest do
       overlap: :skip,
       missed: :catch_up,
       active: true,
+      activation_state: :enabled,
+      effective_enabled?: true,
+      runtime_state: :running,
       window: %Policy{kind: :calendar, anchor: :scheduled_at, timezone: "UTC"},
       schedule_fingerprint: "sch_fp",
       manifest_version_id: "manifest_1",
       manifest_content_hash: "hash_1",
       last_evaluated_at: @now,
       last_due_at: @now,
+      next_due_at: @later,
       last_submitted_due_at: @later,
       in_flight_run_id: "run_1",
       queued_due_at: nil,
+      last_scheduler_error: %FavnOrchestrator.SchedulerError{
+        occurred_at: @now,
+        phase: :submit_run,
+        code: :invalid_window,
+        message: "Invalid window"
+      },
       updated_at: @later
     }
 
@@ -88,6 +98,9 @@ defmodule FavnOrchestrator.API.DTOTest do
              overlap: "skip",
              missed: "catch_up",
              active: true,
+             activation_state: "enabled",
+             effective_enabled: true,
+             runtime_state: "running",
              window: %{
                kind: "calendar",
                anchor: "scheduled_at",
@@ -99,9 +112,16 @@ defmodule FavnOrchestrator.API.DTOTest do
              manifest_content_hash: "hash_1",
              last_evaluated_at: "2026-01-02T03:04:05Z",
              last_due_at: "2026-01-02T03:04:05Z",
+             next_due_at: "2026-01-02T04:04:05Z",
              last_submitted_due_at: "2026-01-02T04:04:05Z",
              in_flight_run_id: "run_1",
              queued_due_at: nil,
+             last_scheduler_error: %{
+               occurred_at: "2026-01-02T03:04:05Z",
+               phase: "submit_run",
+               code: "invalid_window",
+               message: "Invalid window"
+             },
              updated_at: "2026-01-02T04:04:05Z"
            }
 

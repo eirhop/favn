@@ -6,6 +6,7 @@ defmodule FavnView.PageLiveTest do
   alias Favn.Log.Entry
   alias Favn.Manifest
   alias Favn.Manifest.Pipeline
+  alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
@@ -98,6 +99,112 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "1 / 1 attempts"
     assert html =~ "2 / 3 attempts"
     assert html =~ "+2"
+  end
+
+  test "renders the schedules list with activation and runtime state separated", %{conn: conn} do
+    {:ok, view, html} = live(conn, ~p"/schedules")
+
+    assert html =~ "Schedules"
+    assert html =~ "Manage and monitor pipeline schedules."
+    assert html =~ "New schedules are disabled by default until activated."
+    assert has_element?(view, ~s([data-testid="schedules-table"]))
+    assert has_element?(view, ~s([data-testid="schedule-card-list"]))
+    assert has_element?(view, ~s([data-testid="schedules-summary-band"]))
+
+    assert has_element?(view, ~s([data-testid="schedule-row"]), "daily")
+    assert has_element?(view, ~s(a[href^="/schedules/s-"]), "daily")
+    assert html =~ "Pending activation"
+    assert html =~ "Inactive"
+    assert html =~ "Europe/Oslo"
+  end
+
+  test "schedules list shows current run link and scheduler warning", %{conn: conn} do
+    seed_schedule_state!(in_flight_run_id: "run_raw_payments")
+    seed_schedule_state!(last_scheduler_error: scheduler_error())
+
+    {:ok, view, html} = live(conn, ~p"/schedules")
+
+    assert has_element?(view, ~s(a[href="/runs/run_raw_payments"]), "run_raw_paym")
+    assert html =~ "Submit run"
+    assert html =~ "Window policy invalid"
+  end
+
+  test "renders the schedule detail overview shell", %{conn: conn} do
+    schedule_id = "schedule:#{__MODULE__.Pipelines.DailyOrders}:daily"
+    route_id = FavnView.ScheduleRoute.to_param(schedule_id)
+
+    {:ok, view, html} = live(conn, ~p"/schedules/#{route_id}")
+
+    assert html =~ "daily"
+    assert html =~ "Back to schedules"
+    assert html =~ schedule_id
+    assert html =~ "Pending activation"
+    assert html =~ "Inactive"
+    assert has_element?(view, ~s([data-testid="schedule-detail-overview"]))
+    assert has_element?(view, ~s([data-testid="view-mode-rail"] button[aria-label="Overview"]))
+    assert has_element?(view, ~s([data-testid="schedule-configuration-panel"]), "Cron")
+    assert html =~ "Occurrence preview"
+    assert html =~ "Next previewed occurrence"
+  end
+
+  test "schedule overview renders current run link", %{conn: conn} do
+    seed_schedule_state!(in_flight_run_id: "run_raw_payments", activation_state: :enabled)
+    schedule_id = "schedule:#{__MODULE__.Pipelines.DailyOrders}:daily"
+    route_id = FavnView.ScheduleRoute.to_param(schedule_id)
+
+    {:ok, view, _html} = live(conn, ~p"/schedules/#{route_id}")
+
+    assert has_element?(view, ~s(a[href="/runs/run_raw_payments"]), "run_raw_paym")
+  end
+
+  test "schedule occurrences tab renders orchestrator preview rows", %{conn: conn} do
+    schedule_id = "schedule:#{__MODULE__.Pipelines.DailyOrders}:daily"
+    route_id = FavnView.ScheduleRoute.to_param(schedule_id)
+
+    {:ok, view, _html} = live(conn, ~p"/schedules/#{route_id}")
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[phx-value-mode="occurrences"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="schedule-detail-occurrences"]))
+    assert has_element?(view, ~s([data-testid="schedule-occurrence-table"]))
+    assert has_element?(view, ~s([data-testid="schedule-occurrence-row"]), "Disabled")
+    assert has_element?(view, ~s([data-testid="schedule-occurrences-disabled-note"]))
+    assert render(view) =~ "Will not submit until enabled"
+  end
+
+  test "schedule occurrences tab handles preview errors", %{conn: conn} do
+    put_test_env(:preview_schedule_occurrences_fun, fn _schedule_id, _opts ->
+      {:error, :preview_failed}
+    end)
+
+    schedule_id = "schedule:#{__MODULE__.Pipelines.DailyOrders}:daily"
+    route_id = FavnView.ScheduleRoute.to_param(schedule_id)
+
+    {:ok, view, _html} = live(conn, ~p"/schedules/#{route_id}")
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[phx-value-mode="occurrences"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="schedule-occurrences-error"]), "preview_failed")
+  end
+
+  test "favn_view scheduler pages do not call scheduler internals" do
+    files = [
+      "lib/favn_view/schedules_live.ex",
+      "lib/favn_view/schedule_detail_live.ex",
+      "lib/favn_view/components/schedules_page.ex",
+      "lib/favn_view/components/schedule_detail_page.ex"
+    ]
+
+    for file <- files do
+      source = File.read!(Path.expand(file))
+      refute source =~ "FavnOrchestrator.Scheduler."
+      refute source =~ "FavnOrchestrator.Storage"
+      refute source =~ "Favn.Scheduler"
+    end
   end
 
   test "renders execution groups without child runs as equal top-level rows", %{conn: conn} do
@@ -2590,7 +2697,8 @@ defmodule FavnView.PageLiveTest do
           name: :daily_orders,
           selectors: [{:asset, {__MODULE__.Assets, :customer_orders_daily}}],
           deps: :all,
-          window: Policy.new!(:daily, timezone: "Europe/Oslo")
+          window: Policy.new!(:daily, timezone: "Europe/Oslo"),
+          schedule: {:ref, {__MODULE__.Schedules, :daily}}
         },
         %Pipeline{
           module: __MODULE__.Pipelines.FullRefresh,
@@ -2598,6 +2706,18 @@ defmodule FavnView.PageLiveTest do
           selectors: [{:asset, {__MODULE__.Assets, :customer_orders_daily}}],
           deps: :all,
           window: nil
+        }
+      ],
+      schedules: [
+        %Schedule{
+          module: __MODULE__.Schedules,
+          name: :daily,
+          ref: {__MODULE__.Schedules, :daily},
+          cron: "0 6 * * *",
+          timezone: "Europe/Oslo",
+          missed: :skip,
+          overlap: :forbid,
+          active: true
         }
       ]
     }
@@ -3367,6 +3487,39 @@ defmodule FavnView.PageLiveTest do
         value -> Application.put_env(:favn_view, key, value)
       end
     end)
+  end
+
+  defp seed_schedule_state!(attrs) do
+    assert {:ok, [entry]} = FavnOrchestrator.list_schedule_entries()
+
+    assert {:ok, current} =
+             Storage.get_scheduler_state({entry.pipeline_module, entry.schedule_id})
+
+    state =
+      current
+      |> Map.from_struct()
+      |> Map.merge(%{
+        pipeline_module: entry.pipeline_module,
+        schedule_id: entry.schedule_id,
+        schedule_fingerprint: entry.schedule_fingerprint,
+        activation_state: Keyword.get(attrs, :activation_state, entry.activation_state),
+        in_flight_run_id: Keyword.get(attrs, :in_flight_run_id, entry.in_flight_run_id),
+        last_scheduler_error:
+          Keyword.get(attrs, :last_scheduler_error, entry.last_scheduler_error),
+        version: (current.version || 1) + 1
+      })
+      |> then(&struct(Favn.Scheduler.State, &1))
+
+    assert :ok = Storage.put_scheduler_state({entry.pipeline_module, entry.schedule_id}, state)
+  end
+
+  defp scheduler_error do
+    %FavnOrchestrator.SchedulerError{
+      occurred_at: DateTime.utc_now(),
+      phase: :submit_run,
+      code: :invalid_window,
+      message: "Window policy invalid"
+    }
   end
 
   defp operator_run_detail(run_id, opts) do

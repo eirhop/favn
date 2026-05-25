@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Scheduler.Cron
   alias FavnOrchestrator.Scheduler.ManifestEntries
+  alias FavnOrchestrator.SchedulerError
   alias FavnOrchestrator.SchedulerEntry
   alias FavnOrchestrator.Storage
 
@@ -50,34 +51,38 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
   @impl true
   def handle_call(:reload, _from, state) do
-    case load_runtime(state.tick_ms, state.auto_tick?) do
-      {:ok, next} ->
-        emit_scheduler_loaded(next)
-        {:reply, :ok, next}
+    with {:ok, state} <- flush_dirty_states(state),
+         {:ok, next} <- load_runtime(state.tick_ms, state.auto_tick?) do
+      emit_scheduler_loaded(next)
+      {:reply, :ok, next}
+    else
+      {:error, reason, next} ->
+        {:reply, {:error, reason}, next}
 
       {:error, reason} ->
-        {:reply, {:error, reason},
-         %{
-           entries: %{},
-           states: %{},
-           tick_ms: state.tick_ms,
-           auto_tick?: state.auto_tick?,
-           index: nil,
-           version: nil
-         }}
+        {:reply, {:error, reason}, failed_runtime_state(state, reason)}
     end
   end
 
-  def handle_call(:tick, _from, state), do: {:reply, :ok, evaluate_all(state)}
+  def handle_call(:tick, _from, state) do
+    case evaluate_all(state) do
+      {:ok, next} -> {:reply, :ok, next}
+      {:error, reason, next} -> {:reply, {:error, reason}, next}
+    end
+  end
+
   def handle_call(:scheduled, _from, state), do: {:reply, Map.values(state.entries), state}
 
   def handle_call(:diagnostics, _from, state),
     do: {:reply, {:ok, diagnostics_payload(state)}, state}
 
   def handle_call(:inspect_entries, _from, state) do
+    now = DateTime.utc_now()
+
     entries =
       state.entries
       |> Enum.map(fn {pipeline_module, entry} ->
+        entry = Map.put(entry, :next_due_at, next_due_at(entry, now))
         SchedulerEntry.from_runtime(entry, Map.get(state.states, pipeline_module))
       end)
       |> Enum.sort_by(&{inspect(&1.pipeline_module), inspect(&1.schedule_id)})
@@ -85,9 +90,44 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     {:reply, entries, state}
   end
 
+  defp failed_runtime_state(state, reason) do
+    %{
+      entries: %{},
+      states: %{},
+      dirty_states: %{},
+      last_persist_error: persist_error(reason),
+      tick_ms: state.tick_ms,
+      auto_tick?: state.auto_tick?,
+      index: nil,
+      version: nil
+    }
+  end
+
+  defp empty_runtime_state(tick_ms, auto_tick?) do
+    %{
+      entries: %{},
+      states: %{},
+      dirty_states: %{},
+      last_persist_error: nil,
+      tick_ms: tick_ms,
+      auto_tick?: auto_tick?,
+      index: nil,
+      version: nil
+    }
+  end
+
   @impl true
   def handle_info(:tick, state) do
-    next = evaluate_all(state)
+    next =
+      case evaluate_all(state) do
+        {:ok, next} ->
+          next
+
+        {:error, reason, next} ->
+          Logger.error("scheduler tick failed", reason: inspect(reason))
+          next
+      end
+
     if next.auto_tick?, do: schedule_tick(next_tick_delay_ms(next.tick_ms))
     {:noreply, next}
   end
@@ -100,6 +140,8 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
        %{
          entries: entries,
          states: states,
+         dirty_states: %{},
+         last_persist_error: nil,
          tick_ms: tick_ms,
          auto_tick?: auto_tick?,
          index: index,
@@ -107,15 +149,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
        }}
     else
       {:empty, reason} when reason in [:active_manifest_not_set, :manifest_version_not_found] ->
-        {:ok,
-         %{
-           entries: %{},
-           states: %{},
-           tick_ms: tick_ms,
-           auto_tick?: auto_tick?,
-           index: nil,
-           version: nil
-         }}
+        {:ok, empty_runtime_state(tick_ms, auto_tick?)}
 
       {:error, reason} ->
         {:error, reason}
@@ -134,6 +168,8 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
         count_entries(state.entries, fn entry -> not entry.schedule.active end),
       in_flight_schedule_count: Enum.count(states, &is_binary(Map.get(&1, :in_flight_run_id))),
       queued_schedule_count: Enum.count(states, &(not is_nil(Map.get(&1, :queued_due_at)))),
+      dirty_scheduler_state_count: map_size(Map.get(state, :dirty_states, %{})),
+      last_scheduler_persist_error: Map.get(state, :last_persist_error),
       state_summary: scheduler_state_summary(state),
       tick_ms: state.tick_ms,
       auto_tick?: state.auto_tick?
@@ -154,6 +190,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
       submitted_cursor_count: count_states(state.states, &present?(&1.last_submitted_due_at)),
       in_flight_count: count_states(state.states, &is_binary(&1.in_flight_run_id)),
       queued_count: count_states(state.states, &present?(&1.queued_due_at)),
+      dirty_count: map_size(Map.get(state, :dirty_states, %{})),
       updated_count: count_states(state.states, &present?(&1.updated_at)),
       entries: entries
     }
@@ -249,6 +286,8 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   end
 
   defp load_states(entries) do
+    now = DateTime.utc_now()
+
     Enum.reduce_while(entries, {:ok, %{}}, fn {pipeline_module, entry}, {:ok, acc} ->
       key = {pipeline_module, entry.schedule.name}
 
@@ -257,36 +296,61 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
           base = %State{
             pipeline_module: pipeline_module,
             schedule_id: entry.schedule.name,
-            schedule_fingerprint: entry.schedule_fingerprint
+            schedule_fingerprint: entry.schedule_fingerprint,
+            activation_state: :pending_activation,
+            updated_at: now,
+            version: 1
           }
 
-          {:cont, {:ok, Map.put(acc, pipeline_module, base)}}
+          case Storage.put_scheduler_state(key, base) do
+            :ok -> {:cont, {:ok, Map.put(acc, pipeline_module, base)}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
 
         {:ok, %State{} = stored} ->
           stored = normalize_scheduler_state(stored)
 
           value =
             if stored.schedule_fingerprint == entry.schedule_fingerprint do
-              %{stored | schedule_id: entry.schedule.name}
+              stored
+              |> bootstrap_activation_state(entry)
+              |> Map.put(:schedule_id, entry.schedule.name)
             else
               %State{
                 pipeline_module: pipeline_module,
                 schedule_id: entry.schedule.name,
-                schedule_fingerprint: entry.schedule_fingerprint
+                schedule_fingerprint: entry.schedule_fingerprint,
+                activation_state: :needs_review,
+                updated_at: now
               }
             end
 
-          if stored.schedule_fingerprint != entry.schedule_fingerprint do
+          if stored.schedule_fingerprint != entry.schedule_fingerprint or
+               stored.activation_state != value.activation_state do
             persisted = persisted_scheduler_state(stored, value)
-            :ok = Storage.put_scheduler_state(key, persisted)
-            {:cont, {:ok, Map.put(acc, pipeline_module, persisted)}}
+
+            case Storage.put_scheduler_state(key, persisted) do
+              :ok -> {:cont, {:ok, Map.put(acc, pipeline_module, persisted)}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
           else
             {:cont, {:ok, Map.put(acc, pipeline_module, value)}}
           end
 
         {:ok, stored} when is_map(stored) ->
           state = normalize_scheduler_state(stored)
-          {:cont, {:ok, Map.put(acc, pipeline_module, state)}}
+          value = bootstrap_activation_state(state, entry)
+
+          if state.activation_state != value.activation_state do
+            persisted = persisted_scheduler_state(state, value)
+
+            case Storage.put_scheduler_state(key, persisted) do
+              :ok -> {:cont, {:ok, Map.put(acc, pipeline_module, persisted)}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          else
+            {:cont, {:ok, Map.put(acc, pipeline_module, value)}}
+          end
 
         {:error, reason} ->
           {:halt, {:error, reason}}
@@ -294,19 +358,27 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     end)
   end
 
-  defp evaluate_all(%{index: nil} = state), do: state
+  defp evaluate_all(%{index: nil} = state), do: flush_dirty_states(state)
 
   defp evaluate_all(state) do
+    if map_size(Map.get(state, :dirty_states, %{})) > 0 do
+      flush_dirty_states(state)
+    else
+      do_evaluate_all(state)
+    end
+  end
+
+  defp do_evaluate_all(state) do
     now = DateTime.utc_now()
 
-    {next_states, _remaining_budget} =
-      Enum.reduce(state.entries, {state.states, configured_submission_budget()}, fn
-        {pipeline_module, entry}, {acc, remaining_budget} ->
+    result =
+      Enum.reduce_while(state.entries, {:ok, state.states, configured_submission_budget()}, fn
+        {pipeline_module, entry}, {:ok, acc, remaining_budget} ->
           current = Map.get(acc, pipeline_module, %State{pipeline_module: pipeline_module})
 
           {updated, remaining_budget} =
             cond do
-              not entry.schedule.active ->
+              not effective_enabled?(entry, current) ->
                 {%{current | last_evaluated_at: now, updated_at: now}, remaining_budget}
 
               remaining_budget <= 0 ->
@@ -319,17 +391,67 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
           next_acc =
             if persist_state_change?(current, updated) do
               persisted = persisted_scheduler_state(current, updated)
-              :ok = Storage.put_scheduler_state({pipeline_module, entry.schedule.name}, persisted)
-              Map.put(acc, pipeline_module, persisted)
+              key = {pipeline_module, entry.schedule.name}
+
+              case Storage.put_scheduler_state(key, persisted) do
+                :ok ->
+                  Map.put(acc, pipeline_module, persisted)
+
+                {:error, reason} ->
+                  {:error, reason, Map.put(acc, pipeline_module, persisted), pipeline_module,
+                   persisted}
+              end
             else
               Map.put(acc, pipeline_module, updated)
             end
 
-          {next_acc, remaining_budget}
+          case next_acc do
+            {:error, reason, failed_acc, dirty_key, dirty_state} ->
+              {:halt, {:error, reason, failed_acc, dirty_key, dirty_state}}
+
+            next_acc ->
+              {:cont, {:ok, next_acc, remaining_budget}}
+          end
       end)
 
-    %{state | states: next_states}
+    case result do
+      {:ok, next_states, _remaining_budget} ->
+        {:ok, %{state | states: next_states, last_persist_error: nil}}
+
+      {:error, reason, next_states, dirty_key, dirty_state} ->
+        next = %{
+          state
+          | states: next_states,
+            dirty_states: Map.put(state.dirty_states, dirty_key, dirty_state),
+            last_persist_error: persist_error(reason)
+        }
+
+        {:error, reason, next}
+    end
   end
+
+  defp flush_dirty_states(state) do
+    dirty_states = Map.get(state, :dirty_states, %{})
+
+    Enum.reduce_while(dirty_states, {:ok, state}, fn {pipeline_module, dirty_state}, {:ok, acc} ->
+      case Storage.put_scheduler_state({pipeline_module, dirty_state.schedule_id}, dirty_state) do
+        :ok ->
+          {:cont,
+           {:ok,
+            %{
+              acc
+              | states: Map.put(acc.states, pipeline_module, dirty_state),
+                dirty_states: Map.delete(acc.dirty_states, pipeline_module),
+                last_persist_error: nil
+            }}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason, %{acc | last_persist_error: persist_error(reason)}}}
+      end
+    end)
+  end
+
+  defp persist_error(reason), do: %{reason: inspect(reason), occurred_at: DateTime.utc_now()}
 
   defp evaluate_entry(entry, index, version, state, now, remaining_budget) do
     state = reconcile_in_flight(state)
@@ -337,7 +459,10 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
     cond do
       is_nil(latest_due) ->
-        {%{state | last_evaluated_at: now, updated_at: now}, remaining_budget}
+        error = SchedulerError.new(:compute_due, :invalid_cron_or_timezone, now)
+
+        {%{state | last_evaluated_at: now, last_scheduler_error: error, updated_at: now},
+         remaining_budget}
 
       is_nil(state.last_due_at) ->
         {%{state | last_due_at: latest_due, last_evaluated_at: now, updated_at: now},
@@ -416,8 +541,12 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
   defp maybe_submit_queued(state, entry, index, version, latest_due, now, remaining_budget) do
     case submit_occurrence(state, entry, index, version, state.queued_due_at, latest_due, now) do
-      {:ok, next} -> {%{next | queued_due_at: nil}, [state.queued_due_at], remaining_budget - 1}
-      {:error, _reason} -> {state, [], remaining_budget - 1}
+      {:ok, next} ->
+        {%{next | queued_due_at: nil}, [state.queued_due_at], remaining_budget - 1}
+
+      {:error, reason} ->
+        {%{state | last_scheduler_error: SchedulerError.new(:submit_run, reason, now)}, [],
+         remaining_budget - 1}
     end
   end
 
@@ -461,8 +590,11 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
           case submit_occurrence(state, entry, index, version, due, latest_due, now,
                  track_in_flight?: false
                ) do
-            {:ok, value} -> {value, [due | submitted_reversed]}
-            {:error, _reason} -> {state, submitted_reversed}
+            {:ok, value} ->
+              {value, [due | submitted_reversed]}
+
+            {:error, reason} ->
+              {record_scheduler_error(state, :submit_run, reason, now), submitted_reversed}
           end
 
         submit_due_occurrences(
@@ -480,8 +612,12 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
           {state, submitted_reversed, remaining_budget}
         else
           case submit_occurrence(state, entry, index, version, due, latest_due, now) do
-            {:ok, value} -> {value, [due | submitted_reversed], remaining_budget - 1}
-            {:error, _reason} -> {state, submitted_reversed, remaining_budget - 1}
+            {:ok, value} ->
+              {value, [due | submitted_reversed], remaining_budget - 1}
+
+            {:error, reason} ->
+              {record_scheduler_error(state, :submit_run, reason, now), submitted_reversed,
+               remaining_budget - 1}
           end
         end
 
@@ -495,8 +631,9 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
               next = if rest == [], do: value, else: %{value | queued_due_at: List.last(rest)}
               {next, [due | submitted_reversed], remaining_budget - 1}
 
-            {:error, _reason} ->
-              {state, submitted_reversed, remaining_budget - 1}
+            {:error, reason} ->
+              {record_scheduler_error(state, :submit_run, reason, now), submitted_reversed,
+               remaining_budget - 1}
           end
         end
     end
@@ -524,9 +661,15 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
            end) do
       next =
         if track_in_flight? do
-          %{state | in_flight_run_id: run_id, last_submitted_due_at: due_at, updated_at: now}
+          %{
+            state
+            | in_flight_run_id: run_id,
+              last_submitted_due_at: due_at,
+              last_scheduler_error: nil,
+              updated_at: now
+          }
         else
-          %{state | last_submitted_due_at: due_at, updated_at: now}
+          %{state | last_submitted_due_at: due_at, last_scheduler_error: nil, updated_at: now}
         end
 
       {:ok, next}
@@ -623,10 +766,12 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   defp persist_state_change?(previous, next) do
     previous.schedule_id != next.schedule_id or
       previous.schedule_fingerprint != next.schedule_fingerprint or
+      previous.activation_state != next.activation_state or
       previous.last_due_at != next.last_due_at or
       previous.last_submitted_due_at != next.last_submitted_due_at or
       previous.in_flight_run_id != next.in_flight_run_id or
-      previous.queued_due_at != next.queued_due_at
+      previous.queued_due_at != next.queued_due_at or
+      previous.last_scheduler_error != next.last_scheduler_error
   end
 
   defp reconcile_in_flight(%State{in_flight_run_id: nil} = state), do: state
@@ -655,10 +800,12 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
       :schedule_id,
       :schedule_fingerprint,
       :last_evaluated_at,
+      :activation_state,
       :last_due_at,
       :last_submitted_due_at,
       :in_flight_run_id,
       :queued_due_at,
+      :last_scheduler_error,
       :updated_at,
       :version
     ]
@@ -676,6 +823,37 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     do: version + 1
 
   defp next_scheduler_version(_previous), do: 1
+
+  defp bootstrap_activation_state(%State{activation_state: nil} = state, entry) do
+    %{state | activation_state: initial_activation_state(state, entry)}
+  end
+
+  defp bootstrap_activation_state(%State{} = state, _entry), do: state
+
+  defp initial_activation_state(%State{} = state, entry) do
+    has_runtime_cursor? =
+      not is_nil(state.last_due_at) or not is_nil(state.last_submitted_due_at) or
+        not is_nil(state.in_flight_run_id) or not is_nil(state.queued_due_at)
+
+    cond do
+      entry.schedule.active != true -> :disabled
+      has_runtime_cursor? -> :enabled
+      true -> :pending_activation
+    end
+  end
+
+  defp effective_enabled?(entry, %State{} = state),
+    do: entry.schedule.active == true and state.activation_state == :enabled
+
+  defp record_scheduler_error(%State{} = state, phase, reason, %DateTime{} = now) do
+    %{state | last_scheduler_error: SchedulerError.new(phase, reason, now), updated_at: now}
+  end
+
+  defp next_due_at(%{schedule: %{cron: cron, timezone: timezone}}, %DateTime{} = now)
+       when is_binary(cron) and is_binary(timezone),
+       do: Cron.next_due(cron, timezone, now)
+
+  defp next_due_at(_entry, _now), do: nil
 
   defp configured_tick_ms do
     case Application.get_env(:favn_orchestrator, :scheduler, []) do

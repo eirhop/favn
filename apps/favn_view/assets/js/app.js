@@ -142,6 +142,13 @@ const Hooks = {
   }
 }
 
+document.addEventListener("click", event => {
+  const button = event.target.closest("[data-copy-text]")
+  if (!button) return
+
+  navigator.clipboard?.writeText(button.dataset.copyText || "")
+})
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,

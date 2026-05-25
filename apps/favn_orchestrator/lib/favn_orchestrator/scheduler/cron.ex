@@ -19,6 +19,22 @@ defmodule FavnOrchestrator.Scheduler.Cron do
     end
   end
 
+  @spec next_due(String.t(), String.t(), DateTime.t()) :: DateTime.t() | nil
+  def next_due(cron, timezone, %DateTime{} = now_utc) do
+    case parse(cron) do
+      {:ok, expr} ->
+        now = now_utc |> shift_zone!(timezone) |> floor_for_expr(expr)
+        to = DateTime.add(now, @max_lookback_seconds, :second, Favn.Timezone.database!())
+
+        expr
+        |> find_next(now, to)
+        |> maybe_to_utc()
+
+      :error ->
+        nil
+    end
+  end
+
   @spec occurrences_between(String.t(), String.t(), DateTime.t(), DateTime.t(), keyword()) :: [
           DateTime.t()
         ]
