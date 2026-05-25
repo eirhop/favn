@@ -4,6 +4,10 @@ defmodule FavnOrchestrator.RunState do
   """
 
   @default_timeout_ms 30 * 60 * 1000
+  @terminal_statuses [:ok, :partial, :error, :cancelled, :timed_out]
+  @terminal_status_strings Enum.map(@terminal_statuses, &Atom.to_string/1)
+  @terminal_event_types [:run_finished, :run_failed, :run_cancelled, :run_timed_out]
+  @terminal_event_type_strings Enum.map(@terminal_event_types, &Atom.to_string/1)
 
   @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
 
@@ -98,6 +102,52 @@ defmodule FavnOrchestrator.RunState do
   @doc false
   @spec default_timeout_ms() :: pos_integer()
   def default_timeout_ms, do: @default_timeout_ms
+
+  @doc "Returns true when a persisted run snapshot has been finalized."
+  @spec finalized?(t()) :: boolean()
+  def finalized?(%__MODULE__{metadata: metadata}), do: finalized_metadata?(metadata)
+
+  @doc "Returns true when the run can still admit execution work."
+  @spec execution_admissible?(t()) :: boolean()
+  def execution_admissible?(%__MODULE__{} = run), do: not finalized?(run)
+
+  @doc "Returns true when the status represents terminal persisted run state."
+  @spec terminal_status?(status() | term()) :: boolean()
+  def terminal_status?(status) when is_atom(status), do: status in @terminal_statuses
+  def terminal_status?(status) when is_binary(status), do: status in @terminal_status_strings
+  def terminal_status?(_status), do: false
+
+  @doc "Returns the persisted terminal event type for a terminal run status."
+  @spec terminal_event_type(status() | term()) :: atom() | nil
+  def terminal_event_type(:ok), do: :run_finished
+  def terminal_event_type("ok"), do: :run_finished
+  def terminal_event_type(:cancelled), do: :run_cancelled
+  def terminal_event_type("cancelled"), do: :run_cancelled
+  def terminal_event_type(:timed_out), do: :run_timed_out
+  def terminal_event_type("timed_out"), do: :run_timed_out
+  def terminal_event_type(:partial), do: :run_failed
+  def terminal_event_type("partial"), do: :run_failed
+  def terminal_event_type(:error), do: :run_failed
+  def terminal_event_type("error"), do: :run_failed
+  def terminal_event_type(_status), do: nil
+
+  defp finalized_metadata?(metadata) when is_map(metadata) do
+    terminal_event_type =
+      Map.get(metadata, :terminal_event_type) || Map.get(metadata, "terminal_event_type")
+
+    cancelled? = Map.get(metadata, :cancelled) || Map.get(metadata, "cancelled")
+
+    terminal_event_type?(terminal_event_type) or cancelled? == true
+  end
+
+  defp finalized_metadata?(_metadata), do: false
+
+  defp terminal_event_type?(value) when is_atom(value), do: value in @terminal_event_types
+
+  defp terminal_event_type?(value) when is_binary(value),
+    do: value in @terminal_event_type_strings
+
+  defp terminal_event_type?(_value), do: false
 
   @spec transition(t(), keyword()) :: t()
   def transition(%__MODULE__{} = run, attrs) when is_list(attrs) do

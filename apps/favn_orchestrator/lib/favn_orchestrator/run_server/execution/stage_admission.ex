@@ -155,6 +155,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
             waiter: waiter
           })
 
+        {:error, {:run_not_admissible, run_id, _status}}
+        when run_id == current_run.id ->
+          {:error, current_run, [], Enum.map(acc, & &1.node_key)}
+
         {:error, reason} ->
           failed = RunState.transition(current_run, status: :error, error: reason)
           {:error, failed, [], Enum.map(acc, & &1.node_key)}

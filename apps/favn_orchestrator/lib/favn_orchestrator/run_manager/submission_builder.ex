@@ -259,7 +259,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     run_id = Keyword.get(opts, :run_id, new_run_id())
     params = Keyword.get(opts, :params, source_run.params)
     trigger = Keyword.get(opts, :trigger, %{kind: :rerun, source_run_id: source_run.id})
-    metadata = Map.merge(source_run.metadata, Keyword.get(opts, :metadata, %{}))
+    metadata = Map.merge(rerun_base_metadata(source_run), Keyword.get(opts, :metadata, %{}))
     max_attempts = Keyword.get(opts, :max_attempts, source_run.max_attempts)
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, source_run.retry_backoff_ms)
     timeout_ms = Keyword.get(opts, :timeout_ms, source_run.timeout_ms)
@@ -355,6 +355,27 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     do: metadata
 
   defp maybe_put_pipeline_execution_policy(metadata), do: metadata
+
+  defp rerun_base_metadata(%RunState{metadata: metadata}) when is_map(metadata) do
+    Map.drop(metadata, [
+      :terminal_event_type,
+      "terminal_event_type",
+      :cancelled,
+      "cancelled",
+      :cancel_requested,
+      "cancel_requested",
+      :cancel_reason,
+      "cancel_reason",
+      :cancel_requested_at,
+      "cancel_requested_at",
+      :cancel_forward_error,
+      "cancel_forward_error",
+      :in_flight_execution_ids,
+      "in_flight_execution_ids"
+    ])
+  end
+
+  defp rerun_base_metadata(%RunState{}), do: %{}
 
   defp normalize_pipeline_window_request(nil, window_request),
     do: WindowRequest.from_value(window_request)

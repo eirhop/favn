@@ -52,7 +52,8 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   end
 
   defp acquire_result(%RunState{} = run, entry) when is_map(entry) do
-    with :ok <- validate_execution_pool(entry) do
+    with :ok <- validate_run_admissible(run),
+         :ok <- validate_execution_pool(entry) do
       scopes = admission_scopes(run, entry)
 
       if scopes == [] do
@@ -81,6 +82,14 @@ defmodule FavnOrchestrator.ExecutionAdmission do
             {:error, reason}
         end
       end
+    end
+  end
+
+  defp validate_run_admissible(%RunState{id: run_id, status: status} = run) do
+    if RunState.execution_admissible?(run) do
+      :ok
+    else
+      {:error, {:run_not_admissible, run_id, status}}
     end
   end
 

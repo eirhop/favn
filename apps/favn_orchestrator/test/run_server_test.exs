@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.RunServerTest do
   alias Favn.Plan
   alias Favn.Window.Runtime
   alias FavnOrchestrator.RunServer
+  alias FavnOrchestrator.RunServer.Execution.StageAdmission
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.MaterializationClaim.Identity, as: MaterializationClaimIdentity
@@ -550,6 +551,36 @@ defmodule FavnOrchestrator.RunServerTest do
     assert stored.metadata.in_flight_execution_ids == []
   end
 
+  test "run server refuses to dispatch terminal snapshots" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, submit_log: submit_log)
+
+    version = manifest_version("mv_terminal_snapshot_dispatch_guard")
+
+    terminal =
+      "run_terminal_snapshot_dispatch_guard"
+      |> asset_run_state(version)
+      |> RunState.transition(
+        status: :cancelled,
+        error: {:cancelled, %{reason: :already_terminal}},
+        metadata: %{cancelled: true}
+      )
+
+    assert :ok = Storage.put_run(terminal)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: terminal, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert Agent.get(submit_log, & &1) == []
+
+    assert {:ok, stored} = Storage.get_run(terminal.id)
+    assert stored.status == :cancelled
+    assert stored.error == {:cancelled, %{reason: :already_terminal}}
+    assert {:ok, []} = Storage.list_run_events(terminal.id)
+  end
+
   test "run execution paths do not use blocking retry sleeps" do
     execution_source =
       File.read!(
@@ -1057,6 +1088,48 @@ defmodule FavnOrchestrator.RunServerTest do
     assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}, 1_000
     assert Agent.get(submit_log, & &1) == []
     assert {:ok, []} = Storage.list_execution_admission_waiters_for_scope(run_scope(run_state))
+    assert {:ok, []} = Storage.list_execution_leases()
+  end
+
+  test "pipeline admission rejection does not rewrite terminal runs to error" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    ref = {MyApp.Assets.PipelineTerminalAdmission.Asset, :asset}
+    refs = [ref]
+    node_key = {ref, nil}
+    plan = same_stage_plan(refs)
+    version = manifest_version_for_refs("mv_pipeline_terminal_admission", refs)
+
+    terminal =
+      "run_pipeline_terminal_admission"
+      |> pipeline_run_state(version, plan, refs)
+      |> RunState.transition(
+        status: :cancelled,
+        error: {:cancelled, %{reason: :already_terminal}},
+        metadata: %{
+          cancelled: true,
+          terminal_event_type: :run_cancelled,
+          pipeline_execution_policy: %{max_concurrency: 1}
+        }
+      )
+
+    assert {:error, rejected, [], []} =
+             StageAdmission.submit(%{
+               run: terminal,
+               version: version,
+               stage: 0,
+               node_keys: [node_key],
+               decisions: %{},
+               freshness_context: %{},
+               attempt: 1,
+               runner_client: RunnerClientRecordingStub,
+               runner_opts: [submit_log: submit_log]
+             })
+
+    assert rejected.status == :cancelled
+    assert rejected.error == {:cancelled, %{reason: :already_terminal}}
+    assert rejected.event_seq == terminal.event_seq
+    assert Agent.get(submit_log, & &1) == []
+    assert {:ok, []} = Storage.list_execution_admission_waiters_for_scope(run_scope(terminal))
     assert {:ok, []} = Storage.list_execution_leases()
   end
 

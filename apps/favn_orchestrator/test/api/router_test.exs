@@ -1149,7 +1149,8 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert response.status == 200
     assert %{"data" => %{"run" => run}} = Jason.decode!(response.resp_body)
-    assert run["metadata"] == %{"source" => "test"}
+    assert run["metadata"]["source"] == "test"
+    assert run["metadata"]["terminal_event_type"] == "run_finished"
 
     assert [%{"asset_ref" => "Elixir.MyApp.Assets.Gold:asset", "meta" => meta}] =
              run["asset_results"]

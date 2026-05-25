@@ -187,6 +187,65 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
              })
   end
 
+  test "terminal runs cannot acquire leases or register waiters" do
+    entry = %{asset_step_id: "step-1"}
+
+    for status <- [:ok, :partial, :error, :cancelled, :timed_out] do
+      run = run(id: "run-terminal-#{status}", max_concurrency: 1)
+      terminal = terminal_run(run, status)
+      run_id = terminal.id
+
+      refute RunState.execution_admissible?(terminal)
+
+      assert {:error, {:run_not_admissible, ^run_id, ^status}} =
+               ExecutionAdmission.acquire(terminal, entry)
+
+      assert {:error, {:run_not_admissible, ^run_id, ^status}} =
+               ExecutionAdmission.acquire_or_wait(terminal, %{entry | asset_step_id: "step-2"},
+                 stage: 0,
+                 attempt: 1
+               )
+
+      assert {:ok, []} = Storage.list_execution_leases()
+      assert {:ok, []} = Storage.list_execution_admission_waiters_for_scope(run_scope(terminal))
+    end
+  end
+
+  test "intermediate step outcome statuses remain admissible before finalization" do
+    for status <- [:error, :timed_out] do
+      run = run(id: "run-intermediate-#{status}", max_concurrency: 1)
+      intermediate = RunState.transition(run, status: status, error: %{type: status})
+
+      assert RunState.terminal_status?(status)
+      assert RunState.execution_admissible?(intermediate)
+      assert {:ok, lease} = ExecutionAdmission.acquire(intermediate, %{asset_step_id: "step-1"})
+      assert lease.run_id == intermediate.id
+
+      assert :ok = ExecutionAdmission.release(lease)
+    end
+  end
+
+  test "run lease cleanup is idempotent and does not reopen terminal admission" do
+    run = run(max_concurrency: 1)
+
+    assert {:ok, _lease} = ExecutionAdmission.acquire(run, %{asset_step_id: "step-1"})
+    assert :ok = ExecutionAdmission.release_run(run.id)
+    assert :ok = ExecutionAdmission.release_run(run.id)
+    assert {:ok, []} = Storage.list_execution_leases()
+
+    terminal = terminal_run(run, :cancelled)
+    run_id = terminal.id
+
+    assert {:error, {:run_not_admissible, ^run_id, :cancelled}} =
+             ExecutionAdmission.acquire_or_wait(terminal, %{asset_step_id: "step-2"},
+               stage: 0,
+               attempt: 1
+             )
+
+    assert {:ok, []} = Storage.list_execution_leases()
+    assert {:ok, []} = Storage.list_execution_admission_waiters_for_scope(run_scope(terminal))
+  end
+
   test "acquire_or_wait persists waiter and release wakes registered owner" do
     run = run(max_concurrency: 1)
     entry = %{asset_step_id: "step-1"}
@@ -351,6 +410,21 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
       }
     )
   end
+
+  defp run_scope(%RunState{} = run), do: %{kind: :run, key: run.id, limit: 1}
+
+  defp terminal_run(%RunState{} = run, status) do
+    RunState.transition(run,
+      status: status,
+      result: %{status: status, asset_results: [], metadata: run.metadata},
+      metadata: Map.put(run.metadata, :terminal_event_type, terminal_event_type(status))
+    )
+  end
+
+  defp terminal_event_type(:ok), do: :run_finished
+  defp terminal_event_type(:cancelled), do: :run_cancelled
+  defp terminal_event_type(:timed_out), do: :run_timed_out
+  defp terminal_event_type(_status), do: :run_failed
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)
