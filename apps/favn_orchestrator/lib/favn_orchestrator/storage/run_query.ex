@@ -98,7 +98,7 @@ defmodule FavnOrchestrator.Storage.RunQuery do
     |> map_get(:pipeline_context)
     |> case do
       context when is_map(context) -> context |> map_get(:anchor_window) |> anchor_key()
-      _other -> ""
+      _other -> nil
     end
   end
 
@@ -107,7 +107,7 @@ defmodule FavnOrchestrator.Storage.RunQuery do
     |> map_get(:pipeline_submit_ref)
     |> case do
       value when is_atom(value) or is_binary(value) -> public_ref(value)
-      _other -> nil
+      _other -> ""
     end
   end
 

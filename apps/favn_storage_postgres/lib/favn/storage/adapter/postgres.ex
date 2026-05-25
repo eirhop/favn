@@ -3302,7 +3302,9 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp target_run_filter_sql(:pipeline, target_ref_text, params) do
     placeholder = "$#{length(params) + 1}"
-    {" AND r.pipeline_submit_ref_text = #{placeholder}", params ++ [target_ref_text]}
+
+    {" AND r.pipeline_submit_ref_text != '' AND r.pipeline_submit_ref_text = #{placeholder}",
+     params ++ [target_ref_text]}
   end
 
   defp list_logs_query(filter, opts) do

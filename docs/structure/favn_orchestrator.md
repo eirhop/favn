@@ -25,8 +25,9 @@ Code:
   `apps/favn_orchestrator/lib/favn_orchestrator/target_status.ex` and
   `apps/favn_orchestrator/lib/favn_orchestrator/target_status/projector.ex`,
   including persisted current asset/pipeline catalogue status, run/latest-freshness
-  projection updates, target-scoped bounded detail history reads, and explicit
-  rebuild from authoritative history.
+  projection updates, target-scoped bounded detail history reads, module-submitted
+  pipeline attribution for named pipeline targets, and explicit rebuild from
+  authoritative history.
 - Schedule inspection/read models in `apps/favn_orchestrator/lib/favn_orchestrator/scheduler_entry.ex`
   and `apps/favn_orchestrator/lib/favn_orchestrator/schedule_list_entry.ex`,
   including operator activation state, effective-enabled scheduling semantics,

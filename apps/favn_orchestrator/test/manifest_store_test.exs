@@ -1129,6 +1129,42 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert Enum.map(detail.runs, & &1.id) == ["run_quiet_pipeline_a"]
   end
 
+  test "explicit target-ref pipeline runs are not attributed to named pipeline targets" do
+    ref = {MyApp.AssetA, :asset}
+
+    version =
+      manifest_version(
+        "mv_explicit_targets",
+        ref,
+        [%Pipeline{module: MyApp.PipelineA, name: :pipeline_a, selectors: [ref], deps: :all}]
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_explicit_targets")
+
+    assert :ok =
+             Storage.put_run(
+               explicit_target_pipeline_run_state(
+                 "run_explicit_targets",
+                 [ref],
+                 :ok,
+                 ~U[2026-05-10 12:00:00Z],
+                 "mv_explicit_targets"
+               )
+             )
+
+    assert {:ok, _count} = FavnOrchestrator.rebuild_target_statuses("mv_explicit_targets")
+
+    assert {:ok, [entry]} = FavnOrchestrator.active_pipeline_catalogue()
+    assert entry.status == :unknown
+    assert is_nil(entry.latest_run_id)
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_pipeline_detail("pipeline:Elixir.MyApp.PipelineA")
+
+    assert detail.runs == []
+  end
+
   test "pipeline catalogue matches runs by pipeline identity before target refs" do
     ref = {MyApp.AssetA, :asset}
 
@@ -1342,6 +1378,27 @@ defmodule FavnOrchestrator.ManifestStoreTest do
       submit_kind: Keyword.get(opts, :submit_kind, :pipeline),
       metadata: %{
         pipeline_submit_ref: pipeline_module,
+        pipeline_target_refs: refs,
+        pipeline_dependencies: :all
+      }
+    )
+    |> RunState.transition(status: status, result: %{asset_results: []})
+    |> Map.put(:inserted_at, started_at)
+    |> Map.put(:updated_at, finished_at)
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp explicit_target_pipeline_run_state(id, refs, status, finished_at, manifest_version_id) do
+    started_at = DateTime.add(finished_at, -1, :second)
+
+    RunState.new(
+      id: id,
+      manifest_version_id: manifest_version_id,
+      manifest_content_hash: "hash_a",
+      asset_ref: List.first(refs),
+      target_refs: refs,
+      submit_kind: :pipeline,
+      metadata: %{
         pipeline_target_refs: refs,
         pipeline_dependencies: :all
       }

@@ -341,22 +341,11 @@ defmodule FavnOrchestrator.TargetStatus.Projector do
 
   defp raw_pipeline_selector_ref(_selector), do: nil
 
-  defp pipeline_matches_run?(%RunState{} = run, %Pipeline{} = pipeline, selected_assets) do
+  defp pipeline_matches_run?(%RunState{} = run, %Pipeline{} = pipeline, _selected_assets) do
     case pipeline_submit_ref(run) do
-      nil -> legacy_pipeline_targets_match?(run, selected_assets)
+      nil -> false
       submit_ref -> same_pipeline_ref?(submit_ref, pipeline.module)
     end
-  end
-
-  defp legacy_pipeline_targets_match?(%RunState{} = run, selected_assets) do
-    pipeline_origin?(run) and selected_assets != [] and
-      Enum.sort(run.target_refs) == Enum.sort(selected_assets)
-  end
-
-  defp pipeline_origin?(%RunState{} = run) do
-    run.submit_kind in [:pipeline, :backfill_pipeline] or
-      not is_nil(metadata_value(run, :pipeline_submit_ref)) or
-      match?([_ | _], metadata_value(run, :pipeline_target_refs))
   end
 
   defp pipeline_submit_ref(%RunState{} = run) do

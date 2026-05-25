@@ -2046,7 +2046,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
     case Map.get(metadata, :pipeline_submit_ref, Map.get(metadata, "pipeline_submit_ref")) do
       value when is_atom(value) or is_binary(value) -> RunQuery.public_ref(value)
-      _other -> nil
+      _other -> ""
     end
   end
 
