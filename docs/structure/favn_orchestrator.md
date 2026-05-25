@@ -21,6 +21,11 @@ Code:
   including bounded operator run detail, execution-group summaries/details,
   asset attempts, windows, event cursors, and timeline entries for thin operator
   clients.
+- Target status projection in
+  `apps/favn_orchestrator/lib/favn_orchestrator/target_status.ex` and
+  `apps/favn_orchestrator/lib/favn_orchestrator/target_status/projector.ex`,
+  including persisted current asset/pipeline catalogue status, run/freshness
+  projection updates, and explicit rebuild from authoritative history.
 - Schedule inspection/read models in `apps/favn_orchestrator/lib/favn_orchestrator/scheduler_entry.ex`
   and `apps/favn_orchestrator/lib/favn_orchestrator/schedule_list_entry.ex`,
   including operator activation state, effective-enabled scheduling semantics,

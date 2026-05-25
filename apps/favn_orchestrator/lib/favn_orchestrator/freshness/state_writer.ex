@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
   alias FavnOrchestrator.Freshness.Staleness
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.TargetStatus
 
   @type decision :: map()
   @type freshness_context :: %{
@@ -78,7 +79,8 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
   def put_success_state(run_state, version, node_key, decision, freshness_context) do
     state = build_success_state(run_state, version, node_key, decision, freshness_context)
 
-    with :ok <- Storage.put_asset_freshness_state(state) do
+    with :ok <- Storage.put_asset_freshness_state(state),
+         :ok <- TargetStatus.Projector.project_freshness_state(state) do
       {:ok, state}
     end
   end
@@ -152,7 +154,8 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
   def put_attempt_state(run_state, version, node_key, status, freshness_key, decision) do
     state = build_attempt_state(run_state, version, node_key, status, freshness_key, decision)
 
-    with :ok <- Storage.put_asset_freshness_state(state) do
+    with :ok <- Storage.put_asset_freshness_state(state),
+         :ok <- TargetStatus.Projector.project_freshness_state(state) do
       {:ok, state}
     end
   end

@@ -242,7 +242,8 @@ defmodule FavnStorageSqlite.ReadinessTest do
              "20260521100000",
              "20260521200000",
              "20260522100000",
-             "20260524100000"
+             "20260524100000",
+             "20260525100000"
            ]
 
     refute Migrations.schema_ready?(Repo)

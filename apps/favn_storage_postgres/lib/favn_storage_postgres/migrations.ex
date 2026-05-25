@@ -12,6 +12,7 @@ defmodule FavnStoragePostgres.Migrations do
   alias FavnStoragePostgres.Migrations.AddBackfillProgress
   alias FavnStoragePostgres.Migrations.AddRunEventGlobalSequence
   alias FavnStoragePostgres.Migrations.AddRunGroupQueryColumns
+  alias FavnStoragePostgres.Migrations.AddTargetStatuses
   alias FavnStoragePostgres.Migrations.CreateFoundation
   alias FavnStoragePostgres.Migrations.RebuildBackfillReadModelsForDtos
 
@@ -27,7 +28,8 @@ defmodule FavnStoragePostgres.Migrations do
     {20_260_521_100_000, AddMaterializationClaims},
     {20_260_521_200_000, AddRunGroupQueryColumns},
     {20_260_522_100_000, AddBackfillProgress},
-    {20_260_524_100_000, AddExecutionGroupSummaries}
+    {20_260_524_100_000, AddExecutionGroupSummaries},
+    {20_260_525_100_000, AddTargetStatuses}
   ]
   @required_tables [
     "public.favn_manifest_versions",
@@ -48,7 +50,8 @@ defmodule FavnStoragePostgres.Migrations do
     "public.favn_execution_lease_scopes",
     "public.favn_execution_admission_waiters",
     "public.favn_materialization_claims",
-    "public.favn_execution_group_summaries"
+    "public.favn_execution_group_summaries",
+    "public.favn_target_statuses"
   ]
   @expected_versions Enum.map(@migrations, fn {version, _module} -> to_string(version) end)
 

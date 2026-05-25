@@ -54,6 +54,7 @@ defmodule FavnView.PageLiveTest do
 
     assert :ok = Storage.put_run(node_results_run_state())
     seed_freshness_states!()
+    assert {:ok, _count} = FavnOrchestrator.rebuild_target_statuses(version.manifest_version_id)
 
     seed_run_events!("run_customer_orders_daily")
     seed_run_events!("run_failed_empty", :error)

@@ -34,7 +34,9 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.RunSnapshotCodec
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
+  alias FavnOrchestrator.Storage.TargetStatusCodec
   alias FavnOrchestrator.Storage.WriteSemantics
+  alias FavnOrchestrator.TargetStatus
   alias FavnStoragePostgres.Migrations
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Supervisor, as: PostgresSupervisor
@@ -1097,6 +1099,77 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   @impl true
+  def upsert_target_status(%TargetStatus{} = status, opts) when is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      upsert_target_statuses(repo, [status])
+    end
+  end
+
+  @impl true
+  def get_target_status(manifest_version_id, target_kind, target_id, opts)
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_binary(target_id) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      sql =
+        target_status_select() <>
+          "\nWHERE manifest_version_id = $1 AND target_kind = $2 AND target_id = $3\nLIMIT 1"
+
+      params = [manifest_version_id, Atom.to_string(target_kind), target_id]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, %{rows: [row]}} -> decode_target_status_row(row)
+        {:ok, %{rows: []}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_target_statuses(manifest_version_id, target_kind, target_ids, opts)
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_list(target_ids) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      target_ids
+      |> Enum.uniq()
+      |> Enum.chunk_every(250)
+      |> Enum.reduce_while({:ok, %{}}, fn chunk, {:ok, acc} ->
+        case list_target_status_chunk(repo, manifest_version_id, target_kind, chunk) do
+          {:ok, rows} -> {:cont, {:ok, Map.merge(acc, rows)}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  @impl true
+  def replace_target_statuses(scope, statuses, opts) when is_list(statuses) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, scope} <- target_status_scope(scope),
+         :ok <- validate_target_status_scope_rows(scope, statuses) do
+      repo.transact(fn ->
+        with :ok <- delete_target_status_scope(repo, scope),
+             :ok <- upsert_target_statuses(repo, statuses) do
+          {:ok, :ok}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def delete_target_statuses(scope, opts) when is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, scope} <- target_status_scope(scope) do
+      delete_target_status_scope(repo, scope)
+    end
+  end
+
+  @impl true
   def replace_backfill_read_models(
         scope,
         coverage_baselines,
@@ -1347,6 +1420,39 @@ defmodule Favn.Storage.Adapter.Postgres do
     bulk_query_ok(repo, sql, states, &asset_window_state_params/1)
   end
 
+  defp upsert_target_statuses(_repo, []), do: :ok
+
+  defp upsert_target_statuses(repo, statuses) do
+    sql = """
+    INSERT INTO favn_target_statuses (
+      manifest_version_id, target_kind, target_id, target_ref_text, status,
+      latest_run_id, latest_run_status, latest_run_at, latest_success_run_id,
+      latest_success_at, latest_failure_run_id, latest_failure_at,
+      in_flight_run_id, freshness_status, freshness_key, updated_at, updated_seq,
+      record_payload
+    ) VALUES __VALUES__
+    ON CONFLICT(manifest_version_id, target_kind, target_id) DO UPDATE SET
+      target_ref_text = EXCLUDED.target_ref_text,
+      status = EXCLUDED.status,
+      latest_run_id = EXCLUDED.latest_run_id,
+      latest_run_status = EXCLUDED.latest_run_status,
+      latest_run_at = EXCLUDED.latest_run_at,
+      latest_success_run_id = EXCLUDED.latest_success_run_id,
+      latest_success_at = EXCLUDED.latest_success_at,
+      latest_failure_run_id = EXCLUDED.latest_failure_run_id,
+      latest_failure_at = EXCLUDED.latest_failure_at,
+      in_flight_run_id = EXCLUDED.in_flight_run_id,
+      freshness_status = EXCLUDED.freshness_status,
+      freshness_key = EXCLUDED.freshness_key,
+      updated_at = EXCLUDED.updated_at,
+      updated_seq = EXCLUDED.updated_seq,
+      record_payload = EXCLUDED.record_payload
+    """
+
+    statuses = dedupe_last_by(statuses, &{&1.manifest_version_id, &1.target_kind, &1.target_id})
+    bulk_query_ok(repo, sql, statuses, &target_status_params/1)
+  end
+
   defp dedupe_last_by(rows, key_fun) when is_function(key_fun, 1) do
     rows
     |> Enum.reverse()
@@ -1395,6 +1501,29 @@ defmodule Favn.Storage.Adapter.Postgres do
     ]
   end
 
+  defp target_status_params(%TargetStatus{} = status) do
+    [
+      status.manifest_version_id,
+      Atom.to_string(status.target_kind),
+      status.target_id,
+      status.target_ref_text,
+      Atom.to_string(status.status),
+      status.latest_run_id,
+      optional_atom_to_string(status.latest_run_status),
+      status.latest_run_at,
+      status.latest_success_run_id,
+      status.latest_success_at,
+      status.latest_failure_run_id,
+      status.latest_failure_at,
+      status.in_flight_run_id,
+      optional_atom_to_string(status.freshness_status),
+      status.freshness_key,
+      status.updated_at,
+      status.updated_seq,
+      encode_target_status(status)
+    ]
+  end
+
   defp backfill_progress_params(%BackfillProgress{} = progress) do
     [
       progress.backfill_run_id,
@@ -1440,6 +1569,14 @@ defmodule Favn.Storage.Adapter.Postgres do
     """
     SELECT record_payload
     FROM favn_asset_freshness_states
+    """
+    |> String.trim_trailing()
+  end
+
+  defp target_status_select do
+    """
+    SELECT record_payload
+    FROM favn_target_statuses
     """
     |> String.trim_trailing()
   end
@@ -1610,6 +1747,49 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp replacement_scope(scope),
     do: {:error, {:unsupported_replacement_scope, scope}}
+
+  defp target_status_scope({:manifest_version, manifest_version_id})
+       when is_binary(manifest_version_id),
+       do: {:ok, {:manifest_version, manifest_version_id}}
+
+  defp target_status_scope({:manifest_version, manifest_version_id, target_kind})
+       when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline],
+       do: {:ok, {:manifest_version, manifest_version_id, target_kind}}
+
+  defp target_status_scope(scope), do: {:error, {:unsupported_target_status_scope, scope}}
+
+  defp validate_target_status_scope_rows(scope, statuses) do
+    if Enum.all?(statuses, &target_status_in_scope?(&1, scope)) do
+      :ok
+    else
+      {:error, :target_status_scope_mismatch}
+    end
+  end
+
+  defp target_status_in_scope?(%TargetStatus{manifest_version_id: id}, {:manifest_version, id}),
+    do: true
+
+  defp target_status_in_scope?(
+         %TargetStatus{manifest_version_id: id, target_kind: kind},
+         {:manifest_version, id, kind}
+       ),
+       do: true
+
+  defp target_status_in_scope?(_status, _scope), do: false
+
+  defp delete_target_status_scope(repo, {:manifest_version, manifest_version_id}) do
+    query_ok(repo, "DELETE FROM favn_target_statuses WHERE manifest_version_id = $1", [
+      manifest_version_id
+    ])
+  end
+
+  defp delete_target_status_scope(repo, {:manifest_version, manifest_version_id, target_kind}) do
+    query_ok(
+      repo,
+      "DELETE FROM favn_target_statuses WHERE manifest_version_id = $1 AND target_kind = $2",
+      [manifest_version_id, Atom.to_string(target_kind)]
+    )
+  end
 
   defp delete_replacement_scope(repo, table, kind, scope) do
     case replacement_scope_filter(kind, scope) do
@@ -1805,6 +1985,8 @@ defmodule Favn.Storage.Adapter.Postgres do
   defp decode_asset_freshness_state_row([record_payload]),
     do: AssetFreshnessStateCodec.decode(record_payload)
 
+  defp decode_target_status_row([record_payload]), do: TargetStatusCodec.decode(record_payload)
+
   defp decode_backfill_progress_row([record_payload]),
     do: ProgressCodec.decode(record_payload)
 
@@ -1833,6 +2015,26 @@ defmodule Favn.Storage.Adapter.Postgres do
        Map.new(states, fn %AssetFreshnessState{} = state ->
          {{state.asset_ref_module, state.asset_ref_name, state.freshness_key}, state}
        end)}
+    end
+  end
+
+  defp list_target_status_chunk(_repo, _manifest_version_id, _target_kind, []), do: {:ok, %{}}
+
+  defp list_target_status_chunk(repo, manifest_version_id, target_kind, target_ids) do
+    placeholders =
+      target_ids
+      |> Enum.with_index(3)
+      |> Enum.map(fn {_target_id, index} -> "$#{index}" end)
+      |> Enum.join(", ")
+
+    sql =
+      target_status_select() <>
+        "\nWHERE manifest_version_id = $1 AND target_kind = $2 AND target_id IN (#{placeholders})"
+
+    params = [manifest_version_id, Atom.to_string(target_kind) | target_ids]
+
+    with {:ok, statuses} <- query_and_decode_rows(repo, sql, params, &decode_target_status_row/1) do
+      {:ok, Map.new(statuses, &{&1.target_id, &1})}
     end
   end
 
@@ -3359,6 +3561,16 @@ defmodule Favn.Storage.Adapter.Postgres do
 
       {:error, reason} ->
         raise ArgumentError, "invalid asset freshness state payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_target_status(%TargetStatus{} = status) do
+    case TargetStatusCodec.encode(status) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid target status payload: #{inspect(reason)}"
     end
   end
 

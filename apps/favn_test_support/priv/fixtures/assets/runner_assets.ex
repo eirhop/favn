@@ -388,6 +388,22 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def scan_asset_freshness_states(_filters, scan_opts, _opts), do: {:ok, empty_cursor_page(scan_opts)}
 
   @impl true
+  def upsert_target_status(_status, _opts), do: :ok
+
+  @impl true
+  def get_target_status(_manifest_version_id, _target_kind, _target_id, _opts),
+    do: {:error, :not_found}
+
+  @impl true
+  def list_target_statuses(_manifest_version_id, _target_kind, _target_ids, _opts), do: {:ok, %{}}
+
+  @impl true
+  def replace_target_statuses(_scope, _statuses, _opts), do: :ok
+
+  @impl true
+  def delete_target_statuses(_scope, _opts), do: :ok
+
+  @impl true
   def replace_backfill_read_models(
         _scope,
         _coverage_baselines,
