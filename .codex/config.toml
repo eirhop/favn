@@ -1,0 +1,8 @@
+[mcp_servers.playwright]
+command = "/home/eirik/.nvm/versions/node/v24.14.0/bin/node"
+args = ["/home/eirik/.nvm/versions/node/v24.14.0/lib/node_modules/npm/bin/npx-cli.js", "-y", "@playwright/mcp@latest"]
+enabled = true
+
+[mcp_servers.tidewave]
+url = "http://localhost:4173/tidewave/mcp"
+enabled = true
