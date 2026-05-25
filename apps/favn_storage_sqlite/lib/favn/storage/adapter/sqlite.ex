@@ -282,6 +282,22 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   @impl true
+  def list_target_runs(manifest_version_id, target_kind, target_ref, run_opts, opts)
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_list(run_opts) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         :ok <- repair_missing_run_query_metadata(repo) do
+      {sql, params} =
+        list_target_runs_query(manifest_version_id, target_kind, target_ref, run_opts)
+
+      case SQL.query(repo, sql, params) do
+        {:ok, %{rows: rows}} -> decode_run_rows(rows)
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
   def list_execution_group_runs(group_id, opts) when is_binary(group_id) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
          :ok <- repair_missing_run_query_metadata(repo) do
@@ -2692,8 +2708,9 @@ defmodule Favn.Storage.Adapter.SQLite do
           trigger_type,
           asset_ref_text,
           target_refs_text,
-          window_key
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+          window_key,
+          pipeline_submit_ref_text
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
         ON CONFLICT(run_id) DO UPDATE SET
           manifest_version_id = excluded.manifest_version_id,
           manifest_content_hash = excluded.manifest_content_hash,
@@ -2711,7 +2728,8 @@ defmodule Favn.Storage.Adapter.SQLite do
           trigger_type = excluded.trigger_type,
           asset_ref_text = excluded.asset_ref_text,
           target_refs_text = excluded.target_refs_text,
-          window_key = excluded.window_key
+          window_key = excluded.window_key,
+          pipeline_submit_ref_text = excluded.pipeline_submit_ref_text
         WHERE excluded.event_seq > favn_runs.event_seq
         """
 
@@ -2733,7 +2751,8 @@ defmodule Favn.Storage.Adapter.SQLite do
         query_metadata.trigger_type,
         query_metadata.asset_ref_text,
         query_metadata.target_refs_text,
-        query_metadata.window_key
+        query_metadata.window_key,
+        query_metadata.pipeline_submit_ref_text
       ]
 
       case SQL.query(repo, sql, params) do
@@ -3673,6 +3692,28 @@ defmodule Favn.Storage.Adapter.SQLite do
        where_sql <> " ORDER BY r.updated_seq DESC, r.run_id DESC" <> limit_sql, params}
   end
 
+  defp list_target_runs_query(manifest_version_id, target_kind, target_ref, run_opts) do
+    target_ref_text = RunQuery.public_ref(target_ref)
+    limit = Keyword.get(run_opts, :limit)
+
+    filters =
+      run_opts
+      |> Keyword.take([:status])
+      |> Keyword.put(:manifest_version_id, manifest_version_id)
+
+    {where_sql, params} = run_filter_sql(filters)
+
+    {target_sql, params} =
+      target_run_filter_sql(target_kind, target_ref_text, params)
+
+    limit_sql = if is_integer(limit) and limit > 0, do: " LIMIT ?#{length(params) + 1}", else: ""
+    params = if limit_sql == "", do: params, else: params ++ [limit]
+
+    {run_snapshot_select() <>
+       where_sql <> target_sql <> " ORDER BY r.updated_seq DESC, r.run_id DESC" <> limit_sql,
+     params}
+  end
+
   defp execution_groups_query(group_opts) do
     with {:ok, page_opts} <- Page.normalize_opts(group_opts) do
       filters = Keyword.drop(group_opts, [:limit, :offset, :sort])
@@ -3925,7 +3966,9 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp maybe_limit_clause(params, _limit), do: {"", params}
 
   defp repair_missing_run_query_metadata(repo) do
-    sql = run_snapshot_select() <> " WHERE r.root_execution_group_id IS NULL"
+    sql =
+      run_snapshot_select() <>
+        " WHERE r.root_execution_group_id IS NULL OR r.pipeline_submit_ref_text IS NULL"
 
     case SQL.query(repo, sql, []) do
       {:ok, %{rows: []}} ->
@@ -3959,8 +4002,9 @@ defmodule Favn.Storage.Adapter.SQLite do
           trigger_type = ?5,
           asset_ref_text = ?6,
           target_refs_text = ?7,
-          window_key = ?8
-      WHERE run_id = ?9
+          window_key = ?8,
+          pipeline_submit_ref_text = ?9
+      WHERE run_id = ?10
       """
 
     params = [
@@ -3972,6 +4016,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       metadata.asset_ref_text,
       metadata.target_refs_text,
       metadata.window_key,
+      metadata.pipeline_submit_ref_text,
       run.id
     ]
 
@@ -3995,6 +4040,18 @@ defmodule Favn.Storage.Adapter.SQLite do
       {[], params} -> {"", params}
       {clauses, params} -> {" WHERE " <> Enum.join(clauses, " AND "), params}
     end
+  end
+
+  defp target_run_filter_sql(:asset, target_ref_text, params) do
+    placeholder = "?#{length(params) + 1}"
+
+    {" AND (r.asset_ref_text = #{placeholder} OR r.target_refs_text = #{placeholder} OR r.target_refs_text LIKE #{placeholder} || char(10) || '%' OR r.target_refs_text LIKE '%' || char(10) || #{placeholder} OR r.target_refs_text LIKE '%' || char(10) || #{placeholder} || char(10) || '%')",
+     params ++ [target_ref_text]}
+  end
+
+  defp target_run_filter_sql(:pipeline, target_ref_text, params) do
+    placeholder = "?#{length(params) + 1}"
+    {" AND r.pipeline_submit_ref_text = #{placeholder}", params ++ [target_ref_text]}
   end
 
   defp run_snapshot_select do

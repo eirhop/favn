@@ -449,7 +449,9 @@ defmodule FavnOrchestrator do
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
          {:ok, status} <- target_status(manifest_version_id, :pipeline, target_id),
-         {:ok, recent_runs} <- recent_catalogue_runs(manifest_version_id) do
+         {:ok, pipeline} <- pipeline_for_target(version, target_id),
+         {:ok, recent_runs} <-
+           Storage.list_target_runs(manifest_version_id, :pipeline, pipeline.module, limit: 50) do
       case pipeline_detail_entry(version, index, target_id, status, recent_runs) do
         nil -> {:error, :not_found}
         detail -> {:ok, detail}
@@ -471,7 +473,9 @@ defmodule FavnOrchestrator do
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, freshness_states} <- detail_freshness_states(manifest_version_id),
          {:ok, asset_window_states} <- detail_asset_window_states(manifest_version_id),
-         {:ok, recent_runs} <- recent_catalogue_runs(manifest_version_id),
+         {:ok, asset} <- asset_for_target(version, target_id),
+         {:ok, recent_runs} <-
+           Storage.list_target_runs(manifest_version_id, :asset, asset.ref, limit: 50),
          {:ok, status} <- target_status(manifest_version_id, :asset, target_id) do
       case asset_detail_entry(
              version,
@@ -2369,12 +2373,28 @@ defmodule FavnOrchestrator do
     end
   end
 
-  defp recent_catalogue_runs(manifest_version_id) do
-    list_runs(manifest_version_id: manifest_version_id, limit: 50)
-  end
-
   defp target_ref_text(:asset, target), do: Map.fetch!(target, :asset_ref)
   defp target_ref_text(:pipeline, target), do: Map.fetch!(target, :label)
+
+  defp pipeline_for_target(%Version{} = version, target_id) do
+    version.manifest.pipelines
+    |> List.wrap()
+    |> Enum.find(&(manifest_pipeline_target(&1).target_id == target_id))
+    |> case do
+      nil -> {:error, :not_found}
+      pipeline -> {:ok, pipeline}
+    end
+  end
+
+  defp asset_for_target(%Version{} = version, target_id) do
+    version.manifest.assets
+    |> List.wrap()
+    |> Enum.find(&(manifest_asset_target(&1).target_id == target_id))
+    |> case do
+      nil -> {:error, :not_found}
+      asset -> {:ok, asset}
+    end
+  end
 
   defp detail_freshness_states(manifest_version_id) do
     case list_asset_freshness(manifest_version_id: manifest_version_id, limit: Page.max_limit()) do
@@ -3784,7 +3804,10 @@ defmodule FavnOrchestrator do
 
   defp same_pipeline_ref?(_value, _module), do: false
 
-  defp run_time_sort_key(run), do: run.finished_at || run.started_at || DateTime.from_unix!(0)
+  defp run_time_sort_key(run),
+    do:
+      Map.get(run, :finished_at) || Map.get(run, :started_at) || Map.get(run, :updated_at) ||
+        Map.get(run, :inserted_at) || DateTime.from_unix!(0)
 
   defp run_duration_ms(%{
          started_at: %DateTime{} = started_at,
@@ -3849,7 +3872,7 @@ defmodule FavnOrchestrator do
   defp latest_run_at(%AssetFreshnessState{latest_success_at: at}, _run) when not is_nil(at),
     do: at
 
-  defp latest_run_at(_freshness, run) when not is_nil(run), do: run.finished_at || run.started_at
+  defp latest_run_at(_freshness, run) when not is_nil(run), do: run_time_sort_key(run)
   defp latest_run_at(_freshness, _run), do: nil
 
   defp window_policy_dto(nil), do: nil

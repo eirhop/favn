@@ -282,6 +282,10 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def list_runs(_opts, _adapter_opts), do: {:ok, []}
 
   @impl true
+  def list_target_runs(_manifest_version_id, _target_kind, _target_ref, _run_opts, _adapter_opts),
+    do: {:ok, []}
+
+  @impl true
   def persist_run_transition(run, _transition, opts), do: put_run(run, opts)
 
   @impl true

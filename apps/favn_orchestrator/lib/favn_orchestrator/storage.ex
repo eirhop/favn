@@ -124,6 +124,21 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.list_runs(run_opts, opts) end)
   end
 
+  @spec list_target_runs(
+          String.t(),
+          TargetStatus.target_kind(),
+          Favn.Ref.t() | module(),
+          keyword()
+        ) ::
+          {:ok, [RunState.t()]} | {:error, term()}
+  def list_target_runs(manifest_version_id, target_kind, target_ref, run_opts \\ [])
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_list(run_opts) do
+    adapter_call(fn adapter, opts ->
+      adapter.list_target_runs(manifest_version_id, target_kind, target_ref, run_opts, opts)
+    end)
+  end
+
   @spec list_execution_group_runs(String.t()) :: {:ok, [RunState.t()]} | {:error, term()}
   def list_execution_group_runs(group_id) when is_binary(group_id) do
     optional_adapter_call(

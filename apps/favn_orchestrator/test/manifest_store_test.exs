@@ -1047,6 +1047,88 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert is_nil(healthy_status.in_flight_run_id)
   end
 
+  test "non-latest freshness states do not overwrite target status projection" do
+    ref = {MyApp.AssetA, :asset}
+    finished_at = ~U[2026-05-10 12:00:00Z]
+
+    run =
+      run_state("run_projection_latest", ref, :ok, finished_at, "mv_projection_freshness")
+
+    assert :ok = TransitionWriter.persist_transition(run, :run_finished, %{})
+
+    window_state =
+      freshness_state(ref, "window:v1", DateTime.add(finished_at, 60, :second),
+        freshness_key: "calendar:day:Etc/UTC:2026-05-10",
+        status: :error,
+        manifest_version_id: "mv_projection_freshness",
+        run_id: "run_projection_window"
+      )
+
+    assert :ok = Storage.put_asset_freshness_state(window_state)
+    assert :ok = FavnOrchestrator.TargetStatus.Projector.project_freshness_state(window_state)
+
+    assert {:ok, status} =
+             Storage.get_target_status(
+               "mv_projection_freshness",
+               :asset,
+               "asset:Elixir.MyApp.AssetA:asset"
+             )
+
+    assert status.status == :healthy
+    assert status.latest_run_id == "run_projection_latest"
+    assert status.latest_run_status == :ok
+  end
+
+  test "pipeline detail history is scoped before applying the run limit" do
+    ref = {MyApp.AssetA, :asset}
+
+    version =
+      manifest_version(
+        "mv_target_history",
+        ref,
+        [
+          %Pipeline{module: MyApp.PipelineA, name: :pipeline_a, selectors: [ref], deps: :all},
+          %Pipeline{module: MyApp.PipelineB, name: :pipeline_b, selectors: [ref], deps: :all}
+        ]
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_target_history")
+
+    assert :ok =
+             Storage.put_run(
+               pipeline_run_state(
+                 "run_quiet_pipeline_a",
+                 MyApp.PipelineA,
+                 [ref],
+                 :ok,
+                 ~U[2026-05-10 12:00:00Z],
+                 "mv_target_history"
+               )
+             )
+
+    for index <- 1..60 do
+      assert :ok =
+               Storage.put_run(
+                 pipeline_run_state(
+                   "run_noisy_pipeline_b_#{index}",
+                   MyApp.PipelineB,
+                   [ref],
+                   :ok,
+                   DateTime.add(~U[2026-05-10 12:00:00Z], index, :second),
+                   "mv_target_history"
+                 )
+               )
+    end
+
+    assert {:ok, _count} = FavnOrchestrator.rebuild_target_statuses("mv_target_history")
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_pipeline_detail("pipeline:Elixir.MyApp.PipelineA")
+
+    assert Enum.map(detail.runs, & &1.id) == ["run_quiet_pipeline_a"]
+  end
+
   test "pipeline catalogue matches runs by pipeline identity before target refs" do
     ref = {MyApp.AssetA, :asset}
 

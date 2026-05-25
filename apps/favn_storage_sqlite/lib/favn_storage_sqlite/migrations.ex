@@ -13,6 +13,7 @@ defmodule FavnStorageSqlite.Migrations do
   alias FavnStorageSqlite.Migrations.AddLogEntries
   alias FavnStorageSqlite.Migrations.AddMaterializationClaims
   alias FavnStorageSqlite.Migrations.AddRunGroupQueryColumns
+  alias FavnStorageSqlite.Migrations.AddRunPipelineQueryColumn
   alias FavnStorageSqlite.Migrations.AddTargetStatuses
   alias FavnStorageSqlite.Migrations.AddRunEventGlobalSequence
   alias FavnStorageSqlite.Migrations.CreateFoundation
@@ -33,7 +34,8 @@ defmodule FavnStorageSqlite.Migrations do
     {20_260_521_200_000, AddRunGroupQueryColumns},
     {20_260_522_100_000, AddBackfillProgress},
     {20_260_524_100_000, AddExecutionGroupSummaries},
-    {20_260_525_100_000, AddTargetStatuses}
+    {20_260_525_100_000, AddTargetStatuses},
+    {20_260_525_110_000, AddRunPipelineQueryColumn}
   ]
   @required_tables [
     "favn_manifest_versions",

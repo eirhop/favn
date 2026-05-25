@@ -85,6 +85,13 @@ defmodule Favn.Storage.Adapter do
   @callback put_run(RunState.t(), adapter_opts()) :: :ok | {:error, error()}
   @callback get_run(String.t(), adapter_opts()) :: {:ok, RunState.t()} | {:error, error()}
   @callback list_runs(list_opts(), adapter_opts()) :: {:ok, [RunState.t()]} | {:error, error()}
+  @callback list_target_runs(
+              String.t(),
+              TargetStatus.target_kind(),
+              Favn.Ref.t() | module(),
+              list_opts(),
+              adapter_opts()
+            ) :: {:ok, [RunState.t()]} | {:error, error()}
   @callback list_execution_group_runs(String.t(), adapter_opts()) ::
               {:ok, [RunState.t()]} | {:error, error()}
   @callback list_execution_group_run_ids(String.t(), adapter_opts()) ::

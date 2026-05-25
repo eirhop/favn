@@ -240,6 +240,24 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def list_target_runs(
+        manifest_version_id,
+        target_kind,
+        target_ref,
+        run_opts \\ [],
+        adapter_opts \\ []
+      )
+      when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
+             is_list(run_opts) and is_list(adapter_opts) do
+    server = Keyword.get(adapter_opts, :server, __MODULE__)
+
+    GenServer.call(
+      server,
+      {:list_target_runs, manifest_version_id, target_kind, target_ref, run_opts}
+    )
+  end
+
+  @impl true
   def list_execution_group_runs(group_id, opts \\ [])
       when is_binary(group_id) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
@@ -994,6 +1012,22 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       state.runs
       |> Map.values()
       |> filter_runs(run_opts)
+      |> Enum.sort_by(&run_sort_key/1, :desc)
+      |> maybe_limit_runs(run_opts)
+
+    {:reply, {:ok, runs}, state}
+  end
+
+  def handle_call(
+        {:list_target_runs, manifest_version_id, target_kind, target_ref, run_opts},
+        _from,
+        state
+      ) do
+    runs =
+      state.runs
+      |> Map.values()
+      |> filter_runs(Keyword.put(run_opts, :manifest_version_id, manifest_version_id))
+      |> Enum.filter(&target_run?(&1, target_kind, target_ref))
       |> Enum.sort_by(&run_sort_key/1, :desc)
       |> maybe_limit_runs(run_opts)
 
@@ -1992,6 +2026,28 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           Keyword.get(run_opts, :manifest_version_id)
         )
     end)
+  end
+
+  defp target_run?(%RunState{} = run, :asset, target_ref) do
+    target_ref_text = RunQuery.public_ref(target_ref)
+
+    run
+    |> RunQuery.target_refs()
+    |> Enum.map(&RunQuery.public_ref/1)
+    |> Enum.member?(target_ref_text)
+  end
+
+  defp target_run?(%RunState{} = run, :pipeline, target_ref) do
+    pipeline_submit_ref_text(run) == RunQuery.public_ref(target_ref)
+  end
+
+  defp pipeline_submit_ref_text(%RunState{} = run) do
+    metadata = run.metadata || %{}
+
+    case Map.get(metadata, :pipeline_submit_ref, Map.get(metadata, "pipeline_submit_ref")) do
+      value when is_atom(value) or is_binary(value) -> RunQuery.public_ref(value)
+      _other -> nil
+    end
   end
 
   defp execution_group_runs(runs, group_id) when is_map(runs) do

@@ -302,6 +302,10 @@ defmodule FavnOrchestrator.RunServerTest do
     defdelegate put_run(run, opts), to: Memory
     defdelegate get_run(id, opts), to: Memory
     defdelegate list_runs(run_opts, opts), to: Memory
+
+    defdelegate list_target_runs(manifest_version_id, target_kind, target_ref, run_opts, opts),
+      to: Memory
+
     defdelegate persist_run_transition(run, event, opts), to: Memory
     defdelegate append_run_event(run_id, event, opts), to: Memory
     defdelegate list_run_events(run_id, opts), to: Memory

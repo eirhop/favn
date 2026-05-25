@@ -19,6 +19,8 @@ defmodule FavnOrchestrator.TargetStatus.Projector do
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.TargetStatus
 
+  @latest_freshness_key Favn.Freshness.Key.latest()
+
   @doc """
   Projects a persisted run transition into current asset and pipeline target rows.
   """
@@ -38,6 +40,10 @@ defmodule FavnOrchestrator.TargetStatus.Projector do
   Projects a persisted asset freshness state into the matching asset target row.
   """
   @spec project_freshness_state(AssetFreshnessState.t()) :: :ok | {:error, term()}
+  def project_freshness_state(%AssetFreshnessState{freshness_key: freshness_key})
+      when freshness_key != @latest_freshness_key,
+      do: :ok
+
   def project_freshness_state(%AssetFreshnessState{} = freshness_state) do
     ref = {freshness_state.asset_ref_module, freshness_state.asset_ref_name}
     manifest_version_id = freshness_state.manifest_version_id
@@ -308,7 +314,7 @@ defmodule FavnOrchestrator.TargetStatus.Projector do
   defp latest_freshness_for_ref(freshness_states, {module, name}) do
     Enum.find(freshness_states, fn %AssetFreshnessState{} = state ->
       state.asset_ref_module == module and state.asset_ref_name == name and
-        state.freshness_key == Favn.Freshness.Key.latest()
+        state.freshness_key == @latest_freshness_key
     end)
   end
 

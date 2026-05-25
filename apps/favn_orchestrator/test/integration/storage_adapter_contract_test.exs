@@ -130,6 +130,8 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, listed} = Storage.list_runs(status: :pending, limit: 10)
     assert Enum.any?(listed, &(&1.id == run.id))
 
+    assert_target_run_history_contract(label, version, run)
+
     child =
       RunState.new(
         id: "run_contract_#{label}_child_#{System.unique_integer([:positive])}",
@@ -538,6 +540,51 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert Map.keys(states) == [key]
     refute Map.has_key?(states, unrelated_key)
     assert {:ok, %{}} = Storage.get_asset_freshness_states_by_keys([])
+  end
+
+  defp assert_target_run_history_contract(label, version, run) do
+    assert {:ok, asset_runs} =
+             Storage.list_target_runs(version.manifest_version_id, :asset, {MyApp.Asset, :asset},
+               limit: 10
+             )
+
+    assert Enum.any?(asset_runs, &(&1.id == run.id))
+
+    quiet_pipeline =
+      RunState.new(
+        id: "run_contract_#{label}_quiet_pipeline_#{System.unique_integer([:positive])}",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Asset, :asset},
+        target_refs: [{MyApp.Asset, :asset}],
+        submit_kind: :pipeline,
+        metadata: %{pipeline_submit_ref: MyApp.Pipeline}
+      )
+      |> Map.put(:updated_at, ~U[2026-05-10 12:00:00Z])
+
+    noisy_pipelines =
+      for index <- 1..3 do
+        RunState.new(
+          id:
+            "run_contract_#{label}_noisy_pipeline_#{index}_#{System.unique_integer([:positive])}",
+          manifest_version_id: version.manifest_version_id,
+          manifest_content_hash: version.content_hash,
+          asset_ref: {MyApp.Asset, :asset},
+          target_refs: [{MyApp.Asset, :asset}],
+          submit_kind: :pipeline,
+          metadata: %{pipeline_submit_ref: MyApp.OtherPipeline}
+        )
+        |> Map.put(:updated_at, DateTime.add(~U[2026-05-10 12:00:00Z], index, :second))
+      end
+
+    Enum.each([quiet_pipeline | noisy_pipelines], &assert(:ok = Storage.put_run(&1)))
+
+    assert {:ok, [target_run]} =
+             Storage.list_target_runs(version.manifest_version_id, :pipeline, MyApp.Pipeline,
+               limit: 1
+             )
+
+    assert target_run.id == quiet_pipeline.id
   end
 
   defp assert_target_status_contract(label, run) do
