@@ -15,7 +15,7 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineBackfillRequest do
           coverage_baseline_id: String.t() | nil,
           max_attempts: pos_integer() | nil,
           retry_backoff_ms: non_neg_integer() | nil,
-          timeout_ms: non_neg_integer() | nil
+          timeout_ms: pos_integer() | nil
         }
 
   defstruct refresh_mode: :auto,
@@ -41,16 +41,26 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineBackfillRequest do
     range_value = Input.field(input, :range, Input.field(input, :range_request))
 
     with {:ok, refresh_mode} <- Input.pipeline_refresh_mode(refresh_value),
-         {:ok, range} <- Input.range(range_value) do
+         {:ok, range} <- Input.range(range_value),
+         {:ok, coverage_baseline_id} <-
+           Input.non_empty_binary(
+             Input.field(input, :coverage_baseline_id),
+             :coverage_baseline_id
+           ),
+         {:ok, max_attempts} <-
+           Input.positive_integer(Input.field(input, :max_attempts), :max_attempts),
+         {:ok, retry_backoff_ms} <-
+           Input.non_neg_integer(Input.field(input, :retry_backoff_ms), :retry_backoff_ms),
+         {:ok, timeout_ms} <- Input.timeout_ms(Input.field(input, :timeout_ms)) do
       {:ok,
        %__MODULE__{
          refresh_mode: refresh_mode,
          range: range,
          metadata: Input.field(input, :metadata),
-         coverage_baseline_id: Input.field(input, :coverage_baseline_id),
-         max_attempts: Input.field(input, :max_attempts),
-         retry_backoff_ms: Input.field(input, :retry_backoff_ms),
-         timeout_ms: Input.field(input, :timeout_ms)
+         coverage_baseline_id: coverage_baseline_id,
+         max_attempts: max_attempts,
+         retry_backoff_ms: retry_backoff_ms,
+         timeout_ms: timeout_ms
        }}
     end
   end

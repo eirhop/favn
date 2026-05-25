@@ -42,6 +42,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunEvent
+  alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.ManifestEntries
@@ -1698,10 +1699,15 @@ defmodule FavnOrchestrator do
 
   @doc """
   Lists persisted run events for one run.
+
+  This public facade is bounded for operator/API callers: `:limit` defaults to
+  `100` and is capped at `500`; `:after_sequence` is an optional non-negative
+  cursor. Orchestrator-internal repair/projection code that intentionally needs
+  an unbounded adapter read should call the storage boundary directly.
   """
   @spec list_run_events(run_id(), keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
   def list_run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
-    with :ok <- validate_run_event_opts(opts),
+    with {:ok, opts} <- RunEventQuery.normalize_opts(opts),
          {:ok, events} <- Storage.list_run_events(run_id, opts) do
       {:ok, Enum.map(events, &RunEvent.from_map/1)}
     end
@@ -1941,22 +1947,6 @@ defmodule FavnOrchestrator do
       running: Enum.count(entries, &(&1.runtime_state == :running)),
       queued: Enum.count(entries, &(&1.runtime_state == :queued))
     }
-  end
-
-  defp validate_run_event_opts(opts) do
-    after_sequence = Keyword.get(opts, :after_sequence)
-    limit = Keyword.get(opts, :limit)
-
-    cond do
-      not is_nil(after_sequence) and (not is_integer(after_sequence) or after_sequence < 0) ->
-        {:error, :invalid_opts}
-
-      not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->
-        {:error, :invalid_opts}
-
-      true ->
-        :ok
-    end
   end
 
   defp run_event_cursor_valid?(_run_id, nil), do: {:ok, true}

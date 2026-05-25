@@ -4,6 +4,8 @@ defmodule FavnView.LogsLiveSupport do
   import Phoenix.Component, only: [assign: 2, assign: 3]
   import Phoenix.LiveView, only: [connected?: 1]
 
+  require Logger
+
   alias Favn.Log.Filter
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.LogsViewModel
@@ -74,6 +76,10 @@ defmodule FavnView.LogsLiveSupport do
         run_context_from_public(summary, Map.get(detail, :steps, []))
 
       {:error, reason} ->
+        Logger.error(
+          "logs.run_context failed run_id=#{inspect(run_id)} reason=#{inspect(reason)}"
+        )
+
         %{
           found?: false,
           id: run_id,
@@ -274,5 +280,5 @@ defmodule FavnView.LogsLiveSupport do
   defp target_label(%{asset_ref: target}), do: LogsViewModel.ref_label(target)
 
   defp error_label(:not_found), do: "Run not found"
-  defp error_label(reason), do: "Unable to load run: #{inspect(reason)}"
+  defp error_label(_reason), do: "Unable to load run"
 end

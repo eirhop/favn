@@ -3,6 +3,8 @@ defmodule FavnView.RunsListLive do
 
   use FavnView, :live_view
 
+  require Logger
+
   alias FavnView.Components.RunsListPage
   alias FavnView.LiveRefresh
   alias FavnView.LogsViewModel
@@ -166,8 +168,12 @@ defmodule FavnView.RunsListLive do
 
   defp load_groups(filters) do
     case page_execution_groups(orchestrator_filters(filters)) do
-      {:ok, %{items: groups}} -> {Enum.map(groups, &group_from_public/1), nil}
-      {:error, reason} -> {[], inspect(reason)}
+      {:ok, %{items: groups}} ->
+        {Enum.map(groups, &group_from_public/1), nil}
+
+      {:error, reason} ->
+        Logger.error("runs.list failed: #{inspect(reason)}")
+        {[], "Backend unavailable"}
     end
   end
 
@@ -290,7 +296,15 @@ defmodule FavnView.RunsListLive do
           update(socket, :group_details, &Map.put(&1, group_id, detail_from_public(detail)))
 
         {:error, reason} ->
-          update(socket, :group_details, &Map.put(&1, group_id, %{error: inspect(reason)}))
+          Logger.error(
+            "runs.group_detail failed group_id=#{inspect(group_id)} reason=#{inspect(reason)}"
+          )
+
+          update(
+            socket,
+            :group_details,
+            &Map.put(&1, group_id, %{error: "Unable to load run group"})
+          )
       end
     end
   end

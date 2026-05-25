@@ -11,10 +11,13 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator
   alias FavnOrchestrator.API.Config
   alias FavnOrchestrator.API.DTO
+  alias FavnOrchestrator.API.ErrorResponse
+  alias FavnOrchestrator.API.SSE
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.RunEvent
+  alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
 
   @read_model_status_filters %{
     "pending" => :pending,
@@ -561,7 +564,8 @@ defmodule FavnOrchestrator.API.Router do
   get "/api/orchestrator/v1/runs/:run_id/events" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
-         {:ok, events} <- FavnOrchestrator.list_run_events(run_id, run_event_opts(conn.params)) do
+         {:ok, opts} <- RunEventQuery.from_params(conn.params),
+         {:ok, events} <- FavnOrchestrator.list_run_events(run_id, opts) do
       data(conn, 200, %{items: Enum.map(events, &DTO.run_event/1)})
     else
       {:error, :invalid_opts} ->
@@ -692,7 +696,7 @@ defmodule FavnOrchestrator.API.Router do
 
           {:error, reason} ->
             Logger.error("run.submit failed after request validation: #{inspect(reason)}")
-            {:error, 400, "bad_request", "Request failed", %{reason: inspect(reason)}}
+            {:error, 400, "bad_request", "Request failed", %{}}
         end
       end)
     else
@@ -829,7 +833,7 @@ defmodule FavnOrchestrator.API.Router do
               {:error, 422, "validation_failed", "Invalid backfill range request", %{}}
 
             {:error, reason} when is_tuple(reason) ->
-              command_backfill_range_error(reason)
+              command_operator_validation_error(reason) || command_backfill_range_error(reason)
 
             {:error, :active_manifest_not_set} ->
               {:error, 404, "not_found", "Active manifest is not set", %{}}
@@ -867,7 +871,10 @@ defmodule FavnOrchestrator.API.Router do
         error(conn, 422, "validation_failed", "Invalid backfill range request")
 
       {:error, reason} when is_tuple(reason) ->
-        range_error(conn, reason)
+        case command_operator_validation_error(reason) do
+          {:error, status, code, message, details} -> error(conn, status, code, message, details)
+          nil -> range_error(conn, reason)
+        end
 
       {:error, :active_manifest_not_set} ->
         error(conn, 404, "not_found", "Active manifest is not set")
@@ -1608,31 +1615,52 @@ defmodule FavnOrchestrator.API.Router do
       {:ok, status, payload, resource_type, resource_id} ->
         response_body = DTO.normalize(payload)
 
-        :ok =
-          Idempotency.complete(record.id, %{
-            status: :completed,
-            response_status: status,
-            response_body: response_body,
-            resource_type: resource_type,
-            resource_id: resource_id
-          })
+        attrs = %{
+          status: :completed,
+          response_status: status,
+          response_body: response_body,
+          resource_type: resource_type,
+          resource_id: resource_id
+        }
 
-        data(conn, status, response_body)
+        case Idempotency.complete(record.id, attrs) do
+          :ok ->
+            data(conn, status, response_body)
+
+          {:error, reason} ->
+            log_idempotency_completion_failure(conn, record, attrs, reason)
+            error_response(conn, ErrorResponse.response(:idempotency_completion_failed))
+        end
 
       {:error, status, code, message, details} ->
         response_body = DTO.normalize(%{code: code, message: message, details: details})
 
-        :ok =
-          Idempotency.complete(record.id, %{
-            status: :failed,
-            response_status: status,
-            response_body: response_body,
-            resource_type: nil,
-            resource_id: nil
-          })
+        attrs = %{
+          status: :failed,
+          response_status: status,
+          response_body: response_body,
+          resource_type: nil,
+          resource_id: nil
+        }
 
-        error(conn, status, code, message, details)
+        case Idempotency.complete(record.id, attrs) do
+          :ok ->
+            error(conn, status, code, message, details)
+
+          {:error, reason} ->
+            log_idempotency_completion_failure(conn, record, attrs, reason)
+            error_response(conn, ErrorResponse.response(:idempotency_completion_failed))
+        end
     end
+  end
+
+  defp log_idempotency_completion_failure(conn, record, attrs, reason) do
+    Logger.error(
+      "idempotency.complete failed operation=#{inspect(record.operation)} " <>
+        "record_id=#{record.id} resource_type=#{inspect(attrs.resource_type)} " <>
+        "resource_id=#{inspect(attrs.resource_id)} request_id=#{inspect(request_id(conn))} " <>
+        "reason=#{inspect(reason)}"
+    )
   end
 
   defp replay_idempotent_response(conn, %{status: :completed} = record) do
@@ -1931,16 +1959,27 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp backfill_submit_opts(params, range_request) when is_map(params) do
-    {:ok,
-     []
-     |> Keyword.put(:range_request, range_request)
-     |> maybe_put_string_opt(:coverage_baseline_id, Map.get(params, "coverage_baseline_id"))
-     |> maybe_put_map_opt(:metadata, Map.get(params, "metadata"))
-     |> maybe_put_opt(:refresh, Map.get(params, "refresh"))
-     |> maybe_put_opt(:refresh_policy, Map.get(params, "refresh_policy"))
-     |> maybe_put_positive_int_opt(:max_attempts, Map.get(params, "max_attempts"))
-     |> maybe_put_non_neg_int_opt(:retry_backoff_ms, Map.get(params, "retry_backoff_ms"))
-     |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))}
+    with {:ok, coverage_baseline_id} <-
+           optional_non_empty_binary(
+             Map.get(params, "coverage_baseline_id"),
+             :coverage_baseline_id
+           ),
+         {:ok, max_attempts} <-
+           optional_positive_int(Map.get(params, "max_attempts"), :max_attempts),
+         {:ok, retry_backoff_ms} <-
+           optional_non_neg_int(Map.get(params, "retry_backoff_ms"), :retry_backoff_ms),
+         {:ok, timeout_ms} <- optional_positive_int(Map.get(params, "timeout_ms"), :timeout_ms) do
+      {:ok,
+       []
+       |> Keyword.put(:range_request, range_request)
+       |> maybe_put_string_opt(:coverage_baseline_id, coverage_baseline_id)
+       |> maybe_put_map_opt(:metadata, Map.get(params, "metadata"))
+       |> maybe_put_opt(:refresh, Map.get(params, "refresh"))
+       |> maybe_put_opt(:refresh_policy, Map.get(params, "refresh_policy"))
+       |> maybe_put_positive_int_opt(:max_attempts, max_attempts)
+       |> maybe_put_non_neg_int_opt(:retry_backoff_ms, retry_backoff_ms)
+       |> maybe_put_positive_int_opt(:timeout_ms, timeout_ms)}
+    end
   end
 
   defp backfill_window_rerun_opts(params) when is_map(params) do
@@ -2096,12 +2135,6 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
-  defp run_event_opts(params) do
-    []
-    |> maybe_put_int_opt(:after_sequence, Map.get(params, "after_sequence"))
-    |> maybe_put_int_opt(:limit, Map.get(params, "limit"))
-  end
-
   defp run_filters(params) when is_map(params) do
     with {:ok, limit} <- pagination_int(Map.get(params, "limit", "100"), 1, 500),
          {:ok, opts} <- maybe_put_status_filter([limit: limit], Map.get(params, "status")) do
@@ -2111,21 +2144,6 @@ defmodule FavnOrchestrator.API.Router do
       {:error, _reason} = error -> error
     end
   end
-
-  defp maybe_put_int_opt(opts, _key, nil), do: opts
-
-  defp maybe_put_int_opt(opts, key, value) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} -> Keyword.put(opts, key, int)
-      _ -> opts
-    end
-  end
-
-  defp maybe_put_int_opt(opts, key, value) when is_integer(value) do
-    Keyword.put(opts, key, value)
-  end
-
-  defp maybe_put_int_opt(opts, _key, _value), do: opts
 
   defp pagination_filters(params) when is_map(params) do
     with {:ok, limit} <- pagination_int(Map.get(params, "limit", "100"), 1, 500),
@@ -2188,6 +2206,33 @@ defmodule FavnOrchestrator.API.Router do
     do: Keyword.put(opts, key, value)
 
   defp maybe_put_non_neg_int_opt(opts, _key, _value), do: opts
+
+  defp optional_positive_int(nil, _field), do: {:ok, nil}
+  defp optional_positive_int(value, _field) when is_integer(value) and value > 0, do: {:ok, value}
+
+  defp optional_positive_int(value, field),
+    do: {:error, {invalid_operator_numeric_field(field), value}}
+
+  defp optional_non_neg_int(nil, _field), do: {:ok, nil}
+  defp optional_non_neg_int(value, _field) when is_integer(value) and value >= 0, do: {:ok, value}
+
+  defp optional_non_neg_int(value, field),
+    do: {:error, {invalid_operator_numeric_field(field), value}}
+
+  defp optional_non_empty_binary(nil, _field), do: {:ok, nil}
+
+  defp optional_non_empty_binary(value, _field) when is_binary(value) and value != "",
+    do: {:ok, value}
+
+  defp optional_non_empty_binary(value, field),
+    do: {:error, {invalid_operator_text_field(field), value}}
+
+  defp invalid_operator_numeric_field(:max_attempts), do: :invalid_operator_max_attempts
+  defp invalid_operator_numeric_field(:retry_backoff_ms), do: :invalid_operator_retry_backoff_ms
+  defp invalid_operator_numeric_field(:timeout_ms), do: :invalid_operator_timeout_ms
+
+  defp invalid_operator_text_field(:coverage_baseline_id),
+    do: :invalid_operator_coverage_baseline_id
 
   defp maybe_put_status_filter(opts, nil), do: {:ok, opts}
   defp maybe_put_status_filter(opts, ""), do: {:ok, opts}
@@ -2322,6 +2367,10 @@ defmodule FavnOrchestrator.API.Router do
     |> send_resp(status, body)
   end
 
+  defp error_response(conn, {status, code, message, details}) do
+    error(conn, status, code, message, details)
+  end
+
   defp range_error(conn, reason) do
     case backfill_range_error(reason) do
       {:ok, message, details} -> error(conn, 422, "validation_failed", message, details)
@@ -2335,6 +2384,36 @@ defmodule FavnOrchestrator.API.Router do
       :error -> {:error, 400, "bad_request", "Request failed", %{}}
     end
   end
+
+  defp command_operator_validation_error({reason, _value})
+       when reason in [
+              :invalid_operator_max_attempts,
+              :invalid_operator_retry_backoff_ms,
+              :invalid_operator_timeout_ms,
+              :invalid_operator_coverage_baseline_id
+            ] do
+    {:error, 422, "validation_failed", operator_validation_message(reason),
+     %{field: operator_validation_field(reason)}}
+  end
+
+  defp command_operator_validation_error(_reason), do: nil
+
+  defp operator_validation_message(:invalid_operator_max_attempts), do: "Invalid max_attempts"
+
+  defp operator_validation_message(:invalid_operator_retry_backoff_ms),
+    do: "Invalid retry_backoff_ms"
+
+  defp operator_validation_message(:invalid_operator_timeout_ms), do: "Invalid timeout_ms"
+
+  defp operator_validation_message(:invalid_operator_coverage_baseline_id),
+    do: "Invalid coverage_baseline_id"
+
+  defp operator_validation_field(:invalid_operator_max_attempts), do: "max_attempts"
+  defp operator_validation_field(:invalid_operator_retry_backoff_ms), do: "retry_backoff_ms"
+  defp operator_validation_field(:invalid_operator_timeout_ms), do: "timeout_ms"
+
+  defp operator_validation_field(:invalid_operator_coverage_baseline_id),
+    do: "coverage_baseline_id"
 
   defp window_policy_error({:missing_window_request, kind}) do
     {:ok, "Pipeline requires an explicit #{kind} window", %{kind: atom_name(kind)}}
@@ -2356,7 +2435,8 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp window_policy_error({:invalid_window_request, reason}) do
-    {:ok, "Invalid window request", %{reason: inspect(reason)}}
+    Logger.error("invalid window request: #{inspect(reason)}")
+    {:ok, "Invalid window request", %{reason: "invalid_window_request"}}
   end
 
   defp window_policy_error({:invalid_window_value, kind, value}) do
@@ -2381,7 +2461,8 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp backfill_range_error({:invalid_backfill_range_request, value}) do
-    {:ok, "Invalid backfill range request", %{value: inspect(value)}}
+    Logger.error("invalid backfill range request: #{inspect(value)}")
+    {:ok, "Invalid backfill range request", %{reason: "invalid_backfill_range_request"}}
   end
 
   defp backfill_range_error({:missing_backfill_reference, _opts}) do
@@ -2389,11 +2470,13 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp backfill_range_error({:invalid_last_request, value}) do
-    {:ok, "Invalid relative backfill range", %{value: inspect(value)}}
+    Logger.error("invalid relative backfill range: #{inspect(value)}")
+    {:ok, "Invalid relative backfill range", %{reason: "invalid_last_request"}}
   end
 
   defp backfill_range_error({:invalid_window_policy_kind, kind}) do
-    {:ok, "Invalid backfill window kind", %{kind: inspect(kind)}}
+    Logger.error("invalid backfill window policy kind: #{inspect(kind)}")
+    {:ok, "Invalid backfill window kind", %{reason: "invalid_window_policy_kind"}}
   end
 
   defp backfill_range_error({:invalid_window_value, kind, value}) do
@@ -2544,7 +2627,11 @@ defmodule FavnOrchestrator.API.Router do
         {:ok, "retry: #{@sse_retry_ms}\n\n", initial_cursor(stream)},
         fn event, {:ok, body, _cursor} ->
           cursor = event_cursor(stream, event)
-          {:ok, body <> sse_run_event_body(event, stream, cursor), cursor}
+
+          case sse_run_event_body(event, stream, cursor) do
+            {:ok, event_body} -> {:ok, body <> event_body, cursor}
+            {:error, reason} -> raise ArgumentError, "invalid SSE event: #{inspect(reason)}"
+          end
         end
       )
 
@@ -2566,9 +2653,16 @@ defmodule FavnOrchestrator.API.Router do
                                                                       {:ok, conn, _cursor} ->
       cursor = event_cursor(stream, event)
 
-      case chunk(conn, sse_run_event_body(event, stream, cursor)) do
-        {:ok, conn} -> {:cont, {:ok, conn, cursor}}
-        {:error, reason} -> {:halt, {:error, reason}}
+      case sse_run_event_body(event, stream, cursor) do
+        {:ok, body} ->
+          case chunk(conn, body) do
+            {:ok, conn} -> {:cont, {:ok, conn, cursor}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+
+        {:error, reason} ->
+          Logger.error("sse.run_event encode failed: #{inspect(reason)}")
+          {:halt, {:error, reason}}
       end
     end)
   end
@@ -2583,9 +2677,16 @@ defmodule FavnOrchestrator.API.Router do
           {:ok, hydrated} ->
             next_cursor = event_cursor(stream, hydrated)
 
-            case chunk(conn, sse_run_event_body(hydrated, stream, next_cursor)) do
-              {:ok, conn} -> sse_live_loop(conn, stream, next_cursor, heartbeat_ref)
-              {:error, _reason} -> conn
+            case sse_run_event_body(hydrated, stream, next_cursor) do
+              {:ok, body} ->
+                case chunk(conn, body) do
+                  {:ok, conn} -> sse_live_loop(conn, stream, next_cursor, heartbeat_ref)
+                  {:error, _reason} -> conn
+                end
+
+              {:error, reason} ->
+                Logger.error("sse.run_event encode failed: #{inspect(reason)}")
+                sse_live_loop(conn, stream, cursor, heartbeat_ref)
             end
 
           {:error, _reason} ->
@@ -2638,10 +2739,12 @@ defmodule FavnOrchestrator.API.Router do
   defp unsubscribe_sse_stream({:global, _sequence}), do: FavnOrchestrator.unsubscribe_runs()
 
   defp sse_run_event_body(event, stream, cursor) do
-    event_name = event_name(event.event_type)
-    payload = Jason.encode!(sse_event_payload(event, stream, cursor, event_name))
+    with {:ok, event_name} <- SSE.field(:event, event.event_type),
+         {:ok, cursor} <- SSE.field(:id, cursor) do
+      payload = Jason.encode!(sse_event_payload(event, stream, cursor, event_name))
 
-    "id: #{cursor}\nevent: #{event_name}\ndata: #{payload}\n\n"
+      {:ok, "id: #{cursor}\nevent: #{event_name}\ndata: #{payload}\n\n"}
+    end
   end
 
   defp sse_ready_body(stream, nil) when is_binary(stream) do

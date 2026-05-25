@@ -35,6 +35,17 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
     assert normalized.data == %{"attempt" => 1}
   end
 
+  test "normalizes valid string event types" do
+    assert {:ok, normalized} =
+             RunEventCodec.normalize("run_string_event", %{
+               sequence: 1,
+               event_type: "custom.run:updated-1",
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert normalized.event_type == "custom.run:updated-1"
+  end
+
   test "accepts ISO8601 timestamps" do
     now = DateTime.utc_now() |> DateTime.to_iso8601()
 
@@ -81,6 +92,41 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
                event_type: :run_started,
                occurred_at: 1
              })
+  end
+
+  test "rejects unsafe event types before persistence" do
+    for event_type <- ["run\nupdated", "run\rupdated", "run_updated\n\nid: forged\nevent: forged"] do
+      assert {:error, {:invalid_run_event_field, :event_type, ^event_type}} =
+               RunEventCodec.normalize("run_unsafe_event", %{
+                 sequence: 1,
+                 event_type: event_type,
+                 occurred_at: DateTime.utc_now()
+               })
+    end
+
+    assert {:error, {:invalid_run_event_field, :event_type, :"run\nupdated"}} =
+             RunEventCodec.normalize("run_unsafe_atom_event", %{
+               sequence: 1,
+               event_type: :"run\nupdated",
+               occurred_at: DateTime.utc_now()
+             })
+  end
+
+  test "rejects unsafe decoded event types" do
+    payload =
+      Jason.encode!(%{
+        "format" => "favn.run_event.storage.v1",
+        "schema_version" => 1,
+        "run_id" => "run_decode_injection",
+        "sequence" => 1,
+        "event_type" => "run_updated\n\nevent: forged",
+        "entity" => "run",
+        "occurred_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "data" => %{}
+      })
+
+    assert {:error, {:invalid_run_event_json, {:invalid_run_event_field, :event_type, _}}} =
+             RunEventCodec.decode(payload)
   end
 
   test "encodes run events as explicit JSON-safe DTOs" do

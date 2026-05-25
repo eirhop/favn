@@ -3,6 +3,8 @@ defmodule FavnView.PipelineDetailLive do
 
   use FavnView, :live_view
 
+  require Logger
+
   alias FavnView.AssetRoute
   alias FavnView.Components.AppShell
   alias FavnView.Components.GlassPanel
@@ -12,14 +14,19 @@ defmodule FavnView.PipelineDetailLive do
   alias FavnView.Auth.Scope
 
   @valid_modes ~w(runs assets more)
+  @refresh_choices ~w(missing force auto force_all)
+  @window_kind_choices ~w(hour day month year)
+  @timezone_pattern ~r/\A[A-Za-z0-9_+\-\/]{1,64}\z/
 
   @impl true
   def mount(%{"pipeline_id" => pipeline_id}, _session, socket) do
-    pipeline = load_pipeline(pipeline_id)
+    pipeline_state = load_pipeline(pipeline_id)
+    pipeline = pipeline_from_state(pipeline_state)
 
     socket =
       assign(socket,
         pipeline_id: pipeline_id,
+        pipeline_state: pipeline_state,
         pipeline: pipeline,
         active_mode: :runs,
         run_error: nil,
@@ -62,6 +69,7 @@ defmodule FavnView.PipelineDetailLive do
          |> push_navigate(to: ~p"/runs/#{run_id}")}
 
       {:error, reason} ->
+        Logger.error("pipeline.run submit failed reason=#{inspect(reason)}")
         {:noreply, assign(socket, :run_error, submit_error_label(reason))}
     end
   end
@@ -83,6 +91,7 @@ defmodule FavnView.PipelineDetailLive do
     pipeline = socket.assigns.pipeline
 
     with true <- pipeline.can_backfill?,
+         nil <- validate_backfill_config(config),
          {:ok, run_id} <-
            FavnOrchestrator.submit_operator_pipeline_backfill(
              actor_context(socket),
@@ -102,7 +111,16 @@ defmodule FavnView.PipelineDetailLive do
            backfill_error: "Backfill requires a windowed pipeline."
          )}
 
+      error when is_binary(error) ->
+        {:noreply,
+         assign(socket,
+           backfill_config: config,
+           backfill_error: error
+         )}
+
       {:error, reason} ->
+        Logger.error("pipeline.backfill submit failed reason=#{inspect(reason)}")
+
         {:noreply,
          assign(socket,
            backfill_config: config,
@@ -128,7 +146,26 @@ defmodule FavnView.PipelineDetailLive do
     />
 
     <AppShell.app_shell
-      :if={!@pipeline}
+      :if={match?({:error, _reason}, @pipeline_state)}
+      title={pipeline_error_title(@pipeline_state)}
+      subtitle={@pipeline_id}
+      nav_items={@nav_items}
+    >
+      <div class="mx-auto w-full max-w-4xl">
+        <GlassPanel.glass_panel class="p-8 text-center" data-testid="pipeline-backend-error-state">
+          <h2 class="text-xl font-medium">{pipeline_error_title(@pipeline_state)}</h2>
+          <p class="mt-2 text-base-content/60">
+            {pipeline_error_message(@pipeline_state)}
+          </p>
+          <.link navigate={~p"/pipelines"} class="btn btn-primary btn-soft mt-6">
+            Back to pipelines
+          </.link>
+        </GlassPanel.glass_panel>
+      </div>
+    </AppShell.app_shell>
+
+    <AppShell.app_shell
+      :if={match?({:not_found, _id}, @pipeline_state)}
       title="Pipeline not found"
       subtitle={@pipeline_id}
       nav_items={@nav_items}
@@ -152,10 +189,26 @@ defmodule FavnView.PipelineDetailLive do
     target_id = AssetRoute.from_param(pipeline_id)
 
     case FavnOrchestrator.active_pipeline_detail(target_id) do
-      {:ok, detail} -> pipeline_from_detail(detail)
-      {:error, _reason} -> nil
+      {:ok, detail} ->
+        {:ok, pipeline_from_detail(detail)}
+
+      {:error, :not_found} ->
+        {:not_found, pipeline_id}
+
+      {:error, :active_manifest_not_set} ->
+        {:error, :active_manifest_not_set}
+
+      {:error, reason} ->
+        Logger.error(
+          "pipeline_detail.load failed pipeline_id=#{inspect(pipeline_id)} reason=#{inspect(reason)}"
+        )
+
+        {:error, :backend_unavailable}
     end
   end
+
+  defp pipeline_from_state({:ok, pipeline}), do: pipeline
+  defp pipeline_from_state(_state), do: nil
 
   defp actor_context(socket) do
     %Scope{} = scope = socket.assigns.current_scope
@@ -208,6 +261,37 @@ defmodule FavnView.PipelineDetailLive do
       refresh: params |> Map.get("refresh", "missing") |> String.trim()
     }
   end
+
+  defp validate_backfill_config(config) do
+    cond do
+      config.kind not in @window_kind_choices ->
+        "Window kind is invalid."
+
+      config.refresh not in @refresh_choices ->
+        "Refresh choice is invalid."
+
+      config.from == "" ->
+        "Backfill range start is required."
+
+      config.to == "" ->
+        "Backfill range end is required."
+
+      not String.match?(config.timezone, @timezone_pattern) ->
+        "Timezone is invalid."
+
+      true ->
+        nil
+    end
+  end
+
+  defp pipeline_error_title({:error, :active_manifest_not_set}), do: "Active manifest not set"
+  defp pipeline_error_title({:error, _reason}), do: "Unable to load pipeline"
+
+  defp pipeline_error_message({:error, :active_manifest_not_set}) do
+    "Set an active manifest before opening pipeline details."
+  end
+
+  defp pipeline_error_message({:error, _reason}), do: "Backend unavailable. Try again later."
 
   defp normalize_window_kind(kind) when kind in [:hour, :day, :month, :year], do: kind
   defp normalize_window_kind(:hourly), do: :hour
@@ -402,7 +486,7 @@ defmodule FavnView.PipelineDetailLive do
 
   defp submit_error_label(:forbidden), do: "Operator role required to submit runs."
   defp submit_error_label(:not_found), do: "Pipeline not found."
-  defp submit_error_label(reason), do: "Submit failed: #{inspect(reason)}"
+  defp submit_error_label(_reason), do: "Submit failed."
 
   defp humanize(value) do
     value
