@@ -103,9 +103,13 @@ defmodule FavnOrchestrator.RunState do
   @spec default_timeout_ms() :: pos_integer()
   def default_timeout_ms, do: @default_timeout_ms
 
-  @doc "Returns true when a persisted run snapshot has been terminalized."
-  @spec terminal?(t()) :: boolean()
-  def terminal?(%__MODULE__{metadata: metadata}), do: terminal_metadata?(metadata)
+  @doc "Returns true when a persisted run snapshot has been finalized."
+  @spec finalized?(t()) :: boolean()
+  def finalized?(%__MODULE__{metadata: metadata}), do: finalized_metadata?(metadata)
+
+  @doc "Returns true when the run can still admit execution work."
+  @spec execution_admissible?(t()) :: boolean()
+  def execution_admissible?(%__MODULE__{} = run), do: not finalized?(run)
 
   @doc "Returns true when the status represents terminal persisted run state."
   @spec terminal_status?(status() | term()) :: boolean()
@@ -113,7 +117,21 @@ defmodule FavnOrchestrator.RunState do
   def terminal_status?(status) when is_binary(status), do: status in @terminal_status_strings
   def terminal_status?(_status), do: false
 
-  defp terminal_metadata?(metadata) when is_map(metadata) do
+  @doc "Returns the persisted terminal event type for a terminal run status."
+  @spec terminal_event_type(status() | term()) :: atom() | nil
+  def terminal_event_type(:ok), do: :run_finished
+  def terminal_event_type("ok"), do: :run_finished
+  def terminal_event_type(:cancelled), do: :run_cancelled
+  def terminal_event_type("cancelled"), do: :run_cancelled
+  def terminal_event_type(:timed_out), do: :run_timed_out
+  def terminal_event_type("timed_out"), do: :run_timed_out
+  def terminal_event_type(:partial), do: :run_failed
+  def terminal_event_type("partial"), do: :run_failed
+  def terminal_event_type(:error), do: :run_failed
+  def terminal_event_type("error"), do: :run_failed
+  def terminal_event_type(_status), do: nil
+
+  defp finalized_metadata?(metadata) when is_map(metadata) do
     terminal_event_type =
       Map.get(metadata, :terminal_event_type) || Map.get(metadata, "terminal_event_type")
 
@@ -122,7 +140,7 @@ defmodule FavnOrchestrator.RunState do
     terminal_event_type?(terminal_event_type) or cancelled? == true
   end
 
-  defp terminal_metadata?(_metadata), do: false
+  defp finalized_metadata?(_metadata), do: false
 
   defp terminal_event_type?(value) when is_atom(value), do: value in @terminal_event_types
 

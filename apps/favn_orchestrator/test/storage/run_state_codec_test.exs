@@ -61,7 +61,48 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
       )
       |> RunState.transition(status: :error, result: nil)
 
-    assert RunState.terminal?(run_state)
+    assert RunState.finalized?(run_state)
+    refute RunState.execution_admissible?(run_state)
+  end
+
+  test "normalizes legacy finalized snapshots that predate terminal metadata" do
+    run_state =
+      RunState.new(
+        id: "run_codec_legacy_terminal",
+        manifest_version_id: "mv_codec",
+        manifest_content_hash: "hash_codec",
+        asset_ref: {MyApp.Asset, :asset}
+      )
+      |> RunState.transition(
+        status: :error,
+        result: %{status: :error, asset_results: [], metadata: %{}}
+      )
+
+    refute RunState.finalized?(run_state)
+
+    assert {:ok, normalized} = RunStateCodec.from_record(Map.from_struct(run_state))
+    assert normalized.status == :error
+    assert normalized.metadata[:terminal_event_type] == :run_failed
+    assert RunState.finalized?(normalized)
+    refute RunState.execution_admissible?(normalized)
+  end
+
+  test "does not finalize active intermediate failure snapshots without terminal result" do
+    run_state =
+      RunState.new(
+        id: "run_codec_intermediate_failure",
+        manifest_version_id: "mv_codec",
+        manifest_content_hash: "hash_codec",
+        asset_ref: {MyApp.Asset, :asset}
+      )
+      |> RunState.transition(status: :error, error: %{type: :step_failed})
+
+    assert RunState.terminal_status?(run_state.status)
+    refute RunState.finalized?(run_state)
+
+    assert {:ok, normalized} = RunStateCodec.from_record(Map.from_struct(run_state))
+    refute RunState.finalized?(normalized)
+    assert RunState.execution_admissible?(normalized)
   end
 
   test "rejects invalid run identity" do

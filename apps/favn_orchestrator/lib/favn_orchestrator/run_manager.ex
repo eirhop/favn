@@ -270,7 +270,7 @@ defmodule FavnOrchestrator.RunManager do
   defp reject_backfill_parent_cancel(_run), do: :ok
 
   defp build_cancel_snapshots(%RunState{} = run, reason) do
-    if RunState.terminal?(run) do
+    if RunState.finalized?(run) do
       {:error, :run_already_terminal}
     else
       build_active_cancel_snapshots(run, reason)

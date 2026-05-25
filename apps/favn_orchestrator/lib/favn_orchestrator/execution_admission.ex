@@ -86,10 +86,10 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   end
 
   defp validate_run_admissible(%RunState{id: run_id, status: status} = run) do
-    if RunState.terminal?(run) do
-      {:error, {:run_not_admissible, run_id, status}}
-    else
+    if RunState.execution_admissible?(run) do
       :ok
+    else
+      {:error, {:run_not_admissible, run_id, status}}
     end
   end
 

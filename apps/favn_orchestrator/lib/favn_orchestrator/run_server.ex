@@ -26,7 +26,7 @@ defmodule FavnOrchestrator.RunServer do
 
   @impl true
   def handle_continue(:execute, %{run_state: run_state, version: version} = state) do
-    if RunState.terminal?(run_state) do
+    if RunState.finalized?(run_state) do
       :ok = ExecutionAdmission.release_run(run_state.id)
       {:stop, :normal, state |> Map.put(:run_state, run_state) |> Map.put(:execution_state, nil)}
     else

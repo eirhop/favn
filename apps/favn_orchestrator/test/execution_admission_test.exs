@@ -120,6 +120,8 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
       terminal = terminal_run(run, status)
       run_id = terminal.id
 
+      refute RunState.execution_admissible?(terminal)
+
       assert {:error, {:run_not_admissible, ^run_id, ^status}} =
                ExecutionAdmission.acquire(terminal, entry)
 
@@ -134,12 +136,18 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
     end
   end
 
-  test "intermediate step outcome statuses remain admissible before terminalization" do
-    run = run(max_concurrency: 1)
-    intermediate = RunState.transition(run, status: :error, result: %{status: :error})
+  test "intermediate step outcome statuses remain admissible before finalization" do
+    for status <- [:error, :timed_out] do
+      run = run(id: "run-intermediate-#{status}", max_concurrency: 1)
+      intermediate = RunState.transition(run, status: status, error: %{type: status})
 
-    assert {:ok, lease} = ExecutionAdmission.acquire(intermediate, %{asset_step_id: "step-1"})
-    assert lease.run_id == intermediate.id
+      assert RunState.terminal_status?(status)
+      assert RunState.execution_admissible?(intermediate)
+      assert {:ok, lease} = ExecutionAdmission.acquire(intermediate, %{asset_step_id: "step-1"})
+      assert lease.run_id == intermediate.id
+
+      assert :ok = ExecutionAdmission.release(lease)
+    end
   end
 
   test "run lease cleanup is idempotent and does not reopen terminal admission" do
