@@ -15,13 +15,15 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
   @spec decode(String.t()) :: {:ok, map()} | {:error, term()}
   def decode(payload) when is_binary(payload) do
     with {:ok, %{"format" => @format, "schema_version" => 1} = dto} <- Jason.decode(payload),
+         {:ok, event_type} <-
+           validate_event_type(existing_atom_or_string(Map.get(dto, "event_type"))),
          {:ok, occurred_at} <- normalize_occurred_at(Map.get(dto, "occurred_at")) do
       {:ok,
        %{
          schema_version: 1,
          run_id: Map.get(dto, "run_id"),
          sequence: Map.get(dto, "sequence"),
-         event_type: existing_atom_or_string(Map.get(dto, "event_type")),
+         event_type: event_type,
          entity: entity_from_dto(Map.get(dto, "entity")),
          occurred_at: occurred_at,
          status: existing_atom_or_string(Map.get(dto, "status")),
@@ -80,9 +82,26 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
   defp validate_run_id(run_id, run_id), do: :ok
   defp validate_run_id(_run_id, value), do: {:error, {:invalid_run_event_field, :run_id, value}}
 
-  defp validate_event_type(value) when is_atom(value) and not is_nil(value), do: {:ok, value}
-  defp validate_event_type(value) when is_binary(value) and value != "", do: {:ok, value}
+  defp validate_event_type(value) when is_atom(value) and not is_nil(value) do
+    if safe_event_type?(Atom.to_string(value)) do
+      {:ok, value}
+    else
+      {:error, {:invalid_run_event_field, :event_type, value}}
+    end
+  end
+
+  defp validate_event_type(value) when is_binary(value) do
+    if safe_event_type?(value) do
+      {:ok, value}
+    else
+      {:error, {:invalid_run_event_field, :event_type, value}}
+    end
+  end
+
   defp validate_event_type(value), do: {:error, {:invalid_run_event_field, :event_type, value}}
+
+  defp safe_event_type?(value) when is_binary(value),
+    do: String.match?(value, ~r/\A[a-zA-Z0-9_.:-]{1,128}\z/)
 
   defp normalize_occurred_at(nil), do: {:ok, DateTime.utc_now()}
   defp normalize_occurred_at(%DateTime{} = occurred_at), do: {:ok, occurred_at}

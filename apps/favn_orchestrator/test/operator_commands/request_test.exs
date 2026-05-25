@@ -91,4 +91,35 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
     assert {:error, {:invalid_operator_range, %{kind: "day"}}} =
              PipelineBackfillRequest.from_input(%{range: %{kind: "day"}})
   end
+
+  test "pipeline backfill requests validate optional DTO fields" do
+    base = %{range: %{kind: "day", from: "2026-05-01", to: "2026-05-03"}}
+
+    assert {:ok, request} =
+             PipelineBackfillRequest.from_input(
+               Map.merge(base, %{
+                 max_attempts: 2,
+                 retry_backoff_ms: 0,
+                 timeout_ms: 1_000,
+                 coverage_baseline_id: "baseline_1"
+               })
+             )
+
+    assert request.max_attempts == 2
+    assert request.retry_backoff_ms == 0
+    assert request.timeout_ms == 1_000
+    assert request.coverage_baseline_id == "baseline_1"
+
+    assert {:error, {:invalid_operator_max_attempts, 0}} =
+             PipelineBackfillRequest.from_input(Map.put(base, :max_attempts, 0))
+
+    assert {:error, {:invalid_operator_retry_backoff_ms, -1}} =
+             PipelineBackfillRequest.from_input(Map.put(base, :retry_backoff_ms, -1))
+
+    assert {:error, {:invalid_operator_timeout_ms, 0}} =
+             PipelineBackfillRequest.from_input(Map.put(base, :timeout_ms, 0))
+
+    assert {:error, {:invalid_operator_coverage_baseline_id, ""}} =
+             PipelineBackfillRequest.from_input(Map.put(base, :coverage_baseline_id, ""))
+  end
 end

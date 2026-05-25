@@ -3,6 +3,8 @@ defmodule FavnView.AssetDetailLive do
 
   use FavnView, :live_view
 
+  require Logger
+
   alias FavnView.AssetRoute
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.AssetDetailPage
@@ -11,14 +13,21 @@ defmodule FavnView.AssetDetailLive do
   alias FavnView.Auth.Scope
 
   @valid_modes ~w(timeline runs lineage docs code details)
+  @dependency_choices ~w(all none)
+  @refresh_choices ~w(auto missing force_selected force_selected_upstream force_all)
+  @source_choices ~w(refresh_timeline data_coverage_timeline)
+  @window_kind_choices ~w(hour day month year)
+  @timezone_pattern ~r/\A[A-Za-z0-9_+\-\/]{1,64}\z/
 
   @impl true
   def mount(%{"asset_id" => asset_id}, _session, socket) do
-    asset = load_asset(asset_id)
+    asset_state = load_asset(asset_id)
+    asset = asset_from_state(asset_state)
 
     socket =
       assign(socket,
         asset_id: asset_id,
+        asset_state: asset_state,
         asset: asset,
         active_mode: :timeline,
         active_timeline: :refresh,
@@ -129,8 +138,9 @@ defmodule FavnView.AssetDetailLive do
 
   def handle_event("change_run_config", params, socket) do
     run_config = run_config_from_params(params, socket.assigns.run_config)
+    error = validate_run_config(run_config, socket.assigns.selected_window)
 
-    {:noreply, assign(socket, :run_config, run_config)}
+    {:noreply, assign(socket, run_config: run_config, selected_window_error: error)}
   end
 
   def handle_event("run_selected_window", params, socket) do
@@ -155,6 +165,14 @@ defmodule FavnView.AssetDetailLive do
            socket,
            :selected_window_error,
            disabled_reason_label(selected_window.run_disabled_reason)
+         )}
+
+      error = validate_run_config(run_config, selected_window) ->
+        {:noreply,
+         assign(socket,
+           run_config: run_config,
+           submitting_window_run?: false,
+           selected_window_error: error
          )}
 
       true ->
@@ -185,6 +203,8 @@ defmodule FavnView.AssetDetailLive do
          |> push_navigate(to: ~p"/runs/#{run_id}")}
 
       {:error, reason} ->
+        Logger.error("asset.run submit failed reason=#{inspect(reason)}")
+
         {:noreply,
          assign(socket,
            submitting_window_run?: false,
@@ -263,7 +283,26 @@ defmodule FavnView.AssetDetailLive do
     />
 
     <AppShell.app_shell
-      :if={!@asset}
+      :if={match?({:error, _reason}, @asset_state)}
+      title={asset_error_title(@asset_state)}
+      subtitle={@asset_id}
+      nav_items={@nav_items}
+    >
+      <div class="mx-auto w-full max-w-4xl">
+        <GlassPanel.glass_panel class="p-8 text-center" data-testid="asset-backend-error-state">
+          <h2 class="text-xl font-medium">{asset_error_title(@asset_state)}</h2>
+          <p class="mt-2 text-base-content/60">
+            {asset_error_message(@asset_state)}
+          </p>
+          <.link navigate={~p"/assets"} class="btn btn-primary btn-soft mt-6">
+            Back to catalogue
+          </.link>
+        </GlassPanel.glass_panel>
+      </div>
+    </AppShell.app_shell>
+
+    <AppShell.app_shell
+      :if={match?({:not_found, _id}, @asset_state)}
       title="Asset not found"
       subtitle={@asset_id}
       nav_items={@nav_items}
@@ -286,10 +325,34 @@ defmodule FavnView.AssetDetailLive do
   defp load_asset(asset_id) do
     target_id = AssetRoute.from_param(asset_id)
 
-    case FavnOrchestrator.active_asset_detail(target_id) do
-      {:ok, detail} -> asset_from_detail(detail)
-      {:error, _reason} -> nil
+    case active_asset_detail(target_id) do
+      {:ok, detail} ->
+        {:ok, asset_from_detail(detail)}
+
+      {:error, :not_found} ->
+        {:not_found, asset_id}
+
+      {:error, :active_manifest_not_set} ->
+        {:error, :active_manifest_not_set}
+
+      {:error, reason} ->
+        Logger.error(
+          "asset_detail.load failed asset_id=#{inspect(asset_id)} reason=#{inspect(reason)}"
+        )
+
+        {:error, :backend_unavailable}
     end
+  end
+
+  defp asset_from_state({:ok, asset}), do: asset
+  defp asset_from_state(_state), do: nil
+
+  defp active_asset_detail(target_id) do
+    Application.get_env(
+      :favn_view,
+      :active_asset_detail_fun,
+      &FavnOrchestrator.active_asset_detail/1
+    ).(target_id)
   end
 
   defp actor_context(socket) do
@@ -543,6 +606,54 @@ defmodule FavnView.AssetDetailLive do
   end
 
   defp run_config_from_params(_params, current_config), do: current_config || default_run_config()
+
+  defp validate_run_config(config, selected_window) do
+    cond do
+      config.dependencies not in @dependency_choices ->
+        "Dependency choice is invalid."
+
+      config.refresh not in @refresh_choices ->
+        "Refresh choice is invalid."
+
+      is_nil(selected_window) and window_context_requested?(config) and
+          config.source not in @source_choices ->
+        "Window source is invalid."
+
+      is_nil(selected_window) and window_context_requested?(config) and
+          config.kind not in @window_kind_choices ->
+        "Window kind is invalid."
+
+      is_nil(selected_window) and window_context_requested?(config) and blank?(config.value) ->
+        "Window range start is required."
+
+      is_nil(selected_window) and range_requested?(config) and blank?(config.to) ->
+        "Window range end is required."
+
+      window_context_requested?(config) and not valid_timezone?(config.timezone) ->
+        "Timezone is invalid."
+
+      true ->
+        nil
+    end
+  end
+
+  defp window_context_requested?(config),
+    do: not blank?(Map.get(config, :value)) or not blank?(Map.get(config, :to))
+
+  defp range_requested?(config), do: not blank?(Map.get(config, :to))
+
+  defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
+  defp valid_timezone?(value) when is_binary(value), do: String.match?(value, @timezone_pattern)
+  defp valid_timezone?(_value), do: false
+
+  defp asset_error_title({:error, :active_manifest_not_set}), do: "Active manifest not set"
+  defp asset_error_title({:error, _reason}), do: "Unable to load asset"
+
+  defp asset_error_message({:error, :active_manifest_not_set}) do
+    "Set an active manifest before opening asset details."
+  end
+
+  defp asset_error_message({:error, _reason}), do: "Backend unavailable. Try again later."
 
   defp disabled_reason_label(:asset_has_no_window_policy), do: "This asset has no window policy."
   defp disabled_reason_label(:invalid_window), do: "This window cannot be run."

@@ -98,6 +98,23 @@ defmodule FavnOrchestrator.API.RouterTest do
     end
   end
 
+  defmodule IdempotencyCompletionFailingStorage do
+    alias FavnOrchestrator.Storage.Adapter.Memory
+
+    for {name, arity} <- Favn.Storage.Adapter.behaviour_info(:callbacks),
+        {name, arity} != {:complete_idempotency_record, 3} do
+      args = Macro.generate_arguments(arity, __MODULE__)
+
+      def unquote(name)(unquote_splicing(args)) do
+        apply(Memory, unquote(name), [unquote_splicing(args)])
+      end
+    end
+
+    def complete_idempotency_record(_record_id, _attrs, _opts) do
+      {:error, {:write_failed, "internal-secret-path"}}
+    end
+  end
+
   setup do
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
@@ -108,6 +125,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     previous_roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles)
     previous_api_server = Application.get_env(:favn_orchestrator, :api_server)
     previous_local_dev_mode = Application.get_env(:favn_orchestrator, :local_dev_mode)
+    previous_storage_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
       [
@@ -140,6 +158,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       restore_env(:favn_orchestrator, :auth_bootstrap_roles, previous_roles)
       restore_env(:favn_orchestrator, :api_server, previous_api_server)
       restore_env(:favn_orchestrator, :local_dev_mode, previous_local_dev_mode)
+      restore_env(:favn_orchestrator, :storage_adapter, previous_storage_adapter)
       Process.delete(:runner_register_manifest_result)
       maybe_stop_auth_store(auth_start)
     end)
@@ -730,6 +749,52 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert response.status == 410
     assert %{"error" => %{"code" => "cursor_expired"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "run event query params are strict and bounded" do
+    seed_run_events!("run_events_query", Enum.to_list(1..120))
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    request = fn params ->
+      conn(:get, "/api/orchestrator/v1/runs/run_events_query/events", params)
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> Router.call(@opts)
+    end
+
+    default_response = request.(%{})
+    assert default_response.status == 200
+    assert %{"data" => %{"items" => default_items}} = Jason.decode!(default_response.resp_body)
+    assert length(default_items) == 100
+
+    bounded_response = request.(%{"after_sequence" => "2", "limit" => "2"})
+    assert bounded_response.status == 200
+
+    assert %{"data" => %{"items" => [%{"sequence" => 3}, %{"sequence" => 4}]}} =
+             Jason.decode!(bounded_response.resp_body)
+
+    max_response = request.(%{"limit" => "500"})
+    assert max_response.status == 200
+
+    for params <- [
+          %{"limit" => "abc"},
+          %{"limit" => "-1"},
+          %{"limit" => "0"},
+          %{"limit" => "1.5"},
+          %{"limit" => ["1"]},
+          %{"limit" => true},
+          %{"limit" => "501"},
+          %{"after_sequence" => "abc"},
+          %{"after_sequence" => "-1"},
+          %{"after_sequence" => "1.5"},
+          %{"after_sequence" => ["1"]},
+          %{"after_sequence" => true}
+        ] do
+      response = request.(params)
+      assert response.status == 422
+      assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
+    end
   end
 
   test "password login returns invalid credentials without rate-limiting branch" do
@@ -1342,6 +1407,43 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert [%{action: "run.submit"}] = Auth.list_audit(limit: 10)
   end
 
+  test "run submission returns unknown outcome when idempotency completion fails after mutation" do
+    Application.put_env(:favn_orchestrator, :storage_adapter, IdempotencyCompletionFailingStorage)
+
+    version = dependency_manifest_version("mv_run_idempotency_completion_failure")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    payload = %{
+      target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+      manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+      dependencies: "none"
+    }
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", payload)
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-submit-completion-fails")
+      |> Router.call(@opts)
+
+    assert response.status == 500
+
+    assert %{
+             "error" => %{
+               "code" => "internal_error",
+               "message" => "Command outcome is unknown",
+               "details" => %{"outcome" => "unknown"}
+             }
+           } = Jason.decode!(response.resp_body)
+
+    refute response.resp_body =~ "internal-secret-path"
+    assert {:ok, runs} = Storage.list_runs()
+    assert Enum.any?(runs, &(&1.manifest_version_id == version.manifest_version_id))
+  end
+
   test "run submission returns in-progress for duplicate while original is reserved" do
     version = dependency_manifest_version("mv_run_idempotency_in_progress")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -1870,6 +1972,56 @@ defmodule FavnOrchestrator.API.RouterTest do
            } = Jason.decode!(response.resp_body)
 
     assert requested > 500
+  end
+
+  test "backfill submit endpoint rejects invalid operator option fields" do
+    version = schedule_manifest_version("mv_backfill_invalid_options_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    for {field, value, message} <- [
+          {"max_attempts", 0, "Invalid max_attempts"},
+          {"retry_backoff_ms", -1, "Invalid retry_backoff_ms"},
+          {"timeout_ms", 0, "Invalid timeout_ms"},
+          {"coverage_baseline_id", "", "Invalid coverage_baseline_id"}
+        ] do
+      response =
+        conn(
+          :post,
+          "/api/orchestrator/v1/backfills",
+          Map.put(
+            %{
+              "target" => %{
+                "type" => "pipeline",
+                "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"
+              },
+              "manifest_selection" => %{
+                "mode" => "version",
+                "manifest_version_id" => version.manifest_version_id
+              },
+              "range" => %{
+                "from" => "2026-01-01",
+                "to" => "2026-01-02",
+                "kind" => "day",
+                "timezone" => "Etc/UTC"
+              }
+            },
+            field,
+            value
+          )
+        )
+        |> put_req_header("authorization", "Bearer test-service-token")
+        |> put_req_header("x-favn-actor-id", actor.id)
+        |> put_req_header("x-favn-session-token", session.token)
+        |> put_idempotency_key("backfill-invalid-option-#{field}")
+        |> Router.call(@opts)
+
+      assert response.status == 422
+
+      assert %{"error" => %{"message" => ^message, "details" => %{"field" => ^field}}} =
+               Jason.decode!(response.resp_body)
+    end
   end
 
   test "backfill submit endpoint reports invalid range window values clearly" do
