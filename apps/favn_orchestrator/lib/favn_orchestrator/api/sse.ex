@@ -6,7 +6,7 @@ defmodule FavnOrchestrator.API.SSE do
   control fields, where CR/LF characters can forge additional fields or events.
   """
 
-  @safe_field ~r/\A[a-zA-Z0-9_.:-]{1,128}\z/
+  alias FavnOrchestrator.RunEvents.EventType
 
   @type field_name :: :event | :id
 
@@ -17,7 +17,7 @@ defmodule FavnOrchestrator.API.SSE do
   def field(name, value) when name in [:event, :id] do
     value = stringify(value)
 
-    if is_binary(value) and String.match?(value, @safe_field) do
+    if EventType.line_safe?(value) do
       {:ok, value}
     else
       {:error, {:invalid_sse_field, name, value}}

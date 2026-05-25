@@ -188,7 +188,7 @@ defmodule FavnView.PipelineDetailLive do
   defp load_pipeline(pipeline_id) do
     target_id = AssetRoute.from_param(pipeline_id)
 
-    case active_pipeline_detail(target_id) do
+    case FavnOrchestrator.active_pipeline_detail(target_id) do
       {:ok, detail} ->
         {:ok, pipeline_from_detail(detail)}
 
@@ -209,14 +209,6 @@ defmodule FavnView.PipelineDetailLive do
 
   defp pipeline_from_state({:ok, pipeline}), do: pipeline
   defp pipeline_from_state(_state), do: nil
-
-  defp active_pipeline_detail(target_id) do
-    Application.get_env(
-      :favn_view,
-      :active_pipeline_detail_fun,
-      &FavnOrchestrator.active_pipeline_detail/1
-    ).(target_id)
-  end
 
   defp actor_context(socket) do
     %Scope{} = scope = socket.assigns.current_scope

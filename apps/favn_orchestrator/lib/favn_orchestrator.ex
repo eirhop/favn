@@ -1675,6 +1675,11 @@ defmodule FavnOrchestrator do
 
   @doc """
   Lists persisted run events for one run.
+
+  This public facade is bounded for operator/API callers: `:limit` defaults to
+  `100` and is capped at `500`; `:after_sequence` is an optional non-negative
+  cursor. Orchestrator-internal repair/projection code that intentionally needs
+  an unbounded adapter read should call the storage boundary directly.
   """
   @spec list_run_events(run_id(), keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
   def list_run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do

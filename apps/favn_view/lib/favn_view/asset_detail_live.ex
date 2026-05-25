@@ -325,7 +325,7 @@ defmodule FavnView.AssetDetailLive do
   defp load_asset(asset_id) do
     target_id = AssetRoute.from_param(asset_id)
 
-    case active_asset_detail(target_id) do
+    case FavnOrchestrator.active_asset_detail(target_id) do
       {:ok, detail} ->
         {:ok, asset_from_detail(detail)}
 
@@ -346,14 +346,6 @@ defmodule FavnView.AssetDetailLive do
 
   defp asset_from_state({:ok, asset}), do: asset
   defp asset_from_state(_state), do: nil
-
-  defp active_asset_detail(target_id) do
-    Application.get_env(
-      :favn_view,
-      :active_asset_detail_fun,
-      &FavnOrchestrator.active_asset_detail/1
-    ).(target_id)
-  end
 
   defp actor_context(socket) do
     %Scope{} = scope = socket.assigns.current_scope

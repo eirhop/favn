@@ -25,6 +25,38 @@ defmodule FavnView.PageLiveTest do
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
+  defmodule ManifestReadFailingStorage do
+    alias FavnOrchestrator.Storage.Adapter.Memory
+
+    for {name, arity} <- Favn.Storage.Adapter.behaviour_info(:callbacks),
+        {name, arity} != {:get_manifest_version, 2} do
+      args = Macro.generate_arguments(arity, __MODULE__)
+
+      def unquote(name)(unquote_splicing(args)) do
+        apply(Memory, unquote(name), [unquote_splicing(args)])
+      end
+    end
+
+    def get_manifest_version(_manifest_version_id, _opts) do
+      {:error, {:storage_failed, :secret_manifest_path}}
+    end
+  end
+
+  defmodule ActiveManifestUnsetStorage do
+    alias FavnOrchestrator.Storage.Adapter.Memory
+
+    for {name, arity} <- Favn.Storage.Adapter.behaviour_info(:callbacks),
+        {name, arity} != {:get_active_manifest_version, 1} do
+      args = Macro.generate_arguments(arity, __MODULE__)
+
+      def unquote(name)(unquote_splicing(args)) do
+        apply(Memory, unquote(name), [unquote_splicing(args)])
+      end
+    end
+
+    def get_active_manifest_version(_opts), do: {:error, :active_manifest_not_set}
+  end
+
   setup %{conn: conn} do
     ensure_auth_store_started()
     :ok = AuthStore.reset()
@@ -443,21 +475,19 @@ defmodule FavnView.PageLiveTest do
   end
 
   test "pipeline detail renders active manifest missing separately", %{conn: conn} do
-    put_test_env(:active_pipeline_detail_fun, fn _target_id ->
-      {:error, :active_manifest_not_set}
-    end)
+    path = pipeline_detail_path()
+    put_orchestrator_test_env(:storage_adapter, ActiveManifestUnsetStorage)
 
-    {:ok, missing_view, missing_html} = live(conn, pipeline_detail_path())
+    {:ok, missing_view, missing_html} = live(conn, path)
     assert missing_html =~ "Active manifest not set"
     assert has_element?(missing_view, ~s([data-testid="pipeline-backend-error-state"]))
   end
 
   test "pipeline detail renders backend failures without internal reasons", %{conn: conn} do
-    put_test_env(:active_pipeline_detail_fun, fn _target_id ->
-      {:error, {:storage_failed, :secret}}
-    end)
+    path = pipeline_detail_path()
+    put_orchestrator_test_env(:storage_adapter, ManifestReadFailingStorage)
 
-    {:ok, failed_view, failed_html} = live(conn, pipeline_detail_path())
+    {:ok, failed_view, failed_html} = live(conn, path)
     assert failed_html =~ "Unable to load pipeline"
 
     assert has_element?(
@@ -467,7 +497,7 @@ defmodule FavnView.PageLiveTest do
            )
 
     refute failed_html =~ "storage_failed"
-    refute failed_html =~ "secret"
+    refute failed_html =~ "secret_manifest_path"
   end
 
   test "pipeline detail does not invent an implicit window for normal pipeline runs", %{
@@ -1117,19 +1147,19 @@ defmodule FavnView.PageLiveTest do
   end
 
   test "asset detail renders active manifest missing separately", %{conn: conn} do
-    put_test_env(:active_asset_detail_fun, fn _target_id -> {:error, :active_manifest_not_set} end)
+    path = detail_path(:customer_orders_daily)
+    put_orchestrator_test_env(:storage_adapter, ActiveManifestUnsetStorage)
 
-    {:ok, missing_view, missing_html} = live(conn, detail_path(:customer_orders_daily))
+    {:ok, missing_view, missing_html} = live(conn, path)
     assert missing_html =~ "Active manifest not set"
     assert has_element?(missing_view, ~s([data-testid="asset-backend-error-state"]))
   end
 
   test "asset detail renders backend failures without internal reasons", %{conn: conn} do
-    put_test_env(:active_asset_detail_fun, fn _target_id ->
-      {:error, {:storage_failed, :secret}}
-    end)
+    path = detail_path(:customer_orders_daily)
+    put_orchestrator_test_env(:storage_adapter, ManifestReadFailingStorage)
 
-    {:ok, failed_view, failed_html} = live(conn, detail_path(:customer_orders_daily))
+    {:ok, failed_view, failed_html} = live(conn, path)
     assert failed_html =~ "Unable to load asset"
 
     assert has_element?(
@@ -1139,7 +1169,7 @@ defmodule FavnView.PageLiveTest do
            )
 
     refute failed_html =~ "storage_failed"
-    refute failed_html =~ "secret"
+    refute failed_html =~ "secret_manifest_path"
   end
 
   test "renders existing run detail overview", %{conn: conn} do
@@ -3586,6 +3616,18 @@ defmodule FavnView.PageLiveTest do
       case original do
         :__missing__ -> Application.delete_env(:favn_view, key)
         value -> Application.put_env(:favn_view, key, value)
+      end
+    end)
+  end
+
+  defp put_orchestrator_test_env(key, value) do
+    original = Application.get_env(:favn_orchestrator, key, :__missing__)
+    Application.put_env(:favn_orchestrator, key, value)
+
+    on_exit(fn ->
+      case original do
+        :__missing__ -> Application.delete_env(:favn_orchestrator, key)
+        value -> Application.put_env(:favn_orchestrator, key, value)
       end
     end)
   end

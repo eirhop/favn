@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.Storage.RunEventCodec do
   @moduledoc false
 
+  alias FavnOrchestrator.RunEvents.EventType
   alias FavnOrchestrator.Storage.JsonSafe
 
   @format "favn.run_event.storage.v1"
@@ -83,7 +84,7 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
   defp validate_run_id(_run_id, value), do: {:error, {:invalid_run_event_field, :run_id, value}}
 
   defp validate_event_type(value) when is_atom(value) and not is_nil(value) do
-    if safe_event_type?(Atom.to_string(value)) do
+    if EventType.line_safe?(value) do
       {:ok, value}
     else
       {:error, {:invalid_run_event_field, :event_type, value}}
@@ -91,7 +92,7 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
   end
 
   defp validate_event_type(value) when is_binary(value) do
-    if safe_event_type?(value) do
+    if EventType.line_safe?(value) do
       {:ok, value}
     else
       {:error, {:invalid_run_event_field, :event_type, value}}
@@ -99,9 +100,6 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
   end
 
   defp validate_event_type(value), do: {:error, {:invalid_run_event_field, :event_type, value}}
-
-  defp safe_event_type?(value) when is_binary(value),
-    do: String.match?(value, ~r/\A[a-zA-Z0-9_.:-]{1,128}\z/)
 
   defp normalize_occurred_at(nil), do: {:ok, DateTime.utc_now()}
   defp normalize_occurred_at(%DateTime{} = occurred_at), do: {:ok, occurred_at}

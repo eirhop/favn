@@ -2461,7 +2461,8 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp backfill_range_error({:invalid_backfill_range_request, value}) do
-    {:ok, "Invalid backfill range request", %{value: inspect(value)}}
+    Logger.error("invalid backfill range request: #{inspect(value)}")
+    {:ok, "Invalid backfill range request", %{reason: "invalid_backfill_range_request"}}
   end
 
   defp backfill_range_error({:missing_backfill_reference, _opts}) do
@@ -2469,11 +2470,13 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp backfill_range_error({:invalid_last_request, value}) do
-    {:ok, "Invalid relative backfill range", %{value: inspect(value)}}
+    Logger.error("invalid relative backfill range: #{inspect(value)}")
+    {:ok, "Invalid relative backfill range", %{reason: "invalid_last_request"}}
   end
 
   defp backfill_range_error({:invalid_window_policy_kind, kind}) do
-    {:ok, "Invalid backfill window kind", %{kind: inspect(kind)}}
+    Logger.error("invalid backfill window policy kind: #{inspect(kind)}")
+    {:ok, "Invalid backfill window kind", %{reason: "invalid_window_policy_kind"}}
   end
 
   defp backfill_range_error({:invalid_window_value, kind, value}) do
