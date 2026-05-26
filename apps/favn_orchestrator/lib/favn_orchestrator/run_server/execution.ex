@@ -358,6 +358,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
             {:error, :external_cancel} ->
               state = cancel_work(state, [execution_id], %{kind: :external_cancel})
+
+              persist_submit_persist_failure_outcome(
+                submitted_ownership,
+                state.run,
+                execution_id,
+                :external_cancel
+              )
+
               {:terminal, Snapshots.cancelled_snapshot(state.run)}
 
             {:error, reason} ->
@@ -366,6 +374,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
                   kind: :step_submitted_persist_failed,
                   error: reason
                 })
+
+              persist_submit_persist_failure_outcome(
+                submitted_ownership,
+                state.run,
+                execution_id,
+                reason
+              )
 
               failed =
                 RunState.transition(state.run,
@@ -468,6 +483,20 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     %{work | metadata: metadata}
   end
+
+  defp persist_submit_persist_failure_outcome(ownership, run_state, execution_id, reason) do
+    result = cancel_outcome_for(run_state, execution_id)
+    _ = RunExecutionOwnership.mark_submit_persist_failed(ownership, result, reason)
+    :ok
+  end
+
+  defp cancel_outcome_for(%RunState{metadata: metadata}, execution_id) when is_map(metadata) do
+    metadata
+    |> Map.get(:cancel_outcomes, Map.get(metadata, "cancel_outcomes", []))
+    |> Enum.find(&(Map.get(&1, :execution_id, Map.get(&1, "execution_id")) == execution_id))
+  end
+
+  defp cancel_outcome_for(%RunState{}, _execution_id), do: nil
 
   defp run_deadline_at(%RunState{timeout_ms: timeout_ms})
        when is_integer(timeout_ms) and timeout_ms > 0 do

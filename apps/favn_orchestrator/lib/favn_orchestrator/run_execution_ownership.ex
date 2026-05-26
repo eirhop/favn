@@ -220,6 +220,16 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
     end
   end
 
+  @doc "Persists a terminal outcome for work whose submitted ownership write failed."
+  @spec mark_submit_persist_failed(t(), map() | nil, term()) :: :ok | {:error, term()}
+  def mark_submit_persist_failed(%__MODULE__{} = ownership, result, reason) do
+    result = submit_persist_failure_result(ownership, result)
+
+    ownership
+    |> cancelled(result, reason)
+    |> persist()
+  end
+
   @doc "Marks matching active storage-ledger ownership records as awaiting durable persistence."
   @spec mark_finish_persist_pending(String.t(), String.t()) :: :ok | {:error, term()}
   def mark_finish_persist_pending(run_id, execution_id)
@@ -449,6 +459,18 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
         last_error: Map.get(result, :error)
     }
     |> touch()
+  end
+
+  defp submit_persist_failure_result(%__MODULE__{} = ownership, %{} = result) do
+    Map.put_new(result, :execution_id, ownership.runner_execution_id)
+  end
+
+  defp submit_persist_failure_result(%__MODULE__{} = ownership, _result) do
+    %{
+      execution_id: ownership.runner_execution_id,
+      status: :unknown_runner_outcome,
+      error: :missing_cancel_outcome
+    }
   end
 
   defp persist_all(ownerships, mapper \\ & &1) when is_list(ownerships) do

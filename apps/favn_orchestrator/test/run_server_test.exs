@@ -569,6 +569,53 @@ defmodule FavnOrchestrator.RunServerTest do
              RunExecutionOwnership.list(run_state)
   end
 
+  test "sequential submitted ownership persistence failure terminalizes ownership" do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
+    {:ok, statuses} = Agent.start_link(fn -> [:ok] end)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :storage_adapter_opts, previous_opts)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSequentialStatusStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      statuses: statuses
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      SubmittedOwnershipFailingStorageAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+    version = manifest_version("mv_sequential_submitted_ownership_failure")
+    run_state = asset_run_state("run_sequential_submitted_ownership_failure", version)
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:submitted, 1, execution_id}, 1_000
+    assert_receive {:cancelled, ^execution_id, cancellation_reason}, 1_000
+    assert cancellation_reason.reason.kind == :step_submitted_persist_failed
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert [
+             %RunExecutionOwnership{
+               status: :cancel_acknowledged,
+               runner_execution_id: ^execution_id
+             }
+           ] = RunExecutionOwnership.list(run_state)
+
+    assert {:ok, []} = RunExecutionOwnership.fetch_active(run_state.id)
+  end
+
   test "sequential cancellation during retry wait wins before next submit" do
     {:ok, statuses} = Agent.start_link(fn -> [:error, :ok] end)
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSequentialStatusStub)
@@ -1443,6 +1490,15 @@ defmodule FavnOrchestrator.RunServerTest do
 
     assert {:ok, stored} = Storage.get_run(run_state.id)
     assert stored.status == :error
+
+    assert [
+             %RunExecutionOwnership{
+               status: :cancel_acknowledged,
+               runner_execution_id: ^execution_id
+             }
+           ] = RunExecutionOwnership.list(run_state)
+
+    assert {:ok, []} = RunExecutionOwnership.fetch_active(run_state.id)
   end
 
   test "actual upstream success refreshes downstream in same pipeline" do

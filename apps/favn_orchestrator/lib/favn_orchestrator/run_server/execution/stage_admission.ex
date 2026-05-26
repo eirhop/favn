@@ -370,14 +370,16 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     :ok = MaterializationClaims.fail(ctx.materialization_claim, :external_cancel)
     :ok = cleanup_entries(ctx.current_run, ctx.acc, :external_cancel)
 
-    cancelled =
-      cancel_execution_ids(
+    {cancelled, cancel_results} =
+      cancel_execution_ids_with_results(
         ctx.current_run,
         Enum.map(ctx.acc, & &1.execution_id) ++ [execution_id],
         %{kind: :external_cancel, asset_ref: asset_ref, stage: ctx.stage, attempt: ctx.attempt},
         ctx.runner_client,
         ctx.runner_opts
       )
+
+    persist_submit_persist_failure_outcome(ctx, execution_id, cancel_results, :external_cancel)
 
     {:error, Snapshots.cancelled_snapshot(cancelled), [],
      Enum.map(ctx.acc, & &1.node_key) ++ [ctx.node_key]}
@@ -388,14 +390,16 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     :ok = MaterializationClaims.fail(ctx.materialization_claim, reason)
     :ok = cleanup_entries(ctx.current_run, ctx.acc, reason)
 
-    cancelled =
-      cancel_execution_ids(
+    {cancelled, cancel_results} =
+      cancel_execution_ids_with_results(
         ctx.current_run,
         Enum.map(ctx.acc, & &1.execution_id) ++ [execution_id],
         %{kind: :step_submitted_persist_failed, asset_ref: asset_ref, error: reason},
         ctx.runner_client,
         ctx.runner_opts
       )
+
+    persist_submit_persist_failure_outcome(ctx, execution_id, cancel_results, reason)
 
     failed =
       RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
@@ -576,6 +580,25 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     else
       RunExecutionOwnership.persist(ownership)
     end
+  end
+
+  defp persist_submit_persist_failure_outcome(ctx, execution_id, cancel_results, reason) do
+    result = Enum.find(cancel_results, &(&1.execution_id == execution_id))
+
+    ctx.current_run
+    |> RunExecutionOwnership.new(
+      asset_step_id: ctx.work.asset_step_id,
+      node_key: ctx.node_key,
+      asset_ref: ctx.work.asset_ref,
+      stage: ctx.stage,
+      attempt: ctx.attempt,
+      execution_pool: RunnerWork.execution_pool(ctx.work),
+      deadline_at: run_deadline_at(ctx.current_run)
+    )
+    |> RunExecutionOwnership.submitted(execution_id)
+    |> RunExecutionOwnership.mark_submit_persist_failed(result, reason)
+
+    :ok
   end
 
   defp persist_step_queued(run_state, work, stage, attempt, queue_reason, scope) do
@@ -770,6 +793,25 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          runner_client,
          runner_opts
        ) do
+    {run_state, _cancel_results} =
+      cancel_execution_ids_with_results(
+        run_state,
+        execution_ids,
+        reason,
+        runner_client,
+        runner_opts
+      )
+
+    run_state
+  end
+
+  defp cancel_execution_ids_with_results(
+         %RunState{} = run_state,
+         execution_ids,
+         reason,
+         runner_client,
+         runner_opts
+       ) do
     cancel_results =
       Cancellation.dispatch_runner_work(
         run_state,
@@ -780,7 +822,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       )
 
     _ = RunExecutionOwnership.persist_cancel_outcomes(run_state.id, cancel_results, reason)
-    clear_inflight_executions(run_state, Enum.map(cancel_results, & &1.execution_id))
+
+    {clear_inflight_executions(run_state, Enum.map(cancel_results, & &1.execution_id)),
+     cancel_results}
   end
 
   defp clear_inflight_executions(%RunState{} = run_state, execution_ids)
