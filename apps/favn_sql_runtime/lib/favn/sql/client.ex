@@ -912,7 +912,7 @@ defmodule Favn.SQL.Client do
 
           result =
             try do
-              {:ok, fun.(session)}
+              normalize_operation_result(operation, fun.(session))
             rescue
               error -> {:error, normalize_runtime_error(operation, error)}
             catch
@@ -1008,6 +1008,13 @@ defmodule Favn.SQL.Client do
        }
      }}
   end
+
+  defp normalize_operation_result(_operation, {:error, %Error{} = error}), do: {:error, error}
+
+  defp normalize_operation_result(operation, {:error, reason}),
+    do: {:error, normalize_runtime_error(operation, reason)}
+
+  defp normalize_operation_result(_operation, result), do: {:ok, result}
 
   defp put_checkout_owner(%Session{pool_checkout: %Checkout{} = checkout} = session, owner) do
     %Session{session | pool_checkout: %Checkout{checkout | owner: owner}}

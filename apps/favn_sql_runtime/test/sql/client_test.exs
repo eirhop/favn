@@ -16,6 +16,10 @@ defmodule FavnSQLRuntime.SQLClientTest do
     end
   end
 
+  defmodule ErrorReturningAdapter do
+    def query(_conn, _statement, _opts), do: {:error, :adapter_down}
+  end
+
   setup do
     :ok = SessionPool.reset()
     {:ok, tracker} = Agent.start_link(fn -> %{query_started?: false, disconnects: 0} end)
@@ -56,6 +60,17 @@ defmodule FavnSQLRuntime.SQLClientTest do
     assert :ok = Client.disconnect(session)
     assert eventually(fn -> Agent.get(tracker, & &1.disconnects) == 1 end)
     assert %{active: 0, idle: 0} = SessionPool.diagnostics()
+  end
+
+  test "adapter error returns are normalized under deadline wrapper", %{tracker: tracker} do
+    session = %Session{session(tracker) | adapter: ErrorReturningAdapter}
+
+    assert {:error,
+            %Favn.SQL.Error{
+              type: :execution_error,
+              operation: :query,
+              cause: :adapter_down
+            }} = Client.query(session, "select 1", timeout_ms: 1_000, read_only?: true)
   end
 
   defp session(tracker) do

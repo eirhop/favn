@@ -34,6 +34,10 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
     defdelegate append_run_event(run_id, event, opts), to: Memory
     defdelegate list_run_events(run_id, opts), to: Memory
     defdelegate list_global_run_events(filters, opts), to: Memory
+    defdelegate put_execution_ownership(ownership, opts), to: Memory
+    defdelegate get_execution_ownership(ownership_id, opts), to: Memory
+    defdelegate list_execution_ownerships(run_id, opts), to: Memory
+    defdelegate list_active_execution_ownerships(run_id, opts), to: Memory
     defdelegate try_acquire_execution_lease(lease, opts), to: Memory
     defdelegate release_execution_lease(lease_id, opts), to: Memory
     defdelegate release_execution_leases_for_run(run_id, opts), to: Memory

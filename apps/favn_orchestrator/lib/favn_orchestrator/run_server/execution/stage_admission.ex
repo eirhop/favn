@@ -313,58 +313,116 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     work = attach_ownership_metadata(ctx.work, ownership)
     ctx = %{ctx | work: work}
 
-    with :ok <-
-           RunExecutionOwnership.persist(ownership),
-         {:ok, execution_id} <- ctx.runner_client.submit_work(work, ctx.runner_opts),
-         submitted_ownership <- RunExecutionOwnership.submitted(ownership, execution_id),
-         :ok <- persist_submitted_ownership_snapshot(submitted_ownership) do
-      submit_started_entry(ctx, submitted_ownership, execution_id)
+    with :ok <- RunExecutionOwnership.persist(ownership) do
+      case ctx.runner_client.submit_work(work, ctx.runner_opts) do
+        {:ok, execution_id} ->
+          submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)
+
+          case persist_submitted_ownership_snapshot(submitted_ownership) do
+            :ok ->
+              submit_started_entry(ctx, submitted_ownership, execution_id)
+
+            {:error, :external_cancel} ->
+              fail_submitted_entry(ctx, asset_ref, execution_id, :external_cancel)
+
+            {:error, reason} ->
+              fail_submitted_entry(ctx, asset_ref, execution_id, reason)
+          end
+
+        {:error, reason} ->
+          _ =
+            RunExecutionOwnership.mark_dispatch_failed(
+              ctx.current_run.id,
+              ownership.ownership_id,
+              reason
+            )
+
+          fail_unsubmitted_entry(ctx, asset_ref, reason)
+      end
     else
-      {:error, :external_cancel} ->
-        :ok = release_entry_lease(%{lease: ctx.lease})
-        :ok = MaterializationClaims.fail(ctx.materialization_claim, :external_cancel)
-        :ok = cleanup_entries(ctx.current_run, ctx.acc, :external_cancel)
-
-        {:error, Snapshots.cancelled_snapshot(ctx.current_run), [],
-         Enum.map(ctx.acc, & &1.node_key)}
-
       {:error, reason} ->
-        :ok = release_entry_lease(%{lease: ctx.lease})
-        :ok = MaterializationClaims.fail(ctx.materialization_claim, reason)
-        :ok = cleanup_entries(ctx.current_run, ctx.acc, reason)
+        fail_unsubmitted_entry(ctx, asset_ref, reason)
+    end
+  end
 
-        cancelled =
-          cancel_execution_ids(
-            ctx.current_run,
-            Enum.map(ctx.acc, & &1.execution_id),
-            %{kind: :submit_failure, asset_ref: asset_ref, error: reason},
-            ctx.runner_client,
-            ctx.runner_opts
-          )
+  defp fail_unsubmitted_entry(ctx, asset_ref, reason) do
+    :ok = release_entry_lease(%{lease: ctx.lease})
+    :ok = MaterializationClaims.fail(ctx.materialization_claim, reason)
+    :ok = cleanup_entries(ctx.current_run, ctx.acc, reason)
 
-        failed =
-          RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
+    cancelled =
+      cancel_execution_ids(
+        ctx.current_run,
+        Enum.map(ctx.acc, & &1.execution_id),
+        %{kind: :submit_failure, asset_ref: asset_ref, error: reason},
+        ctx.runner_client,
+        ctx.runner_opts
+      )
 
-        case Persistence.persist_run_step(failed, :step_failed, %{
-               asset_ref: asset_ref,
-               error: reason,
-               node_key: RunnerWork.node_key(ctx.work),
-               asset_step_id: ctx.work.asset_step_id,
-               window: RunnerWork.window(ctx.work),
-               stage: ctx.stage,
-               attempt: ctx.attempt,
-               max_attempts: ctx.current_run.max_attempts,
-               execution_pool: RunnerWork.execution_pool(ctx.work)
-             }) do
-          :ok ->
-            {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
+    failed =
+      RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
 
-          {:error, :external_cancel} ->
-            {:error, Snapshots.cancelled_snapshot(failed), [], Enum.map(ctx.acc, & &1.node_key)}
+    persist_stage_submit_failure(ctx, failed, asset_ref, reason)
+  end
 
-          {:error, _persist_reason} ->
-            {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
-        end
+  defp fail_submitted_entry(ctx, asset_ref, execution_id, :external_cancel) do
+    :ok = release_entry_lease(%{lease: ctx.lease})
+    :ok = MaterializationClaims.fail(ctx.materialization_claim, :external_cancel)
+    :ok = cleanup_entries(ctx.current_run, ctx.acc, :external_cancel)
+
+    cancelled =
+      cancel_execution_ids(
+        ctx.current_run,
+        Enum.map(ctx.acc, & &1.execution_id) ++ [execution_id],
+        %{kind: :external_cancel, asset_ref: asset_ref, stage: ctx.stage, attempt: ctx.attempt},
+        ctx.runner_client,
+        ctx.runner_opts
+      )
+
+    {:error, Snapshots.cancelled_snapshot(cancelled), [],
+     Enum.map(ctx.acc, & &1.node_key) ++ [ctx.node_key]}
+  end
+
+  defp fail_submitted_entry(ctx, asset_ref, execution_id, reason) do
+    :ok = release_entry_lease(%{lease: ctx.lease})
+    :ok = MaterializationClaims.fail(ctx.materialization_claim, reason)
+    :ok = cleanup_entries(ctx.current_run, ctx.acc, reason)
+
+    cancelled =
+      cancel_execution_ids(
+        ctx.current_run,
+        Enum.map(ctx.acc, & &1.execution_id) ++ [execution_id],
+        %{kind: :step_submitted_persist_failed, asset_ref: asset_ref, error: reason},
+        ctx.runner_client,
+        ctx.runner_opts
+      )
+
+    failed =
+      RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
+
+    persist_stage_submit_failure(ctx, failed, asset_ref, reason)
+  end
+
+  defp persist_stage_submit_failure(ctx, failed, asset_ref, reason) do
+    case Persistence.persist_run_step(failed, :step_failed, %{
+           asset_ref: asset_ref,
+           error: reason,
+           node_key: RunnerWork.node_key(ctx.work),
+           asset_step_id: ctx.work.asset_step_id,
+           window: RunnerWork.window(ctx.work),
+           stage: ctx.stage,
+           attempt: ctx.attempt,
+           max_attempts: ctx.current_run.max_attempts,
+           execution_pool: RunnerWork.execution_pool(ctx.work)
+         }) do
+      :ok ->
+        {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
+
+      {:error, :external_cancel} ->
+        {:error, Snapshots.cancelled_snapshot(failed), [], Enum.map(ctx.acc, & &1.node_key)}
+
+      {:error, _persist_reason} ->
+        {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
     end
   end
 

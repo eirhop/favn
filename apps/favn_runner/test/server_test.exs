@@ -195,7 +195,7 @@ defmodule FavnRunner.ServerTest do
              FavnRunner.cancel_work(execution_id, %{}, server: server)
   end
 
-  test "submit_work queues within bounded queue until capacity opens" do
+  test "submit_work rejects instead of blocking when bounded capacity is exhausted" do
     server =
       start_runner_server(
         admission: [max_active_workers: 1, max_queue_size: 1, queue_timeout_ms: 1_000]
@@ -213,26 +213,16 @@ defmodule FavnRunner.ServerTest do
                server: server
              )
 
-    queued_submit =
-      Task.async(fn ->
-        FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.SlowAsset),
-          server: server
-        )
-      end)
+    assert {:error, %RunnerError{type: :runner_overloaded, kind: :boundary, retryable?: true}} =
+             FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.SlowAsset),
+               server: server
+             )
 
-    wait_until(fn ->
-      {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
-      diagnostics.admission.queued_worker_count == 1
-    end)
+    assert {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
+    assert diagnostics.admission.queued_worker_count == 0
 
     assert {:ok, %{status: :acknowledged}} =
              FavnRunner.cancel_work(first_execution_id, %{}, server: server)
-
-    assert {:ok, second_execution_id} = Task.await(queued_submit, 2_000)
-    assert is_binary(second_execution_id)
-
-    assert {:ok, %{status: :acknowledged}} =
-             FavnRunner.cancel_work(second_execution_id, %{}, server: server)
   end
 
   test "submit_work accepts new work after a worker completes" do

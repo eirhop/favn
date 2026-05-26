@@ -30,6 +30,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunnerLogBridge
+  alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
@@ -266,7 +267,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       outcomes == [] ->
         Snapshots.cancelled_terminal(run_state, accumulated_results)
 
-      Enum.all?(outcomes, &(Map.get(&1, :status) == :acknowledged)) ->
+      Enum.all?(outcomes, &CancellationOutcome.confirmed?/1) ->
         Snapshots.cancelled_terminal(run_state, accumulated_results)
 
       true ->
@@ -336,34 +337,53 @@ defmodule FavnOrchestrator.RunServer.Execution do
              deadline_at: run_deadline_at(state.run)
            ),
          work <- attach_ownership_metadata(work, ownership),
-         :ok <- RunExecutionOwnership.persist(ownership),
-         {:ok, execution_id} <- state.runner_client.submit_work(work, state.runner_opts) do
-      submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)
+         :ok <- RunExecutionOwnership.persist(ownership) do
+      case state.runner_client.submit_work(work, state.runner_opts) do
+        {:ok, execution_id} ->
+          submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)
 
-      case persist_submitted_ownership_snapshot(submitted_ownership) do
-        :ok ->
-          start_submitted_sequential_attempt(
-            state,
-            lifecycle,
-            work,
-            submitted_ownership,
-            execution_id,
-            asset_ref,
-            node_key,
-            stage,
-            attempt
-          )
+          case persist_submitted_ownership_snapshot(submitted_ownership) do
+            :ok ->
+              start_submitted_sequential_attempt(
+                state,
+                lifecycle,
+                work,
+                submitted_ownership,
+                execution_id,
+                asset_ref,
+                node_key,
+                stage,
+                attempt
+              )
 
-        {:error, :external_cancel} ->
-          state = cancel_work(state, [execution_id], %{kind: :external_cancel})
-          {:terminal, Snapshots.cancelled_snapshot(state.run)}
+            {:error, :external_cancel} ->
+              state = cancel_work(state, [execution_id], %{kind: :external_cancel})
+              {:terminal, Snapshots.cancelled_snapshot(state.run)}
+
+            {:error, reason} ->
+              state =
+                cancel_work(state, [execution_id], %{
+                  kind: :step_submitted_persist_failed,
+                  error: reason
+                })
+
+              failed =
+                RunState.transition(state.run,
+                  status: :error,
+                  runner_execution_id: nil,
+                  error: reason
+                )
+
+              {:terminal, failed}
+          end
 
         {:error, reason} ->
-          state =
-            cancel_work(state, [execution_id], %{
-              kind: :step_submitted_persist_failed,
-              error: reason
-            })
+          _ =
+            RunExecutionOwnership.mark_dispatch_failed(
+              state.run.id,
+              ownership.ownership_id,
+              reason
+            )
 
           failed =
             RunState.transition(state.run,
@@ -372,7 +392,31 @@ defmodule FavnOrchestrator.RunServer.Execution do
               error: reason
             )
 
-          {:terminal, failed}
+          case Persistence.persist_run_step(failed, :step_failed, %{
+                 asset_ref: asset_ref,
+                 error: reason,
+                 node_key: node_key,
+                 asset_step_id: work.asset_step_id,
+                 stage: stage,
+                 attempt: attempt,
+                 max_attempts: state.run.max_attempts
+               }) do
+            :ok ->
+              maybe_schedule_sequential_retry(
+                %{state | run: failed},
+                asset_ref,
+                stage,
+                attempt,
+                true,
+                []
+              )
+
+            {:error, :external_cancel} ->
+              {:terminal, elem(Snapshots.cancelled_state(failed), 1)}
+
+            {:error, _persist_reason} ->
+              {:terminal, failed}
+          end
       end
     else
       {:error, reason} ->

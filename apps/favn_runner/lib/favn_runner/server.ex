@@ -464,40 +464,8 @@ defmodule FavnRunner.Server do
     end
   end
 
-  defp enqueue_or_reject_submit(state, from, execution_id, work, version, asset, error) do
-    if queued_worker_count(state) < state.admission.max_queue_size do
-      queue_ref = make_ref()
-
-      timer_ref =
-        Process.send_after(
-          self(),
-          {:queued_submit_timeout, queue_ref},
-          state.admission.queue_timeout_ms
-        )
-
-      monitor_ref = Process.monitor(elem(from, 0))
-
-      entry = %{
-        ref: queue_ref,
-        from: from,
-        execution_id: execution_id,
-        work: work,
-        version: version,
-        asset: asset,
-        timer_ref: timer_ref,
-        monitor_ref: monitor_ref
-      }
-
-      {:noreply,
-       %{
-         state
-         | queue: :queue.in(entry, state.queue),
-           queue_monitors: Map.put(state.queue_monitors, monitor_ref, queue_ref)
-       }}
-    else
-      {{:error, error}, state}
-    end
-  end
+  defp enqueue_or_reject_submit(state, _from, _execution_id, _work, _version, _asset, error),
+    do: {{:error, error}, state}
 
   defp admit_worker(state) do
     case ExecutionAdmission.admit(state.admission, active_worker_count(state)) do

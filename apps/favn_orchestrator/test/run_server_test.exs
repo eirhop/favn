@@ -18,6 +18,42 @@ defmodule FavnOrchestrator.RunServerTest do
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
+  defmodule StorageAdapterDelegate do
+    @moduledoc false
+
+    defmacro __using__(opts \\ []) do
+      except = Keyword.get(opts, :except, [])
+
+      for {name, arity} <- Favn.Storage.Adapter.behaviour_info(:callbacks), name not in except do
+        args = Macro.generate_arguments(arity, __MODULE__)
+
+        quote do
+          def unquote(name)(unquote_splicing(args)) do
+            apply(FavnOrchestrator.Storage.Adapter.Memory, unquote(name), [unquote_splicing(args)])
+          end
+        end
+      end
+    end
+  end
+
+  defmodule SubmittedOwnershipFailingStorageAdapter do
+    @moduledoc false
+    @behaviour Favn.Storage.Adapter
+
+    use FavnOrchestrator.RunServerTest.StorageAdapterDelegate,
+      except: [:put_execution_ownership]
+
+    @impl true
+    def put_execution_ownership(
+          %FavnOrchestrator.RunExecutionOwnership{status: :submitted},
+          _opts
+        ),
+        do: {:error, :ownership_persist_failed}
+
+    def put_execution_ownership(ownership, opts),
+      do: Memory.put_execution_ownership(ownership, opts)
+  end
+
   defmodule RunnerClientCancelBeforeStepStartedStub do
     @behaviour Favn.Contracts.RunnerClient
 
@@ -426,6 +462,7 @@ defmodule FavnOrchestrator.RunServerTest do
 
     start_memory_if_needed()
     Memory.reset()
+    FavnOrchestrator.ProjectionDiagnostics.reset()
 
     on_exit(fn ->
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
@@ -434,6 +471,8 @@ defmodule FavnOrchestrator.RunServerTest do
       if Process.whereis(Memory) do
         Memory.reset()
       end
+
+      FavnOrchestrator.ProjectionDiagnostics.reset()
     end)
 
     :ok
@@ -504,6 +543,30 @@ defmodule FavnOrchestrator.RunServerTest do
              RunExecutionOwnership.list(stored)
 
     assert is_binary(execution_id)
+  end
+
+  test "sequential submit failure terminalizes pre-submit ownership" do
+    asset_ref = {MyApp.Assets.Gold, :asset}
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSubmitFailureStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      fail_ref: asset_ref
+    )
+
+    version = manifest_version("mv_sequential_submit_failure_ownership")
+    run_state = asset_run_state("run_sequential_submit_failure_ownership", version)
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:submitted, ^asset_ref, _execution_id}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert [%RunExecutionOwnership{status: :dispatch_failed, runner_execution_id: nil}] =
+             RunExecutionOwnership.list(run_state)
   end
 
   test "sequential cancellation during retry wait wins before next submit" do
@@ -1334,6 +1397,52 @@ defmodule FavnOrchestrator.RunServerTest do
 
     assert {:ok, %{status: status}} = Storage.get_materialization_claim(first_claim_key)
     assert status in [:failed, "failed"]
+  end
+
+  test "pipeline submitted ownership persistence failure cancels current runner work" do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :storage_adapter_opts, previous_opts)
+    end)
+
+    asset_ref = {MyApp.Assets.PipelineSubmittedOwnershipFailure, :asset}
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSubmitFailureStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      fail_ref: :no_submit_failure
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      SubmittedOwnershipFailingStorageAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+    plan = single_node_plan(asset_ref, [])
+    version = manifest_version_for_refs("mv_pipeline_submitted_ownership_failure", [asset_ref])
+
+    run_state =
+      pipeline_run_state("run_pipeline_submitted_ownership_failure", version, plan, [asset_ref])
+
+    assert :ok = Storage.put_run(run_state)
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:submitted, ^asset_ref, execution_id}, 1_000
+    assert_receive {:cancelled, ^execution_id, cancellation_reason}, 1_000
+    assert cancellation_reason.reason.kind == :step_submitted_persist_failed
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :error
   end
 
   test "actual upstream success refreshes downstream in same pipeline" do

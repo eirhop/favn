@@ -986,9 +986,13 @@ defmodule FavnView.RunDetailLive do
   defp error_summary(nil), do: nil
   defp error_summary(%{message: message}) when is_binary(message), do: message
   defp error_summary(%{"message" => message}) when is_binary(message), do: message
+
   defp error_summary(%{reason: reason}), do: error_summary(reason)
   defp error_summary(%{"reason" => reason}), do: error_summary(reason)
-  defp error_summary(reason) when is_binary(reason), do: reason
+
+  defp error_summary(reason) when is_binary(reason),
+    do: OperatorErrorLabels.run_failure_detail(reason)
+
   defp error_summary(reason) when is_atom(reason), do: label(reason)
   defp error_summary(reason), do: OperatorErrorLabels.run_failure_detail(reason)
 

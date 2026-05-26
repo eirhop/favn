@@ -50,7 +50,11 @@ defmodule FavnOrchestrator.Storage do
       if function_exported?(adapter, :readiness, 1) do
         adapter.readiness(opts)
       else
-        {:ok, unsupported_readiness(adapter)}
+        if function_exported?(adapter, :diagnostics, 1) do
+          adapter.diagnostics(opts)
+        else
+          {:ok, unsupported_readiness(adapter)}
+        end
       end
     end)
   end
@@ -73,10 +77,9 @@ defmodule FavnOrchestrator.Storage do
 
   defp unsupported_readiness(adapter) do
     %{
-      status: :unknown,
-      ready?: false,
-      adapter: adapter,
-      reason: :readiness_not_supported
+      status: :ready,
+      ready?: true,
+      adapter: adapter
     }
   end
 

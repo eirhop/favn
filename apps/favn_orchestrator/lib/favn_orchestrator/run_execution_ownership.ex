@@ -23,7 +23,8 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
     :unknown_runner_outcome
   ]
 
-  @statuses @active_statuses ++ [:completed, :cancel_acknowledged, :already_completed]
+  @statuses @active_statuses ++
+              [:dispatch_failed, :completed, :cancel_acknowledged, :already_completed]
   @cancel_statuses [
     :cancel_dispatched,
     :cancel_acknowledged,
@@ -37,6 +38,7 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
           | :submitted
           | :started
           | :finish_persist_pending
+          | :dispatch_failed
           | :completed
           | :cancel_requested
           | :cancel_dispatched
@@ -199,6 +201,23 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   @spec completed(t()) :: t()
   def completed(%__MODULE__{} = ownership) do
     %{ownership | status: :completed, last_error: nil} |> touch()
+  end
+
+  @doc "Marks a dispatch intent as failed before runner ownership was established."
+  @spec dispatch_failed(t(), term()) :: t()
+  def dispatch_failed(%__MODULE__{} = ownership, reason) do
+    %{ownership | status: :dispatch_failed, last_error: reason} |> touch()
+  end
+
+  @doc "Marks matching pre-submit ownership records as failed."
+  @spec mark_dispatch_failed(String.t(), String.t(), term()) :: :ok | {:error, term()}
+  def mark_dispatch_failed(run_id, ownership_id, reason)
+      when is_binary(run_id) and is_binary(ownership_id) do
+    with {:ok, ownerships} <- fetch_active(run_id) do
+      ownerships
+      |> Enum.filter(&(&1.ownership_id == ownership_id))
+      |> persist_all(&dispatch_failed(&1, reason))
+    end
   end
 
   @doc "Marks matching active storage-ledger ownership records as awaiting durable persistence."

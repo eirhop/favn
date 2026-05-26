@@ -34,8 +34,10 @@ defmodule FavnSQLRuntime.SQLConcurrencyPolicyTest do
             %ConcurrencyPolicy{
               limit: 1,
               applies_to: :all,
-              admission_timeout_ms: :infinity,
-              connection: :warehouse
+              admission_timeout_ms: 30_000,
+              connection: :warehouse,
+              scope: {:connection, :warehouse},
+              target: :default
             }} =
              ConcurrencyPolicy.resolve(resolved)
   end
