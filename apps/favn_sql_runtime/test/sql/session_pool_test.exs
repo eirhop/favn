@@ -229,6 +229,28 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
            end)
   end
 
+  test "checkout_or_create times out and removes waiter when same key capacity is exhausted",
+       context do
+    key = pool_key(:checkout_timeout)
+
+    assert :create =
+             SessionPool.checkout_or_create(key,
+               name: context.pool_name,
+               max_creating_per_key: 1,
+               checkout_timeout_ms: 20
+             )
+
+    assert {:error, %Favn.SQL.Error{type: :pool_timeout, retryable?: true}} =
+             SessionPool.checkout_or_create(key,
+               name: context.pool_name,
+               max_creating_per_key: 1,
+               checkout_timeout_ms: 20
+             )
+
+    assert %{creating: 1, waiters: 0} = SessionPool.diagnostics(name: context.pool_name)
+    assert :ok = SessionPool.creation_finished(key, name: context.pool_name)
+  end
+
   test "pool keys hash stable inputs and sort required catalogs" do
     resolved = resolved(:stable, %{database: "secret.duckdb"})
 

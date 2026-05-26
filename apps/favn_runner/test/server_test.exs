@@ -164,6 +164,106 @@ defmodule FavnRunner.ServerTest do
     assert diagnostics.retention.evicted_completed_executions == 1
   end
 
+  test "submit_work rejects overload when active worker capacity is exhausted" do
+    server = start_runner_server(admission: [max_active_workers: 1, max_queue_size: 0])
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+
+    assert {:ok, execution_id} =
+             FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.SlowAsset),
+               server: server
+             )
+
+    assert {:error, %RunnerError{type: :runner_overloaded, kind: :boundary, retryable?: true}} =
+             FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.SlowAsset),
+               server: server
+             )
+
+    assert {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
+    assert diagnostics.admission.active_worker_count == 1
+    assert diagnostics.admission.queued_worker_count == 0
+    assert diagnostics.admission.rejected_overload_count == 1
+    assert diagnostics.admission.max_active_workers == 1
+    assert diagnostics.admission.max_queue_size == 0
+
+    assert {:ok, %{status: :acknowledged}} =
+             FavnRunner.cancel_work(execution_id, %{}, server: server)
+  end
+
+  test "submit_work rejects instead of blocking when bounded capacity is exhausted" do
+    server =
+      start_runner_server(
+        admission: [max_active_workers: 1, max_queue_size: 1, queue_timeout_ms: 1_000]
+      )
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+
+    assert {:ok, first_execution_id} =
+             FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.SlowAsset),
+               server: server
+             )
+
+    assert {:error, %RunnerError{type: :runner_overloaded, kind: :boundary, retryable?: true}} =
+             FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.SlowAsset),
+               server: server
+             )
+
+    assert {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
+    assert diagnostics.admission.queued_worker_count == 0
+
+    assert {:ok, %{status: :acknowledged}} =
+             FavnRunner.cancel_work(first_execution_id, %{}, server: server)
+  end
+
+  test "submit_work accepts new work after a worker completes" do
+    server = start_runner_server(admission: [max_active_workers: 1, max_queue_size: 0])
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.FastAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+
+    assert {:ok, first_execution_id} =
+             FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.FastAsset),
+               server: server
+             )
+
+    assert {:ok, %{status: :ok}} =
+             FavnRunner.await_result(first_execution_id, 1_000, server: server)
+
+    assert {:ok, second_execution_id} =
+             FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.FastAsset),
+               server: server
+             )
+
+    assert {:ok, %{status: :ok}} =
+             FavnRunner.await_result(second_execution_id, 1_000, server: server)
+  end
+
+  test "invalid admission config normalizes to safe defaults" do
+    server =
+      start_runner_server(
+        admission: [max_active_workers: 0, max_queue_size: -1, queue_timeout_ms: :bad]
+      )
+
+    assert {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
+    assert diagnostics.admission.max_active_workers == System.schedulers_online()
+    assert diagnostics.admission.max_queue_size == System.schedulers_online() * 2
+    assert diagnostics.admission.queue_timeout_ms == 30_000
+  end
+
   test "log replay is bounded to newest entries in chronological order" do
     server = start_runner_server(max_logs_per_execution: 2)
 
@@ -315,9 +415,17 @@ defmodule FavnRunner.ServerTest do
     }
   end
 
-  defp start_runner_server(retention \\ []) do
+  defp start_runner_server(opts \\ []) do
     server = String.to_atom(unique_id("runner_server"))
-    start_supervised!({FavnRunner.Server, name: server, retention: retention})
+
+    server_opts =
+      if Keyword.has_key?(opts, :admission) or Keyword.has_key?(opts, :retention) do
+        opts
+      else
+        [retention: opts]
+      end
+
+    start_supervised!({FavnRunner.Server, Keyword.merge([name: server], server_opts)})
     server
   end
 

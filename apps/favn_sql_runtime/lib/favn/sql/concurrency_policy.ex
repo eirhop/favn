@@ -5,21 +5,31 @@ defmodule Favn.SQL.ConcurrencyPolicy do
   alias Favn.SQL.Error
 
   @enforce_keys [:limit, :scope, :applies_to]
-  defstruct [:limit, :scope, :applies_to, :connection, :target, admission_timeout_ms: :infinity]
+  @default_admission_timeout_ms 30_000
+
+  defstruct [
+    :limit,
+    :scope,
+    :applies_to,
+    :connection,
+    :target,
+    admission_timeout_ms: @default_admission_timeout_ms
+  ]
 
   @type limit :: pos_integer() | :unlimited
   @type applies_to :: :all | :writes
   @type admission_timeout_ms :: pos_integer() | :infinity
   @type t :: %__MODULE__{
           limit: limit(),
-           scope: term(),
-           applies_to: applies_to(),
-           connection: atom() | nil,
-           target: Favn.SQL.ConcurrencyPolicies.target() | nil,
-           admission_timeout_ms: admission_timeout_ms()
-         }
+          scope: term(),
+          applies_to: applies_to(),
+          connection: atom() | nil,
+          target: Favn.SQL.ConcurrencyPolicies.target() | nil,
+          admission_timeout_ms: admission_timeout_ms()
+        }
 
-  @spec resolve(Resolved.t()) :: {:ok, t() | Favn.SQL.ConcurrencyPolicies.t()} | {:error, Error.t()}
+  @spec resolve(Resolved.t()) ::
+          {:ok, t() | Favn.SQL.ConcurrencyPolicies.t()} | {:error, Error.t()}
   def resolve(%Resolved{} = resolved) do
     with {:ok, policies} <- adapter_policies(resolved),
          {:ok, limit} <- configured_limit(resolved),
@@ -124,11 +134,19 @@ defmodule Favn.SQL.ConcurrencyPolicy do
     %{policy | connection: policy.connection || resolved.name, target: target}
   end
 
-  defp apply_configured_overrides(%Favn.SQL.ConcurrencyPolicies{} = policies, resolved, limit, timeout) do
+  defp apply_configured_overrides(
+         %Favn.SQL.ConcurrencyPolicies{} = policies,
+         resolved,
+         limit,
+         timeout
+       ) do
     %Favn.SQL.ConcurrencyPolicies{
       policies
       | default: apply_configured_overrides(policies.default, resolved, limit, timeout),
-        catalog: Map.new(policies.catalog, fn {key, policy} -> {key, apply_timeout(policy, resolved, timeout)} end)
+        catalog:
+          Map.new(policies.catalog, fn {key, policy} ->
+            {key, apply_timeout(policy, resolved, timeout)}
+          end)
     }
   end
 

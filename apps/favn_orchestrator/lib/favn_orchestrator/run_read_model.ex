@@ -1188,7 +1188,7 @@ defmodule FavnOrchestrator.RunReadModel do
   defp error_summary(%{message: message}) when is_binary(message), do: message
   defp error_summary(%{"message" => message}) when is_binary(message), do: message
   defp error_summary(error) when is_binary(error), do: error
-  defp error_summary(error), do: inspect(error)
+  defp error_summary(_error), do: "Failure details are available in server logs."
 
   defp timeline_sort_key(%{started_at: %DateTime{} = started_at}),
     do: DateTime.to_unix(started_at, :microsecond)

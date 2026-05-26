@@ -66,6 +66,18 @@ defmodule Favn.StorageFacadeTest do
     def list_global_run_events(_filters, _opts), do: {:ok, []}
 
     @impl true
+    def put_execution_ownership(_ownership, _opts), do: :ok
+
+    @impl true
+    def get_execution_ownership(_ownership_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_execution_ownerships(_run_id, _opts), do: {:ok, []}
+
+    @impl true
+    def list_active_execution_ownerships(_run_id, _opts), do: {:ok, []}
+
+    @impl true
     def try_acquire_execution_lease(lease, _opts), do: {:ok, lease}
 
     @impl true
@@ -266,6 +278,18 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def list_global_run_events(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def put_execution_ownership(_ownership, _opts), do: :ok
+
+    @impl true
+    def get_execution_ownership(_ownership_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_execution_ownerships(_run_id, _opts), do: {:ok, []}
+
+    @impl true
+    def list_active_execution_ownerships(_run_id, _opts), do: {:ok, []}
 
     @impl true
     def try_acquire_execution_lease(lease, _opts), do: {:ok, lease}

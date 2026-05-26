@@ -11,12 +11,24 @@ Code:
 - Run submission, cancellation, execution admission, materialization-claim
   admission, and recovery in
   `apps/favn_orchestrator/lib/favn_orchestrator/run_manager.ex`,
+  `apps/favn_orchestrator/lib/favn_orchestrator/run_execution_ownership.ex`,
   `apps/favn_orchestrator/lib/favn_orchestrator/execution_admission.ex`,
   `apps/favn_orchestrator/lib/favn_orchestrator/materialization_claim.ex`, and
   `apps/favn_orchestrator/lib/favn_orchestrator/run_recovery.ex`
+- Durable runner execution ownership is stored behind the storage adapter boundary
+  before runner dispatch and updated through submitted, started,
+  finish-persist-pending, completed, and cancellation-outcome states. Crash
+  cleanup reads this ledger instead of trusting run metadata alone. Ownership
+  records carry `ownership_id`, `dispatch_id`, deadline, runner reference, and
+  cancellation outcome fields; runner work metadata includes the ownership and
+  dispatch identifiers before dispatch.
 - Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
 - Runner cancellation envelope and best-effort dispatch under
-  `apps/favn_orchestrator/lib/favn_orchestrator/run_server/cancellation.ex`
+  `apps/favn_orchestrator/lib/favn_orchestrator/run_server/cancellation.ex` and
+  normalized cancellation DTOs in
+  `apps/favn_orchestrator/lib/favn_orchestrator/cancellation_outcome.ex`.
+  `:cancelled` is persisted only for acknowledged cancellation; already-completed
+  and unknown/failed runner outcomes remain explicit non-cancelled cleanup states.
 - Run read models in `apps/favn_orchestrator/lib/favn_orchestrator/run_read_model.ex`,
   including bounded operator run detail, execution-group summaries/details,
   asset attempts, windows, event cursors, and timeline entries for thin operator
@@ -54,9 +66,14 @@ Code:
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - Private API router and DTO boundary under `apps/favn_orchestrator/lib/favn_orchestrator/api/`
 - HTTP contract schemas for private API JSON-safe DTOs under `apps/favn_orchestrator/priv/http_contract/v1/`
-- Production runtime config, normalized runtime dependency config, readiness, diagnostics, redaction, and operational event modules under `apps/favn_orchestrator/lib/favn_orchestrator/`
+- Production runtime config, normalized runtime dependency config, readiness,
+  diagnostics, projection degradation diagnostics, telemetry, redaction, safe
+  operator error DTOs, and operational event modules under
+  `apps/favn_orchestrator/lib/favn_orchestrator/`
 - Public facade readiness and diagnostics entrypoints on `FavnOrchestrator`, used
   by same-BEAM web readiness and operator tooling.
+  Storage adapters without readiness support report `:unknown` instead of healthy;
+  SQLite and Postgres expose explicit schema/migration readiness diagnostics.
 - Command idempotency helpers under `apps/favn_orchestrator/lib/favn_orchestrator/idempotency.ex`
 
 Tests:
@@ -72,7 +89,8 @@ Tests:
 - execution-group run read-model coverage in `apps/favn_orchestrator/test/run_read_model_test.exs`
 - optional adapter contract smoke coverage under `apps/favn_orchestrator/test/integration/`; adapter-specific suites own full adapter coverage
 
-Use when changing run lifecycle, run cancellation semantics, freshness
+Use when changing run lifecycle, durable runner ownership, run cancellation
+semantics, freshness
 decisions/queries, scheduling, private API behavior, SSE/events, auth, command
 idempotency, bootstrap service-token/runner-registration endpoints, same-BEAM
 readiness facade behavior, backfill orchestration, execution leases,

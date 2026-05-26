@@ -8,7 +8,9 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSet do
   """
 
   alias FavnOrchestrator.ExecutionAdmission
+  alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.MaterializationClaims
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
@@ -111,8 +113,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSet do
       ) do
     active_ids = Enum.uniq(execution_ids(work_set) ++ inflight_execution_ids(run_state))
 
-    cancelled_ids =
-      Cancellation.cancel_runner_work(
+    cancel_results =
+      Cancellation.dispatch_runner_work(
         run_state,
         active_ids,
         reason,
@@ -120,10 +122,26 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSet do
         runner_opts
       )
 
+    cancelled_ids = Enum.map(cancel_results, & &1.execution_id)
+
     next_work_set =
       Enum.reduce(cancelled_ids, work_set, fn id, acc -> elem(complete_entry(acc, id), 1) end)
 
-    {sync_run_metadata(run_state, next_work_set), next_work_set}
+    run_state =
+      run_state
+      |> tap(fn run ->
+        _ = RunExecutionOwnership.persist_cancel_outcomes(run.id, cancel_results, reason)
+      end)
+      |> put_cancel_outcomes(cancel_results)
+      |> sync_run_metadata(next_work_set)
+
+    {run_state, next_work_set}
+  end
+
+  defp put_cancel_outcomes(%RunState{} = run_state, cancel_results) do
+    outcomes = Enum.map(cancel_results, &CancellationOutcome.to_map/1)
+    metadata = Map.put(run_state.metadata, :cancel_outcomes, outcomes)
+    RunState.transition(run_state, metadata: metadata)
   end
 
   @doc "Releases an entry admission lease. Missing leases are already clean."

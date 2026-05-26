@@ -146,6 +146,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     auth_start = ensure_auth_store_started()
     :ok = AuthStore.reset()
     Memory.reset()
+    FavnOrchestrator.ProjectionDiagnostics.reset()
     :ok = Auth.bootstrap_configured_actor()
 
     on_exit(fn ->
@@ -160,6 +161,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       restore_env(:favn_orchestrator, :local_dev_mode, previous_local_dev_mode)
       restore_env(:favn_orchestrator, :storage_adapter, previous_storage_adapter)
       Process.delete(:runner_register_manifest_result)
+      FavnOrchestrator.ProjectionDiagnostics.reset()
       maybe_stop_auth_store(auth_start)
     end)
 

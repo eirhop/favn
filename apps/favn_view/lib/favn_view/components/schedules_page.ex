@@ -36,7 +36,7 @@ defmodule FavnView.Components.SchedulesPage do
         data-testid="schedules-page"
       >
         <.loading_state :if={@loading} />
-        <.error_state :if={!@loading && @error} />
+        <.error_state :if={!@loading && @error} error={@error} />
 
         <div :if={!@loading && !@error} class="flex min-h-0 flex-1 flex-col gap-2.5 lg:gap-3">
           <.helper_text />
@@ -415,6 +415,8 @@ defmodule FavnView.Components.SchedulesPage do
     """
   end
 
+  attr :error, :string, required: true
+
   def error_state(assigns) do
     ~H"""
     <GlassPanel.glass_panel
@@ -422,7 +424,7 @@ defmodule FavnView.Components.SchedulesPage do
       data-testid="schedules-error-state"
     >
       <h2 class="text-xl font-medium">Could not load schedules</h2>
-      <p class="mt-2 text-base-content/60">Retry</p>
+      <p class="mt-2 text-base-content/60">{@error}</p>
     </GlassPanel.glass_panel>
     """
   end

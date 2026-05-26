@@ -27,7 +27,7 @@ defmodule FavnView.Components.PipelinesPage do
     >
       <div class="mx-auto w-full max-w-[120rem] pb-24 lg:pb-0" data-testid="pipelines-page">
         <.loading_state :if={@loading} />
-        <.error_state :if={!@loading && @error} />
+        <.error_state :if={!@loading && @error} error={@error} />
 
         <div :if={!@loading && !@error} class="space-y-3.5 lg:space-y-5">
           <div id="pipeline-filters" data-testid="pipeline-filters">
@@ -285,6 +285,8 @@ defmodule FavnView.Components.PipelinesPage do
     """
   end
 
+  attr :error, :string, required: true
+
   def error_state(assigns) do
     ~H"""
     <GlassPanel.glass_panel
@@ -292,7 +294,7 @@ defmodule FavnView.Components.PipelinesPage do
       data-testid="pipelines-error-state"
     >
       <h2 class="text-xl font-medium">Could not load pipelines</h2>
-      <p class="mt-2 text-base-content/60">Retry</p>
+      <p class="mt-2 text-base-content/60">{@error}</p>
     </GlassPanel.glass_panel>
     """
   end

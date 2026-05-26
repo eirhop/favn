@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -126,6 +127,32 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     conflict = %{run | status: :error} |> RunState.with_snapshot_hash()
     assert {:error, :conflicting_snapshot} = Storage.put_run(conflict)
+
+    ownership =
+      RunExecutionOwnership.new(run,
+        asset_step_id: "#{run.id}:asset",
+        node_key: run.asset_ref,
+        asset_ref: run.asset_ref,
+        stage: 0,
+        attempt: 1,
+        execution_pool: :default
+      )
+
+    assert :ok = Storage.put_execution_ownership(ownership)
+    assert {:ok, [^ownership]} = Storage.list_active_execution_ownerships(run.id)
+
+    submitted = RunExecutionOwnership.submitted(ownership, "exec_#{run.id}")
+    assert :ok = Storage.put_execution_ownership(submitted)
+    assert {:ok, ^submitted} = Storage.get_execution_ownership(ownership.ownership_id)
+
+    finish_pending = RunExecutionOwnership.finish_persist_pending(submitted)
+    assert :ok = Storage.put_execution_ownership(finish_pending)
+    assert {:ok, [^finish_pending]} = Storage.list_active_execution_ownerships(run.id)
+
+    completed = RunExecutionOwnership.completed(finish_pending)
+    assert :ok = Storage.put_execution_ownership(completed)
+    assert {:ok, []} = Storage.list_active_execution_ownerships(run.id)
+    assert {:ok, [^completed]} = Storage.list_execution_ownerships(run.id)
 
     assert {:ok, listed} = Storage.list_runs(status: :pending, limit: 10)
     assert Enum.any?(listed, &(&1.id == run.id))

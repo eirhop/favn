@@ -25,6 +25,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.ExecutionAdmissionWaiterCodec
   alias FavnOrchestrator.Storage.ExecutionGroupSummary
   alias FavnOrchestrator.Storage.ExecutionLeaseCodec
+  alias FavnOrchestrator.Storage.ExecutionOwnershipCodec
   alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
   alias FavnOrchestrator.Storage.IdempotencyResponseCodec
   alias FavnOrchestrator.Storage.LogEntryCodec
@@ -240,6 +241,81 @@ defmodule Favn.Storage.Adapter.SQLite do
         {:ok, :idempotent} -> :idempotent
         {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  @impl true
+  def put_execution_ownership(ownership, opts) when is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, normalized} <- ExecutionOwnershipCodec.normalize(ownership),
+         {:ok, payload} <- ExecutionOwnershipCodec.encode(normalized) do
+      sql = """
+      INSERT INTO favn_execution_ownerships (
+        ownership_id, run_id, asset_step_id, runner_execution_id, status,
+        inserted_at, updated_at, ownership_payload
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+      ON CONFLICT(ownership_id) DO UPDATE SET
+        run_id = excluded.run_id,
+        asset_step_id = excluded.asset_step_id,
+        runner_execution_id = excluded.runner_execution_id,
+        status = excluded.status,
+        inserted_at = excluded.inserted_at,
+        updated_at = excluded.updated_at,
+        ownership_payload = excluded.ownership_payload
+      """
+
+      case SQL.query(repo, sql, execution_ownership_params(normalized, payload)) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def get_execution_ownership(ownership_id, opts)
+      when is_binary(ownership_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      case SQL.query(
+             repo,
+             "SELECT ownership_payload FROM favn_execution_ownerships WHERE ownership_id = ?1 LIMIT 1",
+             [ownership_id]
+           ) do
+        {:ok, %{rows: [row]}} -> decode_execution_ownership_row(row)
+        {:ok, %{rows: []}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_execution_ownerships(run_id, opts) when is_binary(run_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      query_and_decode_rows(
+        repo,
+        "SELECT ownership_payload FROM favn_execution_ownerships WHERE run_id = ?1 ORDER BY inserted_at ASC, ownership_id ASC",
+        [run_id],
+        &decode_execution_ownership_row/1
+      )
+    end
+  end
+
+  @impl true
+  def list_active_execution_ownerships(run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    statuses = execution_ownership_active_statuses()
+
+    placeholders =
+      statuses
+      |> Enum.with_index(2)
+      |> Enum.map_join(", ", fn {_status, index} -> "?#{index}" end)
+
+    with {:ok, repo} <- repo_name(opts) do
+      query_and_decode_rows(
+        repo,
+        "SELECT ownership_payload FROM favn_execution_ownerships WHERE run_id = ?1 AND status IN (#{placeholders}) ORDER BY inserted_at ASC, ownership_id ASC",
+        [run_id | statuses],
+        &decode_execution_ownership_row/1
+      )
     end
   end
 
@@ -2053,7 +2129,30 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp decode_materialization_claim_row([record_payload]),
     do: MaterializationClaimCodec.decode(record_payload)
 
+  defp decode_execution_ownership_row([ownership_payload]),
+    do: ExecutionOwnershipCodec.decode(ownership_payload)
+
   defp decode_execution_lease_row([lease_payload]), do: ExecutionLeaseCodec.decode(lease_payload)
+
+  defp query_and_decode_rows(repo, sql, params, decoder) do
+    case SQL.query(repo, sql, params) do
+      {:ok, %{rows: rows}} -> decode_rows(rows, decoder)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_rows(rows, decoder) do
+    Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
+      case decoder.(row) do
+        {:ok, value} -> {:cont, {:ok, [value | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp decode_execution_admission_waiter_row([waiter_payload]),
     do: ExecutionAdmissionWaiterCodec.decode(waiter_payload)
@@ -4356,6 +4455,23 @@ defmodule Favn.Storage.Adapter.SQLite do
     else
       {:error, reason} -> repo.rollback(reason)
     end
+  end
+
+  defp execution_ownership_params(ownership, payload) do
+    [
+      ownership.ownership_id,
+      ownership.run_id,
+      ownership.asset_step_id,
+      ownership.runner_execution_id,
+      Atom.to_string(ownership.status),
+      ownership.inserted_at,
+      ownership.updated_at,
+      payload
+    ]
+  end
+
+  defp execution_ownership_active_statuses do
+    Enum.map(FavnOrchestrator.RunExecutionOwnership.active_statuses(), &Atom.to_string/1)
   end
 
   defp materialization_claim_params(%MaterializationClaim{} = claim) do

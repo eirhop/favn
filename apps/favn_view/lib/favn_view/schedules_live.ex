@@ -3,8 +3,9 @@ defmodule FavnView.SchedulesLive do
 
   use FavnView, :live_view
 
-  alias FavnView.ScheduleRoute
   alias FavnView.Components.SchedulesPage
+  alias FavnView.OperatorErrorLabels
+  alias FavnView.ScheduleRoute
 
   @default_filters %{
     "search" => "",
@@ -90,7 +91,7 @@ defmodule FavnView.SchedulesLive do
   defp load_entries(filters) do
     case page_schedule_list_entries(orchestrator_filters(filters)) do
       {:ok, %{items: entries}} -> {Enum.map(entries, &schedule_from_public/1), nil}
-      {:error, reason} -> {[], inspect(reason)}
+      {:error, reason} -> {[], OperatorErrorLabels.load(reason)}
     end
   end
 

@@ -24,6 +24,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.ExecutionAdmissionWaiterCodec
   alias FavnOrchestrator.Storage.ExecutionGroupSummary
   alias FavnOrchestrator.Storage.ExecutionLeaseCodec
+  alias FavnOrchestrator.Storage.ExecutionOwnershipCodec
   alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.LogEntryCodec
@@ -88,6 +89,34 @@ defmodule Favn.Storage.Adapter.Postgres do
         :external ->
           :none
       end
+    end
+  end
+
+  @impl true
+  def readiness(opts) when is_list(opts) do
+    diagnostics(opts)
+  end
+
+  @impl true
+  def diagnostics(opts) when is_list(opts) do
+    with {:ok, normalized} <- normalize_opts(opts),
+         {:ok, schema} <- inspect_schema(normalized) do
+      migration_mode = Keyword.fetch!(normalized, :migration_mode)
+      status = readiness_status(schema.status, migration_mode)
+
+      {:ok,
+       %{
+         status: status,
+         ready?: status in [:ready, :ready_after_migration],
+         adapter: __MODULE__,
+         mode: :postgres,
+         repo_mode: Keyword.fetch!(normalized, :repo_mode),
+         migration_mode: migration_mode,
+         database: %{configured?: true, name: :redacted},
+         schema: schema
+       }}
+    else
+      {:error, reason} -> {:error, redacted_readiness_error(reason)}
     end
   end
 
@@ -235,6 +264,81 @@ defmodule Favn.Storage.Adapter.Postgres do
         {:ok, :idempotent} -> :idempotent
         {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  @impl true
+  def put_execution_ownership(ownership, opts) when is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, normalized} <- ExecutionOwnershipCodec.normalize(ownership),
+         {:ok, payload} <- ExecutionOwnershipCodec.encode(normalized) do
+      sql = """
+      INSERT INTO favn_execution_ownerships (
+        ownership_id, run_id, asset_step_id, runner_execution_id, status,
+        inserted_at, updated_at, ownership_payload
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT(ownership_id) DO UPDATE SET
+        run_id = EXCLUDED.run_id,
+        asset_step_id = EXCLUDED.asset_step_id,
+        runner_execution_id = EXCLUDED.runner_execution_id,
+        status = EXCLUDED.status,
+        inserted_at = EXCLUDED.inserted_at,
+        updated_at = EXCLUDED.updated_at,
+        ownership_payload = EXCLUDED.ownership_payload
+      """
+
+      case SQL.query(repo, sql, execution_ownership_params(normalized, payload)) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def get_execution_ownership(ownership_id, opts)
+      when is_binary(ownership_id) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      case SQL.query(
+             repo,
+             "SELECT ownership_payload FROM favn_execution_ownerships WHERE ownership_id = $1 LIMIT 1",
+             [ownership_id]
+           ) do
+        {:ok, %{rows: [row]}} -> decode_execution_ownership_row(row)
+        {:ok, %{rows: []}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_execution_ownerships(run_id, opts) when is_binary(run_id) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      query_and_decode_rows(
+        repo,
+        "SELECT ownership_payload FROM favn_execution_ownerships WHERE run_id = $1 ORDER BY inserted_at ASC, ownership_id ASC",
+        [run_id],
+        &decode_execution_ownership_row/1
+      )
+    end
+  end
+
+  @impl true
+  def list_active_execution_ownerships(run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    statuses = execution_ownership_active_statuses()
+
+    placeholders =
+      statuses
+      |> Enum.with_index(2)
+      |> Enum.map_join(", ", fn {_status, index} -> "$#{index}" end)
+
+    with {:ok, repo} <- resolve_repo(opts) do
+      query_and_decode_rows(
+        repo,
+        "SELECT ownership_payload FROM favn_execution_ownerships WHERE run_id = $1 AND status IN (#{placeholders}) ORDER BY inserted_at ASC, ownership_id ASC",
+        [run_id | statuses],
+        &decode_execution_ownership_row/1
+      )
     end
   end
 
@@ -2157,6 +2261,9 @@ defmodule Favn.Storage.Adapter.Postgres do
   defp decode_materialization_claim_row([record_payload]),
     do: MaterializationClaimCodec.decode(record_payload)
 
+  defp decode_execution_ownership_row([ownership_payload]),
+    do: ExecutionOwnershipCodec.decode(ownership_payload)
+
   defp decode_execution_lease_row([lease_payload]), do: ExecutionLeaseCodec.decode(lease_payload)
 
   defp decode_execution_admission_waiter_row([waiter_payload]),
@@ -3785,6 +3892,23 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
+  defp execution_ownership_params(ownership, payload) do
+    [
+      ownership.ownership_id,
+      ownership.run_id,
+      ownership.asset_step_id,
+      ownership.runner_execution_id,
+      Atom.to_string(ownership.status),
+      ownership.inserted_at,
+      ownership.updated_at,
+      payload
+    ]
+  end
+
+  defp execution_ownership_active_statuses do
+    Enum.map(FavnOrchestrator.RunExecutionOwnership.active_statuses(), &Atom.to_string/1)
+  end
+
   defp materialization_claim_params(%MaterializationClaim{} = claim) do
     [
       claim.claim_key,
@@ -4134,6 +4258,78 @@ defmodule Favn.Storage.Adapter.Postgres do
           end
       end
     end
+  end
+
+  defp inspect_schema(normalized) do
+    case Keyword.fetch!(normalized, :repo_mode) do
+      :external ->
+        repo = Keyword.fetch!(normalized, :repo)
+        Migrations.schema_diagnostics(repo)
+
+      :managed ->
+        inspect_managed_schema(Keyword.fetch!(normalized, :repo_config))
+    end
+  end
+
+  defp inspect_managed_schema(repo_config) do
+    if Process.whereis(Repo) do
+      Migrations.schema_diagnostics(Repo)
+    else
+      repo_name = unique_repo_name()
+
+      case Repo.start_link(Keyword.put(repo_config, :name, repo_name)) do
+        {:ok, pid} ->
+          Process.unlink(pid)
+
+          try do
+            Migrations.schema_diagnostics(repo_name)
+          after
+            GenServer.stop(pid, :normal, 5_000)
+          end
+
+        {:error, reason} ->
+          {:error, {:database_open_failed, reason}}
+      end
+    end
+  end
+
+  defp readiness_status(:ready, _migration_mode), do: :ready
+
+  defp readiness_status(status, :auto) when status in [:empty_database, :upgrade_required],
+    do: :ready_after_migration
+
+  defp readiness_status(_status, _migration_mode), do: :schema_not_ready
+
+  defp redacted_readiness_error({:invalid_repo_config, key}),
+    do: %{status: :invalid_configuration, reason: {:invalid_repo_config, key}}
+
+  defp redacted_readiness_error({:invalid_repo_mode, _mode}),
+    do: %{status: :invalid_configuration, reason: :invalid_repo_mode}
+
+  defp redacted_readiness_error({:invalid_migration_mode, _mode}),
+    do: %{status: :invalid_configuration, reason: :invalid_migration_mode}
+
+  defp redacted_readiness_error({:invalid_external_migration_mode, _mode}),
+    do: %{status: :invalid_configuration, reason: :invalid_external_migration_mode}
+
+  defp redacted_readiness_error({:invalid_external_repo, _repo}),
+    do: %{status: :invalid_configuration, reason: :invalid_external_repo}
+
+  defp redacted_readiness_error({:database_open_failed, reason}),
+    do: %{status: :database_unavailable, reason: redact_postgres_error(reason)}
+
+  defp redacted_readiness_error(reason),
+    do: %{status: :schema_diagnostics_failed, reason: redact_postgres_error(reason)}
+
+  defp redact_postgres_error(%{__struct__: module}) when is_atom(module),
+    do: %{exception: Atom.to_string(module)}
+
+  defp redact_postgres_error(reason) when is_atom(reason), do: reason
+  defp redact_postgres_error(reason) when is_binary(reason), do: reason
+  defp redact_postgres_error(_reason), do: :redacted
+
+  defp unique_repo_name do
+    Module.concat(__MODULE__, "ReadinessRepo#{System.unique_integer([:positive, :monotonic])}")
   end
 
   defp schema_ready?(repo) when is_atom(repo) do

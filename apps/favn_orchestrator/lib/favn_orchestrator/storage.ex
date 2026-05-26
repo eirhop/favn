@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.Storage do
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.TargetStatus
 
@@ -49,7 +50,11 @@ defmodule FavnOrchestrator.Storage do
       if function_exported?(adapter, :readiness, 1) do
         adapter.readiness(opts)
       else
-        {:ok, %{status: :ready, ready?: true, adapter: adapter}}
+        if function_exported?(adapter, :diagnostics, 1) do
+          adapter.diagnostics(opts)
+        else
+          {:ok, unsupported_readiness(adapter)}
+        end
       end
     end)
   end
@@ -65,9 +70,17 @@ defmodule FavnOrchestrator.Storage do
           adapter.readiness(opts)
 
         true ->
-          {:ok, %{status: :ready, ready?: true, adapter: adapter}}
+          {:ok, unsupported_readiness(adapter)}
       end
     end)
+  end
+
+  defp unsupported_readiness(adapter) do
+    %{
+      status: :ready,
+      ready?: true,
+      adapter: adapter
+    }
   end
 
   @spec put_manifest_version(Version.t()) :: :ok | {:error, term()}
@@ -112,6 +125,28 @@ defmodule FavnOrchestrator.Storage do
   @spec persist_run_transition(RunState.t(), map()) :: :ok | :idempotent | {:error, term()}
   def persist_run_transition(%RunState{} = run, event) when is_map(event) do
     adapter_call(fn adapter, opts -> adapter.persist_run_transition(run, event, opts) end)
+  end
+
+  @spec put_execution_ownership(RunExecutionOwnership.t() | map()) :: :ok | {:error, term()}
+  def put_execution_ownership(ownership) do
+    adapter_call(fn adapter, opts -> adapter.put_execution_ownership(ownership, opts) end)
+  end
+
+  @spec get_execution_ownership(String.t()) :: {:ok, RunExecutionOwnership.t()} | {:error, term()}
+  def get_execution_ownership(ownership_id) when is_binary(ownership_id) do
+    adapter_call(fn adapter, opts -> adapter.get_execution_ownership(ownership_id, opts) end)
+  end
+
+  @spec list_execution_ownerships(String.t()) ::
+          {:ok, [RunExecutionOwnership.t()]} | {:error, term()}
+  def list_execution_ownerships(run_id) when is_binary(run_id) do
+    adapter_call(fn adapter, opts -> adapter.list_execution_ownerships(run_id, opts) end)
+  end
+
+  @spec list_active_execution_ownerships(String.t()) ::
+          {:ok, [RunExecutionOwnership.t()]} | {:error, term()}
+  def list_active_execution_ownerships(run_id) when is_binary(run_id) do
+    adapter_call(fn adapter, opts -> adapter.list_active_execution_ownerships(run_id, opts) end)
   end
 
   @spec get_run(String.t()) :: {:ok, RunState.t()} | {:error, term()}

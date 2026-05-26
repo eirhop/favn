@@ -8,6 +8,7 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.RelationRef
   alias Favn.Run.Context
   alias Favn.SQL.Client, as: SQLClient
+  alias Favn.SQL.CancelToken
   alias Favn.SQL.Error, as: SQLError
 
   alias Favn.SQL.{Explain, IncrementalWindow, MaterializationResult, Params, Preview, Render}
@@ -22,10 +23,12 @@ defmodule Favn.SQLAsset.Runtime do
 
   @spec run_manifest(Asset.t(), Version.t(), RunnerWork.t()) :: {:ok, map()} | {:error, Error.t()}
   def run_manifest(%Asset{} = asset, %Version{} = version, work) do
-    opts = [
-      params: Map.get(work, :params, %{}),
-      runtime: trigger_runtime(Map.get(work, :trigger, %{}))
-    ]
+    opts =
+      [
+        params: Map.get(work, :params, %{}),
+        runtime: trigger_runtime(Map.get(work, :trigger, %{}))
+      ]
+      |> Keyword.merge(runner_runtime_opts(work))
 
     with {:ok, %Definition{} = definition} <- manifest_definition(asset, version),
          {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
@@ -172,9 +175,13 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp query_render(%Render{} = rendered, statement, phase, opts) do
     with_session(rendered.connection, opts, required_catalogs(rendered), fn session ->
-      SQLClient.query(session, statement,
-        params: adapter_params(rendered.params),
-        read_only?: true
+      SQLClient.query(
+        session,
+        statement,
+        Keyword.merge(sql_operation_opts(opts),
+          params: adapter_params(rendered.params),
+          read_only?: true
+        )
       )
     end)
     |> map_sql_result_error(rendered.asset_ref, phase)
@@ -184,7 +191,11 @@ defmodule Favn.SQLAsset.Runtime do
     with_session(rendered.connection, opts, required_catalogs(rendered), fn session ->
       with {:ok, write_plan} <- MaterializationPlanner.build(session, definition, rendered),
            {:ok, result} <-
-             SQLClient.materialize(session, write_plan, params: adapter_params(rendered.params)) do
+             SQLClient.materialize(
+               session,
+               write_plan,
+               Keyword.merge(sql_operation_opts(opts), params: adapter_params(rendered.params))
+             ) do
         {:ok, write_plan, result}
       end
     end)
@@ -261,6 +272,33 @@ defmodule Favn.SQLAsset.Runtime do
   rescue
     error -> {:error, error}
   end
+
+  defp sql_operation_opts(opts) do
+    Keyword.take(opts, [:timeout_ms, :deadline, :cancel_token])
+  end
+
+  defp runner_runtime_opts(%RunnerWork{metadata: metadata}) when is_map(metadata) do
+    deadline_at = Map.get(metadata, :deadline_at) || Map.get(metadata, "deadline_at")
+
+    []
+    |> maybe_put_timeout(deadline_at)
+    |> Keyword.put(
+      :cancel_token,
+      CancelToken.new(
+        operation_id: Map.get(metadata, :dispatch_id) || Map.get(metadata, "dispatch_id"),
+        deadline_at: deadline_at
+      )
+    )
+  end
+
+  defp runner_runtime_opts(%RunnerWork{}), do: []
+
+  defp maybe_put_timeout(opts, %DateTime{} = deadline_at) do
+    remaining_ms = max(DateTime.diff(deadline_at, DateTime.utc_now(), :millisecond), 1)
+    Keyword.put(opts, :timeout_ms, remaining_ms)
+  end
+
+  defp maybe_put_timeout(opts, _deadline_at), do: opts
 
   defp required_catalogs(%Render{} = rendered) do
     # Catalog scope comes from manifest-declared relation ownership and resolved

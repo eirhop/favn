@@ -151,6 +151,18 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "Europe/Oslo"
   end
 
+  test "schedules list renders backend failures without internal reasons", %{conn: conn} do
+    put_test_env(:page_schedule_list_entries_fun, fn _opts ->
+      {:error, {:storage_failed, :secret_schedule_path}}
+    end)
+
+    {:ok, view, html} = live(conn, ~p"/schedules")
+
+    assert has_element?(view, ~s([data-testid="schedules-error-state"]), "Backend unavailable")
+    refute html =~ "storage_failed"
+    refute html =~ "secret_schedule_path"
+  end
+
   test "schedules list shows current run link and scheduler warning", %{conn: conn} do
     seed_schedule_state!(in_flight_run_id: "run_raw_payments")
     seed_schedule_state!(last_scheduler_error: scheduler_error())
@@ -221,7 +233,33 @@ defmodule FavnView.PageLiveTest do
     |> element(~s([data-testid="view-mode-rail"] button[phx-value-mode="occurrences"]))
     |> render_click()
 
-    assert has_element?(view, ~s([data-testid="schedule-occurrences-error"]), "preview_failed")
+    assert has_element?(
+             view,
+             ~s([data-testid="schedule-occurrences-error"]),
+             "Could not load schedule occurrences."
+           )
+
+    refute render(view) =~ "preview_failed"
+  end
+
+  test "schedule detail renders backend failures without internal reasons", %{conn: conn} do
+    put_test_env(:get_schedule_entry_fun, fn _schedule_id ->
+      {:error, {:storage_failed, :secret_schedule_path}}
+    end)
+
+    schedule_id = "schedule:#{__MODULE__.Pipelines.DailyOrders}:daily"
+    route_id = FavnView.ScheduleRoute.to_param(schedule_id)
+
+    {:ok, view, html} = live(conn, ~p"/schedules/#{route_id}")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="schedule-detail-error-state"]),
+             "Backend unavailable"
+           )
+
+    refute html =~ "storage_failed"
+    refute html =~ "secret_schedule_path"
   end
 
   test "favn_view scheduler pages do not call scheduler internals" do
@@ -429,6 +467,18 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "Day Europe/Oslo"
     assert html =~ "Healthy"
     assert html =~ "5.0 s"
+  end
+
+  test "pipelines list renders backend failures without internal reasons", %{conn: conn} do
+    put_test_env(:active_pipeline_catalogue_fun, fn ->
+      {:error, {:storage_failed, :secret_manifest_path}}
+    end)
+
+    {:ok, view, html} = live(conn, ~p"/pipelines")
+
+    assert has_element?(view, ~s([data-testid="pipelines-error-state"]), "Backend unavailable")
+    refute html =~ "storage_failed"
+    refute html =~ "secret_manifest_path"
   end
 
   test "renders the pipeline detail page with run history and actions", %{conn: conn} do
@@ -1593,6 +1643,38 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="asset-error-copy-button"]), "Copy error")
   end
 
+  test "run detail does not render inspected raw error reasons", %{conn: conn} do
+    step_id = "run_empty_running-stg-payments"
+    ref = {__MODULE__.Assets, :stg_payments}
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 3,
+               event_type: :step_failed,
+               occurred_at: DateTime.utc_now(),
+               status: :error,
+               data: %{
+                 "error" => %{"reason" => {:storage_failed, :secret_run_path}},
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    {:ok, view, html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="run-asset-result-row"]),
+             "Run failed. Check server logs for details."
+           )
+
+    refute html =~ "storage_failed"
+    refute html =~ "secret_run_path"
+  end
+
   test "run detail marks drain failures separately from root failures", %{conn: conn} do
     root_ref = {__MODULE__.Assets, :stg_payments}
     cascade_ref = {__MODULE__.Assets, :customer_orders_daily}
@@ -1876,15 +1958,19 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
 
     assert has_element?(view, ~s([data-testid="run-failure-summary"]), "1 backfill window failed")
-    assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "unknown_execution_pool")
-    assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "partner_api")
+    assert has_element?(view, ~s([data-testid="backfill-failure-row"]))
+
+    refute render(view) =~ "unknown_execution_pool"
+    refute render(view) =~ "partner_api"
 
     view
     |> element(~s([data-testid="view-mode-rail"] button[aria-label="Failures"]))
     |> render_click()
 
-    assert has_element?(view, ~s([data-testid="window-failure-row"]), "unknown_execution_pool")
-    assert has_element?(view, ~s([data-testid="window-failure-row"]), "partner_api")
+    assert has_element?(view, ~s([data-testid="window-failure-row"]))
+
+    refute render(view) =~ "unknown_execution_pool"
+    refute render(view) =~ "partner_api"
   end
 
   test "run detail failures view counts all failed windows when details are capped", %{conn: conn} do

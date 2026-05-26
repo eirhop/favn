@@ -889,6 +889,27 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     assert :ok = Limiter.release(scope, self())
   end
 
+  test "limiter acquire default timeout is finite from app env" do
+    previous = Application.get_env(:favn_sql_runtime, :sql_admission_timeout_ms)
+    Application.put_env(:favn_sql_runtime, :sql_admission_timeout_ms, 20)
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:favn_sql_runtime, :sql_admission_timeout_ms)
+      else
+        Application.put_env(:favn_sql_runtime, :sql_admission_timeout_ms, previous)
+      end
+    end)
+
+    scope = {:db, :limiter_default_timeout}
+    assert :ok = Limiter.acquire(scope, 1, 50)
+
+    assert {:error, :admission_timeout} =
+             Task.async(fn -> Limiter.acquire(scope, 1) end) |> Task.await(200)
+
+    assert :ok = Limiter.release(scope, self())
+  end
+
   test "multi-lease transfers are atomic" do
     held_scope = {:db, :transfer_many_held}
     missing_scope = {:db, :transfer_many_missing}

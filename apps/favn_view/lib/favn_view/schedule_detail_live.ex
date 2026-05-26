@@ -4,6 +4,7 @@ defmodule FavnView.ScheduleDetailLive do
   use FavnView, :live_view
 
   alias FavnView.Components.ScheduleDetailPage
+  alias FavnView.OperatorErrorLabels
   alias FavnView.ScheduleRoute
 
   @impl true
@@ -59,7 +60,8 @@ defmodule FavnView.ScheduleDetailLive do
          )}
 
       {:error, reason} ->
-        {:noreply, assign(socket, :occurrence_error, inspect(reason))}
+        {:noreply,
+         assign(socket, :occurrence_error, OperatorErrorLabels.schedule_activation(reason))}
     end
   end
 
@@ -87,11 +89,8 @@ defmodule FavnView.ScheduleDetailLive do
         {preview, preview_error} = load_occurrence_preview(schedule_id)
         {schedule_from_public(schedule_id, entry), nil, preview, preview_error}
 
-      {:error, :schedule_not_found} ->
-        {nil, :not_found, [], nil}
-
       {:error, reason} ->
-        {nil, inspect(reason), [], nil}
+        {nil, OperatorErrorLabels.load(reason), [], nil}
     end
   end
 
@@ -106,7 +105,7 @@ defmodule FavnView.ScheduleDetailLive do
   defp load_occurrence_preview(schedule_id) do
     case preview_schedule_occurrences(schedule_id, limit: 10) do
       {:ok, occurrences} -> {Enum.map(occurrences, &occurrence_from_public/1), nil}
-      {:error, reason} -> {[], inspect(reason)}
+      {:error, reason} -> {[], OperatorErrorLabels.schedule_occurrences(reason)}
     end
   end
 

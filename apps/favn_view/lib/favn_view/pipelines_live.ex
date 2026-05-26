@@ -5,6 +5,7 @@ defmodule FavnView.PipelinesLive do
 
   alias FavnView.Components.PipelinesPage
   alias FavnView.LogsViewModel
+  alias FavnView.OperatorErrorLabels
 
   @default_filters %{search: "", status: "all"}
   @valid_modes ~w(list)
@@ -61,10 +62,18 @@ defmodule FavnView.PipelinesLive do
   end
 
   defp load_pipelines do
-    case FavnOrchestrator.active_pipeline_catalogue() do
+    case active_pipeline_catalogue() do
       {:ok, entries} -> {Enum.map(entries, &pipeline_from_entry/1), nil}
-      {:error, reason} -> {[], inspect(reason)}
+      {:error, reason} -> {[], OperatorErrorLabels.load(reason)}
     end
+  end
+
+  defp active_pipeline_catalogue do
+    Application.get_env(
+      :favn_view,
+      :active_pipeline_catalogue_fun,
+      &FavnOrchestrator.active_pipeline_catalogue/0
+    ).()
   end
 
   defp pipeline_from_entry(entry) do

@@ -20,6 +20,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.Storage.ExecutionLeaseCodec
   alias FavnOrchestrator.Storage.LogEntryCodec
   alias FavnOrchestrator.Storage.ExecutionAdmissionWaiterCodec
+  alias FavnOrchestrator.Storage.ExecutionOwnershipCodec
   alias FavnOrchestrator.Storage.ExecutionGroupSummary
   alias FavnOrchestrator.Storage.MaterializationClaimCodec
   alias FavnOrchestrator.Storage.RunEventCodec
@@ -55,6 +56,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           execution_leases: %{required(String.t()) => map()},
           execution_lease_ids_by_run: %{required(String.t()) => MapSet.t(String.t())},
           execution_admission_waiters: %{required(String.t()) => map()},
+          execution_ownerships: %{required(String.t()) => map()},
           materialization_claims: %{required(String.t()) => MaterializationClaim.t()},
           log_entries: [Favn.Log.Entry.t()],
           log_global_sequence: non_neg_integer(),
@@ -224,6 +226,34 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       server = Keyword.get(opts, :server, __MODULE__)
       GenServer.call(server, {:persist_run_transition, normalized_run, normalized_event})
     end
+  end
+
+  @impl true
+  def put_execution_ownership(ownership, opts \\ []) when is_list(opts) do
+    with {:ok, normalized} <- ExecutionOwnershipCodec.normalize(ownership) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:put_execution_ownership, normalized})
+    end
+  end
+
+  @impl true
+  def get_execution_ownership(ownership_id, opts \\ [])
+      when is_binary(ownership_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_execution_ownership, ownership_id})
+  end
+
+  @impl true
+  def list_execution_ownerships(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_execution_ownerships, run_id})
+  end
+
+  @impl true
+  def list_active_execution_ownerships(run_id, opts \\ [])
+      when is_binary(run_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_active_execution_ownerships, run_id})
   end
 
   @impl true
@@ -844,6 +874,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       execution_leases: %{},
       execution_lease_ids_by_run: %{},
       execution_admission_waiters: %{},
+      execution_ownerships: %{},
       materialization_claims: %{},
       log_entries: [],
       log_global_sequence: 0,
@@ -1005,6 +1036,41 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       end
 
     {:reply, reply, state}
+  end
+
+  def handle_call({:put_execution_ownership, ownership}, _from, state) do
+    {:reply, :ok,
+     %{
+       state
+       | execution_ownerships:
+           Map.put(state.execution_ownerships, ownership.ownership_id, ownership)
+     }}
+  end
+
+  def handle_call({:get_execution_ownership, ownership_id}, _from, state) do
+    {:reply, fetch_or_not_found(state.execution_ownerships, ownership_id), state}
+  end
+
+  def handle_call({:list_execution_ownerships, run_id}, _from, state) do
+    ownerships =
+      state.execution_ownerships
+      |> Map.values()
+      |> Enum.filter(&(&1.run_id == run_id))
+      |> Enum.sort_by(&{&1.inserted_at, &1.ownership_id})
+
+    {:reply, {:ok, ownerships}, state}
+  end
+
+  def handle_call({:list_active_execution_ownerships, run_id}, _from, state) do
+    ownerships =
+      state.execution_ownerships
+      |> Map.values()
+      |> Enum.filter(
+        &(&1.run_id == run_id and FavnOrchestrator.RunExecutionOwnership.active?(&1))
+      )
+      |> Enum.sort_by(&{&1.inserted_at, &1.ownership_id})
+
+    {:reply, {:ok, ownerships}, state}
   end
 
   def handle_call({:list_runs, run_opts}, _from, state) do

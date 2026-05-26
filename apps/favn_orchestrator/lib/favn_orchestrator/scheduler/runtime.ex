@@ -19,19 +19,27 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   @default_tick_ms 15_000
   @default_max_missed_all_occurrences 1_000
   @default_submission_budget 25
+  @default_call_timeout_ms 5_000
 
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  def reload(server \\ __MODULE__), do: GenServer.call(server, :reload, :infinity)
-  def tick(server \\ __MODULE__), do: GenServer.call(server, :tick, :infinity)
-  def scheduled(server \\ __MODULE__), do: GenServer.call(server, :scheduled, :infinity)
-  def diagnostics(server \\ __MODULE__), do: GenServer.call(server, :diagnostics, :infinity)
+  def reload(server \\ __MODULE__), do: call_runtime(server, :reload)
+  def tick(server \\ __MODULE__), do: call_runtime(server, :tick)
+  def scheduled(server \\ __MODULE__), do: call_runtime(server, :scheduled)
+  def diagnostics(server \\ __MODULE__), do: call_runtime(server, :diagnostics)
 
   def inspect_entries(server \\ __MODULE__),
-    do: GenServer.call(server, :inspect_entries, :infinity)
+    do: call_runtime(server, :inspect_entries)
+
+  defp call_runtime(server, message) do
+    GenServer.call(server, message, call_timeout_ms())
+  catch
+    :exit, {:timeout, _call} -> {:error, {:scheduler_call_timeout, message}}
+    :exit, {:noproc, _call} -> {:error, :scheduler_not_running}
+  end
 
   @impl true
   def init(opts) do
@@ -859,6 +867,17 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     case Application.get_env(:favn_orchestrator, :scheduler, []) do
       opts when is_list(opts) -> Keyword.get(opts, :tick_ms, @default_tick_ms)
       _ -> @default_tick_ms
+    end
+  end
+
+  defp call_timeout_ms do
+    case Application.get_env(
+           :favn_orchestrator,
+           :scheduler_call_timeout_ms,
+           @default_call_timeout_ms
+         ) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> @default_call_timeout_ms
     end
   end
 
