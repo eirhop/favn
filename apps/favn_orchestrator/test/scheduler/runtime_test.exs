@@ -326,6 +326,14 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert {:error, :scheduler_state_get_failed} = FavnOrchestrator.list_schedule_entries()
   end
 
+  test "schedule list fallback ignores unscheduled windowed pipelines" do
+    version = unscheduled_window_manifest_version("mv_scheduler_unscheduled_window")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, []} = FavnOrchestrator.list_schedule_entries()
+  end
+
   test "schedule list fallback propagates scheduler state bootstrap write errors" do
     version = scheduler_manifest_version("mv_scheduler_list_put_error")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -1017,6 +1025,29 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
           active: true
         }
       ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
+  defp unscheduled_window_manifest_version(manifest_version_id) do
+    manifest = %Manifest{
+      assets: [
+        %Asset{ref: {MyApp.Assets.Raw, :asset}, module: MyApp.Assets.Raw, name: :asset}
+      ],
+      pipelines: [
+        %Pipeline{
+          module: MyApp.Pipelines.Monthly,
+          name: :monthly,
+          selectors: [{:asset, {MyApp.Assets.Raw, :asset}}],
+          deps: :all,
+          schedule: nil,
+          window: :month,
+          metadata: %{owner: :scheduler}
+        }
+      ],
+      schedules: []
     }
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
