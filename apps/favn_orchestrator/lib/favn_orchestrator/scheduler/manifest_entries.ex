@@ -22,24 +22,25 @@ defmodule FavnOrchestrator.Scheduler.ManifestEntries do
   end
 
   defp build_entry(%Version{} = version, %Index{} = index, %Pipeline{} = pipeline) do
-    with {:ok, schedule} <- resolve_schedule(index, pipeline.schedule),
-         :ok <- validate_window_for_schedule(pipeline.window, schedule) do
+    with {:ok, schedule} <- resolve_schedule(index, pipeline.schedule) do
       case schedule do
         nil ->
           {:ok, nil}
 
         %Schedule{} = value ->
-          {:ok,
-           %{
-             module: pipeline.module,
-             id: pipeline.name,
-             pipeline: pipeline,
-             schedule: value,
-             window: pipeline.window,
-             schedule_fingerprint: fingerprint(value, pipeline.window),
-             manifest_version_id: version.manifest_version_id,
-             manifest_content_hash: version.content_hash
-           }}
+          with :ok <- validate_window_for_schedule(pipeline.window, value) do
+            {:ok,
+             %{
+               module: pipeline.module,
+               id: pipeline.name,
+               pipeline: pipeline,
+               schedule: value,
+               window: pipeline.window,
+               schedule_fingerprint: fingerprint(value, pipeline.window),
+               manifest_version_id: version.manifest_version_id,
+               manifest_content_hash: version.content_hash
+             }}
+          end
       end
     end
   end

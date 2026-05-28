@@ -326,6 +326,20 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert {:error, :scheduler_state_get_failed} = FavnOrchestrator.list_schedule_entries()
   end
 
+  test "schedule list fallback ignores unscheduled windowed pipelines" do
+    version =
+      scheduler_manifest_version("mv_scheduler_unscheduled_window",
+        schedule: nil,
+        schedules: [],
+        window: :month
+      )
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, []} = FavnOrchestrator.list_schedule_entries()
+  end
+
   test "schedule list fallback propagates scheduler state bootstrap write errors" do
     version = scheduler_manifest_version("mv_scheduler_list_put_error")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -984,6 +998,20 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
   end
 
   defp scheduler_manifest_version(manifest_version_id, opts \\ []) do
+    schedules =
+      Keyword.get(opts, :schedules, [
+        %Schedule{
+          module: MyApp.Schedules,
+          name: :daily,
+          ref: {MyApp.Schedules, :daily},
+          cron: Keyword.get(opts, :cron, "* * * * *"),
+          timezone: Keyword.get(opts, :timezone, "Etc/UTC"),
+          missed: Keyword.get(opts, :missed, :one),
+          overlap: Keyword.get(opts, :overlap, :forbid),
+          active: true
+        }
+      ])
+
     manifest = %Manifest{
       assets: [
         %Asset{ref: {MyApp.Assets.Raw, :asset}, module: MyApp.Assets.Raw, name: :asset},
@@ -1000,23 +1028,12 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
           name: :daily,
           selectors: [{:asset, {MyApp.Assets.Gold, :asset}}],
           deps: :all,
-          schedule: {:ref, {MyApp.Schedules, :daily}},
+          schedule: Keyword.get(opts, :schedule, {:ref, {MyApp.Schedules, :daily}}),
           window: Keyword.get(opts, :window),
           metadata: %{owner: :scheduler}
         }
       ],
-      schedules: [
-        %Schedule{
-          module: MyApp.Schedules,
-          name: :daily,
-          ref: {MyApp.Schedules, :daily},
-          cron: Keyword.get(opts, :cron, "* * * * *"),
-          timezone: Keyword.get(opts, :timezone, "Etc/UTC"),
-          missed: Keyword.get(opts, :missed, :one),
-          overlap: Keyword.get(opts, :overlap, :forbid),
-          active: true
-        }
-      ]
+      schedules: schedules
     }
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
