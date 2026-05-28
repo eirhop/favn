@@ -74,6 +74,36 @@ defmodule FavnOrchestrator.RunManagerTest do
     def list_active_execution_ownerships(_run_id, _opts), do: {:error, :ownership_read_failed}
   end
 
+  defmodule SecondRunCreatedFailingStorageAdapter do
+    @moduledoc false
+    @behaviour Favn.Storage.Adapter
+
+    use StorageAdapterDelegate, except: [:persist_run_transition]
+
+    @impl true
+    def persist_run_transition(run, event, opts) do
+      fail? =
+        run_created_event?(event) and
+          case Application.get_env(:favn_orchestrator, :retry_admission_failure_agent) do
+            nil -> false
+            agent -> Agent.get_and_update(agent, fn count -> {count >= 1, count + 1} end)
+          end
+
+      if fail? do
+        {:error, :injected_retry_admission_failure}
+      else
+        Memory.persist_run_transition(run, event, opts)
+      end
+    end
+
+    defp run_created_event?(event) do
+      (Map.get(event, :event_type) || Map.get(event, "event_type")) in [
+        :run_created,
+        "run_created"
+      ]
+    end
+  end
+
   defmodule RunnerClientStub do
     @behaviour Favn.Contracts.RunnerClient
 
@@ -1812,6 +1842,92 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert Enum.sort(Enum.map(runs, & &1.id)) ==
              Enum.sort([parent.id, valid_child.id, invalid_child.id])
+  end
+
+  test "retry remaining reports partial result when admission fails after earlier children" do
+    version = manifest_version("mv_retry_remaining_partial_admission")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    parent =
+      RunState.new(
+        id: "retry_remaining_parent_partial_admission",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Assets.Raw, :asset},
+        target_refs: [{MyApp.Assets.Raw, :asset}],
+        submit_kind: :backfill_pipeline
+      )
+      |> RunState.transition(status: :error, error: %{type: :backfill_failed})
+
+    first_child =
+      retry_source_run(
+        "retry_remaining_partial_first_child",
+        {MyApp.Assets.Raw, :asset},
+        version.manifest_version_id,
+        version.content_hash
+      )
+
+    second_child =
+      retry_source_run(
+        "retry_remaining_partial_second_child",
+        {MyApp.Assets.Silver, :asset},
+        version.manifest_version_id,
+        version.content_hash
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(first_child)
+    assert :ok = Storage.put_run(second_child)
+
+    assert :ok =
+             Storage.put_backfill_windows([
+               retry_backfill_window(
+                 parent.id,
+                 first_child.id,
+                 "2026-01-01",
+                 version.manifest_version_id
+               ),
+               retry_backfill_window(
+                 parent.id,
+                 second_child.id,
+                 "2026-01-02",
+                 version.manifest_version_id
+               )
+             ])
+
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_agent = Application.get_env(:favn_orchestrator, :retry_admission_failure_agent)
+    {:ok, failure_agent} = Agent.start_link(fn -> 0 end)
+
+    on_exit(fn ->
+      restore_env(:storage_adapter, previous_adapter)
+
+      if is_nil(previous_agent) do
+        Application.delete_env(:favn_orchestrator, :retry_admission_failure_agent)
+      else
+        Application.put_env(:favn_orchestrator, :retry_admission_failure_agent, previous_agent)
+      end
+
+      stop_agent(failure_agent)
+    end)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      SecondRunCreatedFailingStorageAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :retry_admission_failure_agent, failure_agent)
+
+    assert {:partial,
+            %{
+              run_ids: [retry_run_id],
+              reason: :injected_retry_admission_failure,
+              asset_count: 2
+            }} = FavnOrchestrator.retry_remaining(parent.id)
+
+    assert {:ok, retry_run} = await_terminal_run(retry_run_id)
+    assert retry_run.rerun_of_run_id == first_child.id
   end
 
   test "pipeline stage await timeout keeps original sibling execution context" do

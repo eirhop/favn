@@ -125,6 +125,38 @@ defmodule FavnOrchestrator.RunRetryPlannerTest do
     assert [%{target_refs: [^ref], node_keys: [^node_b, ^node_c]}] = plan.children
   end
 
+  test "remaining retry plan treats nil results as no successful work" do
+    refs = [
+      {MyApp.Assets.Raw, :first},
+      {MyApp.Assets.Raw, :second}
+    ]
+
+    node_keys = Enum.map(refs, &{&1, nil})
+
+    run =
+      RunState.new(
+        id: "retry_remaining_nil_result",
+        manifest_version_id: "mv_retry_remaining_nil_result",
+        manifest_content_hash: "hash_retry_remaining_nil_result",
+        asset_ref: List.first(refs),
+        target_refs: refs,
+        plan: flat_plan(refs),
+        submit_kind: :pipeline,
+        metadata: %{pipeline_target_refs: refs, pipeline_dependencies: :none}
+      )
+      |> RunState.transition(
+        status: :error,
+        error: %{type: :test_failure},
+        result: nil
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    assert {:ok, plan} = FavnOrchestrator.plan_remaining_retry(run.id)
+    assert plan.asset_count == 2
+    assert [%{target_refs: ^refs, node_keys: ^node_keys}] = plan.children
+  end
+
   test "remaining retry plan rejects active backfill parents" do
     parent =
       RunState.new(

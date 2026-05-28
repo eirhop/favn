@@ -175,11 +175,13 @@ defmodule FavnOrchestrator.RunRetryPlanner do
 
   defp successful_refs(_result), do: MapSet.new()
 
-  defp result_entries(result, field) do
+  defp result_entries(result, field) when is_map(result) do
     result
     |> Map.get(field, Map.get(result, Atom.to_string(field), []))
     |> result_values()
   end
+
+  defp result_entries(_result, _field), do: []
 
   defp result_values(values) when is_list(values), do: values
   defp result_values(values) when is_map(values), do: Map.values(values)
