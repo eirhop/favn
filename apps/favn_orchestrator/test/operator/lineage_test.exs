@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Operator.LineageTest do
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
   alias FavnOrchestrator.Operator.Lineage
+  alias FavnOrchestrator.Operator.Lineage.AssetInspector
   alias FavnOrchestrator.Operator.Lineage.EdgeInspector
   alias FavnOrchestrator.Operator.Lineage.GroupInspector
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -77,6 +78,25 @@ defmodule FavnOrchestrator.Operator.LineageTest do
     assert Enum.any?(search_page.items, &(&1.id == hidden_id))
   end
 
+  test "group and asset inspectors expose bounded adjacent groups" do
+    version = fanout_manifest_version()
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, %GroupInspector{} = group_inspector} =
+             Lineage.get_group("group:raw:source", limit: [max_inspector_adjacent_groups: 2])
+
+    assert length(group_inspector.downstream) == 2
+    assert group_inspector.hidden_downstream_count == 2
+    assert group_inspector.hidden_upstream_count == 0
+
+    assert {:ok, %AssetInspector{} = asset_inspector} =
+             Lineage.get_asset(target_id(:raw_events), limit: [max_inspector_adjacent_groups: 2])
+
+    assert length(asset_inspector.downstream) == 2
+    assert asset_inspector.hidden_downstream_count == 2
+  end
+
   test "schemas on the same connection remain distinct groups" do
     assert {:ok, graph} = Lineage.get_graph()
 
@@ -116,6 +136,30 @@ defmodule FavnOrchestrator.Operator.LineageTest do
 
     manifest = %Manifest{assets: assets, graph: graph}
     assert {:ok, version} = Version.new(manifest, manifest_version_id: "mv_lineage_test")
+    version
+  end
+
+  defp fanout_manifest_version do
+    assets = [
+      asset(:raw_events, :source, :source, "raw", "raw", []),
+      asset(:domain_a_orders, :sql, :warehouse, "core", "domain_a", [
+        {__MODULE__.Assets, :raw_events}
+      ]),
+      asset(:domain_b_orders, :sql, :warehouse, "core", "domain_b", [
+        {__MODULE__.Assets, :raw_events}
+      ]),
+      asset(:domain_c_orders, :sql, :warehouse, "core", "domain_c", [
+        {__MODULE__.Assets, :raw_events}
+      ]),
+      asset(:domain_d_orders, :sql, :warehouse, "core", "domain_d", [
+        {__MODULE__.Assets, :raw_events}
+      ])
+    ]
+
+    assert {:ok, graph} = Graph.build(assets)
+
+    manifest = %Manifest{assets: assets, graph: graph}
+    assert {:ok, version} = Version.new(manifest, manifest_version_id: "mv_lineage_fanout_test")
     version
   end
 

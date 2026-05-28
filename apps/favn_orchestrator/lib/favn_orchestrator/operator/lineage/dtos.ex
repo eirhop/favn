@@ -34,6 +34,7 @@ defmodule FavnOrchestrator.Operator.Lineage.Limits do
           max_visible_asset_nodes: pos_integer(),
           max_visible_edges: pos_integer(),
           max_dependency_previews_per_edge: pos_integer(),
+          max_inspector_adjacent_groups: pos_integer(),
           group_asset_page_size: pos_integer(),
           search_page_size: pos_integer(),
           timeout_ms: pos_integer()
@@ -44,6 +45,7 @@ defmodule FavnOrchestrator.Operator.Lineage.Limits do
             max_visible_asset_nodes: 160,
             max_visible_edges: 300,
             max_dependency_previews_per_edge: 5,
+            max_inspector_adjacent_groups: 12,
             group_asset_page_size: 50,
             search_page_size: 20,
             timeout_ms: 250
@@ -214,8 +216,8 @@ defmodule FavnOrchestrator.Operator.Lineage.Graph do
   alias FavnOrchestrator.Operator.Lineage.Limits
   alias FavnOrchestrator.Operator.Lineage.Summary
 
-  @type view_mode :: :all | :upstream | :downstream | :impact | :freshness
-  @type scope :: :global | :asset | :group
+  @type view_mode :: :all
+  @type scope :: :global
 
   @type t :: %__MODULE__{
           manifest_version_id: String.t(),
@@ -263,6 +265,8 @@ defmodule FavnOrchestrator.Operator.Lineage.GroupInspector do
           top_issues: [map()],
           upstream: [map()],
           downstream: [map()],
+          hidden_upstream_count: non_neg_integer(),
+          hidden_downstream_count: non_neg_integer(),
           actions: [map()]
         }
 
@@ -276,6 +280,8 @@ defmodule FavnOrchestrator.Operator.Lineage.GroupInspector do
     top_issues: [],
     upstream: [],
     downstream: [],
+    hidden_upstream_count: 0,
+    hidden_downstream_count: 0,
     actions: []
   ]
 end
@@ -294,11 +300,23 @@ defmodule FavnOrchestrator.Operator.Lineage.AssetInspector do
           latest_run: map() | nil,
           upstream: [map()],
           downstream: [map()],
+          hidden_upstream_count: non_neg_integer(),
+          hidden_downstream_count: non_neg_integer(),
           actions: [map()]
         }
 
   @enforce_keys [:id, :title, :asset]
-  defstruct [:id, :title, :asset, :latest_run, upstream: [], downstream: [], actions: []]
+  defstruct [
+    :id,
+    :title,
+    :asset,
+    :latest_run,
+    upstream: [],
+    downstream: [],
+    hidden_upstream_count: 0,
+    hidden_downstream_count: 0,
+    actions: []
+  ]
 end
 
 defmodule FavnOrchestrator.Operator.Lineage.EdgeInspector do

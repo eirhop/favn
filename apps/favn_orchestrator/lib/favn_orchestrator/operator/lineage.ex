@@ -226,6 +226,7 @@ defmodule FavnOrchestrator.Operator.Lineage do
     |> maybe_put_limit(:max_visible_asset_nodes, limit_opts, 160, 300)
     |> maybe_put_limit(:max_visible_edges, limit_opts, 300, 600)
     |> maybe_put_limit(:max_dependency_previews_per_edge, limit_opts, 5, 20)
+    |> maybe_put_limit(:max_inspector_adjacent_groups, limit_opts, 12, 50)
     |> maybe_put_limit(:group_asset_page_size, limit_opts, 50, 100)
     |> maybe_put_limit(:search_page_size, limit_opts, 20, 50)
     |> Map.put(
@@ -712,6 +713,9 @@ defmodule FavnOrchestrator.Operator.Lineage do
   end
 
   defp group_inspector(%Graph{} = graph, %GroupNode{} = group) do
+    {upstream, hidden_upstream_count} = adjacent_groups(graph, group.id, :upstream)
+    {downstream, hidden_downstream_count} = adjacent_groups(graph, group.id, :downstream)
+
     %GroupInspector{
       id: group.id,
       title: group.label,
@@ -724,8 +728,10 @@ defmodule FavnOrchestrator.Operator.Lineage do
       },
       health_summary: group.status_counts,
       top_issues: group.top_issues,
-      upstream: adjacent_groups(graph, group.id, :upstream),
-      downstream: adjacent_groups(graph, group.id, :downstream),
+      upstream: upstream,
+      downstream: downstream,
+      hidden_upstream_count: hidden_upstream_count,
+      hidden_downstream_count: hidden_downstream_count,
       actions: [
         %{label: "Drill into group", kind: :drill_in},
         %{label: "View all assets", kind: :assets}
@@ -734,13 +740,18 @@ defmodule FavnOrchestrator.Operator.Lineage do
   end
 
   defp asset_inspector(%Graph{} = graph, %AssetNode{} = asset) do
+    {upstream, hidden_upstream_count} = adjacent_groups(graph, asset.group_id, :upstream)
+    {downstream, hidden_downstream_count} = adjacent_groups(graph, asset.group_id, :downstream)
+
     %AssetInspector{
       id: asset.id,
       title: asset.label,
       asset: asset,
       latest_run: latest_run(asset),
-      upstream: adjacent_groups(graph, asset.group_id, :upstream),
-      downstream: adjacent_groups(graph, asset.group_id, :downstream),
+      upstream: upstream,
+      downstream: downstream,
+      hidden_upstream_count: hidden_upstream_count,
+      hidden_downstream_count: hidden_downstream_count,
       actions: [%{label: "Open asset", kind: :asset}, %{label: "Explain lineage", kind: :explain}]
     }
   end
@@ -761,23 +772,29 @@ defmodule FavnOrchestrator.Operator.Lineage do
   defp latest_run(%AssetNode{latest_run_id: nil}), do: nil
   defp latest_run(%AssetNode{} = asset), do: %{id: asset.latest_run_id, status: asset.run_status}
 
-  defp adjacent_groups(graph, group_id, direction) do
-    graph.edges
-    |> Enum.filter(fn edge ->
-      case direction do
-        :upstream -> edge.to == group_id
-        :downstream -> edge.from == group_id
-      end
-    end)
-    |> Enum.map(fn edge ->
-      related_id = if direction == :upstream, do: edge.from, else: edge.to
+  defp adjacent_groups(%Graph{} = graph, group_id, direction) do
+    limit = graph.limits.max_inspector_adjacent_groups
 
-      %{
-        id: related_id,
-        label: graph_label(graph, related_id),
-        dependency_count: edge.dependency_count
-      }
-    end)
+    items =
+      graph.edges
+      |> Enum.filter(fn edge ->
+        case direction do
+          :upstream -> edge.to == group_id
+          :downstream -> edge.from == group_id
+        end
+      end)
+      |> Enum.map(fn edge ->
+        related_id = if direction == :upstream, do: edge.from, else: edge.to
+
+        %{
+          id: related_id,
+          label: graph_label(graph, related_id),
+          dependency_count: edge.dependency_count
+        }
+      end)
+      |> Enum.sort_by(&{String.downcase(&1.label), &1.id})
+
+    {Enum.take(items, limit), max(length(items) - limit, 0)}
   end
 
   defp graph_label(%Graph{} = graph, id) do
