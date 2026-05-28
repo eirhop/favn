@@ -417,7 +417,6 @@ defmodule FavnView.Components.AssetDetailPage do
   def sample_nav_items do
     [
       %{label: "Assets", icon: "hero-sparkles", href: "/assets", active: true},
-      %{label: "Lineage", icon: "hero-share", href: "#"},
       %{label: "Storage", icon: "hero-circle-stack", href: "#"},
       %{label: "Runs", icon: "hero-rocket-launch", href: "#"},
       %{label: "Alerts", icon: "hero-bell", href: "#"},

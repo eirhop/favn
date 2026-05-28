@@ -64,6 +64,51 @@ const Hooks = {
       if (terminal) terminal.scrollTop = terminal.scrollHeight
     }
   },
+  LineageCanvas: {
+    mounted() {
+      this.scale = Number.parseFloat(this.el.dataset.zoom || "62") / 100
+      this.pan = {x: 0, y: 0}
+      this.drag = null
+      this.content = this.el.querySelector(".lineage-canvas-content")
+      this.applyTransform()
+
+      this.el.addEventListener("pointerdown", event => {
+        if (event.target.closest("button,a,input,select,textarea")) return
+        this.drag = {x: event.clientX, y: event.clientY, pan: {...this.pan}}
+        this.el.setPointerCapture(event.pointerId)
+      })
+
+      this.el.addEventListener("pointermove", event => {
+        if (!this.drag) return
+        this.pan = {
+          x: this.drag.pan.x + event.clientX - this.drag.x,
+          y: this.drag.pan.y + event.clientY - this.drag.y,
+        }
+        this.applyTransform()
+      })
+
+      this.el.addEventListener("pointerup", event => {
+        this.drag = null
+        if (this.el.hasPointerCapture(event.pointerId)) this.el.releasePointerCapture(event.pointerId)
+      })
+
+      this.el.addEventListener("wheel", event => {
+        event.preventDefault()
+        const delta = event.deltaY > 0 ? -0.06 : 0.06
+        this.scale = Math.max(0.35, Math.min(1.4, this.scale + delta))
+        this.applyTransform()
+      }, {passive: false})
+    },
+    updated() {
+      this.scale = Number.parseFloat(this.el.dataset.zoom || String(this.scale * 100)) / 100
+      this.content = this.el.querySelector(".lineage-canvas-content")
+      this.applyTransform()
+    },
+    applyTransform() {
+      if (!this.content) return
+      this.content.style.transform = `translate(${this.pan.x}px, ${this.pan.y}px) scale(${this.scale})`
+    }
+  },
   FavnTimeline: {
     mounted() {
       this.userPaused = false
