@@ -9,7 +9,7 @@ defmodule FavnView.AssetCatalogueLive do
 
   @default_filters %{search: "", connection: "all", catalogue: "all"}
   @valid_modes ~w(list lineage)
-  @valid_lineage_modes ~w(all upstream downstream impact freshness)
+  @valid_lineage_modes ~w(all)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -75,10 +75,6 @@ defmodule FavnView.AssetCatalogueLive do
 
   def handle_event("set_mode", _params, socket), do: {:noreply, socket}
 
-  def handle_event("search_lineage", %{"search" => search}, socket) do
-    {:noreply, assign(socket, :lineage_search, search)}
-  end
-
   def handle_event("select_node", %{"id" => id, "kind" => kind}, socket)
       when kind in ["group", "asset"] do
     {:noreply,
@@ -116,9 +112,6 @@ defmodule FavnView.AssetCatalogueLive do
 
   def handle_event("fit_graph", _params, socket),
     do: {:noreply, assign(socket, :lineage_zoom, 62)}
-
-  def handle_event("toggle_filters", _params, socket), do: {:noreply, socket}
-  def handle_event("toggle_fullscreen", _params, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do

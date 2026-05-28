@@ -104,7 +104,7 @@ defmodule FavnView.Components.LineagePage do
       class="flex shrink-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between"
       data-testid="lineage-toolbar"
     >
-      <form phx-change="search_lineage" phx-submit="search_lineage" class="flex min-w-0 flex-1 gap-2">
+      <div class="flex min-w-0 flex-1 gap-2">
         <label class="input input-sm favn-surface-control min-w-0 flex-1 gap-3 px-4 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary">
           <.icon name="hero-magnifying-glass" class="size-5 shrink-0 text-base-content/60" />
           <span class="sr-only">Search lineage</span>
@@ -112,22 +112,13 @@ defmodule FavnView.Components.LineagePage do
             type="search"
             name="search"
             value={@search}
-            placeholder="Search assets, groups, or schemas..."
+            placeholder="Search lineage coming soon"
             autocomplete="off"
-            phx-debounce="200"
+            disabled
           />
           <kbd class="kbd kbd-xs border-base-content/10 bg-base-100/20 text-base-content/50">K</kbd>
         </label>
-
-        <button
-          type="button"
-          class="btn btn-sm favn-surface-control gap-2 px-4"
-          phx-click="toggle_filters"
-        >
-          <.icon name="hero-funnel" class="size-4" />
-          <span class="hidden sm:inline">Filters</span>
-        </button>
-      </form>
+      </div>
 
       <div class="flex items-center gap-2 overflow-x-auto pb-1 lg:pb-0">
         <div
@@ -140,10 +131,12 @@ defmodule FavnView.Components.LineagePage do
             type="button"
             class={[
               "join-item btn btn-ghost btn-xs h-8 rounded-field px-3 text-xs font-normal",
-              @view_mode == mode.id && "bg-primary/15 text-primary"
+              @view_mode == mode.id && "bg-primary/15 text-primary",
+              mode[:disabled] && "opacity-45"
             ]}
-            phx-click="set_mode"
+            phx-click={if(mode[:disabled], do: false, else: "set_mode")}
             phx-value-mode={mode.id}
+            disabled={mode[:disabled] || false}
             aria-pressed={@view_mode == mode.id}
           >
             {mode.label}
@@ -184,15 +177,6 @@ defmodule FavnView.Components.LineagePage do
             <.icon name="hero-plus" class="size-4" />
           </button>
         </div>
-
-        <button
-          type="button"
-          class="btn btn-sm btn-square favn-surface-control"
-          phx-click="toggle_fullscreen"
-          aria-label="Fullscreen"
-        >
-          <.icon name="hero-arrows-pointing-out" class="size-4" />
-        </button>
       </div>
     </div>
     """
@@ -235,7 +219,7 @@ defmodule FavnView.Components.LineagePage do
           style={"width: #{@canvas_width}px; height: #{@canvas_height}px; transform: scale(#{@zoom / 100});"}
           data-testid="lineage-canvas-content"
         >
-          <.layer_headers />
+          <.layer_headers graph={@graph} />
 
           <svg
             class="pointer-events-none absolute inset-0 size-full overflow-visible"
@@ -296,6 +280,8 @@ defmodule FavnView.Components.LineagePage do
     """
   end
 
+  attr :graph, :any, required: true
+
   defp layer_headers(assigns) do
     assigns = assign(assigns, :layers, @layers)
 
@@ -309,7 +295,7 @@ defmodule FavnView.Components.LineagePage do
         <.icon name={layer_icon(layer)} class="size-4 text-primary/80" />
         <span class="font-medium">{layer_label(layer)}</span>
       </div>
-      <p class="mt-1 text-[0.65rem] text-base-content/45">{layer_caption(layer)}</p>
+      <p class="mt-1 text-[0.65rem] text-base-content/45">{layer_caption(@graph, layer)}</p>
     </div>
     """
   end
@@ -1061,10 +1047,10 @@ defmodule FavnView.Components.LineagePage do
   defp view_modes do
     [
       %{id: :all, label: "All"},
-      %{id: :upstream, label: "Upstream"},
-      %{id: :downstream, label: "Downstream"},
-      %{id: :impact, label: "Impact"},
-      %{id: :freshness, label: "Freshness"}
+      %{id: :upstream, label: "Upstream", disabled: true},
+      %{id: :downstream, label: "Downstream", disabled: true},
+      %{id: :impact, label: "Impact", disabled: true},
+      %{id: :freshness, label: "Freshness", disabled: true}
     ]
   end
 
@@ -1133,11 +1119,18 @@ defmodule FavnView.Components.LineagePage do
   defp layer_label(:marts), do: "Marts"
   defp layer_label(:dashboards), do: "Dashboards"
 
-  defp layer_caption(:raw), do: "2 systems"
-  defp layer_caption(:staging), do: "2 schemas"
-  defp layer_caption(:core), do: "6 schemas"
-  defp layer_caption(:marts), do: "8 schemas"
-  defp layer_caption(:dashboards), do: "12 dashboards"
+  defp layer_caption(%Graph{} = graph, layer) do
+    count = Enum.count(graph.nodes, &(&1.layer == layer))
+
+    case layer do
+      :raw -> pluralize(count, "system", "systems")
+      :dashboards -> pluralize(count, "dashboard", "dashboards")
+      _layer -> pluralize(count, "group", "groups")
+    end
+  end
+
+  defp pluralize(1, singular, _plural), do: "1 #{singular}"
+  defp pluralize(count, _singular, plural), do: "#{count} #{plural}"
 
   defp layer_icon(:raw), do: "hero-cpu-chip"
   defp layer_icon(:staging), do: "hero-circle-stack"

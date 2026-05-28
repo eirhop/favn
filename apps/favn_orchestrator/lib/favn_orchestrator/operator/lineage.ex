@@ -28,8 +28,8 @@ defmodule FavnOrchestrator.Operator.Lineage do
   alias FavnOrchestrator.TargetStatus
 
   @layers [:raw, :staging, :core, :marts, :dashboards]
-  @scope_values [:global, :asset, :group]
-  @view_modes [:all, :upstream, :downstream, :impact, :freshness]
+  @scope_values [:global]
+  @view_modes [:all]
   @status_keys [:fresh, :stale, :failed, :running, :unknown]
   @status_priority %{failed: 0, stale: 1, running: 2, unknown: 3, fresh: 4}
 
@@ -51,14 +51,8 @@ defmodule FavnOrchestrator.Operator.Lineage do
   """
   @spec get_graph(graph_opts()) :: {:ok, Graph.t()} | {:error, error()}
   def get_graph(opts \\ []) when is_list(opts) do
-    with {:ok, request} <- normalize_graph_opts(opts),
-         {:ok, version} <- fetch_version(request.manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
-         assets <- List.wrap(version.manifest.assets),
-         targets <- Enum.map(assets, &asset_target/1),
-         {:ok, statuses} <- target_statuses(version.manifest_version_id, targets) do
-      graph = build_graph(version, index, assets, targets, statuses, request)
-      {:ok, graph}
+    with {:ok, model} <- read_model(opts) do
+      {:ok, model.graph}
     else
       {:error, %Error{} = error} -> {:error, error}
       {:error, reason} -> {:error, normalize_error(reason)}
@@ -70,9 +64,9 @@ defmodule FavnOrchestrator.Operator.Lineage do
   """
   @spec get_group(String.t(), keyword()) :: {:ok, GroupInspector.t()} | {:error, error()}
   def get_group(group_id, opts \\ []) when is_binary(group_id) and is_list(opts) do
-    with {:ok, graph} <- get_graph(Keyword.put(opts, :selected_id, group_id)),
-         {:ok, group} <- fetch_group(graph, group_id) do
-      {:ok, group_inspector(graph, group)}
+    with {:ok, model} <- read_model(Keyword.put(opts, :selected_id, group_id)),
+         {:ok, group} <- fetch_group(model.groups, group_id) do
+      {:ok, group_inspector(model_graph(model), group)}
     end
   end
 
@@ -81,9 +75,9 @@ defmodule FavnOrchestrator.Operator.Lineage do
   """
   @spec get_asset(String.t(), keyword()) :: {:ok, AssetInspector.t()} | {:error, error()}
   def get_asset(asset_id, opts \\ []) when is_binary(asset_id) and is_list(opts) do
-    with {:ok, graph} <- get_graph(Keyword.put(opts, :selected_id, asset_id)),
-         {:ok, asset} <- fetch_asset_node(graph, asset_id) do
-      {:ok, asset_inspector(graph, asset)}
+    with {:ok, model} <- read_model(Keyword.put(opts, :selected_id, asset_id)),
+         {:ok, asset} <- fetch_asset_node(model.asset_nodes_by_id, asset_id) do
+      {:ok, asset_inspector(model_graph(model), asset)}
     end
   end
 
@@ -92,9 +86,9 @@ defmodule FavnOrchestrator.Operator.Lineage do
   """
   @spec get_edge(String.t(), keyword()) :: {:ok, EdgeInspector.t()} | {:error, error()}
   def get_edge(edge_id, opts \\ []) when is_binary(edge_id) and is_list(opts) do
-    with {:ok, graph} <- get_graph(Keyword.put(opts, :selected_id, edge_id)),
-         {:ok, edge} <- fetch_edge(graph, edge_id) do
-      {:ok, edge_inspector(graph, edge)}
+    with {:ok, model} <- read_model(Keyword.put(opts, :selected_id, edge_id)),
+         {:ok, edge} <- fetch_edge(model.edges, edge_id) do
+      {:ok, edge_inspector(model_graph(model), edge)}
     end
   end
 
@@ -103,12 +97,13 @@ defmodule FavnOrchestrator.Operator.Lineage do
   """
   @spec search(String.t(), keyword()) :: {:ok, Page.t(SearchResult.t())} | {:error, error()}
   def search(query, opts \\ []) when is_binary(query) and is_list(opts) do
-    with {:ok, graph} <- get_graph(opts),
-         {:ok, page_opts} <- Page.normalize_opts(page_opts(opts, graph.limits.search_page_size)) do
+    with {:ok, model} <- read_model(opts),
+         {:ok, page_opts} <-
+           Page.normalize_opts(page_opts(opts, model.graph.limits.search_page_size)) do
       normalized = normalize_query(query)
 
       results =
-        graph
+        model
         |> search_results()
         |> Enum.filter(&search_match?(&1, normalized))
         |> Enum.sort_by(&{result_rank(&1.kind), String.downcase(&1.label), &1.id})
@@ -128,12 +123,12 @@ defmodule FavnOrchestrator.Operator.Lineage do
   @spec list_group_assets(String.t(), keyword()) ::
           {:ok, Page.t(AssetNode.t())} | {:error, error()}
   def list_group_assets(group_id, opts \\ []) when is_binary(group_id) and is_list(opts) do
-    with {:ok, graph} <- get_graph(opts),
-         {:ok, group} <- fetch_group(graph, group_id),
+    with {:ok, model} <- read_model(opts),
+         {:ok, _group} <- fetch_group(model.groups, group_id),
          {:ok, page_opts} <-
-           Page.normalize_opts(page_opts(opts, graph.limits.group_asset_page_size)) do
+           Page.normalize_opts(page_opts(opts, model.graph.limits.group_asset_page_size)) do
       assets =
-        group.preview_assets
+        Map.get(model.group_assets_by_id, group_id, [])
         |> Enum.sort_by(
           &{Map.fetch!(@status_priority, &1.freshness_status), String.downcase(&1.label), &1.id}
         )
@@ -147,11 +142,28 @@ defmodule FavnOrchestrator.Operator.Lineage do
     end
   end
 
+  defp read_model(opts) do
+    started_at = System.monotonic_time(:millisecond)
+
+    with {:ok, request} <- normalize_graph_opts(opts),
+         :ok <- check_timeout(started_at, request.limits.timeout_ms),
+         {:ok, version} <- fetch_version(request.manifest_version_id),
+         :ok <- check_timeout(started_at, request.limits.timeout_ms),
+         {:ok, index} <- Index.build_from_version(version),
+         assets <- List.wrap(version.manifest.assets),
+         targets <- Enum.map(assets, &asset_target/1),
+         {:ok, statuses} <- target_statuses(version.manifest_version_id, targets),
+         :ok <- check_timeout(started_at, request.limits.timeout_ms) do
+      {:ok, build_model(version, index, assets, targets, statuses, request)}
+    end
+  end
+
   defp normalize_graph_opts(opts) do
     with {:ok, scope} <-
            normalize_enum(Keyword.get(opts, :scope, :global), @scope_values, :invalid_scope),
          {:ok, view_mode} <-
-           normalize_enum(Keyword.get(opts, :view_mode, :all), @view_modes, :invalid_view_mode) do
+           normalize_enum(Keyword.get(opts, :view_mode, :all), @view_modes, :invalid_view_mode),
+         :ok <- validate_filters(Keyword.get(opts, :filters, %{})) do
       limit_opts = Keyword.get(opts, :limit, [])
       graph_limit_opts = if Keyword.keyword?(limit_opts), do: limit_opts, else: []
       limits = normalize_limits(graph_limit_opts, Keyword.get(opts, :timeout_ms))
@@ -172,6 +184,23 @@ defmodule FavnOrchestrator.Operator.Lineage do
 
       {:error, :invalid_view_mode} ->
         {:error, %Error{code: :invalid_scope, message: "Invalid lineage view mode."}}
+
+      {:error, :unsupported_filters} ->
+        {:error, %Error{code: :invalid_scope, message: "Lineage filters are not supported yet."}}
+    end
+  end
+
+  defp validate_filters(filters) when filters in [%{}, nil], do: :ok
+  defp validate_filters(_filters), do: {:error, :unsupported_filters}
+
+  defp check_timeout(started_at, timeout_ms) do
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+    if elapsed_ms > timeout_ms do
+      {:error,
+       %Error{code: :query_timeout, message: "Lineage query timed out.", retryable?: true}}
+    else
+      :ok
     end
   end
 
@@ -264,12 +293,19 @@ defmodule FavnOrchestrator.Operator.Lineage do
     end
   end
 
-  defp build_graph(%Version{} = version, %Index{} = index, assets, targets, statuses, request) do
+  defp build_model(%Version{} = version, %Index{} = index, assets, targets, statuses, request) do
     target_by_ref = Map.new(targets, &{&1.ref, &1})
     status_by_ref = Map.new(targets, &{&1.ref, Map.fetch!(statuses, &1.target_id)})
     group_contexts = build_group_contexts(assets, target_by_ref, status_by_ref, request)
     {groups, asset_nodes_by_id, group_by_ref} = build_group_nodes(group_contexts, request)
     edges = build_edges(version, index, group_by_ref, asset_nodes_by_id, request)
+
+    group_assets_by_id =
+      asset_nodes_by_id
+      |> Map.values()
+      |> Enum.group_by(& &1.group_id, & &1)
+      |> Map.new(fn {group_id, assets} -> {group_id, sort_asset_nodes(assets)} end)
+
     visible_groups = Enum.take(groups, request.limits.max_visible_groups)
     visible_ids = MapSet.new(Enum.map(visible_groups, & &1.id))
 
@@ -278,7 +314,7 @@ defmodule FavnOrchestrator.Operator.Lineage do
       |> Enum.filter(&(&1.from in visible_ids and &1.to in visible_ids))
       |> Enum.take(request.limits.max_visible_edges)
 
-    %Graph{
+    graph = %Graph{
       manifest_version_id: version.manifest_version_id,
       scope: request.scope,
       selected_id: request.selected_id,
@@ -292,7 +328,18 @@ defmodule FavnOrchestrator.Operator.Lineage do
       layout: %{direction: :left_to_right, layers: @layers},
       generated_at: DateTime.utc_now()
     }
+
+    %{
+      graph: graph,
+      groups: groups,
+      edges: edges,
+      asset_nodes_by_id: asset_nodes_by_id,
+      group_assets_by_id: group_assets_by_id
+    }
   end
+
+  defp model_graph(model),
+    do: %{model.graph | groups: model.groups, nodes: model.groups, edges: model.edges}
 
   defp build_group_contexts(assets, target_by_ref, status_by_ref, request) do
     assets
@@ -468,10 +515,21 @@ defmodule FavnOrchestrator.Operator.Lineage do
       ])
 
     label = group_label(layer, system, schema, asset)
-    id = "group:#{layer}:#{slug(system || schema || label)}"
+    id = group_id(layer, system, schema, label)
 
     %{id: id, label: label, system: system, schema: schema, layer: layer, type: group_type(layer)}
   end
+
+  defp group_id(:raw, system, _schema, label), do: "group:raw:#{slug(system || label)}"
+
+  defp group_id(:staging, system, schema, label),
+    do: "group:staging:#{slug(system || label)}:#{slug(schema || label)}"
+
+  defp group_id(layer, _system, schema, label) when layer in [:core, :marts, :dashboards],
+    do: "group:#{layer}:#{slug(schema || label)}"
+
+  defp group_id(layer, system, schema, label),
+    do: "group:#{layer}:#{slug(system || schema || label)}"
 
   defp group_state(group_id, request, layer) do
     cond do
@@ -632,25 +690,22 @@ defmodule FavnOrchestrator.Operator.Lineage do
     Map.new(@status_keys, &{&1, Map.get(left, &1, 0) + Map.get(right, &1, 0)})
   end
 
-  defp fetch_group(%Graph{} = graph, group_id) do
-    case Enum.find(graph.groups, &(&1.id == group_id)) do
+  defp fetch_group(groups, group_id) when is_list(groups) do
+    case Enum.find(groups, &(&1.id == group_id)) do
       %GroupNode{} = group -> {:ok, group}
       nil -> {:error, %Error{code: :node_not_found, message: "Lineage group was not found."}}
     end
   end
 
-  defp fetch_asset_node(%Graph{} = graph, asset_id) do
-    graph.groups
-    |> Enum.flat_map(& &1.preview_assets)
-    |> Enum.find(&(&1.id == asset_id))
-    |> case do
-      %AssetNode{} = asset -> {:ok, asset}
-      nil -> {:error, %Error{code: :node_not_found, message: "Lineage asset was not found."}}
+  defp fetch_asset_node(asset_nodes_by_id, asset_id) when is_map(asset_nodes_by_id) do
+    case Map.fetch(asset_nodes_by_id, asset_id) do
+      {:ok, %AssetNode{} = asset} -> {:ok, asset}
+      :error -> {:error, %Error{code: :node_not_found, message: "Lineage asset was not found."}}
     end
   end
 
-  defp fetch_edge(%Graph{} = graph, edge_id) do
-    case Enum.find(graph.edges, &(&1.id == edge_id)) do
+  defp fetch_edge(edges, edge_id) when is_list(edges) do
+    case Enum.find(edges, &(&1.id == edge_id)) do
       %Edge{} = edge -> {:ok, edge}
       nil -> {:error, %Error{code: :node_not_found, message: "Lineage edge was not found."}}
     end
@@ -734,9 +789,9 @@ defmodule FavnOrchestrator.Operator.Lineage do
     end
   end
 
-  defp search_results(%Graph{} = graph) do
+  defp search_results(model) when is_map(model) do
     group_results =
-      Enum.map(graph.groups, fn group ->
+      Enum.map(model.groups, fn group ->
         %SearchResult{
           id: group.id,
           kind: :group,
@@ -747,8 +802,8 @@ defmodule FavnOrchestrator.Operator.Lineage do
       end)
 
     asset_results =
-      graph.groups
-      |> Enum.flat_map(& &1.preview_assets)
+      model.asset_nodes_by_id
+      |> Map.values()
       |> Enum.map(fn asset ->
         %SearchResult{
           id: asset.id,
@@ -760,7 +815,7 @@ defmodule FavnOrchestrator.Operator.Lineage do
       end)
 
     schema_results =
-      graph.groups
+      model.groups
       |> Enum.map(& &1.schema)
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()

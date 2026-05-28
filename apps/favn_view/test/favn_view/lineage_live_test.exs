@@ -27,7 +27,7 @@ defmodule FavnView.AssetCatalogueLineageTest do
     {:ok, view, html} = live(conn, ~p"/assets?mode=lineage")
 
     assert html =~ "Asset catalogue"
-    assert html =~ "Search assets, groups, or schemas"
+    assert html =~ "Search lineage coming soon"
     assert has_element?(view, ~s([data-testid="lineage-toolbar"]))
     assert has_element?(view, ~s([data-testid="lineage-canvas"]))
     assert has_element?(view, ~s([data-testid="lineage-inspector"]))
@@ -39,6 +39,8 @@ defmodule FavnView.AssetCatalogueLineageTest do
              view,
              ~s([data-testid="view-mode-rail"] button[aria-label="Lineage"][aria-pressed="true"])
            )
+
+    assert has_element?(view, ~s(button[phx-value-mode="upstream"][disabled]))
 
     refute html =~ "lineage-kpi-card"
   end
