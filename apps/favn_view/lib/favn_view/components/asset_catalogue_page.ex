@@ -7,6 +7,7 @@ defmodule FavnView.Components.AssetCataloguePage do
 
   alias FavnView.Components.AppShell
   alias FavnView.Components.GlassPanel
+  alias FavnView.Components.LineagePage
   alias FavnView.Components.ModeRail
 
   attr :assets, :list, required: true
@@ -17,6 +18,14 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :nav_items, :list, required: true
   attr :connection_options, :list, required: true
   attr :catalogue_options, :list, required: true
+  attr :lineage_graph, :any, default: nil
+  attr :lineage_inspector, :any, default: nil
+  attr :lineage_loading, :boolean, default: false
+  attr :lineage_error, :any, default: nil
+  attr :lineage_search, :string, default: ""
+  attr :lineage_zoom, :integer, default: 62
+  attr :lineage_inspector_open?, :boolean, default: true
+  attr :lineage_canvas_hook?, :boolean, default: true
 
   def asset_catalogue_page(assigns) do
     ~H"""
@@ -24,12 +33,20 @@ defmodule FavnView.Components.AssetCataloguePage do
       title="Asset catalogue"
       subtitle="Browse and monitor all assets"
       nav_items={@nav_items}
+      content_scroll?={@active_mode != :lineage}
     >
-      <div class="mx-auto w-full max-w-[120rem] pb-24 lg:pb-0" data-testid="asset-catalogue-page">
+      <div
+        class={[
+          "mx-auto flex w-full max-w-[120rem] flex-1 flex-col",
+          @active_mode == :lineage && "min-h-0 pb-20 lg:pb-0",
+          @active_mode != :lineage && "pb-24 lg:pb-0"
+        ]}
+        data-testid="asset-catalogue-page"
+      >
         <.loading_state :if={@loading} />
         <.error_state :if={!@loading && @error} />
 
-        <div :if={!@loading && !@error} class="space-y-3.5 lg:space-y-5">
+        <div :if={!@loading && !@error && @active_mode == :list} class="space-y-3.5 lg:space-y-5">
           <div id="asset-filters" data-testid="asset-filters">
             <.asset_catalogue_filters
               filters={@filters}
@@ -46,6 +63,19 @@ defmodule FavnView.Components.AssetCataloguePage do
 
           <.asset_card_list :if={@assets != []} assets={@assets} />
         </div>
+
+        <LineagePage.lineage_explorer
+          :if={!@loading && !@error && @active_mode == :lineage}
+          graph={@lineage_graph}
+          inspector={@lineage_inspector}
+          view_mode={:all}
+          search={@lineage_search}
+          loading={@lineage_loading}
+          error={@lineage_error}
+          zoom={@lineage_zoom}
+          inspector_open?={@lineage_inspector_open?}
+          canvas_hook?={@lineage_canvas_hook?}
+        />
       </div>
 
       <:mode_rail>
@@ -303,7 +333,7 @@ defmodule FavnView.Components.AssetCataloguePage do
   def catalogue_modes do
     [
       %{id: :list, label: "List", icon: "hero-list-bullet"},
-      %{id: :tree, label: "Tree", icon: "hero-share", disabled: true},
+      %{id: :lineage, label: "Lineage", icon: "hero-share"},
       %{id: :filters, label: "Filters", icon: "hero-funnel", disabled: true},
       %{id: :more, label: "More", icon: "hero-ellipsis-vertical", disabled: true}
     ]
@@ -318,7 +348,6 @@ defmodule FavnView.Components.AssetCataloguePage do
         href: "/pipelines",
         active: active == :pipelines
       },
-      %{label: "Lineage", icon: "hero-share", href: "#"},
       %{label: "Storage", icon: "hero-circle-stack", href: "#"},
       %{label: "Runs", icon: "hero-rocket-launch", href: "/runs", active: active == :runs},
       %{

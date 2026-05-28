@@ -1,5 +1,6 @@
 defmodule FavnView.Storybook.Components.AssetCataloguePage do
   alias FavnView.Components.AssetCataloguePage
+  alias FavnView.Components.LineagePage
 
   use PhoenixStorybook.Story, :component
 
@@ -30,6 +31,27 @@ defmodule FavnView.Storybook.Components.AssetCataloguePage do
           nav_items: AssetCataloguePage.nav_items(),
           connection_options: AssetCataloguePage.connection_options(),
           catalogue_options: AssetCataloguePage.catalogue_options()
+        }
+      },
+      %Variation{
+        id: :lineage,
+        attributes: %{
+          assets: AssetCataloguePage.sample_assets(),
+          filters: %{search: "", connection: "all", catalogue: "all"},
+          active_mode: :lineage,
+          loading: false,
+          error: nil,
+          nav_items: AssetCataloguePage.nav_items(:assets),
+          connection_options: AssetCataloguePage.connection_options(),
+          catalogue_options: AssetCataloguePage.catalogue_options(),
+          lineage_graph: LineagePage.sample_graph(),
+          lineage_inspector: LineagePage.sample_group_inspector(),
+          lineage_loading: false,
+          lineage_error: nil,
+          lineage_search: "",
+          lineage_zoom: 62,
+          lineage_inspector_open?: true,
+          lineage_canvas_hook?: false
         }
       },
       %Variation{
