@@ -46,6 +46,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.Scheduler.ManifestEntries
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Scheduler.Cron
@@ -1452,6 +1453,40 @@ defmodule FavnOrchestrator do
 
   def cancel_operator_run(_actor_context, _run_id), do: {:error, :unauthenticated}
 
+  @doc """
+  Plans remaining retry work for a failed run or backfill execution group.
+  """
+  @spec plan_remaining_retry(run_id()) :: {:ok, RunRetryPlanner.retry_plan()} | {:error, term()}
+  def plan_remaining_retry(run_id) when is_binary(run_id), do: RunRetryPlanner.remaining(run_id)
+
+  @doc """
+  Submits retry runs for failed or not-started assets, preserving source run config.
+  """
+  @spec retry_remaining(run_id(), keyword()) :: {:ok, map()} | {:error, term()}
+  def retry_remaining(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+    with {:ok, plan} <- RunRetryPlanner.remaining(run_id) do
+      submit_remaining_retry_plan(plan, opts)
+    end
+  end
+
+  @doc """
+  Submits remaining retry work on behalf of an authenticated operator.
+  """
+  @spec retry_operator_run_remaining(operator_actor_context(), run_id()) ::
+          {:ok, map()} | {:error, term()}
+  def retry_operator_run_remaining(actor_context, run_id)
+      when is_map(actor_context) and is_binary(run_id) do
+    with :ok <- require_operator_context(actor_context),
+         {:ok, actor} <- actor_context_object(actor_context, :actor) do
+      retry_remaining(run_id,
+        metadata: %{operator_retry: true, actor_id: context_id(actor)},
+        requested_by: :operator
+      )
+    end
+  end
+
+  def retry_operator_run_remaining(_actor_context, _run_id), do: {:error, :unauthenticated}
+
   @doc "Returns a browser-safe operator error DTO for a public UI context."
   @spec operator_error(operator_error_context(), term()) :: OperatorErrorDTO.t()
   def operator_error(:load, reason), do: OperatorErrorDTO.load(reason)
@@ -1471,6 +1506,65 @@ defmodule FavnOrchestrator do
   @spec rerun(run_id(), keyword()) :: {:ok, run_id()} | {:error, term()}
   def rerun(source_run_id, opts \\ []) when is_binary(source_run_id) and is_list(opts) do
     RunManager.rerun(source_run_id, opts)
+  end
+
+  defp submit_remaining_retry_plan(%{children: children, asset_count: asset_count} = plan, opts) do
+    children
+    |> Enum.reduce_while({:ok, []}, fn child, {:ok, acc} ->
+      submit_opts = remaining_retry_opts(plan, child, opts)
+
+      case rerun(child.source_run_id, submit_opts) do
+        {:ok, run_id} -> {:cont, {:ok, [run_id | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, run_ids} ->
+        {:ok,
+         %{
+           source_run_id: plan.source_run_id,
+           run_ids: Enum.reverse(run_ids),
+           asset_count: asset_count
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp remaining_retry_opts(plan, child, opts) do
+    metadata =
+      opts
+      |> Keyword.get(:metadata, %{})
+      |> Map.merge(%{
+        retry_mode: :remaining,
+        retry_source_run_id: plan.source_run_id,
+        retry_asset_count: length(child.target_refs)
+      })
+
+    []
+    |> Keyword.put(:target_refs, child.target_refs)
+    |> Keyword.put(:replay_node_keys, child.node_keys)
+    |> Keyword.put(:replay_mode, :resume_from_failure)
+    |> Keyword.put(:metadata, metadata)
+    |> Keyword.put(:trigger, remaining_retry_trigger(plan, child))
+    |> maybe_put_opt(:refresh_policy, Map.get(child, :refresh_policy))
+    |> maybe_put_opt(:anchor_window, Map.get(child, :anchor_window))
+    |> maybe_put_opt(:parent_run_id, Map.get(child, :backfill_run_id))
+    |> maybe_put_opt(:root_run_id, Map.get(child, :backfill_run_id))
+  end
+
+  defp remaining_retry_trigger(plan, child) do
+    %{
+      kind: :rerun,
+      retry_mode: :remaining,
+      source_run_id: child.source_run_id,
+      retry_source_run_id: plan.source_run_id,
+      backfill_run_id: Map.get(child, :backfill_run_id),
+      window_key: Map.get(child, :window_key)
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
   end
 
   defp ensure_window_rerunnable(window, opts) when is_list(opts) do

@@ -1536,7 +1536,7 @@ defmodule FavnOrchestrator.RunReadModel do
     waiting_steps =
       candidates
       |> Enum.reject(&known_waiting_candidate?(run.id, known, &1, candidate_ref_counts))
-      |> Enum.map(&waiting_step(run.id, &1))
+      |> Enum.map(&missing_step(run, &1))
 
     steps ++ waiting_steps
   end
@@ -1677,6 +1677,21 @@ defmodule FavnOrchestrator.RunReadModel do
       root_failure_asset_ref: nil
     }
   end
+
+  defp missing_step(%RunState{status: status} = run, candidate)
+       when status in [:error, :partial, :cancelled, :timed_out] do
+    run.id
+    |> waiting_step(candidate)
+    |> Map.merge(%{
+      status: :blocked,
+      queue_reason: :pipeline_stopped_after_failure,
+      error: %{type: :pipeline_stopped_after_failure, status: status},
+      explanation: "Asset was not started because the pipeline stopped after an earlier failure.",
+      failure_role: :cascade
+    })
+  end
+
+  defp missing_step(%RunState{} = run, candidate), do: waiting_step(run.id, candidate)
 
   defp unique_asset_refs(persisted_steps, event_steps) do
     persisted_steps

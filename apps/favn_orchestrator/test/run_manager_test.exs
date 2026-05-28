@@ -1695,6 +1695,65 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert failed_sequence < finished_sequence
   end
 
+  test "retry remaining submits only failed and not-started work with source refresh config" do
+    version = manifest_version("mv_retry_remaining_submission")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_retry_remaining_submission")
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      stop_agent(cancel_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStageSiblingFailureStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      cancel_log: cancel_log,
+      raw_status: :ok,
+      silver_status: :error,
+      silver_block_ms: 0
+    )
+
+    assert {:ok, source_run_id} =
+             FavnOrchestrator.submit_pipeline_run(
+               [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}],
+               refresh_policy: :force
+             )
+
+    assert {:ok, source_run} = await_terminal_run(source_run_id)
+    assert source_run.status == :error
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+
+    assert {:ok, %{run_ids: [retry_run_id], asset_count: 1}} =
+             FavnOrchestrator.retry_remaining(source_run_id)
+
+    assert {:ok, retry_run} = await_terminal_run(retry_run_id)
+    assert retry_run.status == :ok
+    assert retry_run.rerun_of_run_id == source_run_id
+    assert retry_run.metadata[:retry_mode] == :remaining
+    assert retry_run.metadata[:replay_mode] == :resume_from_failure
+    assert retry_run.metadata[:retry_asset_count] == 1
+
+    assert retry_run.metadata[:refresh_policy] == %{
+             mode: :force,
+             refs: [],
+             include_upstream?: false
+           }
+
+    assert retry_run.target_refs == [{MyApp.Assets.Silver, :asset}]
+    assert retry_run.plan.target_refs == [{MyApp.Assets.Silver, :asset}]
+    assert Map.keys(retry_run.plan.nodes) == [{{MyApp.Assets.Silver, :asset}, nil}]
+  end
+
   test "pipeline stage await timeout keeps original sibling execution context" do
     version = manifest_version("mv_pipeline_stage_await_timeout")
     assert :ok = FavnOrchestrator.register_manifest(version)
