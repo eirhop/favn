@@ -49,8 +49,7 @@ defmodule Favn.SQLAsset.Runtime do
   def render(asset, opts \\ [])
 
   def render(%{type: :sql, module: module}, opts) when is_atom(module) and is_list(opts) do
-    with {:ok, %Definition{} = definition} <- fetch_definition(module),
-         {:ok, %Render{} = rendered} <- Renderer.render(definition, opts) do
+    with {:ok, _definition, %Render{} = rendered} <- render_sql_asset(module, opts) do
       {:ok, rendered}
     end
   end
@@ -72,9 +71,9 @@ defmodule Favn.SQLAsset.Runtime do
     limit = Keyword.get(opts, :limit, 100)
 
     with :ok <- validate_limit(limit),
-         {:ok, %Render{} = rendered} <- render(asset, opts),
+         {:ok, %Definition{} = definition, %Render{} = rendered} <- render_sql_asset(asset, opts),
          statement <- preview_statement(rendered.sql, limit),
-         {:ok, result} <- query_render(rendered, statement, :preview, opts) do
+         {:ok, result} <- query_render(definition, rendered, statement, :preview, opts) do
       {:ok, %Preview{render: rendered, limit: limit, statement: statement, result: result}}
     end
   end
@@ -83,9 +82,9 @@ defmodule Favn.SQLAsset.Runtime do
   def explain(%{} = asset, opts \\ []) when is_list(opts) do
     analyze? = Keyword.get(opts, :analyze?, false)
 
-    with {:ok, %Render{} = rendered} <- render(asset, opts),
+    with {:ok, %Definition{} = definition, %Render{} = rendered} <- render_sql_asset(asset, opts),
          statement <- explain_statement(rendered.sql, analyze?),
-         {:ok, result} <- query_render(rendered, statement, :explain, opts) do
+         {:ok, result} <- query_render(definition, rendered, statement, :explain, opts) do
       {:ok, %Explain{render: rendered, statement: statement, analyze?: analyze?, result: result}}
     end
   end
@@ -138,6 +137,29 @@ defmodule Favn.SQLAsset.Runtime do
     [params: ctx.params || %{}, runtime: runtime]
   end
 
+  defp render_sql_asset(%{type: :sql, module: module}, opts)
+       when is_atom(module) and is_list(opts),
+       do: render_sql_asset(module, opts)
+
+  defp render_sql_asset(%{} = asset, _opts) do
+    asset_ref = Map.get(asset, :ref)
+
+    {:error,
+     %Error{
+       type: :not_sql_asset,
+       phase: :render,
+       asset_ref: asset_ref,
+       message: "asset #{inspect(asset_ref)} is not a SQL asset"
+     }}
+  end
+
+  defp render_sql_asset(module, opts) when is_atom(module) and is_list(opts) do
+    with {:ok, %Definition{} = definition} <- fetch_definition(module),
+         {:ok, %Render{} = rendered} <- Renderer.render(definition, opts) do
+      {:ok, definition, rendered}
+    end
+  end
+
   defp fetch_definition(module) do
     case Compiler.fetch_definition(module) do
       {:ok, %Definition{} = definition} ->
@@ -173,32 +195,42 @@ defmodule Favn.SQLAsset.Runtime do
   defp explain_statement(sql, true), do: "EXPLAIN ANALYZE #{trim_sql(sql)}"
   defp explain_statement(sql, false), do: "EXPLAIN #{trim_sql(sql)}"
 
-  defp query_render(%Render{} = rendered, statement, phase, opts) do
-    with_session(rendered.connection, opts, required_catalogs(rendered), fn session ->
-      SQLClient.query(
-        session,
-        statement,
-        Keyword.merge(sql_operation_opts(opts),
-          params: adapter_params(rendered.params),
-          read_only?: true
+  defp query_render(%Definition{} = definition, %Render{} = rendered, statement, phase, opts) do
+    with_session(
+      rendered.connection,
+      opts,
+      session_required_catalogs(definition, rendered),
+      fn session ->
+        SQLClient.query(
+          session,
+          statement,
+          Keyword.merge(sql_operation_opts(opts),
+            params: adapter_params(rendered.params),
+            read_only?: true
+          )
         )
-      )
-    end)
+      end
+    )
     |> map_sql_result_error(rendered.asset_ref, phase)
   end
 
   defp materialize_render(%Definition{} = definition, %Render{} = rendered, opts) do
-    with_session(rendered.connection, opts, required_catalogs(rendered), fn session ->
-      with {:ok, write_plan} <- MaterializationPlanner.build(session, definition, rendered),
-           {:ok, result} <-
-             SQLClient.materialize(
-               session,
-               write_plan,
-               Keyword.merge(sql_operation_opts(opts), params: adapter_params(rendered.params))
-             ) do
-        {:ok, write_plan, result}
+    with_session(
+      rendered.connection,
+      opts,
+      session_required_catalogs(definition, rendered),
+      fn session ->
+        with {:ok, write_plan} <- MaterializationPlanner.build(session, definition, rendered),
+             {:ok, result} <-
+               SQLClient.materialize(
+                 session,
+                 write_plan,
+                 Keyword.merge(sql_operation_opts(opts), params: adapter_params(rendered.params))
+               ) do
+          {:ok, write_plan, result}
+        end
       end
-    end)
+    )
     |> map_sql_result_error(rendered.asset_ref, :materialize)
   end
 
@@ -300,16 +332,25 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp maybe_put_timeout(opts, _deadline_at), do: opts
 
-  defp required_catalogs(%Render{} = rendered) do
+  defp session_required_catalogs(%Definition{} = definition, %Render{} = rendered) do
     # Catalog scope comes from manifest-declared relation ownership and resolved
     # Favn asset references, not by parsing arbitrary SQL text.
     catalogs =
-      [rendered.relation | resolved_relations(rendered.resolved_asset_refs)]
+      [rendered.relation | definition_relation_inputs(definition)]
+      |> Enum.concat(resolved_relations(rendered.resolved_asset_refs))
       |> Enum.flat_map(&relation_catalog/1)
       |> Enum.uniq()
 
     if catalogs == [], do: nil, else: catalogs
   end
+
+  defp definition_relation_inputs(%Definition{relation_inputs: inputs}) when is_list(inputs) do
+    Enum.map(inputs, fn input ->
+      Map.get(input, :relation_ref) || Map.get(input, "relation_ref")
+    end)
+  end
+
+  defp definition_relation_inputs(%Definition{}), do: []
 
   defp resolved_relations(refs) when is_list(refs) do
     Enum.map(refs, fn ref -> Map.get(ref, :relation) || Map.get(ref, "relation") end)
