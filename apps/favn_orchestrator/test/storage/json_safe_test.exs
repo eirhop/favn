@@ -93,6 +93,19 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
     assert_json_compatible!(normalized)
   end
 
+  test "normalizes exception-shaped maps with malformed struct metadata" do
+    normalized =
+      JsonSafe.error(%{
+        __exception__: true,
+        __struct__: "Adbc.Error",
+        message: "Binder Error: Catalog \"raw\" does not exist!"
+      })
+
+    assert normalized["type"] == "map"
+    assert normalized["message"] == "Binder Error: Catalog \"raw\" does not exist!"
+    assert_json_compatible!(normalized)
+  end
+
   test "normalizes explicit error terms as structured sanitized maps" do
     normalized =
       JsonSafe.error(%{

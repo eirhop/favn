@@ -95,6 +95,21 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert Keyword.fetch!(opts, :required_catalogs) == ["int", "raw"]
   end
 
+  test "preview and explain scope SQL sessions to declared relation input catalogs" do
+    asset = %{
+      type: :sql,
+      module: FavnRunner.ExecutionSQLAssetTest.PlainRelationInputSQLAsset
+    }
+
+    assert {:ok, _preview} = Favn.SQLAsset.Runtime.preview(asset)
+    assert_received {:connect_opts, :runner_sql_runtime, preview_opts}
+    assert Keyword.fetch!(preview_opts, :required_catalogs) == ["int", "raw"]
+
+    assert {:ok, _explain} = Favn.SQLAsset.Runtime.explain(asset)
+    assert_received {:connect_opts, :runner_sql_runtime, explain_opts}
+    assert Keyword.fetch!(explain_opts, :required_catalogs) == ["int", "raw"]
+  end
+
   test "executes manifest-pinned sql asset through declared runner SQL runtime" do
     ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
     version = register_sql_manifest!(ref)
@@ -539,6 +554,22 @@ end
 defmodule FavnRunner.ExecutionSQLAssetTest.SQLAsset do
 end
 
+defmodule FavnRunner.ExecutionSQLAssetTest.PlainRelationInputSQLAsset do
+  use Favn.Namespace,
+    relation: [connection: :runner_sql_runtime, catalog: "int", schema: "sales"]
+
+  use Favn.SQLAsset
+
+  @relation [name: "customers_normalized"]
+  @materialized :table
+  query do
+    ~SQL"""
+    select customer_id
+    from raw.crm.customers
+    """
+  end
+end
+
 defmodule FavnRunner.ExecutionSQLAssetTest.MissingPayloadSQLAsset do
 end
 
@@ -612,6 +643,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter do
 
   def disconnect(:conn, _opts), do: :ok
   def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+  def query(:conn, _statement, _opts),
+    do: {:ok, %Result{kind: :query, command: "SELECT", rows: [], columns: []}}
 
   def materialize(:conn, _write_plan, _opts),
     do: {:ok, %Result{command: :insert, rows_affected: 1}}
