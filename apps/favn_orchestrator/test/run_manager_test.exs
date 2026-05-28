@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.RunManagerTest do
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
   alias FavnOrchestrator
+  alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -71,6 +72,36 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     @impl true
     def list_active_execution_ownerships(_run_id, _opts), do: {:error, :ownership_read_failed}
+  end
+
+  defmodule SecondRunCreatedFailingStorageAdapter do
+    @moduledoc false
+    @behaviour Favn.Storage.Adapter
+
+    use StorageAdapterDelegate, except: [:persist_run_transition]
+
+    @impl true
+    def persist_run_transition(run, event, opts) do
+      fail? =
+        run_created_event?(event) and
+          case Application.get_env(:favn_orchestrator, :retry_admission_failure_agent) do
+            nil -> false
+            agent -> Agent.get_and_update(agent, fn count -> {count >= 1, count + 1} end)
+          end
+
+      if fail? do
+        {:error, :injected_retry_admission_failure}
+      else
+        Memory.persist_run_transition(run, event, opts)
+      end
+    end
+
+    defp run_created_event?(event) do
+      (Map.get(event, :event_type) || Map.get(event, "event_type")) in [
+        :run_created,
+        "run_created"
+      ]
+    end
   end
 
   defmodule RunnerClientStub do
@@ -1695,6 +1726,210 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert failed_sequence < finished_sequence
   end
 
+  test "retry remaining submits only failed and not-started work with source refresh config" do
+    version = manifest_version("mv_retry_remaining_submission")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_retry_remaining_submission")
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      stop_agent(cancel_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStageSiblingFailureStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      cancel_log: cancel_log,
+      raw_status: :ok,
+      silver_status: :error,
+      silver_block_ms: 0
+    )
+
+    assert {:ok, source_run_id} =
+             FavnOrchestrator.submit_pipeline_run(
+               [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}],
+               refresh_policy: :force
+             )
+
+    assert {:ok, source_run} = await_terminal_run(source_run_id)
+    assert source_run.status == :error
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+
+    assert {:ok, %{run_ids: [retry_run_id], asset_count: 1}} =
+             FavnOrchestrator.retry_remaining(source_run_id)
+
+    assert {:ok, retry_run} = await_terminal_run(retry_run_id)
+    assert retry_run.status == :ok
+    assert retry_run.rerun_of_run_id == source_run_id
+    assert retry_run.metadata[:retry_mode] == :remaining
+    assert retry_run.metadata[:replay_mode] == :resume_from_failure
+    assert retry_run.metadata[:retry_asset_count] == 1
+
+    assert retry_run.metadata[:refresh_policy] == %{
+             mode: :force,
+             refs: [],
+             include_upstream?: false
+           }
+
+    assert retry_run.target_refs == [{MyApp.Assets.Silver, :asset}]
+    assert retry_run.plan.target_refs == [{MyApp.Assets.Silver, :asset}]
+    assert Map.keys(retry_run.plan.nodes) == [{{MyApp.Assets.Silver, :asset}, nil}]
+  end
+
+  test "retry remaining preflights every child before admitting retry runs" do
+    version = manifest_version("mv_retry_remaining_preflight")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    parent =
+      RunState.new(
+        id: "retry_remaining_parent_preflight",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Assets.Raw, :asset},
+        target_refs: [{MyApp.Assets.Raw, :asset}],
+        submit_kind: :backfill_pipeline
+      )
+      |> RunState.transition(status: :error, error: %{type: :backfill_failed})
+
+    valid_child =
+      retry_source_run(
+        "retry_remaining_preflight_valid_child",
+        {MyApp.Assets.Raw, :asset},
+        version.manifest_version_id,
+        version.content_hash
+      )
+
+    invalid_child =
+      retry_source_run(
+        "retry_remaining_preflight_invalid_child",
+        {MyApp.Assets.Silver, :asset},
+        "mv_retry_remaining_missing_manifest",
+        "missing_hash"
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(valid_child)
+    assert :ok = Storage.put_run(invalid_child)
+
+    assert :ok =
+             Storage.put_backfill_windows([
+               retry_backfill_window(
+                 parent.id,
+                 valid_child.id,
+                 "2026-01-01",
+                 version.manifest_version_id
+               ),
+               retry_backfill_window(
+                 parent.id,
+                 invalid_child.id,
+                 "2026-01-02",
+                 version.manifest_version_id
+               )
+             ])
+
+    assert {:error, _reason} = FavnOrchestrator.retry_remaining(parent.id)
+
+    assert {:ok, runs} = Storage.list_runs()
+
+    assert Enum.sort(Enum.map(runs, & &1.id)) ==
+             Enum.sort([parent.id, valid_child.id, invalid_child.id])
+  end
+
+  test "retry remaining reports partial result when admission fails after earlier children" do
+    version = manifest_version("mv_retry_remaining_partial_admission")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    parent =
+      RunState.new(
+        id: "retry_remaining_parent_partial_admission",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Assets.Raw, :asset},
+        target_refs: [{MyApp.Assets.Raw, :asset}],
+        submit_kind: :backfill_pipeline
+      )
+      |> RunState.transition(status: :error, error: %{type: :backfill_failed})
+
+    first_child =
+      retry_source_run(
+        "retry_remaining_partial_first_child",
+        {MyApp.Assets.Raw, :asset},
+        version.manifest_version_id,
+        version.content_hash
+      )
+
+    second_child =
+      retry_source_run(
+        "retry_remaining_partial_second_child",
+        {MyApp.Assets.Silver, :asset},
+        version.manifest_version_id,
+        version.content_hash
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(first_child)
+    assert :ok = Storage.put_run(second_child)
+
+    assert :ok =
+             Storage.put_backfill_windows([
+               retry_backfill_window(
+                 parent.id,
+                 first_child.id,
+                 "2026-01-01",
+                 version.manifest_version_id
+               ),
+               retry_backfill_window(
+                 parent.id,
+                 second_child.id,
+                 "2026-01-02",
+                 version.manifest_version_id
+               )
+             ])
+
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_agent = Application.get_env(:favn_orchestrator, :retry_admission_failure_agent)
+    {:ok, failure_agent} = Agent.start_link(fn -> 0 end)
+
+    on_exit(fn ->
+      restore_env(:storage_adapter, previous_adapter)
+
+      if is_nil(previous_agent) do
+        Application.delete_env(:favn_orchestrator, :retry_admission_failure_agent)
+      else
+        Application.put_env(:favn_orchestrator, :retry_admission_failure_agent, previous_agent)
+      end
+
+      stop_agent(failure_agent)
+    end)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      SecondRunCreatedFailingStorageAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :retry_admission_failure_agent, failure_agent)
+
+    assert {:partial,
+            %{
+              run_ids: [retry_run_id],
+              reason: :injected_retry_admission_failure,
+              asset_count: 2
+            }} = FavnOrchestrator.retry_remaining(parent.id)
+
+    assert {:ok, retry_run} = await_terminal_run(retry_run_id)
+    assert retry_run.rerun_of_run_id == first_child.id
+  end
+
   test "pipeline stage await timeout keeps original sibling execution context" do
     version = manifest_version("mv_pipeline_stage_await_timeout")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -2931,6 +3166,84 @@ defmodule FavnOrchestrator.RunManagerTest do
       :pending -> base
       :running -> RunState.transition(base, status: :running)
     end
+  end
+
+  defp retry_source_run(run_id, ref, manifest_version_id, manifest_content_hash) do
+    node_key = {ref, nil}
+    now = DateTime.utc_now()
+
+    RunState.new(
+      id: run_id,
+      manifest_version_id: manifest_version_id,
+      manifest_content_hash: manifest_content_hash,
+      asset_ref: ref,
+      target_refs: [ref],
+      plan: single_node_plan(ref),
+      submit_kind: :pipeline,
+      metadata: %{pipeline_target_refs: [ref], pipeline_dependencies: :none}
+    )
+    |> RunState.transition(
+      status: :error,
+      error: %{type: :test_failure},
+      result: %{
+        node_results: [
+          Favn.Run.NodeResult.new(%{
+            node_key: node_key,
+            ref: ref,
+            stage: 0,
+            status: :error,
+            started_at: now,
+            finished_at: now,
+            error: %{type: :test_failure}
+          })
+        ]
+      }
+    )
+  end
+
+  defp retry_backfill_window(backfill_run_id, latest_attempt_run_id, day, manifest_version_id) do
+    start_at = DateTime.from_iso8601("#{day}T00:00:00Z") |> elem(1)
+    end_at = DateTime.add(start_at, 86_400, :second)
+
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: backfill_run_id,
+        pipeline_module: MyApp.Pipelines.Daily,
+        manifest_version_id: manifest_version_id,
+        window_kind: :day,
+        window_start_at: start_at,
+        window_end_at: end_at,
+        timezone: "Etc/UTC",
+        window_key: day,
+        status: :error,
+        latest_attempt_run_id: latest_attempt_run_id,
+        updated_at: DateTime.utc_now()
+      })
+
+    window
+  end
+
+  defp single_node_plan(ref) do
+    node_key = {ref, nil}
+
+    %Favn.Plan{
+      target_refs: [ref],
+      target_node_keys: [node_key],
+      nodes: %{
+        node_key => %{
+          ref: ref,
+          node_key: node_key,
+          window: nil,
+          upstream: [],
+          downstream: [],
+          stage: 0,
+          action: :run
+        }
+      },
+      topo_order: [ref],
+      stages: [[ref]],
+      node_stages: [[node_key]]
+    }
   end
 
   defp manifest_version(manifest_version_id, opts \\ []) do

@@ -10,6 +10,7 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.LiveRefresh
   alias FavnView.LogsViewModel
   alias FavnView.OperatorErrorLabels
+  alias FavnView.RunEventRefresh
 
   @refresh_interval_ms 1_500
   @coalesce_refresh_ms 100
@@ -25,17 +26,14 @@ defmodule FavnView.RunDetailLive do
       assign(socket,
         run_id: run_id,
         run: run,
-        run_event_sequence: latest_event_sequence(run),
-        pending_run_event_sequence: nil,
-        run_events_live?: false,
         active_mode: :overview,
         timeline_state: default_timeline_state(run),
         selected_child_run_id: nil,
         selected_attempt_id: nil,
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
-      |> LiveRefresh.init([:refresh_timer_ref, :fallback_poll_ref])
-      |> maybe_subscribe_run()
+      |> RunEventRefresh.init([:refresh_timer_ref, :fallback_poll_ref])
+      |> sync_run_event_refresh()
       |> maybe_schedule_fallback_poll()
 
     {:ok, socket}
@@ -70,37 +68,17 @@ defmodule FavnView.RunDetailLive do
     {:noreply, socket |> refresh_run() |> maybe_schedule_fallback_poll()}
   end
 
-  def handle_info(
-        {:favn_run_event, %{run_id: run_id} = event},
-        %{assigns: %{run: %{subscribed_run_id: run_id}}} = socket
-      ) do
-    socket =
-      if fresh_run_event?(event, socket.assigns.run_event_sequence) do
-        socket
-        |> assign(
-          :pending_run_event_sequence,
-          latest_sequence([event], socket.assigns.pending_run_event_sequence)
-        )
-        |> schedule_coalesced_refresh()
-      else
-        socket
-      end
-
-    {:noreply, socket}
+  def handle_info({:favn_run_event, event}, socket) do
+    {:noreply, RunEventRefresh.handle_event(socket, event, run_event_refresh_opts())}
   end
 
-  def handle_info({:favn_run_event, _event}, socket), do: {:noreply, socket}
-
   defp refresh_run(socket) do
-    event_sequence =
-      socket.assigns.pending_run_event_sequence || socket.assigns.run_event_sequence
-
     run = load_run(socket.assigns.run_id, socket.assigns.run[:back_asset_href])
 
     socket
     |> assign(:run, run)
-    |> assign(:pending_run_event_sequence, nil)
-    |> assign(:run_event_sequence, latest_event_sequence(run, event_sequence))
+    |> RunEventRefresh.mark_refreshed(run_event_sequences(run))
+    |> sync_run_event_refresh()
     |> maybe_schedule_fallback_poll()
   end
 
@@ -174,10 +152,38 @@ defmodule FavnView.RunDetailLive do
             {:noreply,
              socket
              |> put_flash(:info, "Run cancellation requested")
-             |> reload_run_from_event(socket.assigns.run_event_sequence)}
+             |> refresh_run()}
 
           {:error, reason} ->
             {:noreply, put_flash(socket, :error, cancel_error_label(reason))}
+        end
+
+      _run ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("retry_remaining", _params, socket) do
+    case socket.assigns.run do
+      %{retry_remaining?: true} ->
+        case FavnOrchestrator.retry_operator_run_remaining(
+               actor_context(socket),
+               socket.assigns.run_id
+             ) do
+          {:ok, %{run_ids: run_ids, asset_count: asset_count}} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, retry_remaining_submitted_label(run_ids, asset_count))
+             |> refresh_run()}
+
+          {:partial, %{run_ids: run_ids, reason: reason}} ->
+            {:noreply,
+             socket
+             |> put_flash(:error, retry_remaining_partial_label(run_ids, reason))
+             |> refresh_run()}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, retry_remaining_error_label(reason))}
         end
 
       _run ->
@@ -246,9 +252,7 @@ defmodule FavnView.RunDetailLive do
 
   @impl true
   def terminate(_reason, socket) do
-    if socket.assigns[:run_events_live?] do
-      unsubscribe_run(socket.assigns.run.subscribed_run_id)
-    end
+    RunEventRefresh.unsubscribe_all(socket, &unsubscribe_run/1)
 
     :ok
   end
@@ -285,11 +289,14 @@ defmodule FavnView.RunDetailLive do
       found?: true,
       id: summary.id,
       subscribed_run_id: root_run.id,
+      subscribed_run_ids: subscribed_run_ids(root_run, child_runs),
       raw_status: status,
       active?: active_group?(summary),
       cancellable?: !is_nil(cancel_target),
       cancel_run_id: cancel_target && cancel_target.id,
       cancel_label: cancel_target && cancel_target.label,
+      retry_remaining?: retry_remaining?(summary),
+      retry_remaining_label: retry_remaining_label(summary),
       short_id: short_id(summary.id),
       title: group_title(summary),
       subtitle: subtitle([target, window_range_label(windows)]),
@@ -336,22 +343,23 @@ defmodule FavnView.RunDetailLive do
         existing_back_asset_href || back_asset_href(List.first(summary.target_assets)),
       raw_run: inspect(detail, pretty: true, limit: 50, printable_limit: 2_000),
       raw_events: inspect(events, pretty: true, limit: 50, printable_limit: 2_000),
-      root_event_sequence: Map.get(detail, :root_event_sequence)
+      root_event_sequence: Map.get(detail, :root_event_sequence),
+      run_event_sequences: run_event_sequences_from_public(root_run, child_runs, events, detail)
     }
   end
 
-  defp schedule_coalesced_refresh(socket) do
+  defp maybe_schedule_fallback_poll(
+         %{assigns: %{run_events_live?: false, run: %{active?: true}}} = socket
+       ) do
     if connected?(socket) do
-      LiveRefresh.schedule_once(socket, :refresh_timer_ref, :refresh_run, @coalesce_refresh_ms)
+      LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_run, @refresh_interval_ms)
     else
       socket
     end
   end
 
-  defp maybe_schedule_fallback_poll(%{assigns: %{run_events_live?: true}} = socket), do: socket
-
   defp maybe_schedule_fallback_poll(%{assigns: %{run: %{active?: true}}} = socket) do
-    if connected?(socket) do
+    if connected?(socket) and needs_discovery_poll?(socket.assigns.run) do
       LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_run, @refresh_interval_ms)
     else
       socket
@@ -360,41 +368,26 @@ defmodule FavnView.RunDetailLive do
 
   defp maybe_schedule_fallback_poll(socket), do: socket
 
-  defp maybe_subscribe_run(%{assigns: %{run: %{subscribed_run_id: run_id}}} = socket) do
-    if connected?(socket) do
-      case subscribe_run(run_id) do
-        :ok -> socket |> assign(:run_events_live?, true) |> replay_run_event_gap()
-        {:error, _reason} -> socket
-      end
-    else
-      socket
-    end
+  defp sync_run_event_refresh(%{assigns: %{run: run}} = socket) do
+    RunEventRefresh.sync_subscriptions(
+      socket,
+      Map.get(run, :subscribed_run_ids, []),
+      run_event_sequences(run),
+      run_event_refresh_opts()
+    )
   end
 
-  defp maybe_subscribe_run(socket), do: socket
+  defp sync_run_event_refresh(socket), do: socket
+
+  defp needs_discovery_poll?(%{total_windows: total, child_runs: child_runs})
+       when is_integer(total) and is_list(child_runs),
+       do: total > length(child_runs)
+
+  defp needs_discovery_poll?(_run), do: false
 
   defp actor_context(socket) do
     %Scope{} = scope = socket.assigns.current_scope
     %{actor: scope.actor, session: scope.session}
-  end
-
-  defp replay_run_event_gap(socket) do
-    after_sequence = socket.assigns.run_event_sequence || 0
-
-    case list_run_stream_events(socket.assigns.run.subscribed_run_id,
-           after_sequence: after_sequence,
-           limit: 200
-         ) do
-      {:ok, []} -> socket
-      {:ok, events} -> reload_run_from_event(socket, latest_sequence(events, after_sequence))
-      {:error, _reason} -> refresh_run(socket)
-    end
-  end
-
-  defp reload_run_from_event(socket, event_sequence) do
-    socket
-    |> assign(:pending_run_event_sequence, event_sequence)
-    |> refresh_run()
   end
 
   defp get_operator_run_detail(run_id, opts) do
@@ -419,6 +412,63 @@ defmodule FavnView.RunDetailLive do
       :run_stream_events_fun,
       &FavnOrchestrator.list_run_stream_events/2
     ).(run_id, opts)
+  end
+
+  defp subscribed_run_ids(root_run, child_runs) do
+    [root_run.id | Enum.map(child_runs, & &1.id)]
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+  end
+
+  defp run_event_sequences(%{run_event_sequences: sequences}) when is_map(sequences),
+    do: sequences
+
+  defp run_event_sequences(_run), do: %{}
+
+  defp run_event_sequences_from_public(root_run, child_runs, events, detail) do
+    event_sequences =
+      events
+      |> Enum.reduce(%{}, fn event, acc ->
+        run_id = Map.get(event, :run_id)
+        sequence = Map.get(event, :sequence)
+
+        if is_binary(run_id) and is_integer(sequence) do
+          Map.update(acc, run_id, sequence, &max(&1, sequence))
+        else
+          acc
+        end
+      end)
+
+    child_sequences =
+      child_runs
+      |> Enum.reduce(%{}, fn child, acc ->
+        if is_integer(Map.get(child, :event_seq)) do
+          Map.put(acc, child.id, child.event_seq)
+        else
+          acc
+        end
+      end)
+
+    event_sequences
+    |> Map.merge(child_sequences, fn _run_id, left, right -> max(left, right) end)
+    |> maybe_put_sequence(root_run.id, Map.get(detail, :root_event_sequence))
+  end
+
+  defp maybe_put_sequence(sequences, run_id, sequence)
+       when is_binary(run_id) and is_integer(sequence),
+       do: Map.update(sequences, run_id, sequence, &max(&1, sequence))
+
+  defp maybe_put_sequence(sequences, _run_id, _sequence), do: sequences
+
+  defp run_event_refresh_opts do
+    [
+      subscribe_fun: &subscribe_run/1,
+      unsubscribe_fun: &unsubscribe_run/1,
+      list_events_fun: &list_run_stream_events/2,
+      refresh_key: :refresh_timer_ref,
+      refresh_message: :refresh_run,
+      coalesce_ms: @coalesce_refresh_ms
+    ]
   end
 
   defp patch_run_state(socket, updates) do
@@ -807,6 +857,17 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
+  defp retry_remaining?(%{status: status, failed_asset_attempts: failed})
+       when status in [:error, :partial] and failed > 0,
+       do: true
+
+  defp retry_remaining?(_summary), do: false
+
+  defp retry_remaining_label(%{failed_asset_attempts: 1}), do: "Retry 1 remaining asset"
+
+  defp retry_remaining_label(%{failed_asset_attempts: count}),
+    do: "Retry #{count} remaining assets"
+
   defp active_group?(summary), do: Map.get(summary, :active?, false)
 
   defp cancel_target(summary, root_run, child_runs, run_id) do
@@ -867,6 +928,23 @@ defmodule FavnView.RunDetailLive do
 
   defp cancel_error_label(reason), do: OperatorErrorLabels.run_cancel(reason)
 
+  defp retry_remaining_submitted_label(run_ids, asset_count) do
+    run_label = if(length(run_ids) == 1, do: "1 retry run", else: "#{length(run_ids)} retry runs")
+    asset_label = if(asset_count == 1, do: "1 asset", else: "#{asset_count} assets")
+    "Submitted #{run_label} for #{asset_label}"
+  end
+
+  defp retry_remaining_partial_label(run_ids, _reason) do
+    run_label =
+      if(length(run_ids) == 1, do: "1 retry run was", else: "#{length(run_ids)} retry runs were")
+
+    "Retry submission partially succeeded: #{run_label} submitted before a later retry failed"
+  end
+
+  defp retry_remaining_error_label(:no_remaining_work), do: "No remaining assets to retry"
+  defp retry_remaining_error_label({:run_not_retryable, _status}), do: "Run is not retryable"
+  defp retry_remaining_error_label(_reason), do: "Remaining assets could not be retried"
+
   defp duration_or_elapsed(%{duration_ms: duration_ms}) when is_integer(duration_ms),
     do: LogsViewModel.duration_ms_label(duration_ms)
 
@@ -894,33 +972,10 @@ defmodule FavnView.RunDetailLive do
   defp latest_event_summary([]), do: nil
   defp latest_event_summary(events), do: events |> List.last() |> Map.get(:summary)
 
-  defp latest_event_sequence(run, fallback \\ nil)
-
-  defp latest_event_sequence(%{root_event_sequence: sequence}, fallback)
-       when is_integer(sequence),
-       do: max(sequence, fallback || 0)
-
-  defp latest_event_sequence(%{events: events}, fallback) when is_list(events) do
-    events
-    |> Enum.map(&Map.get(&1, :sequence))
-    |> Enum.reject(&is_nil/1)
-    |> Enum.max(fn -> fallback end)
-  end
-
-  defp latest_event_sequence(_run, fallback), do: fallback
-
-  defp latest_sequence(events, fallback),
-    do: events |> Enum.map(&Map.get(&1, :sequence)) |> Enum.max(fn -> fallback end)
-
   defp legacy_step_status_label(_status, :cascade), do: "Cascade failed"
   defp legacy_step_status_label(status, _role) when status in [:pending, "pending"], do: "Waiting"
   defp legacy_step_status_label(status, _role) when status in [:ok, "ok"], do: "Succeeded"
   defp legacy_step_status_label(status, _role), do: status_label(status)
-
-  defp fresh_run_event?(%{sequence: sequence}, latest_sequence) when is_integer(sequence),
-    do: is_nil(latest_sequence) or sequence > latest_sequence
-
-  defp fresh_run_event?(_event, _latest_sequence), do: true
 
   defp window_identity(nil), do: "none"
 

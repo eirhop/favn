@@ -174,6 +174,60 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert [%{asset_ref: "MyApp.Assets.Gold.asset", id: "live-prefixed-step"}] = detail.steps
   end
 
+  test "terminal failed pipeline marks unstarted planned steps blocked instead of queued" do
+    refs = [
+      {MyApp.Assets.Raw, :succeeded},
+      {MyApp.Assets.Raw, :failed},
+      {MyApp.Assets.Raw, :not_started}
+    ]
+
+    node_keys = Enum.map(refs, &{&1, nil})
+    now = DateTime.utc_now()
+
+    results = [
+      NodeResult.new(%{
+        node_key: Enum.at(node_keys, 0),
+        ref: Enum.at(refs, 0),
+        stage: 0,
+        status: :ok,
+        started_at: now,
+        finished_at: now,
+        asset_step_id: "succeeded-step"
+      }),
+      NodeResult.new(%{
+        node_key: Enum.at(node_keys, 1),
+        ref: Enum.at(refs, 1),
+        stage: 0,
+        status: :error,
+        started_at: now,
+        finished_at: now,
+        error: %{type: :test_failure},
+        asset_step_id: "failed-step"
+      })
+    ]
+
+    failed_run =
+      run("failed_with_unstarted_steps", submit_kind: :pipeline)
+      |> Map.put(:asset_ref, List.first(refs))
+      |> Map.put(:target_refs, refs)
+      |> Map.put(:plan, flat_plan(refs))
+      |> RunState.transition(
+        status: :error,
+        error: %{type: :test_failure},
+        result: %{node_results: results}
+      )
+
+    assert :ok = Storage.put_run(failed_run)
+
+    assert {:ok, detail} = FavnOrchestrator.get_operator_run_detail(failed_run.id)
+
+    assert detail.summary.queued_asset_attempts == 0
+    assert detail.summary.failed_asset_attempts == 2
+
+    assert %{status: :blocked, queue_reason: :pipeline_stopped_after_failure} =
+             Enum.find(detail.asset_attempts, &(&1.asset_ref == "MyApp.Assets.Raw.not_started"))
+  end
+
   test "run detail marks post-root in-flight failures as cascade failures" do
     root_ref = {MyApp.Assets.Gold, :asset}
     cascade_ref = {MyApp.Assets.Silver, :asset}
@@ -477,7 +531,10 @@ defmodule FavnOrchestrator.RunReadModelTest do
     steps_by_ref = Map.new(detail.steps, &{&1.asset_ref, &1})
     assert steps_by_ref["MyApp.Assets.Gold.asset"].status == :error
     assert steps_by_ref["MyApp.Assets.Silver.asset"].status == :running
-    assert steps_by_ref["MyApp.Assets.Bronze.asset"].status == :pending
+    assert steps_by_ref["MyApp.Assets.Bronze.asset"].status == :blocked
+
+    assert steps_by_ref["MyApp.Assets.Bronze.asset"].queue_reason ==
+             :pipeline_stopped_after_failure
   end
 
   test "pending rows keep repeated asset refs for distinct planned nodes" do
@@ -1281,6 +1338,24 @@ defmodule FavnOrchestrator.RunReadModelTest do
       topo_order: refs,
       stages: Enum.map(refs, &[&1]),
       node_stages: Enum.map(node_keys, &[&1])
+    }
+  end
+
+  defp flat_plan(refs) do
+    node_keys = Enum.map(refs, &{&1, nil})
+
+    nodes =
+      refs
+      |> Enum.zip(node_keys)
+      |> Map.new(fn {ref, node_key} -> {node_key, plan_node(ref, node_key, nil, 0)} end)
+
+    %Favn.Plan{
+      target_refs: refs,
+      target_node_keys: node_keys,
+      nodes: nodes,
+      topo_order: refs,
+      stages: [refs],
+      node_stages: [node_keys]
     }
   end
 

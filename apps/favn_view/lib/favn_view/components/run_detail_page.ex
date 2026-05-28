@@ -58,6 +58,19 @@ defmodule FavnView.Components.RunDetailPage do
           <.icon name="hero-no-symbol" class="size-4" /> {@run[:cancel_label] || "Cancel run"}
         </button>
       </:compact_header_action>
+      <:compact_header_action :if={@run[:retry_remaining?]}>
+        <button
+          type="button"
+          class="btn btn-primary btn-soft btn-sm gap-2 rounded-box border-primary/30"
+          phx-click="retry_remaining"
+          phx-disable-with="Submitting..."
+          data-confirm="Retry remaining failed or not-started assets with the same run configuration?"
+          data-testid="retry-remaining-button"
+        >
+          <.icon name="hero-arrow-path" class="size-4" /> {@run[:retry_remaining_label] ||
+            "Retry remaining"}
+        </button>
+      </:compact_header_action>
 
       <NotFound.not_found_panel :if={!@run[:found?]} run={@run} />
       <.execution_group_page
@@ -141,6 +154,7 @@ defmodule FavnView.Components.RunDetailPage do
     |> Map.put_new(:failures, [])
     |> Map.put_new(:backfill_failures, [])
     |> Map.put_new(:backfill_failure_count, 0)
+    |> Map.put_new(:retry_remaining?, false)
   end
 
   defp default_timeline_state(%{active?: true}) do

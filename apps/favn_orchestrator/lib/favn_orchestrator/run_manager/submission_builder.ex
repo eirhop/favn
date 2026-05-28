@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
 
   alias Favn.Assets.Planner
   alias Favn.Manifest.Index
+  alias Favn.Plan
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
   alias Favn.Window.Anchor
@@ -263,7 +264,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     max_attempts = Keyword.get(opts, :max_attempts, source_run.max_attempts)
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, source_run.retry_backoff_ms)
     timeout_ms = Keyword.get(opts, :timeout_ms, source_run.timeout_ms)
-    {rerun_asset_ref, rerun_targets, rerun_dependencies} = replay_selection(source_run)
+    {rerun_asset_ref, rerun_targets, rerun_dependencies} = replay_selection(source_run, opts)
 
     with :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
@@ -285,7 +286,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              planning_index: index.planning_index,
              dependencies: rerun_dependencies,
              anchor_window: anchor_window
-           ) do
+           ),
+         {:ok, plan} <- maybe_filter_replay_plan(plan, Keyword.get(opts, :replay_node_keys)) do
       rerun_of_run_id = source_run.rerun_of_run_id || source_run.id
       parent_run_id = Keyword.get(opts, :parent_run_id, source_run.id)
       root_run_id = Keyword.get(opts, :root_run_id, source_run.root_run_id || source_run.id)
@@ -299,13 +301,13 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
         if pipeline_origin?(source_run) do
           Map.merge(metadata_with_source, %{
             replay_submit_kind: :pipeline,
-            replay_mode: :exact_replay,
+            replay_mode: Keyword.get(opts, :replay_mode, :exact_replay),
             pipeline_target_refs: rerun_targets,
             pipeline_dependencies: rerun_dependencies
           })
         else
           Map.merge(metadata_with_source, %{
-            replay_mode: :exact_replay,
+            replay_mode: Keyword.get(opts, :replay_mode, :exact_replay),
             asset_dependencies: rerun_dependencies
           })
         end
@@ -429,25 +431,107 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
      })}
   end
 
-  defp replay_selection(%RunState{} = source_run) do
+  defp replay_selection(%RunState{} = source_run, opts) do
     if pipeline_origin?(source_run) do
       replay_targets =
-        case Map.get(source_run.metadata, :pipeline_target_refs) do
-          targets when is_list(targets) and targets != [] -> targets
-          _other -> source_run.target_refs
+        case Keyword.get(opts, :target_refs) do
+          targets when is_list(targets) and targets != [] ->
+            targets
+
+          _other ->
+            source_run.metadata
+            |> metadata_value(:pipeline_target_refs)
+            |> case do
+              targets when is_list(targets) and targets != [] -> targets
+              _other -> source_run.target_refs
+            end
         end
 
       replay_asset_ref = List.first(replay_targets) || source_run.asset_ref
 
       replay_dependencies =
-        normalize_dependencies(metadata_value(source_run.metadata, :pipeline_dependencies))
+        case Keyword.fetch(opts, :dependencies) do
+          {:ok, value} ->
+            normalize_dependencies(value)
+
+          :error ->
+            normalize_dependencies(metadata_value(source_run.metadata, :pipeline_dependencies))
+        end
 
       {replay_asset_ref, replay_targets, replay_dependencies}
     else
+      replay_targets =
+        case Keyword.get(opts, :target_refs) do
+          targets when is_list(targets) and targets != [] -> targets
+          _other -> [source_run.asset_ref]
+        end
+
+      replay_asset_ref = List.first(replay_targets) || source_run.asset_ref
       replay_dependencies = normalize_asset_dependencies(source_run)
 
-      {source_run.asset_ref, [source_run.asset_ref], replay_dependencies}
+      {replay_asset_ref, replay_targets, replay_dependencies}
     end
+  end
+
+  defp maybe_filter_replay_plan(%Plan{} = plan, nil), do: {:ok, plan}
+
+  defp maybe_filter_replay_plan(%Plan{} = plan, node_keys) when is_list(node_keys) do
+    wanted = MapSet.new(node_keys)
+
+    nodes =
+      plan.nodes
+      |> Enum.filter(fn {node_key, _node} -> MapSet.member?(wanted, node_key) end)
+      |> Map.new()
+
+    if map_size(nodes) == 0 do
+      {:error, :empty_replay_plan}
+    else
+      node_stages =
+        plan.node_stages
+        |> Enum.map(fn stage -> Enum.filter(stage, &Map.has_key?(nodes, &1)) end)
+        |> Enum.reject(&(&1 == []))
+
+      stage_by_node_key =
+        node_stages
+        |> Enum.with_index()
+        |> Enum.flat_map(fn {stage, index} -> Enum.map(stage, &{&1, index}) end)
+        |> Map.new()
+
+      nodes =
+        Map.new(nodes, fn {node_key, node} ->
+          {node_key,
+           %{
+             node
+             | upstream: Enum.filter(Map.get(node, :upstream, []), &Map.has_key?(nodes, &1)),
+               downstream: Enum.filter(Map.get(node, :downstream, []), &Map.has_key?(nodes, &1)),
+               stage: Map.fetch!(stage_by_node_key, node_key)
+           }}
+        end)
+
+      target_node_keys = Enum.filter(plan.target_node_keys, &Map.has_key?(nodes, &1))
+
+      target_node_keys =
+        if target_node_keys == [], do: List.flatten(node_stages), else: target_node_keys
+
+      {:ok,
+       %{
+         plan
+         | target_node_keys: target_node_keys,
+           target_refs: target_refs_for_node_keys(nodes, target_node_keys),
+           nodes: nodes,
+           topo_order: target_refs_for_node_keys(nodes, List.flatten(node_stages)),
+           stages: Enum.map(node_stages, &target_refs_for_node_keys(nodes, &1)),
+           node_stages: node_stages
+       }}
+    end
+  end
+
+  defp maybe_filter_replay_plan(%Plan{}, _node_keys), do: {:error, :invalid_replay_node_keys}
+
+  defp target_refs_for_node_keys(nodes, node_keys) do
+    node_keys
+    |> Enum.map(&Map.fetch!(nodes, &1).ref)
+    |> Enum.uniq()
   end
 
   defp normalize_asset_dependencies(%RunState{} = source_run) do
