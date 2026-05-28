@@ -3,6 +3,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
+  alias Favn.Asset.RelationInput
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
@@ -51,6 +52,47 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert result.status == :ok
     assert_received {:connect_opts, :runner_sql_runtime, opts}
     assert Keyword.fetch!(opts, :required_catalogs) == ["raw"]
+  end
+
+  test "manifest execution scopes SQL sessions to declared relation input catalogs" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+
+    relation =
+      RelationRef.new!(%{
+        connection: :runner_sql_runtime,
+        catalog: "int",
+        schema: "sales",
+        name: "customers_normalized"
+      })
+
+    raw_relation =
+      RelationRef.new!(%{
+        connection: :runner_sql_runtime,
+        catalog: "raw",
+        schema: "crm",
+        name: "customers"
+      })
+
+    version =
+      register_sql_manifest!(ref, relation, [
+        %RelationInput{
+          kind: :plain_relation,
+          relation_ref: raw_relation,
+          raw: "raw.crm.customers"
+        }
+      ])
+
+    work = %RunnerWork{
+      run_id: "run_sql_relation_input_catalog_scope",
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      asset_ref: ref
+    }
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :ok
+    assert_received {:connect_opts, :runner_sql_runtime, opts}
+    assert Keyword.fetch!(opts, :required_catalogs) == ["int", "raw"]
   end
 
   test "executes manifest-pinned sql asset through declared runner SQL runtime" do
@@ -283,7 +325,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version
   end
 
-  defp register_sql_manifest!(ref, relation \\ nil) do
+  defp register_sql_manifest!(ref, relation \\ nil, relation_inputs \\ []) do
     relation =
       relation || RelationRef.new!(%{connection: :runner_sql_runtime, name: "manifest_sql_asset"})
 
@@ -309,6 +351,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
             execution: %{entrypoint: :asset, arity: 1},
             relation: relation,
             materialization: :table,
+            relation_inputs: relation_inputs,
             sql_execution: %SQLExecution{
               sql: "SELECT 1 AS id",
               template: template,

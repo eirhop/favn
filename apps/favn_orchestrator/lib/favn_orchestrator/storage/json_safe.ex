@@ -65,11 +65,24 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     }
   end
 
-  def error(%{__exception__: true} = exception) do
+  def error(%{__exception__: true, __struct__: module} = exception) do
     %{
       "kind" => "error",
-      "type" => exception.__struct__ |> Atom.to_string(),
+      "type" => Atom.to_string(module),
       "message" => safe_error_message(exception_message(exception) || exception),
+      "reason" => safe_error_reason(exception),
+      "redacted" => true,
+      "truncated" => false
+    }
+  end
+
+  def error(%{__exception__: true} = exception) do
+    message = Map.get(exception, :message) || Map.get(exception, "message") || exception
+
+    %{
+      "kind" => "error",
+      "type" => error_type(exception),
+      "message" => safe_error_message(message),
       "reason" => safe_error_reason(exception),
       "redacted" => true,
       "truncated" => false

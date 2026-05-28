@@ -188,7 +188,7 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp materialize_render(%Definition{} = definition, %Render{} = rendered, opts) do
-    with_session(rendered.connection, opts, required_catalogs(rendered), fn session ->
+    with_session(rendered.connection, opts, required_catalogs(rendered, definition), fn session ->
       with {:ok, write_plan} <- MaterializationPlanner.build(session, definition, rendered),
            {:ok, result} <-
              SQLClient.materialize(
@@ -310,6 +310,24 @@ defmodule Favn.SQLAsset.Runtime do
 
     if catalogs == [], do: nil, else: catalogs
   end
+
+  defp required_catalogs(%Render{} = rendered, %Definition{} = definition) do
+    catalogs =
+      [rendered.relation | definition_relation_inputs(definition)]
+      |> Enum.concat(resolved_relations(rendered.resolved_asset_refs))
+      |> Enum.flat_map(&relation_catalog/1)
+      |> Enum.uniq()
+
+    if catalogs == [], do: nil, else: catalogs
+  end
+
+  defp definition_relation_inputs(%Definition{relation_inputs: inputs}) when is_list(inputs) do
+    Enum.map(inputs, fn input ->
+      Map.get(input, :relation_ref) || Map.get(input, "relation_ref")
+    end)
+  end
+
+  defp definition_relation_inputs(%Definition{}), do: []
 
   defp resolved_relations(refs) when is_list(refs) do
     Enum.map(refs, fn ref -> Map.get(ref, :relation) || Map.get(ref, "relation") end)
