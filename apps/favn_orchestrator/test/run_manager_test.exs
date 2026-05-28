@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.RunManagerTest do
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
   alias FavnOrchestrator
+  alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -1754,6 +1755,65 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert Map.keys(retry_run.plan.nodes) == [{{MyApp.Assets.Silver, :asset}, nil}]
   end
 
+  test "retry remaining preflights every child before admitting retry runs" do
+    version = manifest_version("mv_retry_remaining_preflight")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    parent =
+      RunState.new(
+        id: "retry_remaining_parent_preflight",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Assets.Raw, :asset},
+        target_refs: [{MyApp.Assets.Raw, :asset}],
+        submit_kind: :backfill_pipeline
+      )
+      |> RunState.transition(status: :error, error: %{type: :backfill_failed})
+
+    valid_child =
+      retry_source_run(
+        "retry_remaining_preflight_valid_child",
+        {MyApp.Assets.Raw, :asset},
+        version.manifest_version_id,
+        version.content_hash
+      )
+
+    invalid_child =
+      retry_source_run(
+        "retry_remaining_preflight_invalid_child",
+        {MyApp.Assets.Silver, :asset},
+        "mv_retry_remaining_missing_manifest",
+        "missing_hash"
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(valid_child)
+    assert :ok = Storage.put_run(invalid_child)
+
+    assert :ok =
+             Storage.put_backfill_windows([
+               retry_backfill_window(
+                 parent.id,
+                 valid_child.id,
+                 "2026-01-01",
+                 version.manifest_version_id
+               ),
+               retry_backfill_window(
+                 parent.id,
+                 invalid_child.id,
+                 "2026-01-02",
+                 version.manifest_version_id
+               )
+             ])
+
+    assert {:error, _reason} = FavnOrchestrator.retry_remaining(parent.id)
+
+    assert {:ok, runs} = Storage.list_runs()
+
+    assert Enum.sort(Enum.map(runs, & &1.id)) ==
+             Enum.sort([parent.id, valid_child.id, invalid_child.id])
+  end
+
   test "pipeline stage await timeout keeps original sibling execution context" do
     version = manifest_version("mv_pipeline_stage_await_timeout")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -2990,6 +3050,84 @@ defmodule FavnOrchestrator.RunManagerTest do
       :pending -> base
       :running -> RunState.transition(base, status: :running)
     end
+  end
+
+  defp retry_source_run(run_id, ref, manifest_version_id, manifest_content_hash) do
+    node_key = {ref, nil}
+    now = DateTime.utc_now()
+
+    RunState.new(
+      id: run_id,
+      manifest_version_id: manifest_version_id,
+      manifest_content_hash: manifest_content_hash,
+      asset_ref: ref,
+      target_refs: [ref],
+      plan: single_node_plan(ref),
+      submit_kind: :pipeline,
+      metadata: %{pipeline_target_refs: [ref], pipeline_dependencies: :none}
+    )
+    |> RunState.transition(
+      status: :error,
+      error: %{type: :test_failure},
+      result: %{
+        node_results: [
+          Favn.Run.NodeResult.new(%{
+            node_key: node_key,
+            ref: ref,
+            stage: 0,
+            status: :error,
+            started_at: now,
+            finished_at: now,
+            error: %{type: :test_failure}
+          })
+        ]
+      }
+    )
+  end
+
+  defp retry_backfill_window(backfill_run_id, latest_attempt_run_id, day, manifest_version_id) do
+    start_at = DateTime.from_iso8601("#{day}T00:00:00Z") |> elem(1)
+    end_at = DateTime.add(start_at, 86_400, :second)
+
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: backfill_run_id,
+        pipeline_module: MyApp.Pipelines.Daily,
+        manifest_version_id: manifest_version_id,
+        window_kind: :day,
+        window_start_at: start_at,
+        window_end_at: end_at,
+        timezone: "Etc/UTC",
+        window_key: day,
+        status: :error,
+        latest_attempt_run_id: latest_attempt_run_id,
+        updated_at: DateTime.utc_now()
+      })
+
+    window
+  end
+
+  defp single_node_plan(ref) do
+    node_key = {ref, nil}
+
+    %Favn.Plan{
+      target_refs: [ref],
+      target_node_keys: [node_key],
+      nodes: %{
+        node_key => %{
+          ref: ref,
+          node_key: node_key,
+          window: nil,
+          upstream: [],
+          downstream: [],
+          stage: 0,
+          action: :run
+        }
+      },
+      topo_order: [ref],
+      stages: [[ref]],
+      node_stages: [[node_key]]
+    }
   end
 
   defp manifest_version(manifest_version_id, opts \\ []) do

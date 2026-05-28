@@ -1680,18 +1680,35 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp missing_step(%RunState{status: status} = run, candidate)
        when status in [:error, :partial, :cancelled, :timed_out] do
+    {reason, explanation} = stopped_before_start_reason(status)
+
     run.id
     |> waiting_step(candidate)
     |> Map.merge(%{
       status: :blocked,
-      queue_reason: :pipeline_stopped_after_failure,
-      error: %{type: :pipeline_stopped_after_failure, status: status},
-      explanation: "Asset was not started because the pipeline stopped after an earlier failure.",
+      queue_reason: reason,
+      error: %{type: reason, status: status},
+      explanation: explanation,
       failure_role: :cascade
     })
   end
 
   defp missing_step(%RunState{} = run, candidate), do: waiting_step(run.id, candidate)
+
+  defp stopped_before_start_reason(status) when status in [:error, :partial] do
+    {:pipeline_stopped_after_failure,
+     "Asset was not started because the pipeline stopped after an earlier failure."}
+  end
+
+  defp stopped_before_start_reason(:cancelled) do
+    {:pipeline_stopped_after_cancellation,
+     "Asset was not started because the pipeline was cancelled before this step began."}
+  end
+
+  defp stopped_before_start_reason(:timed_out) do
+    {:pipeline_stopped_after_timeout,
+     "Asset was not started because the pipeline timed out before this step began."}
+  end
 
   defp unique_asset_refs(persisted_steps, event_steps) do
     persisted_steps

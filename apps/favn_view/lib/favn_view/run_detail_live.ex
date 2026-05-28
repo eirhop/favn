@@ -176,6 +176,12 @@ defmodule FavnView.RunDetailLive do
              |> put_flash(:info, retry_remaining_submitted_label(run_ids, asset_count))
              |> refresh_run()}
 
+          {:partial, %{run_ids: run_ids, reason: reason}} ->
+            {:noreply,
+             socket
+             |> put_flash(:error, retry_remaining_partial_label(run_ids, reason))
+             |> refresh_run()}
+
           {:error, reason} ->
             {:noreply, put_flash(socket, :error, retry_remaining_error_label(reason))}
         end
@@ -926,6 +932,13 @@ defmodule FavnView.RunDetailLive do
     run_label = if(length(run_ids) == 1, do: "1 retry run", else: "#{length(run_ids)} retry runs")
     asset_label = if(asset_count == 1, do: "1 asset", else: "#{asset_count} assets")
     "Submitted #{run_label} for #{asset_label}"
+  end
+
+  defp retry_remaining_partial_label(run_ids, _reason) do
+    run_label =
+      if(length(run_ids) == 1, do: "1 retry run was", else: "#{length(run_ids)} retry runs were")
+
+    "Retry submission partially succeeded: #{run_label} submitted before a later retry failed"
   end
 
   defp retry_remaining_error_label(:no_remaining_work), do: "No remaining assets to retry"

@@ -1462,7 +1462,8 @@ defmodule FavnOrchestrator do
   @doc """
   Submits retry runs for failed or not-started assets, preserving source run config.
   """
-  @spec retry_remaining(run_id(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec retry_remaining(run_id(), keyword()) ::
+          {:ok, map()} | {:partial, map()} | {:error, term()}
   def retry_remaining(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
     with {:ok, plan} <- RunRetryPlanner.remaining(run_id) do
       submit_remaining_retry_plan(plan, opts)
@@ -1473,7 +1474,7 @@ defmodule FavnOrchestrator do
   Submits remaining retry work on behalf of an authenticated operator.
   """
   @spec retry_operator_run_remaining(operator_actor_context(), run_id()) ::
-          {:ok, map()} | {:error, term()}
+          {:ok, map()} | {:partial, map()} | {:error, term()}
   def retry_operator_run_remaining(actor_context, run_id)
       when is_map(actor_context) and is_binary(run_id) do
     with :ok <- require_operator_context(actor_context),
@@ -1509,13 +1510,47 @@ defmodule FavnOrchestrator do
   end
 
   defp submit_remaining_retry_plan(%{children: children, asset_count: asset_count} = plan, opts) do
+    with {:ok, submissions} <- prepare_remaining_retry_submissions(plan, children, opts) do
+      admit_remaining_retry_submissions(plan, submissions, asset_count)
+    end
+  end
+
+  defp prepare_remaining_retry_submissions(plan, children, opts) do
     children
     |> Enum.reduce_while({:ok, []}, fn child, {:ok, acc} ->
       submit_opts = remaining_retry_opts(plan, child, opts)
 
-      case rerun(child.source_run_id, submit_opts) do
-        {:ok, run_id} -> {:cont, {:ok, [run_id | acc]}}
+      case RunManager.prepare_rerun(child.source_run_id, submit_opts) do
+        {:ok, submission} -> {:cont, {:ok, [submission | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, submissions} -> {:ok, Enum.reverse(submissions)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp admit_remaining_retry_submissions(plan, submissions, asset_count) do
+    submissions
+    |> Enum.reduce_while({:ok, []}, fn submission, {:ok, acc} ->
+      case RunManager.admit_prepared_submission(submission) do
+        {:ok, run_id} ->
+          {:cont, {:ok, [run_id | acc]}}
+
+        {:error, reason} when acc == [] ->
+          {:halt, {:error, reason}}
+
+        {:error, reason} ->
+          {:halt,
+           {:partial,
+            %{
+              source_run_id: plan.source_run_id,
+              run_ids: Enum.reverse(acc),
+              failed_run_id: submission.run_state.id,
+              reason: reason,
+              asset_count: asset_count
+            }}}
       end
     end)
     |> case do
@@ -1529,6 +1564,9 @@ defmodule FavnOrchestrator do
 
       {:error, reason} ->
         {:error, reason}
+
+      {:partial, result} ->
+        {:partial, result}
     end
   end
 

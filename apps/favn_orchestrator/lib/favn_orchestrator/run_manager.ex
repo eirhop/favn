@@ -51,6 +51,16 @@ defmodule FavnOrchestrator.RunManager do
     prepare_and_admit(:rerun, fn -> SubmissionBuilder.rerun(source_run_id, opts) end)
   end
 
+  @spec prepare_rerun(String.t(), keyword()) :: {:ok, Submission.t()} | {:error, term()}
+  def prepare_rerun(source_run_id, opts \\ []) when is_binary(source_run_id) and is_list(opts) do
+    SubmissionBuilder.rerun(source_run_id, opts)
+  end
+
+  @spec admit_prepared_submission(Submission.t()) :: {:ok, String.t()} | {:error, term()}
+  def admit_prepared_submission(%Submission{} = submission) do
+    call_manager({:admit_submission, submission})
+  end
+
   @spec cancel_run(String.t(), map()) :: :ok | {:error, term()}
   def cancel_run(run_id, reason \\ %{}) when is_binary(run_id) and is_map(reason) do
     call_manager({:cancel_run, run_id, reason})

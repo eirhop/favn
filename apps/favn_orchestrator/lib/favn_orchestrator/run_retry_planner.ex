@@ -43,7 +43,8 @@ defmodule FavnOrchestrator.RunRetryPlanner do
 
   defp remaining_for_run(%RunState{submit_kind: kind} = run)
        when kind in [:backfill_asset, :backfill_pipeline] do
-    with {:ok, windows} <- list_all_backfill_windows(run.id),
+    with :ok <- ensure_retryable_run(run),
+         {:ok, windows} <- list_retryable_backfill_windows(run.id),
          {:ok, children} <- backfill_children(windows) do
       retry_plan(run.id, children)
     end
@@ -58,7 +59,6 @@ defmodule FavnOrchestrator.RunRetryPlanner do
 
   defp backfill_children(windows) do
     windows
-    |> Enum.filter(&(&1.status in @terminal_retryable_statuses))
     |> Enum.reduce_while({:ok, []}, fn window, {:ok, acc} ->
       case window_retry_child(window) do
         {:ok, nil} -> {:cont, {:ok, acc}}
@@ -125,8 +125,15 @@ defmodule FavnOrchestrator.RunRetryPlanner do
 
   defp remaining_node_keys(%RunState{plan: %Plan{} = plan, result: result}) do
     planned = planned_node_keys(plan)
-    successful_node_keys = successful_node_keys(result)
-    successful_refs = successful_refs(result)
+    node_results = result_entries(result, :node_results)
+    successful_node_keys = successful_node_keys(node_results)
+
+    successful_refs =
+      if node_results == [] do
+        successful_refs(result)
+      else
+        MapSet.new()
+      end
 
     remaining =
       Enum.reject(planned, fn node_key ->
@@ -147,16 +154,15 @@ defmodule FavnOrchestrator.RunRetryPlanner do
 
   defp planned_node_keys(%Plan{nodes: nodes}), do: Map.keys(nodes)
 
-  defp successful_node_keys(result) when is_map(result) do
-    result
-    |> result_entries(:node_results)
+  defp successful_node_keys(node_results) when is_list(node_results) do
+    node_results
     |> Enum.filter(&(result_status(&1) in @successful_statuses))
     |> Enum.map(&result_node_key/1)
     |> Enum.reject(&is_nil/1)
     |> MapSet.new()
   end
 
-  defp successful_node_keys(_result), do: MapSet.new()
+  defp successful_node_keys(_node_results), do: MapSet.new()
 
   defp successful_refs(result) when is_map(result) do
     result
@@ -235,14 +241,29 @@ defmodule FavnOrchestrator.RunRetryPlanner do
     )
   end
 
-  defp list_all_backfill_windows(backfill_run_id, cursor \\ nil, acc \\ []) do
+  defp list_retryable_backfill_windows(backfill_run_id) do
+    @terminal_retryable_statuses
+    |> Enum.reduce_while({:ok, []}, fn status, {:ok, acc} ->
+      case list_backfill_windows_by_status(backfill_run_id, status) do
+        {:ok, windows} -> {:cont, {:ok, acc ++ windows}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp list_backfill_windows_by_status(backfill_run_id, status, cursor \\ nil, acc \\ []) do
     case Storage.scan_backfill_windows(
-           [backfill_run_id: backfill_run_id],
+           [backfill_run_id: backfill_run_id, status: status],
            [{:limit, 500}, {:after, cursor}]
          ) do
       {:ok, %{items: items, has_more?: true, next_cursor: next_cursor}}
       when is_map(next_cursor) ->
-        list_all_backfill_windows(backfill_run_id, next_cursor, prepend_page_items(items, acc))
+        list_backfill_windows_by_status(
+          backfill_run_id,
+          status,
+          next_cursor,
+          prepend_page_items(items, acc)
+        )
 
       {:ok, %{items: items}} ->
         {:ok, Enum.reverse(prepend_page_items(items, acc))}
