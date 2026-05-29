@@ -67,6 +67,22 @@ defmodule FavnStorageSqlite.BackupTest do
     Enum.each([source, wrong, corrupt], &rm_sqlite_files/1)
   end
 
+  test "backup rejects missing source without creating a database file" do
+    source = temp_path("backup-missing-source.db")
+    destination = temp_path("backup-missing-source-destination.db")
+    rm_sqlite_files(source)
+    rm_sqlite_files(destination)
+
+    refute File.exists?(source)
+
+    assert {:error, error} = Maintenance.backup([database: source], to: destination)
+
+    assert error.category == :database_unavailable
+    assert error.reason == :source_database_missing
+    refute File.exists?(source)
+    refute File.exists?(destination)
+  end
+
   test "backup rejects unsafe destinations" do
     source = ready_database!("backup-unsafe-source.db")
     destination = temp_path("backup-existing.db")
@@ -79,6 +95,13 @@ defmodule FavnStorageSqlite.BackupTest do
     assert {:error, exists_error} = Maintenance.backup([database: source], to: destination)
     assert exists_error.category == :backup_invalid
     assert exists_error.reason == :backup_destination_exists
+
+    assert {:error, overwrite_error} =
+             Maintenance.backup([database: source], to: destination, overwrite?: true)
+
+    assert overwrite_error.category == :backup_invalid
+    assert overwrite_error.reason == :backup_overwrite_not_supported
+    assert File.read!(destination) == "existing"
 
     rm_sqlite_files(source)
     rm_sqlite_files(destination)

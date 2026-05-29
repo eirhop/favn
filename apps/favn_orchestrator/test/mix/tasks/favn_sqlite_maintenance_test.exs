@@ -113,6 +113,12 @@ defmodule Mix.Tasks.Favn.Sqlite.MaintenanceTest do
     assert opts[:verify?] == false
   end
 
+  test "backup rejects unsupported overwrite flag" do
+    assert_raise Mix.Error, ~r/invalid sqlite maintenance command/, fn ->
+      Task.run(["backup", "--to", "/secret/backup.db", "--overwrite"])
+    end
+  end
+
   test "verify-backup parses path and output remains redacted" do
     secret = "/tmp/secret/favn-control-plane.db"
 
@@ -132,6 +138,8 @@ defmodule Mix.Tasks.Favn.Sqlite.MaintenanceTest do
       |> File.read!()
 
     assert source =~ "FavnOrchestrator.Operator.Maintenance"
+    assert source =~ "FavnOrchestrator.Operator.MaintenanceBootstrap"
+    refute source =~ "app.start"
     refute source =~ "FavnStorageSqlite.Repo"
     refute source =~ "FavnStorageSqlite.Migrations"
     refute source =~ "FavnStorageSqlite.Supervisor"

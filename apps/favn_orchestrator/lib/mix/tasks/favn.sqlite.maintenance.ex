@@ -15,15 +15,15 @@ defmodule Mix.Tasks.Favn.Sqlite.Maintenance do
   use Mix.Task
 
   alias FavnOrchestrator.Operator.Maintenance
+  alias FavnOrchestrator.Operator.MaintenanceBootstrap
   alias FavnOrchestrator.Operator.Maintenance.MaintenanceError
 
   @shortdoc "Runs SQLite control-plane maintenance"
 
   @impl true
   def run(args) do
-    Mix.Task.run("app.start")
-
     with {:ok, command, opts} <- parse_args(args),
+         :ok <- MaintenanceBootstrap.bootstrap(),
          {:ok, result} <- run_command(command, opts) do
       print_result(result)
     else
@@ -54,16 +54,13 @@ defmodule Mix.Tasks.Favn.Sqlite.Maintenance do
 
   defp parse_args(["backup" | argv]) do
     with {:ok, opts} <-
-           parse_options(argv,
-             strict: [to: :string, verify: :boolean, no_verify: :boolean, overwrite: :boolean]
-           ),
+           parse_options(argv, strict: [to: :string, verify: :boolean, no_verify: :boolean]),
          {:ok, destination} <- fetch_required(opts, :to),
          :ok <- reject_both(opts, :verify, :no_verify) do
       {:ok, :backup,
        [
          to: destination,
-         verify?: Keyword.get(opts, :verify, true),
-         overwrite?: Keyword.get(opts, :overwrite, false)
+         verify?: Keyword.get(opts, :verify, true)
        ]}
     end
   end

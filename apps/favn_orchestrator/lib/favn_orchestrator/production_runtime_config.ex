@@ -100,6 +100,37 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   end
 
   @doc """
+  Applies only the production storage env config when explicitly configured.
+
+  SQLite maintenance commands use this path so they can run before the full
+  orchestrator supervision tree is able to start, for example before an explicit
+  manual-mode schema migration.
+  """
+  @spec apply_storage_from_env_if_configured(map()) :: :ok | {:error, term()}
+  def apply_storage_from_env_if_configured(env \\ System.get_env()) when is_map(env) do
+    if Map.has_key?(env, "FAVN_STORAGE") do
+      apply_storage_from_env(env)
+    else
+      :ok
+    end
+  end
+
+  @doc """
+  Validates and applies only the production storage env config.
+  """
+  @spec apply_storage_from_env(map()) :: :ok | {:error, term()}
+  def apply_storage_from_env(env \\ System.get_env()) when is_map(env) do
+    with {:ok, :sqlite} <- storage(env),
+         {:ok, sqlite} <- sqlite(env) do
+      Application.put_env(:favn_orchestrator, :storage_adapter, @sqlite_adapter)
+      Application.put_env(:favn_orchestrator, :storage_adapter_opts, sqlite)
+      :ok
+    else
+      {:error, reason} -> {:error, %{status: :invalid, error: redact(reason)}}
+    end
+  end
+
+  @doc """
   Validates production runtime env values without mutating application env.
   """
   @spec validate(map()) :: {:ok, config()} | {:error, map()}

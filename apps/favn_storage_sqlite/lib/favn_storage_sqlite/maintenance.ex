@@ -28,9 +28,9 @@ defmodule FavnStorageSqlite.Maintenance do
   @spec migrate(keyword(), keyword()) :: result()
   def migrate(adapter_opts, command_opts) when is_list(adapter_opts) and is_list(command_opts) do
     started = System.monotonic_time()
-    dry_run? = Keyword.get(command_opts, :dry_run?, not Keyword.get(command_opts, :apply?, false))
 
-    with :ok <- validate_source(adapter_opts),
+    with {:ok, dry_run?} <- migration_mode(command_opts),
+         :ok <- validate_source(adapter_opts),
          {:ok, result} <-
            with_migration_repo(adapter_opts, fn repo -> migrate_repo(repo, dry_run?) end) do
       {:ok, Map.merge(result, %{adapter: :sqlite, duration_ms: duration_ms(started)})}
@@ -47,8 +47,8 @@ defmodule FavnStorageSqlite.Maintenance do
     verify? = Keyword.get(command_opts, :verify?, true)
 
     with {:ok, destination} <- fetch_path(command_opts, :to, :backup_destination_required),
-         :ok <- validate_source(adapter_opts),
          {:ok, source} <- fetch_path(adapter_opts, :database, :sqlite_database_required),
+         :ok <- validate_existing_source(source, adapter_opts),
          :ok <- validate_backup_destination(source, destination, adapter_opts, command_opts),
          {:ok, :ready} <- ensure_ready_source(adapter_opts),
          {:ok, _backup} <- with_repo(adapter_opts, &create_backup(&1, destination)),
@@ -156,6 +156,17 @@ defmodule FavnStorageSqlite.Maintenance do
 
   defp migration_allowed(status), do: {:error, {:migration_not_allowed, status}}
 
+  defp migration_mode(command_opts) do
+    apply? = Keyword.get(command_opts, :apply?, false)
+    dry_run? = Keyword.get(command_opts, :dry_run?, not apply?)
+
+    if apply? and dry_run? do
+      {:error, :ambiguous_migration_options}
+    else
+      {:ok, dry_run?}
+    end
+  end
+
   defp ensure_ready_schema(%{status: :ready}), do: :ok
 
   defp ensure_ready_schema(%{status: status}),
@@ -213,6 +224,21 @@ defmodule FavnStorageSqlite.Maintenance do
 
   defp validate_source(adapter_opts), do: Diagnostics.validate_database_path(adapter_opts)
 
+  defp validate_existing_source(source, adapter_opts) do
+    with :ok <-
+           validate_absolute_path(
+             source,
+             Keyword.get(adapter_opts, :require_absolute_path, false)
+           ) do
+      case File.stat(source) do
+        {:ok, %{type: :regular}} -> :ok
+        {:ok, stat} -> {:error, {:source_database_not_regular_file, stat.type}}
+        {:error, :enoent} -> {:error, :source_database_missing}
+        {:error, reason} -> {:error, {:source_database_stat_failed, reason}}
+      end
+    end
+  end
+
   defp validate_backup_destination(source, destination, adapter_opts, command_opts) do
     with :ok <-
            validate_absolute_path(
@@ -222,8 +248,16 @@ defmodule FavnStorageSqlite.Maintenance do
          :ok <- validate_not_source(destination, source),
          :ok <- validate_destination_parent(destination),
          :ok <- validate_destination_parent_writable(destination),
-         :ok <-
-           validate_destination_target(destination, Keyword.get(command_opts, :overwrite?, false)) do
+         :ok <- reject_unsupported_backup_options(command_opts),
+         :ok <- validate_destination_target(destination) do
+      :ok
+    end
+  end
+
+  defp reject_unsupported_backup_options(command_opts) do
+    if Keyword.get(command_opts, :overwrite?, false) do
+      {:error, :backup_overwrite_not_supported}
+    else
       :ok
     end
   end
@@ -275,9 +309,8 @@ defmodule FavnStorageSqlite.Maintenance do
     end
   end
 
-  defp validate_destination_target(destination, overwrite?) do
+  defp validate_destination_target(destination) do
     case File.stat(destination) do
-      {:ok, %{type: :regular}} when overwrite? -> File.rm(destination)
       {:ok, %{type: :regular}} -> {:error, :backup_destination_exists}
       {:ok, stat} -> {:error, {:backup_destination_not_regular_file, stat.type}}
       {:error, :enoent} -> :ok
@@ -399,7 +432,8 @@ defmodule FavnStorageSqlite.Maintenance do
        when reason in [
               :sqlite_database_required,
               :backup_destination_required,
-              :backup_path_required
+              :backup_path_required,
+              :ambiguous_migration_options
             ],
        do: :invalid_configuration
 
@@ -407,11 +441,13 @@ defmodule FavnStorageSqlite.Maintenance do
        when reason in [
               :backup_path_not_absolute,
               :backup_same_as_source,
-              :backup_destination_exists
+              :backup_destination_exists,
+              :backup_overwrite_not_supported
             ],
        do: :backup_invalid
 
   defp error_category(_operation, :backup_missing), do: :filesystem_error
+  defp error_category(:backup, :source_database_missing), do: :database_unavailable
   defp error_category(:migrate, {:migration_not_allowed, _status}), do: :migration_not_allowed
   defp error_category(:migrate, {:migration_failed, _reason}), do: :migration_failed
   defp error_category(:migrate, {:migration_failed_final_schema, _status}), do: :migration_failed
@@ -433,6 +469,8 @@ defmodule FavnStorageSqlite.Maintenance do
 
   defp error_category(_operation, {reason, _detail})
        when reason in [
+              :source_database_not_regular_file,
+              :source_database_stat_failed,
               :backup_parent_not_directory,
               :backup_parent_missing,
               :backup_parent_not_writable,

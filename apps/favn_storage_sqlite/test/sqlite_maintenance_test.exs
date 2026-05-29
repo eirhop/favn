@@ -6,11 +6,24 @@ defmodule FavnStorageSqlite.MaintenanceTest do
   alias FavnStorageSqlite.Migrations
   alias FavnStorageSqlite.Migrations.CreateFoundation
   alias FavnStorageSqlite.Repo
+  alias FavnStorageSqlite.Supervisor, as: SQLiteSupervisor
+  alias Mix.Tasks.Favn.Sqlite.Maintenance, as: MaintenanceTask
 
   setup do
     maybe_stop_process(Repo)
 
-    on_exit(fn -> maybe_stop_process(Repo) end)
+    previous_shell = Mix.shell()
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
+    previous_dynamic = Application.get_env(:favn_orchestrator, :runtime_config_dynamic_env?)
+
+    on_exit(fn ->
+      Mix.shell(previous_shell)
+      maybe_stop_process(Repo)
+      restore_env(:storage_adapter, previous_adapter)
+      restore_env(:storage_adapter_opts, previous_opts)
+      restore_env(:runtime_config_dynamic_env?, previous_dynamic)
+    end)
 
     :ok
   end
@@ -93,6 +106,53 @@ defmodule FavnStorageSqlite.MaintenanceTest do
     rm_sqlite_files(db_path)
   end
 
+  test "migration rejects ambiguous direct API options" do
+    db_path = temp_path("migrate-ambiguous.db")
+
+    assert {:error, error} =
+             Maintenance.migrate([database: db_path], apply?: true, dry_run?: true)
+
+    assert error.category == :invalid_configuration
+    assert error.reason == :ambiguous_migration_options
+    rm_sqlite_files(db_path)
+  end
+
+  test "maintenance task migrates when normal manual startup would reject" do
+    db_path = temp_path("task-migrate-manual-upgrade.db")
+    start_repo!(db_path)
+    Ecto.Migrator.run(Repo, [{20_260_415_000_000, CreateFoundation}], :up, all: true)
+    maybe_stop_process(Repo)
+
+    Process.flag(:trap_exit, true)
+
+    assert {:error, {%RuntimeError{message: message}, _stack}} =
+             SQLiteSupervisor.start_link(database: db_path, migration_mode: :manual, pool_size: 1)
+
+    assert message =~ "schema is not ready"
+    assert message =~ "upgrade_required"
+
+    Mix.shell(Mix.Shell.Process)
+    Mix.Task.reenable("favn.sqlite.maintenance")
+    Application.put_env(:favn_orchestrator, :runtime_config_dynamic_env?, true)
+    Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.SQLite)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+      database: db_path,
+      migration_mode: :manual,
+      pool_size: 1
+    )
+
+    MaintenanceTask.run(["migrate", "--apply"])
+
+    assert_receive {:mix_shell, :info, ["operation=migrate"]}
+    assert_receive {:mix_shell, :info, ["final_schema_status=ready"]}
+
+    start_repo!(db_path)
+    assert Migrations.schema_ready?(Repo)
+
+    rm_sqlite_files(db_path)
+  end
+
   test "migration rejects newer, non-Favn, inconsistent, and invalid databases" do
     newer = ready_database!("migrate-newer.db")
     assert {:ok, _} = SQL.query(Repo, "INSERT INTO schema_migrations (version) VALUES (999)", [])
@@ -170,4 +230,7 @@ defmodule FavnStorageSqlite.MaintenanceTest do
       GenServer.stop(pid, :normal, 5_000)
     end
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
+  defp restore_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)
 end

@@ -414,7 +414,8 @@ Backup and verification limitations:
 
 - The backup destination parent must already exist and be writable.
 - The destination must not be the active source database.
-- Existing backup files are rejected unless an explicit overwrite option is used.
+- Existing backup files are rejected. Choose a new destination path for each
+  backup; overwrite is intentionally not supported by the Favn-owned command.
 - Verification checks the backup file exists, is a regular file, is not the
   active source database, passes SQLite `quick_check`, and has a Favn schema ready
   for the current release.
