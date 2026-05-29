@@ -14,7 +14,7 @@ cancellation, persistence conflict handling, admission cleanup, and
 materialization claim cleanup consistent between sequential and pipeline
 execution.
 
-This follows `docs/refactor_review_standard.md`: expose real lifecycle
+This follows `docs/archive/ai-planning/refactor_review_standard.md`: expose real lifecycle
 contracts that already exist implicitly, do not split files for cosmetic
 reasons, and keep orchestrator control-plane behavior in `favn_orchestrator`.
 

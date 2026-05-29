@@ -12,7 +12,7 @@ group semantics, lifecycle status, health, progress, and summary totals. The
 view should keep only visual labels, component formatting, and interaction
 state.
 
-This follows `docs/refactor_review_standard.md`: expose explicit storage and
+This follows `docs/archive/ai-planning/refactor_review_standard.md`: expose explicit storage and
 read-model contracts where broad scans currently hide real runtime contracts.
 
 ## Current Baseline

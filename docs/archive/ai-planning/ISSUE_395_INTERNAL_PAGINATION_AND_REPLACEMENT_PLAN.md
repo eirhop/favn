@@ -10,7 +10,7 @@ Make internal persisted-truth traversal stable under concurrent writes and make
 backfill read-model replacement scopes explicit, safe, and consistent across
 memory, SQLite, and Postgres adapters.
 
-This follows `docs/refactor_review_standard.md`: expose storage contracts that
+This follows `docs/archive/ai-planning/refactor_review_standard.md`: expose storage contracts that
 already exist implicitly, keep persisted truth behind the orchestrator storage
 boundary, and protect behavior with adapter-level contract tests.
 

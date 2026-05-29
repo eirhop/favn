@@ -1,0 +1,84 @@
+# Adapters And Plugins
+
+Adapters connect Favn to external systems.
+
+Most users see adapters through configuration. Application code should use
+`Favn.SQLAsset`, `Favn.SQLClient`, `Favn.Connection`, and `mix favn.*` commands,
+not call adapter modules directly.
+
+## Two Adapter Jobs
+
+| Adapter kind | Used for | User-facing path |
+| --- | --- | --- |
+| SQL execution adapter | Run SQL, inspect relations, and materialize SQL assets. | Configure a Favn connection and use `Favn.SQLAsset` or `Favn.SQLClient`. |
+| Runtime storage adapter | Store Favn runtime records such as runs, schedules, logs, and diagnostics. | Configure local/runtime tooling. Do not use it for SQL asset tables. |
+
+SQL asset tables and warehouse data are separate from Favn's runtime records.
+
+## DuckDB Plugin
+
+Use `:favn_duckdb` for the standard bundled DuckDB path:
+
+```elixir
+def deps do
+  [
+    {:favn, path: "../favn/apps/favn"},
+    {:favn_duckdb, path: "../favn/apps/favn_duckdb"}
+  ]
+end
+```
+
+Use `:favn_duckdb_adbc` when a deployment needs explicit DuckDB shared-library or
+driver control:
+
+```elixir
+def deps do
+  [
+    {:favn, path: "../favn/apps/favn"},
+    {:favn_duckdb_adbc, path: "../favn/apps/favn_duckdb_adbc"}
+  ]
+end
+```
+
+Do not add runtime implementation apps directly for DuckDB support.
+
+## Connection Example
+
+```elixir
+defmodule MyApp.Connections.Warehouse do
+  @behaviour Favn.Connection
+
+  @impl true
+  def definition do
+    %Favn.Connection.Definition{
+      name: :warehouse,
+      adapter: Favn.SQL.Adapter.DuckDB,
+      config_schema: Favn.SQL.Adapter.DuckDB.config_schema_fields()
+    }
+  end
+end
+```
+
+```elixir
+config :favn,
+  discovery: [apps: [:my_app], connections: :all],
+  connections: [
+    warehouse: [
+      open: [database: ":memory:"],
+      duckdb: [load: [:parquet]]
+    ]
+  ]
+```
+
+See [Configuration](configuration.md) for the full option reference.
+
+## Common Problems
+
+| Problem | What to do |
+| --- | --- |
+| DuckDB dependency is missing | Add `:favn_duckdb` or `:favn_duckdb_adbc`. |
+| Connection cannot load | Check the `Favn.Connection` module and discovery config. |
+| Missing `open.database` | Add `open: [database: ...]`. |
+| DuckLake attach fails | Check extensions, secrets, `meta_secret`, and `data_path`. |
+| Session ownership error | Open a session per process. |
+| SQL timeout after a write | Treat the result as unknown and inspect before retrying. |

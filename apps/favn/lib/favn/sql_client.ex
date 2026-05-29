@@ -101,11 +101,16 @@ defmodule Favn.SQLClient do
   alias Favn.RelationRef
   alias Favn.SQL.Client
   alias Favn.SQL.Observability
-  alias Favn.SQL.Session
 
   @type connection_name :: atom()
   @type opts :: keyword()
-  @type session :: Session.t()
+  @typedoc """
+  Adapter-owned SQL session handle returned by `connect/2`.
+
+  Treat sessions as opaque, process-owned values. Do not construct them directly
+  or share one session concurrently across processes.
+  """
+  @type session :: term()
   @type operation_result :: {:ok, term()} | {:error, term()}
   @type catalog :: atom() | String.t()
 

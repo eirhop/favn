@@ -41,7 +41,7 @@ The Phase 6 plan should fit the code that already exists:
 - `FavnOrchestrator.Storage.Adapter.Memory` already enforces the intended monotonic run-write semantics and scheduler-state version checks in memory
 - `Favn.Storage` still includes a memory-oriented adapter lifecycle shortcut (`Process.whereis(adapter)`) that will not be correct for real adapter apps, especially Postgres external-repo mode
 - the old SQLite and Postgres adapters still exist in `favn_legacy`, but they are shaped around legacy `%Favn.Run{}` storage and old module ownership
-- `docs/POSTGRES_STORAGE_FOUNDATION_PLAN.md` remains valuable directionally, but it predates the Phase 5 orchestrator-owned `%FavnOrchestrator.RunState{}` contract and must be applied to the new boundary rather than copied blindly
+- `docs/archive/ai-planning/POSTGRES_STORAGE_FOUNDATION_PLAN.md` remains valuable directionally, but it predates the Phase 5 orchestrator-owned `%FavnOrchestrator.RunState{}` contract and must be applied to the new boundary rather than copied blindly
 
 That means Phase 6 should not start from an empty page, but it also should not port the legacy adapters file-for-file.
 
@@ -163,7 +163,7 @@ The current contract can be satisfied by storing canonical `RunState` JSON plus 
 
 ### 5. Postgres should be production-oriented and queryable
 
-Postgres should carry forward the direction of `docs/POSTGRES_STORAGE_FOUNDATION_PLAN.md`, but adapted to the orchestrator-owned boundary that exists now.
+Postgres should carry forward the direction of `docs/archive/ai-planning/POSTGRES_STORAGE_FOUNDATION_PLAN.md`, but adapted to the orchestrator-owned boundary that exists now.
 
 Recommended Postgres goals:
 
@@ -454,7 +454,7 @@ The same contract suite should run against:
 Phase 6 implementation should update at least:
 
 - `README.md`
-- `docs/REFACTOR.md`
+- `docs/archive/ai-planning/REFACTOR.md`
 - `docs/FEATURES.md`
 - `docs/structure/`
 - adapter app READMEs under `apps/favn_storage_sqlite/` and `apps/favn_storage_postgres/`

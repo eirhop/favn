@@ -9,7 +9,7 @@ Status: planned.
 Make run startup and backfill projection scale with the explicit runtime inputs
 instead of total persisted freshness or window cardinality.
 
-This follows `docs/refactor_review_standard.md`: expose the storage contracts
+This follows `docs/archive/ai-planning/refactor_review_standard.md`: expose the storage contracts
 that already exist implicitly, keep persisted truth behind the orchestrator
 storage boundary, and protect the behavior with adapter-level tests.
 

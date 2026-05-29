@@ -2,7 +2,7 @@
 
 Planning issue: #170
 
-Status: superseded by `docs/DUCKDB_DUCKLAKE_CONNECTION_REDESIGN_PLAN.md`, which
+Status: superseded by `docs/archive/ai-planning/DUCKDB_DUCKLAKE_CONNECTION_REDESIGN_PLAN.md`, which
 replaces the earlier `database`/`duckdb_bootstrap` shape with `open`/`duckdb`,
 multiple keyed attached catalogs, and catalog-level write admission.
 

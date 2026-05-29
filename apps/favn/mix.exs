@@ -13,7 +13,8 @@ defmodule Favn.MixProject do
       elixir: "~> 1.19",
       elixirc_options: [docs: true],
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      docs: docs()
     ]
   end
 
@@ -30,7 +31,36 @@ defmodule Favn.MixProject do
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
       internal_dep(:favn_orchestrator, "../favn_orchestrator", only: :test),
       internal_dep(:favn_runner, "../favn_runner", only: :test),
-      internal_dep(:favn_test_support, "../favn_test_support", only: :test)
+      internal_dep(:favn_test_support, "../favn_test_support", only: :test),
+      {:ex_doc, "~> 0.38", only: :dev, runtime: false}
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_url: "https://github.com/eirhop/favn",
+      source_ref: "main",
+      extras: [
+        "README.md",
+        "guides/getting-started.md",
+        "guides/authoring-assets.md",
+        "guides/local-development.md",
+        "guides/configuration.md",
+        "guides/sql-client.md",
+        "guides/manifest-first.md",
+        "guides/runtime-model.md",
+        "guides/adapters.md",
+        "guides/cheatsheet.cheatmd"
+      ],
+      groups_for_modules: [
+        "Public Facades": [Favn, Favn.AI, Favn.SQLClient],
+        "Mix Tasks": ~r/^Mix\.Tasks\.Favn(?:\.|$)/
+      ],
+      groups_for_extras: [
+        Cheatsheets: ~r/cheatsheet\.cheatmd/,
+        Guides: ~r/guides\//
+      ]
     ]
   end
 

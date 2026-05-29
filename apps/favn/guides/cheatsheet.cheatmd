@@ -1,0 +1,207 @@
+# Favn Cheatsheet
+
+Quick reminders for the public `:favn` package.
+
+Use this as a lookup page after reading the guides. It is not a full reference.
+
+First local run:
+
+```bash
+mix favn.init --duckdb --sample
+mix favn.doctor
+mix favn.install
+mix favn.dev
+mix favn.run MyApp.Pipelines.LocalSmoke
+```
+
+## Public DSL Modules
+
+Define one Elixir asset:
+
+```elixir
+defmodule MyApp.Assets.Orders do
+  use Favn.Asset
+
+  @doc "Load raw orders."
+  @meta owner: "analytics", tags: [:daily]
+  def asset(_ctx) do
+    {:ok, %{rows_written: 0}}
+  end
+end
+```
+
+Define one SQL asset:
+
+```elixir
+defmodule MyApp.Assets.OrderSummary do
+  use Favn.SQLAsset
+
+  @depends MyApp.Assets.Orders
+  @materialized :table
+  query do
+    ~SQL"""
+    select order_date, count(*) as order_count
+    from raw.orders
+    group by order_date
+    """
+  end
+end
+```
+
+Share relation defaults:
+
+```elixir
+defmodule MyApp.Lakehouse do
+  use Favn.Namespace, relation: [connection: :warehouse]
+end
+
+defmodule MyApp.Lakehouse.Raw do
+  use Favn.Namespace, relation: [catalog: "raw"]
+end
+```
+
+Define a pipeline:
+
+```elixir
+defmodule MyApp.Pipelines.DailySales do
+  use Favn.Pipeline
+
+  pipeline :daily_sales do
+    asset MyApp.Assets.OrderSummary
+    deps :all
+  end
+end
+```
+
+Common modules:
+
+| Module | Use it for |
+| --- | --- |
+| `Favn.Asset` | Elixir asset modules. |
+| `Favn.SQLAsset` | SQL asset modules. |
+| `Favn.Pipeline` | Named groups of assets to run together. |
+| `Favn.Namespace` | Shared relation defaults such as connection, catalog, and schema. |
+| `Favn.Connection` | Named SQL connection definitions. |
+| `Favn.SQLClient` | SQL calls from Elixir code through configured Favn connections. |
+
+## Manifest Calls For Debugging And Tooling
+
+Normal local development should use `mix favn.dev` and `mix favn.run`. Use these
+functions when building tools or debugging what Favn discovered.
+
+Generate a manifest from explicit modules:
+
+```elixir
+{:ok, manifest} =
+  Favn.generate_manifest(
+    asset_modules: [MyApp.Assets.Orders, MyApp.Assets.OrderSummary],
+    pipeline_modules: [MyApp.Pipelines.DailySales]
+  )
+```
+
+Generate from configured discovery:
+
+```elixir
+config :favn,
+  discovery: [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all]
+
+{:ok, manifest} = Favn.generate_manifest()
+```
+
+Pin, serialize, hash, and validate:
+
+```elixir
+{:ok, version} = Favn.pin_manifest_version(manifest)
+{:ok, json} = Favn.serialize_manifest(manifest)
+{:ok, hash} = Favn.hash_manifest(manifest)
+:ok = Favn.validate_manifest_compatibility(manifest)
+```
+
+Inspect authored work:
+
+```elixir
+{:ok, assets} = Favn.list_assets()
+{:ok, asset} = Favn.get_asset(MyApp.Assets.Orders)
+{:ok, pipeline} = Favn.get_pipeline(MyApp.Pipelines.DailySales)
+{:ok, resolution} = Favn.resolve_pipeline(MyApp.Pipelines.DailySales)
+{:ok, plan} = Favn.plan_asset_run([{MyApp.Assets.OrderSummary, :asset}])
+```
+
+Remember: generating or pinning a manifest does not run assets.
+
+## SQL Client Basics
+
+Open and close a session:
+
+```elixir
+{:ok, session} = Favn.SQLClient.connect(:warehouse)
+{:ok, result} = Favn.SQLClient.query(session, "select 1 as ok")
+:ok = Favn.SQLClient.disconnect(session)
+```
+
+Prefer `with_connection/3` when doing several SQL calls:
+
+```elixir
+Favn.SQLClient.with_connection(:warehouse, [], fn session ->
+  with {:ok, _} <- Favn.SQLClient.execute(session, "create schema if not exists raw"),
+       {:ok, result} <- Favn.SQLClient.query(session, "select 1 as ok") do
+    {:ok, result}
+  end
+end)
+```
+
+Sessions are process-owned. Do not share one session across concurrent tasks.
+
+## `mix favn.*` Commands
+
+Local setup:
+
+| Command | Use it for |
+| --- | --- |
+| `mix favn.init` | Generate local Favn files and optional samples. |
+| `mix favn.doctor` | Check local configuration. |
+| `mix favn.install` | Prepare the local runtime workspace. |
+| `mix favn.dev` | Start local runtime processes. |
+| `mix favn.stop` | Stop the local runtime stack. |
+
+Run and inspect work:
+
+| Command | Use it for |
+| --- | --- |
+| `mix favn.run` | Submit an asset or pipeline run. |
+| `mix favn.backfill` | Submit or inspect backfill work. |
+| `mix favn.runs` | List, inspect, cancel, or retry runs. |
+| `mix favn.logs` | Read run or asset-step logs. |
+| `mix favn.inspect` | Inspect relation metadata and samples. |
+| `mix favn.query` | Run local read-only SQL inspection. |
+| `mix favn.diagnostics` | Show runtime diagnostics. |
+| `mix favn.status` | Show local runtime status. |
+
+Manage local runtime:
+
+| Command | Use it for |
+| --- | --- |
+| `mix favn.reload` | Reload manifest or scheduler state where supported. |
+| `mix favn.reset` | Reset local runtime state. Use with care. |
+| `mix favn.read_doc` | Read compiled Favn docs locally. |
+
+Packaging commands:
+
+| Command | Use it for |
+| --- | --- |
+| `mix favn.build.runner` | Build runner artifact metadata/output. |
+| `mix favn.build.web` | Build web artifact metadata/output. |
+| `mix favn.build.orchestrator` | Build orchestrator artifact metadata/output. |
+| `mix favn.build.single` | Build the single-node local deployment artifact. |
+| `mix favn.bootstrap.single` | Bootstrap a single-node backend from a manifest JSON file. |
+
+## Common Rules
+
+- Depend on `:favn` from application code.
+- Add optional plugin packages only when you need them, such as DuckDB support.
+- Use `mix favn.init`, `mix favn.doctor`, `mix favn.install`, and `mix favn.dev`
+  for first local setup.
+- Do not depend on Favn runtime, storage, or UI implementation apps directly.
+- Use public `mix favn.*` commands for local runtime work.
+- Use manifest functions for tooling and debugging, not as the normal first-run
+  path.

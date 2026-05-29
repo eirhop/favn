@@ -348,7 +348,7 @@ Legacy tests that should stay where they are for now:
 Phase 4 implementation should update at least:
 
 - `README.md`
-- `docs/REFACTOR.md`
+- `docs/archive/ai-planning/REFACTOR.md`
 - `docs/FEATURES.md`
 - `docs/structure/`
 
