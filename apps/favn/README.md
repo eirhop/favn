@@ -103,6 +103,7 @@ not depend on Favn runtime, storage, or UI implementation apps directly.
 - [Configuration](guides/configuration.md): configure discovery, local runtime, SQL connections, DuckDB, ADBC, pooling, and env files.
 - [SQL Client](guides/sql-client.md): use `Favn.SQLClient` from Elixir code.
 - [Adapters](guides/adapters.md): understand SQL plugins and runtime storage adapters.
+- [AI Agent Development](guides/ai-agents.md): use `Favn.AI` and `mix favn.read_doc` for AI-assisted development.
 - [Cheatsheet](guides/cheatsheet.cheatmd): quick lookup for DSL modules, manifest calls, and commands.
 - [Advanced Manifest Notes](guides/manifest-first.md): use manifest functions for tooling and debugging.
 - [Runtime Model](guides/runtime-model.md): understand runtime ownership when you need deeper context.
@@ -110,6 +111,7 @@ not depend on Favn runtime, storage, or UI implementation apps directly.
 ## Public API Pointers
 
 - `Favn`: functions for manifests, planning, and inspection.
+- `Favn.AI`: doc routing entry point for AI-assisted development.
 - `Favn.Asset`: Elixir asset DSL.
 - `Favn.SQLAsset`: SQL asset DSL.
 - `Favn.Pipeline`: pipeline DSL.

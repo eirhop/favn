@@ -48,6 +48,7 @@ defmodule Favn.MixProject do
         "guides/local-development.md",
         "guides/configuration.md",
         "guides/sql-client.md",
+        "guides/ai-agents.md",
         "guides/manifest-first.md",
         "guides/runtime-model.md",
         "guides/adapters.md",
