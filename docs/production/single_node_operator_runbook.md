@@ -154,8 +154,9 @@ FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin
 FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=<replace-with-15-plus-character-password>
 ```
 
-With `manual`, startup requires a schema-ready SQLite database. Favn does not yet
-ship a separate production migration command; track follow-up #350.
+With `manual`, startup requires a schema-ready SQLite database. Use the local
+operator maintenance command below to inspect or migrate the control-plane schema
+before starting traffic.
 
 ## First-Run Bootstrap
 
@@ -318,6 +319,112 @@ SQLite is unavailable or schema-not-ready, the scheduler cannot load required
 state, or the local runner boundary is unavailable. Diagnostics redact secrets
 and database paths.
 
+## SQLite Maintenance Commands
+
+Run these commands from the runtime source root or from an operator shell where
+the Favn Mix tasks are available. Source the backend env file first so the command
+uses the same `FAVN_STORAGE`, `FAVN_SQLITE_PATH`, and migration-mode settings as
+the backend:
+
+```bash
+set -a
+. env/backend.env
+set +a
+```
+
+Status:
+
+```bash
+mix favn.sqlite.maintenance status
+```
+
+Example output:
+
+```text
+operation=status
+adapter=sqlite
+ready=true
+readiness_status=ready
+schema_status=ready
+migration_mode=manual
+missing_versions=0
+future_versions=0
+missing_tables=0
+```
+
+Migration dry-run and apply:
+
+```bash
+mix favn.sqlite.maintenance migrate --dry-run
+mix favn.sqlite.maintenance migrate --apply
+```
+
+Example output:
+
+```text
+operation=migrate
+adapter=sqlite
+action=migrated
+dry_run=false
+previous_schema_status=upgrade_required
+final_schema_status=ready
+migrated_count=3
+duration_ms=42
+```
+
+Manual versus auto migration mode:
+
+- `FAVN_SQLITE_MIGRATION_MODE=manual` makes backend startup reject a non-ready
+  existing schema. Run `migrate --dry-run` to inspect the planned action and
+  `migrate --apply` when the operator is ready to mutate the database.
+- `FAVN_SQLITE_MIGRATION_MODE=auto` lets backend startup apply approved empty or
+  upgrade-required migrations as before. The explicit maintenance migration
+  command is still allowed for deploy preflight automation.
+- The explicit migration command migrates only `empty_database` and
+  `upgrade_required` schemas. It rejects missing, newer-than-release,
+  inconsistent, invalid, and unavailable databases with stable error categories.
+
+Online backup and verification:
+
+```bash
+mix favn.sqlite.maintenance backup --to /var/backups/favn/control-plane.sqlite3
+mix favn.sqlite.maintenance verify-backup --path /var/backups/favn/control-plane.sqlite3
+```
+
+Example backup output:
+
+```text
+operation=backup
+adapter=sqlite
+destination=%{basename: "control-plane.sqlite3", path: :redacted}
+byte_size=245760
+checksum=<sha256>
+checkpoint_policy=passive_before_vacuum_into
+duration_ms=55
+verification_status=valid
+verification_schema_status=ready
+```
+
+The Favn-owned backup command uses SQLite `VACUUM INTO` for a consistent live
+SQLite snapshot. It runs `PRAGMA wal_checkpoint(PASSIVE)` first to reduce WAL
+pressure, but checkpointing is not the correctness mechanism. The command does
+not perform live raw file copy of the SQLite database, WAL, or SHM files.
+
+Backup and verification limitations:
+
+- The backup destination parent must already exist and be writable.
+- The destination must not be the active source database.
+- Existing backup files are rejected unless an explicit overwrite option is used.
+- Verification checks the backup file exists, is a regular file, is not the
+  active source database, passes SQLite `quick_check`, and has a Favn schema ready
+  for the current release.
+- Verification can classify missing, wrong SQLite database, non-Favn schema,
+  newer/inconsistent schema, and corrupt file failures, but it does not prove
+  external DuckDB data-plane files or source systems were backed up.
+- DuckDB data-plane backup automation remains out of scope for this command.
+- Postgres maintenance commands are out of scope.
+- Distributed or multi-node SQLite maintenance is not supported.
+
 ## Backup And Restore Overview
 
 SQLite control-plane backup and DuckDB data-plane backup are separate
@@ -336,15 +443,25 @@ SQLite backup does not cover:
 - Service-token/source/DuckDB credentials stored outside SQLite.
 - Build artifacts.
 
-The tested and recommended golden path is a stopped-backend backup and restore.
-Favn does not yet provide a write-pause command, online backup command, or backup
-verification command. Track follow-up #350 for SQLite backup/migration command
-automation and follow-up #351 for DuckDB data-plane backup automation design.
+The Favn-owned online SQLite backup command is available for live control-plane
+backup. Stopped-backend raw file copy remains a manual recovery option only when
+the backend is fully stopped and SQLite sidecar files are handled consistently.
+DuckDB data-plane backup automation remains a separate non-goal.
 
 ## SQLite Control-Plane Backup
 
-Use this conservative procedure from the artifact root when the backend can be
-stopped.
+Preferred online backup command:
+
+```bash
+set -a
+. env/backend.env
+set +a
+mix favn.sqlite.maintenance backup --to /backups/favn/control-plane.sqlite3
+mix favn.sqlite.maintenance verify-backup --path /backups/favn/control-plane.sqlite3
+```
+
+Use this conservative stopped-backend procedure from the artifact root when the
+backend can be stopped or when your SQLite version does not support `VACUUM INTO`.
 
 1. Record the artifact version/build id and runtime env file used by the node.
 2. Stop the backend:
@@ -376,9 +493,10 @@ bin/start
 
 6. Check readiness and diagnostics.
 
-Do not copy only the SQLite file while the backend is running. If an operator
-uses an online SQLite backup API or filesystem snapshot instead, that procedure
-must preserve SQLite consistency and is outside current Favn automation.
+Do not copy only the SQLite file while the backend is running. The Favn-owned live
+backup command uses SQLite-native backup semantics instead of raw live copying.
+If an operator uses a filesystem snapshot instead, that procedure must preserve
+SQLite consistency and is outside current Favn automation.
 
 ## SQLite Control-Plane Restore
 
@@ -490,7 +608,8 @@ own those systems and cannot make SQLite restore recover them.
 
 The supported restore path is same-version restore. Before upgrading:
 
-- Take a stopped-backend SQLite backup.
+- Take a verified SQLite backup with `mix favn.sqlite.maintenance backup`, or a
+  stopped-backend SQLite backup when that is the deployment's required procedure.
 - Back up DuckDB data-plane files and external systems separately.
 - Record artifact build metadata and runtime env keys.
 - Confirm the target release's migration expectations.
@@ -498,6 +617,10 @@ The supported restore path is same-version restore. Before upgrading:
 SQLite readiness diagnostics classify empty, ready, missing, upgrade-required,
 newer-than-release, and inconsistent schemas. If readiness reports a schema
 problem, do not serve traffic until the schema issue is resolved.
+
+For manual migration mode, use `mix favn.sqlite.maintenance migrate --dry-run` to
+inspect the planned action and `mix favn.sqlite.maintenance migrate --apply` to
+apply approved release migrations.
 
 Rollback is backup restore, not down-migration. Restore the previous SQLite
 backup with the matching previous artifact version.
@@ -575,6 +698,14 @@ Evidence:
   verifies SQLite restart survival for bootstrap/scheduler state.
 - `apps/favn_storage_sqlite/test/sqlite_readiness_test.exs` verifies SQLite path
   and schema readiness classification with redaction.
+- `apps/favn_orchestrator/test/storage_maintenance_test.exs` and
+  `apps/favn_orchestrator/test/mix/tasks/favn_sqlite_maintenance_test.exs`
+  verify the public maintenance contract, task wrapper, logging, telemetry,
+  redaction, unsupported-adapter behavior, and boundary enforcement.
+- `apps/favn_storage_sqlite/test/sqlite_maintenance_test.exs` and
+  `apps/favn_storage_sqlite/test/sqlite_backup_test.exs` verify explicit SQLite
+  migration, `VACUUM INTO` backup creation, backup verification, WAL-backed
+  backup, and failure categories for missing, wrong, and corrupt backup files.
 - `apps/favn_orchestrator/test/production_runtime_config_test.exs` verifies
   supported production env validation and rejected unsupported modes.
 - `apps/favn_orchestrator/test/readiness_test.exs` verifies readiness behavior and
@@ -585,7 +716,6 @@ Evidence:
 
 Known limits:
 
-- Favn does not yet ship a SQLite backup, backup-verification, or migration
-  command. Track #350.
 - Favn does not yet automate DuckDB data-plane backup/restore. Track #351.
+- Favn does not ship Postgres maintenance commands.
 - Postgres production mode and distributed execution are out of scope.

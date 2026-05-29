@@ -4,6 +4,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   """
 
   @behaviour Favn.Storage.Adapter
+  @behaviour Favn.Storage.MaintenanceAdapter
 
   alias Ecto.Adapters.SQL
   alias Favn.Manifest.Version
@@ -41,6 +42,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.WriteSemantics
   alias FavnOrchestrator.TargetStatus
   alias FavnStorageSqlite.Diagnostics
+  alias FavnStorageSqlite.Maintenance, as: SQLiteMaintenance
   alias FavnStorageSqlite.Migrations
   alias FavnStorageSqlite.Repo
   alias FavnStorageSqlite.Supervisor, as: SQLiteSupervisor
@@ -95,6 +97,26 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def diagnostics(opts) when is_list(opts) do
     Diagnostics.readiness(opts)
+  end
+
+  @impl Favn.Storage.MaintenanceAdapter
+  def maintenance_status(opts) when is_list(opts) do
+    SQLiteMaintenance.status(opts)
+  end
+
+  @impl Favn.Storage.MaintenanceAdapter
+  def migrate_storage(opts, command_opts) when is_list(opts) and is_list(command_opts) do
+    SQLiteMaintenance.migrate(opts, command_opts)
+  end
+
+  @impl Favn.Storage.MaintenanceAdapter
+  def backup_storage(opts, command_opts) when is_list(opts) and is_list(command_opts) do
+    SQLiteMaintenance.backup(opts, command_opts)
+  end
+
+  @impl Favn.Storage.MaintenanceAdapter
+  def verify_storage_backup(opts, command_opts) when is_list(opts) and is_list(command_opts) do
+    SQLiteMaintenance.verify_backup(opts, command_opts)
   end
 
   @impl true

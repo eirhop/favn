@@ -15,8 +15,8 @@ A run is one accepted attempt to execute an asset, pipeline, scheduled occurrenc
 or backfill child. The orchestrator records the run before the runner starts
 execution.
 
-For production startup, backup, and restore, use
-`docs/production/single_node_operator_runbook.md`.
+For production startup, SQLite control-plane maintenance commands, backup, and
+restore, use `docs/production/single_node_operator_runbook.md`.
 
 ## Assumptions
 
@@ -163,7 +163,8 @@ If readiness fails, fix the failing check before submitting more work. If an
 operation has an unknown outcome, re-read run state and diagnostics before retrying
 so you do not create duplicate work.
 
-Production command examples are in
+Production command examples, including `mix favn.sqlite.maintenance status`,
+`migrate`, `backup`, and `verify-backup`, are in
 `docs/production/single_node_operator_runbook.md`.
 
 ## Boundaries To Preserve
