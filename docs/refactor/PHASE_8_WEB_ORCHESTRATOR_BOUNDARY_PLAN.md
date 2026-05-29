@@ -41,7 +41,7 @@ Required change:
 - mark `favn_view` as a disposable prototype.
 - point to this Phase 8 plan as the source of truth.
 
-### `docs/REFACTOR.md`
+### `docs/archive/ai-planning/REFACTOR.md`
 
 Current mismatches:
 

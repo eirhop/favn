@@ -12,7 +12,7 @@ contract. The refactor should make running executions, completed executions,
 worker monitors, await waiters, log subscribers, buffered logs, buffered events,
 retention, and cleanup visible as one internal runtime contract.
 
-This follows `docs/refactor_review_standard.md`: expose a real lifecycle
+This follows `docs/archive/ai-planning/refactor_review_standard.md`: expose a real lifecycle
 contract that already exists implicitly, separate GenServer protocol mechanics
 from runtime state transitions, improve cleanup and bounded memory behavior, and
 avoid splitting modules only by size.

@@ -70,7 +70,7 @@ This checklist covers the SQL manifest contract, manifest-pinned runner SQL exec
 ## Docs Updates
 
 - [x] Update `README.md` for Phase 7 focus and plugin packaging notes.
-- [x] Update `docs/REFACTOR.md` to point at the Phase 7 plan and checklist.
+- [x] Update `docs/archive/ai-planning/REFACTOR.md` to point at the Phase 7 plan and checklist.
 - [x] Update `docs/FEATURES.md` as Phase 7 planning and implementation slices land.
 - [x] Update structure docs for the DuckDB ownership move and related tests.
 - [x] Update `apps/favn_duckdb/README.md` with plugin usage/config examples.

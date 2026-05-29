@@ -89,7 +89,7 @@ Phase 3 implementation scope is complete. Remaining unchecked items are intentio
 ## Docs Updates
 
 - [x] Update `README.md` status and documentation pointers.
-- [x] Update `docs/REFACTOR.md` Phase 3 section to point at the manifest/versioning plan.
+- [x] Update `docs/archive/ai-planning/REFACTOR.md` Phase 3 section to point at the manifest/versioning plan.
 - [x] Update `docs/FEATURES.md` so Phase 2 transitional state and Phase 3 planning are both discoverable.
 - [x] Update structure docs to show `favn_core` ownership for internal manifest/compiler/contracts modules and tests.
 - [x] Update `docs/refactor/PHASE_2_MIGRATION_PLAN.md` to link forward to the Phase 3 plan and clarify the transitional layout.

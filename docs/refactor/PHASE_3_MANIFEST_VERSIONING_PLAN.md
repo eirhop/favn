@@ -509,7 +509,7 @@ The following behavior must be locked before runner work begins:
 Phase 3 implementation should update at least:
 
 - `README.md`
-- `docs/REFACTOR.md`
+- `docs/archive/ai-planning/REFACTOR.md`
 - `docs/FEATURES.md`
 - `docs/structure/`
 

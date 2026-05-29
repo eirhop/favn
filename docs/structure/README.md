@@ -5,6 +5,7 @@ you need ownership or test-location guidance for a specific app.
 
 - `favn.md`: public package facade and public Mix tasks
 - `favn_authoring.md`: authoring DSL implementation and doc lookup internals
+- `favn_azure.md`: Azure token acquisition helpers for adapter bootstrap
 - `favn_core.md`: compiler, manifest, planning, windows, and shared contracts
 - `favn_local.md`: local developer tooling and packaging implementation
 - `favn_orchestrator.md`: control plane, HTTP API, runs, auth, storage contracts

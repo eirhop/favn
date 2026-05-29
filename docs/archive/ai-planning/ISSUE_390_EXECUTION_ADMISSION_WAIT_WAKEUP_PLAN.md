@@ -13,7 +13,7 @@ The new contract should reduce repeated storage-backed acquisition attempts when
 capacity is unchanged, preserve storage as the source of truth for admission
 capacity, and make queued admission lifecycle behavior visible to `RunServer`.
 
-This follows `docs/refactor_review_standard.md`: the change should expose a real
+This follows `docs/archive/ai-planning/refactor_review_standard.md`: the change should expose a real
 runtime contract, improve concurrency behavior, and keep control-plane state in
 `favn_orchestrator` instead of moving code around cosmetically.
 

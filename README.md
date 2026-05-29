@@ -994,8 +994,8 @@ manifest/JSON-shaped unless Favn explicitly supports that key.
 
 - `docs/FEATURES.md` tracks the implemented feature set today
 - `docs/ROADMAP.md` tracks planned next work and later ideas
-- `docs/RUN_CANCELLATION_PLAN.md` documents implemented single-run cancellation
-  and remaining whole-backfill cancellation follow-up work
+- `docs/operators/runs-and-schedules.md` documents local run inspection,
+  cancellation, logs, and schedule behavior
 - `docs/production/public_api_boundary.md` defines the intended package and
   stable public API boundary for `v1`
 - `docs/production/single_node_contract.md` defines the first `v1` production deployment contract
@@ -1004,14 +1004,16 @@ manifest/JSON-shaped unless Favn explicitly supports that key.
 - `docs/structure/` maps current ownership, code layout, and test layout by app
 - `examples/basic-workflow-tutorial` is the first end-to-end tutorial project
 
-## AI Doc Entry Point
+## AI Agent Development
 
-Favn includes a compiled-doc reader intended for AI-assisted workflows.
+Favn includes a compiled-doc reader intended for AI-assisted workflows. Use it
+before guessing about Favn APIs, app ownership, or local command behavior.
 
 Use Favn when you are defining assets and pipelines in Elixir, compiling them
 into a manifest, planning runs, or using the local dev/runtime tooling.
 
-Read `Favn.AI` for the task map and the next module to inspect.
+Read `Favn.AI` for the task map and the next module to inspect. For generated
+package docs, see `apps/favn/guides/ai-agents.md`.
 
 ```bash
 mix favn.read_doc Favn.AI
@@ -1027,6 +1029,17 @@ mix favn.read_doc Favn.Pipeline
 mix favn.read_doc Favn.Backfill.RangeRequest
 mix favn.read_doc Favn.Dev
 ```
+
+Recommended workflow for AI agents:
+
+- Start with the user-facing `:favn` package unless a task explicitly requires
+  runtime, UI, storage, or orchestration internals.
+- Read `AGENTS.md` for repo-wide rules and load the matching OpenCode skill
+  before changing app boundaries, Phoenix UI/API code, or storage behavior.
+- Use `mix favn.read_doc Favn.AI` as the routing document for public DSL,
+  manifest, local tooling, SQL client, and selected internal debugging docs.
+- Prefer public facades and documented local commands over direct calls into
+  runtime, storage, orchestrator, or UI implementation apps.
 
 Suggested section for a consumer project's `AGENTS.md`:
 

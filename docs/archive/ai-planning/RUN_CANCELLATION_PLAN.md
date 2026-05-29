@@ -187,7 +187,7 @@ single-run cancellation from CLI/UI.
 - For CLI `--wait`, poll one run by id with a bounded interval and timeout. Do not
   list all runs while waiting for cancellation.
 - Keep cancellation dispatch outside long blocking GenServer work. The existing
-  lifecycle plan in `docs/ISSUE_389_RUN_EXECUTION_LIFECYCLE_PLAN.md` should still
+  lifecycle plan in `docs/archive/ai-planning/ISSUE_389_RUN_EXECUTION_LIFECYCLE_PLAN.md` should still
   remove blocking sleeps from retry paths so cancellation is responsive during
   retry backoff and admission waits.
 - Avoid broad scans to decide whether a run is cancellable. Use `get_run(run_id)`

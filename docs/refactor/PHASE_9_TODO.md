@@ -162,7 +162,7 @@ gap remains:
 ## Docs
 
 - [x] Keep `README.md` aligned with the implemented command surface and public local-dev flow.
-- [x] Update `docs/REFACTOR.md` so Phase 9 is described as hardening, verification, and packaging honesty rather than missing commands.
+- [x] Update `docs/archive/ai-planning/REFACTOR.md` so Phase 9 is described as hardening, verification, and packaging honesty rather than missing commands.
 - [x] Update `docs/FEATURES.md` so Phase 9 completion status and scope are explicit.
 - [x] Update `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` to reflect implemented command surface, packaging honesty, and completion status.
 - [x] Keep this TODO file as a completion record plus post-v0.5 follow-up separation.

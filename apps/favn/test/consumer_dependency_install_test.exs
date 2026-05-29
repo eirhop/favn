@@ -23,12 +23,13 @@ defmodule Favn.ConsumerDependencyInstallTest do
     dep_apps = Enum.map(deps, &elem(&1, 0))
 
     refute :favn in dep_apps
-    refute Enum.any?(deps, fn {_app, opts} -> Keyword.has_key?(opts, :in_umbrella) end)
+    refute Enum.any?(deps, fn dep -> Keyword.has_key?(dep_opts(dep), :in_umbrella) end)
 
     assert runtime_deps(deps) == [:favn_authoring, :favn_local, :favn_sql_runtime]
     assert test_only_deps(deps) == [:favn_orchestrator, :favn_runner, :favn_test_support]
 
-    assert Enum.all?(deps, fn {_app, opts} ->
+    assert Enum.all?(internal_path_deps(deps), fn dep ->
+             opts = dep_opts(dep)
              path = Keyword.fetch!(opts, :path)
              String.starts_with?(path, "../")
            end)
@@ -109,15 +110,24 @@ defmodule Favn.ConsumerDependencyInstallTest do
 
   defp runtime_deps(deps) do
     deps
-    |> Enum.reject(fn {_app, opts} -> Keyword.get(opts, :only) == :test end)
+    |> internal_path_deps()
+    |> Enum.reject(fn dep -> Keyword.get(dep_opts(dep), :only) == :test end)
     |> Enum.map(&elem(&1, 0))
   end
 
   defp test_only_deps(deps) do
     deps
-    |> Enum.filter(fn {_app, opts} -> Keyword.get(opts, :only) == :test end)
+    |> internal_path_deps()
+    |> Enum.filter(fn dep -> Keyword.get(dep_opts(dep), :only) == :test end)
     |> Enum.map(&elem(&1, 0))
   end
+
+  defp internal_path_deps(deps) do
+    Enum.filter(deps, fn dep -> Keyword.has_key?(dep_opts(dep), :path) end)
+  end
+
+  defp dep_opts({_app, opts}) when is_list(opts), do: opts
+  defp dep_opts({_app, _requirement, opts}) when is_list(opts), do: opts
 
   defp consumer_mix_exs(repo_url, ref) do
     """

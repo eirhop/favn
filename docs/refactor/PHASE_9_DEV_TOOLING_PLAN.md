@@ -1122,7 +1122,7 @@ Recommended default:
     implemented command surface
   - keep the honest distinction between local dev, split deployment, and
     single-node packaging
-- `docs/REFACTOR.md`
+- `docs/archive/ai-planning/REFACTOR.md`
   - keep the Phase 9 completion status aligned with this plan
 - `docs/FEATURES.md`
   - keep the high-level roadmap wording aligned with Phase 9 completion

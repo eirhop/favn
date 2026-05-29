@@ -440,7 +440,7 @@ Recommended Phase 5 work order:
 Phase 5 implementation should update at least:
 
 - `README.md`
-- `docs/REFACTOR.md`
+- `docs/archive/ai-planning/REFACTOR.md`
 - `docs/FEATURES.md`
 - `docs/structure/`
 - `apps/favn/lib/favn.ex` moduledoc and public runtime docs that currently still describe transitional behavior

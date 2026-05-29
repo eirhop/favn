@@ -62,7 +62,7 @@ This checklist records the storage-boundary work that belongs in Phase 6. The re
 ## Docs Updates
 
 - [x] Update `README.md` for Phase 6 planning and adapter roles.
-- [x] Update `docs/REFACTOR.md` to point at Phase 6 planning docs and carried-forward follow-ups.
+- [x] Update `docs/archive/ai-planning/REFACTOR.md` to point at Phase 6 planning docs and carried-forward follow-ups.
 - [x] Update `docs/FEATURES.md` as Phase 6 slices land.
 - [x] Update structure docs when real adapter modules or tests are added.
 

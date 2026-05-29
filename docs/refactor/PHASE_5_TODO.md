@@ -103,7 +103,7 @@ Phase 5 implementation is complete. This checklist records the delivered orchest
 ## Docs Updates
 
 - [x] Update `README.md` once orchestrator owns real control-plane paths.
-- [x] Update `docs/REFACTOR.md` Phase 5 status as slices land.
+- [x] Update `docs/archive/ai-planning/REFACTOR.md` Phase 5 status as slices land.
 - [x] Update `docs/FEATURES.md` checkboxes as orchestrator slices complete.
 - [x] Update structure docs with new orchestrator-owned modules and tests.
 

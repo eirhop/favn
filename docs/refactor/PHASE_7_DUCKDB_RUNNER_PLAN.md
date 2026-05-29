@@ -507,7 +507,7 @@ These are explicit implementation rules for this phase, not optional style notes
 Phase 7 implementation should update at least:
 
 - `README.md`
-- `docs/REFACTOR.md`
+- `docs/archive/ai-planning/REFACTOR.md`
 - `docs/FEATURES.md`
 - `docs/structure/`
 - `apps/favn_duckdb/README.md`
