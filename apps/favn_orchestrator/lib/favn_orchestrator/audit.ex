@@ -1,6 +1,12 @@
 defmodule FavnOrchestrator.Audit do
   @moduledoc """
   Orchestrator-owned audit helpers for operator control-plane commands.
+
+  The current same-BEAM operator facades use this module for accepted commands:
+  actor/session authorization, request parsing, manifest lookup, target
+  resolution, and option normalization happen before an audit event is inserted.
+  Rejected, forbidden, unauthenticated, and validation-failed attempt auditing is
+  a separate security-event concern.
   """
 
   alias FavnOrchestrator.Audit.Event

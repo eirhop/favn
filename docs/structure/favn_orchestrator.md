@@ -63,8 +63,10 @@ Code:
   `apps/favn_orchestrator/lib/favn_orchestrator/operator/context.ex` and
   `apps/favn_orchestrator/lib/favn_orchestrator/audit/`. Same-BEAM operator
   facades reload persisted auth state, authorize roles, redact payloads, persist
-  an audit event before accepted run/backfill mutations, and update resource ids
-  after acceptance when available.
+  an audit event before accepted run/backfill mutations, update resource ids after
+  acceptance when available, and emit operational events when best-effort result
+  updates fail. These facades audit accepted command intent only; rejected
+  auth/validation/security attempts require a separate audit path.
 - Operational pipeline and asset backfill range expansion, parent/child run
   grouping, ledger rows, and partial-submission compensation in
   `apps/favn_orchestrator/lib/favn_orchestrator/backfill_manager.ex`

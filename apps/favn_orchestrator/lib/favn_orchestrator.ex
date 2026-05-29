@@ -42,6 +42,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
   alias FavnOrchestrator.Operator.Context, as: OperatorContext
   alias FavnOrchestrator.OperatorErrorDTO
+  alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RefreshPolicy
@@ -1750,24 +1751,42 @@ defmodule FavnOrchestrator do
          :ok <- AuditStore.put_event(event) do
       case submit_fun.() do
         {:ok, resource_id} = ok ->
-          _result =
-            AuditStore.update_event_result(event.id, %{
-              outcome: :accepted,
-              resource_type: Map.get(attrs, :resource_type),
-              resource_id: resource_id
-            })
+          best_effort_update_audit_result(event, %{
+            outcome: :accepted,
+            resource_type: Map.get(attrs, :resource_type),
+            resource_id: resource_id
+          })
 
           ok
 
         {:error, reason} = error ->
-          _result =
-            AuditStore.update_event_result(event.id, %{
-              outcome: :rejected,
-              failure_class: AuditRedactor.failure_class(reason)
-            })
+          best_effort_update_audit_result(event, %{
+            outcome: :rejected,
+            failure_class: AuditRedactor.failure_class(reason)
+          })
 
           error
       end
+    end
+  end
+
+  defp best_effort_update_audit_result(event, attrs) when is_map(attrs) do
+    case AuditStore.update_event_result(event.id, attrs) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        OperationalEvents.emit(
+          :audit_event_result_update_failed,
+          %{},
+          %{
+            event_id: event.id,
+            action: event.action,
+            outcome: Map.get(attrs, :outcome),
+            reason: reason
+          },
+          level: :warning
+        )
     end
   end
 

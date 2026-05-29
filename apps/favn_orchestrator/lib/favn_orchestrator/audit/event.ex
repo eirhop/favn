@@ -1,6 +1,11 @@
 defmodule FavnOrchestrator.Audit.Event do
   @moduledoc """
   Durable orchestrator audit event for operator control-plane commands.
+
+  The current same-BEAM operator command facades persist events only after the
+  command is authorized, parsed, and resolved to a manifest target. The broader
+  outcome enum is reserved for future callers that deliberately audit rejected
+  security or validation attempts.
   """
 
   @schema_version 1

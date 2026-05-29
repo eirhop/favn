@@ -89,33 +89,34 @@ defmodule Favn.SQLiteStorageTest do
   end
 
   test "persists and lists durable audit events" do
-    assert {:ok, event} =
-             AuditEvent.new(%{
-               id: "aud_sqlite_1",
-               occurred_at: ~U[2026-05-29 00:00:00Z],
-               action: "operator.asset_run.submit",
-               outcome: :accepted,
-               actor_id: "act_sqlite",
-               session_id: "ses_sqlite",
-               source: :live_view,
-               manifest_version_id: "manifest_v1",
-               target_type: :asset,
-               target_id: "asset:Elixir.MyApp.Assets.Gold:asset",
-               resource_type: :run,
-               payload: %{"refresh_mode" => "auto"},
-               request_context: %{},
-               metadata: %{}
-             })
+    events = [
+      sample_audit_event("aud_sqlite_1", ~U[2026-05-29 00:00:00Z]),
+      sample_audit_event("aud_sqlite_2", ~U[2026-05-29 00:00:01Z]),
+      sample_audit_event("aud_sqlite_3", ~U[2026-05-29 00:00:02Z])
+    ]
 
-    assert :ok = OrchestratorStorage.put_audit_event(event)
+    for event <- events do
+      assert :ok = OrchestratorStorage.put_audit_event(event)
+    end
 
     assert :ok =
-             OrchestratorStorage.update_audit_event_result(event.id, %{resource_id: "run_sqlite"})
+             OrchestratorStorage.update_audit_event_result("aud_sqlite_3", %{
+               resource_id: "run_sqlite"
+             })
 
-    assert {:ok, page} = OrchestratorStorage.list_audit_events(limit: 10)
-    assert [stored] = page.items
-    assert stored.id == event.id
+    assert {:ok, page} = OrchestratorStorage.list_audit_events(limit: 2)
+    assert Enum.map(page.items, & &1.id) == ["aud_sqlite_3", "aud_sqlite_2"]
+    assert page.has_more? == true
+    assert is_map(page.next_cursor)
+
+    assert [stored | _rest] = page.items
     assert stored.resource_id == "run_sqlite"
+
+    assert {:ok, next_page} =
+             OrchestratorStorage.list_audit_events(limit: 2, after: page.next_cursor)
+
+    assert Enum.map(next_page.items, & &1.id) == ["aud_sqlite_1"]
+    assert next_page.has_more? == false
   end
 
   test "lists runs newest first by latest persisted write, not by id" do
@@ -1444,6 +1445,28 @@ defmodule Favn.SQLiteStorageTest do
       params: params,
       retry_policy: %{max_attempts: 1, delay_ms: 0, retry_on: []}
     }
+  end
+
+  defp sample_audit_event(id, occurred_at) do
+    assert {:ok, event} =
+             AuditEvent.new(%{
+               id: id,
+               occurred_at: occurred_at,
+               action: "operator.asset_run.submit",
+               outcome: :accepted,
+               actor_id: "act_sqlite",
+               session_id: "ses_sqlite",
+               source: :live_view,
+               manifest_version_id: "manifest_v1",
+               target_type: :asset,
+               target_id: "asset:Elixir.MyApp.Assets.Gold:asset",
+               resource_type: :run,
+               payload: %{"refresh_mode" => "auto"},
+               request_context: %{},
+               metadata: %{}
+             })
+
+    event
   end
 
   defp manifest_version(manifest_version_id) do

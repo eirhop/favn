@@ -42,6 +42,11 @@ defmodule FavnOrchestrator.Operator.Context do
 
   @doc """
   Normalizes a context struct or legacy `%{actor: actor, session: session}` map.
+
+  Command facades intentionally reject raw `%{actor_id: ..., session_id: ...}`
+  maps so callers cannot forge a trusted context shape by copying identifiers.
+  Use `new/1` directly only at orchestrator-owned boundaries that have already
+  decided raw identifier input is trusted.
   """
   @spec normalize(t() | map()) :: {:ok, t()} | {:error, term()}
   def normalize(%__MODULE__{} = context), do: new(Map.from_struct(context))
@@ -67,7 +72,7 @@ defmodule FavnOrchestrator.Operator.Context do
         end
 
       true ->
-        new(context)
+        {:error, :missing_context}
     end
   end
 
