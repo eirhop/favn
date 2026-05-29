@@ -212,7 +212,11 @@ defmodule FavnView.PipelineDetailLive do
 
   defp actor_context(socket) do
     %Scope{} = scope = socket.assigns.current_scope
-    %{actor: scope.actor, session: scope.session}
+
+    case FavnOrchestrator.operator_context(scope.actor, scope.session, source: :live_view) do
+      {:ok, context} -> context
+      {:error, _reason} -> %{}
+    end
   end
 
   defp pipeline_from_detail(detail) do

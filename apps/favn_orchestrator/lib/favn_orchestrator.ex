@@ -22,6 +22,9 @@ defmodule FavnOrchestrator do
   alias Favn.Window.Runtime, as: RuntimeWindow
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.Audit
+  alias FavnOrchestrator.Audit.Redactor, as: AuditRedactor
+  alias FavnOrchestrator.Audit.Store, as: AuditStore
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.Repair, as: BackfillRepair
@@ -37,6 +40,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.OperatorCommands.AssetRunRequest
   alias FavnOrchestrator.OperatorCommands.PipelineBackfillRequest
   alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
+  alias FavnOrchestrator.Operator.Context, as: OperatorContext
   alias FavnOrchestrator.OperatorErrorDTO
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.Projector
@@ -59,10 +63,12 @@ defmodule FavnOrchestrator do
   @type run_id :: String.t()
   @type operator_actor :: Auth.actor()
   @type operator_session :: Auth.session()
-  @type operator_actor_context :: %{
-          required(:actor) => operator_actor(),
-          required(:session) => operator_session()
-        }
+  @type operator_actor_context ::
+          OperatorContext.t()
+          | %{
+              required(:actor) => operator_actor(),
+              required(:session) => operator_session()
+            }
   @type manifest_summary :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
@@ -285,6 +291,26 @@ defmodule FavnOrchestrator do
   def operator_has_role?(actor, role) when role in [:viewer, :operator, :admin] do
     Auth.has_role?(actor, role)
   end
+
+  @doc """
+  Builds a browser-safe operator context for same-BEAM command facades.
+
+  The returned context contains only actor/session identifiers and allow-listed
+  request metadata. Command facades reload persisted auth state before authorizing.
+  """
+  @spec operator_context(operator_actor(), operator_session(), keyword()) ::
+          {:ok, OperatorContext.t()} | {:error, term()}
+  def operator_context(actor, session, opts \\ []) when is_map(actor) and is_map(session) do
+    OperatorContext.from_actor_session(actor, session, opts)
+  end
+
+  @doc """
+  Lists durable operator audit events through a bounded cursor page.
+  """
+  @spec list_audit_events(keyword()) ::
+          {:ok, FavnOrchestrator.CursorPage.t(FavnOrchestrator.Audit.Event.t())}
+          | {:error, term()}
+  def list_audit_events(opts \\ []) when is_list(opts), do: AuditStore.list_events(opts)
 
   @doc """
   Registers one manifest version in orchestrator storage.
@@ -587,8 +613,7 @@ defmodule FavnOrchestrator do
   :unauthenticated}`; authenticated actors without the operator role return
   `{:error, :forbidden}`.
 
-  TODO: add a narrow audit event for accepted LiveView operator commands once the
-  audit shape for same-BEAM browser actions is finalized.
+  Accepted commands are durably audited before the runtime mutation is submitted.
   """
   @spec submit_operator_asset_run(
           operator_actor_context(),
@@ -607,12 +632,29 @@ defmodule FavnOrchestrator do
         target_id,
         command_input \\ %{}
       ) do
-    with :ok <- require_operator_context(actor_context),
+    with {:ok, _actor, _session, context} <- authorize_operator_context(actor_context),
          {:ok, request} <- AssetRunRequest.from_input(command_input),
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, asset} <- resolve_asset_target(version, target_id),
          {:ok, opts} <- operator_asset_run_opts(asset, request) do
-      submit_asset_run(asset.ref, Keyword.put(opts, :manifest_version_id, manifest_version_id))
+      audit_operator_command(
+        context,
+        %{
+          action: "operator.asset_run.submit",
+          manifest_version_id: manifest_version_id,
+          target_type: :asset,
+          target_id: target_id_for_asset(asset.ref),
+          target_ref: ref_to_string(asset.ref),
+          resource_type: :run,
+          payload: Map.from_struct(request)
+        },
+        fn ->
+          submit_asset_run(
+            asset.ref,
+            Keyword.put(opts, :manifest_version_id, manifest_version_id)
+          )
+        end
+      )
     end
   end
 
@@ -630,10 +672,10 @@ defmodule FavnOrchestrator do
           AssetRunRequest.t() | PipelineRunRequest.t() | map() | keyword() | nil
         ) :: {:ok, run_id()} | {:error, term()}
   def submit_operator_run(actor_context, manifest_version_id, target, command_input \\ %{}) do
-    with :ok <- require_operator_context(actor_context),
+    with {:ok, _actor, _session, context} <- authorize_operator_context(actor_context),
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, normalized_target} <- normalize_operator_run_target(version, target) do
-      submit_operator_run_target(version, normalized_target, command_input)
+      submit_operator_run_target(context, version, normalized_target, command_input)
     end
   end
 
@@ -662,14 +704,28 @@ defmodule FavnOrchestrator do
         target_id,
         command_input \\ %{}
       ) do
-    with :ok <- require_operator_context(actor_context),
+    with {:ok, _actor, _session, context} <- authorize_operator_context(actor_context),
          {:ok, request} <- AssetBackfillRequest.from_input(command_input),
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, asset} <- resolve_asset_target(version, target_id),
          {:ok, opts} <- operator_asset_backfill_opts(asset, request) do
-      BackfillManager.submit_asset_backfill(
-        asset.ref,
-        Keyword.put(opts, :manifest_version_id, manifest_version_id)
+      audit_operator_command(
+        context,
+        %{
+          action: "operator.asset_backfill.submit",
+          manifest_version_id: manifest_version_id,
+          target_type: :asset,
+          target_id: target_id_for_asset(asset.ref),
+          target_ref: ref_to_string(asset.ref),
+          resource_type: :backfill,
+          payload: Map.from_struct(request)
+        },
+        fn ->
+          BackfillManager.submit_asset_backfill(
+            asset.ref,
+            Keyword.put(opts, :manifest_version_id, manifest_version_id)
+          )
+        end
       )
     end
   end
@@ -908,26 +964,60 @@ defmodule FavnOrchestrator do
 
   defp normalize_operator_run_target(_version, _target), do: {:error, :invalid_target}
 
-  defp submit_operator_run_target(%Version{} = version, %{type: :asset, asset: asset}, input) do
+  defp submit_operator_run_target(
+         %OperatorContext{} = context,
+         %Version{} = version,
+         %{type: :asset, asset: asset},
+         input
+       ) do
     with {:ok, request} <- AssetRunRequest.from_input(input),
          {:ok, opts} <- operator_asset_run_opts(asset, request) do
-      submit_asset_run(
-        asset.ref,
-        Keyword.put(opts, :manifest_version_id, version.manifest_version_id)
+      audit_operator_command(
+        context,
+        %{
+          action: "operator.asset_run.submit",
+          manifest_version_id: version.manifest_version_id,
+          target_type: :asset,
+          target_id: target_id_for_asset(asset.ref),
+          target_ref: ref_to_string(asset.ref),
+          resource_type: :run,
+          payload: Map.from_struct(request)
+        },
+        fn ->
+          submit_asset_run(
+            asset.ref,
+            Keyword.put(opts, :manifest_version_id, version.manifest_version_id)
+          )
+        end
       )
     end
   end
 
   defp submit_operator_run_target(
+         %OperatorContext{} = context,
          %Version{} = version,
          %{type: :pipeline, pipeline_module: pipeline_module},
          input
        ) do
     with {:ok, request} <- PipelineRunRequest.from_input(input),
          {:ok, opts} <- operator_pipeline_run_opts(request) do
-      submit_pipeline_run(
-        pipeline_module,
-        Keyword.put(opts, :manifest_version_id, version.manifest_version_id)
+      audit_operator_command(
+        context,
+        %{
+          action: "operator.pipeline_run.submit",
+          manifest_version_id: version.manifest_version_id,
+          target_type: :pipeline,
+          target_id: target_id_for_pipeline(pipeline_module),
+          target_ref: Atom.to_string(pipeline_module),
+          resource_type: :run,
+          payload: Map.from_struct(request)
+        },
+        fn ->
+          submit_pipeline_run(
+            pipeline_module,
+            Keyword.put(opts, :manifest_version_id, version.manifest_version_id)
+          )
+        end
       )
     end
   end
@@ -1055,8 +1145,7 @@ defmodule FavnOrchestrator do
   :unauthenticated}`; authenticated actors without the operator role return
   `{:error, :forbidden}`.
 
-  TODO: add a narrow audit event for accepted LiveView operator commands once the
-  audit shape for same-BEAM browser actions is finalized.
+  Accepted commands are durably audited before the runtime mutation is submitted.
   """
   @spec submit_operator_pipeline_run(
           operator_actor_context(),
@@ -1075,14 +1164,28 @@ defmodule FavnOrchestrator do
         target_id,
         command_input \\ %{}
       ) do
-    with :ok <- require_operator_context(actor_context),
+    with {:ok, _actor, _session, context} <- authorize_operator_context(actor_context),
          {:ok, request} <- PipelineRunRequest.from_input(command_input),
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id),
          {:ok, opts} <- operator_pipeline_run_opts(request) do
-      submit_pipeline_run(
-        pipeline_module,
-        Keyword.put(opts, :manifest_version_id, manifest_version_id)
+      audit_operator_command(
+        context,
+        %{
+          action: "operator.pipeline_run.submit",
+          manifest_version_id: manifest_version_id,
+          target_type: :pipeline,
+          target_id: target_id_for_pipeline(pipeline_module),
+          target_ref: Atom.to_string(pipeline_module),
+          resource_type: :run,
+          payload: Map.from_struct(request)
+        },
+        fn ->
+          submit_pipeline_run(
+            pipeline_module,
+            Keyword.put(opts, :manifest_version_id, manifest_version_id)
+          )
+        end
       )
     end
   end
@@ -1271,8 +1374,7 @@ defmodule FavnOrchestrator do
   :unauthenticated}`; authenticated actors without the operator role return
   `{:error, :forbidden}`.
 
-  TODO: add a narrow audit event for accepted LiveView operator commands once the
-  audit shape for same-BEAM browser actions is finalized.
+  Accepted commands are durably audited before the runtime mutation is submitted.
   """
   @spec submit_operator_pipeline_backfill(
           operator_actor_context(),
@@ -1291,14 +1393,28 @@ defmodule FavnOrchestrator do
         target_id,
         command_input \\ %{}
       ) do
-    with :ok <- require_operator_context(actor_context),
+    with {:ok, _actor, _session, context} <- authorize_operator_context(actor_context),
          {:ok, request} <- PipelineBackfillRequest.from_input(command_input),
          {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id),
          {:ok, opts} <- operator_pipeline_backfill_opts(request) do
-      submit_pipeline_backfill(
-        pipeline_module,
-        Keyword.put(opts, :manifest_version_id, manifest_version_id)
+      audit_operator_command(
+        context,
+        %{
+          action: "operator.pipeline_backfill.submit",
+          manifest_version_id: manifest_version_id,
+          target_type: :pipeline,
+          target_id: target_id_for_pipeline(pipeline_module),
+          target_ref: Atom.to_string(pipeline_module),
+          resource_type: :backfill,
+          payload: Map.from_struct(request)
+        },
+        fn ->
+          submit_pipeline_backfill(
+            pipeline_module,
+            Keyword.put(opts, :manifest_version_id, manifest_version_id)
+          )
+        end
       )
     end
   end
@@ -1445,9 +1561,8 @@ defmodule FavnOrchestrator do
   @spec cancel_operator_run(operator_actor_context(), run_id()) :: :ok | {:error, term()}
   def cancel_operator_run(actor_context, run_id)
       when is_map(actor_context) and is_binary(run_id) do
-    with :ok <- require_operator_context(actor_context),
-         {:ok, actor} <- actor_context_object(actor_context, :actor) do
-      cancel_run(run_id, %{actor_id: context_id(actor), requested_by: :operator})
+    with {:ok, actor, _session, _context} <- authorize_operator_context(actor_context) do
+      cancel_run(run_id, %{actor_id: actor.id, requested_by: :operator})
     end
   end
 
@@ -1477,10 +1592,9 @@ defmodule FavnOrchestrator do
           {:ok, map()} | {:partial, map()} | {:error, term()}
   def retry_operator_run_remaining(actor_context, run_id)
       when is_map(actor_context) and is_binary(run_id) do
-    with :ok <- require_operator_context(actor_context),
-         {:ok, actor} <- actor_context_object(actor_context, :actor) do
+    with {:ok, actor, _session, _context} <- authorize_operator_context(actor_context) do
       retry_remaining(run_id,
-        metadata: %{operator_retry: true, actor_id: context_id(actor)},
+        metadata: %{operator_retry: true, actor_id: actor.id},
         requested_by: :operator
       )
     end
@@ -1629,32 +1743,57 @@ defmodule FavnOrchestrator do
 
   defp ensure_window_rerunnable(_window), do: {:error, :backfill_window_not_rerunnable}
 
-  defp require_operator_context(actor_context) when is_map(actor_context) do
-    with {:ok, actor} <- actor_context_object(actor_context, :actor),
-         {:ok, session} <- actor_context_object(actor_context, :session),
-         {:ok, persisted_actor, persisted_session} <- load_operator_context(actor, session),
+  defp audit_operator_command(%OperatorContext{} = context, attrs, submit_fun)
+       when is_map(attrs) and is_function(submit_fun, 0) do
+    with {:ok, event} <-
+           Audit.operator_command_event(context, Map.put(attrs, :outcome, :accepted)),
+         :ok <- AuditStore.put_event(event) do
+      case submit_fun.() do
+        {:ok, resource_id} = ok ->
+          _result =
+            AuditStore.update_event_result(event.id, %{
+              outcome: :accepted,
+              resource_type: Map.get(attrs, :resource_type),
+              resource_id: resource_id
+            })
+
+          ok
+
+        {:error, reason} = error ->
+          _result =
+            AuditStore.update_event_result(event.id, %{
+              outcome: :rejected,
+              failure_class: AuditRedactor.failure_class(reason)
+            })
+
+          error
+      end
+    end
+  end
+
+  defp authorize_operator_context(actor_context) when is_map(actor_context) do
+    with {:ok, context} <- OperatorContext.normalize(actor_context),
+         {:ok, persisted_actor, persisted_session} <- load_operator_context(context),
          :ok <- ensure_operator_session_context(persisted_actor, persisted_session) do
-      if Auth.has_role?(persisted_actor, :operator), do: :ok, else: {:error, :forbidden}
+      if Auth.has_role?(persisted_actor, :operator) do
+        {:ok, persisted_actor, persisted_session, context}
+      else
+        {:error, :forbidden}
+      end
     else
       {:error, :missing_context} -> {:error, :unauthenticated}
       {:error, :invalid_session} -> {:error, :unauthenticated}
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp require_operator_context(_actor_context), do: {:error, :unauthenticated}
+  defp authorize_operator_context(_actor_context), do: {:error, :unauthenticated}
 
-  defp actor_context_object(actor_context, key) do
-    case Map.get(actor_context, key) || Map.get(actor_context, Atom.to_string(key)) do
-      %{id: id} = object when is_binary(id) and id != "" -> {:ok, object}
-      %{"id" => id} = object when is_binary(id) and id != "" -> {:ok, object}
-      _object -> {:error, :missing_context}
-    end
+  defp load_operator_context(%OperatorContext{} = context) do
+    load_operator_context_ids(context.actor_id, context.session_id)
   end
 
-  defp load_operator_context(actor, session) do
-    actor_id = context_id(actor)
-    session_id = context_id(session)
-
+  defp load_operator_context_ids(actor_id, session_id) do
     with true <- is_binary(actor_id) and actor_id != "",
          true <- is_binary(session_id) and session_id != "",
          {:ok, persisted_session} <- Storage.get_auth_session(session_id),
@@ -1665,10 +1804,6 @@ defmodule FavnOrchestrator do
       _error -> {:error, :invalid_session}
     end
   end
-
-  defp context_id(%{id: id}), do: id
-  defp context_id(%{"id" => id}), do: id
-  defp context_id(_context), do: nil
 
   defp context_actor_id(%{actor_id: actor_id}), do: actor_id
   defp context_actor_id(%{"actor_id" => actor_id}), do: actor_id

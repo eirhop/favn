@@ -3,6 +3,7 @@ defmodule FavnStoragePostgres.Migrations do
 
   alias Ecto.Adapters.SQL
   alias FavnStoragePostgres.Migrations.AddAssetFreshnessState
+  alias FavnStoragePostgres.Migrations.AddAuditEvents
   alias FavnStoragePostgres.Migrations.AddExecutionAdmissionWaiters
   alias FavnStoragePostgres.Migrations.AddExecutionGroupSummaries
   alias FavnStoragePostgres.Migrations.AddExecutionLeases
@@ -33,7 +34,8 @@ defmodule FavnStoragePostgres.Migrations do
     {20_260_524_100_000, AddExecutionGroupSummaries},
     {20_260_525_100_000, AddTargetStatuses},
     {20_260_525_110_000, AddRunPipelineQueryColumn},
-    {20_260_525_120_000, AddExecutionOwnerships}
+    {20_260_525_120_000, AddExecutionOwnerships},
+    {20_260_529_100_000, AddAuditEvents}
   ]
   @required_tables [
     "public.favn_manifest_versions",
@@ -49,6 +51,7 @@ defmodule FavnStoragePostgres.Migrations do
     "public.favn_run_write_seq",
     "public.favn_run_event_global_seq",
     "public.favn_log_entries",
+    "public.favn_audit_events",
     "public.favn_log_global_seq",
     "public.favn_execution_leases",
     "public.favn_execution_lease_scopes",

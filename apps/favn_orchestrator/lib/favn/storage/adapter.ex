@@ -41,6 +41,7 @@ defmodule Favn.Storage.Adapter do
   """
 
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.Audit.Event, as: AuditEvent
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -275,6 +276,11 @@ defmodule Favn.Storage.Adapter do
               :ok | {:error, error()}
   @callback put_auth_audit(map(), adapter_opts()) :: :ok | {:error, error()}
   @callback list_auth_audit(keyword(), adapter_opts()) :: {:ok, [map()]} | {:error, error()}
+  @callback put_audit_event(AuditEvent.t() | map(), adapter_opts()) :: :ok | {:error, error()}
+  @callback update_audit_event_result(String.t(), map(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback list_audit_events(keyword(), adapter_opts()) ::
+              {:ok, CursorPage.t(AuditEvent.t())} | {:error, error()}
 
   @callback reserve_idempotency_record(map(), adapter_opts()) ::
               {:ok, {:reserved, map()} | {:replay, map()}}
@@ -301,6 +307,9 @@ defmodule Favn.Storage.Adapter do
                       revoke_auth_sessions_for_actor: 3,
                       put_auth_audit: 2,
                       list_auth_audit: 2,
+                      put_audit_event: 2,
+                      update_audit_event_result: 3,
+                      list_audit_events: 2,
                       reserve_idempotency_record: 2,
                       complete_idempotency_record: 3,
                       get_idempotency_record: 2,

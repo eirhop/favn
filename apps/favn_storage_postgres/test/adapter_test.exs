@@ -66,6 +66,7 @@ defmodule FavnStoragePostgres.AdapterTest do
     assert {:error, :invalid_pagination} = Adapter.list_coverage_baselines(filters, opts)
     assert {:error, :invalid_pagination} = Adapter.list_backfill_windows(filters, opts)
     assert {:error, :invalid_pagination} = Adapter.list_asset_window_states(filters, opts)
+    assert {:error, :invalid_cursor_pagination} = Adapter.list_audit_events(filters, opts)
   end
 
   test "log read APIs validate pagination and cursors before database access" do

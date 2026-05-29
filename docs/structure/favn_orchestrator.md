@@ -59,10 +59,16 @@ Code:
 - Operator run/backfill command DTOs under
   `apps/favn_orchestrator/lib/favn_orchestrator/operator_commands/`, used by the
   public facade to translate browser/API/CLI intent into runtime submit options.
+- Operator command context and durable audit contracts under
+  `apps/favn_orchestrator/lib/favn_orchestrator/operator/context.ex` and
+  `apps/favn_orchestrator/lib/favn_orchestrator/audit/`. Same-BEAM operator
+  facades reload persisted auth state, authorize roles, redact payloads, persist
+  an audit event before accepted run/backfill mutations, and update resource ids
+  after acceptance when available.
 - Operational pipeline and asset backfill range expansion, parent/child run
   grouping, ledger rows, and partial-submission compensation in
   `apps/favn_orchestrator/lib/favn_orchestrator/backfill_manager.ex`
-- Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
+- Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including durable operator audit event storage DTOs and full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - Private API router and DTO boundary under `apps/favn_orchestrator/lib/favn_orchestrator/api/`
 - HTTP contract schemas for private API JSON-safe DTOs under `apps/favn_orchestrator/priv/http_contract/v1/`
@@ -81,6 +87,7 @@ Tests:
 - API contract tests under `apps/favn_orchestrator/test/api/`
 - HTTP schema shape tests under `apps/favn_orchestrator/test/http_contract/`
 - Auth storage/facade tests under `apps/favn_orchestrator/test/auth/`
+- Operator audit contract tests under `apps/favn_orchestrator/test/audit/`
 - Operator command DTO tests under `apps/favn_orchestrator/test/operator_commands/`
 - Production runtime config/runtime dependency config/readiness/diagnostics tests under `apps/favn_orchestrator/test/production_runtime_config_test.exs`, `apps/favn_orchestrator/test/runtime_config_test.exs`, `apps/favn_orchestrator/test/readiness_test.exs`, and `apps/favn_orchestrator/test/diagnostics_test.exs`
 - storage contract/codec tests under `apps/favn_orchestrator/test/storage/`

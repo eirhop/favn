@@ -16,6 +16,7 @@ Code:
 - Execution-group summaries and log cursor indexes: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_execution_group_summaries.ex`
 - Target status projection migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_target_statuses.ex`
 - Pipeline target run-history query metadata migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_run_pipeline_query_column.ex`
+- Durable operator audit event migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_audit_events.ex`
 
 Tests:
 - `apps/favn_storage_postgres/test/`

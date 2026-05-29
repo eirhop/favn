@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Storage do
 
   alias Favn.Manifest.Version
   alias Favn.Storage.Adapter, as: StorageAdapter
+  alias FavnOrchestrator.Audit.Event, as: AuditEvent
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -773,6 +774,31 @@ defmodule FavnOrchestrator.Storage do
   @spec list_auth_audit(keyword()) :: {:ok, [map()]} | {:error, term()}
   def list_auth_audit(opts \\ []) when is_list(opts) do
     adapter_call(fn adapter, adapter_opts -> adapter.list_auth_audit(opts, adapter_opts) end)
+  end
+
+  @spec put_audit_event(AuditEvent.t() | map()) :: :ok | {:error, term()}
+  def put_audit_event(%AuditEvent{} = event) do
+    adapter_call(fn adapter, opts -> adapter.put_audit_event(event, opts) end)
+  end
+
+  def put_audit_event(event) when is_map(event) do
+    adapter_call(fn adapter, opts -> adapter.put_audit_event(event, opts) end)
+  end
+
+  @spec update_audit_event_result(String.t(), map()) :: :ok | {:error, term()}
+  def update_audit_event_result(event_id, attrs)
+      when is_binary(event_id) and is_map(attrs) do
+    adapter_call(fn adapter, opts -> adapter.update_audit_event_result(event_id, attrs, opts) end)
+  end
+
+  @spec list_audit_events(keyword()) ::
+          {:ok, CursorPage.t(AuditEvent.t())} | {:error, term()}
+  def list_audit_events(opts \\ []) when is_list(opts) do
+    with {:ok, scan_opts} <- CursorPage.normalize_opts(Keyword.take(opts, [:limit, :after])) do
+      adapter_call(fn adapter, adapter_opts ->
+        adapter.list_audit_events(scan_opts, adapter_opts)
+      end)
+    end
   end
 
   @spec reserve_idempotency_record(map()) ::

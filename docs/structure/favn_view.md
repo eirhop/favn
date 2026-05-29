@@ -39,7 +39,9 @@ Ownership rules:
 - Operator mutation forms for pipeline runs, pipeline backfills, asset/window
   runs, and asset range backfills must pass refresh intent through the public
   orchestrator facade rather than reconstructing freshness, range expansion, or
-  backfill state in the UI.
+  backfill state in the UI. LiveViews build browser-safe operator context through
+  `FavnOrchestrator.operator_context/3`; durable audit creation, redaction,
+  storage, and command semantics remain in `favn_orchestrator`.
 - Operator run cancellation controls must call the public `FavnOrchestrator`
   facade only. UI state may disable buttons, show confirmations, and map stable
   error atoms to labels, but cancellation lifecycle, audit, idempotency, runner

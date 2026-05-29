@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   @behaviour Favn.Storage.Adapter
 
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.Audit.Event, as: AuditEvent
   alias Favn.Scheduler.State, as: SchedulerState
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
@@ -77,6 +78,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           auth_sessions: %{required(String.t()) => map()},
           auth_session_hashes: %{required(String.t()) => String.t()},
           auth_audits: [map()],
+          audit_events: %{required(String.t()) => AuditEvent.t()},
           idempotency_records: %{required(String.t()) => map()}
         }
 
@@ -840,6 +842,25 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def put_audit_event(event, opts) when is_map(event) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_audit_event, event})
+  end
+
+  @impl true
+  def update_audit_event_result(event_id, attrs, opts)
+      when is_binary(event_id) and is_map(attrs) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:update_audit_event_result, event_id, attrs})
+  end
+
+  @impl true
+  def list_audit_events(audit_opts, opts) when is_list(audit_opts) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_audit_events, audit_opts})
+  end
+
+  @impl true
   def reserve_idempotency_record(record, opts) when is_map(record) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:reserve_idempotency_record, record})
@@ -891,6 +912,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       auth_sessions: %{},
       auth_session_hashes: %{},
       auth_audits: [],
+      audit_events: %{},
       idempotency_records: %{}
     }
   end
@@ -2017,6 +2039,44 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, {:ok, state.auth_audits |> Enum.take(limit) |> Enum.reverse()}, state}
   end
 
+  def handle_call({:put_audit_event, event}, _from, state) do
+    case AuditEvent.new(event) do
+      {:ok, audit_event} ->
+        {:reply, :ok,
+         %{state | audit_events: Map.put(state.audit_events, audit_event.id, audit_event)}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:update_audit_event_result, event_id, attrs}, _from, state) do
+    case Map.fetch(state.audit_events, event_id) do
+      {:ok, event} ->
+        case AuditEvent.put_result(event, attrs) do
+          {:ok, updated} ->
+            {:reply, :ok, %{state | audit_events: Map.put(state.audit_events, event_id, updated)}}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:list_audit_events, opts}, _from, state) do
+    rows =
+      state.audit_events
+      |> Map.values()
+      |> Enum.sort_by(&{DateTime.to_unix(&1.occurred_at, :microsecond), &1.id}, :desc)
+      |> filter_after_audit_cursor(Keyword.get(opts, :after))
+      |> Enum.take(Keyword.fetch!(opts, :limit) + 1)
+
+    {:reply, {:ok, CursorPage.from_fetched(rows, opts, &audit_event_cursor!/1)}, state}
+  end
+
   def handle_call({:reserve_idempotency_record, record}, _from, state) do
     case Map.fetch(state.idempotency_records, record.id) do
       :error ->
@@ -2783,6 +2843,45 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   defp cursor_drop(rows, after_key, sort_fun) do
     Enum.drop_while(rows, &(sort_fun.(&1) <= after_key))
   end
+
+  defp filter_after_audit_cursor(rows, nil), do: rows
+
+  defp filter_after_audit_cursor(rows, %{
+         kind: :audit_event,
+         occurred_at: %DateTime{} = occurred_at,
+         id: id
+       })
+       when is_binary(id) do
+    after_key = audit_event_sort_key(occurred_at, id)
+    Enum.drop_while(rows, &(audit_event_sort_key(&1) >= after_key))
+  end
+
+  defp filter_after_audit_cursor(rows, %{
+         "kind" => "audit_event",
+         "occurred_at" => occurred_at,
+         "id" => id
+       })
+       when is_binary(occurred_at) and is_binary(id) do
+    case DateTime.from_iso8601(occurred_at) do
+      {:ok, datetime, _offset} ->
+        filter_after_audit_cursor(rows, %{kind: :audit_event, occurred_at: datetime, id: id})
+
+      _other ->
+        rows
+    end
+  end
+
+  defp filter_after_audit_cursor(rows, _cursor), do: rows
+
+  defp audit_event_cursor!(%AuditEvent{} = event) do
+    %{kind: :audit_event, occurred_at: event.occurred_at, id: event.id}
+  end
+
+  defp audit_event_sort_key(%AuditEvent{} = event),
+    do: audit_event_sort_key(event.occurred_at, event.id)
+
+  defp audit_event_sort_key(%DateTime{} = occurred_at, id),
+    do: {DateTime.to_unix(occurred_at, :microsecond), id}
 
   defp backfill_window_cursor(nil), do: {:ok, nil}
 

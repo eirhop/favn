@@ -7,6 +7,7 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   alias Ecto.Adapters.SQL
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.Audit.Event, as: AuditEvent
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -18,6 +19,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
+  alias FavnOrchestrator.Storage.AuditEventCodec
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
   alias FavnOrchestrator.Storage.Backfill.ProgressCodec
@@ -1383,6 +1385,87 @@ defmodule Favn.Storage.Adapter.Postgres do
   @impl true
   def list_auth_audit(_audit_opts, _opts), do: auth_persistence_not_supported()
 
+  @impl true
+  def put_audit_event(event, opts) when is_map(event) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, event} <- AuditEvent.new(event),
+         {:ok, event_payload} <- AuditEventCodec.encode(event) do
+      sql = """
+      INSERT INTO favn_audit_events (
+        audit_id, occurred_at, action, outcome, actor_id, session_id,
+        browser_session_id, source, manifest_version_id, target_type, target_id,
+        resource_type, resource_id, event_blob
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      """
+
+      query_ok(repo, sql, audit_event_params(event, event_payload))
+    end
+  end
+
+  @impl true
+  def update_audit_event_result(event_id, attrs, opts)
+      when is_binary(event_id) and is_map(attrs) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, existing} <- fetch_audit_event(repo, event_id),
+         {:ok, updated} <- AuditEvent.put_result(existing, attrs),
+         {:ok, event_payload} <- AuditEventCodec.encode(updated) do
+      sql = """
+      UPDATE favn_audit_events
+      SET outcome = $1, resource_type = $2, resource_id = $3, event_blob = $4
+      WHERE audit_id = $5
+      """
+
+      query_ok(repo, sql, [
+        Atom.to_string(updated.outcome),
+        optional_atom_string(updated.resource_type),
+        updated.resource_id,
+        event_payload,
+        event_id
+      ])
+    end
+  end
+
+  @impl true
+  def list_audit_events(audit_opts, opts) when is_list(audit_opts) and is_list(opts) do
+    with {:ok, audit_opts} <- CursorPage.normalize_opts(audit_opts),
+         {:ok, repo} <- resolve_repo(opts) do
+      {cursor_sql, cursor_params} = audit_cursor_clause(Keyword.get(audit_opts, :after))
+
+      sql = """
+      SELECT event_blob
+      FROM favn_audit_events
+      #{cursor_sql}
+      ORDER BY occurred_at DESC, audit_id DESC
+      LIMIT $#{length(cursor_params) + 1}
+      """
+
+      params = cursor_params ++ [Keyword.fetch!(audit_opts, :limit) + 1]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> Enum.reduce_while({:ok, []}, fn [payload], {:ok, acc} ->
+            case AuditEventCodec.decode(payload) do
+              {:ok, event} -> {:cont, {:ok, [event | acc]}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+          |> case do
+            {:ok, events} ->
+              events = Enum.reverse(events)
+              {:ok, CursorPage.from_fetched(events, audit_opts, &audit_event_cursor!/1)}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
   defp coverage_baseline_params(%CoverageBaseline{} = baseline) do
     [
       baseline.baseline_id,
@@ -1860,6 +1943,60 @@ defmodule Favn.Storage.Adapter.Postgres do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp fetch_audit_event(repo, event_id) do
+    sql = "SELECT event_blob FROM favn_audit_events WHERE audit_id = $1 LIMIT 1"
+
+    case SQL.query(repo, sql, [event_id]) do
+      {:ok, %{rows: [[payload]]}} -> AuditEventCodec.decode(payload)
+      {:ok, %{rows: []}} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp audit_event_params(%AuditEvent{} = event, event_payload) do
+    [
+      event.id,
+      event.occurred_at,
+      event.action,
+      Atom.to_string(event.outcome),
+      event.actor_id,
+      event.session_id,
+      event.browser_session_id,
+      Atom.to_string(event.source),
+      event.manifest_version_id,
+      optional_atom_string(event.target_type),
+      event.target_id,
+      optional_atom_string(event.resource_type),
+      event.resource_id,
+      event_payload
+    ]
+  end
+
+  defp audit_cursor_clause(%{kind: :audit_event, occurred_at: %DateTime{} = occurred_at, id: id})
+       when is_binary(id) do
+    {"WHERE (occurred_at < $1 OR (occurred_at = $1 AND audit_id < $2))", [occurred_at, id]}
+  end
+
+  defp audit_cursor_clause(%{"kind" => "audit_event", "occurred_at" => occurred_at, "id" => id})
+       when is_binary(occurred_at) and is_binary(id) do
+    case DateTime.from_iso8601(occurred_at) do
+      {:ok, datetime, _offset} ->
+        audit_cursor_clause(%{kind: :audit_event, occurred_at: datetime, id: id})
+
+      _other ->
+        {"", []}
+    end
+  end
+
+  defp audit_cursor_clause(_cursor), do: {"", []}
+
+  defp audit_event_cursor!(%AuditEvent{} = event) do
+    %{kind: :audit_event, occurred_at: event.occurred_at, id: event.id}
+  end
+
+  defp optional_atom_string(nil), do: nil
+  defp optional_atom_string(value) when is_atom(value), do: Atom.to_string(value)
 
   defp replacement_scope(:all), do: {:ok, :all}
   defp replacement_scope({:backfill_run, id}) when is_binary(id), do: {:ok, {:backfill_run, id}}

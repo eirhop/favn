@@ -387,7 +387,11 @@ defmodule FavnView.RunDetailLive do
 
   defp actor_context(socket) do
     %Scope{} = scope = socket.assigns.current_scope
-    %{actor: scope.actor, session: scope.session}
+
+    case FavnOrchestrator.operator_context(scope.actor, scope.session, source: :live_view) do
+      {:ok, context} -> context
+      {:error, _reason} -> %{}
+    end
   end
 
   defp get_operator_run_detail(run_id, opts) do

@@ -15,6 +15,7 @@ defmodule Favn.SQLiteStorageTest do
   alias Favn.Storage.Adapter.SQLite, as: Adapter
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Audit.Event, as: AuditEvent
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.Backfill.AssetWindowState
@@ -85,6 +86,36 @@ defmodule Favn.SQLiteStorageTest do
     assert {:ok, fetched} = Storage.get_run("sqlite-run-1")
     assert fetched.id == run.id
     assert fetched.status == :running
+  end
+
+  test "persists and lists durable audit events" do
+    assert {:ok, event} =
+             AuditEvent.new(%{
+               id: "aud_sqlite_1",
+               occurred_at: ~U[2026-05-29 00:00:00Z],
+               action: "operator.asset_run.submit",
+               outcome: :accepted,
+               actor_id: "act_sqlite",
+               session_id: "ses_sqlite",
+               source: :live_view,
+               manifest_version_id: "manifest_v1",
+               target_type: :asset,
+               target_id: "asset:Elixir.MyApp.Assets.Gold:asset",
+               resource_type: :run,
+               payload: %{"refresh_mode" => "auto"},
+               request_context: %{},
+               metadata: %{}
+             })
+
+    assert :ok = OrchestratorStorage.put_audit_event(event)
+
+    assert :ok =
+             OrchestratorStorage.update_audit_event_result(event.id, %{resource_id: "run_sqlite"})
+
+    assert {:ok, page} = OrchestratorStorage.list_audit_events(limit: 10)
+    assert [stored] = page.items
+    assert stored.id == event.id
+    assert stored.resource_id == "run_sqlite"
   end
 
   test "lists runs newest first by latest persisted write, not by id" do

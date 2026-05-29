@@ -31,6 +31,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 - Rebuild browser auth/session handling and browser-edge abuse controls in `apps/favn_view` when real operator screens return.
 - Decide whether to add session idle timeout and sudo/re-auth modes once concrete operator flows need them.
+- Add a real browser command idempotency key contract for LiveView operator mutations if double-submit/replay protection is needed beyond the current one-durable-audit-event-per-accepted-command semantics.
 
 ### 3a. Rebuild The Phoenix/LiveView UI
 

@@ -12,6 +12,7 @@ Code:
 - `apps/favn_storage_sqlite/lib/favn_storage_sqlite/`
 - SQLite database model, ER diagram, indexes, and usage: `docs/structure/favn_storage_sqlite_database.md`
 - Auth/session/audit schema migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_auth_state.ex`
+- Durable operator audit event migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_audit_events.ex`
 - Command idempotency schema migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_idempotency_records.ex`
 - Run-event global sequence migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_run_event_global_sequence.ex`
 - Asset freshness state migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_asset_freshness_state.ex`
@@ -25,7 +26,7 @@ Tests:
 - `apps/favn_storage_sqlite/test/`
 - SQLite readiness diagnostics: `apps/favn_storage_sqlite/test/sqlite_readiness_test.exs`
 - Stopped-backend control-plane restore verification, including auth/session/audit and command-idempotency state: `apps/favn_storage_sqlite/test/sqlite_control_plane_restore_test.exs`
-- Auth/session/audit and command-idempotency storage restart coverage: `apps/favn_storage_sqlite/test/sqlite_storage_test.exs`
+- Auth/session/audit, durable operator audit event, and command-idempotency storage restart coverage: `apps/favn_storage_sqlite/test/sqlite_storage_test.exs`
 - Single-node bootstrap acceptance verification: `apps/favn_storage_sqlite/test/sqlite_single_node_bootstrap_acceptance_test.exs`
 
 Use when changing SQLite persistence, migrations, adapter lifecycle, readiness
