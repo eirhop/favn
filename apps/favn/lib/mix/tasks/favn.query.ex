@@ -74,19 +74,17 @@ defmodule Mix.Tasks.Favn.Query do
   end
 
   defp run_query(sql, opts) do
-    with :ok <- ensure_app_started() do
-      case Dev.query(sql, opts) do
-        {:ok, %{result: %Favn.SQL.Result{} = result, displayed_rows: rows, display_limit: limit}} ->
-          print_result(result, rows, limit)
+    :ok = ensure_app_started()
 
-        {:ok, result} ->
-          IO.puts(inspect(result))
+    case Dev.query(sql, opts) do
+      {:ok, %{result: %Favn.SQL.Result{} = result, displayed_rows: rows, display_limit: limit}} ->
+        print_result(result, rows, limit)
 
-        {:error, reason} ->
-          Mix.raise(format_error(reason))
-      end
-    else
-      {:error, reason} -> Mix.raise(format_error(reason))
+      {:ok, result} ->
+        IO.puts(inspect(result))
+
+      {:error, reason} ->
+        Mix.raise(format_error(reason))
     end
   end
 

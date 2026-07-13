@@ -148,9 +148,9 @@ defmodule FavnView.LogsViewModel do
   def ref_label({module, name}), do: "#{module_label(module)}.#{name}"
   def ref_label(%{module: module, name: name}), do: "#{module_label(module)}.#{name}"
   def ref_label(%{"module" => module, "name" => name}), do: "#{module_label(module)}.#{name}"
+  def ref_label(nil), do: nil
   def ref_label(ref) when is_atom(ref), do: ref |> Atom.to_string() |> strip_elixir_prefix()
   def ref_label(ref) when is_binary(ref), do: strip_elixir_prefix(ref)
-  def ref_label(nil), do: nil
   def ref_label(ref), do: inspect(ref)
 
   def deterministic_step_id(run_id, asset_ref), do: safe_id("#{run_id}:#{asset_ref}")

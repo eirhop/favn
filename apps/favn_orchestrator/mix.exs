@@ -10,7 +10,7 @@ defmodule FavnOrchestrator.MixProject do
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
-      elixir: "~> 1.19",
+      elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -31,7 +31,7 @@ defmodule FavnOrchestrator.MixProject do
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime", only: :test),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
       {:phoenix_pubsub, "~> 2.2"},
-      {:plug_cowboy, "~> 2.7"},
+      {:bandit, "~> 1.12"},
       {:tidewave, "~> 0.5", only: :dev},
       {:argon2_elixir, "~> 4.0"},
       {:jason, "~> 1.4"}

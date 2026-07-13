@@ -24,11 +24,8 @@ defmodule Mix.Tasks.Favn.Inspect do
   def run(args) do
     case parse_args(args) do
       {:ok, {command, relation, opts}} ->
-        with :ok <- ensure_app_started() do
-          run_command(command, relation, opts)
-        else
-          {:error, reason} -> Mix.raise(format_error(reason))
-        end
+        :ok = ensure_app_started()
+        run_command(command, relation, opts)
 
       {:error, message} ->
         Mix.raise(message)

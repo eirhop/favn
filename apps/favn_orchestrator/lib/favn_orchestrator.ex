@@ -3235,12 +3235,6 @@ defmodule FavnOrchestrator do
 
   defp detail_timeline_policy(_asset), do: {:day, "Etc/UTC"}
 
-  defp put_window_run_state(window, %{window: nil}) do
-    window
-    |> Map.put(:run_enabled?, false)
-    |> Map.put(:run_disabled_reason, :asset_has_no_window_policy)
-  end
-
   defp put_window_run_state(%{id: window_id} = window, asset) do
     with {:ok, window_request} <- window_request_from_id(window_id),
          {:ok, _anchor_window} <- resolve_asset_window(asset, window_request) do

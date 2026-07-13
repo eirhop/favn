@@ -356,8 +356,6 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
 
   def from_map(_value), do: {:error, :invalid_execution_ownership}
 
-  defp from_metadata(%__MODULE__{} = ownership), do: [ownership]
-
   defp from_metadata(%{} = map) do
     status =
       known_atom(Map.get(map, :status, Map.get(map, "status")), @statuses, :dispatch_intent)
@@ -402,8 +400,6 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
       _ -> []
     end
   end
-
-  defp from_metadata(_value), do: []
 
   defp to_metadata(%__MODULE__{} = ownership) do
     %{

@@ -44,8 +44,7 @@ defmodule FavnView.Components.LogViewer do
             <div class="flex flex-wrap items-center gap-2 sm:gap-3">
               <h2 class="text-xl font-medium tracking-tight sm:text-2xl">{@title}</h2>
               <span class={live_badge_class(@live?)} data-testid="log-live-status">
-                <span class={["status", @live? && "status-success", !@live? && "status-neutral"]}>
-                </span>
+                <span class={["status", @live? && "status-success", !@live? && "status-neutral"]}></span>
                 {if @live?, do: "Live streaming", else: "Loaded"}
               </span>
             </div>

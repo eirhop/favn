@@ -2662,8 +2662,6 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   defp reject_replacement_progress(values, {:pipeline, _module}), do: values
 
-  defp in_replacement_scope?(_value, :all), do: true
-
   defp in_replacement_scope?(%CoverageBaseline{created_by_run_id: id}, {:backfill_run, id}),
     do: true
 

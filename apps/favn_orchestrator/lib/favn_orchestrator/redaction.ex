@@ -74,9 +74,7 @@ defmodule FavnOrchestrator.Redaction do
   def redact(value) when is_atom(value), do: value
   def redact(value) when is_integer(value), do: value
   def redact(value) when is_float(value), do: value
-  def redact(value) when is_boolean(value), do: value
   def redact(value) when is_binary(value), do: value
-  def redact(nil), do: nil
   def redact(value), do: inspect(value)
 
   @doc """
@@ -97,8 +95,6 @@ defmodule FavnOrchestrator.Redaction do
   def redact_untrusted(value) when is_atom(value), do: value
   def redact_untrusted(value) when is_integer(value), do: value
   def redact_untrusted(value) when is_float(value), do: value
-  def redact_untrusted(value) when is_boolean(value), do: value
-  def redact_untrusted(nil), do: nil
   def redact_untrusted(value) when is_binary(value), do: "[REDACTED]"
 
   def redact_untrusted(value) when is_tuple(value) do
@@ -201,8 +197,6 @@ defmodule FavnOrchestrator.Redaction do
   defp redact_operational_untrusted(value) when is_atom(value), do: value
   defp redact_operational_untrusted(value) when is_integer(value), do: value
   defp redact_operational_untrusted(value) when is_float(value), do: value
-  defp redact_operational_untrusted(value) when is_boolean(value), do: value
-  defp redact_operational_untrusted(nil), do: nil
   defp redact_operational_untrusted(value) when is_binary(value), do: sanitize_text(value)
 
   defp redact_operational_untrusted(value) when is_tuple(value) do

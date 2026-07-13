@@ -44,7 +44,7 @@ jobs:
       - name: Setup Elixir and Erlang
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: '1.19.5'
+          elixir-version: '1.20.2'
           otp-version: '28.4.2'
 
       - name: Check test tag coverage
@@ -102,7 +102,7 @@ jobs:
       - name: Setup Elixir and Erlang
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: '1.19.5'
+          elixir-version: '1.20.2'
           otp-version: '28.4.2'
 
       - name: Install Hex and Rebar
@@ -138,7 +138,7 @@ jobs:
       - name: Setup Elixir and Erlang
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: '1.19.5'
+          elixir-version: '1.20.2'
           otp-version: '28.4.2'
 
       - name: Install Hex and Rebar

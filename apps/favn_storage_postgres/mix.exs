@@ -10,7 +10,7 @@ defmodule FavnStoragePostgres.MixProject do
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
-      elixir: "~> 1.19",
+      elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -27,7 +27,7 @@ defmodule FavnStoragePostgres.MixProject do
       internal_dep(:favn_orchestrator, "../favn_orchestrator", runtime: false),
       internal_dep(:favn_core, "../favn_core", runtime: false),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
-      {:ecto_sql, "~> 3.13.4"},
+      {:ecto_sql, "~> 3.14"},
       {:postgrex, "~> 0.22"}
     ]
   end

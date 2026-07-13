@@ -629,8 +629,6 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     end
   end
 
-  defp attach_meta_secret(_config), do: :error
-
   defp attach_metadata(config) when is_map(config) do
     case Map.fetch(config, :metadata) do
       {:ok, metadata} -> {:ok, metadata}
@@ -700,8 +698,6 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
       :error -> :error
     end
   end
-
-  defp secret_value(_config, _key), do: :error
 
   @impl true
   @spec execute(Conn.t(), iodata(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}

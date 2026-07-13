@@ -93,7 +93,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     %{
       "kind" => "error",
       "type" => error_type(value),
-      "message" => safe_error_message(exception_message(value) || value),
+      "message" => safe_error_message(value),
       "reason" => safe_error_reason(value),
       "redacted" => true,
       "truncated" => false
@@ -296,24 +296,24 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     do: Atom.to_string(module)
 
   defp error_type(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
+  defp error_type(value) when is_boolean(value), do: "boolean"
+  defp error_type(nil), do: "nil"
   defp error_type(value) when is_atom(value), do: Atom.to_string(value)
   defp error_type(value) when is_map(value), do: "map"
   defp error_type(value) when is_tuple(value), do: "tuple"
   defp error_type(value) when is_list(value), do: "list"
   defp error_type(value) when is_binary(value), do: "string"
   defp error_type(value) when is_number(value), do: "number"
-  defp error_type(value) when is_boolean(value), do: "boolean"
-  defp error_type(nil), do: "nil"
   defp error_type(_value), do: "term"
 
   defp scalar_string(value, _default) when is_binary(value), do: truncate(value)
-  defp scalar_string(value, _default) when is_atom(value), do: Atom.to_string(value)
   defp scalar_string(nil, default), do: default
+  defp scalar_string(value, _default) when is_atom(value), do: Atom.to_string(value)
   defp scalar_string(value, _default), do: inspect_value(value)
 
+  defp atom_string(nil), do: nil
   defp atom_string(value) when is_atom(value), do: Atom.to_string(value)
   defp atom_string(value) when is_binary(value), do: value
-  defp atom_string(nil), do: nil
   defp atom_string(value), do: inspect_value(value)
 
   defp key_to_string(key) when is_binary(key), do: key

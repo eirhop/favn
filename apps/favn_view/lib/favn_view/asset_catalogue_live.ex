@@ -212,7 +212,6 @@ defmodule FavnView.AssetCatalogueLive do
   defp normalize_mode(_mode), do: :list
 
   defp mode_query("list"), do: %{}
-  defp mode_query(:list), do: %{}
   defp mode_query(mode), do: %{mode: mode}
 
   defp get_graph(opts), do: configured_fun(:lineage_get_graph_fun, &Lineage.get_graph/1).(opts)

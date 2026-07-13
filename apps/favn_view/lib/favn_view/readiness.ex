@@ -164,6 +164,8 @@ defmodule FavnView.Readiness do
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key), do: key
 
+  defp redact(%_struct{} = value), do: value.__struct__
+
   defp redact(value) when is_map(value) do
     Map.new(value, fn {key, val} -> {key, redact(key, val)} end)
   end
@@ -173,7 +175,6 @@ defmodule FavnView.Readiness do
   defp redact(value) when is_tuple(value),
     do: value |> Tuple.to_list() |> Enum.map(&redact/1) |> List.to_tuple()
 
-  defp redact(%_struct{} = value), do: value.__struct__
   defp redact(value), do: value
 
   defp redact(key, _value) when key in [:token, :secret, :password, :authorization, :cookie],

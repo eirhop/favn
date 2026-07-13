@@ -101,8 +101,7 @@ defmodule FavnView.Components.RunsListPage do
             class="progress progress-info h-1.5 w-full bg-base-content/10"
             value={@summary.completed_asset_attempts}
             max={max(@summary.total_asset_attempts, 1)}
-          >
-          </progress>
+          ></progress>
         </div>
         <div class="space-y-2 border-base-content/10 sm:border-l sm:pl-5 xl:col-span-2">
           <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-base-content/50">
@@ -611,8 +610,7 @@ defmodule FavnView.Components.RunsListPage do
         class={["progress h-1.5 w-full bg-base-content/10", progress_class(@progress.tone)]}
         value={@progress.percent}
         max="100"
-      >
-      </progress>
+      ></progress>
     </div>
     """
   end

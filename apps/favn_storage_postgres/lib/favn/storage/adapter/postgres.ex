@@ -2719,7 +2719,6 @@ defmodule Favn.Storage.Adapter.Postgres do
       end
     else
       {:error, reason} -> {:error, reason}
-      other -> {:error, {:invalid_log_entry_insert, other}}
     end
   end
 

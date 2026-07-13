@@ -10,7 +10,7 @@ defmodule FavnStorageSqlite.MixProject do
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
-      elixir: "~> 1.19",
+      elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -27,8 +27,8 @@ defmodule FavnStorageSqlite.MixProject do
       internal_dep(:favn_orchestrator, "../favn_orchestrator", runtime: false),
       internal_dep(:favn_core, "../favn_core", runtime: false),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
-      {:ecto_sql, "~> 3.13.4"},
-      {:ecto_sqlite3, "~> 0.22.0"}
+      {:ecto_sql, "~> 3.14"},
+      {:ecto_sqlite3, "~> 0.24"}
     ]
   end
 

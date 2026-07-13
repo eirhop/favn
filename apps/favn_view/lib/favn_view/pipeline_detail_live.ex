@@ -324,8 +324,6 @@ defmodule FavnView.PipelineDetailLive do
     }
   end
 
-  defp window_kind(nil), do: :month
-
   defp window_kind(window) do
     window
     |> then(&(Map.get(&1, :kind) || Map.get(&1, "kind")))

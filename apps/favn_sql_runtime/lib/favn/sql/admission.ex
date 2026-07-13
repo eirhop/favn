@@ -23,8 +23,6 @@ defmodule Favn.SQL.Admission do
     |> acquire_and_run(operation, payload, fun)
   end
 
-  def with_permit(%Session{}, _operation, _payload, fun) when is_function(fun, 0), do: fun.()
-
   @spec acquire_session(ConcurrencyPolicy.t() | ConcurrencyPolicies.t() | nil, keyword()) ::
           term()
   def acquire_session(policy, opts \\ [])

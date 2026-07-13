@@ -285,11 +285,11 @@ defmodule FavnOrchestrator.TargetStatus.Projector do
 
   defp pipeline_targets(%RunState{} = run) do
     case pipeline_submit_ref(run) do
+      nil ->
+        []
+
       module when is_atom(module) ->
         [{:pipeline, TargetStatus.target_id_for_pipeline(module), TargetStatus.ref_text(module)}]
-
-      _other ->
-        []
     end
   end
 
@@ -350,6 +350,7 @@ defmodule FavnOrchestrator.TargetStatus.Projector do
 
   defp pipeline_submit_ref(%RunState{} = run) do
     case metadata_value(run, :pipeline_submit_ref) do
+      nil -> nil
       value when is_atom(value) -> value
       value when is_binary(value) -> existing_atom(value)
       _other -> nil
@@ -378,29 +379,14 @@ defmodule FavnOrchestrator.TargetStatus.Projector do
   end
 
   defp run_time(%RunState{} = run) do
-    Map.get(run, :finished_at) || Map.get(run, :started_at) || run.updated_at || run.inserted_at ||
-      DateTime.from_unix!(0)
+    run.updated_at || run.inserted_at || DateTime.from_unix!(0)
   end
 
   defp run_duration_ms(%RunState{} = run) do
-    case {Map.get(run, :started_at), Map.get(run, :finished_at)} do
-      {%DateTime{} = started_at, %DateTime{} = finished_at} ->
-        max(DateTime.diff(finished_at, started_at, :millisecond), 0)
-
-      _other ->
-        run_duration_ms_from_snapshot(run)
-    end
-  end
-
-  defp run_duration_ms_from_snapshot(%RunState{} = run) do
-    duration_ms = Map.get(run, :duration_ms)
     inserted_at = run.inserted_at
     updated_at = run.updated_at
 
     cond do
-      is_integer(duration_ms) ->
-        duration_ms
-
       run.status in [:ok, :partial, :error, :cancelled, :timed_out] and
         match?(%DateTime{}, inserted_at) and match?(%DateTime{}, updated_at) ->
         max(DateTime.diff(updated_at, inserted_at, :millisecond), 0)

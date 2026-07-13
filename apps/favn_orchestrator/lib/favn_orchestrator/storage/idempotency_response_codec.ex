@@ -108,8 +108,6 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
     end
   end
 
-  defp error_to_dto(body), do: {:error, {:invalid_idempotency_response_body, :error, body}}
-
   defp error_body?(body) when is_map(body) do
     not is_nil(field(body, "code")) and not is_nil(field(body, "message"))
   end

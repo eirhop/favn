@@ -92,8 +92,6 @@ defmodule Favn.Manifest.PipelineResolver do
     end
   end
 
-  defp validate_pipeline(_other), do: {:error, :invalid_pipeline}
-
   defp validate_deps(:all), do: :ok
   defp validate_deps(:none), do: :ok
   defp validate_deps(other), do: {:error, {:invalid_dependencies_mode, other}}

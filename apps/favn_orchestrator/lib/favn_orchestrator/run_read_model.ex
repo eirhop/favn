@@ -2245,9 +2245,9 @@ defmodule FavnOrchestrator.RunReadModel do
   defp public_ref({module, name}), do: "#{module_label(module)}.#{name}"
   defp public_ref(%{module: module, name: name}), do: "#{module_label(module)}.#{name}"
   defp public_ref(%{"module" => module, "name" => name}), do: "#{module_label(module)}.#{name}"
+  defp public_ref(nil), do: "Unknown asset"
   defp public_ref(ref) when is_atom(ref), do: ref |> Atom.to_string() |> strip_elixir_prefix()
   defp public_ref(ref) when is_binary(ref), do: strip_elixir_prefix(ref)
-  defp public_ref(nil), do: "Unknown asset"
   defp public_ref(ref), do: inspect(ref)
 
   defp module_label(module) when is_atom(module),
