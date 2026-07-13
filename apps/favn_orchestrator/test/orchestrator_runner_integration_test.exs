@@ -87,8 +87,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     assert run.status == :ok
     assert :ok = await_execution_leases_empty()
 
-    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run_id)
-    [first, second] = Enum.sort_by(detail.steps, & &1.started_at, DateTime)
+    assert {:ok, steps} = await_completed_steps(run_id)
+    [first, second] = Enum.sort_by(steps, & &1.started_at, DateTime)
 
     assert DateTime.compare(second.started_at, first.finished_at) in [:eq, :gt]
 
@@ -194,6 +194,25 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
   end
 
   defp await_execution_leases_empty(0), do: {:error, :execution_leases_not_released}
+
+  defp await_completed_steps(run_id, attempts \\ 60)
+
+  defp await_completed_steps(run_id, attempts) when attempts > 0 do
+    with {:ok, %{steps: steps}} <- FavnOrchestrator.get_run_detail(run_id),
+         completed_steps <- Enum.filter(steps, &completed_step?/1),
+         2 <- length(completed_steps) do
+      {:ok, completed_steps}
+    else
+      _other ->
+        Process.sleep(20)
+        await_completed_steps(run_id, attempts - 1)
+    end
+  end
+
+  defp await_completed_steps(_run_id, 0), do: {:error, :steps_not_completed}
+
+  defp completed_step?(%{started_at: %DateTime{}, finished_at: %DateTime{}}), do: true
+  defp completed_step?(_step), do: false
 
   defp manifest_version(manifest_version_id) do
     assets = [
