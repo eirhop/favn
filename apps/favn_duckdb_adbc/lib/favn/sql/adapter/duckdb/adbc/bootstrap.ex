@@ -7,6 +7,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   alias Favn.SQL.Error
 
   @config_key :duckdb
+  @ducklake_sqlite_prefix "ducklake:sqlite:"
   @old_config_message "DuckDB connection config now uses open: [database: ...] and duckdb: [...]; move duckdb_bootstrap entries under duckdb and move write_concurrency under duckdb.attach.<catalog>.write_concurrency"
   @azure_transport_option_type_values ~w(default curl)
   @pg_pool_acquire_mode_values ~w(force wait try)
@@ -197,7 +198,11 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   end
 
   defp normalize_setting(:azure_transport_option_type, value) do
-    case normalize_enum_setting(:azure_transport_option_type, value, @azure_transport_option_type_values) do
+    case normalize_enum_setting(
+           :azure_transport_option_type,
+           value,
+           @azure_transport_option_type_values
+         ) do
       {:ok, normalized} -> setting(:azure_transport_option_type, normalized)
       {:error, reason} -> {:error, reason}
     end
@@ -425,7 +430,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
         :ducklake ->
           with {:ok, metadata} <- fetch_present_value(attach, :metadata),
-               {:ok, meta_secret} <- normalize_identifier(Keyword.get(attach, :meta_secret)),
+               {:ok, meta_secret} <- normalize_ducklake_meta_secret(metadata, attach),
                {:ok, data_path} <- fetch_present_value(attach, :data_path),
                {:ok, write_concurrency} <-
                  normalize_write_concurrency(Keyword.get(attach, :write_concurrency, :unlimited)) do
@@ -541,6 +546,22 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   defp normalize_write_concurrency(value) when is_integer(value) and value > 0, do: {:ok, value}
   defp normalize_write_concurrency(value), do: {:error, {:invalid_write_concurrency, value}}
 
+  defp normalize_ducklake_meta_secret(
+         @ducklake_sqlite_prefix <> sqlite_path,
+         _attach
+       ) do
+    if String.trim(sqlite_path) == "",
+      do: {:error, :empty_ducklake_sqlite_metadata_path},
+      else: {:ok, nil}
+  end
+
+  defp normalize_ducklake_meta_secret(_metadata, attach) do
+    case Keyword.fetch(attach, :meta_secret) do
+      {:ok, meta_secret} -> normalize_identifier(meta_secret)
+      :error -> {:error, {:missing_attach_field, :meta_secret}}
+    end
+  end
+
   defp validate_attach_secrets(attach, secrets) do
     postgres_secret_names =
       secrets
@@ -548,6 +569,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
       |> MapSet.new(& &1.name)
 
     Enum.reduce_while(attach, :ok, fn
+      %{type: :ducklake, meta_secret: nil}, :ok ->
+        {:cont, :ok}
+
       %{type: :ducklake, meta_secret: secret, name: name}, :ok ->
         if MapSet.member?(postgres_secret_names, secret),
           do: {:cont, :ok},
@@ -805,6 +829,47 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
         statement: statement,
         safe_statement: statement,
         sensitive_values: []
+      }
+    ]
+  end
+
+  defp attach_steps(
+         %{
+           name: name,
+           type: :ducklake,
+           metadata: metadata,
+           meta_secret: nil,
+           data_path: data_path
+         },
+         _secrets
+       ) do
+    statement = [
+      "ATTACH ",
+      quote_literal(metadata),
+      " AS ",
+      quote_ident(name),
+      " (DATA_PATH ",
+      quote_literal(data_path),
+      ")"
+    ]
+
+    safe_statement = [
+      "ATTACH ",
+      quote_literal(:redacted),
+      " AS ",
+      quote_ident(name),
+      " (DATA_PATH ",
+      quote_literal(:redacted),
+      ")"
+    ]
+
+    [
+      %{
+        id: step_id(:attach, name),
+        kind: :ducklake_attach,
+        statement: statement,
+        safe_statement: safe_statement,
+        sensitive_values: [metadata, data_path]
       }
     ]
   end

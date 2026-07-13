@@ -114,6 +114,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   PostgreSQL metadata catalog credentials are supplied as DuckDB Postgres secrets
   and then referenced from DuckLake attach config with `meta_secret: :secret_name`.
+  Local DuckLake catalogs may use
+  `metadata: "ducklake:sqlite:/absolute/path/catalog.sqlite"` without
+  `meta_secret`; SQLite metadata paths and `data_path` must be non-empty.
 
   PostgreSQL secrets accept either `:password` or Azure PostgreSQL Entra `:auth`,
   not both. Azure auth supports managed identity and Azure CLI dogfooding:
@@ -162,6 +165,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   @type opts :: keyword()
 
+  @ducklake_sqlite_prefix "ducklake:sqlite:"
   @production_key :production?
   @storage_key :duckdb_storage
   @local_file_storage :local_file
@@ -523,6 +527,13 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp normalize_catalog_write_concurrency(_value), do: 1
 
   defp catalog_policy_scope(%Resolved{} = resolved, catalog, attach_config, secrets) do
+    case ducklake_sqlite_metadata_scope(attach_config) do
+      {:ok, scope} -> scope
+      :error -> postgres_catalog_policy_scope(resolved, catalog, attach_config, secrets)
+    end
+  end
+
+  defp postgres_catalog_policy_scope(%Resolved{} = resolved, catalog, attach_config, secrets) do
     with true <- ducklake_attach?(attach_config),
          {:ok, secret_name} <- attach_meta_secret(attach_config),
          {:ok, secret_config} <- Map.fetch(secrets, secret_name),
@@ -530,6 +541,22 @@ defmodule Favn.SQL.Adapter.DuckDB do
       scope
     else
       _ -> {resolved.name, catalog}
+    end
+  end
+
+  defp ducklake_sqlite_metadata_scope(attach_config) do
+    with true <- ducklake_attach?(attach_config),
+         {:ok, @ducklake_sqlite_prefix <> path} <- attach_metadata(attach_config),
+         false <- String.trim(path) == "" do
+      hash =
+        path
+        |> Path.expand()
+        |> then(&:crypto.hash(:sha256, &1))
+        |> Base.encode16(case: :lower)
+
+      {:ok, {:ducklake_sqlite_metadata, hash}}
+    else
+      _ -> :error
     end
   end
 
@@ -554,6 +581,15 @@ defmodule Favn.SQL.Adapter.DuckDB do
       secret -> {:ok, to_string(secret)}
     end
   end
+
+  defp attach_metadata(config) when is_map(config) do
+    case Map.fetch(config, :metadata) do
+      {:ok, metadata} -> {:ok, metadata}
+      :error -> Map.fetch(config, "metadata")
+    end
+  end
+
+  defp attach_metadata(config) when is_list(config), do: Keyword.fetch(config, :metadata)
 
   defp postgres_metadata_scope(%Resolved{}, secret_config) do
     with true <- postgres_secret?(secret_config),

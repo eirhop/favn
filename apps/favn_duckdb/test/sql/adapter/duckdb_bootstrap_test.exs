@@ -264,6 +264,97 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     assert planned_statements(steps) == [~s(ATTACH '.favn/data/raw.duckdb' AS "raw")]
   end
 
+  test "validates SQLite and PostgreSQL DuckLake attachment requirements" do
+    assert %{type: {:custom, validator}} = duckdb_schema_field()
+
+    assert :ok =
+             validator.(
+               attach: [
+                 source: [
+                   type: :ducklake,
+                   metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
+                   data_path: "/absolute/path/files/source",
+                   write_concurrency: 1
+                 ]
+               ]
+             )
+
+    assert {:error, :empty_ducklake_sqlite_metadata_path} =
+             validator.(
+               attach: [
+                 source: [
+                   type: :ducklake,
+                   metadata: "ducklake:sqlite:",
+                   data_path: "/absolute/path/files/source"
+                 ]
+               ]
+             )
+
+    for data_path <- [nil, ""] do
+      assert {:error, {:missing_attach_field, :data_path}} =
+               validator.(
+                 attach: [
+                   source: [
+                     type: :ducklake,
+                     metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
+                     data_path: data_path
+                   ]
+                 ]
+               )
+    end
+
+    assert {:error, {:invalid_write_concurrency, 0}} =
+             validator.(
+               attach: [
+                 source: [
+                   type: :ducklake,
+                   metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
+                   data_path: "/absolute/path/files/source",
+                   write_concurrency: 0
+                 ]
+               ]
+             )
+
+    assert {:error, {:missing_attach_field, :meta_secret}} =
+             validator.(
+               attach: [
+                 source: [
+                   type: :ducklake,
+                   metadata: "ducklake:postgres:",
+                   data_path: "/absolute/path/files/source"
+                 ]
+               ]
+             )
+
+    assert {:error, {:unknown_ducklake_meta_secret, "source", "missing_meta"}} =
+             validator.(
+               attach: [
+                 source: [
+                   type: :ducklake,
+                   metadata: "ducklake:postgres:",
+                   meta_secret: :missing_meta,
+                   data_path: "/absolute/path/files/source"
+                 ]
+               ]
+             )
+  end
+
+  test "builds and filters SQLite DuckLake attach statements without META_SECRET" do
+    assert {:ok, all_steps} = Bootstrap.build_steps(ducklake_sqlite_resolved())
+
+    assert planned_statements(all_steps) == [
+             "ATTACH 'ducklake:sqlite:/absolute/path/source.sqlite' AS \"source\" (DATA_PATH '/absolute/path/files/source')",
+             "ATTACH 'ducklake:sqlite:/absolute/path/mart.sqlite' AS \"mart\" (DATA_PATH '/absolute/path/files/mart')"
+           ]
+
+    assert {:ok, source_steps} =
+             Bootstrap.build_steps(ducklake_sqlite_resolved(), required_catalogs: [:source])
+
+    assert planned_statements(source_steps) == [
+             "ATTACH 'ducklake:sqlite:/absolute/path/source.sqlite' AS \"source\" (DATA_PATH '/absolute/path/files/source')"
+           ]
+  end
+
   test "nil required_catalogs preserves all planned DuckDB catalog attach steps" do
     assert {:ok, steps} =
              Bootstrap.build_steps(duckdb_catalogs_resolved(), required_catalogs: nil)
@@ -651,6 +742,34 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
       config: %{
         open: [database: ":memory:"],
         duckdb: duckdb
+      },
+      secret_fields: []
+    }
+  end
+
+  defp ducklake_sqlite_resolved do
+    %Resolved{
+      name: :local_lakehouse,
+      adapter: DuckDB,
+      module: __MODULE__,
+      config: %{
+        open: [database: ":memory:"],
+        duckdb: [
+          attach: [
+            source: [
+              type: :ducklake,
+              metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
+              data_path: "/absolute/path/files/source",
+              write_concurrency: 1
+            ],
+            mart: [
+              type: :ducklake,
+              metadata: "ducklake:sqlite:/absolute/path/mart.sqlite",
+              data_path: "/absolute/path/files/mart",
+              write_concurrency: 1
+            ]
+          ]
+        ]
       },
       secret_fields: []
     }
