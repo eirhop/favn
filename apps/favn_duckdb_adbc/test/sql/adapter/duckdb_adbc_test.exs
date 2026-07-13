@@ -358,6 +358,60 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     assert other_scope == hd(scopes)
   end
 
+  test "ducklake catalogs on the same SQLite metadata file share admission scope" do
+    metadata_path = Path.join(System.tmp_dir!(), "favn-ducklake-metadata.sqlite")
+
+    equivalent_path =
+      Path.join([
+        Path.dirname(metadata_path),
+        "nested",
+        "..",
+        Path.basename(metadata_path)
+      ])
+
+    resolved = %Resolved{
+      resolved()
+      | config: %{
+          open: [database: ":memory:"],
+          duckdb: [
+            attach: [
+              raw: [
+                type: :ducklake,
+                metadata: "ducklake:sqlite:#{metadata_path}",
+                write_concurrency: 1
+              ],
+              mart: [
+                type: :ducklake,
+                metadata: "ducklake:sqlite:#{equivalent_path}",
+                write_concurrency: 10
+              ]
+            ]
+          ]
+        }
+    }
+
+    assert {:ok, policies} = ADBC.concurrency_policies(resolved)
+
+    scopes =
+      policies
+      |> Enum.filter(&match?(%ConcurrencyPolicy{target: {:catalog, _}}, &1))
+      |> Enum.map(& &1.scope)
+
+    assert length(scopes) == 2
+    assert scopes |> Enum.uniq() |> length() == 1
+    assert [%ConcurrencyPolicy{limit: 1}, %ConcurrencyPolicy{limit: 1}] = Enum.drop(policies, 1)
+
+    assert {:ok, other_connection_policies} =
+             ADBC.concurrency_policies(%Resolved{resolved | name: :other_warehouse})
+
+    other_scope =
+      other_connection_policies
+      |> Enum.find(&match?(%ConcurrencyPolicy{target: {:catalog, "raw"}}, &1))
+      |> Map.fetch!(:scope)
+
+    assert other_scope == hd(scopes)
+  end
+
   test "row_count uses adapter-owned quoted relation SQL" do
     {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
 

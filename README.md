@@ -497,6 +497,30 @@ is exclusive to its checkout owner process; the shared SQL client rejects
 non-owner operations and disconnect attempts. Existing catalog/write concurrency
 still bounds active work and new session/bootstrap, so enabling pooling does not
 increase write concurrency.
+
+Local DuckLake catalogs can use SQLite metadata without a PostgreSQL metadata
+secret. Both DuckDB adapters accept the same attachment shape:
+
+```elixir
+duckdb: [
+  load: [:ducklake],
+  attach: [
+    source: [
+      type: :ducklake,
+      metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
+      data_path: "/absolute/path/files/source",
+      write_concurrency: 1
+    ]
+  ]
+]
+```
+
+`meta_secret` is omitted only for the `ducklake:sqlite:` metadata scheme.
+Catalog aliases and named connections that resolve to the same SQLite metadata
+file share one write-admission scope.
+PostgreSQL-backed DuckLake attachments continue to require a known PostgreSQL
+secret referenced by `meta_secret`.
+
 If `required_catalogs` is omitted for a connection with configured catalog
 policies, Favn treats bootstrap as all-catalog bootstrap and acquires every
 configured catalog permit before opening the adapter session.

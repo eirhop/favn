@@ -33,6 +33,12 @@ Raw write admission is SQL-runtime owned: callers provide explicit
 `admission: [...]` operation catalog targets or rely on the session
 `required_catalogs` scope; the adapter does not parse arbitrary SQL text to infer
 catalogs.
+Local DuckLake attachments may use
+`metadata: "ducklake:sqlite:/absolute/path/catalog.sqlite"` without
+`meta_secret`. PostgreSQL metadata attachments still require a known PostgreSQL
+secret, and both metadata and data paths are validated before bootstrap.
+Catalog aliases and named connections that resolve to the same SQLite metadata
+file share one write-admission scope.
 DuckLake catalogs backed by PostgreSQL metadata can use multiple PostgreSQL
 backend connections per concurrent DuckLake writer; observed deployments used
 about three. Size DuckLake `write_concurrency` with that multiplier and leave

@@ -65,7 +65,22 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   runtime config shape as `Favn.SQL.Adapter.DuckDB`, including extension loading,
   Azure ADLS `credential_chain` secrets with validated `:chain` and optional
   trailing-slash `:scope`, PostgreSQL DuckDB secrets, and DuckLake attach through
-  `META_SECRET`.
+  `META_SECRET`. Local DuckLake catalogs may instead use SQLite metadata without
+  a metadata secret:
+
+      duckdb: [
+        load: [:ducklake],
+        attach: [
+          source: [
+            type: :ducklake,
+            metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
+            data_path: "/absolute/path/files/source",
+            write_concurrency: 1
+          ]
+        ]
+      ]
+
+  `meta_secret` remains required for PostgreSQL-backed DuckLake metadata.
 
   `duckdb.settings` are emitted after configured `LOAD` statements and before
   secrets and `ATTACH`, so DuckDB Postgres extension pool settings apply to newly
@@ -133,6 +148,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   @type opts :: keyword()
 
+  @ducklake_sqlite_prefix "ducklake:sqlite:"
   @production_key :production?
   @storage_key :duckdb_storage
   @local_file_storage :local_file
@@ -558,6 +574,13 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   defp normalize_catalog_write_concurrency(_value), do: 1
 
   defp catalog_policy_scope(%Resolved{} = resolved, catalog, attach_config, secrets) do
+    case ducklake_sqlite_metadata_scope(attach_config) do
+      {:ok, scope} -> scope
+      :error -> postgres_catalog_policy_scope(resolved, catalog, attach_config, secrets)
+    end
+  end
+
+  defp postgres_catalog_policy_scope(%Resolved{} = resolved, catalog, attach_config, secrets) do
     with true <- ducklake_attach?(attach_config),
          {:ok, secret_name} <- attach_meta_secret(attach_config),
          {:ok, secret_config} <- Map.fetch(secrets, secret_name),
@@ -565,6 +588,22 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
       scope
     else
       _ -> {resolved.name, catalog}
+    end
+  end
+
+  defp ducklake_sqlite_metadata_scope(attach_config) do
+    with true <- ducklake_attach?(attach_config),
+         {:ok, @ducklake_sqlite_prefix <> path} <- attach_metadata(attach_config),
+         false <- String.trim(path) == "" do
+      hash =
+        path
+        |> Path.expand()
+        |> then(&:crypto.hash(:sha256, &1))
+        |> Base.encode16(case: :lower)
+
+      {:ok, {:ducklake_sqlite_metadata, hash}}
+    else
+      _ -> :error
     end
   end
 
@@ -591,6 +630,15 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   end
 
   defp attach_meta_secret(_config), do: :error
+
+  defp attach_metadata(config) when is_map(config) do
+    case Map.fetch(config, :metadata) do
+      {:ok, metadata} -> {:ok, metadata}
+      :error -> Map.fetch(config, "metadata")
+    end
+  end
+
+  defp attach_metadata(config) when is_list(config), do: Keyword.fetch(config, :metadata)
 
   defp postgres_metadata_scope(%Resolved{}, secret_config) do
     with true <- postgres_secret?(secret_config),
