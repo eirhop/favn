@@ -84,8 +84,8 @@ defmodule FavnOrchestrator.Application do
 
     if Keyword.get(api_opts, :enabled, false) do
       [
-        {Plug.Cowboy,
-         scheme: :http, plug: FavnOrchestrator.API.Router, options: api_server_options(api_opts)}
+        {Bandit,
+         [scheme: :http, plug: FavnOrchestrator.API.Router] ++ api_server_options(api_opts)}
       ]
     else
       []

@@ -4,7 +4,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
 
-  @type record :: %{
+  @type manifest_record :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
           required(:schema_version) => pos_integer(),
@@ -14,7 +14,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
           optional(:inserted_at) => DateTime.t() | nil
         }
 
-  @spec to_record(Version.t()) :: {:ok, record()} | {:error, term()}
+  @spec to_record(Version.t()) :: {:ok, manifest_record()} | {:error, term()}
   def to_record(%Version{} = version) do
     with {:ok, manifest_json} <- Serializer.encode_manifest(version.manifest) do
       {:ok,
@@ -30,7 +30,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
     end
   end
 
-  @spec from_record(record()) :: {:ok, Version.t()} | {:error, term()}
+  @spec from_record(manifest_record()) :: {:ok, Version.t()} | {:error, term()}
   def from_record(record) when is_map(record) do
     with {:ok, manifest_version_id} <- fetch_non_empty_binary(record, :manifest_version_id),
          {:ok, content_hash} <- fetch_non_empty_binary(record, :content_hash),

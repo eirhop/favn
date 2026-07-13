@@ -162,8 +162,6 @@ defmodule FavnOrchestrator.RunRetryPlanner do
     |> MapSet.new()
   end
 
-  defp successful_node_keys(_node_results), do: MapSet.new()
-
   defp successful_refs(result) when is_map(result) do
     result
     |> result_entries(:asset_results)

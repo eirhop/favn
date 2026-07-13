@@ -295,11 +295,9 @@ defmodule FavnOrchestrator.Freshness.Decider do
 
   defp freshness_version(%AssetFreshnessState{} = state), do: state.freshness_version
   defp freshness_version(%{} = state), do: field(state, :freshness_version)
-  defp freshness_version(_state), do: nil
 
   defp latest_success_at(%AssetFreshnessState{} = state), do: state.latest_success_at
   defp latest_success_at(%{} = state), do: field(state, :latest_success_at)
-  defp latest_success_at(_state), do: nil
 
   defp get_state(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, inspect(key))
   defp get_state(_map, _key), do: nil

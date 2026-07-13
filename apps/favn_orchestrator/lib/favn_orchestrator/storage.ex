@@ -824,7 +824,6 @@ defmodule FavnOrchestrator.Storage do
          true <- function_exported?(Favn.Log.Redactor, :redact, 2) do
       case Favn.Log.Redactor.redact(entry, policy) do
         {redacted_entry, _redacted?} -> {:ok, redacted_entry}
-        redacted_entry -> {:ok, redacted_entry}
       end
     else
       _other -> {:ok, entry}

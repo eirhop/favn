@@ -214,8 +214,6 @@ defmodule Favn.Manifest.Rehydrate do
     end)
   end
 
-  defp decode_materialization_opts(other), do: other
-
   defp decode_materialization_opt_key(key),
     do: decode_known_atom(key, [:strategy, :unique_key, :window_column])
 
@@ -702,12 +700,9 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp build_metadata(_other), do: %{}
 
-  defp build_metadata_tags(values) when is_list(values),
-    do: Labels.normalize_labels!(values)
-
   defp build_metadata_tags(nil), do: nil
 
-  defp build_metadata_tags(other), do: Labels.normalize_labels!(other)
+  defp build_metadata_tags(values), do: Labels.normalize_labels!(values)
 
   defp build_template_span(nil), do: nil
 

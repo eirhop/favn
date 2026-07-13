@@ -555,8 +555,6 @@ defmodule Favn.SQL.Adapter.DuckDB do
     end
   end
 
-  defp attach_meta_secret(_config), do: :error
-
   defp postgres_metadata_scope(%Resolved{}, secret_config) do
     with true <- postgres_secret?(secret_config),
          {:ok, host} <- secret_value(secret_config, :host),
@@ -617,8 +615,6 @@ defmodule Favn.SQL.Adapter.DuckDB do
       :error -> :error
     end
   end
-
-  defp secret_value(_config, _key), do: :error
 
   @impl true
   @spec execute(Conn.t(), iodata(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}

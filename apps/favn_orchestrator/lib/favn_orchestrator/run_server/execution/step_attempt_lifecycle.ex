@@ -232,10 +232,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
 
   defp node_window(%RunState{}, _node_key), do: nil
 
-  defp planned_asset_refs(%RunState{plan: %Favn.Plan{topo_order: refs}})
-       when is_list(refs) and refs != [],
-       do: refs
-
   defp planned_asset_refs(%RunState{target_refs: refs}) when is_list(refs) and refs != [],
     do: refs
 

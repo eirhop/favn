@@ -112,12 +112,12 @@ defmodule Favn.RelationRef do
   defp normalize_optional_identifier!(nil, _field), do: nil
   defp normalize_optional_identifier!(value, field), do: normalize_identifier(value, field)
 
-  defp normalize_identifier(value, _field) when is_binary(value), do: value
-  defp normalize_identifier(value, _field) when is_atom(value), do: Atom.to_string(value)
-
   defp normalize_identifier(nil, :name) do
     raise ArgumentError, "relation ref name is required"
   end
+
+  defp normalize_identifier(value, _field) when is_binary(value), do: value
+  defp normalize_identifier(value, _field) when is_atom(value), do: Atom.to_string(value)
 
   defp normalize_identifier(value, field) do
     raise ArgumentError,

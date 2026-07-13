@@ -130,8 +130,7 @@ defmodule Favn.Pipeline.Resolver do
   defp validate_assets_input(values) when is_list(values), do: :ok
   defp validate_assets_input(other), do: {:error, {:invalid_assets_opt, other}}
 
-  defp resolve_assets(nil), do: {:error, :missing_assets}
-  defp resolve_assets(values), do: {:ok, values}
+  defp resolve_assets(values) when is_list(values), do: {:ok, values}
 
   defp resolve_schedule(nil, _default_timezone, _lookup), do: {:ok, nil}
 

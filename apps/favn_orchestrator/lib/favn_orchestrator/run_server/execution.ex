@@ -2745,6 +2745,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp error_message(_error), do: nil
 
   defp error_type(%{__exception__: true, __struct__: module}), do: Atom.to_string(module)
+  defp error_type(error) when is_boolean(error), do: "boolean"
   defp error_type(error) when is_atom(error), do: Atom.to_string(error)
   defp error_type(error), do: error |> term_type() |> Atom.to_string()
 
@@ -2753,7 +2754,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp term_type(term) when is_list(term), do: :list
   defp term_type(term) when is_binary(term), do: :string
   defp term_type(term) when is_number(term), do: :number
-  defp term_type(term) when is_boolean(term), do: :boolean
   defp term_type(_term), do: :term
 
   defp string_value(value) when is_binary(value), do: truncate_string(value)

@@ -122,14 +122,14 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     %{"__type__" => "tuple", "items" => tuple |> Tuple.to_list() |> Enum.map(&encode_term/1)}
   end
 
-  defp encode_term(atom) when is_atom(atom) do
-    %{"__type__" => "atom", "value" => Atom.to_string(atom)}
-  end
-
   defp encode_term(value) when is_binary(value), do: value
   defp encode_term(value) when is_number(value), do: value
   defp encode_term(value) when is_boolean(value), do: value
   defp encode_term(nil), do: nil
+
+  defp encode_term(atom) when is_atom(atom) do
+    %{"__type__" => "atom", "value" => Atom.to_string(atom)}
+  end
 
   defp allowed_atom_strings(opts) when is_list(opts) do
     opts

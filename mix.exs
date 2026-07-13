@@ -21,6 +21,7 @@ defmodule FavnUmbrella.MixProject do
         :favn_view
       ],
       version: "0.5.0-dev",
+      elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),

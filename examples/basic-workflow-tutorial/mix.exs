@@ -5,7 +5,7 @@ defmodule FavnReferenceWorkload.MixProject do
     [
       app: :basic_workflow_tutorial,
       version: "0.1.0-dev",
-      elixir: "~> 1.19",
+      elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]

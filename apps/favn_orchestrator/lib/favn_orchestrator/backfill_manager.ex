@@ -679,8 +679,6 @@ defmodule FavnOrchestrator.BackfillManager do
     meaningful?(Keyword.get(value, :relative_to)) or meaningful?(Keyword.get(value, :baseline))
   end
 
-  defp has_meaningful_relative_reference?(_value), do: false
-
   defp meaningful?(nil), do: false
   defp meaningful?(""), do: false
   defp meaningful?(value) when is_map(value), do: map_size(value) > 0

@@ -198,7 +198,6 @@ defmodule FavnView.Components.OutputMetadata do
   defp value_label(%DateTime{} = value), do: DateTime.to_string(value)
   defp value_label(%Date{} = value), do: Date.to_iso8601(value)
   defp value_label(%Time{} = value), do: Time.to_iso8601(value)
-  defp value_label(value) when is_boolean(value), do: to_string(value)
   defp value_label(value) when is_number(value), do: to_string(value)
   defp value_label(value) when is_map(value) or is_list(value), do: compact_json(value)
   defp value_label(value), do: inspect(value)

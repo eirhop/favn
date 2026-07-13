@@ -3152,7 +3152,6 @@ defmodule Favn.Storage.Adapter.SQLite do
       end
     else
       {:error, reason} -> {:error, reason}
-      other -> {:error, {:invalid_log_entry_insert, other}}
     end
   end
 

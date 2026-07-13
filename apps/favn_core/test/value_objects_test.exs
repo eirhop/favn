@@ -16,6 +16,12 @@ defmodule Favn.ValueObjectsTest do
     assert relation.name == "orders"
   end
 
+  test "requires a relation name" do
+    assert_raise ArgumentError, "relation ref name is required", fn ->
+      Favn.RelationRef.new!(name: nil)
+    end
+  end
+
   test "validates timezone identifiers" do
     assert Favn.Timezone.valid_identifier?("Etc/UTC")
     assert Favn.Timezone.valid_identifier?("Europe/Oslo")

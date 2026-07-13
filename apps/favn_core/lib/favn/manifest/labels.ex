@@ -47,7 +47,7 @@ defmodule Favn.Manifest.Labels do
   @doc """
   Normalizes a list of selector labels while preserving order.
   """
-  @spec normalize_labels([label_input()]) :: {:ok, [label()]} | {:error, error()}
+  @spec normalize_labels(term()) :: {:ok, [label()]} | {:error, error()}
   def normalize_labels(values) when is_list(values) do
     values
     |> Enum.reduce_while({:ok, []}, fn value, {:ok, acc} ->
@@ -67,7 +67,7 @@ defmodule Favn.Manifest.Labels do
   @doc """
   Normalizes a list of selector labels or raises `ArgumentError`.
   """
-  @spec normalize_labels!([label_input()]) :: [label()]
+  @spec normalize_labels!(term()) :: [label()]
   def normalize_labels!(values) do
     case normalize_labels(values) do
       {:ok, labels} -> labels

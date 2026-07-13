@@ -76,13 +76,9 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodec do
     do: {:error, {:invalid_scheduler_field, :version, version}}
 
   @spec normalize_key(term()) :: {:ok, key()} | {:error, term()}
-  def normalize_key({pipeline_module, schedule_id}) when is_atom(pipeline_module) do
-    if is_atom(schedule_id) or is_nil(schedule_id) do
-      {:ok, {pipeline_module, schedule_id}}
-    else
-      {:error, {:invalid_scheduler_key, {pipeline_module, schedule_id}}}
-    end
-  end
+  def normalize_key({pipeline_module, schedule_id})
+      when is_atom(pipeline_module) and is_atom(schedule_id),
+      do: {:ok, {pipeline_module, schedule_id}}
 
   def normalize_key(value), do: {:error, {:invalid_scheduler_key, value}}
 

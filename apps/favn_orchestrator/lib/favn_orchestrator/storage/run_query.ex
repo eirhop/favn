@@ -46,9 +46,9 @@ defmodule FavnOrchestrator.Storage.RunQuery do
   def public_ref({module, name}), do: "#{module_label(module)}.#{name}"
   def public_ref(%{module: module, name: name}), do: "#{module_label(module)}.#{name}"
   def public_ref(%{"module" => module, "name" => name}), do: "#{module_label(module)}.#{name}"
+  def public_ref(nil), do: "Unknown asset"
   def public_ref(ref) when is_atom(ref), do: ref |> Atom.to_string() |> strip_elixir_prefix()
   def public_ref(ref) when is_binary(ref), do: strip_elixir_prefix(ref)
-  def public_ref(nil), do: "Unknown asset"
   def public_ref(ref), do: inspect(ref)
 
   @spec target_refs(RunState.t()) :: [term()]

@@ -529,9 +529,6 @@ defmodule FavnOrchestrator.Operator.Lineage do
   defp group_id(layer, _system, schema, label) when layer in [:core, :marts, :dashboards],
     do: "group:#{layer}:#{slug(schema || label)}"
 
-  defp group_id(layer, system, schema, label),
-    do: "group:#{layer}:#{slug(system || schema || label)}"
-
   defp group_state(group_id, request, layer) do
     cond do
       MapSet.member?(request.expanded_group_ids, group_id) -> :expanded_full
@@ -863,8 +860,6 @@ defmodule FavnOrchestrator.Operator.Lineage do
   defp page_opts(opts, default_limit) do
     [limit: Keyword.get(opts, :limit, default_limit), offset: Keyword.get(opts, :offset, 0)]
   end
-
-  defp normalize_error(%Error{} = error), do: error
 
   defp normalize_error(:invalid_pagination),
     do: %Error{code: :invalid_scope, message: "Invalid lineage pagination."}

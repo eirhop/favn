@@ -75,7 +75,7 @@ defmodule FavnView.Components.RunDetailPage.Stats do
         <div>
           <p class="text-xs text-base-content/55">{@label}</p>
           <p class="text-2xl font-light tracking-tight">
-            {@value}<span :if={@suffix} class="text-base-content/45"> {@suffix}</span>
+            {@value}{" "}<span :if={@suffix} class="text-base-content/45">{@suffix}</span>
           </p>
           <p :if={@detail} class="text-xs text-base-content/45">{@detail}</p>
         </div>

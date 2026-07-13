@@ -347,8 +347,8 @@ defmodule Favn.Dev.Doctor do
     if function_exported?(resolved.adapter, :default_catalog, 1) do
       case resolved.adapter.default_catalog(resolved) do
         {:ok, catalog} when is_binary(catalog) -> {:ok, catalog}
-        {:ok, catalog} when is_atom(catalog) -> {:ok, Atom.to_string(catalog)}
         {:ok, nil} -> {:ok, nil}
+        {:ok, catalog} when is_atom(catalog) -> {:ok, Atom.to_string(catalog)}
         other -> other
       end
     else

@@ -228,8 +228,6 @@ defmodule Favn.Contracts.RunnerError do
   defp sanitize_value(value) when is_binary(value), do: value
   defp sanitize_value(value) when is_atom(value), do: value
   defp sanitize_value(value) when is_number(value), do: value
-  defp sanitize_value(value) when is_boolean(value), do: value
-  defp sanitize_value(nil), do: nil
   defp sanitize_value(value), do: inspect_value(value)
 
   defp sanitize_value(key, value) when key in @operational_untrusted_keys,
@@ -279,8 +277,6 @@ defmodule Favn.Contracts.RunnerError do
   defp sanitize_untrusted_value(value) when is_binary(value), do: sanitize_text(value)
   defp sanitize_untrusted_value(value) when is_atom(value), do: value
   defp sanitize_untrusted_value(value) when is_number(value), do: value
-  defp sanitize_untrusted_value(value) when is_boolean(value), do: value
-  defp sanitize_untrusted_value(nil), do: nil
   defp sanitize_untrusted_value(value), do: value |> inspect_value() |> sanitize_text()
 
   defp sanitize_text(nil), do: nil
@@ -307,6 +303,5 @@ defmodule Favn.Contracts.RunnerError do
   defp term_type(term) when is_list(term), do: :list
   defp term_type(term) when is_binary(term), do: :string
   defp term_type(term) when is_number(term), do: :number
-  defp term_type(term) when is_boolean(term), do: :boolean
   defp term_type(_term), do: :term
 end

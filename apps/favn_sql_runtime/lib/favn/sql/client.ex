@@ -1108,18 +1108,15 @@ defmodule Favn.SQL.Client do
 
   defp discard_pooled_session?(_operation, _payload, %Error{type: :operation_timeout}), do: true
 
-  defp discard_pooled_session?(operation, _payload, %Error{} = error)
+  defp discard_pooled_session?(operation, _payload, %Error{})
        when operation in [:execute, :materialize, :transaction] do
-    not retryable_admission_only?(error)
+    true
   end
 
   defp discard_pooled_session?(_operation, _payload, %Error{} = error) do
     classification = Map.get(error.details || %{}, :classification)
     classification in [:unknown_commit_state, :unknown_outcome_timeout]
   end
-
-  defp retryable_admission_only?(%Error{type: :admission_timeout}), do: true
-  defp retryable_admission_only?(_error), do: false
 
   defp discard_reason(operation, %Error{} = error) do
     %{

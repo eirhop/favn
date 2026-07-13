@@ -694,9 +694,7 @@ defmodule FavnRunner.Server do
 
   defp redact(value) when is_atom(value), do: value
   defp redact(value) when is_integer(value), do: value
-  defp redact(value) when is_boolean(value), do: value
   defp redact(value) when is_binary(value), do: value
-  defp redact(nil), do: nil
   defp redact(value), do: inspect(value)
 
   defp redact(key, _value)

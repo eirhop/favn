@@ -37,8 +37,50 @@ defmodule FavnOrchestrator.Repair.Report do
 
   @doc "Adds one count to a report counter."
   @spec bump(t(), atom(), non_neg_integer()) :: t()
-  def bump(%__MODULE__{} = report, key, count \\ 1) when is_atom(key) and count >= 0 do
-    Map.update!(report, key, &(&1 + count))
+  def bump(report, key, count \\ 1)
+
+  def bump(%__MODULE__{} = report, :runs_scanned, count)
+      when is_integer(count) and count >= 0,
+      do: %{report | runs_scanned: report.runs_scanned + count}
+
+  def bump(%__MODULE__{} = report, :runs_terminalized, count)
+      when is_integer(count) and count >= 0,
+      do: %{report | runs_terminalized: report.runs_terminalized + count}
+
+  def bump(%__MODULE__{} = report, :steps_terminalized, count)
+      when is_integer(count) and count >= 0,
+      do: %{report | steps_terminalized: report.steps_terminalized + count}
+
+  def bump(%__MODULE__{} = report, :execution_leases_expired, count)
+      when is_integer(count) and count >= 0,
+      do: %{report | execution_leases_expired: report.execution_leases_expired + count}
+
+  def bump(%__MODULE__{} = report, :materialization_claims_expired, count)
+      when is_integer(count) and count >= 0,
+      do: %{
+        report
+        | materialization_claims_expired: report.materialization_claims_expired + count
+      }
+
+  def bump(%__MODULE__{} = report, :backfill_windows_reconciled, count)
+      when is_integer(count) and count >= 0,
+      do: %{report | backfill_windows_reconciled: report.backfill_windows_reconciled + count}
+
+  def bump(%__MODULE__{} = report, :backfill_parents_reprojected, count)
+      when is_integer(count) and count >= 0,
+      do: %{report | backfill_parents_reprojected: report.backfill_parents_reprojected + count}
+
+  def bump(%__MODULE__{} = report, :freshness_states_rebuilt, count)
+      when is_integer(count) and count >= 0,
+      do: %{report | freshness_states_rebuilt: report.freshness_states_rebuilt + count}
+
+  def bump(%__MODULE__{} = report, :freshness_states_skipped, count)
+      when is_integer(count) and count >= 0,
+      do: %{report | freshness_states_skipped: report.freshness_states_skipped + count}
+
+  def bump(%__MODULE__{}, key, count) do
+    raise ArgumentError,
+          "invalid repair report counter #{inspect(key)} or count #{inspect(count)}"
   end
 
   @doc "Adds an error to the report without raising."

@@ -10,7 +10,7 @@ defmodule FavnCore.MixProject do
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
-      elixir: "~> 1.19",
+      elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -18,14 +18,14 @@ defmodule FavnCore.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :tzdata]
+      extra_applications: [:logger, :tz]
     ]
   end
 
   defp deps do
     [
       {:jason, "~> 1.4"},
-      {:tzdata, "~> 1.1"},
+      {:tz, "~> 0.28.2"},
       internal_dep(:favn_test_support, "../favn_test_support", only: :test)
     ]
   end

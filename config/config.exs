@@ -54,10 +54,6 @@ config :tailwind,
     cd: Path.expand("../apps/favn_view", __DIR__)
   ]
 
-if Mix.env() == :test do
-  config :tzdata, :autoupdate, :disabled
-end
-
 service_token_env_default =
   if Mix.env() == :test,
     do: "favn_view:favn-view-local-credential-1234567890abcdef",

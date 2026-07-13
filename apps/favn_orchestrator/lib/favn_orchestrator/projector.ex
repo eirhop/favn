@@ -291,25 +291,6 @@ defmodule FavnOrchestrator.Projector do
     }
   end
 
-  defp normalize_asset_result(run_state, _result, _ref) do
-    ref = {:unknown, :asset}
-
-    %AssetResult{
-      ref: ref,
-      stage: 0,
-      status: :error,
-      started_at: DateTime.utc_now(),
-      finished_at: DateTime.utc_now(),
-      duration_ms: 0,
-      meta: %{},
-      error: :invalid_asset_result,
-      attempt_count: 1,
-      max_attempts: 1,
-      attempts: [],
-      asset_step_id: AssetStepIdentity.asset_step_id(run_state.id, {ref, nil}, ref)
-    }
-  end
-
   defp normalize_node_result(run_state, %NodeResult{ref: ref} = result, node_key) do
     put_node_asset_step_id(result, run_state, node_key, ref)
   end

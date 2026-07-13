@@ -12,7 +12,7 @@ defmodule Favn.Dev.InitTest do
 
     File.write!(
       Path.join(root_dir, "config/config.exs"),
-      "import Config\nconfig :tzdata, :autoupdate, :disabled\n"
+      "import Config\n"
     )
 
     favn_path = Path.expand("../../favn", __DIR__)
@@ -188,7 +188,7 @@ defmodule Favn.Dev.InitTest do
         use Mix.Project
 
         def project do
-          [app: :smoke_consumer, version: "0.1.0", elixir: "~> 1.19", deps: deps()]
+          [app: :smoke_consumer, version: "0.1.0", elixir: "~> 1.20", deps: deps()]
         end
 
         def application do
@@ -272,7 +272,7 @@ defmodule Favn.Dev.InitTest do
                stderr_to_stdout: true
              )
 
-    assert output =~ "1 test, 0 failures"
+    assert output =~ "Result: 1 passed"
   end
 
   test "requires explicit duckdb and sample flags", %{root_dir: root_dir} do
