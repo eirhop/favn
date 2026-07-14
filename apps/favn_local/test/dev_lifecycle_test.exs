@@ -476,6 +476,30 @@ defmodule Favn.Dev.LifecycleTest do
     _ = Dev.stop(root_dir: root_dir)
   end
 
+  test "staged runner startup reports service exit before node timeout", %{root_dir: root_dir} do
+    root_dir = root_with_free_distribution_ports(root_dir)
+
+    [runner_spec, operator_spec] =
+      service_specs(root_dir, runner_args: ["-lc", "exit 23"])
+
+    assert {:error, {:service_exit, "runner", 23}} =
+             Dev.dev(
+               root_dir: root_dir,
+               orchestrator_port: free_port(),
+               web_port: free_port(),
+               skip_install_check: true,
+               skip_bootstrap: true,
+               skip_readiness: true,
+               runner_wait_node_name: "missing_runner@nohost",
+               runner_wait_timeout_ms: 2_000,
+               service_specs_override: %{runner: runner_spec, operator: operator_spec}
+             )
+
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+  after
+    _ = Dev.stop(root_dir: root_dir)
+  end
+
   test "foreground exits cleanly when stopped externally", %{root_dir: root_dir} do
     root_dir = root_with_free_distribution_ports(root_dir)
     specs = service_specs(root_dir)

@@ -49,6 +49,9 @@ Explicit module keys:
 ## Local Runtime Config
 
 Local dev reads `config :favn, :local`. Task flags override config values.
+`mix favn.dev` loads the consumer project's `config/runtime.exs` before it
+collects connection, execution-pool, and plugin configuration for the local
+runner, so environment-specific values may be supplied there.
 
 Minimal default:
 
