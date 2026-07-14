@@ -172,7 +172,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "error" => error(result.error),
       "attempt_count" => result.attempt_count,
       "max_attempts" => result.max_attempts,
-      "attempts" => Enum.map(result.attempts || [], &attempt(&1, depth - 1)),
+      "attempts" => result.attempts |> List.wrap() |> bounded_attempts(depth),
       "next_retry_at" => data(result.next_retry_at, nil, depth - 1)
     }
   end
@@ -188,7 +188,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "error" => error(result.error),
       "attempt_count" => result.attempt_count,
       "max_attempts" => result.max_attempts,
-      "attempts" => Enum.map(result.attempts || [], &attempt(&1, depth - 1)),
+      "attempts" => result.attempts |> List.wrap() |> bounded_attempts(depth),
       "asset_step_id" => result.asset_step_id
     }
     |> Enum.reject(fn {_key, child_value} -> is_nil(child_value) end)
@@ -203,65 +203,17 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   defp attempt(value, depth), do: data(value, nil, depth)
 
+  defp bounded_attempts(attempts, depth) do
+    attempts
+    |> Enum.take(@max_entries)
+    |> Enum.map(&attempt(&1, depth - 1))
+  end
+
   defp runtime_config_diagnostic(value) when is_map(value) do
     value
     |> Map.drop([:stacktrace, "stacktrace"])
-    |> Map.new(fn {key, child_value} ->
-      {key_to_string(key), runtime_config_diagnostic_value(key, child_value)}
-    end)
+    |> data(nil, @max_depth)
   end
-
-  defp runtime_config_diagnostic_value(key, value) do
-    key_string = key_to_string(key)
-
-    cond do
-      key_string in ["message", "type", "phase", "provider", "env", "scope", "field"] ->
-        data(value, key_string, @max_depth - 1)
-
-      key_string in [
-        "key",
-        "connection",
-        "module",
-        "asset_ref",
-        "asset_type",
-        "connections",
-        "sql_asset_refs",
-        "connection_asset_refs"
-      ] ->
-        data(value, key_string, @max_depth - 1)
-
-      key_string in ["secret?"] ->
-        data(value, key_string, @max_depth - 1)
-
-      is_map(value) ->
-        runtime_config_diagnostic(value)
-
-      is_list(value) ->
-        Enum.map(value, &runtime_config_diagnostic_nested/1)
-
-      is_tuple(value) ->
-        value
-        |> Tuple.to_list()
-        |> Enum.map(&runtime_config_diagnostic_nested/1)
-
-      true ->
-        data(value, key_string, @max_depth - 1)
-    end
-  end
-
-  defp runtime_config_diagnostic_nested(value) when is_map(value),
-    do: runtime_config_diagnostic(value)
-
-  defp runtime_config_diagnostic_nested(value) when is_list(value),
-    do: Enum.map(value, &runtime_config_diagnostic_nested/1)
-
-  defp runtime_config_diagnostic_nested(value) when is_tuple(value) do
-    value
-    |> Tuple.to_list()
-    |> Enum.map(&runtime_config_diagnostic_nested/1)
-  end
-
-  defp runtime_config_diagnostic_nested(value), do: data(value, nil, @max_depth - 1)
 
   defp safe_error_message(value) do
     case Redaction.redact_operational(%{message: value}) do
@@ -330,13 +282,21 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   defp redact_sensitive_value(_value), do: "[REDACTED]"
 
   defp truncate(value) when is_binary(value) do
-    if byte_size(value) > @max_string_bytes do
-      suffix = "..."
-      content_bytes = @max_string_bytes - byte_size(suffix)
-      valid_prefix(value, content_bytes) <> suffix
+    if String.valid?(value) do
+      truncate_valid(value)
     else
       value
+      |> inspect(limit: 20, printable_limit: @max_string_bytes)
+      |> truncate_valid()
     end
+  end
+
+  defp truncate_valid(value) when byte_size(value) <= @max_string_bytes, do: value
+
+  defp truncate_valid(value) do
+    suffix = "..."
+    content_bytes = @max_string_bytes - byte_size(suffix)
+    valid_prefix(value, content_bytes) <> suffix
   end
 
   defp valid_prefix(_value, size) when size <= 0, do: ""

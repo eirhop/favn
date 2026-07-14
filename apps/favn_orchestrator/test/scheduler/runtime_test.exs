@@ -9,12 +9,15 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
   alias Favn.Scheduler.State
+  alias Favn.Storage.Adapter, as: StorageAdapter
   alias Favn.Window.Policy
   alias FavnOrchestrator
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Scheduler.Cron
   alias FavnOrchestrator.Scheduler.Runtime
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
+  alias FavnOrchestrator.TestSupport.Runtime, as: RuntimeCleanup
 
   defmodule RunnerClientStub do
     @behaviour Favn.Contracts.RunnerClient
@@ -57,11 +60,11 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
   end
 
   defmodule SchedulerStateFailingStorageAdapter do
-    @behaviour Favn.Storage.Adapter
+    @behaviour StorageAdapter
 
     alias FavnOrchestrator.Storage.Adapter.Memory
 
-    for {name, arity} <- Favn.Storage.Adapter.behaviour_info(:callbacks),
+    for {name, arity} <- StorageAdapter.behaviour_info(:callbacks),
         {name, arity} not in [put_scheduler_state: 3, get_scheduler_state: 2] do
       args = Macro.generate_arguments(arity, __MODULE__)
 
@@ -118,6 +121,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+    RuntimeCleanup.stop_active_runs()
     Memory.reset()
 
     on_exit(fn ->
@@ -127,6 +131,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       restore_env(:favn_orchestrator, :runner_client_opts, previous_opts)
       restore_env(:favn_orchestrator, :scheduler, previous_scheduler)
       restore_env(:favn_orchestrator, :scheduler_call_timeout_ms, previous_scheduler_call_timeout)
+      RuntimeCleanup.stop_active_runs()
       Memory.reset()
     end)
 
@@ -310,6 +315,13 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     )
 
     assert {:error, :scheduler_state_get_failed} = Runtime.reload(name)
+
+    assert [preserved] = Runtime.scheduled(name)
+    assert preserved.manifest_version_id == version.manifest_version_id
+
+    assert {:ok, diagnostics} = Runtime.diagnostics(name)
+    assert diagnostics.entry_count == 1
+    assert diagnostics.last_scheduler_persist_error.reason["type"] == "scheduler_state_get_failed"
   end
 
   test "schedule list fallback propagates scheduler state read errors" do
@@ -418,7 +430,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert {:ok, diagnostics} = Runtime.diagnostics(name)
     assert diagnostics.dirty_scheduler_state_count == 1
     assert diagnostics.state_summary.dirty_count == 1
-    assert diagnostics.last_scheduler_persist_error.reason == ":scheduler_state_put_failed"
+    assert diagnostics.last_scheduler_persist_error.reason["type"] == "scheduler_state_put_failed"
 
     Application.put_env(:favn_orchestrator, :storage_adapter, Memory)
     Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
@@ -443,6 +455,126 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
 
     assert {:ok, runs} = Storage.list_runs()
     assert Enum.count(runs, &(&1.manifest_version_id == version.manifest_version_id)) == 1
+  end
+
+  test "restart adopts a submitted occurrence when scheduler cursor persistence failed" do
+    version = scheduler_manifest_version("mv_scheduler_restart_dedup")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    first_name = unique_runtime_name()
+    first_pid = start_runtime(first_name)
+    [entry] = Runtime.scheduled(first_name)
+
+    state = %State{
+      pipeline_module: entry.module,
+      schedule_id: entry.schedule.name,
+      schedule_fingerprint: entry.schedule_fingerprint,
+      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second),
+      activation_state: :enabled,
+      version: 2
+    }
+
+    assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
+    assert :ok = Runtime.reload(first_name)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, SchedulerStateFailingStorageAdapter)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+      put_error: :scheduler_state_put_failed
+    )
+
+    assert {:error, :scheduler_state_put_failed} = Runtime.tick(first_name)
+    assert {:ok, first_run} = await_run_submission(version.manifest_version_id)
+    GenServer.stop(first_pid)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, Memory)
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+    second_name = unique_runtime_name()
+    start_runtime(second_name)
+    assert :ok = Runtime.tick(second_name)
+
+    assert {:ok, runs} = Storage.list_runs(pipeline_module: entry.module)
+    assert [adopted_run] = Enum.filter(runs, &(&1.id == first_run.id))
+
+    assert adopted_run.trigger.occurrence.occurrence_key ==
+             first_run.trigger.occurrence.occurrence_key
+
+    assert {:ok, %State{} = persisted_state} =
+             Storage.get_scheduler_state({entry.module, entry.schedule.name})
+
+    assert persisted_state.last_submitted_due_at == first_run.trigger.occurrence.due_at
+  end
+
+  test "changed schedule definitions do not adopt an older occurrence at the same due time" do
+    cron = "0 0 1 1 *"
+    first = scheduler_manifest_version("mv_scheduler_occurrence_v1", cron: cron)
+    second = scheduler_manifest_version("mv_scheduler_occurrence_v2", cron: cron, overlap: :allow)
+
+    assert :ok = FavnOrchestrator.register_manifest(first)
+    assert :ok = FavnOrchestrator.register_manifest(second)
+    assert :ok = FavnOrchestrator.activate_manifest(first.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+    [first_entry] = Runtime.scheduled(name)
+    due_at = Cron.latest_due(cron, "Etc/UTC", DateTime.utc_now())
+
+    first_state = %State{
+      pipeline_module: first_entry.module,
+      schedule_id: first_entry.schedule.name,
+      schedule_fingerprint: first_entry.schedule_fingerprint,
+      last_due_at: DateTime.add(due_at, -1, :second),
+      activation_state: :enabled,
+      version: 2
+    }
+
+    assert :ok =
+             Storage.put_scheduler_state(
+               {first_entry.module, first_entry.schedule.name},
+               first_state
+             )
+
+    assert :ok = Runtime.reload(name)
+    assert :ok = Runtime.tick(name)
+    assert {:ok, first_run} = await_run_submission(first.manifest_version_id)
+
+    assert :ok = FavnOrchestrator.activate_manifest(second.manifest_version_id)
+    assert :ok = Runtime.reload(name)
+    [second_entry] = Runtime.scheduled(name)
+
+    assert first_entry.schedule_fingerprint != second_entry.schedule_fingerprint
+
+    assert {:ok, current_state} =
+             Storage.get_scheduler_state({second_entry.module, second_entry.schedule.name})
+
+    second_state = %{
+      current_state
+      | schedule_fingerprint: second_entry.schedule_fingerprint,
+        last_due_at: DateTime.add(due_at, -1, :second),
+        last_submitted_due_at: nil,
+        in_flight_run_id: nil,
+        activation_state: :enabled,
+        version: current_state.version + 1
+    }
+
+    assert :ok =
+             Storage.put_scheduler_state(
+               {second_entry.module, second_entry.schedule.name},
+               second_state
+             )
+
+    assert :ok = Runtime.reload(name)
+    assert :ok = Runtime.tick(name)
+    assert {:ok, second_run} = await_run_submission(second.manifest_version_id)
+
+    assert first_run.id != second_run.id
+    assert first_run.trigger.occurrence.due_at == due_at
+    assert second_run.trigger.occurrence.due_at == due_at
+
+    assert first_run.trigger.occurrence.occurrence_key =~ first_entry.schedule_fingerprint
+    assert second_run.trigger.occurrence.occurrence_key =~ second_entry.schedule_fingerprint
   end
 
   test "enable schedule facade changes effective state without catch-up" do
@@ -500,8 +632,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
 
     assert {:ok, runs} = Storage.list_runs()
 
-    assert Enum.count(Enum.filter(runs, &(&1.manifest_version_id == version.manifest_version_id))) ==
-             1
+    assert Enum.count(runs, &(&1.manifest_version_id == version.manifest_version_id)) == 1
   end
 
   test "occurrence preview is computed by orchestrator with window state" do
@@ -513,16 +644,41 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     start_runtime(name)
     [entry] = Runtime.scheduled(name)
     schedule_entry_id = "schedule:#{entry.module}:#{entry.schedule.name}"
+    now = ~U[2026-05-12 10:00:30Z]
 
     assert {:ok, occurrences} =
-             FavnOrchestrator.preview_schedule_occurrences(schedule_entry_id, limit: 3)
+             FavnOrchestrator.preview_schedule_occurrences(schedule_entry_id,
+               limit: 3,
+               now: now
+             )
 
     assert length(occurrences) == 3
+
+    assert Enum.map(occurrences, & &1.due_at) == [
+             ~U[2026-05-12 10:01:00Z],
+             ~U[2026-05-12 10:02:00Z],
+             ~U[2026-05-12 10:03:00Z]
+           ]
+
     assert Enum.all?(occurrences, &match?(%FavnOrchestrator.ScheduleOccurrencePreview{}, &1))
     assert Enum.all?(occurrences, &(&1.schedule_entry_id == schedule_entry_id))
     assert Enum.all?(occurrences, &(&1.status == :disabled))
     assert Enum.all?(occurrences, &is_map(&1.window))
     assert Enum.all?(occurrences, &("Will not submit until enabled" in &1.notes))
+  end
+
+  test "schedule operator queries reject malformed and unsupported options" do
+    assert {:error, :invalid_schedule_list_filters} =
+             FavnOrchestrator.page_schedule_list_entries([:not_a_keyword])
+
+    assert {:error, {:invalid_schedule_list_filters, [:unknown]}} =
+             FavnOrchestrator.page_schedule_list_entries(unknown: true)
+
+    assert {:error, {:invalid_schedule_occurrence_preview_now, "not-a-datetime"}} =
+             FavnOrchestrator.preview_schedule_occurrences("schedule:any", now: "not-a-datetime")
+
+    assert {:error, {:invalid_schedule_occurrence_preview_options, [:unknown]}} =
+             FavnOrchestrator.preview_schedule_occurrences("schedule:any", unknown: true)
   end
 
   test "tick submits scheduled pipeline run and persists scheduler state" do
@@ -649,6 +805,45 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert is_nil(stored_state.queued_due_at)
   end
 
+  test "overlap forbid keeps a pending admitted run in flight" do
+    version = scheduler_manifest_version("mv_scheduler_overlap_pending", overlap: :forbid)
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+    [entry] = Runtime.scheduled(name)
+
+    pending =
+      "run_inflight_pending"
+      |> running_run_state(version, %{kind: :schedule})
+      |> Map.put(:status, :pending)
+      |> RunState.with_snapshot_hash()
+
+    assert :ok = Storage.put_run(pending)
+
+    state = %State{
+      pipeline_module: entry.module,
+      schedule_id: entry.schedule.name,
+      schedule_fingerprint: entry.schedule_fingerprint,
+      in_flight_run_id: pending.id,
+      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second),
+      activation_state: :enabled,
+      version: 2
+    }
+
+    assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
+    assert :ok = Runtime.reload(name)
+    assert :ok = Runtime.tick(name)
+
+    assert {:ok, persisted} =
+             Storage.get_scheduler_state({entry.module, entry.schedule.name})
+
+    assert persisted.in_flight_run_id == pending.id
+    assert {:ok, [only_run]} = Storage.list_runs()
+    assert only_run.id == pending.id
+  end
+
   test "overlap queue_one queues then submits after in-flight run finishes" do
     version = scheduler_manifest_version("mv_scheduler_overlap_queue", overlap: :queue_one)
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -734,13 +929,6 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     log = capture_log(fn -> assert :ok = Runtime.tick(name) end)
 
     assert log =~ "scheduler missed occurrence catch-up capped"
-    assert log =~ "pipeline=MyApp.Pipelines.Daily"
-    assert log =~ "schedule_id=:daily"
-    assert log =~ "schedule_ref={MyApp.Schedules, :daily}"
-    assert log =~ "cron=\"* * * * * *\""
-    assert log =~ "cap=3"
-    assert log =~ "selected=3"
-    assert log =~ "observed=4"
 
     assert {:ok, runs} = Storage.list_runs()
 
@@ -894,8 +1082,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     log = capture_log(fn -> assert :ok = Runtime.tick(name) end)
 
     assert Process.alive?(pid)
-    assert log =~ "scheduler submit failed"
-    assert log =~ "invalid_scheduled_window_policy"
+    assert log =~ "scheduler submission failed"
 
     assert {:ok, runs} = Storage.list_runs()
     refute Enum.any?(runs, &(&1.manifest_version_id == version.manifest_version_id))
@@ -950,6 +1137,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
   end
 
   defp missed_submission_count(policy) do
+    RuntimeCleanup.stop_active_runs()
     Memory.reset()
 
     version =

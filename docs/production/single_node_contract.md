@@ -277,7 +277,7 @@ At minimum, the production single-node runtime needs:
 - `FAVN_SQLITE_PATH` pointing to the durable attached-storage SQLite database;
   it must be absolute.
 - `FAVN_SQLITE_MIGRATION_MODE` as `manual` or `auto`, defaulting to `manual`.
-- `FAVN_SQLITE_BUSY_TIMEOUT_MS`, defaulting to `5000`, as a positive integer.
+- `FAVN_SQLITE_BUSY_TIMEOUT_MS`, defaulting to `5000`, in `1..3600000`.
 - `FAVN_SQLITE_POOL_SIZE`, defaulting to `1`; Phase 1 accepts only `1`.
 - `FAVN_ORCHESTRATOR_API_BIND_HOST`, defaulting to `127.0.0.1`, as an IPv4
   address.
@@ -287,12 +287,12 @@ At minimum, the production single-node runtime needs:
   unique; each token must be at least 32 characters and not contain weak
   placeholder fragments such as `replace`, `change`, `placeholder`, `example`,
   `secret`, `password`, `test`, `token`, or `todo`.
-- `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL`, defaulting to `43200`, as a positive
-  integer absolute session TTL in seconds.
+- `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL`, defaulting to `43200`, as an absolute
+  session TTL in `1..2592000` seconds.
 - `FAVN_SCHEDULER_ENABLED`, defaulting to `true`, as a boolean.
-- `FAVN_SCHEDULER_TICK_MS`, defaulting to `15000`, minimum `100`.
+- `FAVN_SCHEDULER_TICK_MS`, defaulting to `15000`, in `100..86400000`.
 - `FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES`, defaulting to `1000`, as a
-  positive integer.
+  positive integer no greater than `100000`.
 - `FAVN_RUNNER_MODE`, defaulting to `local`; Phase 1 accepts only the local
   single-node runner mode.
 - `FAVN_VIEW_PUBLIC_ORIGIN`, required for production `favn_view`, as an absolute

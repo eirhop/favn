@@ -10,6 +10,8 @@ defmodule FavnOrchestrator.Backfill.CoverageBaseline do
   and run event stream remain authoritative.
   """
 
+  alias FavnOrchestrator.Backfill.ReadModelValues
+
   @enforce_keys [
     :baseline_id,
     :pipeline_module,
@@ -43,7 +45,7 @@ defmodule FavnOrchestrator.Backfill.CoverageBaseline do
     updated_at: nil
   ]
 
-  @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
+  @type status :: ReadModelValues.status()
 
   @type t :: %__MODULE__{
           baseline_id: String.t(),
@@ -73,7 +75,8 @@ defmodule FavnOrchestrator.Backfill.CoverageBaseline do
 
     with {:ok, attrs} <- normalize_attrs(attrs),
          :ok <- reject_raw_source_identity(attrs),
-         :ok <- require_keys(attrs, @required_keys) do
+         :ok <- require_keys(attrs, @required_keys),
+         :ok <- validate_fields(attrs) do
       {:ok,
        struct(
          __MODULE__,
@@ -137,17 +140,21 @@ defmodule FavnOrchestrator.Backfill.CoverageBaseline do
   defp missing?(attrs, key), do: Map.get(attrs, key) in [nil, ""]
 
   defp normalize_attrs(attrs) do
-    with {:ok, window_kind} <- normalize_window_kind(Map.get(attrs, :window_kind)),
-         {:ok, status} <- normalize_status(Map.get(attrs, :status)),
+    with {:ok, window_kind} <- ReadModelValues.normalize_window_kind(Map.get(attrs, :window_kind)),
+         {:ok, status} <- ReadModelValues.normalize_status(Map.get(attrs, :status)),
          {:ok, coverage_until} <- normalize_datetime(Map.get(attrs, :coverage_until)),
          {:ok, coverage_start_at} <-
-           normalize_optional_datetime(Map.get(attrs, :coverage_start_at)) do
+           normalize_optional_datetime(Map.get(attrs, :coverage_start_at)),
+         {:ok, created_at} <- normalize_datetime(Map.get(attrs, :created_at)),
+         {:ok, updated_at} <- normalize_datetime(Map.get(attrs, :updated_at)) do
       {:ok,
        attrs
        |> Map.put(:window_kind, window_kind)
        |> Map.put(:status, status)
        |> Map.put(:coverage_until, coverage_until)
-       |> Map.put(:coverage_start_at, coverage_start_at)}
+       |> Map.put(:coverage_start_at, coverage_start_at)
+       |> Map.put(:created_at, created_at)
+       |> Map.put(:updated_at, updated_at)}
     end
   end
 
@@ -166,31 +173,53 @@ defmodule FavnOrchestrator.Backfill.CoverageBaseline do
 
   defp normalize_datetime(value), do: {:error, {:invalid_datetime, value}}
 
-  defp normalize_window_kind(value) when value in [:hour, :day, :month, :year], do: {:ok, value}
-  defp normalize_window_kind(:hourly), do: {:ok, :hour}
-  defp normalize_window_kind(:daily), do: {:ok, :day}
-  defp normalize_window_kind(:monthly), do: {:ok, :month}
-  defp normalize_window_kind(:yearly), do: {:ok, :year}
-  defp normalize_window_kind("hour"), do: {:ok, :hour}
-  defp normalize_window_kind("hourly"), do: {:ok, :hour}
-  defp normalize_window_kind("day"), do: {:ok, :day}
-  defp normalize_window_kind("daily"), do: {:ok, :day}
-  defp normalize_window_kind("month"), do: {:ok, :month}
-  defp normalize_window_kind("monthly"), do: {:ok, :month}
-  defp normalize_window_kind("year"), do: {:ok, :year}
-  defp normalize_window_kind("yearly"), do: {:ok, :year}
-  defp normalize_window_kind(value), do: {:error, {:invalid_window_kind, value}}
+  defp validate_fields(attrs) do
+    cond do
+      not is_atom(attrs.pipeline_module) ->
+        {:error, {:invalid_pipeline_module, attrs.pipeline_module}}
 
-  defp normalize_status(value)
-       when value in [:pending, :running, :ok, :partial, :error, :cancelled, :timed_out],
-       do: {:ok, value}
+      not required_binary_fields?(attrs) ->
+        {:error, :invalid_coverage_baseline_identity}
 
-  defp normalize_status("pending"), do: {:ok, :pending}
-  defp normalize_status("running"), do: {:ok, :running}
-  defp normalize_status("ok"), do: {:ok, :ok}
-  defp normalize_status("partial"), do: {:ok, :partial}
-  defp normalize_status("error"), do: {:ok, :error}
-  defp normalize_status("cancelled"), do: {:ok, :cancelled}
-  defp normalize_status("timed_out"), do: {:ok, :timed_out}
-  defp normalize_status(value), do: {:error, {:invalid_status, value}}
+      not optional_binary?(Map.get(attrs, :segment_key_redacted)) ->
+        {:error, {:invalid_segment_key_redacted, Map.get(attrs, :segment_key_redacted)}}
+
+      not valid_coverage_range?(Map.get(attrs, :coverage_start_at), attrs.coverage_until) ->
+        {:error,
+         {:invalid_coverage_range, Map.get(attrs, :coverage_start_at), attrs.coverage_until}}
+
+      not is_list(Map.get(attrs, :errors, [])) ->
+        {:error, {:invalid_errors, Map.get(attrs, :errors)}}
+
+      not is_map(Map.get(attrs, :metadata, %{})) ->
+        {:error, {:invalid_metadata, Map.get(attrs, :metadata)}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp required_binary_fields?(attrs) do
+    Enum.all?(
+      [
+        :baseline_id,
+        :source_key,
+        :segment_key_hash,
+        :timezone,
+        :created_by_run_id,
+        :manifest_version_id
+      ],
+      fn field ->
+        value = Map.get(attrs, field)
+        is_binary(value) and value != ""
+      end
+    )
+  end
+
+  defp optional_binary?(nil), do: true
+  defp optional_binary?(value), do: is_binary(value) and value != ""
+  defp valid_coverage_range?(nil, %DateTime{}), do: true
+
+  defp valid_coverage_range?(%DateTime{} = start_at, %DateTime{} = until),
+    do: DateTime.compare(start_at, until) in [:lt, :eq]
 end

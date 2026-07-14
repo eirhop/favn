@@ -58,9 +58,20 @@ defmodule FavnOrchestrator.API.ConfigTest do
   end
 
   test "bind_ip/1 accepts IPv4 tuples and strings" do
+    assert {:ok, {127, 0, 0, 1}} = Config.bind_ip([])
     assert {:ok, {127, 0, 0, 1}} = Config.bind_ip(bind_ip: {127, 0, 0, 1})
     assert {:ok, {127, 0, 0, 1}} = Config.bind_ip(bind_ip: "127.0.0.1")
     assert {:error, {:invalid_bind_ip, "127.0.0.999"}} = Config.bind_ip(bind_ip: "127.0.0.999")
+  end
+
+  test "server_options/1 defaults to loopback and validates the port" do
+    assert {:ok, [port: 4101, ip: {127, 0, 0, 1}]} = Config.server_options([])
+
+    assert {:ok, [port: 4444, ip: {0, 0, 0, 0}]} =
+             Config.server_options(host: "0.0.0.0", port: 4444)
+
+    assert {:error, {:invalid_port, 0}} = Config.server_options(port: 0)
+    assert {:error, {:invalid_port, "4101"}} = Config.server_options(port: "4101")
   end
 
   test "local_dev_trusted_context_allowed?/0 requires explicit mode and loopback bind" do

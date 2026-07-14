@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   import Plug.Conn
   import Plug.Test
+  import FavnOrchestrator.TestSupport.Runtime, only: [stop_active_runs: 0]
 
   alias Favn.Contracts.RunnerResult
   alias Favn.Manifest
@@ -99,9 +100,10 @@ defmodule FavnOrchestrator.API.RouterTest do
   end
 
   defmodule IdempotencyCompletionFailingStorage do
+    alias Favn.Storage.Adapter
     alias FavnOrchestrator.Storage.Adapter.Memory
 
-    for {name, arity} <- Favn.Storage.Adapter.behaviour_info(:callbacks),
+    for {name, arity} <- Adapter.behaviour_info(:callbacks),
         {name, arity} != {:complete_idempotency_record, 3} do
       args = Macro.generate_arguments(arity, __MODULE__)
 
@@ -113,6 +115,22 @@ defmodule FavnOrchestrator.API.RouterTest do
     def complete_idempotency_record(_record_id, _attrs, _opts) do
       {:error, {:write_failed, "internal-secret-path"}}
     end
+  end
+
+  defmodule AuditFailingStorage do
+    alias Favn.Storage.Adapter
+    alias FavnOrchestrator.Storage.Adapter.Memory
+
+    for {name, arity} <- Adapter.behaviour_info(:callbacks),
+        {name, arity} != {:put_auth_audit, 2} do
+      args = Macro.generate_arguments(arity, __MODULE__)
+
+      def unquote(name)(unquote_splicing(args)) do
+        apply(Memory, unquote(name), [unquote_splicing(args)])
+      end
+    end
+
+    def put_auth_audit(_entry, _opts), do: {:error, :audit_unavailable}
   end
 
   setup do
@@ -144,12 +162,14 @@ defmodule FavnOrchestrator.API.RouterTest do
     Process.delete(:runner_register_manifest_result)
 
     auth_start = ensure_auth_store_started()
+    stop_active_runs()
     :ok = AuthStore.reset()
     Memory.reset()
     FavnOrchestrator.ProjectionDiagnostics.reset()
     :ok = Auth.bootstrap_configured_actor()
 
     on_exit(fn ->
+      stop_active_runs()
       restore_env(:favn_orchestrator, :api_service_tokens, previous_tokens)
       restore_env(:favn_orchestrator, :runner_client, previous_client)
       restore_env(:favn_orchestrator, :runner_client_opts, previous_client_opts)
@@ -513,6 +533,43 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"data" => %{"actor" => me_actor}} = Jason.decode!(me_conn.resp_body)
     assert me_actor["id"] == actor["id"]
     assert me_actor["roles"] == ["admin"]
+  end
+
+  test "password login throttling is isolated by network peer" do
+    previous_limit = Application.get_env(:favn_orchestrator, :auth_login_failure_limit)
+    previous_backoff = Application.get_env(:favn_orchestrator, :auth_login_backoff_seconds)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :auth_login_failure_limit, previous_limit)
+      restore_env(:favn_orchestrator, :auth_login_backoff_seconds, previous_backoff)
+    end)
+
+    Application.put_env(:favn_orchestrator, :auth_login_failure_limit, 2)
+    Application.put_env(:favn_orchestrator, :auth_login_backoff_seconds, 3_600)
+
+    for _attempt <- 1..2 do
+      response =
+        conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{
+          username: "admin",
+          password: "wrong-password"
+        })
+        |> Map.put(:remote_ip, {10, 0, 0, 1})
+        |> put_req_header("authorization", "Bearer test-service-token")
+        |> Router.call(@opts)
+
+      assert response.status == 401
+    end
+
+    response =
+      conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{
+        username: "admin",
+        password: "admin-password-long"
+      })
+      |> Map.put(:remote_ip, {10, 0, 0, 2})
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 201
   end
 
   test "password login returns opaque token once without hashes or password material" do
@@ -1495,6 +1552,8 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"data" => %{"run" => %{"id" => source_run_id}}} =
              Jason.decode!(submit_response.resp_body)
 
+    assert {:ok, _source_run} = await_terminal_run(source_run_id)
+
     request = fn ->
       conn(:post, "/api/orchestrator/v1/runs/#{source_run_id}/rerun")
       |> put_req_header("authorization", "Bearer test-service-token")
@@ -1757,7 +1816,7 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     submit_response =
       conn(:post, "/api/orchestrator/v1/backfills", %{
-        "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        "target" => %{"type" => "pipeline", "module" => "MyApp.Pipelines.DailyOrders"},
         "manifest_selection" => %{
           "mode" => "version",
           "manifest_version_id" => version.manifest_version_id
@@ -1809,6 +1868,27 @@ defmodule FavnOrchestrator.API.RouterTest do
                  include_upstream?: false
                }
            end)
+  end
+
+  test "actor creation remains successful when audit persistence fails" do
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+    Application.put_env(:favn_orchestrator, :storage_adapter, AuditFailingStorage)
+
+    response =
+      conn(:post, "/api/orchestrator/v1/actors", %{
+        username: "audit_failure_actor",
+        password: "audit-failure-password-long",
+        display_name: "Audit Failure Actor",
+        roles: ["operator"]
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> Router.call(@opts)
+
+    assert response.status == 201
+    assert %{"data" => %{"actor" => %{"id" => actor_id}}} = Jason.decode!(response.resp_body)
+    assert {:ok, %{id: ^actor_id}} = Auth.get_actor(actor_id)
   end
 
   test "plans pipeline backfill without creating runs" do
@@ -1987,7 +2067,8 @@ defmodule FavnOrchestrator.API.RouterTest do
           {"max_attempts", 0, "Invalid max_attempts"},
           {"retry_backoff_ms", -1, "Invalid retry_backoff_ms"},
           {"timeout_ms", 0, "Invalid timeout_ms"},
-          {"coverage_baseline_id", "", "Invalid coverage_baseline_id"}
+          {"coverage_baseline_id", "", "Invalid coverage_baseline_id"},
+          {"metadata", "not-an-object", "Invalid metadata"}
         ] do
       response =
         conn(
@@ -3099,4 +3180,23 @@ defmodule FavnOrchestrator.API.RouterTest do
                })
     end)
   end
+
+  defp await_terminal_run(run_id, attempts \\ 100)
+
+  defp await_terminal_run(run_id, attempts) when attempts > 0 do
+    case Storage.get_run(run_id) do
+      {:ok, %RunState{status: status} = run}
+      when status in [:ok, :partial, :error, :cancelled, :timed_out] ->
+        {:ok, run}
+
+      {:ok, %RunState{}} ->
+        Process.sleep(10)
+        await_terminal_run(run_id, attempts - 1)
+
+      error ->
+        error
+    end
+  end
+
+  defp await_terminal_run(_run_id, 0), do: {:error, :timeout_waiting_for_terminal_state}
 end

@@ -51,7 +51,8 @@ defmodule FavnOrchestrator.OperatorCommands.Input do
     run_id = field(value, :run_id)
 
     with {:ok, source} <- selection_source(source),
-         {:ok, id} <- selection_id(source, id, kind, timeline_value) do
+         {:ok, id} <- selection_id(source, id, kind, timeline_value),
+         {:ok, timezone} <- timezone(timezone) do
       {:ok,
        %{
          source: source,
@@ -93,6 +94,10 @@ defmodule FavnOrchestrator.OperatorCommands.Input do
   def timeout_ms(value) when is_integer(value) and value > 0, do: {:ok, value}
   def timeout_ms(value), do: {:error, {:invalid_operator_timeout_ms, value}}
 
+  def metadata(nil), do: {:ok, nil}
+  def metadata(value) when is_map(value), do: {:ok, value}
+  def metadata(value), do: {:error, {:invalid_operator_metadata, value}}
+
   def positive_integer(nil, _field), do: {:ok, nil}
 
   def positive_integer(value, _field) when is_integer(value) and value > 0,
@@ -110,6 +115,9 @@ defmodule FavnOrchestrator.OperatorCommands.Input do
   def non_empty_binary(nil, _field), do: {:ok, nil}
   def non_empty_binary(value, _field) when is_binary(value) and value != "", do: {:ok, value}
   def non_empty_binary(value, field), do: {:error, {invalid_text_field(field), value}}
+
+  defp timezone(value) when is_binary(value) and value != "", do: {:ok, value}
+  defp timezone(value), do: {:error, {:invalid_operator_timezone, value}}
 
   defp normalize_window_result(original, fun) do
     case fun.() do

@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Log.Entry
   alias Favn.Manifest
   alias Favn.Manifest.Version
   alias FavnOrchestrator.RunState
@@ -79,6 +80,10 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
 
     assert {:error, :conflicting_event_sequence} =
              Storage.append_run_event("run_1", %{sequence: 1, event_type: :run_updated})
+
+    assert {:error, :invalid_opts} = Storage.list_run_events("run_1", limit: 0)
+    assert {:error, :invalid_opts} = Storage.list_run_events("run_1", after_sequence: "1")
+    assert {:error, :invalid_opts} = Storage.list_run_events("run_1", order: :sideways)
   end
 
   test "validates scheduler state payload" do
@@ -129,7 +134,7 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
     now = DateTime.utc_now()
 
     entries = [
-      Favn.Log.Entry.normalize(%{
+      Entry.normalize(%{
         run_id: "scan_logs_run",
         runner_execution_id: "runner_a",
         producer_id: "memory-scan",
@@ -138,7 +143,7 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
         stream: :stdout,
         message: "first"
       }),
-      Favn.Log.Entry.normalize(%{
+      Entry.normalize(%{
         run_id: "scan_logs_run",
         runner_execution_id: "runner_a",
         producer_id: "memory-scan",
@@ -164,6 +169,18 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
              )
 
     assert Enum.map(next_page.items, & &1.message) == ["second"]
+
+    assert {:ok, level_page} = Storage.list_logs(%{"level" => "info"}, limit: 10)
+    assert Enum.map(level_page.items, & &1.message) == ["first", "second"]
+
+    assert {:ok, descending_page} = Storage.list_logs(%{}, order: :desc, limit: 10)
+    assert Enum.map(descending_page.items, & &1.message) == ["second", "first"]
+
+    assert {:error, {:unsupported_filter, "unknown"}} =
+             Storage.list_logs(%{"unknown" => true}, limit: 10)
+
+    assert {:error, :invalid_log_filter} = Storage.list_logs(:invalid, limit: 10)
+    assert {:error, :invalid_log_filter} = Storage.list_logs([:invalid], limit: 10)
   end
 
   test "uses nil scheduler schedule ids as exact keys" do
@@ -186,6 +203,51 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
     assert {:ok, %Favn.Scheduler.State{schedule_id: nil}} = Storage.get_scheduler_state(nil_key)
   end
 
+  test "keeps authentication secondary indexes consistent on updates" do
+    now = DateTime.utc_now()
+    actor = auth_actor("actor-1", "first", now)
+
+    assert :ok = Storage.put_auth_actor(actor)
+    assert :ok = Storage.put_auth_actor(%{actor | username: "renamed"})
+    assert {:error, :not_found} = Storage.get_auth_actor_by_username("first")
+    assert {:ok, %{id: "actor-1"}} = Storage.get_auth_actor_by_username("renamed")
+
+    assert {:error, :username_taken} =
+             Storage.put_auth_actor(auth_actor("actor-2", "renamed", now))
+
+    session = auth_session("session-1", "hash-1", actor.id, now)
+    assert :ok = Storage.put_auth_session(session)
+    assert :ok = Storage.put_auth_session(%{session | token_hash: "hash-2"})
+    assert {:error, :not_found} = Storage.get_auth_session_by_token_hash("hash-1")
+    assert {:ok, %{id: "session-1"}} = Storage.get_auth_session_by_token_hash("hash-2")
+
+    assert {:error, :session_token_taken} =
+             Storage.put_auth_session(auth_session("session-2", "hash-2", actor.id, now))
+  end
+
+  test "lists authentication audits newest first like database adapters" do
+    assert :ok = Storage.put_auth_audit(%{id: "audit-1"})
+    assert :ok = Storage.put_auth_audit(%{id: "audit-2"})
+    assert {:ok, [%{id: "audit-2"}, %{id: "audit-1"}]} = Storage.list_auth_audit(limit: 10)
+  end
+
+  test "rejects malformed idempotency maps without crashing storage" do
+    record = %{
+      id: "idem-1",
+      request_fingerprint: "fingerprint",
+      status: :in_progress,
+      expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
+    }
+
+    assert {:error, {:invalid_idempotency_record_key, "unexpected"}} =
+             Storage.reserve_idempotency_record(Map.put(record, "unexpected", true))
+
+    assert {:error, {:invalid_idempotency_status, "unknown"}} =
+             Storage.reserve_idempotency_record(%{record | status: "unknown"})
+
+    assert {:ok, {:reserved, %{id: "idem-1"}}} = Storage.reserve_idempotency_record(record)
+  end
+
   defp manifest_version(manifest_version_id) do
     manifest = %Manifest{
       assets: [
@@ -195,5 +257,29 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
     version
+  end
+
+  defp auth_actor(id, username, now) do
+    %{
+      id: id,
+      username: username,
+      display_name: username,
+      roles: [:viewer],
+      status: :active,
+      inserted_at: now,
+      updated_at: now
+    }
+  end
+
+  defp auth_session(id, token_hash, actor_id, now) do
+    %{
+      id: id,
+      token_hash: token_hash,
+      actor_id: actor_id,
+      provider: "password",
+      issued_at: now,
+      expires_at: DateTime.add(now, 60, :second),
+      revoked_at: nil
+    }
   end
 end

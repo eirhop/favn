@@ -107,6 +107,40 @@ defmodule FavnOrchestrator.Operator.LineageTest do
   test "unsupported graph options fail explicitly" do
     assert {:error, %{code: :invalid_scope}} = Lineage.get_graph(view_mode: :upstream)
     assert {:error, %{code: :invalid_scope}} = Lineage.get_graph(filters: %{status: :failed})
+
+    assert {:error, %{code: :invalid_request}} = Lineage.get_graph(unknown: true)
+
+    assert {:error, %{code: :invalid_request}} =
+             Lineage.get_graph(limit: [max_visible_groups: 0])
+
+    assert {:error, %{code: :invalid_request}} = Lineage.search(String.duplicate("x", 513))
+    assert {:error, %{code: :invalid_request}} = Lineage.get_group(nil)
+  end
+
+  test "asset previews honor the global visible-node budget" do
+    assert {:ok, graph} =
+             Lineage.get_graph(
+               limit: [max_visible_asset_nodes: 2, max_preview_assets_per_group: 2]
+             )
+
+    assert Enum.sum(Enum.map(graph.groups, &length(&1.preview_assets))) == 2
+    assert graph.summary.visible_assets == 2
+    assert graph.summary.truncated?
+  end
+
+  test "group identifiers do not collapse punctuation-distinct schemas" do
+    assets = [
+      asset(:hyphenated, :sql, :warehouse, "core", "foo-bar", []),
+      asset(:underscored, :sql, :warehouse, "core", "foo_bar", [])
+    ]
+
+    assert {:ok, graph} = Graph.build(assets)
+    assert {:ok, version} = Version.new(%Manifest{assets: assets, graph: graph})
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, lineage} = Lineage.get_graph()
+    assert Enum.map(lineage.groups, & &1.id) |> Enum.uniq() |> length() == 2
   end
 
   test "search returns bounded group and asset results" do

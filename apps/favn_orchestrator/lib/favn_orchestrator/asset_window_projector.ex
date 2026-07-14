@@ -59,9 +59,8 @@ defmodule FavnOrchestrator.AssetWindowProjector do
   defp asset_window_state(%RunState{} = run_state, result, %Runtime{} = window) do
     with {:ok, {module, name}} <- result_ref(result),
          {:ok, status} <- result_status(result),
-         {:ok, existing} <- existing_state(module, name, Key.encode(window.key)),
-         {:ok, state} <- build_state(run_state, result, window, module, name, status, existing) do
-      {:ok, state}
+         {:ok, existing} <- existing_state(module, name, Key.encode(window.key)) do
+      build_state(run_state, result, window, module, name, status, existing)
     end
   end
 

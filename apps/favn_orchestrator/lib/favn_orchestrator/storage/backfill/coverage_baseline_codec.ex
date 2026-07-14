@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec do
 
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Storage.JsonSafe
+  alias FavnOrchestrator.Storage.PersistedAtom
 
   @format "favn.backfill.coverage_baseline.storage.v1"
 
@@ -16,7 +17,7 @@ defmodule FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec do
   @spec decode(String.t()) :: {:ok, CoverageBaseline.t()} | {:error, term()}
   def decode(payload) when is_binary(payload) do
     with {:ok, %{"format" => @format, "schema_version" => 1} = dto} <- Jason.decode(payload),
-         {:ok, pipeline_module} <- existing_atom(Map.get(dto, "pipeline_module")),
+         {:ok, pipeline_module} <- PersistedAtom.module(Map.get(dto, "pipeline_module")),
          {:ok, coverage_start_at} <- optional_datetime(Map.get(dto, "coverage_start_at")),
          {:ok, coverage_until} <- datetime(Map.get(dto, "coverage_until")),
          {:ok, created_at} <- datetime(Map.get(dto, "created_at")),
@@ -84,14 +85,6 @@ defmodule FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec do
 
   defp optional_datetime(nil), do: {:ok, nil}
   defp optional_datetime(value), do: datetime(value)
-
-  defp existing_atom(value) when is_binary(value) do
-    {:ok, String.to_existing_atom(value)}
-  rescue
-    ArgumentError -> {:error, {:unknown_atom, value}}
-  end
-
-  defp existing_atom(value), do: {:error, {:invalid_atom, value}}
 
   defp list_field(dto, field) do
     case Map.fetch(dto, field) do

@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   alias Favn.Plan.NodeIdentity
   alias Favn.Run.AssetResult
   alias FavnOrchestrator.AssetStepIdentity
+  alias FavnOrchestrator.RunServer.Execution.ExecutionPool
   alias FavnOrchestrator.RunState
 
   @type node_key :: Favn.Plan.node_key()
@@ -71,7 +72,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
       stage: stage,
       attempt: attempt,
       max_attempts: run_state.max_attempts,
-      execution_pool: effective_execution_pool(run_state, node_key)
+      execution_pool: ExecutionPool.for_node(run_state, node_key)
     }
   end
 
@@ -95,7 +96,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
         trigger:
           lifecycle.run.trigger
           |> Map.put(:window, node_identity.window)
-          |> maybe_put_pipeline_trigger(Map.get(lifecycle.run.metadata, :pipeline_context)),
+          |> maybe_put_pipeline_trigger(
+            Map.get(
+              lifecycle.run.metadata,
+              :pipeline_context,
+              Map.get(lifecycle.run.metadata, "pipeline_context")
+            )
+          ),
         metadata: work_metadata(lifecycle.run.metadata)
       }
 
@@ -124,11 +131,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
     runner_error_retryable?(error) and Enum.all?(asset_results || [], &asset_result_retryable?/1)
   end
 
-  def runner_result_retryable?(_result), do: true
+  def runner_result_retryable?(_result), do: false
 
   @doc "Builds retry scheduling data, or says the attempt is terminal."
-  @spec schedule_retry(t(), boolean()) :: {:ok, retry()} | :terminal
-  def schedule_retry(%__MODULE__{} = lifecycle, true) do
+  @spec schedule_retry(t()) :: {:ok, retry()} | :terminal
+  def schedule_retry(%__MODULE__{} = lifecycle) do
     if lifecycle.attempt < lifecycle.max_attempts do
       {:ok,
        %{
@@ -148,8 +155,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
     end
   end
 
-  def schedule_retry(%__MODULE__{}, _retryable), do: :terminal
-
   @doc "Builds the event payload for a scheduled retry."
   @spec retry_event_payload(retry()) :: map()
   def retry_event_payload(retry) when is_map(retry) do
@@ -167,17 +172,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
     }
   end
 
-  @doc "Returns the lifecycle node key."
-  @spec node_key(t()) :: node_key()
-  def node_key(%__MODULE__{node_key: node_key}), do: node_key
-
   defp asset_result_retryable?(%RunnerAssetResult{error: error}),
     do: runner_error_retryable?(error)
 
   defp asset_result_retryable?(%AssetResult{error: error}), do: structured_retryable?(error)
   defp asset_result_retryable?(%{error: error}), do: structured_retryable?(error)
   defp asset_result_retryable?(%{"error" => error}), do: structured_retryable?(error)
-  defp asset_result_retryable?(_result), do: true
+  defp asset_result_retryable?(_result), do: false
 
   defp runner_error_retryable?(%RunnerError{retryable?: retryable?}), do: retryable?
   defp runner_error_retryable?(error), do: structured_retryable?(error)
@@ -238,32 +239,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   defp planned_asset_refs(%RunState{asset_ref: ref}) when is_tuple(ref), do: [ref]
   defp planned_asset_refs(%RunState{}), do: []
 
-  defp effective_execution_pool(%RunState{} = run_state, node_key) do
-    node_pool =
-      case run_state.plan do
-        %Favn.Plan{nodes: nodes} when is_map(nodes) ->
-          nodes
-          |> Map.get(node_key, %{})
-          |> Map.get(:execution_pool)
-
-        _other ->
-          nil
-      end
-
-    node_pool || pipeline_default_execution_pool(run_state)
-  end
-
-  defp pipeline_default_execution_pool(%RunState{metadata: %{pipeline_execution_policy: policy}})
-       when is_map(policy) do
-    Map.get(policy, :execution_pool) || Map.get(policy, "execution_pool")
-  end
-
-  defp pipeline_default_execution_pool(%RunState{}), do: nil
-
   defp maybe_put_pipeline_trigger(trigger, pipeline_context) when is_map(pipeline_context),
     do: Map.put(trigger, :pipeline, pipeline_context)
 
   defp maybe_put_pipeline_trigger(trigger, _pipeline_context), do: trigger
 
-  defp work_metadata(metadata) when is_map(metadata), do: Map.delete(metadata, :runner_metadata)
+  defp work_metadata(metadata) when is_map(metadata) do
+    metadata
+    |> Map.delete(:runner_metadata)
+    |> Map.delete("runner_metadata")
+  end
 end

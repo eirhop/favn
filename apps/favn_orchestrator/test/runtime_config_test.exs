@@ -74,6 +74,27 @@ defmodule FavnOrchestrator.RuntimeConfigTest do
     end
   end
 
+  test "current reads the published config without synchronously calling its owner" do
+    name = __MODULE__.PublishedRuntimeConfig
+
+    pid =
+      start_supervised!(
+        {RuntimeConfig,
+         config:
+           RuntimeConfig.normalize!(runner_client: RunnerClientStub, storage_adapter: Memory),
+         name: name}
+      )
+
+    :sys.suspend(pid)
+
+    try do
+      task = Task.async(fn -> RuntimeConfig.current(name) end)
+      assert %RuntimeConfig{runner_client: RunnerClientStub} = Task.await(task, 100)
+    after
+      :sys.resume(pid)
+    end
+  end
+
   test "default runtime config freezes storage and runner lookups after startup" do
     keys = [
       :runtime_config_dynamic_env?,

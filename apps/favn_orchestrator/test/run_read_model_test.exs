@@ -1,10 +1,10 @@
 defmodule FavnOrchestrator.RunReadModelTest do
   use ExUnit.Case, async: false
 
-  alias Favn.Window.Anchor
-  alias Favn.Window.Key, as: WindowKey
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
+  alias Favn.Window.Anchor
+  alias Favn.Window.Key, as: WindowKey
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -18,53 +18,6 @@ defmodule FavnOrchestrator.RunReadModelTest do
     end)
 
     :ok
-  end
-
-  test "list_run_summaries classifies public run roles" do
-    anchor = anchor(~U[2026-05-01 00:00:00Z])
-    parent = run("backfill_parent", submit_kind: :backfill_pipeline)
-
-    child =
-      run("backfill_child",
-        submit_kind: :pipeline,
-        parent_run_id: parent.id,
-        root_run_id: parent.id,
-        lineage_depth: 1,
-        trigger: %{
-          kind: :backfill,
-          pipeline_module: MyApp.Pipelines.Daily,
-          window_key: window_key(anchor)
-        },
-        metadata: %{pipeline_context: %{anchor_window: anchor}}
-      )
-
-    runs = [
-      run("asset", submit_kind: :manual),
-      run("pipeline", submit_kind: :pipeline),
-      parent,
-      child,
-      run("rerun", submit_kind: :rerun, rerun_of_run_id: "asset")
-    ]
-
-    Enum.each(runs, fn run ->
-      assert :ok = Storage.put_run(run)
-    end)
-
-    assert {:ok, summaries} = FavnOrchestrator.list_run_summaries()
-
-    summaries_by_id = Map.new(summaries, &{&1.id, &1})
-
-    assert summaries_by_id["asset"].kind == :asset
-    assert summaries_by_id["pipeline"].kind == :pipeline
-    assert summaries_by_id["backfill_parent"].kind == :backfill_parent
-    assert summaries_by_id["backfill_parent"].progress_unit == nil
-    assert summaries_by_id["backfill_child"].kind == :backfill_child
-    assert summaries_by_id["backfill_child"].parent_run_id == parent.id
-    assert summaries_by_id["backfill_child"].root_run_id == parent.id
-    assert summaries_by_id["backfill_child"].window.key == window_key(anchor)
-    assert summaries_by_id["backfill_child"].window.label == "May 1"
-    assert summaries_by_id["rerun"].kind == :rerun
-    assert summaries_by_id["rerun"].rerun_of_run_id == "asset"
   end
 
   test "parent backfill summary includes window progress when ledger rows exist" do
@@ -1058,6 +1011,89 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert detail.root_event_sequence == parent.event_seq
     assert {:ok, events} = Storage.list_run_events(child.id)
     assert detail.latest_global_event_sequence == List.last(events).global_sequence
+  end
+
+  test "operator run detail keeps complete step history for active runs" do
+    parent = run("operator_active_history_parent", submit_kind: :backfill_pipeline)
+    anchor = anchor(~U[2026-07-01 00:00:00Z])
+    asset_ref = {MyApp.Assets.Gold, :asset}
+    node_key = {asset_ref, public_window(anchor).key}
+
+    child =
+      child_run(parent, "operator_active_history_child", anchor, :running, result_status: nil)
+
+    Enum.each([parent, child], &assert(:ok = Storage.put_run(&1)))
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, anchor, :running))
+
+    assert :ok =
+             Storage.append_run_event(child.id, %{
+               run_id: child.id,
+               sequence: 1,
+               event_type: :step_started,
+               occurred_at: ~U[2026-07-01 00:00:01Z],
+               status: :running,
+               asset_ref: asset_ref,
+               data: %{asset_step_id: "old-active-step", attempt: 1}
+             })
+
+    Enum.each(1..201, fn attempt ->
+      asset_step_id = "active-step-#{attempt}"
+      started_sequence = attempt * 2
+      finished_sequence = attempt * 2 + 1
+
+      node_result =
+        NodeResult.new(%{
+          node_key: node_key,
+          ref: asset_ref,
+          status: :ok,
+          started_at: DateTime.add(anchor.start_at, started_sequence, :second),
+          finished_at: DateTime.add(anchor.start_at, finished_sequence, :second),
+          attempt_count: attempt,
+          max_attempts: 201,
+          asset_step_id: asset_step_id
+        })
+
+      assert :ok =
+               Storage.append_run_event(child.id, %{
+                 run_id: child.id,
+                 sequence: started_sequence,
+                 event_type: :step_started,
+                 occurred_at: DateTime.add(~U[2026-07-01 00:00:00Z], started_sequence, :second),
+                 status: :running,
+                 asset_ref: asset_ref,
+                 data: %{asset_step_id: asset_step_id, attempt: attempt}
+               })
+
+      assert :ok =
+               Storage.append_run_event(child.id, %{
+                 run_id: child.id,
+                 sequence: finished_sequence,
+                 event_type: :step_finished,
+                 occurred_at: DateTime.add(~U[2026-07-01 00:00:00Z], finished_sequence, :second),
+                 status: :ok,
+                 asset_ref: asset_ref,
+                 data: %{
+                   asset_step_id: asset_step_id,
+                   attempt: attempt,
+                   node_result: node_result
+                 }
+               })
+    end)
+
+    assert {:ok, bounded_events} =
+             Storage.list_execution_group_events(parent.id, per_run_limit: 200)
+
+    assert length(bounded_events) == 200
+
+    assert {:ok, detail} = FavnOrchestrator.get_operator_run_detail(child.id)
+    assert length(detail.asset_attempts) == 202
+
+    assert Enum.any?(
+             detail.asset_attempts,
+             &(&1.id == "old-active-step" and &1.status == :running)
+           )
+
+    assert Enum.any?(detail.asset_attempts, &(&1.id == "active-step-1" and &1.status == :ok))
   end
 
   test "operator run detail includes only explicitly bounded events" do

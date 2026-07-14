@@ -250,10 +250,14 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   defp normalize_dispatch_reason(_kind, reason), do: reason
 
   defp ensure_connected(runner_node) when is_atom(runner_node) do
-    case Node.connect(runner_node) do
-      true -> :ok
-      false -> {:error, {:runner_node_unreachable, runner_node}}
-      :ignored -> {:error, {:runner_node_ignored, runner_node}}
+    if runner_node == Node.self() do
+      :ok
+    else
+      case Node.connect(runner_node) do
+        true -> :ok
+        false -> {:error, {:runner_node_unreachable, runner_node}}
+        :ignored -> {:error, {:runner_node_ignored, runner_node}}
+      end
     end
   end
 end

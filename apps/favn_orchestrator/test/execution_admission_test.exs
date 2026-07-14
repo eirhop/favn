@@ -77,10 +77,7 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
       Favn.Storage.Adapter.behaviour_info(:callbacks) --
         Favn.Storage.Adapter.behaviour_info(:optional_callbacks)
 
-    excluded = [
-      :expire_execution_admission_waiters,
-      :list_execution_admission_waiters_for_scope
-    ]
+    excluded = [:expire_execution_admission_waiters]
 
     for {name, arity} <- callbacks, name not in excluded do
       args = Macro.generate_arguments(arity, __MODULE__)
@@ -95,20 +92,6 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
     def expire_execution_admission_waiters(now, opts) when is_list(opts) do
       if owner = Keyword.get(opts, :owner), do: send(owner, :expired_waiters)
       FavnOrchestrator.Storage.Adapter.Memory.expire_execution_admission_waiters(now, opts)
-    end
-
-    @impl true
-    def list_execution_admission_waiters_for_scope(scope, waiter_opts, opts)
-        when is_map(scope) and is_list(waiter_opts) and is_list(opts) do
-      if owner = Keyword.get(opts, :owner) do
-        send(owner, {:listed_waiters, {to_string(scope.kind), scope.key}})
-      end
-
-      FavnOrchestrator.Storage.Adapter.Memory.list_execution_admission_waiters_for_scope(
-        scope,
-        waiter_opts,
-        opts
-      )
     end
   end
 
@@ -185,6 +168,31 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
                asset_step_id: "step-1",
                execution_pool: :missing_pool
              })
+  end
+
+  test "normalizes string-keyed entries and rejects malformed entry identities" do
+    run = run(max_concurrency: 1)
+
+    assert {:ok, lease} = ExecutionAdmission.acquire(run, %{"asset_step_id" => "step-string"})
+    assert lease.asset_step_id == "step-string"
+
+    assert {:error, {:invalid_execution_admission_entry, :asset_step_id}} =
+             ExecutionAdmission.acquire(run, %{})
+
+    assert {:error, {:invalid_execution_admission_entry, :execution_pool}} =
+             ExecutionAdmission.acquire(run, %{asset_step_id: "step", execution_pool: %{}})
+  end
+
+  test "lease and waiter identities cannot collide across delimiter-bearing ids" do
+    run_a = run(id: "run:a", max_concurrency: 1)
+    run_b = run(id: "run", max_concurrency: 1)
+
+    assert {:ok, lease_a} = ExecutionAdmission.acquire(run_a, %{asset_step_id: "b"})
+    assert {:ok, lease_b} = ExecutionAdmission.acquire(run_b, %{asset_step_id: "a:b"})
+    refute lease_a.lease_id == lease_b.lease_id
+
+    refute Waiter.waiter_id("run:a", "b", 0, 1) ==
+             Waiter.waiter_id("run", "a:b", 0, 1)
   end
 
   test "terminal runs cannot acquire leases or register waiters" do
@@ -330,9 +338,7 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
     ])
 
     assert_receive :expired_waiters, 1_000
-    assert_receive {:listed_waiters, {"pool", "github_api"}}, 1_000
     refute_received :expired_waiters
-    refute_received {:listed_waiters, {"pool", "github_api"}}
   end
 
   test "acquire_or_wait rechecks admission after registering waiter" do

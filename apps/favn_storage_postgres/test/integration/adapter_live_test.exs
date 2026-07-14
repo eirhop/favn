@@ -116,7 +116,7 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     end
   end
 
-  test "repairs legacy null pipeline submit query metadata once", context do
+  test "keeps reads pure and repairs legacy query metadata only on explicit rebuild", context do
     case context[:opts] do
       nil ->
         :ok
@@ -152,7 +152,7 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
                    [run.id]
                  )
 
-        assert {:ok, [stored]} =
+        assert {:ok, []} =
                  Adapter.list_target_runs(
                    version.manifest_version_id,
                    :pipeline,
@@ -161,7 +161,14 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
                    opts
                  )
 
-        assert stored.id == run.id
+        assert {:ok, %{rows: [[nil]]}} =
+                 SQL.query(
+                   Repo,
+                   "SELECT pipeline_submit_ref_text FROM favn_runs WHERE run_id = $1",
+                   [run.id]
+                 )
+
+        assert {:ok, 1} = Adapter.rebuild_execution_group_summaries(opts)
 
         assert {:ok, %{rows: [["MyApp.Pipeline"]]}} =
                  SQL.query(

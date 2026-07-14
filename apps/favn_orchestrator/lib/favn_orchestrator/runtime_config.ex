@@ -32,7 +32,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
   """
   @spec start_link(t() | keyword()) :: GenServer.on_start()
   def start_link(%__MODULE__{} = config) do
-    GenServer.start_link(__MODULE__, config, name: __MODULE__)
+    GenServer.start_link(__MODULE__, {config, __MODULE__}, name: __MODULE__)
   end
 
   def start_link(opts) when is_list(opts) do
@@ -43,7 +43,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
       end
 
     name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, config, name: name)
+    GenServer.start_link(__MODULE__, {config, name}, name: name)
   end
 
   @doc """
@@ -58,9 +58,9 @@ defmodule FavnOrchestrator.RuntimeConfig do
     if dynamic_env_override?(name) do
       from_app_env()
     else
-      case Process.whereis(name) do
-        nil -> from_app_env()
-        _pid -> GenServer.call(name, :current)
+      case :persistent_term.get(persistent_key(name), :missing) do
+        :missing -> from_app_env()
+        %__MODULE__{} = config -> config
       end
     end
   end
@@ -128,16 +128,27 @@ defmodule FavnOrchestrator.RuntimeConfig do
   end
 
   @impl true
-  def init(%__MODULE__{} = config), do: {:ok, config}
+  def init({%__MODULE__{} = config, name}) do
+    :persistent_term.put(persistent_key(name), config)
+    {:ok, %{config: config, name: name}}
+  end
 
   @impl true
-  def handle_call(:current, _from, %__MODULE__{} = config), do: {:reply, config, config}
+  def handle_call(:current, _from, state), do: {:reply, state.config, state}
+
+  @impl true
+  def terminate(_reason, state) do
+    :persistent_term.erase(persistent_key(state.name))
+    :ok
+  end
 
   defp dynamic_env_override?(__MODULE__) do
     Application.get_env(:favn_orchestrator, :runtime_config_dynamic_env?, false) == true
   end
 
   defp dynamic_env_override?(_name), do: false
+
+  defp persistent_key(name), do: {__MODULE__, name}
 
   defp validate_module_or_nil(_field, nil), do: :ok
   defp validate_module_or_nil(field, module), do: validate_module(field, module)

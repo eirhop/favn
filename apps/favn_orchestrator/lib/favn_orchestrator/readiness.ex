@@ -3,9 +3,9 @@ defmodule FavnOrchestrator.Readiness do
   Aggregates liveness and readiness checks for the orchestrator runtime.
   """
 
-  alias Favn.Contracts.RunnerClient
   alias FavnOrchestrator.API.Config, as: APIConfig
   alias FavnOrchestrator.Redaction
+  alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
@@ -74,13 +74,7 @@ defmodule FavnOrchestrator.Readiness do
   defp runner_check do
     module = RuntimeConfig.current().runner_client
 
-    with true <- is_atom(module),
-         {:module, ^module} <- Code.ensure_loaded(module),
-         callbacks <-
-           RunnerClient.behaviour_info(:callbacks) --
-             RunnerClient.behaviour_info(:optional_callbacks),
-         true <-
-           Enum.all?(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end),
+    with :ok <- RunnerClientValidator.validate(module),
          :ok <- runner_runtime_check(module) do
       ok(:runner, %{module: module_name(module)})
     else
@@ -117,8 +111,11 @@ defmodule FavnOrchestrator.Readiness do
 
   defp normalize_storage_error(reason), do: reason
 
-  defp ok(name, details), do: %{name: name, status: :ok, details: Redaction.redact(details)}
-  defp error(name, reason), do: %{name: name, status: :error, error: Redaction.redact(reason)}
+  defp ok(name, details),
+    do: %{name: name, status: :ok, details: Redaction.redact_operational_bounded(details)}
+
+  defp error(name, reason),
+    do: %{name: name, status: :error, error: Redaction.redact_operational_bounded(reason)}
 
   defp module_name(nil), do: nil
   defp module_name(module) when is_atom(module), do: Atom.to_string(module)

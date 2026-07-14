@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.Backfill.BackfillWindow do
   run event streams.
   """
 
+  alias FavnOrchestrator.Backfill.ReadModelValues
+
   @enforce_keys [
     :backfill_run_id,
     :pipeline_module,
@@ -44,7 +46,7 @@ defmodule FavnOrchestrator.Backfill.BackfillWindow do
     metadata: %{}
   ]
 
-  @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
+  @type status :: ReadModelValues.status()
 
   @type t :: %__MODULE__{
           backfill_run_id: String.t(),
@@ -77,7 +79,8 @@ defmodule FavnOrchestrator.Backfill.BackfillWindow do
     attrs = Map.new(attrs)
 
     with {:ok, attrs} <- normalize_attrs(attrs),
-         :ok <- require_keys(attrs, @required_keys) do
+         :ok <- require_keys(attrs, @required_keys),
+         :ok <- validate_fields(attrs) do
       {:ok, struct(__MODULE__, Map.merge(%{attempt_count: 0, errors: [], metadata: %{}}, attrs))}
     end
   end
@@ -96,43 +99,87 @@ defmodule FavnOrchestrator.Backfill.BackfillWindow do
   defp missing?(attrs, key), do: Map.get(attrs, key) in [nil, ""]
 
   defp normalize_attrs(attrs) do
-    with {:ok, window_kind} <- normalize_window_kind(Map.get(attrs, :window_kind)),
-         {:ok, status} <- normalize_status(Map.get(attrs, :status)) do
-      {:ok, attrs |> Map.put(:window_kind, window_kind) |> Map.put(:status, status)}
+    with {:ok, window_kind} <- ReadModelValues.normalize_window_kind(Map.get(attrs, :window_kind)),
+         {:ok, status} <- ReadModelValues.normalize_status(Map.get(attrs, :status)),
+         {:ok, window_start_at} <- normalize_datetime(Map.get(attrs, :window_start_at)),
+         {:ok, window_end_at} <- normalize_datetime(Map.get(attrs, :window_end_at)),
+         {:ok, started_at} <- normalize_optional_datetime(Map.get(attrs, :started_at)),
+         {:ok, finished_at} <- normalize_optional_datetime(Map.get(attrs, :finished_at)),
+         {:ok, created_at} <- normalize_optional_datetime(Map.get(attrs, :created_at)),
+         {:ok, updated_at} <- normalize_datetime(Map.get(attrs, :updated_at)) do
+      {:ok,
+       attrs
+       |> Map.put(:window_kind, window_kind)
+       |> Map.put(:status, status)
+       |> Map.put(:window_start_at, window_start_at)
+       |> Map.put(:window_end_at, window_end_at)
+       |> Map.put(:started_at, started_at)
+       |> Map.put(:finished_at, finished_at)
+       |> Map.put(:created_at, created_at)
+       |> Map.put(:updated_at, updated_at)}
     end
   end
 
-  defp normalize_window_kind(value) when value in [:hour, :day, :month, :year], do: {:ok, value}
-  defp normalize_window_kind(:hourly), do: {:ok, :hour}
-  defp normalize_window_kind(:daily), do: {:ok, :day}
-  defp normalize_window_kind(:monthly), do: {:ok, :month}
-  defp normalize_window_kind(:yearly), do: {:ok, :year}
-  defp normalize_window_kind("hour"), do: {:ok, :hour}
-  defp normalize_window_kind("hourly"), do: {:ok, :hour}
-  defp normalize_window_kind("day"), do: {:ok, :day}
-  defp normalize_window_kind("daily"), do: {:ok, :day}
-  defp normalize_window_kind("month"), do: {:ok, :month}
-  defp normalize_window_kind("monthly"), do: {:ok, :month}
-  defp normalize_window_kind("year"), do: {:ok, :year}
-  defp normalize_window_kind("yearly"), do: {:ok, :year}
-  defp normalize_window_kind(value), do: {:error, {:invalid_window_kind, value}}
+  defp normalize_optional_datetime(nil), do: {:ok, nil}
+  defp normalize_optional_datetime(""), do: {:ok, nil}
+  defp normalize_optional_datetime(value), do: normalize_datetime(value)
 
-  defp normalize_status(value)
-       when value in [:pending, :running, :ok, :partial, :error, :cancelled, :timed_out],
-       do: {:ok, value}
+  defp normalize_datetime(%DateTime{} = value), do: {:ok, value}
 
-  defp normalize_status(value) when is_binary(value) do
-    case value do
-      "pending" -> {:ok, :pending}
-      "running" -> {:ok, :running}
-      "ok" -> {:ok, :ok}
-      "partial" -> {:ok, :partial}
-      "error" -> {:ok, :error}
-      "cancelled" -> {:ok, :cancelled}
-      "timed_out" -> {:ok, :timed_out}
-      _other -> {:error, {:invalid_status, value}}
+  defp normalize_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      {:error, _reason} -> {:error, {:invalid_datetime, value}}
     end
   end
 
-  defp normalize_status(value), do: {:error, {:invalid_status, value}}
+  defp normalize_datetime(value), do: {:error, {:invalid_datetime, value}}
+
+  defp validate_fields(attrs) do
+    cond do
+      not is_atom(attrs.pipeline_module) ->
+        {:error, {:invalid_pipeline_module, attrs.pipeline_module}}
+
+      not required_binary_fields?(attrs) ->
+        {:error, :invalid_backfill_window_identity}
+
+      not optional_binary_fields?(attrs) ->
+        {:error, :invalid_backfill_window_run_identity}
+
+      not valid_window_range?(attrs.window_start_at, attrs.window_end_at) ->
+        {:error, {:invalid_window_range, attrs.window_start_at, attrs.window_end_at}}
+
+      not valid_attempt_count?(Map.get(attrs, :attempt_count, 0)) ->
+        {:error, {:invalid_attempt_count, Map.get(attrs, :attempt_count)}}
+
+      not is_list(Map.get(attrs, :errors, [])) ->
+        {:error, {:invalid_errors, Map.get(attrs, :errors)}}
+
+      not is_map(Map.get(attrs, :metadata, %{})) ->
+        {:error, {:invalid_metadata, Map.get(attrs, :metadata)}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp required_binary_fields?(attrs) do
+    Enum.all?([:backfill_run_id, :manifest_version_id, :timezone, :window_key], fn field ->
+      value = Map.get(attrs, field)
+      is_binary(value) and value != ""
+    end)
+  end
+
+  defp optional_binary_fields?(attrs) do
+    Enum.all?(
+      [:child_run_id, :coverage_baseline_id, :latest_attempt_run_id, :last_success_run_id],
+      &(is_nil(Map.get(attrs, &1)) or
+          (is_binary(Map.get(attrs, &1)) and Map.get(attrs, &1) != ""))
+    )
+  end
+
+  defp valid_attempt_count?(value), do: is_integer(value) and value >= 0
+
+  defp valid_window_range?(%DateTime{} = start_at, %DateTime{} = end_at),
+    do: DateTime.compare(start_at, end_at) == :lt
 end

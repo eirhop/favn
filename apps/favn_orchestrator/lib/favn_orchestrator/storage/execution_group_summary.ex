@@ -7,22 +7,11 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
   """
 
   alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.ExecutionStatus
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunQuery
-
-  @terminal_statuses [
-    :ok,
-    :partial,
-    :error,
-    :blocked,
-    :cancelled,
-    :timed_out,
-    :skipped,
-    :skipped_fresh
-  ]
-  @failed_statuses [:error, :timed_out, :cancelled, :blocked]
-  @running_statuses [:running, :retrying]
-  @queued_statuses [:pending, :queued, nil]
+  alias FavnOrchestrator.WindowSummary
 
   @type t :: map()
 
@@ -43,7 +32,7 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
 
     windows = Enum.filter(windows, &match?(%BackfillWindow{}, &1))
     windows_by_child = Map.new(windows, &{&1.latest_attempt_run_id || &1.child_run_id, &1})
-    attempt_counts = attempt_counts(root, children, windows)
+    attempt_counts = attempt_counts(root, children, windows_by_child)
     window_counts = window_counts(windows)
     public_root_status = public_status(root)
     active? = active_group?(runs, windows, attempt_counts)
@@ -84,43 +73,66 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
   end
 
   @doc "Encodes a summary for adapter storage."
-  @spec encode(t()) :: binary()
-  def encode(summary) when is_map(summary), do: :erlang.term_to_binary(summary)
+  @spec encode(t()) :: {:ok, binary()} | {:error, term()}
+  def encode(summary) when is_map(summary), do: PayloadCodec.encode(summary)
+
+  def encode(_summary), do: {:error, :invalid_execution_group_summary}
 
   @doc "Decodes a stored summary payload."
   @spec decode(binary()) :: {:ok, t()} | {:error, :invalid_execution_group_summary}
   def decode(payload) when is_binary(payload) do
-    {:ok, :erlang.binary_to_term(payload, [:safe])}
-  rescue
-    ArgumentError -> {:error, :invalid_execution_group_summary}
+    with {:ok, summary} <- PayloadCodec.decode(payload),
+         true <- valid_summary?(summary) do
+      {:ok, summary}
+    else
+      _error -> {:error, :invalid_execution_group_summary}
+    end
   end
 
-  defp attempt_counts(root, children, windows) do
-    windows_by_child = Map.new(windows, &{&1.latest_attempt_run_id || &1.child_run_id, &1})
+  def decode(_payload), do: {:error, :invalid_execution_group_summary}
 
+  defp attempt_counts(root, children, windows_by_child) do
     [root | children]
     |> Enum.reject(&backfill_parent?/1)
     |> Enum.flat_map(&run_attempt_statuses(&1, Map.get(windows_by_child, &1.id)))
-    |> then(fn statuses ->
-      %{
-        total: length(statuses),
-        completed: Enum.count(statuses, &terminal_status?/1),
-        failed: Enum.count(statuses, &failed_status?/1),
-        running: Enum.count(statuses, &running_status?/1),
-        queued: Enum.count(statuses, &queued_status?/1)
-      }
-    end)
+    |> Enum.reduce(
+      %{total: 0, completed: 0, failed: 0, running: 0, queued: 0},
+      &count_attempt/2
+    )
   end
+
+  defp count_attempt(status, counts) do
+    %{
+      total: counts.total + 1,
+      completed: counts.completed + truthy_count(ExecutionStatus.terminal?(status)),
+      failed: counts.failed + truthy_count(ExecutionStatus.failed?(status)),
+      running: counts.running + truthy_count(ExecutionStatus.running?(status)),
+      queued: counts.queued + truthy_count(ExecutionStatus.queued?(status))
+    }
+  end
+
+  defp truthy_count(true), do: 1
+  defp truthy_count(false), do: 0
 
   defp run_attempt_statuses(%RunState{} = run, window) do
     statuses = persisted_result_statuses(run)
+    expected_step_count = expected_step_count(run)
 
     cond do
-      statuses != [] -> statuses
-      match?(%BackfillWindow{}, window) -> [status_name(window.status)]
-      active_status?(run.status) -> List.duplicate(run.status, max(expected_step_count(run), 1))
-      expected_step_count(run) > 0 -> List.duplicate(public_status(run), expected_step_count(run))
-      true -> []
+      statuses != [] ->
+        statuses
+
+      match?(%BackfillWindow{}, window) ->
+        [ExecutionStatus.normalize(window.status)]
+
+      ExecutionStatus.active?(run.status) ->
+        List.duplicate(run.status, max(expected_step_count, 1))
+
+      expected_step_count > 0 ->
+        List.duplicate(public_status(run), expected_step_count)
+
+      true ->
+        []
     end
   end
 
@@ -140,7 +152,7 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
     |> Map.get(field, Map.get(result, Atom.to_string(field), []))
     |> result_values()
     |> Enum.map(&(map_get(&1, :status) || map_get(&1, :state)))
-    |> Enum.map(&status_name/1)
+    |> Enum.map(&ExecutionStatus.normalize/1)
     |> Enum.reject(&is_nil/1)
   end
 
@@ -156,19 +168,19 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
   defp expected_step_count(_run), do: 0
 
   defp window_counts(windows) do
-    statuses = Enum.map(windows, &status_name(&1.status))
+    statuses = Enum.map(windows, &ExecutionStatus.normalize(&1.status))
 
     %{
       total: length(windows),
-      completed: Enum.count(statuses, &terminal_status?/1),
-      failed: Enum.count(statuses, &failed_status?/1)
+      completed: Enum.count(statuses, &ExecutionStatus.terminal?/1),
+      failed: Enum.count(statuses, &ExecutionStatus.failed?/1)
     }
   end
 
   defp active_group?(runs, windows, attempt_counts) do
     attempt_counts.running > 0 or attempt_counts.queued > 0 or
       Enum.any?(runs, &(public_status(&1) in [:pending, :running])) or
-      Enum.any?(windows, &(status_name(&1.status) in [:pending, :queued, :running]))
+      Enum.any?(windows, &(ExecutionStatus.normalize(&1.status) in [:pending, :queued, :running]))
   end
 
   defp group_status(root_status, attempt_counts, window_counts, active?) do
@@ -226,7 +238,7 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
 
       run
       |> run_attempt_statuses(window)
-      |> Enum.filter(&running_status?/1)
+      |> Enum.filter(&ExecutionStatus.running?/1)
       |> Enum.map(&current_attempt(run, &1, window))
     end)
   end
@@ -239,25 +251,12 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
       root_execution_group_id: RunQuery.root_execution_group_id(run),
       child_run_id: run.id,
       run_id: run.id,
-      status: status_name(status),
+      status: ExecutionStatus.normalize(status),
       asset_key: asset_key,
       asset_ref: asset_key,
-      window: public_window(window)
+      window: if(window, do: WindowSummary.from_backfill(window))
     }
   end
-
-  defp public_window(%BackfillWindow{} = window) do
-    %{
-      key: window.window_key,
-      label: label(window.window_kind, window.window_start_at),
-      kind: window.window_kind,
-      start_at: window.window_start_at,
-      end_at: window.window_end_at,
-      timezone: window.timezone
-    }
-  end
-
-  defp public_window(_window), do: nil
 
   defp backfill_parent?(%RunState{submit_kind: kind})
        when kind in [:backfill_asset, :backfill_pipeline],
@@ -265,24 +264,7 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
 
   defp backfill_parent?(_run), do: false
 
-  defp public_status(%RunState{status: status}), do: status_name(status)
-
-  defp status_name(nil), do: nil
-  defp status_name(status) when is_atom(status), do: status
-
-  defp status_name(status) when is_binary(status) do
-    try do
-      String.to_existing_atom(status)
-    rescue
-      ArgumentError -> status
-    end
-  end
-
-  defp terminal_status?(status), do: status_name(status) in @terminal_statuses
-  defp failed_status?(status), do: status_name(status) in @failed_statuses
-  defp running_status?(status), do: status_name(status) in @running_statuses
-  defp queued_status?(status), do: status_name(status) in @queued_statuses
-  defp active_status?(status), do: status_name(status) in [:pending, :running]
+  defp public_status(%RunState{status: status}), do: ExecutionStatus.normalize(status)
 
   defp finished_at(%RunState{status: status, updated_at: updated_at})
        when status in [:ok, :partial, :error, :cancelled, :timed_out],
@@ -294,12 +276,6 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
     do: DateTime.diff(finished_at, started_at, :millisecond)
 
   defp duration_ms(_started_at, _finished_at), do: nil
-
-  defp label(:hour, %DateTime{} = start_at), do: Calendar.strftime(start_at, "%b %-d %H:00")
-  defp label(:day, %DateTime{} = start_at), do: Calendar.strftime(start_at, "%b %-d")
-  defp label(:month, %DateTime{} = start_at), do: Calendar.strftime(start_at, "%b %Y")
-  defp label(:year, %DateTime{} = start_at), do: Calendar.strftime(start_at, "%Y")
-  defp label(_kind, _start_at), do: nil
 
   defp earliest_datetime(values), do: datetime_extreme(values, &(DateTime.compare(&1, &2) == :lt))
   defp latest_datetime(values), do: datetime_extreme(values, &(DateTime.compare(&1, &2) == :gt))
@@ -326,4 +302,76 @@ defmodule FavnOrchestrator.Storage.ExecutionGroupSummary do
 
   defp map_get(map, key) when is_map(map),
     do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  defp valid_summary?(%{
+         id: id,
+         root_execution_group_id: root_execution_group_id,
+         status: status,
+         health: health,
+         active?: active?,
+         trigger_type: trigger_type,
+         target_assets: target_assets,
+         root_status: root_status,
+         started_at: started_at,
+         finished_at: finished_at,
+         duration_ms: duration_ms,
+         total_windows: total_windows,
+         completed_windows: completed_windows,
+         failed_windows: failed_windows,
+         total_asset_attempts: total_asset_attempts,
+         completed_asset_attempts: completed_asset_attempts,
+         failed_asset_attempts: failed_asset_attempts,
+         running_asset_attempts: running_asset_attempts,
+         queued_asset_attempts: queued_asset_attempts,
+         failure_count: failure_count,
+         progress: progress,
+         summary_totals: summary_totals,
+         last_activity_at: last_activity_at,
+         currently_running_asset_attempts: currently_running_asset_attempts,
+         child_run_ids: child_run_ids
+       }) do
+    Enum.all?([
+      non_empty_binary?(id),
+      non_empty_binary?(root_execution_group_id),
+      status_value?(status),
+      health in [:ok, :warning, :error, :active],
+      is_boolean(active?),
+      optional_status_value?(trigger_type),
+      string_list?(target_assets),
+      status_value?(root_status),
+      optional_datetime?(started_at),
+      optional_datetime?(finished_at),
+      optional_non_negative_integer?(duration_ms),
+      non_negative_integer?(total_windows),
+      non_negative_integer?(completed_windows),
+      non_negative_integer?(failed_windows),
+      non_negative_integer?(total_asset_attempts),
+      non_negative_integer?(completed_asset_attempts),
+      non_negative_integer?(failed_asset_attempts),
+      non_negative_integer?(running_asset_attempts),
+      non_negative_integer?(queued_asset_attempts),
+      non_negative_integer?(failure_count),
+      is_map(progress) or is_nil(progress),
+      is_map(summary_totals),
+      optional_datetime?(last_activity_at),
+      is_list(currently_running_asset_attempts),
+      string_list?(child_run_ids)
+    ])
+  end
+
+  defp valid_summary?(_summary), do: false
+
+  defp optional_datetime?(nil), do: true
+  defp optional_datetime?(%DateTime{}), do: true
+  defp optional_datetime?(_value), do: false
+
+  defp optional_non_negative_integer?(nil), do: true
+  defp optional_non_negative_integer?(value), do: non_negative_integer?(value)
+
+  defp non_negative_integer?(value), do: is_integer(value) and value >= 0
+  defp status_value?(value), do: (is_atom(value) and not is_nil(value)) or is_binary(value)
+  defp optional_status_value?(nil), do: true
+  defp optional_status_value?(value), do: status_value?(value)
+  defp string_list?(values), do: is_list(values) and Enum.all?(values, &non_empty_binary?/1)
+  defp non_empty_binary?(value), do: is_binary(value) and value != ""
 end

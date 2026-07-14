@@ -1443,7 +1443,7 @@ defmodule FavnView.PageLiveTest do
                event_type: :run_started,
                occurred_at: DateTime.utc_now(),
                status: nil,
-               asset_ref: "nil",
+               asset_ref: nil,
                data: %{}
              })
 

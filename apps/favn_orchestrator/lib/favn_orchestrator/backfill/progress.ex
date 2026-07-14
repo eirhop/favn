@@ -8,8 +8,9 @@ defmodule FavnOrchestrator.Backfill.Progress do
   """
 
   alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.ReadModelValues
 
-  @statuses [:pending, :running, :ok, :partial, :error, :cancelled, :timed_out]
+  @statuses ReadModelValues.statuses()
 
   @enforce_keys [
     :backfill_run_id,
@@ -40,10 +41,14 @@ defmodule FavnOrchestrator.Backfill.Progress do
     metadata: %{}
   ]
 
-  @type status :: BackfillWindow.status()
+  @type status :: ReadModelValues.status()
 
   @type counts :: %{
           optional(status()) => non_neg_integer()
+        }
+
+  @type counts_input :: %{
+          optional(status() | String.t()) => integer() | String.t()
         }
 
   @type t :: %__MODULE__{
@@ -70,7 +75,6 @@ defmodule FavnOrchestrator.Backfill.Progress do
          :ok <- require_keys(attrs, @enforce_keys),
          :ok <- validate_counts(attrs),
          :ok <- validate_total_count(attrs),
-         :ok <- validate_status(Map.fetch!(attrs, :status)),
          :ok <- validate_metadata(Map.get(attrs, :metadata, %{})) do
       {:ok, struct(__MODULE__, Map.merge(%{metadata: %{}}, attrs))}
     end
@@ -79,26 +83,28 @@ defmodule FavnOrchestrator.Backfill.Progress do
   def new(_attrs), do: {:error, :invalid_attrs}
 
   @doc "Builds progress from a map of window-status counts."
-  @spec from_counts(String.t(), counts(), DateTime.t(), map()) :: {:ok, t()} | {:error, term()}
+  @spec from_counts(String.t(), counts_input(), DateTime.t(), map()) ::
+          {:ok, t()} | {:error, term()}
   def from_counts(backfill_run_id, counts, %DateTime{} = updated_at, metadata \\ %{})
       when is_binary(backfill_run_id) and is_map(counts) do
-    normalized_counts = normalize_counts(counts)
-    total_count = Enum.reduce(normalized_counts, 0, fn {_status, count}, acc -> acc + count end)
+    with {:ok, normalized_counts} <- normalize_counts(counts) do
+      total_count = Enum.reduce(normalized_counts, 0, fn {_status, count}, acc -> acc + count end)
 
-    new(%{
-      backfill_run_id: backfill_run_id,
-      total_count: total_count,
-      pending_count: Map.fetch!(normalized_counts, :pending),
-      running_count: Map.fetch!(normalized_counts, :running),
-      ok_count: Map.fetch!(normalized_counts, :ok),
-      partial_count: Map.fetch!(normalized_counts, :partial),
-      error_count: Map.fetch!(normalized_counts, :error),
-      cancelled_count: Map.fetch!(normalized_counts, :cancelled),
-      timed_out_count: Map.fetch!(normalized_counts, :timed_out),
-      status: status_from_counts(total_count, normalized_counts),
-      updated_at: updated_at,
-      metadata: metadata
-    })
+      new(%{
+        backfill_run_id: backfill_run_id,
+        total_count: total_count,
+        pending_count: Map.fetch!(normalized_counts, :pending),
+        running_count: Map.fetch!(normalized_counts, :running),
+        ok_count: Map.fetch!(normalized_counts, :ok),
+        partial_count: Map.fetch!(normalized_counts, :partial),
+        error_count: Map.fetch!(normalized_counts, :error),
+        cancelled_count: Map.fetch!(normalized_counts, :cancelled),
+        timed_out_count: Map.fetch!(normalized_counts, :timed_out),
+        status: status_from_counts(total_count, normalized_counts),
+        updated_at: updated_at,
+        metadata: metadata
+      })
+    end
   end
 
   @doc "Builds progress by counting a backfill's window rows."
@@ -153,53 +159,52 @@ defmodule FavnOrchestrator.Backfill.Progress do
   def apply_status_change(%__MODULE__{} = progress, old_status, new_status, %DateTime{} = now) do
     counts = counts(progress)
 
-    case status_change_counts(counts, progress.total_count, old_status, new_status) do
-      {:ok, counts, total_count} ->
-        from_counts(
-          progress.backfill_run_id,
-          Map.put(counts, :__total__, total_count),
-          now,
-          progress.metadata
-        )
+    case status_change_counts(counts, old_status, new_status) do
+      {:ok, counts} ->
+        from_counts(progress.backfill_run_id, counts, now, progress.metadata)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp status_change_counts(counts, total_count, nil, new_status),
-    do: {:ok, Map.update!(counts, new_status, &(&1 + 1)), total_count + 1}
+  defp status_change_counts(counts, nil, new_status),
+    do: {:ok, Map.update!(counts, new_status, &(&1 + 1))}
 
-  defp status_change_counts(counts, total_count, old_status, old_status),
-    do: {:ok, counts, total_count}
+  defp status_change_counts(counts, old_status, old_status), do: {:ok, counts}
 
-  defp status_change_counts(counts, total_count, old_status, new_status) do
+  defp status_change_counts(counts, old_status, new_status) do
     if Map.fetch!(counts, old_status) > 0 do
       counts =
         counts
         |> Map.update!(old_status, &(&1 - 1))
         |> Map.update!(new_status, &(&1 + 1))
 
-      {:ok, counts, total_count}
+      {:ok, counts}
     else
       {:error, {:stale_backfill_progress, old_status, new_status, counts}}
     end
   end
 
   defp normalize_attrs(attrs) do
-    with {:ok, status} <- normalize_status(Map.get(attrs, :status)),
-         {:ok, updated_at} <- normalize_datetime(Map.get(attrs, :updated_at)) do
+    with {:ok, status} <- ReadModelValues.normalize_status(Map.get(attrs, :status)),
+         {:ok, updated_at} <- normalize_datetime(Map.get(attrs, :updated_at)),
+         {:ok, attrs} <- normalize_count_fields(attrs) do
       {:ok,
        attrs
        |> Map.put(:status, status)
-       |> Map.put(:updated_at, updated_at)
-       |> normalize_count_fields()}
+       |> Map.put(:updated_at, updated_at)}
     end
   end
 
   defp normalize_count_fields(attrs) do
-    Enum.reduce(count_field_keys(), attrs, fn key, acc ->
-      Map.put(acc, key, normalize_count(Map.get(acc, key, 0)))
+    Enum.reduce_while(count_field_keys(), {:ok, attrs}, fn key, {:ok, acc} ->
+      value = Map.get(acc, key, 0)
+
+      case normalize_count(value) do
+        {:ok, count} -> {:cont, {:ok, Map.put(acc, key, count)}}
+        :error -> {:halt, {:error, {:invalid_count, key, value}}}
+      end
     end)
   end
 
@@ -240,18 +245,20 @@ defmodule FavnOrchestrator.Backfill.Progress do
     if total == sum, do: :ok, else: {:error, {:invalid_total_count, total, sum}}
   end
 
-  defp validate_status(status) when status in @statuses, do: :ok
-  defp validate_status(status), do: {:error, {:invalid_status, status}}
-
   defp validate_metadata(metadata) when is_map(metadata), do: :ok
   defp validate_metadata(metadata), do: {:error, {:invalid_metadata, metadata}}
 
   defp normalize_counts(counts) do
     base = Map.new(@statuses, &{&1, 0})
 
-    Enum.reduce(counts, base, fn
-      {:__total__, _total}, acc -> acc
-      {status, count}, acc -> Map.put(acc, normalize_status_key(status), normalize_count(count))
+    Enum.reduce_while(counts, {:ok, base}, fn {status, value}, {:ok, acc} ->
+      with {:ok, status} <- ReadModelValues.normalize_status(status),
+           {:ok, count} <- normalize_count(value) do
+        {:cont, {:ok, Map.put(acc, status, count)}}
+      else
+        {:error, reason} -> {:halt, {:error, reason}}
+        :error -> {:halt, {:error, {:invalid_count, status, value}}}
+      end
     end)
   end
 
@@ -268,19 +275,16 @@ defmodule FavnOrchestrator.Backfill.Progress do
     end
   end
 
-  defp normalize_status(value) when value in @statuses, do: {:ok, value}
+  defp normalize_count(value) when is_integer(value), do: {:ok, value}
 
-  defp normalize_status(value) when is_binary(value),
-    do: value |> String.to_atom() |> normalize_status()
+  defp normalize_count(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {count, ""} -> {:ok, count}
+      _other -> :error
+    end
+  end
 
-  defp normalize_status(value), do: {:error, {:invalid_status, value}}
-
-  defp normalize_status_key(value) when value in @statuses, do: value
-  defp normalize_status_key(value) when is_binary(value), do: String.to_atom(value)
-
-  defp normalize_count(value) when is_integer(value), do: value
-  defp normalize_count(value) when is_binary(value), do: String.to_integer(value)
-  defp normalize_count(_value), do: 0
+  defp normalize_count(_value), do: :error
 
   defp normalize_datetime(%DateTime{} = value), do: {:ok, value}
 

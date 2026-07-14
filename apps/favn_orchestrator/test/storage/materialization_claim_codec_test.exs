@@ -5,7 +5,6 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodecTest do
   alias FavnOrchestrator.Storage.MaterializationClaimCodec
 
   @format "favn.materialization_claim.storage.v1"
-  @external_module_payload "g3QAAAAUdwVlcnJvcncDbmlsdwZzdGF0dXN3CXN1Y2NlZWRlZHcIbWV0YWRhdGF0AAAAAXcNcmVzdWx0X3N0YXR1c3cCb2t3Cl9fc3RydWN0X193LEVsaXhpci5GYXZuT3JjaGVzdHJhdG9yLk1hdGVyaWFsaXphdGlvbkNsYWltdxNtYW5pZmVzdF92ZXJzaW9uX2lkdwNuaWx3BnJ1bl9pZHcDbmlsdxVtYW5pZmVzdF9jb250ZW50X2hhc2h3A25pbHcRZnJlc2huZXNzX3ZlcnNpb253A25pbHcLZmluaXNoZWRfYXR0AAAADXcLbWljcm9zZWNvbmRoAmEAYQB3BnNlY29uZGEAdwhjYWxlbmRhcncTRWxpeGlyLkNhbGVuZGFyLklTT3cFbW9udGhhBXcKX19zdHJ1Y3RfX3cPRWxpeGlyLkRhdGVUaW1ldwNkYXlhFXcEeWVHcmIAAAfqdwZtaW51dGVhAXcEaG91cmEAdwl0aW1lX3pvbmVtAAAAB0V0Yy9VVEN3CXpvbmVfYWJicm0AAAADVVRDdwp1dGNfb2Zmc2V0YQB3CnN0ZF9vZmZzZXRhAHcKZXhwaXJlc19hdHQAAAANdwttaWNyb3NlY29uZGgCYQBhAHcGc2Vjb25kYQB3CGNhbGVuZGFydxNFbGl4aXIuQ2FsZW5kYXIuSVNPdwVtb250aGEFdwpfX3N0cnVjdF9fdw9FbGl4aXIuRGF0ZVRpbWV3A2RheWEVdwR5ZWFyYgAAB+p3Bm1pbnV0ZWEAdwRob3VyYQF3CXRpbWVfem9uZW0AAAAHRXRjL1VUQ3cJem9uZV9hYmJybQAAAANVVEN3CnV0Y19vZmZzZXRhAHcKc3RkX29mZnNldGEAdwpjbGFpbWVkX2F0dAAAAA13C21pY3Jvc2Vjb25kaAJhAGEAdwZzZWNvbmRhAHcIY2FsZW5kYXJ3E0VsaXhpci5DYWxlbmRhci5JU093BW1vbnRoYQV3Cl9fc3RydWN0X193D0VsaXhpci5EYXRlVGltZXcDZGF5YRV3BHllYXJiAAAH6ncGbWludXRlYQB3BGhvdXJhAHcJdGltZV96b25lbQAAAAdFdGMvVVRDdwl6b25lX2FiYnJtAAAAA1VUQ3cKdXRjX29mZnNldGEAdwpzdGRfb2Zmc2V0YQB3CWNsYWltX2tleW0AAAAOZXh0ZXJuYWwtY2xhaW13EGFzc2V0X3JlZl9tb2R1bGV3LEVsaXhpci5FeHRlcm5hbEFwcC5NYXRlcmlhbGl6YXRpb25DbGFpbUFzc2V0dw5hc3NldF9yZWZfbmFtZXcFYXNzZXR3DWZyZXNobmVzc19rZXltAAAAC3dpbmRvdzp0ZXN0dw1hc3NldF9zdGVwX2lkdwNuaWx3CG5vZGVfa2V5aAJoAncsRWxpeGlyLkV4dGVybmFsQXBwLk1hdGVyaWFsaXphdGlvbkNsYWltQXNzZXR3BWFzc2V0dAAAAAF3BndpbmRvd20AAAAEdGVzdHcRaW5wdXRfZmluZ2VycHJpbnRtAAAAC3NoYTI1Njp0ZXN0dxNydW5uZXJfZXhlY3V0aW9uX2lkdwNuaWx3DGhlYXJ0YmVhdF9hdHcDbmls"
 
   test "encodes materialization claims as versioned JSON DTOs" do
     claim = claim()
@@ -66,28 +65,48 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodecTest do
     assert restored.node_key == {{unloaded_module, :asset}, nil}
   end
 
-  test "decodes legacy Base64 ETF claims" do
-    claim = claim()
-    legacy_payload = Base.encode64(:erlang.term_to_binary(claim))
+  test "rejects unknown module text from a persisted DTO" do
+    module =
+      "Elixir.ExternalApp.UnloadedClaimAsset#{System.unique_integer([:positive])}"
 
-    assert {:ok, restored} = MaterializationClaimCodec.decode(legacy_payload)
-    assert restored == claim
+    assert {:ok, payload} = MaterializationClaimCodec.encode(claim())
+
+    payload =
+      payload
+      |> Jason.decode!()
+      |> Map.put("asset_ref_module", module)
+      |> Jason.encode!()
+
+    assert {:error, {:unknown_module, ^module}} = MaterializationClaimCodec.decode(payload)
+    assert_raise ArgumentError, fn -> String.to_existing_atom(module) end
   end
 
-  test "decodes persisted claims containing unloaded consumer module atoms" do
-    assert {:ok, restored} = MaterializationClaimCodec.decode(@external_module_payload)
+  test "rejects malformed module identities and claim lifetimes" do
+    assert {:ok, payload} = MaterializationClaimCodec.encode(claim())
 
-    assert Atom.to_string(restored.asset_ref_module) ==
-             "Elixir.ExternalApp.MaterializationClaimAsset"
+    assert {:error, {:invalid_module, "Elixir.Bad;System.halt()"}} =
+             payload
+             |> Jason.decode!()
+             |> Map.put("asset_ref_module", "Elixir.Bad;System.halt()")
+             |> Jason.encode!()
+             |> MaterializationClaimCodec.decode()
 
-    assert {{module, :asset}, %{window: "test"}} = restored.node_key
+    assert {:error, {:invalid_materialization_claim_range, :expires_at, _, _}} =
+             claim()
+             |> Map.from_struct()
+             |> Map.put(:expires_at, ~U[2026-05-20 23:59:59Z])
+             |> MaterializationClaim.new()
 
-    assert Atom.to_string(module) == "Elixir.ExternalApp.MaterializationClaimAsset"
+    assert {:error, {:invalid_materialization_claim_field, :run_id, ""}} =
+             claim()
+             |> Map.from_struct()
+             |> Map.put(:run_id, "")
+             |> MaterializationClaim.new()
   end
 
-  test "rejects invalid base64 payloads with tuple error shape" do
-    assert {:error, :invalid_materialization_claim_payload} =
-             MaterializationClaimCodec.decode("not valid base64")
+  test "rejects non-JSON payloads" do
+    assert {:error, {:invalid_materialization_claim_json, %Jason.DecodeError{}}} =
+             MaterializationClaimCodec.decode("not json")
   end
 
   test "rejects malformed JSON with tuple error shape" do

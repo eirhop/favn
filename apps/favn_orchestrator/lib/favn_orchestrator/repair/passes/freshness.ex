@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Repair.Passes.Freshness do
   consumed input versions.
   """
 
+  alias Favn.Freshness.Key
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Freshness.StateWriter
   alias FavnOrchestrator.Repair.Report
@@ -18,12 +19,30 @@ defmodule FavnOrchestrator.Repair.Passes.Freshness do
   @doc "Inspects successful runs and reports conservative freshness repair counts."
   @spec run(Report.t(), keyword()) :: Report.t()
   def run(%Report{} = report, opts) when is_list(opts) do
-    with {:ok, runs} <- Storage.list_runs(status: :ok) do
-      runs
-      |> Enum.filter(&matches_filters?(&1, opts))
-      |> Enum.reduce(report, &repair_run_freshness/2)
-    else
-      {:error, reason} -> Report.error(report, {:freshness_repair_failed, reason})
+    case candidate_runs(opts) do
+      {:ok, runs} ->
+        runs
+        |> Enum.filter(&(&1.status == :ok and matches_filters?(&1, opts)))
+        |> Enum.reduce(report, &repair_run_freshness/2)
+
+      {:error, reason} ->
+        Report.error(report, {:freshness_repair_failed, reason})
+    end
+  end
+
+  defp candidate_runs(opts) do
+    cond do
+      is_binary(opts[:run_id]) ->
+        case Storage.get_run(opts[:run_id]) do
+          {:ok, run} -> {:ok, [run]}
+          {:error, _reason} = error -> error
+        end
+
+      is_binary(opts[:backfill_id]) ->
+        Storage.list_execution_group_runs(opts[:backfill_id])
+
+      true ->
+        Storage.list_runs(status: :ok)
     end
   end
 
@@ -146,17 +165,24 @@ defmodule FavnOrchestrator.Repair.Passes.Freshness do
   defp require_independent_node(_node), do: :ok
 
   defp result_freshness_key(result) when is_map(result) do
-    field(result, :freshness_key) || Favn.Freshness.Key.latest()
+    field(result, :freshness_key) || Key.latest()
   end
 
   defp matches_filters?(%RunState{} = run, opts) do
     matches_run_id?(run, Keyword.get(opts, :run_id)) and
+      matches_backfill_id?(run, Keyword.get(opts, :backfill_id)) and
       matches_since?(run, Keyword.get(opts, :since))
   end
 
   defp matches_run_id?(%RunState{id: run_id}, run_id), do: true
   defp matches_run_id?(_run, nil), do: true
   defp matches_run_id?(_run, _run_id), do: false
+
+  defp matches_backfill_id?(%RunState{} = run, backfill_id) when is_binary(backfill_id) do
+    run.id == backfill_id or run.parent_run_id == backfill_id or run.root_run_id == backfill_id
+  end
+
+  defp matches_backfill_id?(_run, nil), do: true
 
   defp matches_since?(%RunState{updated_at: %DateTime{} = updated_at}, %DateTime{} = since),
     do: DateTime.compare(updated_at, since) in [:gt, :eq]

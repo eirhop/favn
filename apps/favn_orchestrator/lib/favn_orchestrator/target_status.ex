@@ -15,6 +15,28 @@ defmodule FavnOrchestrator.TargetStatus do
 
   @target_kinds [:asset, :pipeline]
   @statuses [:healthy, :running, :failed, :unknown]
+  @run_statuses [
+    :pending,
+    :queued,
+    :running,
+    :retrying,
+    :ok,
+    :partial,
+    :error,
+    :blocked,
+    :cancelled,
+    :timed_out,
+    :skipped,
+    :skipped_fresh
+  ]
+  @freshness_statuses [:ok, :error, :cancelled, :timed_out, :skipped_fresh, :blocked, :running]
+  @optional_binary_fields [
+    :latest_run_id,
+    :latest_success_run_id,
+    :latest_failure_run_id,
+    :in_flight_run_id,
+    :freshness_key
+  ]
 
   @enforce_keys [
     :manifest_version_id,
@@ -85,6 +107,8 @@ defmodule FavnOrchestrator.TargetStatus do
          :ok <- require_binary(attrs, :target_ref_text),
          :ok <- validate_kind(Map.fetch!(attrs, :target_kind)),
          :ok <- validate_status(Map.fetch!(attrs, :status)),
+         :ok <- validate_optional_binaries(attrs),
+         :ok <- validate_duration(Map.get(attrs, :latest_run_duration_ms)),
          :ok <- validate_payload(Map.get(attrs, :payload, %{})) do
       {:ok, struct(__MODULE__, Map.merge(%{updated_seq: 0, payload: %{}}, attrs))}
     end
@@ -154,8 +178,18 @@ defmodule FavnOrchestrator.TargetStatus do
   defp normalize_attrs(attrs) do
     with {:ok, target_kind} <- normalize_kind(Map.get(attrs, :target_kind)),
          {:ok, status} <- normalize_status(Map.get(attrs, :status)),
-         {:ok, latest_run_status} <- normalize_optional_atom(Map.get(attrs, :latest_run_status)),
-         {:ok, freshness_status} <- normalize_optional_atom(Map.get(attrs, :freshness_status)),
+         {:ok, latest_run_status} <-
+           normalize_optional_status(
+             Map.get(attrs, :latest_run_status),
+             :latest_run_status,
+             @run_statuses
+           ),
+         {:ok, freshness_status} <-
+           normalize_optional_status(
+             Map.get(attrs, :freshness_status),
+             :freshness_status,
+             @freshness_statuses
+           ),
          {:ok, latest_run_at} <- normalize_optional_datetime(Map.get(attrs, :latest_run_at)),
          {:ok, latest_success_at} <-
            normalize_optional_datetime(Map.get(attrs, :latest_success_at)),
@@ -193,6 +227,22 @@ defmodule FavnOrchestrator.TargetStatus do
   defp validate_payload(payload) when is_map(payload), do: :ok
   defp validate_payload(payload), do: {:error, {:invalid_payload, payload}}
 
+  defp validate_optional_binaries(attrs) do
+    Enum.reduce_while(@optional_binary_fields, :ok, fn field, :ok ->
+      case Map.get(attrs, field) do
+        nil -> {:cont, :ok}
+        value when is_binary(value) and value != "" -> {:cont, :ok}
+        value -> {:halt, {:error, {:invalid_target_status_field, field, value}}}
+      end
+    end)
+  end
+
+  defp validate_duration(nil), do: :ok
+  defp validate_duration(value) when is_integer(value) and value >= 0, do: :ok
+
+  defp validate_duration(value),
+    do: {:error, {:invalid_target_status_field, :latest_run_duration_ms, value}}
+
   defp normalize_kind(kind) when kind in @target_kinds, do: {:ok, kind}
   defp normalize_kind(kind) when is_binary(kind), do: existing_atom(kind, &validate_kind/1)
   defp normalize_kind(kind), do: {:error, {:invalid_target_kind, kind}}
@@ -204,14 +254,23 @@ defmodule FavnOrchestrator.TargetStatus do
 
   defp normalize_status(status), do: {:error, {:invalid_status, status}}
 
-  defp normalize_optional_atom(nil), do: {:ok, nil}
-  defp normalize_optional_atom(""), do: {:ok, nil}
-  defp normalize_optional_atom(value) when is_atom(value), do: {:ok, value}
+  defp normalize_optional_status(nil, _field, _allowed), do: {:ok, nil}
 
-  defp normalize_optional_atom(value) when is_binary(value),
-    do: existing_atom(value, fn _ -> :ok end)
+  defp normalize_optional_status(value, field, allowed) when is_atom(value) do
+    if value in allowed,
+      do: {:ok, value},
+      else: {:error, {:invalid_target_status_field, field, value}}
+  end
 
-  defp normalize_optional_atom(value), do: {:error, {:invalid_atom, value}}
+  defp normalize_optional_status(value, field, allowed) when is_binary(value) do
+    case Enum.find(allowed, &(Atom.to_string(&1) == value)) do
+      nil -> {:error, {:invalid_target_status_field, field, value}}
+      status -> {:ok, status}
+    end
+  end
+
+  defp normalize_optional_status(value, field, _allowed),
+    do: {:error, {:invalid_target_status_field, field, value}}
 
   defp existing_atom(value, validator) when is_binary(value) and is_function(validator, 1) do
     atom = String.to_existing_atom(value)

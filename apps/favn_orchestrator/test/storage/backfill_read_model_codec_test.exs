@@ -84,16 +84,56 @@ defmodule FavnOrchestrator.Storage.BackfillReadModelCodecTest do
     assert restored.metadata["source"] == "backfill"
   end
 
-  test "backfill window codec restores unloaded pipeline module identities" do
+  test "backfill window codec rejects unknown pipeline module identities" do
     pipeline_module =
       "Elixir.FavnOrchestrator.Test.UnloadedPipeline#{System.unique_integer([:positive])}"
 
-    assert {:ok, restored} =
+    assert {:error, {:unknown_module, ^pipeline_module}} =
              encoded_backfill_window_payload()
              |> put_payload_field("pipeline_module", pipeline_module)
              |> BackfillWindowCodec.decode()
 
-    assert Atom.to_string(restored.pipeline_module) == pipeline_module
+    assert_raise ArgumentError, fn -> String.to_existing_atom(pipeline_module) end
+  end
+
+  test "backfill window codec rejects malformed module identities" do
+    assert {:error, {:invalid_module, "Elixir.Bad;System.halt()"}} =
+             encoded_backfill_window_payload()
+             |> put_payload_field("pipeline_module", "Elixir.Bad;System.halt()")
+             |> BackfillWindowCodec.decode()
+  end
+
+  test "coverage and asset-window codecs reject unknown module identities" do
+    unique = System.unique_integer([:positive])
+    pipeline_module = "Elixir.FavnOrchestrator.Test.UnloadedCoveragePipeline#{unique}"
+    asset_module = "Elixir.FavnOrchestrator.Test.UnloadedWindowAsset#{unique}"
+
+    assert {:error, {:unknown_module, ^pipeline_module}} =
+             encoded_coverage_baseline_payload()
+             |> put_payload_field("pipeline_module", pipeline_module)
+             |> CoverageBaselineCodec.decode()
+
+    assert {:error, {:unknown_module, ^asset_module}} =
+             encoded_asset_window_state_payload()
+             |> put_payload_field("asset_ref_module", asset_module)
+             |> AssetWindowStateCodec.decode()
+
+    assert_raise ArgumentError, fn -> String.to_existing_atom(pipeline_module) end
+    assert_raise ArgumentError, fn -> String.to_existing_atom(asset_module) end
+  end
+
+  test "coverage and asset-window codecs reject malformed module identities" do
+    invalid_module = "Elixir.Bad;System.halt()"
+
+    assert {:error, {:invalid_module, ^invalid_module}} =
+             encoded_coverage_baseline_payload()
+             |> put_payload_field("pipeline_module", invalid_module)
+             |> CoverageBaselineCodec.decode()
+
+    assert {:error, {:invalid_module, ^invalid_module}} =
+             encoded_asset_window_state_payload()
+             |> put_payload_field("asset_ref_module", invalid_module)
+             |> AssetWindowStateCodec.decode()
   end
 
   test "asset window state codec preserves identity fields and JSON-shaped payloads" do

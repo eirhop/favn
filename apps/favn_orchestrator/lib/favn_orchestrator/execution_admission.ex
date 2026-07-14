@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   """
 
   alias FavnOrchestrator.ExecutionAdmission.Coordinator
+  alias FavnOrchestrator.ExecutionAdmission.Identity
   alias FavnOrchestrator.ExecutionAdmission.Waiter
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -25,9 +26,11 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   @spec acquire(RunState.t(), entry()) ::
           {:ok, lease() | nil} | {:queued, queue_reason(), map()} | {:error, term()}
   def acquire(%RunState{} = run, entry) when is_map(entry) do
-    case acquire_result(run, entry) do
-      {:queued, queue_reason, scope, _requested_scopes} -> {:queued, queue_reason, scope}
-      other -> other
+    with {:ok, entry} <- normalize_entry(entry) do
+      case acquire_result(run, entry) do
+        {:queued, queue_reason, scope, _requested_scopes} -> {:queued, queue_reason, scope}
+        other -> other
+      end
     end
   end
 
@@ -35,19 +38,40 @@ defmodule FavnOrchestrator.ExecutionAdmission do
           {:ok, lease() | nil} | {:waiting, Waiter.t()} | {:error, term()}
   def acquire_or_wait(%RunState{} = run, entry, opts \\ [])
       when is_map(entry) and is_list(opts) do
-    case acquire_result(run, entry) do
-      {:ok, lease} ->
-        {:ok, lease}
+    with {:ok, entry} <- normalize_entry(entry) do
+      case acquire_result(run, entry) do
+        {:ok, lease} ->
+          {:ok, lease}
 
-      {:queued, queue_reason, scope, requested_scopes} ->
-        with {:ok, waiter} <- Waiter.new(run, entry, requested_scopes, queue_reason, scope, opts),
-             {:ok, waiter} <- Storage.upsert_execution_admission_waiter(waiter) do
-          :ok = Coordinator.register(waiter, self())
-          acquire_after_waiter_registration(run, entry, waiter)
-        end
+        {:queued, queue_reason, scope, requested_scopes} ->
+          create_waiter(run, entry, requested_scopes, queue_reason, scope, opts)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp create_waiter(run, entry, requested_scopes, queue_reason, scope, opts) do
+    with {:ok, waiter} <- Waiter.new(run, entry, requested_scopes, queue_reason, scope, opts),
+         {:ok, waiter} <- Storage.upsert_execution_admission_waiter(waiter) do
+      register_waiter(run, entry, waiter)
+    end
+  end
+
+  defp register_waiter(run, entry, waiter) do
+    case Coordinator.register(waiter, self()) do
+      :ok ->
+        acquire_after_waiter_registration(run, entry, waiter)
 
       {:error, reason} ->
-        {:error, reason}
+        case Storage.delete_execution_admission_waiter(waiter.waiter_id) do
+          :ok ->
+            {:error, reason}
+
+          {:error, cleanup_error} ->
+            {:error, {:execution_admission_waiter_registration_failed, reason, cleanup_error}}
+        end
     end
   end
 
@@ -63,7 +87,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
         ttl_ms = lease_ttl_ms(run)
 
         lease = %{
-          lease_id: lease_id(run.id, entry.asset_step_id),
+          lease_id: Identity.lease_id(run.id, entry.asset_step_id),
           run_id: run.id,
           asset_step_id: entry.asset_step_id,
           scopes: scopes,
@@ -154,16 +178,28 @@ defmodule FavnOrchestrator.ExecutionAdmission do
             {:ok, lease}
 
           {:error, reason} ->
-            :ok = release(lease)
-            {:error, {:execution_admission_waiter_cleanup_failed, reason}}
+            case release(lease) do
+              :ok ->
+                {:error, {:execution_admission_waiter_cleanup_failed, reason}}
+
+              {:error, release_error} ->
+                {:error,
+                 {:execution_admission_waiter_cleanup_failed, reason,
+                  {:lease_release_failed, release_error}}}
+            end
         end
 
       {:queued, _queue_reason, _scope, _requested_scopes} ->
         {:waiting, waiter}
 
       {:error, reason} ->
-        _cleanup_result = cancel_wait(waiter)
-        {:error, reason}
+        case cancel_wait(waiter) do
+          :ok ->
+            {:error, reason}
+
+          {:error, cleanup_error} ->
+            {:error, {:execution_admission_waiter_cleanup_failed, reason, cleanup_error}}
+        end
     end
   end
 
@@ -207,6 +243,16 @@ defmodule FavnOrchestrator.ExecutionAdmission do
     Map.get(policy, :max_concurrency) || Map.get(policy, "max_concurrency")
   end
 
+  defp pipeline_max_concurrency(%RunState{metadata: metadata}) when is_map(metadata) do
+    case Map.get(metadata, "pipeline_execution_policy") do
+      policy when is_map(policy) ->
+        Map.get(policy, :max_concurrency) || Map.get(policy, "max_concurrency")
+
+      _other ->
+        nil
+    end
+  end
+
   defp pipeline_max_concurrency(%RunState{}), do: nil
 
   defp validate_execution_pool(entry) do
@@ -234,14 +280,22 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   end
 
   defp execution_pools do
-    :favn
-    |> Application.get_env(:execution_pools, [])
-    |> Enum.reduce(%{}, fn {name, opts}, acc ->
-      case execution_pool_limit(opts) do
-        limit when is_integer(limit) and limit > 0 -> Map.put(acc, to_string(name), limit)
-        _other -> acc
-      end
-    end)
+    case Application.get_env(:favn, :execution_pools, []) do
+      pools when is_list(pools) or is_map(pools) ->
+        Enum.reduce(pools, %{}, fn
+          {name, opts}, acc when is_atom(name) or is_binary(name) ->
+            case execution_pool_limit(opts) do
+              limit when is_integer(limit) and limit > 0 -> Map.put(acc, to_string(name), limit)
+              _other -> acc
+            end
+
+          _invalid, acc ->
+            acc
+        end)
+
+      _invalid ->
+        %{}
+    end
   end
 
   defp execution_pool_limit(limit) when is_integer(limit), do: limit
@@ -268,7 +322,28 @@ defmodule FavnOrchestrator.ExecutionAdmission do
 
   defp lease_ttl_ms(%RunState{}), do: execution_lease_ttl_ms()
 
-  defp lease_id(run_id, asset_step_id), do: "#{run_id}:#{asset_step_id}"
+  defp normalize_entry(entry) do
+    asset_step_id = field(entry, :asset_step_id)
+    execution_pool = field(entry, :execution_pool)
+
+    cond do
+      not (is_binary(asset_step_id) and byte_size(asset_step_id) > 0) ->
+        {:error, {:invalid_execution_admission_entry, :asset_step_id}}
+
+      not (is_nil(execution_pool) or is_atom(execution_pool) or is_binary(execution_pool)) ->
+        {:error, {:invalid_execution_admission_entry, :execution_pool}}
+
+      true ->
+        {:ok, %{asset_step_id: asset_step_id, execution_pool: execution_pool}}
+    end
+  end
+
+  defp field(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
 
   defp queue_reason(%{kind: :run}), do: :pipeline_concurrency
   defp queue_reason(%{kind: "run"}), do: :pipeline_concurrency

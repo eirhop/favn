@@ -107,52 +107,32 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
   end
 
   test "normalizes remote runner call failures into error tuples" do
-    case ensure_distributed_node() do
-      :ok ->
-        assert {:error,
-                {:runner_dispatch_failed,
-                 %{
-                   runner_module: RaisingRunner,
-                   function: :cancel_work,
-                   arity: 3,
-                   kind: :error,
-                   reason: {RuntimeError, "runner failed"}
-                 }}} =
-                 LocalNode.cancel_work("exec_2", %{},
-                   runner_module: RaisingRunner,
-                   runner_node: Node.self()
-                 )
-
-      {:error, _reason} ->
-        :ok
-    end
+    assert {:error,
+            {:runner_dispatch_failed,
+             %{
+               runner_module: RaisingRunner,
+               function: :cancel_work,
+               arity: 3,
+               kind: :error,
+               reason: {RuntimeError, "runner failed"}
+             }}} =
+             LocalNode.cancel_work("exec_2", %{},
+               runner_module: RaisingRunner,
+               runner_node: Node.self()
+             )
   end
 
   test "remote await_result uses requested await timeout instead of dispatch default" do
-    case ensure_distributed_node() do
-      :ok ->
-        assert {:ok, %RunnerResult{status: :ok}} =
-                 LocalNode.await_result("exec_2", 50,
-                   runner_module: SlowRunner,
-                   runner_node: Node.self(),
-                   runner_dispatch_timeout_ms: 10,
-                   runner_await_timeout_buffer_ms: 20,
-                   block_ms: 25,
-                   test_pid: self()
-                 )
+    assert {:ok, %RunnerResult{status: :ok}} =
+             LocalNode.await_result("exec_2", 50,
+               runner_module: SlowRunner,
+               runner_node: Node.self(),
+               runner_dispatch_timeout_ms: 10,
+               runner_await_timeout_buffer_ms: 20,
+               block_ms: 25,
+               test_pid: self()
+             )
 
-        assert_received {:await_result_called, _pid}
-
-      {:error, _reason} ->
-        :ok
-    end
-  end
-
-  defp ensure_distributed_node do
-    case Node.start(:favn_orchestrator_local_node_test, :shortnames) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    assert_received {:await_result_called, _pid}
   end
 end

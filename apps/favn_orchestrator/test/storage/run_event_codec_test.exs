@@ -125,8 +125,43 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
         "data" => %{}
       })
 
-    assert {:error, {:invalid_run_event_json, {:invalid_run_event_field, :event_type, _}}} =
+    assert {:error, {:invalid_run_event_field, :event_type, _}} =
              RunEventCodec.decode(payload)
+  end
+
+  test "rejects malformed persisted fields instead of silently coercing them" do
+    base = %{
+      "format" => "favn.run_event.storage.v1",
+      "schema_version" => 1,
+      "run_id" => "run_corrupt",
+      "sequence" => 1,
+      "event_type" => "run_started",
+      "entity" => "run",
+      "occurred_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "status" => nil,
+      "global_sequence" => nil,
+      "manifest_version_id" => nil,
+      "manifest_content_hash" => nil,
+      "asset_ref" => nil,
+      "stage" => nil,
+      "data" => %{}
+    }
+
+    for {field, value, expected_field} <- [
+          {"sequence", 0, :sequence},
+          {"occurred_at", nil, :occurred_at},
+          {"global_sequence", 0, :global_sequence},
+          {"manifest_version_id", 123, :manifest_version_id},
+          {"asset_ref", [], :asset_ref},
+          {"stage", -1, :stage},
+          {"data", [], :data}
+        ] do
+      assert {:error, {:invalid_run_event_field, ^expected_field, _}} =
+               base |> Map.put(field, value) |> Jason.encode!() |> RunEventCodec.decode()
+    end
+
+    assert {:error, {:unknown_run_event_fields, ["unexpected"]}} =
+             base |> Map.put("unexpected", true) |> Jason.encode!() |> RunEventCodec.decode()
   end
 
   test "encodes run events as explicit JSON-safe DTOs" do

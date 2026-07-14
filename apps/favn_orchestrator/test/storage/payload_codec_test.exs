@@ -11,8 +11,8 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
-  alias Favn.Plan.NodeIdentity
   alias Favn.Pipeline.Definition, as: PipelineDefinition
+  alias Favn.Plan.NodeIdentity
   alias Favn.RelationRef
   alias Favn.SQL.Template
   alias Favn.Triggers.Schedule
@@ -196,15 +196,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
              PayloadCodec.decode(payload)
   end
 
-  test "decodes explicitly allowed unknown atoms" do
-    unknown_atom = "favn_explicitly_allowed_payload_atom"
-    payload = ~s({"format":"json-v1","value":{"__type__":"atom","value":"#{unknown_atom}"}})
-
-    assert {:ok, atom} = PayloadCodec.decode(payload, allowed_atom_strings: [unknown_atom])
-    assert Atom.to_string(atom) == unknown_atom
-  end
-
-  test "decodes explicitly allowed consumer module atoms in persisted run snapshots" do
+  test "rejects consumer module atoms that are not already loaded" do
     unknown_module = "Elixir.Favn.PayloadCodecRestartFixture.Asset"
     existing_module = __MODULE__.ExistingAsset
 
@@ -223,13 +215,6 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
 
     assert {:error, {:payload_decode_failed, {:unknown_atom, ^unknown_module}}} =
              PayloadCodec.decode(encoded)
-
-    assert {:ok, %RunState{} = decoded} =
-             PayloadCodec.decode(encoded, allowed_atom_strings: [unknown_module])
-
-    assert {module_atom, :asset} = decoded.asset_ref
-    assert Atom.to_string(module_atom) == unknown_module
-    assert decoded.target_refs == [{module_atom, :asset}]
   end
 
   test "rejects unsupported struct modules during decode" do

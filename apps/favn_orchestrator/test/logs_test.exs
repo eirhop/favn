@@ -3,8 +3,8 @@ defmodule FavnOrchestrator.LogsTest do
 
   alias Favn.Log.Entry
   alias Favn.Log.Filter
-  alias FavnOrchestrator.RunState
   alias FavnOrchestrator.RunnerLogBridge
+  alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
   alias FavnOrchestrator.TransitionWriter
@@ -352,6 +352,27 @@ defmodule FavnOrchestrator.LogsTest do
   test "unsubscribe requires the returned subscription handle" do
     assert {:error, :invalid_log_subscription} =
              FavnOrchestrator.unsubscribe_logs(%Filter{run_id: "run_unsubscribe_filter"})
+  end
+
+  test "subscriptions validate ranges and require the unforgeable stop reference" do
+    assert {:error, {:invalid_log_filter_field, :since, "yesterday"}} =
+             FavnOrchestrator.subscribe_logs(%{since: "yesterday"})
+
+    assert {:error, {:invalid_log_filter_range, _, _}} =
+             FavnOrchestrator.subscribe_logs(%{
+               since: ~U[2026-07-15 00:00:00Z],
+               until: ~U[2026-07-14 00:00:00Z]
+             })
+
+    assert {:ok, subscription} = FavnOrchestrator.subscribe_logs(%Filter{})
+    send(subscription.pid, :stop)
+    Process.sleep(10)
+    assert Process.alive?(subscription.pid)
+
+    assert {:error, :invalid_log_subscription} =
+             FavnOrchestrator.unsubscribe_logs(%{pid: subscription.pid})
+
+    assert :ok = FavnOrchestrator.unsubscribe_logs(subscription)
   end
 
   test "live asset-step subscriptions use asset topics and honor remaining filters" do

@@ -188,4 +188,13 @@ defmodule FavnOrchestrator.Storage.AuthCodecTest do
     assert {:error, {:invalid_auth_audit_field, :action, 123}} =
              AuthCodec.decode_audit(non_binary_action)
   end
+
+  test "rejects malformed optional audit fields before persistence" do
+    assert {:error, {:invalid_auth_audit_field, :action, 123}} =
+             AuthCodec.encode_audit(%{
+               id: "audit-invalid",
+               occurred_at: ~U[2026-07-14 12:00:00Z],
+               action: 123
+             })
+  end
 end

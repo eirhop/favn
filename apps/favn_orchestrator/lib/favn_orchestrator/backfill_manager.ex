@@ -23,10 +23,10 @@ defmodule FavnOrchestrator.BackfillManager do
   alias Favn.Manifest.PipelineResolver
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Runtime, as: RuntimeWindow
-  alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Projector, as: BackfillProjector
+  alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunState
@@ -100,7 +100,7 @@ defmodule FavnOrchestrator.BackfillManager do
          {:ok, range} <- RangeResolver.resolve(range_request),
          :ok <- validate_window_count(range, opts),
          {:ok, parent} <- build_asset_parent_run(run_id, version, asset, range, opts),
-         :ok <- persist_asset_parent(parent, range, opts),
+         :ok <- persist_parent(parent, range, opts),
          :ok <-
            create_pending_windows(
              parent.id,
@@ -174,40 +174,21 @@ defmodule FavnOrchestrator.BackfillManager do
         user_metadata
       end
 
-    with :ok <- validate_metadata(metadata),
-         {:ok, max_attempts} <-
-           positive_integer_option(opts, :max_attempts, 1, :invalid_max_attempts),
-         {:ok, retry_backoff_ms} <-
-           non_neg_integer_option(opts, :retry_backoff_ms, 0, :invalid_retry_backoff_ms),
-         {:ok, timeout_ms} <-
-           positive_integer_option(
-             opts,
-             :timeout_ms,
-             RunState.default_timeout_ms(),
-             :invalid_timeout_ms
-           ) do
-      parent =
-        RunState.new(
-          id: run_id,
-          manifest_version_id: version.manifest_version_id,
-          manifest_content_hash: version.content_hash,
-          asset_ref: List.first(resolution.target_refs),
-          target_refs: resolution.target_refs,
-          plan: nil,
-          params: %{},
-          trigger: %{kind: :backfill, pipeline_module: pipeline.module},
-          metadata: metadata,
-          submit_kind: :backfill_pipeline,
-          max_attempts: max_attempts,
-          retry_backoff_ms: retry_backoff_ms,
-          timeout_ms: timeout_ms
-        )
-        |> Map.put(:status, :running)
-        |> Map.put(:updated_at, DateTime.utc_now())
-        |> RunState.with_snapshot_hash()
-
-      {:ok, parent}
-    end
+    build_running_parent(
+      [
+        id: run_id,
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: List.first(resolution.target_refs),
+        target_refs: resolution.target_refs,
+        plan: nil,
+        params: %{},
+        trigger: %{kind: :backfill, pipeline_module: pipeline.module},
+        metadata: metadata,
+        submit_kind: :backfill_pipeline
+      ],
+      opts
+    )
   end
 
   defp build_asset_parent_run(run_id, version, %Asset{} = asset, range, opts) do
@@ -224,8 +205,40 @@ defmodule FavnOrchestrator.BackfillManager do
         user_metadata
       end
 
-    with :ok <- validate_metadata(metadata),
-         {:ok, max_attempts} <-
+    build_running_parent(
+      [
+        id: run_id,
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: asset.ref,
+        target_refs: [asset.ref],
+        plan: nil,
+        params: %{},
+        trigger: %{kind: :backfill, asset_ref: asset.ref},
+        metadata: metadata,
+        submit_kind: :backfill_asset
+      ],
+      opts
+    )
+  end
+
+  defp build_running_parent(parent_opts, opts) do
+    with :ok <- parent_opts |> Keyword.fetch!(:metadata) |> validate_metadata(),
+         {:ok, execution_opts} <- parent_execution_opts(opts) do
+      parent =
+        parent_opts
+        |> Keyword.merge(execution_opts)
+        |> RunState.new()
+        |> Map.put(:status, :running)
+        |> Map.put(:updated_at, DateTime.utc_now())
+        |> RunState.with_snapshot_hash()
+
+      {:ok, parent}
+    end
+  end
+
+  defp parent_execution_opts(opts) do
+    with {:ok, max_attempts} <-
            positive_integer_option(opts, :max_attempts, 1, :invalid_max_attempts),
          {:ok, retry_backoff_ms} <-
            non_neg_integer_option(opts, :retry_backoff_ms, 0, :invalid_retry_backoff_ms),
@@ -236,27 +249,12 @@ defmodule FavnOrchestrator.BackfillManager do
              RunState.default_timeout_ms(),
              :invalid_timeout_ms
            ) do
-      parent =
-        RunState.new(
-          id: run_id,
-          manifest_version_id: version.manifest_version_id,
-          manifest_content_hash: version.content_hash,
-          asset_ref: asset.ref,
-          target_refs: [asset.ref],
-          plan: nil,
-          params: %{},
-          trigger: %{kind: :backfill, asset_ref: asset.ref},
-          metadata: metadata,
-          submit_kind: :backfill_asset,
-          max_attempts: max_attempts,
-          retry_backoff_ms: retry_backoff_ms,
-          timeout_ms: timeout_ms
-        )
-        |> Map.put(:status, :running)
-        |> Map.put(:updated_at, DateTime.utc_now())
-        |> RunState.with_snapshot_hash()
-
-      {:ok, parent}
+      {:ok,
+       [
+         max_attempts: max_attempts,
+         retry_backoff_ms: retry_backoff_ms,
+         timeout_ms: timeout_ms
+       ]}
     end
   end
 
@@ -264,24 +262,7 @@ defmodule FavnOrchestrator.BackfillManager do
     with :ok <-
            TransitionWriter.persist_transition(parent, :run_created, %{
              status: parent.status,
-             submit_kind: :backfill_pipeline,
-             backfill: backfill_summary(range, opts)
-           }) do
-      started = RunState.transition(parent, metadata: parent.metadata)
-
-      TransitionWriter.persist_transition(started, :backfill_started, %{
-        status: parent.status,
-        requested_count: range.requested_count,
-        window_keys: encoded_window_keys(range.anchors)
-      })
-    end
-  end
-
-  defp persist_asset_parent(%RunState{} = parent, range, opts) do
-    with :ok <-
-           TransitionWriter.persist_transition(parent, :run_created, %{
-             status: parent.status,
-             submit_kind: :backfill_asset,
+             submit_kind: parent.submit_kind,
              backfill: backfill_summary(range, opts)
            }) do
       started = RunState.transition(parent, metadata: parent.metadata)
@@ -298,18 +279,16 @@ defmodule FavnOrchestrator.BackfillManager do
     now = DateTime.utc_now()
     coverage_baseline_id = Keyword.get(opts, :coverage_baseline_id)
 
-    with {:ok, windows} <-
-           build_pending_windows(
-             backfill_run_id,
-             pipeline_module,
-             manifest_version_id,
-             range.anchors,
-             coverage_baseline_id,
-             now
-           ),
-         :ok <- Storage.put_backfill_windows(windows),
-         {:ok, _progress} <- Storage.rebuild_backfill_progress(backfill_run_id) do
-      :ok
+    case build_pending_windows(
+           backfill_run_id,
+           pipeline_module,
+           manifest_version_id,
+           range.anchors,
+           coverage_baseline_id,
+           now
+         ) do
+      {:ok, windows} -> Storage.put_backfill_windows(windows)
+      {:error, _reason} = error -> error
     end
   end
 
@@ -775,32 +754,31 @@ defmodule FavnOrchestrator.BackfillManager do
   end
 
   defp windows_with_compensation(windows, pipeline_module, error, now, opts, failures) do
-    result =
-      Enum.reduce_while(windows, {:ok, []}, fn window, {:ok, acc} ->
-        if compensate_window?(window, pipeline_module, failures) do
-          error = window_compensation_error(error, window.window_key, failures)
+    failure_reasons = failure_reasons(failures)
+
+    {all_windows, changed_windows} =
+      Enum.reduce(windows, {[], []}, fn window, {all, changed} ->
+        if compensate_window?(window, pipeline_module, failure_reasons) do
+          window_error = window_compensation_error(error, window.window_key, failure_reasons)
 
           updated = %{
             window
             | status: :error,
-              last_error: error,
-              errors: window.errors ++ [error],
+              last_error: window_error,
+              errors: append_error(window.errors, window_error),
               finished_at: window.finished_at || now,
               updated_at: now
           }
 
-          case put_compensated_window(updated, opts) do
-            :ok -> {:cont, {:ok, [updated | acc]}}
-            {:error, reason} -> {:halt, {:error, {:backfill_compensation_failed, reason}}}
-          end
+          {[updated | all], [updated | changed]}
         else
-          {:cont, {:ok, [window | acc]}}
+          {[window | all], changed}
         end
       end)
 
-    case result do
-      {:ok, windows} -> {:ok, Enum.reverse(windows)}
-      {:error, _reason} = error -> error
+    case put_compensated_windows(Enum.reverse(changed_windows), opts) do
+      :ok -> {:ok, Enum.reverse(all_windows)}
+      {:error, reason} -> {:error, {:backfill_compensation_failed, reason}}
     end
   end
 
@@ -824,31 +802,47 @@ defmodule FavnOrchestrator.BackfillManager do
     end
   end
 
+  defp failure_reasons(:all), do: :all
+
+  defp failure_reasons(failures) when is_list(failures),
+    do: Map.new(failures, &{&1.window_key, &1.reason})
+
   defp compensate_window?(%BackfillWindow{} = window, pipeline_module, :all) do
     window.pipeline_module == pipeline_module and window.status in [:pending, :running]
   end
 
-  defp compensate_window?(%BackfillWindow{} = window, pipeline_module, failures)
-       when is_list(failures) do
+  defp compensate_window?(%BackfillWindow{} = window, pipeline_module, failure_reasons)
+       when is_map(failure_reasons) do
     window.pipeline_module == pipeline_module and
       window.status in [:pending, :running] and
-      Enum.any?(failures, &(&1.window_key == window.window_key))
+      Map.has_key?(failure_reasons, window.window_key)
   end
 
   defp window_compensation_error(error, _window_key, :all), do: error
 
-  defp window_compensation_error(_error, window_key, failures) when is_list(failures) do
-    case Enum.find(failures, &(&1.window_key == window_key)) do
-      %{reason: reason} -> {:backfill_child_submission_failed, reason}
-      nil -> {:backfill_child_submission_failed, :unknown_child_submission_failure}
+  defp window_compensation_error(_error, window_key, failure_reasons),
+    do:
+      {:backfill_child_submission_failed,
+       Map.get(failure_reasons, window_key, :unknown_child_submission_failure)}
+
+  defp put_compensated_windows(windows, opts) when is_list(opts) do
+    case Keyword.get(opts, :_compensation_window_writer) do
+      writer when is_function(writer, 1) -> put_compensated_windows(windows, writer)
+      _other -> Storage.put_backfill_windows(windows)
     end
   end
 
-  defp put_compensated_window(window, opts) do
-    case Keyword.get(opts, :_compensation_window_writer) do
-      writer when is_function(writer, 1) -> writer.(window)
-      _other -> Storage.put_backfill_window(window)
-    end
+  defp put_compensated_windows(windows, writer) when is_function(writer, 1) do
+    Enum.reduce_while(windows, :ok, fn window, :ok ->
+      case writer.(window) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp append_error(errors, error) when is_list(errors) do
+    if List.last(errors) == error, do: errors, else: errors ++ [error]
   end
 
   defp parent_event_type(:ok), do: :backfill_finished

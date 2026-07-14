@@ -7,11 +7,38 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
   alias Favn.Run.NodeResult
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Repair.RuntimeState
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
   alias FavnOrchestrator.TransitionWriter
+
+  defmodule CancelRecordingRunner do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(_work, _opts), do: {:error, :not_supported}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts), do: {:error, :not_supported}
+
+    @impl true
+    def cancel_work(execution_id, reason, opts) do
+      send(Keyword.fetch!(opts, :owner), {:repair_cancel, execution_id, reason})
+
+      case Keyword.get(opts, :cancel_result, :ok) do
+        :ok -> :ok
+        result -> {:error, result}
+      end
+    end
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+  end
 
   defmodule NoClaimAdapter do
     @behaviour Favn.Storage.Adapter
@@ -76,6 +103,8 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
   setup do
     previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
     previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
+    previous_runner = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_runner_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
 
     Memory.reset()
 
@@ -83,6 +112,8 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
       Memory.reset()
       restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
       restore_env(:favn_orchestrator, :storage_adapter_opts, previous_opts)
+      restore_env(:favn_orchestrator, :runner_client, previous_runner)
+      restore_env(:favn_orchestrator, :runner_client_opts, previous_runner_opts)
     end)
 
     :ok
@@ -137,6 +168,73 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
     assert [%{status: :error}] = detail.steps
   end
 
+  test "apply cancels durable runner ownership before terminalizing an orphan" do
+    Application.put_env(:favn_orchestrator, :runner_client, CancelRecordingRunner)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, owner: self())
+
+    run = running_run("repair_runner_cleanup")
+    assert :ok = persist_running_run_with_started_step(run)
+
+    ownership =
+      run
+      |> RunExecutionOwnership.new(asset_step_id: asset_step_id(run), attempt: 1)
+      |> RunExecutionOwnership.submitted("exec_repair_runner_cleanup")
+
+    assert :ok = RunExecutionOwnership.persist(ownership)
+
+    assert {:ok, report} =
+             RuntimeState.repair(dry_run: false, run_id: run.id, freshness: false)
+
+    assert report.runs_terminalized == 1
+    assert_receive {:repair_cancel, "exec_repair_runner_cleanup", cancellation}
+    assert cancellation.reason.type == :orphaned_run_reconciled
+
+    assert {:ok, [persisted_ownership]} = RunExecutionOwnership.fetch_all(run.id)
+    assert persisted_ownership.status == :cancel_acknowledged
+
+    assert {:ok, failed} = Storage.get_run(run.id)
+    assert [%{status: :cancel_acknowledged}] = failed.error.runner_cleanup
+  end
+
+  test "apply keeps capacity leased when runner cleanup is unconfirmed" do
+    Application.put_env(:favn_orchestrator, :runner_client, CancelRecordingRunner)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      owner: self(),
+      cancel_result: :nodedown
+    )
+
+    run = running_run("repair_runner_cleanup_unconfirmed")
+    assert :ok = persist_running_run_with_started_step(run)
+
+    ownership =
+      run
+      |> RunExecutionOwnership.new(asset_step_id: asset_step_id(run), attempt: 1)
+      |> RunExecutionOwnership.submitted("exec_repair_runner_cleanup_unconfirmed")
+
+    assert :ok = RunExecutionOwnership.persist(ownership)
+
+    now = DateTime.utc_now()
+
+    lease = %{
+      lease_id: "repair-unconfirmed-lease",
+      run_id: run.id,
+      asset_step_id: asset_step_id(run),
+      scopes: [%{kind: :run, key: run.id, limit: 1}],
+      acquired_at: now,
+      expires_at: DateTime.add(now, 60, :second)
+    }
+
+    assert {:ok, ^lease} = Storage.try_acquire_execution_lease(lease)
+
+    assert {:error, report} =
+             RuntimeState.repair(dry_run: false, run_id: run.id, freshness: false)
+
+    assert report.runs_terminalized == 1
+    assert [_cleanup_error] = report.errors
+    assert {:ok, [^lease]} = Storage.list_execution_leases()
+  end
+
   test "apply rebuilds missing freshness for independent successful node results" do
     ref = {MyApp.Assets.RepairRaw, :asset}
     node_key = {ref, nil}
@@ -179,6 +277,64 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
     assert state.status == :ok
     assert state.latest_success_run_id == run.id
     assert state.latest_success_node_key == node_key
+  end
+
+  test "backfill-scoped repair does not inspect unrelated successful runs for freshness" do
+    ref = {MyApp.Assets.RepairRaw, :asset}
+    node_key = {ref, nil}
+    version = manifest_version("mv_repair_backfill_scope", ref)
+    assert :ok = Storage.put_manifest_version(version)
+
+    parent = backfill_parent_run("repair_freshness_scope_parent")
+
+    child_result =
+      NodeResult.new(%{
+        node_key: node_key,
+        ref: ref,
+        status: :ok,
+        freshness_key: Favn.Freshness.Key.latest(),
+        asset_step_id: "repair_freshness_scope_child:raw"
+      })
+
+    child =
+      parent.id
+      |> backfill_child_run("repair_freshness_scope_child", "day:2026-05-21")
+      |> RunState.transition(
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        status: :ok,
+        plan: single_node_plan(ref, node_key),
+        result: %{status: :ok, node_results: [child_result]}
+      )
+
+    unrelated =
+      "repair_freshness_scope_unrelated"
+      |> base_run(ref)
+      |> RunState.transition(
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        status: :ok,
+        plan: single_node_plan(ref, node_key),
+        result: %{status: :ok, node_results: [child_result]}
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(child)
+    assert :ok = Storage.put_run(unrelated)
+
+    assert {:ok, report} = RuntimeState.repair(dry_run: true, backfill_id: parent.id)
+    assert report.freshness_states_rebuilt == 1
+  end
+
+  test "rejects malformed repair options before doing work" do
+    assert {:error, report} = RuntimeState.repair([:not_keyword])
+    assert report.errors == [:invalid_runtime_repair_options]
+
+    assert {:error, report} = RuntimeState.repair(dry_run: false, since: "yesterday")
+    assert report.errors == [{:invalid_runtime_repair_option, :since}]
+
+    assert {:error, report} = RuntimeState.repair(dry_run: false, unknown: true)
+    assert report.errors == [{:invalid_runtime_repair_options, [:unknown]}]
   end
 
   test "apply ignores adapters without materialization claim callbacks" do

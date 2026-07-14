@@ -3,6 +3,8 @@ defmodule FavnOrchestrator.BackfillManagerTest do
 
   @moduletag capture_log: true
 
+  import FavnOrchestrator.TestSupport.Runtime, only: [stop_active_runs: 0]
+
   alias Favn.Contracts.RunnerResult
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -54,9 +56,11 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, submit_log: submit_log)
 
+    stop_active_runs()
     Memory.reset()
 
     on_exit(fn ->
+      stop_active_runs()
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
       Memory.reset()
@@ -448,6 +452,19 @@ defmodule FavnOrchestrator.BackfillManagerTest do
              FavnOrchestrator.cancel_run(parent_run_id, %{reason: "operator"})
 
     assert {:error, :backfill_parent_rerun_not_supported} = FavnOrchestrator.rerun(parent_run_id)
+
+    assert {:ok, asset_parent_run_id} =
+             FavnOrchestrator.BackfillManager.submit_asset_backfill(
+               {MyApp.Assets.Gold, :asset},
+               run_id: "run_asset_backfill_parent_safety",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"}
+             )
+
+    assert {:error, :backfill_parent_cancel_not_supported} =
+             FavnOrchestrator.cancel_run(asset_parent_run_id, %{reason: "operator"})
+
+    assert {:error, :backfill_parent_rerun_not_supported} =
+             FavnOrchestrator.rerun(asset_parent_run_id)
 
     assert {:ok, all_runs} = Storage.list_runs()
 

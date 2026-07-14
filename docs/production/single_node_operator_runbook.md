@@ -103,7 +103,7 @@ Supported backend environment keys are:
 - `FAVN_STORAGE=sqlite`.
 - `FAVN_SQLITE_PATH`, an absolute path on durable attached storage.
 - `FAVN_SQLITE_MIGRATION_MODE`, `manual` or `auto`.
-- `FAVN_SQLITE_BUSY_TIMEOUT_MS`, positive integer, default `5000`.
+- `FAVN_SQLITE_BUSY_TIMEOUT_MS`, `1..3600000`, default `5000`.
 - `FAVN_SQLITE_POOL_SIZE=1`.
 - `FAVN_ORCHESTRATOR_API_BIND_HOST`, IPv4 address, default `127.0.0.1`.
 - `FAVN_ORCHESTRATOR_API_PORT`, `1..65535`, default `4101`.
@@ -119,12 +119,12 @@ Supported backend environment keys are:
 - `FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD`, first admin password, 15 to 1,024
   characters.
 - `FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME`, optional, default `Favn Admin`.
-- `FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES`, optional, default `admin`.
-- `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL`, positive integer seconds, default
-  `43200`.
+- `FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES`, optional comma-separated roles from
+  `viewer`, `operator`, and `admin`; default `admin`.
+- `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL`, `1..2592000` seconds, default `43200`.
 - `FAVN_SCHEDULER_ENABLED`, boolean, default `true`.
-- `FAVN_SCHEDULER_TICK_MS`, integer at least `100`, default `15000`.
-- `FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES`, positive integer, default `1000`.
+- `FAVN_SCHEDULER_TICK_MS`, `100..86400000`, default `15000`.
+- `FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES`, `1..100000`, default `1000`.
 - `FAVN_RUNNER_MODE=local`.
 - `FAVN_VIEW_PUBLIC_ORIGIN`, the browser-facing absolute origin for `favn_view`.
   Production origins must use `https`; `http` is accepted only for localhost.

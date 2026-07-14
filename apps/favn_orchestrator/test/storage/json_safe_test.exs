@@ -161,6 +161,14 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
     assert String.ends_with?(normalized, "...")
   end
 
+  test "renders invalid UTF-8 as bounded JSON-safe text" do
+    normalized = JsonSafe.data(<<255, 254, 253>>)
+
+    assert is_binary(normalized)
+    assert String.valid?(normalized)
+    assert {:ok, _json} = Jason.encode(normalized)
+  end
+
   test "preserves safe runtime config diagnostics" do
     diagnostic = %{
       type: :missing_runtime_config,
@@ -203,6 +211,21 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
                ]
              }
            }
+  end
+
+  test "bounds nested runtime config diagnostics" do
+    diagnostic = %{
+      type: :missing_runtime_config,
+      details: %{
+        errors: Enum.map(1..100, &%{type: :missing_env, env: "ENV_#{&1}"}),
+        nested: Enum.reduce(1..12, "leaf", fn _, acc -> %{child: acc} end)
+      }
+    }
+
+    normalized = JsonSafe.error(diagnostic)
+
+    assert length(normalized["details"]["errors"]) == 50
+    assert contains_value?(normalized, "[TRUNCATED]")
   end
 
   test "preserves sanitized generic struct errors" do

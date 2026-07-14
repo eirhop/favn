@@ -38,6 +38,12 @@ defmodule FavnOrchestrator.Auth.ServiceTokensTest do
 
     assert {:error, {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :weak}} =
              ServiceTokens.from_env_string("favn_web:replace-with-32-plus-char-service-token")
+
+    assert {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :duplicate_token}} =
+             ServiceTokens.from_env_string("first:#{@token_a},second:#{@token_a}")
+
+    assert {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :invalid_identity}} =
+             ServiceTokens.from_env_string("bad identity:#{@token_a}")
   end
 
   test "runtime config uses raw env string only through service token parser" do
@@ -80,6 +86,22 @@ defmodule FavnOrchestrator.Auth.ServiceTokensTest do
 
     assert {:error, {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :weak}} =
              ServiceTokens.validate_runtime_config()
+
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      %{service_identity: "favn_web", token: @token_a, unexpected: true}
+    ])
+
+    assert {:error, :invalid_service_token_config} = ServiceTokens.validate_runtime_config()
+
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      %{
+        service_identity: "favn_web",
+        token: @token_a,
+        token_hash: ServiceTokens.hash_token(@token_a)
+      }
+    ])
+
+    assert {:error, :invalid_service_token_config} = ServiceTokens.validate_runtime_config()
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)

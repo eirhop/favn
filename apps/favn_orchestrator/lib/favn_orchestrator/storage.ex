@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Storage do
   adapter implementations.
   """
 
+  alias Favn.Log.Redactor
   alias Favn.Manifest.Version
   alias Favn.Storage.Adapter, as: StorageAdapter
   alias FavnOrchestrator.AssetFreshnessState
@@ -16,14 +17,14 @@ defmodule FavnOrchestrator.Storage do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
+  alias FavnOrchestrator.CursorPage
   alias FavnOrchestrator.ExecutionAdmission.LeaseRelease
   alias FavnOrchestrator.ExecutionAdmission.Waiter, as: AdmissionWaiter
-  alias FavnOrchestrator.CursorPage
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
-  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.TargetStatus
 
   @type freshness_state_key :: StorageAdapter.freshness_state_key()
@@ -820,9 +821,9 @@ defmodule FavnOrchestrator.Storage do
   end
 
   defp redact_log_entry(entry, policy) do
-    with {:module, Favn.Log.Redactor} <- Code.ensure_loaded(Favn.Log.Redactor),
-         true <- function_exported?(Favn.Log.Redactor, :redact, 2) do
-      case Favn.Log.Redactor.redact(entry, policy) do
+    with {:module, Redactor} <- Code.ensure_loaded(Redactor),
+         true <- function_exported?(Redactor, :redact, 2) do
+      case Redactor.redact(entry, policy) do
         {redacted_entry, _redacted?} -> {:ok, redacted_entry}
       end
     else
@@ -887,8 +888,9 @@ defmodule FavnOrchestrator.Storage do
     runtime_config = RuntimeConfig.current()
     adapter = runtime_config.storage_adapter
 
-    with :ok <- validate_adapter(adapter) do
-      fun.(adapter, runtime_config.storage_adapter_opts)
+    case Code.ensure_loaded(adapter) do
+      {:module, ^adapter} -> fun.(adapter, runtime_config.storage_adapter_opts)
+      _error -> {:error, {:invalid_storage_adapter, adapter}}
     end
   rescue
     error -> {:error, {:raised, error}}

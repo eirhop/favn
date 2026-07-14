@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
   @format "favn.idempotency_response.storage.v1"
   @schema_version 1
   @error_schema "favn.command.error.response.v1"
+  @root_fields ~w(format schema_version operation response_schema body)
 
   @success_schemas %{
     "manifest.activate" => "favn.command.manifest_activate.response.v1",
@@ -15,6 +16,11 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
     "backfill.submit" => "favn.command.backfill_submit.response.v1",
     "backfill.window.rerun" => "favn.command.backfill_window_rerun.response.v1"
   }
+  @simple_success_fields %{
+    "manifest.activate" => [{"activated", :boolean}, {"manifest_version_id", :string}],
+    "run.cancel" => [{"cancelled", :boolean}, {"run_id", :string}]
+  }
+  @run_operations ~w(run.submit run.rerun backfill.submit backfill.window.rerun)
 
   @type json_value :: map() | list() | String.t() | number() | boolean() | nil
 
@@ -66,37 +72,15 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
     end
   end
 
-  defp success_to_dto("manifest.activate", body) when is_map(body) do
-    with {:ok, activated} <- required_boolean(body, "activated"),
-         {:ok, manifest_version_id} <- required_string(body, "manifest_version_id") do
-      {:ok, schema!("manifest.activate"),
-       %{"activated" => activated, "manifest_version_id" => manifest_version_id}}
+  defp success_to_dto(operation, body) do
+    with {:ok, schema} <- success_schema(operation),
+         {:ok, dto} <- success_body(operation, body) do
+      {:ok, schema, dto}
     else
-      {:error, reason} ->
-        {:error, {:invalid_idempotency_response_body, "manifest.activate", reason}}
-    end
-  end
-
-  defp success_to_dto("run.cancel", body) when is_map(body) do
-    with {:ok, cancelled} <- required_boolean(body, "cancelled"),
-         {:ok, run_id} <- required_string(body, "run_id") do
-      {:ok, schema!("run.cancel"), %{"cancelled" => cancelled, "run_id" => run_id}}
-    else
-      {:error, reason} -> {:error, {:invalid_idempotency_response_body, "run.cancel", reason}}
-    end
-  end
-
-  defp success_to_dto(operation, body)
-       when operation in ["run.submit", "run.rerun", "backfill.submit", "backfill.window.rerun"] and
-              is_map(body) do
-    case required_map(body, "run") do
-      {:ok, run} -> {:ok, schema!(operation), %{"run" => JsonSafe.data(run)}}
+      {:error, {:unsupported_idempotency_operation, _operation} = reason} -> {:error, reason}
       {:error, reason} -> {:error, {:invalid_idempotency_response_body, operation, reason}}
     end
   end
-
-  defp success_to_dto(operation, body),
-    do: {:error, {:invalid_idempotency_response_body, operation, body}}
 
   defp error_to_dto(body) when is_map(body) do
     with {:ok, code} <- required_string(body, "code"),
@@ -107,6 +91,16 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
       {:error, reason} -> {:error, {:invalid_idempotency_response_body, :error, reason}}
     end
   end
+
+  defp error_body(body) when is_map(body) do
+    with {:ok, code} <- required_string(body, "code"),
+         {:ok, message} <- required_string(body, "message"),
+         {:ok, details} <- required_map(body, "details") do
+      {:ok, %{"code" => code, "message" => message, "details" => JsonSafe.data(details)}}
+    end
+  end
+
+  defp error_body(body), do: {:error, body}
 
   defp error_body?(body) when is_map(body) do
     not is_nil(field(body, "code")) and not is_nil(field(body, "message"))
@@ -124,7 +118,10 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
          } = dto
        )
        when is_binary(operation) and is_binary(response_schema) do
-    {:ok, dto}
+    case dto |> Map.keys() |> Kernel.--(@root_fields) |> Enum.sort() do
+      [] -> {:ok, dto}
+      fields -> {:error, {:unknown_idempotency_response_fields, fields}}
+    end
   end
 
   defp validate_root(%{"format" => format}) when format != @format,
@@ -138,8 +135,8 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
   defp validate_schema(%{"operation" => operation, "response_schema" => response_schema}) do
     with {:ok, expected} <- success_schema(operation) do
       cond do
-        response_schema == "favn.command.error.response.v1" ->
-          {:ok, "favn.command.error.response.v1"}
+        response_schema == @error_schema ->
+          {:ok, @error_schema}
 
         response_schema == expected ->
           {:ok, response_schema}
@@ -150,47 +147,17 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
     end
   end
 
-  defp validate_body(
-         "manifest.activate",
-         "favn.command.manifest_activate.response.v1",
-         body
-       )
-       when is_map(body) do
-    with {:ok, _activated} <- required_boolean(body, "activated"),
-         {:ok, _manifest_version_id} <- required_string(body, "manifest_version_id") do
-      {:ok, body}
-    else
-      {:error, reason} ->
-        {:error, {:invalid_idempotency_response_body, "manifest.activate", reason}}
-    end
-  end
-
-  defp validate_body("run.cancel", "favn.command.run_cancel.response.v1", body)
-       when is_map(body) do
-    with {:ok, _cancelled} <- required_boolean(body, "cancelled"),
-         {:ok, _run_id} <- required_string(body, "run_id") do
-      {:ok, body}
-    else
-      {:error, reason} -> {:error, {:invalid_idempotency_response_body, "run.cancel", reason}}
-    end
-  end
-
-  defp validate_body(operation, @error_schema, body) when is_map(body) do
-    with {:ok, _code} <- required_string(body, "code"),
-         {:ok, _message} <- required_string(body, "message"),
-         {:ok, _details} <- required_map(body, "details") do
-      {:ok, body}
-    else
+  defp validate_body(operation, @error_schema, body) do
+    case error_body(body) do
+      {:ok, dto} -> {:ok, dto}
       {:error, reason} -> {:error, {:invalid_idempotency_response_body, operation, reason}}
     end
   end
 
-  defp validate_body(operation, schema, body)
-       when operation in ["run.submit", "run.rerun", "backfill.submit", "backfill.window.rerun"] and
-              is_map(body) do
+  defp validate_body(operation, schema, body) do
     with {:ok, ^schema} <- success_schema(operation),
-         {:ok, _run} <- required_map(body, "run") do
-      {:ok, body}
+         {:ok, dto} <- success_body(operation, body) do
+      {:ok, dto}
     else
       {:ok, expected} ->
         {:error, {:idempotency_response_schema_mismatch, operation, schema, expected}}
@@ -200,9 +167,6 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
     end
   end
 
-  defp validate_body(operation, _schema, body),
-    do: {:error, {:invalid_idempotency_response_body, operation, body}}
-
   defp success_schema(operation) do
     case Map.fetch(@success_schemas, operation) do
       {:ok, schema} -> {:ok, schema}
@@ -210,7 +174,28 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
     end
   end
 
-  defp schema!(operation), do: Map.fetch!(@success_schemas, operation)
+  defp success_body(operation, body) when is_map_key(@simple_success_fields, operation) do
+    @simple_success_fields
+    |> Map.fetch!(operation)
+    |> Enum.reduce_while({:ok, %{}}, fn {field, type}, {:ok, acc} ->
+      case required_field(body, field, type) do
+        {:ok, value} -> {:cont, {:ok, Map.put(acc, field, value)}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp success_body(operation, body) when operation in @run_operations and is_map(body) do
+    case required_map(body, "run") do
+      {:ok, run} -> {:ok, %{"run" => JsonSafe.data(run)}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp success_body(_operation, body), do: {:error, body}
+
+  defp required_field(body, field, :boolean), do: required_boolean(body, field)
+  defp required_field(body, field, :string), do: required_string(body, field)
 
   defp field(body, key) when is_map(body) and is_binary(key) do
     if Map.has_key?(body, key) do

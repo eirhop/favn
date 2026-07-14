@@ -3,8 +3,8 @@ defmodule FavnOrchestrator.TransitionWriter do
   Writes authoritative run transitions and publishes live events after successful writes.
   """
 
-  alias FavnOrchestrator.Backfill
   alias FavnOrchestrator.AssetWindowProjector
+  alias FavnOrchestrator.Backfill
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.LogWriter
   alias FavnOrchestrator.OperationalEvents
@@ -12,8 +12,8 @@ defmodule FavnOrchestrator.TransitionWriter do
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Storage.JsonSafe
 
   require Logger
 
@@ -31,7 +31,7 @@ defmodule FavnOrchestrator.TransitionWriter do
           submit_kind: run_state.submit_kind
         })
 
-        Events.broadcast_run_event(event)
+        event |> hydrate_persisted_event() |> Events.broadcast_run_event()
         project_derived_state(run_state, event_type, data)
         safe_emit_transition_log(event)
         :ok
@@ -52,6 +52,24 @@ defmodule FavnOrchestrator.TransitionWriter do
         )
 
         {:error, reason}
+    end
+  end
+
+  defp hydrate_persisted_event(%RunEvent{} = event) do
+    case Storage.list_run_events(event.run_id,
+           after_sequence: event.sequence - 1,
+           limit: 1
+         ) do
+      {:ok, [persisted | _]} ->
+        RunEvent.from_map(persisted)
+
+      {:ok, []} ->
+        Logger.warning("persisted run event missing after transition write")
+        event
+
+      {:error, reason} ->
+        Logger.warning("persisted run event hydration failed: #{inspect(reason)}")
+        event
     end
   end
 

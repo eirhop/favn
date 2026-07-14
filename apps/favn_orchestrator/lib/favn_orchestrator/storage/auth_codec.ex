@@ -95,17 +95,22 @@ defmodule FavnOrchestrator.Storage.AuthCodec do
   @spec encode_audit(map()) :: {:ok, String.t()} | {:error, term()}
   def encode_audit(entry) when is_map(entry) do
     with {:ok, id} <- required_binary(entry, :id),
-         {:ok, occurred_at} <- required_datetime(entry, :occurred_at) do
+         {:ok, occurred_at} <- required_datetime(entry, :occurred_at),
+         {:ok, action} <- optional_binary(entry, :action),
+         {:ok, actor_id} <- optional_binary(entry, :actor_id),
+         {:ok, session_id} <- optional_binary(entry, :session_id),
+         {:ok, outcome} <- optional_binary(entry, :outcome),
+         {:ok, service_identity} <- optional_binary(entry, :service_identity) do
       dto = %{
         "format" => @audit_format,
         "schema_version" => @schema_version,
         "id" => id,
         "occurred_at" => DateTime.to_iso8601(occurred_at),
-        "action" => optional_binary(entry, :action),
-        "actor_id" => optional_binary(entry, :actor_id),
-        "session_id" => optional_binary(entry, :session_id),
-        "outcome" => optional_binary(entry, :outcome),
-        "service_identity" => optional_binary(entry, :service_identity),
+        "action" => action,
+        "actor_id" => actor_id,
+        "session_id" => session_id,
+        "outcome" => outcome,
+        "service_identity" => service_identity,
         "details" => audit_details(entry)
       }
 
@@ -238,8 +243,9 @@ defmodule FavnOrchestrator.Storage.AuthCodec do
 
   defp optional_binary(entry, field) do
     case Map.get(entry, field) do
-      value when is_binary(value) and value != "" -> value
-      _value -> nil
+      value when is_binary(value) and value != "" -> {:ok, value}
+      nil -> {:ok, nil}
+      value -> {:error, {:invalid_auth_audit_field, field, value}}
     end
   end
 

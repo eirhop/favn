@@ -5,15 +5,19 @@ defmodule FavnOrchestrator.RunManager do
 
   use GenServer
 
-  alias Favn.Contracts.RunnerClient
   alias FavnOrchestrator.OperationalEvents
-  alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.Redaction
+  alias FavnOrchestrator.RunExecutionCleanup
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunManager.Submission
   alias FavnOrchestrator.RunManager.SubmissionBuilder
+  alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunServer
+  alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.TransitionWriter
 
   @type state :: %{
@@ -91,34 +95,31 @@ defmodule FavnOrchestrator.RunManager do
 
   def handle_call({:cancel_run, run_id, reason}, _from, state) do
     reply =
-      case Storage.get_run(run_id) do
-        {:ok, run} ->
-          with :ok <- validate_cancel_reason(reason),
-               :ok <- reject_backfill_parent_cancel(run),
-               {:ok, cancel_requested, cancelled} <- build_cancel_snapshots(run, reason),
-               :ok <-
-                 TransitionWriter.persist_transition(cancel_requested, :run_cancel_requested, %{
-                   reason: reason
-                 }) do
-            if active_run_server?(state, run_id) do
-              notify_active_run_server(state, run_id, reason)
-              :ok
-            else
-              case forward_cancel_result(run, reason) do
-                :ok ->
-                  TransitionWriter.persist_transition(cancelled, :run_cancelled, %{reason: reason})
+      with {:ok, safe_reason} <- sanitize_cancel_reason(reason),
+           {:ok, run} <- Storage.get_run(run_id),
+           :ok <- reject_backfill_parent_cancel(run),
+           {:ok, cancel_requested, cancelled} <- build_cancel_snapshots(run, safe_reason),
+           :ok <-
+             TransitionWriter.persist_transition(cancel_requested, :run_cancel_requested, %{
+               reason: safe_reason
+             }) do
+        if active_run_server?(state, run_id) do
+          notify_active_run_server(state, run_id, safe_reason)
+          :ok
+        else
+          case forward_cancel_result(run, safe_reason) do
+            :ok ->
+              TransitionWriter.persist_transition(cancelled, :run_cancelled, %{
+                reason: safe_reason
+              })
 
-                {:already_completed, details} ->
-                  {:error, {:runner_cancel_already_completed, details}}
+            {:already_completed, details} ->
+              {:error, {:runner_cancel_already_completed, details}}
 
-                {:error, cancel_error} ->
-                  {:error, {:runner_cancel_failed, cancel_error}}
-              end
-            end
+            {:error, cancel_error} ->
+              {:error, {:runner_cancel_failed, cancel_error}}
           end
-
-        {:error, _reason} = error ->
-          error
+        end
       end
 
     {:reply, reply, state}
@@ -184,16 +185,42 @@ defmodule FavnOrchestrator.RunManager do
              run_state,
              :run_created,
              submission.transition_metadata
-           ),
-         {:ok, pid} <- start_run_server(run_state, submission.manifest_version) do
-      ref = Process.monitor(pid)
+           ) do
+      case start_run_server(run_state, submission.manifest_version) do
+        {:ok, pid} -> track_run_server(state, run_state.id, pid)
+        {:error, reason} -> compensate_run_server_start(run_state, reason)
+      end
+    end
+  end
 
-      next_state =
-        state
-        |> put_in([:run_pids, run_state.id], pid)
-        |> put_in([:monitors, ref], run_state.id)
+  defp track_run_server(state, run_id, pid) do
+    ref = Process.monitor(pid)
 
-      {{:ok, run_state.id}, next_state}
+    next_state =
+      state
+      |> put_in([:run_pids, run_id], pid)
+      |> put_in([:monitors, ref], run_id)
+
+    {{:ok, run_id}, next_state}
+  end
+
+  defp compensate_run_server_start(%RunState{} = run, reason) do
+    diagnostic = JsonSafe.error(reason)
+
+    error = %{
+      type: :run_server_start_failed,
+      reason: diagnostic,
+      failed_at: DateTime.utc_now()
+    }
+
+    case terminalize_run(run, error, []) do
+      :ok ->
+        {:error, {:run_server_start_failed, diagnostic}}
+
+      {:error, terminalization_error} ->
+        {:error,
+         {:run_server_start_failed, diagnostic,
+          {:terminalization_failed, JsonSafe.error(terminalization_error)}}}
     end
   end
 
@@ -220,8 +247,8 @@ defmodule FavnOrchestrator.RunManager do
   defp terminalize_active_run(run_id, error) when is_binary(run_id) and is_map(error) do
     case Storage.get_run(run_id) do
       {:ok, %RunState{status: status} = run} when status in [:pending, :running] ->
-        {run, cleanup_statuses} =
-          cleanup_active_runner_ownerships(run, %{kind: :run_server_down, error: error})
+        cleanup_statuses =
+          RunExecutionCleanup.cancel_active(run, %{kind: :run_server_down, error: error})
 
         terminalize_run(run, error, cleanup_statuses)
 
@@ -235,64 +262,6 @@ defmodule FavnOrchestrator.RunManager do
           %{run_id: run_id, reason: reason},
           level: :error
         )
-    end
-  end
-
-  defp cleanup_active_runner_ownerships(%RunState{} = run, reason) do
-    case RunExecutionOwnership.fetch_active(run.id) do
-      {:ok, active} ->
-        execution_ids = active |> Enum.map(& &1.runner_execution_id) |> Enum.filter(&is_binary/1)
-        missing_id_result = persist_missing_execution_ids(run.id, reason)
-
-        cleanup_statuses =
-          case missing_id_result do
-            :ok -> []
-            {:error, error} -> [%{status: :unknown_runner_outcome, error: error}]
-          end
-
-        if execution_ids == [] do
-          {run, cleanup_statuses}
-        else
-          runtime_config = RuntimeConfig.current()
-          runner_client = runtime_config.runner_client
-          runner_opts = runtime_config.runner_client_opts
-
-          results =
-            case validate_runner_client(runner_client) do
-              :ok ->
-                FavnOrchestrator.RunServer.Cancellation.dispatch_runner_work(
-                  run,
-                  execution_ids,
-                  reason,
-                  runner_client,
-                  runner_opts
-                )
-
-              {:error, error} ->
-                Enum.map(execution_ids, fn execution_id ->
-                  %{execution_id: execution_id, status: :unknown_runner_outcome, error: error}
-                end)
-            end
-
-          persist_result = RunExecutionOwnership.persist_cancel_outcomes(run.id, results, reason)
-
-          statuses =
-            cleanup_statuses ++
-              cleanup_statuses_from_results(results) ++
-              persist_error_statuses(persist_result)
-
-          {run, statuses}
-        end
-
-      {:error, error} ->
-        {run,
-         [
-           %{
-             runner_execution_id: nil,
-             status: :unknown_runner_outcome,
-             error: {:execution_ownership_read_failed, error}
-           }
-         ]}
     end
   end
 
@@ -311,39 +280,22 @@ defmodule FavnOrchestrator.RunManager do
     })
   end
 
-  defp persist_missing_execution_ids(run_id, reason) do
-    RunExecutionOwnership.persist_unknown_without_execution_id(run_id, reason)
-  end
-
-  defp cleanup_statuses_from_results(results) do
-    Enum.map(results, fn result ->
-      %{
-        runner_execution_id: Map.get(result, :execution_id),
-        status: RunExecutionOwnership.cancel_outcome_status(result),
-        error: Map.get(result, :error)
-      }
-    end)
-  end
-
-  defp persist_error_statuses(:ok), do: []
-
-  defp persist_error_statuses({:error, error}) do
-    [%{runner_execution_id: nil, status: :unknown_runner_outcome, error: error}]
-  end
-
   defp run_server_down_error(reason) do
     %{
       type: :run_server_down,
-      exit_reason: inspect(reason),
+      exit_reason: JsonSafe.error(reason),
       crashed_at: DateTime.utc_now()
     }
   end
 
-  defp validate_cancel_reason(value) when is_map(value), do: :ok
-  defp validate_cancel_reason(_value), do: {:error, :invalid_cancel_reason}
+  defp sanitize_cancel_reason(value) when is_map(value),
+    do: {:ok, Redaction.redact_operational_bounded(value)}
 
-  defp reject_backfill_parent_cancel(%RunState{submit_kind: :backfill_pipeline}),
-    do: {:error, :backfill_parent_cancel_not_supported}
+  defp sanitize_cancel_reason(_value), do: {:error, :invalid_cancel_reason}
+
+  defp reject_backfill_parent_cancel(%RunState{submit_kind: submit_kind})
+       when submit_kind in [:backfill_pipeline, :backfill_asset],
+       do: {:error, :backfill_parent_cancel_not_supported}
 
   defp reject_backfill_parent_cancel(_run), do: :ok
 
@@ -406,9 +358,9 @@ defmodule FavnOrchestrator.RunManager do
       if execution_ids == [] do
         :ok
       else
-        with :ok <- validate_runner_client(runner_client) do
+        with :ok <- RunnerClientValidator.validate(runner_client) do
           results =
-            FavnOrchestrator.RunServer.Cancellation.dispatch_runner_work(
+            Cancellation.dispatch_runner_work(
               run,
               execution_ids,
               reason,
@@ -485,19 +437,4 @@ defmodule FavnOrchestrator.RunManager do
         {:error, {:execution_ownership_read_failed, reason}}
     end
   end
-
-  defp validate_runner_client(module) when is_atom(module) do
-    callbacks =
-      RunnerClient.behaviour_info(:callbacks) -- RunnerClient.behaviour_info(:optional_callbacks)
-
-    with {:module, ^module} <- Code.ensure_loaded(module),
-         true <-
-           Enum.all?(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end) do
-      :ok
-    else
-      _ -> {:error, :runner_client_not_available}
-    end
-  end
-
-  defp validate_runner_client(_module), do: {:error, :runner_client_not_available}
 end

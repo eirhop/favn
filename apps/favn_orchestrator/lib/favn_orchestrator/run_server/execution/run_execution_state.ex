@@ -8,7 +8,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   """
 
   alias Favn.Manifest.Version
-  alias FavnOrchestrator.RunServer.Execution.AwaitTasks
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
   alias FavnOrchestrator.RunServer.Execution.StageAttemptState
   alias FavnOrchestrator.RunState
@@ -20,9 +19,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           | :awaiting
           | :retry_wait
           | :admission_wait
-          | :draining
-          | :terminalizing
-          | :terminal
 
   @type await :: %{
           required(:pid) => pid(),
@@ -46,8 +42,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           runner_client: module() | nil,
           runner_opts: keyword(),
           work_set: RunWorkSet.t(),
-          active_attempts: map(),
-          await_tasks: AwaitTasks.t(),
           awaits: %{optional(String.t()) => await()},
           await_monitors: %{optional(reference()) => String.t()},
           await_timers: %{optional(reference()) => String.t()},
@@ -64,10 +58,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           stage_admission_deadline_ms: integer() | nil,
           stage_decisions: map(),
           stage_freshness_context: map() | nil,
-          stage_executed_node_keys: [Favn.Plan.node_key()],
           freshness_context: map() | nil,
-          terminal_failure: map() | nil,
-          terminal?: boolean()
+          terminal_failure: map() | nil
         }
 
   defstruct run: nil,
@@ -77,8 +69,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             runner_client: nil,
             runner_opts: [],
             work_set: nil,
-            active_attempts: %{},
-            await_tasks: AwaitTasks.new(),
             awaits: %{},
             await_monitors: %{},
             await_timers: %{},
@@ -95,10 +85,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             stage_admission_deadline_ms: nil,
             stage_decisions: %{},
             stage_freshness_context: nil,
-            stage_executed_node_keys: [],
             freshness_context: nil,
-            terminal_failure: nil,
-            terminal?: false
+            terminal_failure: nil
 
   @doc "Creates base execution state for a run."
   @spec new(RunState.t(), Version.t(), keyword()) :: t()

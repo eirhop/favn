@@ -8,10 +8,10 @@ defmodule FavnOrchestrator.TargetStatus.Projector do
   than authoritative.
   """
 
-  alias Favn.Manifest.Pipeline
-  alias Favn.Manifest.Version
   alias Favn.Manifest.Index
+  alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
+  alias Favn.Manifest.Version
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.CursorPage
   alias FavnOrchestrator.Page
@@ -386,13 +386,9 @@ defmodule FavnOrchestrator.TargetStatus.Projector do
     inserted_at = run.inserted_at
     updated_at = run.updated_at
 
-    cond do
-      run.status in [:ok, :partial, :error, :cancelled, :timed_out] and
-        match?(%DateTime{}, inserted_at) and match?(%DateTime{}, updated_at) ->
-        max(DateTime.diff(updated_at, inserted_at, :millisecond), 0)
-
-      true ->
-        nil
+    if run.status in [:ok, :partial, :error, :cancelled, :timed_out] and
+         match?(%DateTime{}, inserted_at) and match?(%DateTime{}, updated_at) do
+      max(DateTime.diff(updated_at, inserted_at, :millisecond), 0)
     end
   end
 

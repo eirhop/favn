@@ -8,12 +8,15 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
 
   use GenServer
 
+  require Logger
+
   alias FavnOrchestrator.ExecutionAdmission.Waiter
+  alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.ExecutionLeaseCodec
 
   @name __MODULE__
-  @candidate_limit 100
+  @call_timeout_ms 5_000
 
   @type state :: %{
           subscribers: %{optional(String.t()) => map()},
@@ -24,9 +27,9 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
   def start_link(opts \\ []),
     do: GenServer.start_link(__MODULE__, %{}, Keyword.put_new(opts, :name, @name))
 
-  @spec register(Waiter.t(), pid()) :: :ok
+  @spec register(Waiter.t(), pid()) :: :ok | {:error, term()}
   def register(%Waiter{} = waiter, owner \\ self()) when is_pid(owner) do
-    call_if_running({:register, waiter, owner}, :ok)
+    required_call({:register, waiter, owner})
   end
 
   @spec cancel(String.t()) :: :ok
@@ -46,7 +49,9 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
       owner: owner,
       monitor_ref: monitor_ref,
       wake_generation: waiter.wake_generation,
-      blocked_scope: waiter.blocked_scope
+      blocked_scope: waiter.blocked_scope,
+      inserted_at: waiter.inserted_at,
+      deadline_at: waiter.deadline_at
     }
 
     {:reply, :ok,
@@ -61,8 +66,8 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
   def handle_cast({:notify_scopes, scopes}, state) do
     scopes = unique_scopes(scopes)
 
-    with [_ | _] <- scopes,
-         {:ok, _expired} <- Storage.expire_execution_admission_waiters(DateTime.utc_now()) do
+    if scopes != [] do
+      maybe_expire_waiters()
       Enum.each(scopes, &wake_scope(&1, state))
     end
 
@@ -75,7 +80,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
 
     state =
       Enum.reduce(waiter_ids, state, fn waiter_id, acc ->
-        :ok = Storage.delete_execution_admission_waiter(waiter_id)
+        _delete_result = Storage.delete_execution_admission_waiter(waiter_id)
         %{acc | subscribers: Map.delete(acc.subscribers, waiter_id)}
       end)
 
@@ -115,17 +120,15 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
   end
 
   defp wake_scope(scope, state) do
-    with {:ok, waiters} <-
-           Storage.list_execution_admission_waiters_for_scope(scope, limit: @candidate_limit),
-         %Waiter{} = waiter <- first_registered_waiter(waiters, state.subscribers) do
-      subscriber = Map.fetch!(state.subscribers, waiter.waiter_id)
+    case first_matching_subscriber(scope, state.subscribers, DateTime.utc_now()) do
+      {waiter_id, subscriber} ->
+        send(
+          subscriber.owner,
+          {:execution_admission_wakeup, waiter_id, subscriber.wake_generation}
+        )
 
-      send(
-        subscriber.owner,
-        {:execution_admission_wakeup, waiter.waiter_id, waiter.wake_generation}
-      )
-    else
-      _other -> :ok
+      nil ->
+        :ok
     end
   end
 
@@ -143,14 +146,49 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
     |> Map.values()
   end
 
-  defp first_registered_waiter(waiters, subscribers) do
-    Enum.find(waiters, &Map.has_key?(subscribers, &1.waiter_id))
+  defp first_matching_subscriber(scope, subscribers, now) do
+    identity = ExecutionLeaseCodec.scope_identity(scope)
+
+    subscribers
+    |> Enum.filter(fn {_waiter_id, subscriber} ->
+      ExecutionLeaseCodec.scope_identity(subscriber.blocked_scope) == identity and
+        waiter_live?(subscriber, now)
+    end)
+    |> Enum.min_by(
+      fn {waiter_id, subscriber} -> {subscriber.inserted_at, waiter_id} end,
+      fn -> nil end
+    )
+  end
+
+  defp waiter_live?(%{owner: owner, deadline_at: deadline}, now) do
+    Process.alive?(owner) and (is_nil(deadline) or DateTime.compare(deadline, now) == :gt)
+  end
+
+  defp maybe_expire_waiters do
+    case Storage.expire_execution_admission_waiters(DateTime.utc_now()) do
+      {:ok, _count} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "execution admission waiter expiry failed reason=#{safe_diagnostic(reason)}"
+        )
+    end
   end
 
   defp call_if_running(message, fallback) do
     case Process.whereis(@name) do
       nil -> fallback
-      _pid -> GenServer.call(@name, message)
+      _pid -> GenServer.call(@name, message, @call_timeout_ms)
+    end
+  catch
+    :exit, _reason -> fallback
+  end
+
+  defp required_call(message) do
+    case call_if_running(message, {:error, :execution_admission_coordinator_not_running}) do
+      :ok -> :ok
+      {:error, _reason} = error -> error
     end
   end
 
@@ -159,5 +197,11 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
       nil -> :ok
       _pid -> GenServer.cast(@name, message)
     end
+  end
+
+  defp safe_diagnostic(reason) do
+    reason
+    |> Redaction.redact_operational_bounded()
+    |> inspect(limit: 20, printable_limit: 2_000)
   end
 end

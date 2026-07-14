@@ -9,15 +9,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   """
 
   alias Favn.Contracts.RunnerWork
+  alias Favn.Freshness.Key
   alias Favn.Manifest.Version
-  alias Favn.Run.NodeResult
-  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.ExecutionAdmission
-  alias FavnOrchestrator.Freshness.StateWriter
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
+  alias FavnOrchestrator.RunServer.Execution.StageClassifier
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
@@ -30,139 +29,86 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           | {:error, RunState.t(), [term()], [node_key()]}
 
   @spec submit(map()) :: result()
-  def submit(%{queued_steps: queued_steps} = request) when is_map(request) do
-    do_submit(
-      request.node_keys,
-      request.run,
-      request.version,
-      request.stage,
-      request.decisions,
-      request.freshness_context,
-      request.attempt,
-      request.runner_client,
-      request.runner_opts,
-      [],
-      queued_steps,
-      []
-    )
+  def submit(request) when is_map(request) do
+    request
+    |> Map.put_new(:queued_steps, MapSet.new())
+    |> submit_request()
   end
 
-  def submit(%{
-        run: %RunState{} = run_state,
-        version: %Version{} = version,
-        stage: stage,
-        node_keys: node_keys,
-        decisions: decisions,
-        freshness_context: freshness_context,
-        attempt: attempt,
-        runner_client: runner_client,
-        runner_opts: runner_opts
-      })
-      when is_list(node_keys) and is_map(decisions) and is_map(freshness_context) do
-    submit(%{
-      run: run_state,
+  defp submit_request(%{
+         run: %RunState{} = run_state,
+         version: %Version{} = version,
+         stage: stage,
+         node_keys: node_keys,
+         decisions: decisions,
+         freshness_context: freshness_context,
+         attempt: attempt,
+         runner_client: runner_client,
+         runner_opts: runner_opts,
+         queued_steps: %MapSet{} = queued_steps
+       })
+       when is_list(node_keys) and is_map(decisions) and is_map(freshness_context) do
+    do_submit(node_keys, %{
+      current_run: run_state,
       version: version,
       stage: stage,
-      node_keys: node_keys,
       decisions: decisions,
       freshness_context: freshness_context,
       attempt: attempt,
       runner_client: runner_client,
       runner_opts: runner_opts,
-      queued_steps: MapSet.new()
+      entries_rev: [],
+      queued_steps: queued_steps,
+      waiters: []
     })
   end
 
-  defp do_submit(
-         [],
-         %RunState{} = run_state,
-         _version,
-         _stage,
-         _decisions,
-         _freshness_context,
-         _attempt,
-         _runner_client,
-         _runner_opts,
-         entries,
-         queued_steps,
-         waiters
-       ) do
-    {:ok, run_state, entries, [], queued_steps, waiters}
+  defp do_submit([], ctx) do
+    {:ok, ctx.current_run, entries(ctx), [], ctx.queued_steps, ctx.waiters}
   end
 
-  defp do_submit(
-         [node_key | rest] = node_keys,
-         %RunState{} = current_run,
-         %Version{} = version,
-         stage,
-         decisions,
-         freshness_context,
-         attempt,
-         runner_client,
-         runner_opts,
-         acc,
-         queued_steps,
-         waiters
-       ) do
-    if Persistence.externally_cancelled?(current_run.id) do
-      {:error, Snapshots.cancelled_snapshot(current_run), [], Enum.map(acc, & &1.node_key)}
+  defp do_submit([node_key | rest] = node_keys, ctx) do
+    if Persistence.externally_cancelled?(ctx.current_run.id) do
+      {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
     else
-      work = stage_work(current_run, version, node_key, stage, attempt)
-      asset_step_id = work.asset_step_id
+      work = stage_work(ctx.current_run, ctx.version, node_key, ctx.stage, ctx.attempt)
+
+      entry_context =
+        Map.merge(ctx, %{
+          rest: rest,
+          node_keys: node_keys,
+          node_key: node_key,
+          work: work
+        })
 
       case ExecutionAdmission.acquire_or_wait(
-             current_run,
+             ctx.current_run,
              %{
-               asset_step_id: asset_step_id,
+               asset_step_id: work.asset_step_id,
                execution_pool: RunnerWork.execution_pool(work)
              },
-             stage: stage,
-             attempt: attempt
+             stage: ctx.stage,
+             attempt: ctx.attempt
            ) do
         {:ok, lease} ->
-          handle_admitted_entry(%{
-            rest: rest,
-            node_keys: node_keys,
-            current_run: current_run,
-            version: version,
-            stage: stage,
-            decisions: decisions,
-            freshness_context: freshness_context,
-            attempt: attempt,
-            runner_client: runner_client,
-            runner_opts: runner_opts,
-            acc: acc,
-            queued_steps: queued_steps,
-            waiters: waiters,
-            node_key: node_key,
-            work: work,
-            lease: lease
-          })
+          handle_admitted_entry(Map.put(entry_context, :lease, lease))
 
         {:waiting, waiter} ->
-          persist_or_defer_queued_entry(%{
-            queued_steps: queued_steps,
-            queue_signature:
-              queue_signature(asset_step_id, waiter.queue_reason, waiter.blocked_scope),
-            current_run: current_run,
-            work: work,
-            stage: stage,
-            attempt: attempt,
-            queue_reason: waiter.queue_reason,
-            scope: waiter.blocked_scope,
-            acc: acc,
-            node_keys: node_keys,
-            waiters: waiters,
-            waiter: waiter
-          })
+          persist_or_defer_queued_entry(
+            entry_context
+            |> Map.put(:queue_signature, queue_signature(work.asset_step_id, waiter))
+            |> Map.put(:queue_reason, waiter.queue_reason)
+            |> Map.put(:scope, waiter.blocked_scope)
+            |> Map.put(:waiter, waiter)
+          )
 
         {:error, {:run_not_admissible, run_id, _status}}
-        when run_id == current_run.id ->
-          {:error, current_run, [], Enum.map(acc, & &1.node_key)}
+        when run_id == ctx.current_run.id ->
+          {:error, ctx.current_run, [], attempted_node_keys(ctx)}
 
         {:error, reason} ->
-          failed = RunState.transition(current_run, status: :error, error: reason)
-          {:error, failed, [], Enum.map(acc, & &1.node_key)}
+          failed = RunState.transition(ctx.current_run, status: :error, error: reason)
+          {:error, failed, [], attempted_node_keys(ctx)}
       end
     end
   end
@@ -190,24 +136,20 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         queue_reason = :materialization_claim
         scope = MaterializationClaims.scope(claim)
 
-        persist_or_defer_queued_entry(%{
-          queued_steps: ctx.queued_steps,
-          queue_signature: queue_signature(ctx.work.asset_step_id, queue_reason, scope),
-          current_run: current_run,
-          work: ctx.work,
-          stage: ctx.stage,
-          attempt: ctx.attempt,
-          queue_reason: queue_reason,
-          scope: scope,
-          acc: ctx.acc,
-          node_keys: ctx.node_keys,
-          waiters: ctx.waiters
-        })
+        persist_or_defer_queued_entry(
+          ctx
+          |> Map.put(
+            :queue_signature,
+            queue_signature(ctx.work.asset_step_id, queue_reason, scope)
+          )
+          |> Map.put(:queue_reason, queue_reason)
+          |> Map.put(:scope, scope)
+        )
 
       {:error, reason} ->
         :ok = release_entry_lease(%{lease: ctx.lease})
         failed = RunState.transition(current_run, status: :error, error: reason)
-        {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
+        {:error, failed, [], attempted_node_keys(ctx)}
     end
   end
 
@@ -221,7 +163,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           reason: MaterializationClaims.skip_reason(claim)
         })
 
-      case persist_decision_result(
+      case StageClassifier.persist_decision(
              ctx.current_run,
              ctx.version,
              ctx.node_key,
@@ -230,28 +172,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
              decision
            ) do
         {:ok, skipped_run} ->
-          do_submit(
-            ctx.rest,
-            skipped_run,
-            ctx.version,
-            ctx.stage,
-            ctx.decisions,
-            ctx.freshness_context,
-            ctx.attempt,
-            ctx.runner_client,
-            ctx.runner_opts,
-            ctx.acc,
-            ctx.queued_steps,
-            ctx.waiters
-          )
+          do_submit(ctx.rest, %{ctx | current_run: skipped_run})
 
         {:error, :external_cancel} ->
-          {:error, Snapshots.cancelled_snapshot(ctx.current_run), [],
-           Enum.map(ctx.acc, & &1.node_key)}
+          {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
 
         {:error, reason} ->
           failed = RunState.transition(ctx.current_run, status: :error, error: reason)
-          {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
+          {:error, failed, [], attempted_node_keys(ctx)}
       end
     else
       failed =
@@ -260,7 +188,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           error: {:non_reusable_materialization_claim_succeeded, MaterializationClaims.key(claim)}
         )
 
-      {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
+      {:error, failed, [], attempted_node_keys(ctx)}
     end
   end
 
@@ -275,25 +203,28 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
            ctx.queue_reason,
            ctx.scope
          ) do
-      {:ok, queued_run, next_queued_steps} when ctx.acc == [] ->
+      {:ok, queued_run, next_queued_steps} when ctx.entries_rev == [] ->
         {:ok, queued_run, [], ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx)}
 
       {:ok, queued_run, next_queued_steps} ->
-        {:ok, queued_run, ctx.acc, ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx)}
+        {:ok, queued_run, entries(ctx), ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx)}
 
       {:error, :external_cancel} ->
-        {:error, Snapshots.cancelled_snapshot(ctx.current_run), [],
-         Enum.map(ctx.acc, & &1.node_key)}
+        {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
 
       {:error, reason} ->
         failed = RunState.transition(ctx.current_run, status: :error, error: reason)
-        {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
+        {:error, failed, [], attempted_node_keys(ctx)}
     end
   end
 
   defp maybe_add_waiter(%{waiters: waiters, waiter: waiter}), do: waiters ++ [waiter]
   defp maybe_add_waiter(%{waiters: waiters}), do: waiters
   defp maybe_add_waiter(_ctx), do: []
+
+  defp entries(%{entries_rev: entries_rev}), do: Enum.reverse(entries_rev)
+  defp attempted_node_keys(ctx), do: Enum.map(entries(ctx), & &1.node_key)
+  defp execution_ids(ctx), do: Enum.map(entries(ctx), & &1.execution_id)
 
   defp submit_admitted_entry(ctx) do
     asset_ref = ctx.work.asset_ref
@@ -313,47 +244,52 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     work = attach_ownership_metadata(ctx.work, ownership)
     ctx = %{ctx | work: work}
 
-    with :ok <- RunExecutionOwnership.persist(ownership) do
-      case ctx.runner_client.submit_work(work, ctx.runner_opts) do
-        {:ok, execution_id} ->
-          submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)
+    case RunExecutionOwnership.persist(ownership) do
+      :ok ->
+        submit_owned_entry(ctx, ownership, work, asset_ref)
 
-          case persist_submitted_ownership_snapshot(submitted_ownership) do
-            :ok ->
-              submit_started_entry(ctx, submitted_ownership, execution_id)
-
-            {:error, :external_cancel} ->
-              fail_submitted_entry(ctx, asset_ref, execution_id, :external_cancel)
-
-            {:error, reason} ->
-              fail_submitted_entry(ctx, asset_ref, execution_id, reason)
-          end
-
-        {:error, reason} ->
-          _ =
-            RunExecutionOwnership.mark_dispatch_failed(
-              ctx.current_run.id,
-              ownership.ownership_id,
-              reason
-            )
-
-          fail_unsubmitted_entry(ctx, asset_ref, reason)
-      end
-    else
       {:error, reason} ->
+        fail_unsubmitted_entry(ctx, asset_ref, reason)
+    end
+  end
+
+  defp submit_owned_entry(ctx, ownership, work, asset_ref) do
+    case ctx.runner_client.submit_work(work, ctx.runner_opts) do
+      {:ok, execution_id} ->
+        submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)
+
+        case persist_submitted_ownership_snapshot(submitted_ownership) do
+          :ok ->
+            submit_started_entry(ctx, submitted_ownership, execution_id)
+
+          {:error, :external_cancel} ->
+            fail_submitted_entry(ctx, asset_ref, execution_id, :external_cancel)
+
+          {:error, reason} ->
+            fail_submitted_entry(ctx, asset_ref, execution_id, reason)
+        end
+
+      {:error, reason} ->
+        _ =
+          RunExecutionOwnership.mark_dispatch_failed(
+            ctx.current_run.id,
+            ownership.ownership_id,
+            reason
+          )
+
         fail_unsubmitted_entry(ctx, asset_ref, reason)
     end
   end
 
   defp fail_unsubmitted_entry(ctx, asset_ref, reason) do
     :ok = release_entry_lease(%{lease: ctx.lease})
-    :ok = MaterializationClaims.fail(ctx.materialization_claim, reason)
-    :ok = cleanup_entries(ctx.current_run, ctx.acc, reason)
+    :ok = fail_claim(ctx, reason)
+    :ok = cleanup_entries(ctx.current_run, entries(ctx), reason)
 
     cancelled =
       cancel_execution_ids(
         ctx.current_run,
-        Enum.map(ctx.acc, & &1.execution_id),
+        execution_ids(ctx),
         %{kind: :submit_failure, asset_ref: asset_ref, error: reason},
         ctx.runner_client,
         ctx.runner_opts
@@ -367,13 +303,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   defp fail_submitted_entry(ctx, asset_ref, execution_id, :external_cancel) do
     :ok = release_entry_lease(%{lease: ctx.lease})
-    :ok = MaterializationClaims.fail(ctx.materialization_claim, :external_cancel)
-    :ok = cleanup_entries(ctx.current_run, ctx.acc, :external_cancel)
+    :ok = fail_claim(ctx, :external_cancel)
+    :ok = cleanup_entries(ctx.current_run, entries(ctx), :external_cancel)
 
     {cancelled, cancel_results} =
       cancel_execution_ids_with_results(
         ctx.current_run,
-        Enum.map(ctx.acc, & &1.execution_id) ++ [execution_id],
+        execution_ids(ctx) ++ [execution_id],
         %{kind: :external_cancel, asset_ref: asset_ref, stage: ctx.stage, attempt: ctx.attempt},
         ctx.runner_client,
         ctx.runner_opts
@@ -382,18 +318,18 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     persist_submit_persist_failure_outcome(ctx, execution_id, cancel_results, :external_cancel)
 
     {:error, Snapshots.cancelled_snapshot(cancelled), [],
-     Enum.map(ctx.acc, & &1.node_key) ++ [ctx.node_key]}
+     attempted_node_keys(ctx) ++ [ctx.node_key]}
   end
 
   defp fail_submitted_entry(ctx, asset_ref, execution_id, reason) do
     :ok = release_entry_lease(%{lease: ctx.lease})
-    :ok = MaterializationClaims.fail(ctx.materialization_claim, reason)
-    :ok = cleanup_entries(ctx.current_run, ctx.acc, reason)
+    :ok = fail_claim(ctx, reason)
+    :ok = cleanup_entries(ctx.current_run, entries(ctx), reason)
 
     {cancelled, cancel_results} =
       cancel_execution_ids_with_results(
         ctx.current_run,
-        Enum.map(ctx.acc, & &1.execution_id) ++ [execution_id],
+        execution_ids(ctx) ++ [execution_id],
         %{kind: :step_submitted_persist_failed, asset_ref: asset_ref, error: reason},
         ctx.runner_client,
         ctx.runner_opts
@@ -420,13 +356,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
            execution_pool: RunnerWork.execution_pool(ctx.work)
          }) do
       :ok ->
-        {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
+        {:error, failed, [], attempted_node_keys(ctx)}
 
       {:error, :external_cancel} ->
-        {:error, Snapshots.cancelled_snapshot(failed), [], Enum.map(ctx.acc, & &1.node_key)}
+        {:error, Snapshots.cancelled_snapshot(failed), [], attempted_node_keys(ctx)}
 
       {:error, _persist_reason} ->
-        {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
+        {:error, failed, [], attempted_node_keys(ctx)}
     end
   end
 
@@ -458,8 +394,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
       {:error, reason} ->
         :ok = release_entry_lease(%{lease: ctx.lease})
-        :ok = MaterializationClaims.fail(ctx.materialization_claim, reason)
-        :ok = cleanup_entries(ctx.current_run, ctx.acc, reason)
+        :ok = fail_claim(ctx, reason)
+        :ok = cleanup_entries(ctx.current_run, entries(ctx), reason)
 
         cancelled =
           cancel_execution_ids(
@@ -473,7 +409,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         failed =
           RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
 
-        {:error, failed, [], Enum.map(ctx.acc, & &1.node_key) ++ [ctx.node_key]}
+        {:error, failed, [], attempted_node_keys(ctx) ++ [ctx.node_key]}
     end
   end
 
@@ -516,25 +452,16 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
         }
 
-        do_submit(
-          ctx.rest,
-          updated_run,
-          ctx.version,
-          ctx.stage,
-          ctx.decisions,
-          ctx.freshness_context,
-          ctx.attempt,
-          ctx.runner_client,
-          ctx.runner_opts,
-          ctx.acc ++ [entry],
-          ctx.queued_steps,
-          ctx.waiters
-        )
+        do_submit(ctx.rest, %{
+          ctx
+          | current_run: updated_run,
+            entries_rev: [entry | ctx.entries_rev]
+        })
 
       {:error, :external_cancel} ->
         :ok = release_entry_lease(%{lease: ctx.lease})
-        :ok = MaterializationClaims.fail(ctx.materialization_claim, :external_cancel)
-        :ok = cleanup_entries(ctx.current_run, ctx.acc, :external_cancel)
+        :ok = fail_claim(ctx, :external_cancel)
+        :ok = cleanup_entries(ctx.current_run, entries(ctx), :external_cancel)
 
         cancelled =
           cancel_execution_ids(
@@ -551,12 +478,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           )
 
         {:error, Snapshots.cancelled_snapshot(cancelled), [],
-         Enum.map(ctx.acc, & &1.node_key) ++ [ctx.node_key]}
+         attempted_node_keys(ctx) ++ [ctx.node_key]}
 
       {:error, reason} ->
         :ok = release_entry_lease(%{lease: ctx.lease})
-        :ok = MaterializationClaims.fail(ctx.materialization_claim, reason)
-        :ok = cleanup_entries(ctx.current_run, ctx.acc, reason)
+        :ok = fail_claim(ctx, reason)
+        :ok = cleanup_entries(ctx.current_run, entries(ctx), reason)
 
         cancelled =
           cancel_execution_ids(
@@ -570,7 +497,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         failed =
           RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
 
-        {:error, failed, [], Enum.map(ctx.acc, & &1.node_key) ++ [ctx.node_key]}
+        {:error, failed, [], attempted_node_keys(ctx) ++ [ctx.node_key]}
     end
   end
 
@@ -648,84 +575,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     {asset_step_id, queue_reason, scope_kind, scope_key}
   end
 
-  defp persist_decision_result(
-         %RunState{} = run_state,
-         %Version{} = version,
-         node_key,
-         stage,
-         status,
-         decision
-       ) do
-    node = Map.fetch!(run_state.plan.nodes, node_key)
-    now = DateTime.utc_now()
-    freshness_key = Map.get(decision, :freshness_key, Favn.Freshness.Key.latest())
-    asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, node.ref)
-
-    result =
-      NodeResult.new(%{
-        node_key: node_key,
-        ref: node.ref,
-        window: node.window,
-        stage: stage,
-        execution_pool: effective_execution_pool(run_state, node_key),
-        status: status,
-        started_at: now,
-        finished_at: now,
-        duration_ms: 0,
-        reason: decision.reason,
-        freshness_key: freshness_key,
-        input_versions: [],
-        attempt_count: 0,
-        max_attempts: run_state.max_attempts,
-        meta: decision_metadata(decision),
-        error: if(status == :blocked, do: decision.reason, else: nil),
-        asset_step_id: asset_step_id
-      })
-
-    next_run = put_node_result(run_state, result)
-    event_type = if status == :skipped_fresh, do: :step_skipped_fresh, else: :step_blocked
-
-    case Persistence.persist_run_step(next_run, event_type, %{
-           asset_ref: node.ref,
-           node_key: node_key,
-           window: node.window,
-           asset_step_id: asset_step_id,
-           stage: stage,
-           execution_pool: effective_execution_pool(run_state, node_key),
-           reason: decision.reason,
-           freshness_key: freshness_key
-         }) do
-      :ok ->
-        case StateWriter.put_attempt_state(
-               next_run,
-               version,
-               node_key,
-               status,
-               freshness_key,
-               decision
-             ) do
-          {:ok, _state} -> {:ok, next_run}
-          {:error, reason} -> {:error, {:freshness_state_write_failed, reason}}
-        end
-
-      {:error, :external_cancel} ->
-        {:error, :external_cancel}
-    end
+  defp queue_signature(asset_step_id, waiter) do
+    queue_signature(asset_step_id, waiter.queue_reason, waiter.blocked_scope)
   end
-
-  defp decision_metadata(decision) when is_map(decision),
-    do: Map.drop(decision, [:decision, :node_key, :reason, :freshness_key])
-
-  defp put_node_result(%RunState{} = run_state, %NodeResult{} = result) do
-    node_results = existing_node_results(run_state) ++ [result]
-    result_map = Map.merge(run_state.result || %{}, %{node_results: node_results})
-    RunState.transition(run_state, result: result_map)
-  end
-
-  defp existing_node_results(%RunState{result: %{node_results: results}}) when is_list(results),
-    do: results
-
-  defp existing_node_results(_run_state), do: []
 
   defp stage_work(%RunState{} = run_state, %Version{} = version, node_key, stage, attempt) do
     {:ok, %{work: work}} =
@@ -735,26 +587,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
     work
   end
-
-  defp effective_execution_pool(%RunState{} = run_state, node_key) do
-    node_pool =
-      case run_state.plan do
-        %Favn.Plan{nodes: nodes} when is_map(nodes) ->
-          nodes |> Map.get(node_key, %{}) |> Map.get(:execution_pool)
-
-        _other ->
-          nil
-      end
-
-    node_pool || pipeline_default_execution_pool(run_state)
-  end
-
-  defp pipeline_default_execution_pool(%RunState{metadata: %{pipeline_execution_policy: policy}})
-       when is_map(policy) do
-    Map.get(policy, :execution_pool) || Map.get(policy, "execution_pool")
-  end
-
-  defp pipeline_default_execution_pool(%RunState{}), do: nil
 
   defp with_inflight_execution(%RunState{} = run_state, execution_id, metadata) do
     ids =
@@ -782,6 +614,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     run_state
     |> RunWorkSet.from_entries(entries)
     |> RunWorkSet.cleanup_all(reason)
+  end
+
+  defp fail_claim(ctx, reason) do
+    RunWorkSet.fail_entry_claim(%{materialization_claim: ctx.materialization_claim}, reason)
   end
 
   defp release_entry_lease(entry), do: RunWorkSet.release_entry(entry)
@@ -839,6 +675,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp decision_freshness_key(decisions, node_key) when is_map(decisions) do
     decisions
     |> Map.get(node_key, %{})
-    |> Map.get(:freshness_key, Favn.Freshness.Key.latest())
+    |> Map.get(:freshness_key, Key.latest())
   end
 end

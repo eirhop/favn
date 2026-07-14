@@ -155,6 +155,79 @@ defmodule FavnOrchestrator.Backfill.RepairTest do
              FavnOrchestrator.repair_backfill_projections(apply: true)
   end
 
+  test "backfill scoped repair supports asset parents and persisted string-keyed children" do
+    anchor = anchor(~U[2026-04-30 00:00:00Z])
+    parent = asset_parent_run("asset_backfill_repair")
+
+    child =
+      RunState.new(
+        id: "asset_backfill_child",
+        manifest_version_id: "mv_backfill_repair",
+        manifest_content_hash: "hash_backfill_repair",
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        target_refs: [{MyApp.Assets.Gold, :asset}],
+        trigger: %{
+          "kind" => "backfill",
+          "backfill_run_id" => parent.id,
+          "pipeline_module" => MyApp.Assets.Gold,
+          "window_key" => WindowKey.encode(anchor.key)
+        },
+        metadata: %{
+          "selected_window" => %{
+            "kind" => "day",
+            "start_at" => anchor.start_at,
+            "end_at" => anchor.end_at,
+            "timezone" => anchor.timezone
+          }
+        },
+        submit_kind: :manual,
+        parent_run_id: parent.id,
+        root_run_id: parent.id,
+        lineage_depth: 1
+      )
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          "asset_results" => [
+            %{
+              "ref" => {MyApp.Assets.Gold, :asset},
+              "status" => "ok",
+              "metadata" => %{"rows_written" => 7}
+            }
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(child)
+
+    assert {:ok, report} =
+             FavnOrchestrator.repair_backfill_projections(
+               apply: true,
+               backfill_run_id: parent.id
+             )
+
+    assert report.counts.backfill_windows == 1
+    assert report.counts.asset_window_states == 0
+
+    assert {:ok, window} =
+             Storage.get_backfill_window(
+               parent.id,
+               MyApp.Assets.Gold,
+               WindowKey.encode(anchor.key)
+             )
+
+    assert window.status == :ok
+    assert window.child_run_id == child.id
+  end
+
+  test "repair rejects string pipeline modules instead of scanning runs to create atoms" do
+    assert {:error, :invalid_repair_scope} =
+             FavnOrchestrator.repair_backfill_projections(
+               pipeline_module: "Elixir.MyApp.Pipelines.Daily"
+             )
+  end
+
   defp parent_run(run_id) do
     RunState.new(
       id: run_id,
@@ -165,6 +238,21 @@ defmodule FavnOrchestrator.Backfill.RepairTest do
       trigger: %{kind: :backfill, pipeline_module: MyApp.Pipelines.Daily},
       metadata: %{pipeline_submit_ref: MyApp.Pipelines.Daily},
       submit_kind: :backfill_pipeline
+    )
+    |> Map.put(:status, :running)
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp asset_parent_run(run_id) do
+    RunState.new(
+      id: run_id,
+      manifest_version_id: "mv_backfill_repair",
+      manifest_content_hash: "hash_backfill_repair",
+      asset_ref: {MyApp.Assets.Gold, :asset},
+      target_refs: [{MyApp.Assets.Gold, :asset}],
+      trigger: %{kind: :backfill, asset_ref: {MyApp.Assets.Gold, :asset}},
+      metadata: %{"backfill" => %{}},
+      submit_kind: :backfill_asset
     )
     |> Map.put(:status, :running)
     |> RunState.with_snapshot_hash()

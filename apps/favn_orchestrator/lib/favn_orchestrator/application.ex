@@ -83,10 +83,13 @@ defmodule FavnOrchestrator.Application do
     api_opts = Application.get_env(:favn_orchestrator, :api_server, [])
 
     if Keyword.get(api_opts, :enabled, false) do
-      [
-        {Bandit,
-         [scheme: :http, plug: FavnOrchestrator.API.Router] ++ api_server_options(api_opts)}
-      ]
+      case APIConfig.server_options(api_opts) do
+        {:ok, server_options} ->
+          [{Bandit, [scheme: :http, plug: FavnOrchestrator.API.Router] ++ server_options}]
+
+        {:error, reason} ->
+          raise ArgumentError, "invalid orchestrator API server config: #{inspect(reason)}"
+      end
     else
       []
     end
@@ -96,19 +99,5 @@ defmodule FavnOrchestrator.Application do
     :favn_orchestrator
     |> Application.get_env(:api_server, [])
     |> Keyword.get(:enabled, false)
-  end
-
-  defp api_server_options(api_opts) do
-    case APIConfig.bind_ip(api_opts) do
-      {:ok, bind_ip} ->
-        bind_ip
-
-      {:error, reason} ->
-        raise ArgumentError, "invalid orchestrator API bind config: #{inspect(reason)}"
-    end
-    |> case do
-      nil -> [port: Keyword.get(api_opts, :port, 4101)]
-      bind_ip -> [port: Keyword.get(api_opts, :port, 4101), ip: bind_ip]
-    end
   end
 end

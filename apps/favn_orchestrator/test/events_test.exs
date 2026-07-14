@@ -38,9 +38,12 @@ defmodule FavnOrchestrator.EventsTest do
     assert event.run_id == run.id
     assert event.sequence == 1
     assert event.event_type == :run_created
+    assert is_integer(event.global_sequence)
+    assert event.global_sequence > 0
     assert event_again.run_id == run.id
     assert event_again.sequence == 1
     assert event_again.event_type == :run_created
+    assert event_again.global_sequence == event.global_sequence
   end
 
   test "unsubscribe helpers stop receiving events" do

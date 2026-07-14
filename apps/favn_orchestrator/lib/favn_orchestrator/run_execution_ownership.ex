@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   mechanics and only reports execution facts.
   """
 
+  alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
 
@@ -127,18 +128,6 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
     }
   end
 
-  @doc "Returns active ownership records persisted in the storage ledger."
-  @spec active(RunState.t()) :: [t()]
-  def active(%RunState{id: run_id}), do: active(run_id)
-
-  @spec active(String.t()) :: [t()]
-  def active(run_id) when is_binary(run_id) do
-    case Storage.list_active_execution_ownerships(run_id) do
-      {:ok, ownerships} -> ownerships
-      {:error, _reason} -> []
-    end
-  end
-
   @doc "Returns true when an ownership record still represents active runner work."
   @spec active?(t()) :: boolean()
   def active?(%__MODULE__{status: status}), do: status in @active_statuses
@@ -154,25 +143,6 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
 
   @spec fetch_active(RunState.t()) :: {:ok, [t()]} | {:error, term()}
   def fetch_active(%RunState{id: run_id}), do: fetch_active(run_id)
-
-  @doc "Returns known active runner execution ids for a run."
-  @spec active_execution_ids(RunState.t()) :: [String.t()]
-  def active_execution_ids(%RunState{} = run_state) do
-    run_state
-    |> active()
-    |> Enum.map(& &1.runner_execution_id)
-    |> Enum.filter(&is_binary/1)
-    |> Enum.uniq()
-  end
-
-  @spec active_execution_ids(String.t()) :: [String.t()]
-  def active_execution_ids(run_id) when is_binary(run_id) do
-    run_id
-    |> active()
-    |> Enum.map(& &1.runner_execution_id)
-    |> Enum.filter(&is_binary/1)
-    |> Enum.uniq()
-  end
 
   @doc "Persists one ownership record in the durable storage ledger."
   @spec persist(t()) :: :ok | {:error, term()}
@@ -206,7 +176,7 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   @doc "Marks a dispatch intent as failed before runner ownership was established."
   @spec dispatch_failed(t(), term()) :: t()
   def dispatch_failed(%__MODULE__{} = ownership, reason) do
-    %{ownership | status: :dispatch_failed, last_error: reason} |> touch()
+    %{ownership | status: :dispatch_failed, last_error: safe_diagnostic(reason)} |> touch()
   end
 
   @doc "Marks matching pre-submit ownership records as failed."
@@ -267,11 +237,18 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   def persist_cancel_outcomes(run_id, results, reason)
       when is_binary(run_id) and is_list(results) do
     with {:ok, active} <- fetch_active(run_id) do
-      results
-      |> Enum.flat_map(fn result ->
-        execution_id = Map.get(result, :execution_id)
+      active_by_execution_id = Enum.group_by(active, & &1.runner_execution_id)
 
-        Enum.filter(active, &(&1.runner_execution_id == execution_id))
+      results
+      |> Enum.reduce(%{}, fn result, acc ->
+        case Map.get(result, :execution_id) do
+          execution_id when is_binary(execution_id) -> Map.put(acc, execution_id, result)
+          _invalid -> acc
+        end
+      end)
+      |> Enum.flat_map(fn {execution_id, result} ->
+        active_by_execution_id
+        |> Map.get(execution_id, [])
         |> Enum.map(&cancelled(&1, result, reason))
       end)
       |> persist_all()
@@ -282,6 +259,8 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   @spec persist_unknown_without_execution_id(String.t(), term()) :: :ok | {:error, term()}
   def persist_unknown_without_execution_id(run_id, reason) when is_binary(run_id) do
     with {:ok, ownerships} <- fetch_active(run_id) do
+      reason = safe_diagnostic(reason)
+
       ownerships
       |> Enum.filter(&is_nil(&1.runner_execution_id))
       |> Enum.map(fn ownership ->
@@ -302,129 +281,43 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   @spec fetch_all(String.t()) :: {:ok, [t()]} | {:error, term()}
   def fetch_all(run_id) when is_binary(run_id), do: Storage.list_execution_ownerships(run_id)
 
-  @doc "Returns all durable ownership records for a run."
-  @spec list(RunState.t()) :: [t()]
-  def list(%RunState{id: run_id}), do: list(run_id)
+  @doc false
+  @spec valid_status?(term()) :: boolean()
+  def valid_status?(status), do: status in @statuses
 
-  @spec list(String.t()) :: [t()]
-  def list(run_id) when is_binary(run_id) do
-    case Storage.list_execution_ownerships(run_id) do
-      {:ok, ownerships} -> ownerships
-      {:error, _reason} -> []
+  @doc false
+  @spec valid_cancel_status?(term()) :: boolean()
+  def valid_cancel_status?(nil), do: true
+  def valid_cancel_status?(status), do: status in @cancel_statuses
+
+  @doc false
+  @spec normalize_status(term()) :: {:ok, status()} | {:error, term()}
+  def normalize_status(nil), do: {:ok, :dispatch_intent}
+  def normalize_status(status) when status in @statuses, do: {:ok, status}
+
+  def normalize_status(status) when is_binary(status) do
+    case Enum.find(@statuses, &(Atom.to_string(&1) == status)) do
+      nil -> {:error, {:invalid_execution_ownership_field, :status}}
+      normalized -> {:ok, normalized}
     end
   end
 
-  @doc "Returns a JSON-safe-ish map for run-event data."
-  @spec event_data(t()) :: map()
-  def event_data(%__MODULE__{} = ownership) do
-    ownership
-    |> to_map()
-    |> Map.take([
-      :ownership_id,
-      :asset_step_id,
-      :node_key,
-      :asset_ref,
-      :stage,
-      :attempt,
-      :execution_pool,
-      :runner_execution_id,
-      :runner_ref,
-      :dispatch_id,
-      :deadline_at,
-      :cancel_requested_at,
-      :cancel_outcome,
-      :status,
-      :cancel_status,
-      :last_error
-    ])
-  end
+  def normalize_status(_status), do: {:error, {:invalid_execution_ownership_field, :status}}
 
-  @doc "Encodes an ownership record as a storage map."
-  @spec to_map(t()) :: map()
-  def to_map(%__MODULE__{} = ownership), do: to_metadata(ownership)
+  @doc false
+  @spec normalize_cancel_status(term()) :: {:ok, cancel_status() | nil} | {:error, term()}
+  def normalize_cancel_status(nil), do: {:ok, nil}
+  def normalize_cancel_status(status) when status in @cancel_statuses, do: {:ok, status}
 
-  @doc "Decodes one ownership record from a storage map."
-  @spec from_map(map() | t()) :: {:ok, t()} | {:error, term()}
-  def from_map(%__MODULE__{} = ownership), do: {:ok, ownership}
-
-  def from_map(%{} = map) do
-    case from_metadata(map) do
-      [%__MODULE__{} = ownership] -> {:ok, ownership}
-      [] -> {:error, :invalid_execution_ownership}
+  def normalize_cancel_status(status) when is_binary(status) do
+    case Enum.find(@cancel_statuses, &(Atom.to_string(&1) == status)) do
+      nil -> {:error, {:invalid_execution_ownership_field, :cancel_status}}
+      normalized -> {:ok, normalized}
     end
   end
 
-  def from_map(_value), do: {:error, :invalid_execution_ownership}
-
-  defp from_metadata(%{} = map) do
-    status =
-      known_atom(Map.get(map, :status, Map.get(map, "status")), @statuses, :dispatch_intent)
-
-    cancel_status =
-      known_atom(
-        Map.get(map, :cancel_status, Map.get(map, "cancel_status")),
-        @cancel_statuses,
-        nil
-      )
-
-    with ownership_id when is_binary(ownership_id) <-
-           Map.get(map, :ownership_id, Map.get(map, "ownership_id")),
-         run_id when is_binary(run_id) <- Map.get(map, :run_id, Map.get(map, "run_id")),
-         asset_step_id when is_binary(asset_step_id) <-
-           Map.get(map, :asset_step_id, Map.get(map, "asset_step_id")) do
-      [
-        %__MODULE__{
-          ownership_id: ownership_id,
-          run_id: run_id,
-          asset_step_id: asset_step_id,
-          node_key: value(map, :node_key),
-          asset_ref: value(map, :asset_ref),
-          stage: value(map, :stage),
-          attempt: value(map, :attempt),
-          execution_pool: value(map, :execution_pool),
-          runner_execution_id: value(map, :runner_execution_id),
-          runner_ref: value(map, :runner_ref),
-          dispatch_id: value(map, :dispatch_id) || ownership_id,
-          deadline_at: optional_datetime(value(map, :deadline_at)),
-          cancel_requested_at: optional_datetime(value(map, :cancel_requested_at)),
-          cancel_outcome: value(map, :cancel_outcome),
-          status: status,
-          cancel_status: cancel_status,
-          cancel_reason: value(map, :cancel_reason),
-          last_error: value(map, :last_error),
-          inserted_at: datetime(value(map, :inserted_at)),
-          updated_at: datetime(value(map, :updated_at))
-        }
-      ]
-    else
-      _ -> []
-    end
-  end
-
-  defp to_metadata(%__MODULE__{} = ownership) do
-    %{
-      ownership_id: ownership.ownership_id,
-      run_id: ownership.run_id,
-      asset_step_id: ownership.asset_step_id,
-      node_key: ownership.node_key,
-      asset_ref: ownership.asset_ref,
-      stage: ownership.stage,
-      attempt: ownership.attempt,
-      execution_pool: ownership.execution_pool,
-      runner_execution_id: ownership.runner_execution_id,
-      runner_ref: ownership.runner_ref,
-      dispatch_id: ownership.dispatch_id,
-      deadline_at: ownership.deadline_at,
-      cancel_requested_at: ownership.cancel_requested_at,
-      cancel_outcome: ownership.cancel_outcome,
-      status: ownership.status,
-      cancel_status: ownership.cancel_status,
-      cancel_reason: ownership.cancel_reason,
-      last_error: ownership.last_error,
-      inserted_at: ownership.inserted_at,
-      updated_at: ownership.updated_at
-    }
-  end
+  def normalize_cancel_status(_status),
+    do: {:error, {:invalid_execution_ownership_field, :cancel_status}}
 
   @doc "Maps a runner cancellation dispatch result to an ownership cancellation status."
   @spec cancel_outcome_status(map()) :: cancel_status()
@@ -451,8 +344,8 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
             :reason_class,
             :correlation_id
           ]),
-        cancel_reason: reason,
-        last_error: Map.get(result, :error)
+        cancel_reason: safe_diagnostic(reason),
+        last_error: safe_diagnostic(Map.get(result, :error))
     }
     |> touch()
   end
@@ -482,33 +375,14 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
     Enum.join([run_id, asset_step_id, attempt || 1], ":")
   end
 
-  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+  defp touch(%__MODULE__{} = ownership), do: %{ownership | updated_at: DateTime.utc_now()}
 
-  defp known_atom(nil, _allowed, default), do: default
+  defp safe_diagnostic(nil), do: nil
 
-  defp known_atom(value, allowed, default) when is_atom(value) do
-    if value in allowed, do: value, else: default
-  end
-
-  defp known_atom(value, allowed, default) when is_binary(value) do
-    Enum.find(allowed, default, &(Atom.to_string(&1) == value))
-  end
-
-  defp known_atom(_value, _allowed, default), do: default
-
-  defp datetime(%DateTime{} = value), do: value
-
-  defp datetime(value) when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, datetime, _offset} -> datetime
-      _ -> DateTime.utc_now()
+  defp safe_diagnostic(value) do
+    case Redaction.redact_operational_bounded(%{error: value}) do
+      %{error: safe} -> safe
+      _other -> "[REDACTED]"
     end
   end
-
-  defp datetime(_value), do: DateTime.utc_now()
-
-  defp optional_datetime(nil), do: nil
-  defp optional_datetime(value), do: datetime(value)
-
-  defp touch(%__MODULE__{} = ownership), do: %{ownership | updated_at: DateTime.utc_now()}
 end

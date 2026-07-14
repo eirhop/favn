@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Operator.Lineage.Error do
   @type code ::
           :active_manifest_not_found
           | :manifest_not_found
+          | :invalid_request
           | :invalid_scope
           | :node_not_found
           | :query_timeout
