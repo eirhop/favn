@@ -9,8 +9,10 @@ defmodule FavnOrchestrator.MaterializationClaims do
 
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
+  alias Favn.Freshness.Key, as: FreshnessKey
   alias Favn.Manifest.Version
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.Freshness.Staleness
   alias FavnOrchestrator.MaterializationClaim.Identity
   alias FavnOrchestrator.RunState
@@ -147,7 +149,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
     if reusable_success?(decisions, node_key) do
       base
     else
-      node_token = node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+      node_token = AssetStepIdentity.node_fingerprint(node_key)
       Enum.join([base, run_state.id, node_token], ":")
     end
   end
@@ -161,7 +163,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
   defp decision_freshness_key(decisions, node_key) when is_map(decisions) do
     decisions
     |> Map.get(node_key, %{})
-    |> Map.get(:freshness_key, Favn.Freshness.Key.latest())
+    |> Map.get(:freshness_key, FreshnessKey.latest())
   end
 
   defp ttl_ms(%RunState{timeout_ms: timeout_ms}) when is_integer(timeout_ms) and timeout_ms > 0,

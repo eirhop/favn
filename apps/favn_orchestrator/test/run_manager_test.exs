@@ -8,13 +8,15 @@ defmodule FavnOrchestrator.RunManagerTest do
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
   alias FavnOrchestrator
-  alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.AssetStepIdentity
+  alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.RunManager.SubmissionBuilder
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
+  alias FavnOrchestrator.TestSupport.Runtime
 
   defmodule StorageAdapterDelegate do
     @moduledoc false
@@ -1019,6 +1021,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
 
+    Runtime.stop_active_runs()
     Memory.reset()
 
     on_exit(fn ->
@@ -1037,6 +1040,7 @@ defmodule FavnOrchestrator.RunManagerTest do
         Application.put_env(:favn_orchestrator, :metrics_hook, previous_metrics_hook)
       end
 
+      Runtime.stop_active_runs()
       Memory.reset()
     end)
 
@@ -1149,6 +1153,92 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert {:error, :invalid_run_metadata} =
              FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, metadata: [])
+  end
+
+  test "all submission builders reject malformed metadata and option lists explicitly" do
+    version = manifest_version("mv_invalid_submission_options")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:error, :invalid_run_metadata} =
+             FavnOrchestrator.submit_pipeline_run(
+               [{MyApp.Assets.Gold, :asset}],
+               metadata: []
+             )
+
+    assert {:error, :invalid_run_metadata} =
+             FavnOrchestrator.submit_pipeline_run(MyApp.Pipelines.Daily, metadata: [])
+
+    assert {:error, :invalid_options} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, [:not_keyword])
+
+    assert {:error, :invalid_options} =
+             FavnOrchestrator.submit_pipeline_run(
+               [{MyApp.Assets.Gold, :asset}],
+               [:not_keyword]
+             )
+  end
+
+  test "rerun validates lifecycle and explicit dependency overrides" do
+    version = manifest_version("mv_rerun_boundary_validation")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    pending =
+      RunState.new(
+        id: "run_pending_rerun_boundary",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        target_refs: [{MyApp.Assets.Gold, :asset}],
+        plan: single_node_plan({MyApp.Assets.Gold, :asset})
+      )
+
+    failed =
+      pending
+      |> Map.put(:id, "run_failed_rerun_boundary")
+      |> RunState.transition(status: :error)
+
+    assert :ok = Storage.put_run(pending)
+    assert :ok = Storage.put_run(failed)
+
+    assert {:error, {:run_not_terminal, :pending}} = FavnOrchestrator.rerun(pending.id)
+
+    assert {:error, :invalid_dependencies} =
+             FavnOrchestrator.rerun(failed.id, dependencies: :invalid)
+
+    assert {:error, :invalid_options} = FavnOrchestrator.rerun(failed.id, [:not_keyword])
+  end
+
+  test "rerun recognizes string-keyed persisted pipeline metadata" do
+    version = manifest_version("mv_string_pipeline_rerun")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    source =
+      RunState.new(
+        id: "run_string_pipeline_rerun",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        target_refs: [{MyApp.Assets.Gold, :asset}],
+        plan: single_node_plan({MyApp.Assets.Gold, :asset}),
+        submit_kind: :rerun,
+        metadata: %{
+          "replay_submit_kind" => "pipeline",
+          "pipeline_target_refs" => [{MyApp.Assets.Gold, :asset}],
+          "pipeline_dependencies" => "none",
+          "pipeline_submit_ref" => MyApp.Pipelines.Daily
+        }
+      )
+      |> RunState.transition(status: :error)
+
+    assert :ok = Storage.put_run(source)
+
+    assert {:ok, submission} =
+             FavnOrchestrator.RunManager.SubmissionBuilder.rerun(source.id, [])
+
+    assert submission.run_state.metadata.replay_submit_kind == :pipeline
+    assert submission.run_state.target_refs == [{MyApp.Assets.Gold, :asset}]
+    assert submission.run_state.plan.dependencies == :none
   end
 
   test "asset preparation failures emit run submission failure events" do
@@ -2342,6 +2432,31 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert reason.reason[:reason] == :manual_cancel
   end
 
+  test "bounds and redacts cancellation metadata before persistence" do
+    version = manifest_version("mv_cancel_metadata_boundary")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    running = run_state("run_cancel_metadata_boundary", version, :running)
+    assert :ok = Storage.put_run(running)
+
+    assert :ok =
+             FavnOrchestrator.cancel_run(running.id, %{
+               requested_by: :operator,
+               reason: %{
+                 token: "super-secret",
+                 message: String.duplicate("x", 10_000),
+                 values: Enum.to_list(1..100)
+               }
+             })
+
+    assert {:ok, cancelled} = Storage.get_run(running.id)
+    safe_reason = cancelled.metadata.cancel_reason.reason
+
+    assert safe_reason.token == "[REDACTED]"
+    assert byte_size(safe_reason.message) == 8_192
+    assert length(safe_reason.values) == 50
+  end
+
   test "does not terminalize cancellation when runner rejects stale execution id" do
     version = manifest_version("mv_cancel_stale_execution")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -2652,7 +2767,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert {:ok, failed} = await_terminal_run(run_id)
     assert failed.status == :error
     assert failed.error.type == :run_server_down
-    assert failed.error.exit_reason == ":killed"
+    assert failed.error.exit_reason["type"] == "killed"
     assert [%{status: :cancel_acknowledged}] = failed.error.runner_cleanup
 
     assert [{execution_id, _reason}] = Agent.get(cancel_log, & &1)
@@ -2846,6 +2961,30 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert {:ok, persisted} = Storage.get_run(running.id)
     assert persisted.status == :running
     assert persisted.error == nil
+  end
+
+  test "run-server startup failure terminalizes the persisted admission" do
+    version = manifest_version("mv_run_server_start_failure")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, submission} =
+             SubmissionBuilder.asset({MyApp.Assets.Gold, :asset},
+               run_id: "run_server_start_failure",
+               dependencies: :none
+             )
+
+    invalid_submission = %{submission | manifest_version: nil}
+
+    assert {:error, {:run_server_start_failed, %{"kind" => "error"}}} =
+             FavnOrchestrator.RunManager.admit_prepared_submission(invalid_submission)
+
+    assert {:ok, failed} = Storage.get_run(submission.run_state.id)
+    assert failed.status == :error
+    assert failed.error.type == :run_server_start_failed
+
+    assert {:ok, events} = Storage.list_run_events(failed.id)
+    assert Enum.map(events, & &1.event_type) == [:run_created, :run_failed]
   end
 
   test "run manager admission timeout reports unknown outcome and may still commit" do

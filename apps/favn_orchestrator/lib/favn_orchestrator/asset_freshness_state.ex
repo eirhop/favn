@@ -70,6 +70,13 @@ defmodule FavnOrchestrator.AssetFreshnessState do
 
   @required_keys @enforce_keys
   @statuses [:ok, :error, :cancelled, :timed_out, :skipped_fresh, :blocked, :running]
+  @optional_binary_fields [
+    :freshness_version,
+    :latest_success_run_id,
+    :latest_attempt_run_id,
+    :manifest_version_id,
+    :manifest_content_hash
+  ]
 
   @spec new(map() | keyword()) :: {:ok, t()} | {:error, term()}
   def new(attrs) when is_map(attrs) or is_list(attrs) do
@@ -78,6 +85,7 @@ defmodule FavnOrchestrator.AssetFreshnessState do
     with {:ok, attrs} <- normalize_attrs(attrs),
          :ok <- require_keys(attrs, @required_keys),
          :ok <- validate_identity(attrs),
+         :ok <- validate_optional_binaries(attrs),
          :ok <- validate_input_versions(Map.get(attrs, :input_versions, %{})),
          :ok <- validate_metadata(Map.get(attrs, :metadata, %{})) do
       {:ok, struct(__MODULE__, Map.merge(%{input_versions: %{}, metadata: %{}}, attrs))}
@@ -176,4 +184,14 @@ defmodule FavnOrchestrator.AssetFreshnessState do
 
   defp validate_metadata(value) when is_map(value), do: :ok
   defp validate_metadata(value), do: {:error, {:invalid_metadata, value}}
+
+  defp validate_optional_binaries(attrs) do
+    Enum.reduce_while(@optional_binary_fields, :ok, fn field, :ok ->
+      case Map.get(attrs, field) do
+        nil -> {:cont, :ok}
+        value when is_binary(value) and value != "" -> {:cont, :ok}
+        value -> {:halt, {:error, {:invalid_asset_freshness_field, field, value}}}
+      end
+    end)
+  end
 end

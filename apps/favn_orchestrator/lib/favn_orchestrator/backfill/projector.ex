@@ -19,6 +19,7 @@ defmodule FavnOrchestrator.Backfill.Projector do
   @terminal_events [:run_finished, :run_failed, :run_cancelled, :run_timed_out]
   @terminal_run_statuses [:ok, :partial, :error, :cancelled, :timed_out]
 
+  @doc "Projects a durable child-run transition into the backfill read models."
   @spec project_transition(RunState.t(), atom(), map()) :: :ok | {:error, term()}
   def project_transition(%RunState{} = run_state, event_type, data \\ %{})
       when is_atom(event_type) and is_map(data) do
@@ -65,18 +66,25 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp project_running(context, %RunState{} = run_state) do
     now = run_state.updated_at || DateTime.utc_now()
 
-    with {:ok, window} <- fetch_window(context),
-         updated <- %{
-           window
-           | status: :running,
-             child_run_id: window.child_run_id || run_state.id,
-             latest_attempt_run_id: run_state.id,
-             attempt_count: next_attempt_count(window, run_state.id),
-             started_at: window.started_at || now,
-             updated_at: now
-         },
-         {:ok, progress} <- Storage.apply_backfill_child_projection(updated, []) do
-      maybe_project_parent(progress)
+    with {:ok, window} <- fetch_window(context) do
+      if terminal_projection_for_same_attempt?(window, run_state.id) do
+        :ok
+      else
+        updated = %{
+          window
+          | status: :running,
+            child_run_id: window.child_run_id || run_state.id,
+            latest_attempt_run_id: run_state.id,
+            attempt_count: next_attempt_count(window, run_state.id),
+            started_at: window.started_at || now,
+            finished_at: nil,
+            updated_at: now
+        }
+
+        with {:ok, progress} <- Storage.apply_backfill_child_projection(updated, []) do
+          maybe_project_parent(progress)
+        end
+      end
     end
   end
 
@@ -255,7 +263,7 @@ defmodule FavnOrchestrator.Backfill.Projector do
          status <- asset_result_status(result),
          metadata <- asset_result_metadata(result),
          error <- asset_result_error(result),
-         existing <-
+         {:ok, existing} <-
            existing_asset_window_state(asset_ref_module, asset_ref_name, window.window_key),
          {:ok, state} <-
            AssetWindowState.new(%{
@@ -292,9 +300,9 @@ defmodule FavnOrchestrator.Backfill.Projector do
 
   defp existing_asset_window_state(asset_ref_module, asset_ref_name, window_key) do
     case Storage.get_asset_window_state(asset_ref_module, asset_ref_name, window_key) do
-      {:ok, %AssetWindowState{} = state} -> state
-      {:error, :not_found} -> nil
-      {:error, _reason} -> nil
+      {:ok, %AssetWindowState{} = state} -> {:ok, state}
+      {:error, :not_found} -> {:ok, nil}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -309,8 +317,13 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp append_error(errors, nil), do: errors
   defp append_error(errors, error), do: errors ++ [error]
 
-  defp asset_results(%RunState{result: %{asset_results: results}}) when is_list(results),
-    do: results
+  defp asset_results(%RunState{result: result}) when is_map(result) do
+    case field(result, :asset_results) do
+      results when is_list(results) -> results
+      results when is_map(results) -> Map.values(results)
+      _other -> []
+    end
+  end
 
   defp asset_results(_run_state), do: []
 
@@ -320,11 +333,20 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp asset_result_ref(%{ref: {module, name}}) when is_atom(module) and is_atom(name),
     do: {:ok, {module, name}}
 
+  defp asset_result_ref(result) when is_map(result) do
+    case field(result, :ref) do
+      {module, name} when is_atom(module) and is_atom(name) -> {:ok, {module, name}}
+      _other -> :error
+    end
+  end
+
   defp asset_result_ref(_result), do: :error
 
   defp asset_result_status(%AssetResult{status: status}), do: normalize_asset_status(status)
   defp asset_result_status(%{status: status}), do: normalize_asset_status(status)
-  defp asset_result_status(_result), do: :error
+
+  defp asset_result_status(result) when is_map(result),
+    do: normalize_asset_status(field(result, :status))
 
   defp normalize_asset_status(status) when status in [:ok, :error, :cancelled, :timed_out],
     do: status
@@ -337,15 +359,21 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp asset_result_metadata(%AssetResult{meta: metadata}) when is_map(metadata), do: metadata
   defp asset_result_metadata(%{meta: metadata}) when is_map(metadata), do: metadata
   defp asset_result_metadata(%{metadata: metadata}) when is_map(metadata), do: metadata
-  defp asset_result_metadata(_result), do: %{}
+
+  defp asset_result_metadata(result) when is_map(result) do
+    case field(result, :meta) || field(result, :metadata) do
+      metadata when is_map(metadata) -> metadata
+      _other -> %{}
+    end
+  end
 
   defp asset_result_error(%AssetResult{error: error}), do: error
   defp asset_result_error(%{error: error}), do: error
-  defp asset_result_error(_result), do: :asset_failed
+  defp asset_result_error(result) when is_map(result), do: field(result, :error)
 
   defp rows_written(metadata) when is_map(metadata) do
     Enum.find_value([:rows_written, :row_count, :rows], fn key ->
-      case Map.get(metadata, key) do
+      case field(metadata, key) do
         value when is_integer(value) and value >= 0 -> value
         _other -> nil
       end
@@ -363,12 +391,23 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp terminal_event_type(_status), do: :run_failed
 
   defp terminal_error(:ok, _run_state, _data), do: nil
-  defp terminal_error(_status, %RunState{error: nil}, data), do: Map.get(data, :error)
+  defp terminal_error(_status, %RunState{error: nil}, data), do: field(data, :error)
   defp terminal_error(_status, %RunState{error: error}, _data), do: error
 
   defp next_errors(errors, :ok, _error) when is_list(errors), do: errors
   defp next_errors(errors, _status, nil) when is_list(errors), do: errors
-  defp next_errors(errors, _status, error) when is_list(errors), do: errors ++ [error]
+
+  defp next_errors(errors, _status, error) when is_list(errors) do
+    if List.last(errors) == error, do: errors, else: errors ++ [error]
+  end
+
+  defp terminal_projection_for_same_attempt?(
+         %BackfillWindow{latest_attempt_run_id: run_id, status: status},
+         run_id
+       ),
+       do: status in @terminal_run_statuses
+
+  defp terminal_projection_for_same_attempt?(_window, _run_id), do: false
 
   defp next_attempt_count(
          %BackfillWindow{latest_attempt_run_id: run_id, attempt_count: count},
@@ -379,8 +418,8 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp next_attempt_count(%BackfillWindow{attempt_count: count}, _run_id), do: count + 1
 
   defp pipeline_module(%RunState{metadata: metadata}) when is_map(metadata) do
-    case Map.get(metadata, :pipeline_submit_ref) ||
-           asset_module(Map.get(metadata, :asset_submit_ref)) do
+    case field(metadata, :pipeline_submit_ref) ||
+           asset_module(field(metadata, :asset_submit_ref)) do
       module when is_atom(module) and not is_nil(module) -> {:ok, module}
       _other -> {:error, :missing_backfill_pipeline_module}
     end
@@ -388,4 +427,7 @@ defmodule FavnOrchestrator.Backfill.Projector do
 
   defp asset_module({module, _name}) when is_atom(module), do: module
   defp asset_module(_asset_ref), do: nil
+
+  defp field(map, key) when is_map(map) and is_atom(key),
+    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 end

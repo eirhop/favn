@@ -66,6 +66,7 @@ defmodule Favn do
   @type list_runs_opts :: [
           status: :running | :ok | :error | :cancelled | :timed_out,
           manifest_version_id: String.t(),
+          pipeline_module: module(),
           limit: pos_integer()
         ]
 

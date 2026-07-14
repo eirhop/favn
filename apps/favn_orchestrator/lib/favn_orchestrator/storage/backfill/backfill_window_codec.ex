@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.Storage.Backfill.BackfillWindowCodec do
 
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Storage.JsonSafe
+  alias FavnOrchestrator.Storage.PersistedAtom
 
   @format "favn.backfill.window.storage.v1"
 
@@ -98,16 +99,7 @@ defmodule FavnOrchestrator.Storage.Backfill.BackfillWindowCodec do
   defp optional_datetime(nil), do: {:ok, nil}
   defp optional_datetime(value), do: datetime(value)
 
-  defp existing_atom(value) when is_binary(value) do
-    {:ok, String.to_existing_atom(value)}
-  rescue
-    ArgumentError -> {:error, {:unknown_atom, value}}
-  end
-
-  defp existing_atom(value), do: {:error, {:invalid_atom, value}}
-
-  defp module_atom("Elixir." <> _rest = value), do: {:ok, String.to_atom(value)}
-  defp module_atom(value), do: existing_atom(value)
+  defp module_atom(value), do: PersistedAtom.module(value)
 
   defp error_field(dto, field) do
     case Map.fetch(dto, field) do

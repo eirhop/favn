@@ -19,7 +19,7 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodec do
     "updated_at"
   ]
 
-  @type key :: {module(), atom() | nil}
+  @type key :: {module(), atom()}
 
   @spec encode_state(map() | SchedulerState.t()) :: {:ok, String.t()} | {:error, term()}
   def encode_state(state) do
@@ -206,7 +206,7 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodec do
   defp validate_activation_state(value),
     do: {:error, {:invalid_scheduler_field, :activation_state, value}}
 
-  defp activation_state_to_dto(nil), do: "pending_activation"
+  defp activation_state_to_dto(nil), do: nil
   defp activation_state_to_dto(value) when is_atom(value), do: Atom.to_string(value)
 
   defp activation_state_from_dto(nil), do: {:ok, nil}
@@ -263,7 +263,8 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodec do
 
   defp scheduler_error_from_dto(nil), do: {:ok, nil}
 
-  defp scheduler_error_from_dto(%{"occurred_at" => occurred_at, "phase" => phase} = error) do
+  defp scheduler_error_from_dto(%{"occurred_at" => occurred_at, "phase" => phase} = error)
+       when is_binary(occurred_at) and is_binary(phase) do
     with {:ok, occurred_at, _offset} <- DateTime.from_iso8601(occurred_at),
          {:ok, phase} <- scheduler_error_phase(phase),
          {:ok, code} <- scheduler_error_text(error, "code", "scheduler_error"),
@@ -272,7 +273,7 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodec do
        %SchedulerError{
          occurred_at: occurred_at,
          phase: phase,
-         code: code,
+         code: existing_atom_or_string(code),
          message: message
        }}
     else
@@ -295,6 +296,12 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodec do
   defp scheduler_error_phase("submit_run"), do: {:ok, :submit_run}
   defp scheduler_error_phase("persist_state"), do: {:ok, :persist_state}
   defp scheduler_error_phase(_phase), do: :error
+
+  defp existing_atom_or_string(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> value
+  end
 
   defp validate_optional_version(nil), do: :ok
   defp validate_optional_version(value) when is_integer(value) and value > 0, do: :ok

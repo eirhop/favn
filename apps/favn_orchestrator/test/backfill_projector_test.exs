@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.Backfill.ProjectorTest do
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
   alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.Projector
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -233,13 +234,93 @@ defmodule FavnOrchestrator.Backfill.ProjectorTest do
     window = %{backfill_window(parent.id, child.trigger.window_key, now) | status: :error}
     assert :ok = Storage.put_backfill_window(window)
 
-    assert :ok = FavnOrchestrator.Backfill.Projector.reproject_parent(parent.id)
+    assert :ok = Projector.reproject_parent(parent.id)
 
     assert {:ok, failed_parent} = Storage.get_run(parent.id)
     assert failed_parent.status == :error
 
     assert {:ok, parent_events} = Storage.list_run_events(parent.id)
     assert Enum.map(parent_events, & &1.event_type) == [:backfill_failed]
+  end
+
+  test "projects string-keyed persisted child metadata and results" do
+    now = DateTime.utc_now()
+    parent = parent_run("run_backfill_string_keys")
+    child = child_run(parent.id, "run_child_string_keys", "day:2026-04-27")
+
+    child = %{
+      child
+      | trigger: %{
+          "kind" => "backfill",
+          "backfill_run_id" => parent.id,
+          "window_key" => "day:2026-04-27"
+        },
+        metadata: %{"pipeline_submit_ref" => MyApp.Pipelines.Daily}
+    }
+
+    terminal =
+      RunState.transition(child,
+        status: :ok,
+        result: %{
+          "asset_results" => [
+            %{
+              "ref" => {MyApp.Assets.Gold, :asset},
+              "status" => "ok",
+              "meta" => %{"rows_written" => 7}
+            }
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, "day:2026-04-27", now))
+    assert :ok = TransitionWriter.persist_transition(terminal, :run_finished, %{"status" => "ok"})
+
+    assert {:ok, asset_window} =
+             Storage.get_asset_window_state(
+               MyApp.Assets.Gold,
+               :asset,
+               "day:2026-04-27"
+             )
+
+    assert asset_window.status == :ok
+    assert asset_window.rows_written == 7
+  end
+
+  test "duplicate and delayed projections do not duplicate errors or regress terminal windows" do
+    now = DateTime.utc_now()
+    parent = parent_run("run_backfill_duplicate_projection")
+    child = child_run(parent.id, "run_child_duplicate_projection", "day:2026-04-27")
+
+    failure =
+      RunState.transition(child,
+        status: :error,
+        error: %{message: "boom"},
+        result: %{status: :error, asset_results: []}
+      )
+
+    assert :ok = Storage.put_run(parent)
+
+    assert :ok =
+             Storage.put_backfill_window(
+               backfill_window(parent.id, child.trigger.window_key, now)
+             )
+
+    assert :ok = TransitionWriter.persist_transition(failure, :run_failed, %{status: :error})
+    assert :ok = Projector.reproject_child_window(failure)
+
+    assert :ok =
+             Projector.project_transition(failure, :run_started, %{})
+
+    assert {:ok, window} =
+             Storage.get_backfill_window(
+               parent.id,
+               MyApp.Pipelines.Daily,
+               child.trigger.window_key
+             )
+
+    assert window.status == :error
+    assert window.errors == [%{message: "boom"}]
   end
 
   defp parent_run(run_id) do

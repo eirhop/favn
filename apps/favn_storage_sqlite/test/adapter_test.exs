@@ -122,7 +122,9 @@ defmodule FavnStorageSqlite.AdapterTest do
     refute payload =~ "secret"
   end
 
-  test "repairs legacy null pipeline submit query metadata once", %{opts: opts} do
+  test "keeps reads pure and repairs legacy query metadata only on explicit rebuild", %{
+    opts: opts
+  } do
     version = manifest_version("mv_sqlite_pipeline_repair")
 
     run =
@@ -153,7 +155,7 @@ defmodule FavnStorageSqlite.AdapterTest do
                run.id
              ])
 
-    assert {:ok, [stored]} =
+    assert {:ok, []} =
              Adapter.list_target_runs(
                version.manifest_version_id,
                :pipeline,
@@ -162,7 +164,12 @@ defmodule FavnStorageSqlite.AdapterTest do
                opts
              )
 
-    assert stored.id == run.id
+    assert {:ok, %{rows: [[nil]]}} =
+             SQL.query(Repo, "SELECT pipeline_submit_ref_text FROM favn_runs WHERE run_id = ?1", [
+               run.id
+             ])
+
+    assert {:ok, 1} = Adapter.rebuild_execution_group_summaries(opts)
 
     assert {:ok, %{rows: [["MyApp.Pipeline"]]}} =
              SQL.query(Repo, "SELECT pipeline_submit_ref_text FROM favn_runs WHERE run_id = ?1", [

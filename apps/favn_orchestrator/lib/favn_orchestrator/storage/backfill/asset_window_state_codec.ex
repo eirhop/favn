@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec do
 
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Storage.JsonSafe
+  alias FavnOrchestrator.Storage.PersistedAtom
 
   @format "favn.backfill.asset_window_state.storage.v1"
 
@@ -16,9 +17,9 @@ defmodule FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec do
   @spec decode(String.t()) :: {:ok, AssetWindowState.t()} | {:error, term()}
   def decode(payload) when is_binary(payload) do
     with {:ok, %{"format" => @format, "schema_version" => 1} = dto} <- Jason.decode(payload),
-         {:ok, asset_ref_module} <- existing_atom(Map.get(dto, "asset_ref_module")),
-         {:ok, asset_ref_name} <- existing_atom(Map.get(dto, "asset_ref_name")),
-         {:ok, pipeline_module} <- existing_atom(Map.get(dto, "pipeline_module")),
+         {:ok, asset_ref_module} <- PersistedAtom.module(Map.get(dto, "asset_ref_module")),
+         {:ok, asset_ref_name} <- PersistedAtom.existing(Map.get(dto, "asset_ref_name")),
+         {:ok, pipeline_module} <- PersistedAtom.module(Map.get(dto, "pipeline_module")),
          {:ok, window_start_at} <- datetime(Map.get(dto, "window_start_at")),
          {:ok, window_end_at} <- datetime(Map.get(dto, "window_end_at")),
          {:ok, updated_at} <- datetime(Map.get(dto, "updated_at")),
@@ -87,14 +88,6 @@ defmodule FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec do
   end
 
   defp datetime(value), do: {:error, {:invalid_datetime, value}}
-
-  defp existing_atom(value) when is_binary(value) do
-    {:ok, String.to_existing_atom(value)}
-  rescue
-    ArgumentError -> {:error, {:unknown_atom, value}}
-  end
-
-  defp existing_atom(value), do: {:error, {:invalid_atom, value}}
 
   defp error_field(dto, field) do
     case Map.fetch(dto, field) do

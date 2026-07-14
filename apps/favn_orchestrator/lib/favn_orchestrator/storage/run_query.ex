@@ -26,7 +26,7 @@ defmodule FavnOrchestrator.Storage.RunQuery do
       submit_kind: Atom.to_string(run.submit_kind),
       trigger_type: Atom.to_string(trigger_type(run)),
       asset_ref_text: public_ref(run.asset_ref),
-      target_refs_text: Enum.join(Enum.map(targets, &public_ref/1), "\n"),
+      target_refs_text: Enum.map_join(targets, "\n", &public_ref/1),
       window_key: window_key(run),
       pipeline_submit_ref_text: pipeline_submit_ref_text(run)
     }

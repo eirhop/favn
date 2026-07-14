@@ -25,6 +25,7 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
   alias FavnOrchestrator.Repair.Passes.Freshness
   alias FavnOrchestrator.Repair.Report
   alias FavnOrchestrator.RunEvent
+  alias FavnOrchestrator.RunExecutionCleanup
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.TransitionWriter
@@ -52,7 +53,14 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
   @doc "Runs runtime-state repair and returns a summary report."
   @spec repair([option()]) :: {:ok, Report.t()} | {:error, Report.t()}
   def repair(opts \\ []) when is_list(opts) do
-    mode = if Keyword.get(opts, :dry_run, true), do: :dry_run, else: :apply
+    case validate_options(opts) do
+      {:ok, opts} -> run_repair(opts)
+      {:error, reason} -> {:error, Report.new(:dry_run) |> Report.error(reason)}
+    end
+  end
+
+  defp run_repair(opts) do
+    mode = if Keyword.fetch!(opts, :dry_run), do: :dry_run, else: :apply
 
     report =
       mode
@@ -84,32 +92,24 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
   end
 
   defp expire_materialization_claims(%Report{} = report, _opts) do
-    if function_exported?(Storage, :expire_materialization_claims, 1) do
-      expire_materialization_claims_for_mode(report, report.mode)
-    else
-      report
-    end
+    expire_materialization_claims_for_mode(report, report.mode)
   end
 
   defp expire_materialization_claims_for_mode(%Report{mode: :dry_run} = report, _mode) do
-    if function_exported?(Storage, :list_materialization_claims, 1) do
-      case apply(Storage, :list_materialization_claims, [[]]) do
-        {:ok, claims} ->
-          Report.bump(report, :materialization_claims_expired, count_expired_claims(claims))
+    case Storage.list_materialization_claims() do
+      {:ok, claims} ->
+        Report.bump(report, :materialization_claims_expired, count_expired_claims(claims))
 
-        {:error, :materialization_claims_not_supported} ->
-          report
+      {:error, :materialization_claims_not_supported} ->
+        report
 
-        {:error, reason} ->
-          Report.error(report, {:materialization_claim_expiry_failed, reason})
-      end
-    else
-      report
+      {:error, reason} ->
+        Report.error(report, {:materialization_claim_expiry_failed, reason})
     end
   end
 
   defp expire_materialization_claims_for_mode(%Report{mode: :apply} = report, _mode) do
-    case apply(Storage, :expire_materialization_claims, [DateTime.utc_now()]) do
+    case Storage.expire_materialization_claims(DateTime.utc_now()) do
       {:ok, count} -> Report.bump(report, :materialization_claims_expired, count)
       {:error, :materialization_claims_not_supported} -> report
       {:error, reason} -> Report.error(report, {:materialization_claim_expiry_failed, reason})
@@ -129,35 +129,83 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
   end
 
   defp active_runs(opts) do
+    cond do
+      is_binary(opts[:run_id]) ->
+        one_active_run(opts[:run_id], opts)
+
+      is_binary(opts[:backfill_id]) ->
+        with {:ok, runs} <- Storage.list_execution_group_runs(opts[:backfill_id]) do
+          {:ok, Enum.filter(runs, &(active_run?(&1) and matches_filters?(&1, opts)))}
+        end
+
+      true ->
+        list_all_active_runs(opts)
+    end
+  end
+
+  defp one_active_run(run_id, opts) do
+    case Storage.get_run(run_id) do
+      {:ok, run} -> {:ok, Enum.filter([run], &(active_run?(&1) and matches_filters?(&1, opts)))}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp list_all_active_runs(opts) do
     @active_run_statuses
     |> Enum.reduce_while({:ok, []}, fn status, {:ok, acc} ->
       case Storage.list_runs(status: status) do
-        {:ok, runs} -> {:cont, {:ok, acc ++ Enum.filter(runs, &matches_filters?(&1, opts))}}
-        {:error, reason} -> {:halt, {:error, reason}}
+        {:ok, runs} ->
+          matching = Enum.filter(runs, &matches_filters?(&1, opts))
+          {:cont, {:ok, Enum.reduce(matching, acc, &[&1 | &2])}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
       end
     end)
+    |> case do
+      {:ok, runs} -> {:ok, Enum.reverse(runs)}
+      {:error, _reason} = error -> error
+    end
   end
 
+  defp active_run?(%RunState{status: status}), do: status in @active_run_statuses
+
   defp repair_run(%RunState{} = run, %Report{mode: :dry_run} = report) do
-    with {:ok, events} <- run_events(run.id) do
-      report
-      |> Report.bump(:steps_terminalized, length(orphaned_step_events(run, events)))
-      |> Report.bump(:runs_terminalized)
-    else
-      {:error, reason} -> Report.error(report, {:run_repair_failed, run.id, reason})
+    case run_events(run.id) do
+      {:ok, events} ->
+        report
+        |> Report.bump(:steps_terminalized, length(orphaned_step_events(run, events)))
+        |> Report.bump(:runs_terminalized)
+
+      {:error, reason} ->
+        Report.error(report, {:run_repair_failed, run.id, reason})
     end
   end
 
   defp repair_run(%RunState{} = run, %Report{mode: :apply} = report) do
     with {:ok, events} <- run_events(run.id),
+         cleanup_statuses = RunExecutionCleanup.cancel_active(run, orphaned_run_error(run)),
          {:ok, repaired_run, step_count} <- terminalize_orphaned_steps(run, events),
-         :ok <- terminalize_run(repaired_run),
-         :ok <- release_execution_leases(repaired_run.id) do
-      report
-      |> Report.bump(:steps_terminalized, step_count)
-      |> Report.bump(:runs_terminalized)
+         :ok <- terminalize_run(repaired_run, cleanup_statuses) do
+      repaired_report =
+        report
+        |> Report.bump(:steps_terminalized, step_count)
+        |> Report.bump(:runs_terminalized)
+
+      cleanup_repaired_run(repaired_report, repaired_run.id, cleanup_statuses)
     else
       {:error, reason} -> Report.error(report, {:run_repair_failed, run.id, reason})
+    end
+  end
+
+  defp cleanup_repaired_run(report, run_id, cleanup_statuses) do
+    if RunExecutionCleanup.confirmed?(cleanup_statuses) do
+      case release_execution_leases(run_id) do
+        :ok -> report
+        {:error, reason} -> Report.error(report, {:run_lease_release_failed, run_id, reason})
+      end
+    else
+      Report.error(report, {:runner_cleanup_unconfirmed, run_id, cleanup_statuses})
     end
   end
 
@@ -178,11 +226,11 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
     end)
   end
 
-  defp terminalize_run(%RunState{} = run) do
+  defp terminalize_run(%RunState{} = run, cleanup_statuses) do
     failed =
       RunState.transition(run,
         status: :error,
-        error: orphaned_run_error(run),
+        error: Map.put(orphaned_run_error(run), :runner_cleanup, cleanup_statuses),
         runner_execution_id: nil,
         metadata:
           run.metadata
@@ -198,7 +246,6 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
 
   defp release_execution_leases(run_id) do
     ExecutionAdmission.release_run(run_id)
-    :ok
   end
 
   defp run_events(run_id) do
@@ -323,10 +370,14 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
       filters = window_filters(status, opts)
 
       case BackfillProjector.list_all_backfill_windows(filters) do
-        {:ok, windows} -> {:cont, {:ok, acc ++ windows}}
+        {:ok, windows} -> {:cont, {:ok, Enum.reduce(windows, acc, &[&1 | &2])}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+    |> case do
+      {:ok, windows} -> {:ok, Enum.reverse(windows)}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp window_filters(status, opts) do
@@ -492,4 +543,44 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
       reconciled_at: DateTime.utc_now()
     }
   end
+
+  defp validate_options(opts) do
+    allowed = [:dry_run, :run_id, :backfill_id, :since, :freshness]
+
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, :invalid_runtime_repair_options}
+
+      Keyword.keys(opts) -- allowed != [] ->
+        {:error, {:invalid_runtime_repair_options, Keyword.keys(opts) -- allowed}}
+
+      not is_boolean(Keyword.get(opts, :dry_run, true)) ->
+        {:error, {:invalid_runtime_repair_option, :dry_run}}
+
+      not valid_optional_id?(Keyword.get(opts, :run_id)) ->
+        {:error, {:invalid_runtime_repair_option, :run_id}}
+
+      not valid_optional_id?(Keyword.get(opts, :backfill_id)) ->
+        {:error, {:invalid_runtime_repair_option, :backfill_id}}
+
+      not valid_optional_datetime?(Keyword.get(opts, :since)) ->
+        {:error, {:invalid_runtime_repair_option, :since}}
+
+      not is_boolean(Keyword.get(opts, :freshness, true)) ->
+        {:error, {:invalid_runtime_repair_option, :freshness}}
+
+      true ->
+        {:ok,
+         opts
+         |> Keyword.put_new(:dry_run, true)
+         |> Keyword.put_new(:freshness, true)}
+    end
+  end
+
+  defp valid_optional_id?(nil), do: true
+  defp valid_optional_id?(value), do: is_binary(value) and byte_size(value) > 0
+
+  defp valid_optional_datetime?(nil), do: true
+  defp valid_optional_datetime?(%DateTime{}), do: true
+  defp valid_optional_datetime?(_value), do: false
 end

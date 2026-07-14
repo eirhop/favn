@@ -7,6 +7,8 @@ defmodule FavnOrchestrator.CancellationOutcome do
   terminalized as cancelled.
   """
 
+  alias FavnOrchestrator.Redaction
+
   @type status ::
           :acknowledged
           | :already_completed
@@ -43,10 +45,10 @@ defmodule FavnOrchestrator.CancellationOutcome do
       execution_id: execution_id,
       status: normalize_status(status),
       runner_status: status,
-      native_status: Map.get(outcome, :native_status),
-      reason_class: Map.get(outcome, :reason_class),
-      correlation_id: Map.get(outcome, :correlation_id),
-      error: Map.get(outcome, :error)
+      native_status: optional_atom(Map.get(outcome, :native_status)),
+      reason_class: optional_atom(Map.get(outcome, :reason_class)),
+      correlation_id: optional_string(Map.get(outcome, :correlation_id)),
+      error: safe_error(Map.get(outcome, :error))
     }
   end
 
@@ -60,7 +62,7 @@ defmodule FavnOrchestrator.CancellationOutcome do
       status: :best_effort_failed,
       runner_status: :error,
       reason_class: classify_reason(error),
-      error: error
+      error: safe_error(error)
     }
   end
 
@@ -70,7 +72,7 @@ defmodule FavnOrchestrator.CancellationOutcome do
       status: :unknown_runner_outcome,
       runner_status: :unknown,
       reason_class: classify_reason(other),
-      error: other
+      error: safe_error(other)
     }
   end
 
@@ -78,6 +80,8 @@ defmodule FavnOrchestrator.CancellationOutcome do
   @spec confirmed?(t() | map()) :: boolean()
   def confirmed?(%__MODULE__{status: status}), do: status in [:acknowledged, :already_completed]
   def confirmed?(%{status: status}), do: status in [:acknowledged, :already_completed]
+  def confirmed?(%{"status" => status}), do: status in ["acknowledged", "already_completed"]
+  def confirmed?(_outcome), do: false
 
   @doc "Returns a bounded map for events, metadata, and error DTOs."
   @spec to_map(t()) :: map()
@@ -107,4 +111,25 @@ defmodule FavnOrchestrator.CancellationOutcome do
   defp classify_reason(%{type: type}) when is_atom(type), do: type
   defp classify_reason(%{"type" => type}) when is_atom(type), do: type
   defp classify_reason(_reason), do: :unknown
+
+  defp optional_atom(value) when is_atom(value), do: value
+  defp optional_atom(_value), do: nil
+
+  defp optional_string(value) when is_binary(value) do
+    case Redaction.redact_operational_bounded(value) do
+      safe when is_binary(safe) -> safe
+      _other -> nil
+    end
+  end
+
+  defp optional_string(_value), do: nil
+
+  defp safe_error(nil), do: nil
+
+  defp safe_error(error) do
+    case Redaction.redact_operational_bounded(%{error: error}) do
+      %{error: safe} -> safe
+      _other -> "[REDACTED]"
+    end
+  end
 end

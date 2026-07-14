@@ -4,10 +4,12 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
   alias FavnOrchestrator
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
+  alias FavnOrchestrator.Operator.Authorization
   alias FavnOrchestrator.OperatorCommands.AssetBackfillRequest
   alias FavnOrchestrator.OperatorCommands.AssetRunRequest
   alias FavnOrchestrator.OperatorCommands.PipelineBackfillRequest
   alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
+  alias FavnOrchestrator.Storage
 
   setup do
     previous_failure_limit = Application.get_env(:favn_orchestrator, :auth_login_failure_limit)
@@ -74,6 +76,29 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
     assert {:ok, _session, _actor} =
              FavnOrchestrator.operator_password_login("operator", "operator-password-long",
                remote_identity: "127.0.0.2"
+             )
+  end
+
+  test "remote backoff cannot be bypassed by cycling usernames" do
+    Application.put_env(:favn_orchestrator, :auth_login_failure_limit, 2)
+    Application.put_env(:favn_orchestrator, :auth_login_backoff_seconds, 3_600)
+
+    assert {:ok, _actor} =
+             Auth.create_actor("operator", "operator-password-long", "Operator", [:operator])
+
+    opts = [remote_identity: "127.0.0.9"]
+
+    assert {:error, :invalid_credentials} =
+             FavnOrchestrator.operator_password_login("missing-one", "wrong-password", opts)
+
+    assert {:error, :invalid_credentials} =
+             FavnOrchestrator.operator_password_login("missing-two", "wrong-password", opts)
+
+    assert {:error, :invalid_credentials} =
+             FavnOrchestrator.operator_password_login(
+               "operator",
+               "operator-password-long",
+               opts
              )
   end
 
@@ -148,6 +173,14 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
              )
 
     assert {:error, :manifest_version_not_found} =
+             FavnOrchestrator.submit_operator_run(
+               operator_context,
+               "missing_manifest",
+               %{"type" => "asset", "id" => "asset:missing"},
+               []
+             )
+
+    assert {:error, :manifest_version_not_found} =
              FavnOrchestrator.submit_operator_pipeline_backfill(
                operator_context,
                "missing_manifest",
@@ -212,6 +245,20 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
                %{type: :asset, id: "asset:missing"},
                []
              )
+  end
+
+  test "operator authorization returns persisted actor state" do
+    context = operator_context("operator-persisted-context")
+
+    forged_context =
+      put_in(context, [:actor], %{context.actor | display_name: "Forged", roles: [:admin]})
+
+    assert {:ok, persisted_actor} = Authorization.authorize(forged_context, :operator)
+    assert persisted_actor.display_name == "Operator"
+    assert persisted_actor.roles == [:operator]
+
+    assert :ok = Storage.put_auth_actor(%{persisted_actor | status: :disabled})
+    assert {:error, :unauthenticated} = Authorization.authorize(context, :operator)
   end
 
   test "operator command wrappers validate malformed DTO structs before manifest lookup" do

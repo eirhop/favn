@@ -60,4 +60,33 @@ defmodule FavnOrchestrator.RedactionTest do
                }
              })
   end
+
+  test "redact_operational_bounded limits untrusted containers and strings" do
+    result =
+      Redaction.redact_operational_bounded(%{
+        reason: %{
+          token: "secret",
+          values: Enum.to_list(1..100),
+          message: String.duplicate("x", 10_000)
+        }
+      })
+
+    assert result.reason.token == "[REDACTED]"
+    assert length(result.reason.values) == 50
+    assert byte_size(result.reason.message) == 8_192
+    assert String.ends_with?(result.reason.message, "...")
+  end
+
+  test "redact_operational_bounded truncates deeply nested values" do
+    deeply_nested = Enum.reduce(1..10, :leaf, &%{&1 => &2})
+
+    assert inspect(Redaction.redact_operational_bounded(deeply_nested)) =~ "[TRUNCATED]"
+  end
+
+  test "redact_operational_bounded makes invalid UTF-8 safe for JSON encoding" do
+    result = Redaction.redact_operational_bounded(%{value: <<255, 254, 0>>})
+
+    assert String.valid?(result.value)
+    assert {:ok, _json} = Jason.encode(result)
+  end
 end

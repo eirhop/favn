@@ -175,6 +175,17 @@ defmodule FavnOrchestrator.RunRetryPlannerTest do
              FavnOrchestrator.plan_remaining_retry(parent.id)
   end
 
+  test "remaining retry rejects malformed and unsupported options" do
+    assert {:error, :invalid_retry_remaining_options} =
+             FavnOrchestrator.retry_remaining("run-any", [:not_keyword])
+
+    assert {:error, {:invalid_retry_remaining_options, [:unknown]}} =
+             FavnOrchestrator.retry_remaining("run-any", unknown: true)
+
+    assert {:error, :invalid_retry_remaining_metadata} =
+             FavnOrchestrator.retry_remaining("run-any", metadata: [:not_a_map])
+  end
+
   defp flat_plan(refs) do
     node_keys = Enum.map(refs, &{&1, nil})
 

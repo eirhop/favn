@@ -1,37 +1,35 @@
 defmodule FavnOrchestrator.Scheduler.Cron do
   @moduledoc false
 
-  @max_lookback_seconds 525_600 * 60
+  @max_search_seconds 8 * 366 * 24 * 60 * 60
 
   @spec latest_due(String.t(), String.t(), DateTime.t()) :: DateTime.t() | nil
   def latest_due(cron, timezone, %DateTime{} = now_utc) do
-    case parse(cron) do
-      {:ok, expr} ->
-        now = now_utc |> shift_zone!(timezone) |> floor_for_expr(expr)
-        from = DateTime.add(now, -@max_lookback_seconds, :second, Favn.Timezone.database!())
+    with {:ok, expr} <- parse(cron),
+         {:ok, local_now} <- shift_zone(now_utc, timezone) do
+      now = floor_for_expr(local_now, expr)
+      from = DateTime.add(now, -@max_search_seconds, :second, Favn.Timezone.database!())
 
-        expr
-        |> find_previous(from, now, true)
-        |> maybe_to_utc()
-
-      :error ->
-        nil
+      expr
+      |> find_previous(from, now, true)
+      |> maybe_to_utc()
+    else
+      _invalid -> nil
     end
   end
 
   @spec next_due(String.t(), String.t(), DateTime.t()) :: DateTime.t() | nil
   def next_due(cron, timezone, %DateTime{} = now_utc) do
-    case parse(cron) do
-      {:ok, expr} ->
-        now = now_utc |> shift_zone!(timezone) |> floor_for_expr(expr)
-        to = DateTime.add(now, @max_lookback_seconds, :second, Favn.Timezone.database!())
+    with {:ok, expr} <- parse(cron),
+         {:ok, local_now} <- shift_zone(now_utc, timezone) do
+      now = floor_for_expr(local_now, expr)
+      to = DateTime.add(now, @max_search_seconds, :second, Favn.Timezone.database!())
 
-        expr
-        |> find_next(now, to)
-        |> maybe_to_utc()
-
-      :error ->
-        nil
+      expr
+      |> find_next(now, to)
+      |> maybe_to_utc()
+    else
+      _invalid -> nil
     end
   end
 
@@ -45,17 +43,15 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         %DateTime{} = latest_due_utc,
         opts \\ []
       ) do
-    case parse(cron) do
-      {:ok, expr} ->
-        from = shift_zone!(last_due_utc, timezone)
-        to = shift_zone!(latest_due_utc, timezone)
-        limit = occurrence_limit(opts)
+    with {:ok, expr} <- parse(cron),
+         {:ok, from} <- shift_zone(last_due_utc, timezone),
+         {:ok, to} <- shift_zone(latest_due_utc, timezone) do
+      limit = occurrence_limit(opts)
 
-        collect_occurrences(expr, from, to, limit)
-        |> Enum.map(&shift_zone!(&1, "Etc/UTC"))
-
-      :error ->
-        []
+      collect_occurrences(expr, from, to, limit)
+      |> Enum.map(&shift_zone!(&1, "Etc/UTC"))
+    else
+      _invalid -> []
     end
   end
 
@@ -67,17 +63,14 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         %DateTime{} = last_due_utc,
         %DateTime{} = latest_due_utc
       ) do
-    case parse(cron) do
-      {:ok, expr} ->
-        from = shift_zone!(last_due_utc, timezone)
-        to = shift_zone!(latest_due_utc, timezone)
-
-        expr
-        |> find_next(from, to)
-        |> maybe_to_utc()
-
-      :error ->
-        nil
+    with {:ok, expr} <- parse(cron),
+         {:ok, from} <- shift_zone(last_due_utc, timezone),
+         {:ok, to} <- shift_zone(latest_due_utc, timezone) do
+      expr
+      |> find_next(from, to)
+      |> maybe_to_utc()
+    else
+      _invalid -> nil
     end
   end
 
@@ -89,17 +82,14 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         %DateTime{} = last_due_utc,
         %DateTime{} = latest_due_utc
       ) do
-    case parse(cron) do
-      {:ok, expr} ->
-        from = shift_zone!(last_due_utc, timezone)
-        to = shift_zone!(latest_due_utc, timezone)
-
-        expr
-        |> find_previous(from, to, false)
-        |> maybe_to_utc()
-
-      :error ->
-        nil
+    with {:ok, expr} <- parse(cron),
+         {:ok, from} <- shift_zone(last_due_utc, timezone),
+         {:ok, to} <- shift_zone(latest_due_utc, timezone) do
+      expr
+      |> find_previous(from, to, false)
+      |> maybe_to_utc()
+    else
+      _invalid -> nil
     end
   end
 
@@ -198,7 +188,7 @@ defmodule FavnOrchestrator.Scheduler.Cron do
     end
   end
 
-  defp parse_base("*", min, max), do: {:ok, Enum.to_list(min..max), 0}
+  defp parse_base("*", min, max), do: {:ok, Enum.to_list(min..max), min}
 
   defp parse_base(base, min, max) do
     case String.split(base, "-", parts: 2) do
@@ -243,12 +233,20 @@ defmodule FavnOrchestrator.Scheduler.Cron do
   defp normalize_weekday(value), do: value
 
   defp occurrence_limit(opts) do
-    case Keyword.get(opts, :limit, :infinity) do
-      :infinity -> :infinity
-      limit when is_integer(limit) and limit > 0 -> limit
-      _other -> :infinity
+    case Keyword.fetch(opts, :limit) do
+      :error -> :infinity
+      {:ok, :infinity} -> :infinity
+      {:ok, 0} -> 0
+      {:ok, limit} when is_integer(limit) and limit > 0 -> limit
+      {:ok, _invalid} -> 0
     end
+  rescue
+    _error -> 0
   end
+
+  defp take_limit(_stream, 0), do: []
+  defp take_limit(stream, :infinity), do: stream
+  defp take_limit(stream, limit), do: Stream.take(stream, limit)
 
   defp collect_occurrences(expr, from, to, limit) do
     case DateTime.compare(from, to) do
@@ -263,9 +261,6 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         []
     end
   end
-
-  defp take_limit(stream, :infinity), do: stream
-  defp take_limit(stream, limit), do: Stream.take(stream, limit)
 
   defp find_next(expr, from, to) do
     case DateTime.compare(from, to) do
@@ -338,7 +333,7 @@ defmodule FavnOrchestrator.Scheduler.Cron do
       |> Stream.flat_map(&date_time_candidates(date, &1, from.time_zone, direction))
       |> Stream.filter(&candidate_in_range?(&1, from, to, include_from?))
     else
-      Stream.reject([], fn _value -> true end)
+      []
     end
   end
 
@@ -438,4 +433,10 @@ defmodule FavnOrchestrator.Scheduler.Cron do
   defp shift_zone!(%DateTime{} = datetime, timezone) do
     DateTime.shift_zone!(datetime, timezone, Favn.Timezone.database!())
   end
+
+  defp shift_zone(%DateTime{} = datetime, timezone) when is_binary(timezone) do
+    DateTime.shift_zone(datetime, timezone, Favn.Timezone.database!())
+  end
+
+  defp shift_zone(_datetime, _timezone), do: {:error, :invalid_timezone}
 end

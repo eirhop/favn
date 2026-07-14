@@ -2,7 +2,11 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   @moduledoc false
 
   @min_token_bytes 32
+  @max_token_bytes 4_096
+  @max_identity_bytes 128
   @weak_fragments ~w(replace change placeholder example secret password test token todo)
+  @identity_pattern ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
+  @config_keys [:enabled, :service_identity, :token, :token_hash]
 
   @type token_config :: %{
           required(:service_identity) => String.t(),
@@ -20,10 +24,8 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
       |> String.split(",", trim: true)
       |> Enum.map(&String.trim/1)
 
-    with :ok <- ensure_present(tokens),
-         {:ok, configs} <- parse_env_tokens(tokens),
-         :ok <- reject_duplicate_identities(configs) do
-      {:ok, configs}
+    with :ok <- ensure_present(tokens) do
+      parse_env_tokens(tokens)
     end
   end
 
@@ -50,7 +52,8 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
 
   @spec authenticate(String.t() | nil, [term()]) ::
           {:ok, String.t()} | {:error, :service_unauthorized}
-  def authenticate(provided, configured_tokens) when is_binary(provided) and provided != "" do
+  def authenticate(provided, configured_tokens)
+      when is_binary(provided) and provided != "" and byte_size(provided) <= @max_token_bytes do
     provided_hash = hash_token(provided)
 
     configured_tokens
@@ -93,7 +96,9 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
       active_tokens = Enum.filter(tokens, & &1.enabled)
 
       with :ok <- ensure_active_tokens(active_tokens) do
-        reject_duplicate_identities(active_tokens)
+        with :ok <- reject_duplicate_identities(active_tokens) do
+          reject_duplicate_token_hashes(active_tokens)
+        end
       end
     end
   end
@@ -132,7 +137,7 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
       end
     end)
     |> case do
-      {:ok, configs} -> {:ok, Enum.reverse(configs)}
+      {:ok, configs} -> validate_normalized_configs(Enum.reverse(configs))
       {:error, reason} -> {:error, reason}
     end
   end
@@ -161,13 +166,14 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
       end
     end)
     |> case do
-      {:ok, configs} -> {:ok, Enum.reverse(configs)}
+      {:ok, configs} -> validate_normalized_configs(Enum.reverse(configs))
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp normalize_config(config) when is_list(config) do
-    if Keyword.keyword?(config) do
+    if Keyword.keyword?(config) and
+         length(Keyword.keys(config)) == length(Enum.uniq(Keyword.keys(config))) do
       normalize_config(Map.new(config))
     else
       {:error, :invalid_service_token_config}
@@ -179,7 +185,9 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   end
 
   defp normalize_config(config) when is_map(config) do
-    with {:ok, identity} <- normalize_identity(value(config, :service_identity)),
+    with :ok <- validate_config_keys(config),
+         :ok <- reject_raw_and_hashed_token(config),
+         {:ok, identity} <- normalize_identity(value(config, :service_identity)),
          enabled? <- Map.get(config, :enabled, Map.get(config, "enabled", true)),
          true <- is_boolean(enabled?),
          {:ok, token_hash} <- normalize_token_hash(config) do
@@ -217,8 +225,15 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
 
   defp normalize_identity(identity) when is_binary(identity) do
     case String.trim(identity) do
-      "" -> {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :blank_identity}}
-      trimmed -> {:ok, trimmed}
+      "" ->
+        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :blank_identity}}
+
+      trimmed ->
+        if byte_size(trimmed) <= @max_identity_bytes and Regex.match?(@identity_pattern, trimmed) do
+          {:ok, trimmed}
+        else
+          {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :invalid_identity}}
+        end
     end
   end
 
@@ -229,6 +244,9 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
     trimmed = String.trim(token)
 
     cond do
+      byte_size(trimmed) > @max_token_bytes ->
+        {:error, {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_long}}
+
       byte_size(trimmed) < @min_token_bytes ->
         {:error, {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_short}}
 
@@ -265,6 +283,48 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
       {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :duplicate_identity}}
     end
   end
+
+  defp reject_duplicate_token_hashes(configs) do
+    hashes = configs |> Enum.filter(& &1.enabled) |> Enum.map(& &1.token_hash)
+
+    if length(hashes) == length(Enum.uniq(hashes)) do
+      :ok
+    else
+      {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :duplicate_token}}
+    end
+  end
+
+  defp validate_normalized_configs(configs) do
+    with :ok <- reject_duplicate_identities(configs),
+         :ok <- reject_duplicate_token_hashes(configs) do
+      {:ok, configs}
+    end
+  end
+
+  defp validate_config_keys(config) do
+    keys = Enum.map(Map.keys(config), &normalize_config_key/1)
+
+    if Enum.all?(keys, &(&1 in @config_keys)) and length(keys) == length(Enum.uniq(keys)) do
+      :ok
+    else
+      {:error, :invalid_service_token_config}
+    end
+  end
+
+  defp reject_raw_and_hashed_token(config) do
+    if not is_nil(value(config, :token)) and not is_nil(value(config, :token_hash)) do
+      {:error, :invalid_service_token_config}
+    else
+      :ok
+    end
+  end
+
+  defp normalize_config_key(key) when key in @config_keys, do: key
+  defp normalize_config_key("enabled"), do: :enabled
+  defp normalize_config_key("service_identity"), do: :service_identity
+  defp normalize_config_key("token"), do: :token
+  defp normalize_config_key("token_hash"), do: :token_hash
+  defp normalize_config_key(_key), do: nil
 
   defp value(config, key) do
     Map.get(config, key, Map.get(config, Atom.to_string(key)))

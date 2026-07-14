@@ -16,6 +16,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.ExecutionAdmission.LeaseRelease
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
+  alias FavnOrchestrator.RunEvents.EventType
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.AuthCodec
   alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
@@ -65,6 +66,7 @@ defmodule Favn.Storage.Adapter.SQLite do
     :node_key
   ]
   @read_model_chunk_size 50
+  @max_event_type_filters 32
 
   @impl true
   def child_spec(opts) when is_list(opts) do
@@ -361,8 +363,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   def list_target_runs(manifest_version_id, target_kind, target_ref, run_opts, opts)
       when is_binary(manifest_version_id) and target_kind in [:asset, :pipeline] and
              is_list(run_opts) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts),
-         :ok <- repair_missing_run_query_metadata(repo) do
+    with {:ok, repo} <- repo_name(opts) do
       {sql, params} =
         list_target_runs_query(manifest_version_id, target_kind, target_ref, run_opts)
 
@@ -375,8 +376,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   @impl true
   def list_execution_group_runs(group_id, opts) when is_binary(group_id) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts),
-         :ok <- repair_missing_run_query_metadata(repo) do
+    with {:ok, repo} <- repo_name(opts) do
       sql =
         run_snapshot_select() <>
           " WHERE r.root_execution_group_id = ?1 ORDER BY CASE WHEN r.run_id = r.root_execution_group_id THEN 0 ELSE 1 END, r.inserted_at ASC, r.run_id ASC"
@@ -390,8 +390,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   @impl true
   def list_execution_group_run_ids(group_id, opts) when is_binary(group_id) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts),
-         :ok <- repair_missing_run_query_metadata(repo) do
+    with {:ok, repo} <- repo_name(opts) do
       sql =
         "SELECT run_id FROM favn_runs WHERE root_execution_group_id = ?1 ORDER BY CASE WHEN run_id = root_execution_group_id THEN 0 ELSE 1 END, inserted_at ASC, run_id ASC"
 
@@ -405,7 +404,6 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def list_execution_groups(group_opts, opts) when is_list(group_opts) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
-         :ok <- repair_missing_run_query_metadata(repo),
          {:ok, query, params, page_opts} <- execution_groups_query(group_opts) do
       case SQL.query(repo, query, params) do
         {:ok, %{rows: rows}} ->
@@ -939,18 +937,26 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   @impl true
   def put_backfill_window(%BackfillWindow{} = window, opts) when is_list(opts) do
-    with {:ok, repo} <- repo_name(opts) do
-      with :ok <- upsert_backfill_windows(repo, [window]) do
-        refresh_execution_group_summary(repo, window.backfill_run_id)
-      end
-    end
+    put_backfill_windows([window], opts)
   end
 
   @impl true
   def put_backfill_windows(windows, opts) when is_list(windows) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
-      with :ok <- upsert_backfill_windows(repo, windows) do
-        refresh_execution_group_summaries(repo, Enum.map(windows, & &1.backfill_run_id))
+      backfill_run_ids = Enum.map(windows, & &1.backfill_run_id)
+
+      repo.transact(fn ->
+        with :ok <- upsert_backfill_windows(repo, windows),
+             :ok <- rebuild_backfill_progress_for_ids(repo, backfill_run_ids),
+             :ok <- refresh_execution_group_summaries(repo, backfill_run_ids) do
+          {:ok, :ok}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
       end
     end
   end
@@ -1019,7 +1025,8 @@ defmodule Favn.Storage.Adapter.SQLite do
              :ok <- upsert_backfill_windows(repo, [window]),
              :ok <- upsert_asset_window_states(repo, asset_window_states),
              {:ok, progress} <-
-               upsert_backfill_progress_after_window_change(repo, window, old_status) do
+               upsert_backfill_progress_after_window_change(repo, window, old_status),
+             :ok <- refresh_execution_group_summary(repo, window.backfill_run_id) do
           {:ok, progress}
         else
           {:error, reason} -> repo.rollback(reason)
@@ -1309,6 +1316,11 @@ defmodule Favn.Storage.Adapter.SQLite do
                rebuild_backfill_progress_for_ids(
                  repo,
                  affected_ids ++ Enum.map(backfill_windows, & &1.backfill_run_id)
+               ),
+             :ok <-
+               refresh_execution_group_summaries(
+                 repo,
+                 affected_ids ++ Enum.map(backfill_windows, & &1.backfill_run_id)
                ) do
           {:ok, :ok}
         else
@@ -1347,7 +1359,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         encode_datetime(actor.updated_at)
       ]
 
-      query_ok(repo, sql, params)
+      put_auth_actor_record(repo, sql, params)
     end
   end
 
@@ -1662,6 +1674,21 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp auth_actor_columns do
     "actor_id, username, display_name, roles_blob, status, inserted_at, updated_at"
+  end
+
+  defp put_auth_actor_record(repo, sql, params) do
+    case SQL.query(repo, sql, params) do
+      {:ok, _result} ->
+        :ok
+
+      {:error, %Exqlite.Error{message: message}}
+      when is_binary(message) and
+             message == "UNIQUE constraint failed: favn_auth_actors.username" ->
+        {:error, :username_taken}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp auth_session_columns do
@@ -2889,8 +2916,10 @@ defmodule Favn.Storage.Adapter.SQLite do
 
       sql =
         """
-        INSERT INTO favn_run_events (run_id, sequence, global_sequence, occurred_at, event_blob)
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        INSERT INTO favn_run_events (
+          run_id, sequence, global_sequence, occurred_at, event_type, asset_step_id, event_blob
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         """
 
       case SQL.query(repo, sql, [
@@ -2898,6 +2927,8 @@ defmodule Favn.Storage.Adapter.SQLite do
              event.sequence,
              global_sequence,
              event.occurred_at,
+             event_type_name(event.event_type),
+             event_asset_step_id(event),
              encode_run_event(event)
            ]) do
         {:ok, _} ->
@@ -3650,7 +3681,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp upsert_execution_group_summary(repo, summary) do
-    with {:ok, activity_seq} <- execution_group_activity_seq(repo, summary.id) do
+    with {:ok, activity_seq} <- execution_group_activity_seq(repo, summary.id),
+         {:ok, payload} <- ExecutionGroupSummary.encode(summary) do
       sql = """
       INSERT INTO favn_execution_group_summaries (
         group_id, root_run_id, root_status, status, trigger_type, target_refs_text,
@@ -3681,7 +3713,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         summary.failure_count > 0,
         summary.active?,
         activity_seq,
-        ExecutionGroupSummary.encode(summary),
+        payload,
         encode_datetime(DateTime.utc_now())
       ]
 
@@ -3780,7 +3812,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp list_runs_query(run_opts) do
     limit = Keyword.get(run_opts, :limit)
-    filters = Keyword.take(run_opts, [:status, :manifest_version_id])
+    filters = Keyword.take(run_opts, [:status, :manifest_version_id, :pipeline_module])
 
     {where_sql, params} = run_filter_sql(filters)
     limit_sql = if is_integer(limit) and limit > 0, do: " LIMIT ?#{length(params) + 1}", else: ""
@@ -4003,44 +4035,177 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp execution_group_events_query(group_id, opts) do
+    with {:ok, query_opts} <- validate_execution_group_event_opts(opts) do
+      clauses = ["r.root_execution_group_id = ?1"]
+      params = [group_id]
+
+      {clauses, params} =
+        case query_opts.after_global_sequence do
+          nil ->
+            {clauses, params}
+
+          sequence ->
+            {clauses ++ ["e.global_sequence > ?#{length(params) + 1}"], params ++ [sequence]}
+        end
+
+      {clauses, params} =
+        event_type_filter_clause(clauses, params, query_opts.event_types)
+
+      execution_group_events_select(
+        clauses,
+        params,
+        query_opts.order,
+        query_opts.per_run_limit,
+        query_opts.limit,
+        query_opts.latest_per_step
+      )
+    end
+  end
+
+  defp validate_execution_group_event_opts(opts) do
     after_global_sequence = Keyword.get(opts, :after_global_sequence)
     limit = Keyword.get(opts, :limit)
-    order = event_order(opts)
+    per_run_limit = Keyword.get(opts, :per_run_limit)
+    latest_per_step = Keyword.get(opts, :latest_per_step, false)
 
-    cond do
-      not is_nil(after_global_sequence) and
-          (not is_integer(after_global_sequence) or after_global_sequence < 0) ->
-        {:error, :invalid_opts}
+    with :ok <- validate_optional_non_negative_integer(after_global_sequence),
+         :ok <- validate_optional_positive_integer(limit),
+         :ok <- validate_optional_positive_integer(per_run_limit),
+         :ok <- validate_latest_per_step(latest_per_step, per_run_limit),
+         {:ok, event_types} <- normalize_event_type_filters(Keyword.get(opts, :event_types)),
+         {:ok, order} <- validated_event_order(opts) do
+      {:ok,
+       %{
+         after_global_sequence: after_global_sequence,
+         limit: limit,
+         per_run_limit: per_run_limit,
+         latest_per_step: latest_per_step,
+         event_types: event_types,
+         order: order
+       }}
+    end
+  end
 
-      not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->
-        {:error, :invalid_opts}
+  defp event_type_filter_clause(clauses, params, nil), do: {clauses, params}
 
-      is_nil(order) ->
-        {:error, :invalid_opts}
+  defp event_type_filter_clause(clauses, params, event_types) do
+    placeholders =
+      event_types
+      |> Enum.with_index(length(params) + 1)
+      |> Enum.map_join(", ", fn {_event_type, index} -> "?#{index}" end)
 
-      true ->
-        clauses = ["r.root_execution_group_id = ?1"]
-        params = [group_id]
+    {clauses ++ ["e.event_type IN (#{placeholders})"], params ++ event_types}
+  end
 
-        {clauses, params} =
-          case after_global_sequence do
-            sequence when is_integer(sequence) and sequence >= 0 ->
-              {clauses ++ ["e.global_sequence > ?#{length(params) + 1}"], params ++ [sequence]}
+  defp normalize_event_type_filters(nil), do: {:ok, nil}
 
-            _other ->
-              {clauses, params}
-          end
+  defp normalize_event_type_filters(event_types)
+       when is_list(event_types) and event_types != [] and
+              length(event_types) <= @max_event_type_filters do
+    if Enum.all?(event_types, &EventType.line_safe?/1),
+      do: {:ok, Enum.map(event_types, &event_type_name/1)},
+      else: {:error, :invalid_opts}
+  end
 
-        {limit_sql, params} = maybe_limit_clause(params, limit)
+  defp normalize_event_type_filters(_event_types), do: {:error, :invalid_opts}
 
-        {:ok,
-         """
-         SELECT e.global_sequence, e.event_blob
-         FROM favn_run_events AS e
-         INNER JOIN favn_runs AS r ON r.run_id = e.run_id
-         WHERE #{Enum.join(clauses, " AND ")}
-         ORDER BY e.global_sequence #{order}, e.run_id ASC, e.sequence ASC#{limit_sql}
-         """, params}
+  defp event_type_name(value) when is_atom(value), do: Atom.to_string(value)
+  defp event_type_name(value) when is_binary(value), do: value
+
+  defp event_asset_step_id(event) do
+    data = Map.get(event, :data, %{})
+
+    case Map.get(data, :asset_step_id) || Map.get(data, "asset_step_id") do
+      asset_step_id when is_binary(asset_step_id) and asset_step_id != "" -> asset_step_id
+      _missing -> nil
+    end
+  end
+
+  defp execution_group_events_select(clauses, params, order, _per_run_limit, limit, true) do
+    {limit_sql, params} = maybe_limit_clause(params, limit)
+
+    {:ok,
+     """
+     WITH ranked_events AS (
+       SELECT e.global_sequence,
+              e.event_blob,
+              e.run_id,
+              e.sequence,
+              ROW_NUMBER() OVER (
+                PARTITION BY e.run_id,
+                  COALESCE(e.asset_step_id, '__event__:' || CAST(e.global_sequence AS TEXT))
+                ORDER BY e.global_sequence DESC, e.sequence DESC
+              ) AS step_rank
+       FROM favn_run_events AS e
+       INNER JOIN favn_runs AS r ON r.run_id = e.run_id
+       WHERE #{Enum.join(clauses, " AND ")}
+     )
+     SELECT global_sequence, event_blob
+     FROM ranked_events
+     WHERE step_rank = 1
+     ORDER BY global_sequence #{order}, run_id ASC, sequence ASC#{limit_sql}
+     """, params}
+  end
+
+  defp execution_group_events_select(clauses, params, order, nil, limit, false) do
+    {limit_sql, params} = maybe_limit_clause(params, limit)
+
+    {:ok,
+     """
+     SELECT e.global_sequence, e.event_blob
+     FROM favn_run_events AS e
+     INNER JOIN favn_runs AS r ON r.run_id = e.run_id
+     WHERE #{Enum.join(clauses, " AND ")}
+     ORDER BY e.global_sequence #{order}, e.run_id ASC, e.sequence ASC#{limit_sql}
+     """, params}
+  end
+
+  defp execution_group_events_select(clauses, params, order, per_run_limit, limit, false) do
+    per_run_placeholder = "?#{length(params) + 1}"
+    params = params ++ [per_run_limit]
+    {limit_sql, params} = maybe_limit_clause(params, limit)
+
+    {:ok,
+     """
+     WITH ranked_events AS (
+       SELECT e.global_sequence,
+              e.event_blob,
+              e.run_id,
+              e.sequence,
+              ROW_NUMBER() OVER (PARTITION BY e.run_id ORDER BY e.sequence DESC) AS run_rank
+       FROM favn_run_events AS e
+       INNER JOIN favn_runs AS r ON r.run_id = e.run_id
+       WHERE #{Enum.join(clauses, " AND ")}
+     )
+     SELECT global_sequence, event_blob
+     FROM ranked_events
+     WHERE run_rank <= #{per_run_placeholder}
+     ORDER BY global_sequence #{order}, run_id ASC, sequence ASC#{limit_sql}
+     """, params}
+  end
+
+  defp validate_optional_non_negative_integer(nil), do: :ok
+
+  defp validate_optional_non_negative_integer(value) when is_integer(value) and value >= 0,
+    do: :ok
+
+  defp validate_optional_non_negative_integer(_value), do: {:error, :invalid_opts}
+
+  defp validate_optional_positive_integer(nil), do: :ok
+
+  defp validate_optional_positive_integer(value) when is_integer(value) and value > 0,
+    do: :ok
+
+  defp validate_optional_positive_integer(_value), do: {:error, :invalid_opts}
+
+  defp validate_latest_per_step(value, nil) when is_boolean(value), do: :ok
+  defp validate_latest_per_step(false, _per_run_limit), do: :ok
+  defp validate_latest_per_step(_value, _per_run_limit), do: {:error, :invalid_opts}
+
+  defp validated_event_order(opts) do
+    case event_order(opts) do
+      nil -> {:error, :invalid_opts}
+      order -> {:ok, order}
     end
   end
 
@@ -4133,6 +4298,10 @@ defmodule Favn.Storage.Adapter.SQLite do
       {:manifest_version_id, manifest_version_id}, {clauses, params} ->
         {clauses ++ ["r.manifest_version_id = ?#{length(params) + 1}"],
          params ++ [manifest_version_id]}
+
+      {:pipeline_module, pipeline_module}, {clauses, params} ->
+        {clauses ++ ["r.pipeline_submit_ref_text = ?#{length(params) + 1}"],
+         params ++ [RunQuery.public_ref(pipeline_module)]}
     end)
     |> case do
       {[], params} -> {"", params}

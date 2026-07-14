@@ -7,23 +7,14 @@ defmodule FavnOrchestrator.Backfill.Repair do
   scoped derived read models.
   """
 
-  alias Favn.Run.AssetResult
   alias Favn.Window.Anchor
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
-  alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Backfill.CoverageEvidence
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
 
   @terminal_statuses [:ok, :error, :cancelled, :timed_out]
-  @required_coverage_keys [
-    :source_key,
-    :segment_key_hash,
-    :coverage_until,
-    :window_kind,
-    :timezone
-  ]
-  @raw_source_keys [:segment_id, :source_id, :source_secret, :token, :secret]
 
   @type report :: map()
 
@@ -32,11 +23,10 @@ defmodule FavnOrchestrator.Backfill.Repair do
     apply? = Keyword.get(opts, :apply, false)
 
     with :ok <- validate_scope_selection(opts),
-         {:ok, raw_scope} <- normalize_scope(opts),
-         {:ok, runs} <- Storage.list_runs(),
-         {:ok, scope} <- resolve_scope(raw_scope, runs),
-         {:ok, plan} <- plan(runs, scope),
+         {:ok, scope} <- normalize_scope(opts),
          {:ok, replacement_scope} <- replacement_scope(apply?, scope, opts),
+         {:ok, runs} <- load_runs(scope),
+         {:ok, plan} <- plan(runs, scope),
          :ok <- maybe_apply(apply?, replacement_scope, plan) do
       {:ok, report(apply?, scope, plan)}
     end
@@ -83,12 +73,19 @@ defmodule FavnOrchestrator.Backfill.Repair do
   end
 
   defp normalize_scope(opts) do
-    scope =
-      []
-      |> maybe_put_scope(:backfill_run_id, Keyword.get(opts, :backfill_run_id))
-      |> maybe_put_scope(:pipeline_module, Keyword.get(opts, :pipeline_module))
+    case {Keyword.get(opts, :backfill_run_id), Keyword.get(opts, :pipeline_module)} do
+      {id, nil} when is_binary(id) and id != "" ->
+        {:ok, [backfill_run_id: id]}
 
-    if length(scope) <= 1, do: {:ok, scope}, else: {:error, :invalid_repair_scope}
+      {nil, module} when is_atom(module) and not is_nil(module) ->
+        {:ok, [pipeline_module: module]}
+
+      {id, module} when id in [nil, ""] and module in [nil, ""] ->
+        {:ok, []}
+
+      _invalid ->
+        {:error, :invalid_repair_scope}
+    end
   end
 
   defp replacement_scope(false, _scope, _opts), do: {:ok, nil}
@@ -115,38 +112,14 @@ defmodule FavnOrchestrator.Backfill.Repair do
     end
   end
 
-  defp maybe_put_scope(scope, _key, nil), do: scope
-  defp maybe_put_scope(scope, _key, ""), do: scope
-  defp maybe_put_scope(scope, key, value), do: [{key, value} | scope]
-
-  defp resolve_scope([pipeline_module: value], runs) when is_binary(value) do
-    runs
-    |> Enum.flat_map(fn run ->
-      case pipeline_module(run) do
-        {:ok, module} -> [module]
-        {:error, _reason} -> []
-      end
-    end)
-    |> Enum.uniq()
-    |> Enum.find(&module_name_matches?(&1, value))
-    |> case do
-      nil -> {:error, :invalid_pipeline_module}
-      module -> {:ok, [pipeline_module: module]}
-    end
-  end
-
-  defp resolve_scope([pipeline_module: module], _runs) when is_atom(module),
-    do: {:ok, [pipeline_module: module]}
-
-  defp resolve_scope(scope, _runs), do: {:ok, scope}
-
-  defp module_name_matches?(module, value) when is_atom(module) and is_binary(value) do
-    Atom.to_string(module) == value or inspect(module) == value
-  end
+  defp load_runs(backfill_run_id: id), do: Storage.list_execution_group_runs(id)
+  defp load_runs(pipeline_module: module), do: Storage.list_runs(pipeline_module: module)
+  defp load_runs([]), do: Storage.list_runs()
 
   defp run_in_scope?(_run, []), do: true
-  defp run_in_scope?(%RunState{id: id}, backfill_run_id: id), do: true
-  defp run_in_scope?(%RunState{trigger: %{backfill_run_id: id}}, backfill_run_id: id), do: true
+
+  defp run_in_scope?(%RunState{} = run, backfill_run_id: id),
+    do: run.id == id or field(run.trigger, :backfill_run_id) == id
 
   defp run_in_scope?(%RunState{} = run, pipeline_module: pipeline_module),
     do: pipeline_module(run) == {:ok, pipeline_module}
@@ -155,7 +128,7 @@ defmodule FavnOrchestrator.Backfill.Repair do
 
   defp parent_by_id(runs) do
     runs
-    |> Enum.filter(&(&1.submit_kind == :backfill_pipeline))
+    |> Enum.filter(&(&1.submit_kind in [:backfill_pipeline, :backfill_asset]))
     |> Map.new(&{&1.id, &1})
   end
 
@@ -172,31 +145,8 @@ defmodule FavnOrchestrator.Backfill.Repair do
   end
 
   defp coverage_baseline(%RunState{status: :ok} = run) do
-    with {:ok, coverage} <- coverage_metadata(run),
-         :ok <- reject_raw_source_identity(coverage),
-         {:ok, pipeline_module} <- pipeline_module(run),
-         {:ok, attrs} <- normalize_coverage_attrs(coverage),
-         timestamp <- run.updated_at || run.inserted_at || DateTime.utc_now(),
-         {:ok, baseline} <-
-           CoverageBaseline.new(%{
-             baseline_id: baseline_id(run, pipeline_module, attrs),
-             pipeline_module: pipeline_module,
-             source_key: Map.fetch!(attrs, :source_key),
-             segment_key_hash: Map.fetch!(attrs, :segment_key_hash),
-             segment_key_redacted: Map.get(attrs, :segment_key_redacted),
-             window_kind: Map.fetch!(attrs, :window_kind),
-             timezone: Map.fetch!(attrs, :timezone),
-             coverage_start_at: Map.get(attrs, :coverage_start_at),
-             coverage_until: Map.fetch!(attrs, :coverage_until),
-             created_by_run_id: run.id,
-             manifest_version_id: run.manifest_version_id,
-             status: Map.get(attrs, :status, :ok),
-             metadata: Map.get(attrs, :metadata, %{}),
-             created_at: timestamp,
-             updated_at: timestamp
-           }) do
-      {:ok, baseline}
-    else
+    case CoverageEvidence.from_run(run) do
+      {:ok, baseline} -> {:ok, baseline}
       :ignore -> {:skip, nil}
       {:error, reason} -> {:skip, reason}
     end
@@ -368,7 +318,7 @@ defmodule FavnOrchestrator.Backfill.Repair do
   defp attempt_sort_key(_timestamp, run_id), do: {0, run_id || ""}
 
   defp child_context(%RunState{trigger: trigger} = run) when is_map(trigger) do
-    with :backfill <- field(trigger, :kind),
+    with kind when kind in [:backfill, "backfill"] <- field(trigger, :kind),
          backfill_run_id when is_binary(backfill_run_id) and backfill_run_id != "" <-
            field(trigger, :backfill_run_id),
          window_key when is_binary(window_key) and window_key != "" <- field(trigger, :window_key),
@@ -394,10 +344,8 @@ defmodule FavnOrchestrator.Backfill.Repair do
   end
 
   defp anchor_window(%RunState{metadata: metadata}) do
-    metadata
-    |> field(:pipeline_context)
-    |> field(:anchor_window)
-    |> normalize_anchor()
+    pipeline_anchor = metadata |> field(:pipeline_context) |> field(:anchor_window)
+    normalize_anchor(pipeline_anchor || field(metadata, :selected_window))
   end
 
   defp normalize_anchor(%Anchor{} = anchor), do: {:ok, anchor}
@@ -419,7 +367,11 @@ defmodule FavnOrchestrator.Backfill.Repair do
   defp normalize_anchor(_anchor), do: {:error, :missing_anchor_window_metadata}
 
   defp normalize_kind(value) when value in [:hour, :day, :month, :year], do: {:ok, value}
-  defp normalize_kind(value) when is_binary(value), do: {:ok, String.to_existing_atom(value)}
+  defp normalize_kind("hour"), do: {:ok, :hour}
+  defp normalize_kind("day"), do: {:ok, :day}
+  defp normalize_kind("month"), do: {:ok, :month}
+  defp normalize_kind("year"), do: {:ok, :year}
+  defp normalize_kind(value), do: {:error, {:invalid_window_kind, value}}
 
   defp window_status(%RunState{status: status}) when status in @terminal_statuses, do: status
   defp window_status(%RunState{}), do: :running
@@ -428,95 +380,7 @@ defmodule FavnOrchestrator.Backfill.Repair do
     metadata |> field(:backfill) |> field(:coverage_baseline_id)
   end
 
-  defp coverage_metadata(%RunState{} = run) do
-    [run.result |> field(:metadata) |> field(:coverage), field(run.metadata, :coverage)]
-    |> Enum.find(&is_map/1)
-    |> case do
-      nil -> :ignore
-      coverage -> require_coverage_keys(coverage)
-    end
-  end
-
-  defp require_coverage_keys(coverage) do
-    missing = Enum.filter(@required_coverage_keys, &(field(coverage, &1) in [nil, ""]))
-
-    if missing == [],
-      do: {:ok, coverage},
-      else: {:error, {:missing_required_coverage_keys, missing}}
-  end
-
-  defp normalize_coverage_attrs(coverage) do
-    attrs =
-      [
-        :source_key,
-        :segment_key_hash,
-        :segment_key_redacted,
-        :coverage_until,
-        :coverage_start_at,
-        :window_kind,
-        :timezone,
-        :status,
-        :metadata
-      ]
-      |> Enum.reduce(%{}, fn key, acc ->
-        case field(coverage, key) do
-          nil -> acc
-          value -> Map.put(acc, key, value)
-        end
-      end)
-
-    {:ok, attrs}
-  end
-
-  defp reject_raw_source_identity(value) do
-    if raw_source_identity?(value), do: {:error, :raw_source_identity_not_allowed}, else: :ok
-  end
-
-  defp raw_source_identity?(%{__struct__: _}), do: false
-
-  defp raw_source_identity?(value) when is_map(value),
-    do:
-      Enum.any?(value, fn {key, nested} ->
-        raw_source_key?(key) or raw_source_identity?(nested)
-      end)
-
-  defp raw_source_identity?(value) when is_list(value),
-    do: Enum.any?(value, &raw_source_identity?/1)
-
-  defp raw_source_identity?(_value), do: false
-  defp raw_source_key?(key) when is_atom(key), do: key in @raw_source_keys
-
-  defp raw_source_key?(key) when is_binary(key),
-    do: Enum.any?(@raw_source_keys, &(Atom.to_string(&1) == key))
-
-  defp raw_source_key?(_key), do: false
-
-  defp baseline_id(%RunState{} = run, pipeline_module, attrs) do
-    hash_input =
-      {:coverage_baseline, pipeline_module, attrs.source_key, attrs.segment_key_hash,
-       attrs.window_kind, attrs.timezone, attrs.coverage_until, run.manifest_version_id}
-
-    "baseline_" <>
-      (:crypto.hash(:sha256, :erlang.term_to_binary(hash_input)) |> Base.encode16(case: :lower))
-  end
-
-  defp pipeline_module(%RunState{metadata: metadata}) when is_map(metadata) do
-    cond do
-      valid_module?(field(metadata, :pipeline_submit_ref)) ->
-        {:ok, field(metadata, :pipeline_submit_ref)}
-
-      valid_module?(field(field(metadata, :pipeline_context), :module)) ->
-        {:ok, field(field(metadata, :pipeline_context), :module)}
-
-      valid_module?(field(field(metadata, :pipeline_context), :pipeline_module)) ->
-        {:ok, field(field(metadata, :pipeline_context), :pipeline_module)}
-
-      true ->
-        {:error, :missing_pipeline_module}
-    end
-  end
-
-  defp valid_module?(module), do: is_atom(module) and not is_nil(module)
+  defp pipeline_module(%RunState{} = run), do: CoverageEvidence.pipeline_module(run)
 
   defp asset_results(%RunState{status: status, result: %{asset_results: results}})
        when status in @terminal_statuses and is_list(results), do: results
@@ -526,37 +390,36 @@ defmodule FavnOrchestrator.Backfill.Repair do
 
   defp asset_results(_run), do: []
 
-  defp asset_result_ref(%AssetResult{ref: {module, name}}) when is_atom(module) and is_atom(name),
-    do: {:ok, {module, name}}
-
-  defp asset_result_ref(%{ref: {module, name}}) when is_atom(module) and is_atom(name),
-    do: {:ok, {module, name}}
+  defp asset_result_ref(result) when is_map(result) do
+    case field(result, :ref) do
+      {module, name} when is_atom(module) and is_atom(name) -> {:ok, {module, name}}
+      _invalid -> {:error, :invalid_asset_result_ref}
+    end
+  end
 
   defp asset_result_ref(_result), do: {:error, :invalid_asset_result_ref}
 
-  defp asset_result_status(%AssetResult{status: status}), do: normalize_status(status)
-  defp asset_result_status(%{status: status}), do: normalize_status(status)
-  defp asset_result_status(_result), do: {:error, :invalid_asset_result_status}
+  defp asset_result_status(result), do: result |> field(:status) |> normalize_status()
 
   defp normalize_status(status) when status in @terminal_statuses, do: {:ok, status}
-
-  defp normalize_status(status) when status in ["ok", "error", "cancelled", "timed_out"],
-    do: {:ok, String.to_existing_atom(status)}
-
+  defp normalize_status("ok"), do: {:ok, :ok}
+  defp normalize_status("error"), do: {:ok, :error}
+  defp normalize_status("cancelled"), do: {:ok, :cancelled}
+  defp normalize_status("timed_out"), do: {:ok, :timed_out}
   defp normalize_status(_status), do: {:error, :invalid_asset_result_status}
 
-  defp asset_result_metadata(%AssetResult{meta: metadata}) when is_map(metadata), do: metadata
-  defp asset_result_metadata(%{meta: metadata}) when is_map(metadata), do: metadata
-  defp asset_result_metadata(%{metadata: metadata}) when is_map(metadata), do: metadata
-  defp asset_result_metadata(_result), do: %{}
+  defp asset_result_metadata(result) do
+    case field(result, :meta) || field(result, :metadata) do
+      metadata when is_map(metadata) -> metadata
+      _invalid -> %{}
+    end
+  end
 
-  defp asset_result_error(%AssetResult{error: error}), do: error
-  defp asset_result_error(%{error: error}), do: error
-  defp asset_result_error(_result), do: nil
+  defp asset_result_error(result), do: field(result, :error)
 
   defp rows_written(metadata) when is_map(metadata) do
     Enum.find_value([:rows_written, :row_count, :rows], fn key ->
-      case Map.get(metadata, key) do
+      case field(metadata, key) do
         value when is_integer(value) and value >= 0 -> value
         _ -> nil
       end

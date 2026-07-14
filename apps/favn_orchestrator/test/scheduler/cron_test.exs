@@ -65,6 +65,51 @@ defmodule FavnOrchestrator.Scheduler.CronTest do
            ]
   end
 
+  test "wildcard steps start at the minimum for one-based fields" do
+    assert Cron.matches?("0 0 */2 * *", ~U[2026-04-01 00:00:00Z])
+    refute Cron.matches?("0 0 */2 * *", ~U[2026-04-02 00:00:00Z])
+    assert Cron.matches?("0 0 */2 * *", ~U[2026-04-03 00:00:00Z])
+  end
+
+  test "invalid occurrence limits cannot accidentally request an unbounded range" do
+    assert Cron.occurrences_between(
+             "* * * * * *",
+             "Etc/UTC",
+             ~U[2026-04-27 12:00:00Z],
+             ~U[2026-04-27 12:00:10Z],
+             limit: 0
+           ) == []
+
+    assert Cron.occurrences_between(
+             "* * * * * *",
+             "Etc/UTC",
+             ~U[2026-04-27 12:00:00Z],
+             ~U[2026-04-27 12:00:10Z],
+             limit: :invalid
+           ) == []
+  end
+
+  test "leap-day schedules search beyond one year" do
+    now = ~U[2026-03-01 00:00:00Z]
+
+    assert Cron.latest_due("0 0 29 2 *", "Etc/UTC", now) == ~U[2024-02-29 00:00:00Z]
+    assert Cron.next_due("0 0 29 2 *", "Etc/UTC", now) == ~U[2028-02-29 00:00:00Z]
+  end
+
+  test "invalid timezones return no occurrence" do
+    now = ~U[2026-03-01 00:00:00Z]
+
+    assert Cron.latest_due("0 0 * * *", "Invalid/Timezone", now) == nil
+    assert Cron.next_due("0 0 * * *", "Invalid/Timezone", now) == nil
+
+    assert Cron.occurrences_between(
+             "0 0 * * *",
+             "Invalid/Timezone",
+             ~U[2026-02-28 00:00:00Z],
+             now
+           ) == []
+  end
+
   test "capped high-frequency occurrence generation does not need a full day of candidates" do
     assert Cron.occurrences_between(
              "* * * * * *",

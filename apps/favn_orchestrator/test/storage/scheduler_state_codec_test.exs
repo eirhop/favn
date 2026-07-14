@@ -130,6 +130,12 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
     assert decoded.last_due_at == utc
   end
 
+  test "preserves an unset activation state for migration bootstrapping" do
+    assert {:ok, encoded} = SchedulerStateCodec.encode_state(%{activation_state: nil})
+    assert Jason.decode!(encoded)["state"]["activation_state"] == nil
+    assert {:ok, %{activation_state: nil}} = SchedulerStateCodec.decode_state(encoded)
+  end
+
   test "builds scheduler state struct from row identity and decoded state" do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
@@ -208,6 +214,23 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
 
     assert {:error, {:invalid_scheduler_state_field, :last_scheduler_error, _}} =
              SchedulerStateCodec.decode_state(invalid_scheduler_error)
+
+    scheduler_error_without_timestamp =
+      Jason.encode!(%{
+        "format" => "favn.scheduler_state.storage",
+        "schema_version" => 1,
+        "state" => %{
+          "last_scheduler_error" => %{
+            "occurred_at" => nil,
+            "phase" => "submit_run",
+            "code" => "invalid_window",
+            "message" => "Invalid window"
+          }
+        }
+      })
+
+    assert {:error, {:invalid_scheduler_state_field, :last_scheduler_error, _}} =
+             SchedulerStateCodec.decode_state(scheduler_error_without_timestamp)
 
     assert {:error, {:invalid_scheduler_state_json, _}} =
              SchedulerStateCodec.decode_state("not-json")

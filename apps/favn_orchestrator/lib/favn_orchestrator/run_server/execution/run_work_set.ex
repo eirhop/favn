@@ -7,13 +7,14 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSet do
   in-flight metadata by hand.
   """
 
-  alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.CancellationOutcome
+  alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage.JsonSafe
 
   @type execution_id :: String.t()
   @type entry :: map()
@@ -127,12 +128,13 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSet do
     next_work_set =
       Enum.reduce(cancelled_ids, work_set, fn id, acc -> elem(complete_entry(acc, id), 1) end)
 
+    ledger_result =
+      RunExecutionOwnership.persist_cancel_outcomes(run_state.id, cancel_results, reason)
+
     run_state =
       run_state
-      |> tap(fn run ->
-        _ = RunExecutionOwnership.persist_cancel_outcomes(run.id, cancel_results, reason)
-      end)
       |> put_cancel_outcomes(cancel_results)
+      |> put_cancellation_ledger_result(ledger_result)
       |> sync_run_metadata(next_work_set)
 
     {run_state, next_work_set}
@@ -142,6 +144,22 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSet do
     outcomes = Enum.map(cancel_results, &CancellationOutcome.to_map/1)
     metadata = Map.put(run_state.metadata, :cancel_outcomes, outcomes)
     RunState.transition(run_state, metadata: metadata)
+  end
+
+  defp put_cancellation_ledger_result(%RunState{} = run_state, :ok) do
+    metadata = Map.delete(run_state.metadata, :cancellation_ledger_persist_error)
+    %{run_state | metadata: metadata} |> RunState.with_snapshot_hash()
+  end
+
+  defp put_cancellation_ledger_result(%RunState{} = run_state, {:error, reason}) do
+    metadata =
+      Map.put(
+        run_state.metadata,
+        :cancellation_ledger_persist_error,
+        JsonSafe.error(reason)
+      )
+
+    %{run_state | metadata: metadata} |> RunState.with_snapshot_hash()
   end
 
   @doc "Releases an entry admission lease. Missing leases are already clean."
@@ -177,7 +195,11 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSet do
   @doc "Reads in-flight execution ids from run metadata."
   @spec inflight_execution_ids(RunState.t()) :: [execution_id()]
   def inflight_execution_ids(%RunState{} = run_state) do
-    case Map.get(run_state.metadata, :in_flight_execution_ids, []) do
+    case Map.get(
+           run_state.metadata,
+           :in_flight_execution_ids,
+           Map.get(run_state.metadata, "in_flight_execution_ids", [])
+         ) do
       ids when is_list(ids) -> Enum.filter(ids, &is_binary/1)
       _other -> []
     end

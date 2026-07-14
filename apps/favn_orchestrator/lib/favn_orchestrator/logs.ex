@@ -5,6 +5,8 @@ defmodule FavnOrchestrator.Logs do
 
   require Logger
 
+  alias Favn.Log.Filter
+
   @global_topic "favn:orchestrator:logs"
   @run_topic_prefix "favn:orchestrator:logs:run:"
   @asset_topic_prefix "favn:orchestrator:logs:asset:"
@@ -13,14 +15,15 @@ defmodule FavnOrchestrator.Logs do
   def subscribe_logs(filter \\ default_filter()) do
     with {:ok, normalized_filter} <- normalize_filter(filter),
          topics <- subscription_topics(normalized_filter),
-         {:ok, pid} <- start_subscription_forwarder(self(), topics, normalized_filter) do
-      {:ok, %{pid: pid, topics: topics, filter: normalized_filter}}
+         {:ok, subscription} <- start_subscription_forwarder(self(), topics, normalized_filter) do
+      {:ok, Map.merge(subscription, %{topics: topics, filter: normalized_filter})}
     end
   end
 
   @spec unsubscribe_logs(term()) :: :ok | {:error, :invalid_log_subscription}
-  def unsubscribe_logs(%{pid: pid}) when is_pid(pid) do
-    send(pid, :stop)
+  def unsubscribe_logs(%{pid: pid, stop_ref: stop_ref})
+      when is_pid(pid) and is_reference(stop_ref) do
+    send(pid, {:stop, stop_ref})
     :ok
   end
 
@@ -76,6 +79,7 @@ defmodule FavnOrchestrator.Logs do
 
   defp start_subscription_forwarder(owner, topics, filter) do
     parent = self()
+    stop_ref = make_ref()
 
     pid =
       spawn(fn ->
@@ -84,7 +88,7 @@ defmodule FavnOrchestrator.Logs do
         case subscribe_topics(topics) do
           :ok ->
             send(parent, {__MODULE__, self(), :ready})
-            subscription_loop(owner, owner_ref, filter)
+            subscription_loop(owner, owner_ref, stop_ref, filter)
 
           {:error, reason} ->
             send(parent, {__MODULE__, self(), {:error, reason}})
@@ -92,23 +96,25 @@ defmodule FavnOrchestrator.Logs do
       end)
 
     receive do
-      {__MODULE__, ^pid, :ready} -> {:ok, pid}
+      {__MODULE__, ^pid, :ready} -> {:ok, %{pid: pid, stop_ref: stop_ref}}
       {__MODULE__, ^pid, {:error, reason}} -> {:error, reason}
     after
-      1_000 -> {:error, :log_subscription_timeout}
+      1_000 ->
+        Process.exit(pid, :kill)
+        {:error, :log_subscription_timeout}
     end
   end
 
-  defp subscription_loop(owner, owner_ref, filter) do
+  defp subscription_loop(owner, owner_ref, stop_ref, filter) do
     receive do
       {:favn_log_entry, entry} = message ->
         if matches_filter?(entry, filter), do: send(owner, message)
-        subscription_loop(owner, owner_ref, filter)
+        subscription_loop(owner, owner_ref, stop_ref, filter)
 
       {:DOWN, ^owner_ref, :process, _pid, _reason} ->
         :ok
 
-      :stop ->
+      {:stop, ^stop_ref} ->
         :ok
     end
   end
@@ -154,34 +160,18 @@ defmodule FavnOrchestrator.Logs do
   end
 
   defp normalize_filter(filter) do
-    case Code.ensure_loaded(Favn.Log.Filter) do
-      {:module, Favn.Log.Filter} -> {:ok, Favn.Log.Filter.normalize(filter) |> Map.from_struct()}
-      _other -> {:ok, normalize_filter_map(filter)}
+    normalized = filter |> Filter.normalize() |> Map.from_struct()
+
+    with :ok <- validate_optional_binary(normalized, :run_id),
+         :ok <- validate_optional_binary(normalized, :asset_step_id),
+         :ok <- validate_optional_binary(normalized, :runner_execution_id),
+         :ok <- validate_optional_datetime(normalized, :since),
+         :ok <- validate_optional_datetime(normalized, :until),
+         :ok <- validate_datetime_order(normalized) do
+      {:ok, normalized}
     end
   rescue
     error -> {:error, {:invalid_log_filter, error}}
-  end
-
-  defp normalize_filter_map(filter) when is_list(filter),
-    do: filter |> Map.new() |> normalize_filter_map()
-
-  defp normalize_filter_map(%_{} = filter),
-    do: filter |> Map.from_struct() |> normalize_filter_map()
-
-  defp normalize_filter_map(filter) when is_map(filter) do
-    filter
-    |> Enum.map(fn {key, value} -> {normalize_filter_key(key), value} end)
-    |> Map.new()
-  end
-
-  defp normalize_filter_map(_filter), do: %{}
-
-  defp normalize_filter_key(key) when is_atom(key), do: key
-
-  defp normalize_filter_key(key) when is_binary(key) do
-    String.to_existing_atom(key)
-  rescue
-    ArgumentError -> key
   end
 
   defp entry_run_id(entry), do: field(entry, :run_id)
@@ -193,10 +183,29 @@ defmodule FavnOrchestrator.Logs do
 
   defp field(_value, _key), do: nil
 
-  defp default_filter do
-    case Code.ensure_loaded(Favn.Log.Filter) do
-      {:module, Favn.Log.Filter} -> struct(Favn.Log.Filter)
-      _other -> %{}
+  defp default_filter, do: %Filter{}
+
+  defp validate_optional_binary(filter, field) do
+    case Map.get(filter, field) do
+      nil -> :ok
+      value when is_binary(value) and value != "" and byte_size(value) <= 512 -> :ok
+      value -> {:error, {:invalid_log_filter_field, field, value}}
     end
   end
+
+  defp validate_optional_datetime(filter, field) do
+    case Map.get(filter, field) do
+      nil -> :ok
+      %DateTime{} -> :ok
+      value -> {:error, {:invalid_log_filter_field, field, value}}
+    end
+  end
+
+  defp validate_datetime_order(%{since: %DateTime{} = since, until: %DateTime{} = until}) do
+    if DateTime.compare(since, until) in [:lt, :eq],
+      do: :ok,
+      else: {:error, {:invalid_log_filter_range, since, until}}
+  end
+
+  defp validate_datetime_order(_filter), do: :ok
 end

@@ -61,7 +61,11 @@ defmodule FavnOrchestrator.RefreshPolicyTest do
              RefreshPolicy.from_value({:force_assets, [@gold], include_upstream: :yes})
 
     assert {:error, {:invalid_refresh_policy, :later}} = RefreshPolicy.from_value(:later)
-    assert_raise ArgumentError, fn -> RefreshPolicy.from_value!(:later) end
+    invalid_policy = Process.get(:invalid_refresh_policy_test_value, :later)
+
+    assert_raise ArgumentError, fn ->
+      RefreshPolicy.from_value!(invalid_policy)
+    end
   end
 
   test "force expands to all planned node keys" do

@@ -36,12 +36,23 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineBackfillRequest do
     |> from_input()
   end
 
-  def from_input(input) when is_map(input) or is_list(input) do
+  def from_input(input) when is_map(input), do: normalize_input(input)
+
+  def from_input(input) when is_list(input) do
+    if Keyword.keyword?(input),
+      do: normalize_input(input),
+      else: {:error, {:invalid_operator_pipeline_backfill_request, input}}
+  end
+
+  def from_input(input), do: {:error, {:invalid_operator_pipeline_backfill_request, input}}
+
+  defp normalize_input(input) do
     refresh_value = Input.field(input, :refresh_mode, Input.field(input, :refresh, :auto))
     range_value = Input.field(input, :range, Input.field(input, :range_request))
 
     with {:ok, refresh_mode} <- Input.pipeline_refresh_mode(refresh_value),
          {:ok, range} <- Input.range(range_value),
+         {:ok, metadata} <- Input.metadata(Input.field(input, :metadata)),
          {:ok, coverage_baseline_id} <-
            Input.non_empty_binary(
              Input.field(input, :coverage_baseline_id),
@@ -56,7 +67,7 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineBackfillRequest do
        %__MODULE__{
          refresh_mode: refresh_mode,
          range: range,
-         metadata: Input.field(input, :metadata),
+         metadata: metadata,
          coverage_baseline_id: coverage_baseline_id,
          max_attempts: max_attempts,
          retry_backoff_ms: retry_backoff_ms,
@@ -64,6 +75,4 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineBackfillRequest do
        }}
     end
   end
-
-  def from_input(input), do: {:error, {:invalid_operator_pipeline_backfill_request, input}}
 end

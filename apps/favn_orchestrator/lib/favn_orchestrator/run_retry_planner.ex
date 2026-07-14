@@ -22,7 +22,6 @@ defmodule FavnOrchestrator.RunRetryPlanner do
           required(:node_keys) => [Plan.node_key()],
           optional(:backfill_run_id) => String.t(),
           optional(:window_key) => String.t(),
-          optional(:pipeline_module) => module(),
           optional(:anchor_window) => Anchor.t(),
           optional(:refresh_policy) => map()
         }
@@ -75,25 +74,22 @@ defmodule FavnOrchestrator.RunRetryPlanner do
   defp window_retry_child(%BackfillWindow{latest_attempt_run_id: run_id} = window)
        when is_binary(run_id) do
     with {:ok, source_run} <- Storage.get_run(run_id),
-         {:ok, anchor} <- window_anchor(window),
-         {:ok, child} <-
-           child_retry(source_run, %{
-             backfill_run_id: window.backfill_run_id,
-             window_key: window.window_key,
-             pipeline_module: window.pipeline_module,
-             anchor_window: anchor
-           }) do
-      {:ok, child}
+         {:ok, anchor} <- window_anchor(window) do
+      child_retry(source_run, %{
+        backfill_run_id: window.backfill_run_id,
+        window_key: window.window_key,
+        anchor_window: anchor
+      })
     end
   end
 
-  defp window_retry_child(%BackfillWindow{}), do: {:ok, nil}
+  defp window_retry_child(%BackfillWindow{window_key: window_key}),
+    do: {:error, {:backfill_window_missing_attempt, window_key}}
 
   defp child_retry(%RunState{} = source_run, context) do
     with :ok <- ensure_retryable_run(source_run),
-         {:ok, remaining_node_keys} <- remaining_node_keys(source_run) do
-      target_refs = target_refs_for_node_keys(source_run.plan, remaining_node_keys)
-
+         {:ok, remaining_node_keys} <- remaining_node_keys(source_run),
+         {:ok, target_refs} <- target_refs_for_node_keys(source_run.plan, remaining_node_keys) do
       {:ok,
        context
        |> Map.merge(%{
@@ -198,9 +194,16 @@ defmodule FavnOrchestrator.RunRetryPlanner do
   defp result_ref(_result), do: nil
 
   defp target_refs_for_node_keys(%Plan{} = plan, node_keys) do
-    node_keys
-    |> Enum.map(&plan.nodes[&1].ref)
-    |> Enum.uniq()
+    Enum.reduce_while(node_keys, {:ok, []}, fn node_key, {:ok, acc} ->
+      case Map.fetch(plan.nodes, node_key) do
+        {:ok, %{ref: ref}} -> {:cont, {:ok, [ref | acc]}}
+        _missing -> {:halt, {:error, {:invalid_retry_plan_node, node_key}}}
+      end
+    end)
+    |> case do
+      {:ok, refs} -> {:ok, refs |> Enum.reverse() |> Enum.uniq()}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp maybe_put_anchor(context, %RunState{metadata: metadata}) when is_map(metadata) do
@@ -245,10 +248,14 @@ defmodule FavnOrchestrator.RunRetryPlanner do
     @terminal_retryable_statuses
     |> Enum.reduce_while({:ok, []}, fn status, {:ok, acc} ->
       case list_backfill_windows_by_status(backfill_run_id, status) do
-        {:ok, windows} -> {:cont, {:ok, acc ++ windows}}
+        {:ok, windows} -> {:cont, {:ok, prepend_page_items(windows, acc)}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+    |> case do
+      {:ok, windows} -> {:ok, Enum.reverse(windows)}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp list_backfill_windows_by_status(backfill_run_id, status, cursor \\ nil, acc \\ []) do
@@ -257,7 +264,7 @@ defmodule FavnOrchestrator.RunRetryPlanner do
            [{:limit, 500}, {:after, cursor}]
          ) do
       {:ok, %{items: items, has_more?: true, next_cursor: next_cursor}}
-      when is_map(next_cursor) ->
+      when is_map(next_cursor) and next_cursor != cursor ->
         list_backfill_windows_by_status(
           backfill_run_id,
           status,
@@ -265,8 +272,14 @@ defmodule FavnOrchestrator.RunRetryPlanner do
           prepend_page_items(items, acc)
         )
 
-      {:ok, %{items: items}} ->
+      {:ok, %{has_more?: true}} ->
+        {:error, :invalid_backfill_window_cursor}
+
+      {:ok, %{items: items}} when is_list(items) ->
         {:ok, Enum.reverse(prepend_page_items(items, acc))}
+
+      {:ok, _invalid_page} ->
+        {:error, :invalid_backfill_window_page}
 
       {:error, _reason} = error ->
         error

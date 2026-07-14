@@ -12,6 +12,8 @@ defmodule FavnStoragePostgres.Migrations do
   alias FavnStoragePostgres.Migrations.AddBackfillState
   alias FavnStoragePostgres.Migrations.AddBackfillProgress
   alias FavnStoragePostgres.Migrations.AddRunEventGlobalSequence
+  alias FavnStoragePostgres.Migrations.AddRunEventStepIdentity
+  alias FavnStoragePostgres.Migrations.AddRunEventType
   alias FavnStoragePostgres.Migrations.AddRunGroupQueryColumns
   alias FavnStoragePostgres.Migrations.AddRunPipelineQueryColumn
   alias FavnStoragePostgres.Migrations.AddTargetStatuses
@@ -33,7 +35,9 @@ defmodule FavnStoragePostgres.Migrations do
     {20_260_524_100_000, AddExecutionGroupSummaries},
     {20_260_525_100_000, AddTargetStatuses},
     {20_260_525_110_000, AddRunPipelineQueryColumn},
-    {20_260_525_120_000, AddExecutionOwnerships}
+    {20_260_525_120_000, AddExecutionOwnerships},
+    {20_260_714_100_000, AddRunEventType},
+    {20_260_714_110_000, AddRunEventStepIdentity}
   ]
   @required_tables [
     "public.favn_manifest_versions",

@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
   alias Favn.Window.Key, as: WindowKey
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Storage.JsonSafe
+  alias FavnOrchestrator.Storage.PersistedAtom
 
   @format "favn.materialization_claim.storage.v1"
 
@@ -26,14 +27,14 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
 
   @spec decode(binary()) :: {:ok, MaterializationClaim.t()} | {:error, term()}
   def decode(payload) when is_binary(payload) do
-    decode_json_or_legacy(payload)
+    decode_json(payload)
   rescue
     exception -> {:error, {:invalid_materialization_claim_payload, exception}}
   end
 
   def decode(_payload), do: {:error, :invalid_materialization_claim_payload}
 
-  defp decode_json_or_legacy(payload) do
+  defp decode_json(payload) do
     case Jason.decode(payload) do
       {:ok, %{"format" => @format, "schema_version" => 1} = dto} ->
         from_dto(dto)
@@ -45,11 +46,7 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
         {:error, {:invalid_materialization_claim_dto, other}}
 
       {:error, reason} ->
-        if json_like?(payload) do
-          {:error, {:invalid_materialization_claim_json, reason}}
-        else
-          decode_legacy_payload(payload)
-        end
+        {:error, {:invalid_materialization_claim_json, reason}}
     end
   end
 
@@ -80,8 +77,8 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
   end
 
   defp from_dto(dto) do
-    with {:ok, asset_ref_module} <- trusted_persisted_atom(Map.get(dto, "asset_ref_module")),
-         {:ok, asset_ref_name} <- trusted_persisted_atom(Map.get(dto, "asset_ref_name")),
+    with {:ok, asset_ref_module} <- PersistedAtom.module(Map.get(dto, "asset_ref_module")),
+         {:ok, asset_ref_name} <- PersistedAtom.existing(Map.get(dto, "asset_ref_name")),
          {:ok, node_key} <- node_key_from_dto(Map.get(dto, "node_key")),
          {:ok, claimed_at} <- datetime(Map.get(dto, "claimed_at")),
          {:ok, heartbeat_at} <- optional_datetime(Map.get(dto, "heartbeat_at")),
@@ -111,22 +108,6 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
         metadata: metadata
       })
     end
-  end
-
-  defp decode_legacy_payload(payload) do
-    with {:ok, binary} <- Base.decode64(payload) do
-      binary
-      |> decode_trusted_legacy_term()
-      |> normalize()
-    else
-      :error -> {:error, :invalid_materialization_claim_payload}
-    end
-  end
-
-  defp json_like?(payload) do
-    payload
-    |> String.trim_leading()
-    |> String.starts_with?(["{", "["])
   end
 
   defp node_key_to_dto(nil), do: nil
@@ -186,8 +167,8 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
   defp ref_to_dto(_value), do: nil
 
   defp ref_from_dto(%{"module" => module, "name" => name}) do
-    with {:ok, module_atom} <- trusted_persisted_atom(module),
-         {:ok, name_atom} <- trusted_persisted_atom(name) do
+    with {:ok, module_atom} <- PersistedAtom.module(module),
+         {:ok, name_atom} <- PersistedAtom.existing(name) do
       {:ok, {module_atom, name_atom}}
     end
   end
@@ -223,23 +204,5 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
       {:ok, value} -> {:error, {:invalid_dto_field, field, value}}
       :error -> {:error, {:missing_dto_field, field}}
     end
-  end
-
-  # Materialization claims are trusted orchestrator-owned durable state. The
-  # current struct still requires atom refs, so JSON decoding recreates only
-  # atoms read from this storage payload. The long-term fix is string-backed
-  # persisted identities or a richer identity value object, not broader atom
-  # recreation; external inputs must not call this path.
-  defp trusted_persisted_atom(value) when is_binary(value), do: {:ok, String.to_atom(value)}
-  defp trusted_persisted_atom(value), do: {:error, {:invalid_atom, value}}
-
-  # Claims are internal durable state written by storage adapters, not external
-  # input. Older claim payloads used ETF and may contain consumer module atoms
-  # before those modules are loaded; keep this trusted compatibility path only
-  # until legacy claim payloads have aged out or been rewritten.
-  defp decode_trusted_legacy_term(binary) when is_binary(binary) do
-    :erlang.binary_to_term(binary, [:safe])
-  rescue
-    ArgumentError -> :erlang.binary_to_term(binary)
   end
 end

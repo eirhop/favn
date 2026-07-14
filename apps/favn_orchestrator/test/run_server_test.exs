@@ -1,35 +1,39 @@
 defmodule FavnOrchestrator.RunServerTest do
   use ExUnit.Case, async: false
 
-  alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Freshness.{Key, Policy}
   alias Favn.Manifest
   alias Favn.Manifest.Version
   alias Favn.Plan
   alias Favn.Window.Runtime
+  alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.AssetStepIdentity
+  alias FavnOrchestrator.MaterializationClaim.Identity, as: MaterializationClaimIdentity
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunServer.Execution.StageAdmission
-  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.AssetFreshnessState
-  alias FavnOrchestrator.MaterializationClaim.Identity, as: MaterializationClaimIdentity
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
   defmodule StorageAdapterDelegate do
     @moduledoc false
 
+    alias Favn.Storage.Adapter
+    alias FavnOrchestrator.Storage.Adapter.Memory
+
     defmacro __using__(opts \\ []) do
       except = Keyword.get(opts, :except, [])
 
-      for {name, arity} <- Favn.Storage.Adapter.behaviour_info(:callbacks), name not in except do
+      for {name, arity} <- Adapter.behaviour_info(:callbacks), name not in except do
         args = Macro.generate_arguments(arity, __MODULE__)
 
         quote do
           def unquote(name)(unquote_splicing(args)) do
-            apply(FavnOrchestrator.Storage.Adapter.Memory, unquote(name), [unquote_splicing(args)])
+            apply(Memory, unquote(name), [unquote_splicing(args)])
           end
         end
       end
@@ -49,6 +53,58 @@ defmodule FavnOrchestrator.RunServerTest do
           _opts
         ),
         do: {:error, :ownership_persist_failed}
+
+    def put_execution_ownership(ownership, opts),
+      do: Memory.put_execution_ownership(ownership, opts)
+  end
+
+  defmodule ExecutionTransitionFailOnceStorageAdapter do
+    @moduledoc false
+    @behaviour Favn.Storage.Adapter
+
+    use FavnOrchestrator.RunServerTest.StorageAdapterDelegate,
+      except: [:persist_run_transition]
+
+    @impl true
+    def persist_run_transition(run, event, opts) do
+      event_type = Map.get(event, :event_type) || Map.get(event, "event_type")
+
+      fail? =
+        case Application.get_env(:favn_orchestrator, :execution_transition_failure_agent) do
+          nil ->
+            false
+
+          agent ->
+            Agent.get_and_update(agent, fn remaining ->
+              {MapSet.member?(remaining, event_type), MapSet.delete(remaining, event_type)}
+            end)
+        end
+
+      if fail?,
+        do: {:error, {:injected_execution_transition_failure, event_type}},
+        else: Memory.persist_run_transition(run, event, opts)
+    end
+  end
+
+  defmodule CancellationLedgerFailingStorageAdapter do
+    @moduledoc false
+    @behaviour Favn.Storage.Adapter
+
+    use FavnOrchestrator.RunServerTest.StorageAdapterDelegate,
+      except: [:put_execution_ownership]
+
+    @cancellation_statuses [
+      :cancel_dispatched,
+      :cancel_acknowledged,
+      :already_completed,
+      :best_effort_failed,
+      :unknown_runner_outcome
+    ]
+
+    @impl true
+    def put_execution_ownership(%{status: status}, _opts)
+        when status in @cancellation_statuses,
+        do: {:error, :cancellation_ledger_unavailable}
 
     def put_execution_ownership(ownership, opts),
       do: Memory.put_execution_ownership(ownership, opts)
@@ -230,7 +286,7 @@ defmodule FavnOrchestrator.RunServerTest do
     @impl true
     def cancel_work(execution_id, reason, opts) do
       send(Keyword.fetch!(opts, :parent), {:cancelled, execution_id, reason})
-      :ok
+      Keyword.get(opts, :cancel_result, :ok)
     end
 
     @impl true
@@ -418,13 +474,19 @@ defmodule FavnOrchestrator.RunServerTest do
 
       send(parent, {:awaited, execution_id, status})
 
-      {:ok,
-       %RunnerResult{
-         status: status,
-         error: if(status == :ok, do: nil, else: :runner_failed),
-         asset_results: [asset_result({MyApp.Assets.Gold, :asset}, status)],
-         metadata: %{}
-       }}
+      case status do
+        :await_timeout ->
+          {:error, :timeout}
+
+        status ->
+          {:ok,
+           %RunnerResult{
+             status: status,
+             error: if(status == :ok, do: nil, else: :runner_failed),
+             asset_results: [asset_result({MyApp.Assets.Gold, :asset}, status)],
+             metadata: %{}
+           }}
+      end
     end
 
     @impl true
@@ -539,10 +601,181 @@ defmodule FavnOrchestrator.RunServerTest do
 
     assert {:ok, stored} = Storage.get_run(run_state.id)
 
-    assert [%RunExecutionOwnership{status: :completed, runner_execution_id: execution_id}] =
-             RunExecutionOwnership.list(stored)
+    assert {:ok, [%RunExecutionOwnership{status: :completed, runner_execution_id: execution_id}]} =
+             RunExecutionOwnership.fetch_all(stored.id)
 
     assert is_binary(execution_id)
+  end
+
+  test "run start recovers from a transient storage error before execution" do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_retry_ms = Application.get_env(:favn_orchestrator, :execution_persist_retry_ms)
+
+    previous_agent =
+      Application.get_env(:favn_orchestrator, :execution_transition_failure_agent)
+
+    {:ok, statuses} = Agent.start_link(fn -> [:ok] end)
+    {:ok, failures} = Agent.start_link(fn -> MapSet.new([:run_started]) end)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :execution_persist_retry_ms, previous_retry_ms)
+
+      restore_env(
+        :favn_orchestrator,
+        :execution_transition_failure_agent,
+        previous_agent
+      )
+    end)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      ExecutionTransitionFailOnceStorageAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :execution_persist_retry_ms, 1)
+    Application.put_env(:favn_orchestrator, :execution_transition_failure_agent, failures)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSequentialStatusStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      statuses: statuses
+    )
+
+    version = manifest_version("mv_run_start_transition_retry")
+    run_state = asset_run_state("run_start_transition_retry", version)
+
+    assert :ok = Storage.put_run(run_state)
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+    assert MapSet.size(Agent.get(failures, & &1)) == 0
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :ok
+
+    assert {:ok, events} = Storage.list_run_events(run_state.id)
+    assert Enum.count(events, &(&1.event_type == :run_started)) == 1
+  end
+
+  test "sequential result and retry transitions recover from storage errors" do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_retry_ms = Application.get_env(:favn_orchestrator, :execution_persist_retry_ms)
+
+    previous_agent =
+      Application.get_env(:favn_orchestrator, :execution_transition_failure_agent)
+
+    {:ok, statuses} = Agent.start_link(fn -> [:error, :ok] end)
+
+    {:ok, failures} =
+      Agent.start_link(fn ->
+        MapSet.new([:step_failed, :step_retry_scheduled, :step_finished])
+      end)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :execution_persist_retry_ms, previous_retry_ms)
+
+      restore_env(
+        :favn_orchestrator,
+        :execution_transition_failure_agent,
+        previous_agent
+      )
+    end)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      ExecutionTransitionFailOnceStorageAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :execution_persist_retry_ms, 1)
+    Application.put_env(:favn_orchestrator, :execution_transition_failure_agent, failures)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSequentialStatusStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      statuses: statuses
+    )
+
+    version = manifest_version("mv_sequential_transition_retry")
+
+    run_state =
+      "run_sequential_transition_retry"
+      |> asset_run_state(version)
+      |> RunState.transition(max_attempts: 2, retry_backoff_ms: 0)
+
+    assert :ok = Storage.put_run(run_state)
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :ok
+    assert MapSet.size(Agent.get(failures, & &1)) == 0
+
+    assert {:ok, events} = Storage.list_run_events(run_state.id)
+    assert Enum.count(events, &(&1.event_type == :step_failed)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_retry_scheduled)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_finished)) == 1
+  end
+
+  test "sequential timeout transition recovers from a storage error" do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_retry_ms = Application.get_env(:favn_orchestrator, :execution_persist_retry_ms)
+
+    previous_agent =
+      Application.get_env(:favn_orchestrator, :execution_transition_failure_agent)
+
+    {:ok, statuses} = Agent.start_link(fn -> [:await_timeout, :ok] end)
+    {:ok, failures} = Agent.start_link(fn -> MapSet.new([:step_timed_out]) end)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :execution_persist_retry_ms, previous_retry_ms)
+
+      restore_env(
+        :favn_orchestrator,
+        :execution_transition_failure_agent,
+        previous_agent
+      )
+    end)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      ExecutionTransitionFailOnceStorageAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :execution_persist_retry_ms, 1)
+    Application.put_env(:favn_orchestrator, :execution_transition_failure_agent, failures)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSequentialStatusStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      statuses: statuses
+    )
+
+    version = manifest_version("mv_sequential_timeout_transition_retry")
+
+    run_state =
+      "run_sequential_timeout_transition_retry"
+      |> asset_run_state(version)
+      |> RunState.transition(max_attempts: 2, retry_backoff_ms: 0)
+
+    assert :ok = Storage.put_run(run_state)
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :ok
+    assert MapSet.size(Agent.get(failures, & &1)) == 0
+
+    assert {:ok, events} = Storage.list_run_events(run_state.id)
+    assert Enum.count(events, &(&1.event_type == :step_timed_out)) == 1
   end
 
   test "sequential submit failure terminalizes pre-submit ownership" do
@@ -565,8 +798,8 @@ defmodule FavnOrchestrator.RunServerTest do
     assert_receive {:submitted, ^asset_ref, _execution_id}, 1_000
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
 
-    assert [%RunExecutionOwnership{status: :dispatch_failed, runner_execution_id: nil}] =
-             RunExecutionOwnership.list(run_state)
+    assert {:ok, [%RunExecutionOwnership{status: :dispatch_failed, runner_execution_id: nil}]} =
+             RunExecutionOwnership.fetch_all(run_state.id)
   end
 
   test "sequential submitted ownership persistence failure terminalizes ownership" do
@@ -606,12 +839,13 @@ defmodule FavnOrchestrator.RunServerTest do
     assert cancellation_reason.reason.kind == :step_submitted_persist_failed
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
 
-    assert [
-             %RunExecutionOwnership{
-               status: :cancel_acknowledged,
-               runner_execution_id: ^execution_id
-             }
-           ] = RunExecutionOwnership.list(run_state)
+    assert {:ok,
+            [
+              %RunExecutionOwnership{
+                status: :cancel_acknowledged,
+                runner_execution_id: ^execution_id
+              }
+            ]} = RunExecutionOwnership.fetch_all(run_state.id)
 
     assert {:ok, []} = RunExecutionOwnership.fetch_active(run_state.id)
   end
@@ -671,6 +905,59 @@ defmodule FavnOrchestrator.RunServerTest do
     assert {:ok, stored} = Storage.get_run(run_state.id)
     assert stored.status == :cancelled
     assert stored.metadata.in_flight_execution_ids == []
+  end
+
+  test "uncertain cancellation with a ledger failure preserves active ownership" do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :storage_adapter_opts, previous_opts)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientBlockingStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      cancel_result: {:error, :nodedown}
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      CancellationLedgerFailingStorageAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+    version = manifest_version("mv_uncertain_cancel_ledger_failure")
+    run_state = asset_run_state("run_uncertain_cancel_ledger_failure", version)
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:submitted, {MyApp.Assets.Gold, :asset}, execution_id}, 1_000
+    assert_receive {:awaiting, ^execution_id, {MyApp.Assets.Gold, :asset}, _awaiter}, 1_000
+
+    send(pid, {:favn_run_cancel_requested, %{reason: :test_cancel}})
+
+    assert_receive {:cancelled, ^execution_id, _reason}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert [%{status: :best_effort_failed}] = stored.metadata.cancel_outcomes
+    assert stored.status == :error
+    assert stored.error.type == :runner_cancel_unconfirmed
+
+    assert stored.metadata.cancellation_ledger_persist_error["type"] ==
+             "cancellation_ledger_unavailable"
+
+    assert {:ok, [%RunExecutionOwnership{status: status}]} =
+             RunExecutionOwnership.fetch_active(run_state.id)
+
+    assert status in [:submitted, :started, :finish_persist_pending]
   end
 
   test "run server refuses to dispatch terminal snapshots" do
@@ -882,6 +1169,51 @@ defmodule FavnOrchestrator.RunServerTest do
     assert {:ok, stored} = Storage.get_run(run_state.id)
     assert stored.status == :error
     assert stored.error == {:freshness_state_lookup_failed, :freshness_lookup_unavailable}
+  end
+
+  test "pipeline projects append-only node results while later stages are active" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientBlockingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, parent: self())
+
+    version = manifest_version("mv_pipeline_incremental_results")
+    plan = raw_to_gold_plan()
+
+    run_state =
+      pipeline_run_state(
+        "run_pipeline_incremental_results",
+        version,
+        plan,
+        plan.target_refs
+      )
+
+    assert :ok = Storage.put_run(run_state)
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:submitted, {MyApp.Assets.Raw, :asset}, raw_execution_id}, 1_000
+    assert_receive {:awaiting, ^raw_execution_id, {MyApp.Assets.Raw, :asset}, raw_awaiter}, 1_000
+    send(raw_awaiter, {:release_runner_result, raw_execution_id, :ok})
+
+    assert_receive {:submitted, {MyApp.Assets.Gold, :asset}, gold_execution_id}, 1_000
+
+    assert_receive {:awaiting, ^gold_execution_id, {MyApp.Assets.Gold, :asset}, gold_awaiter},
+                   1_000
+
+    assert {:ok, active_run} = Storage.get_run(run_state.id)
+    refute match?(%{node_results: [_ | _]}, active_run.result)
+
+    assert {:ok, detail} = FavnOrchestrator.get_operator_run_detail(run_state.id)
+
+    assert Enum.any?(detail.steps, fn step ->
+             step.asset_ref == "MyApp.Assets.Raw.asset" and step.status == :ok
+           end)
+
+    send(gold_awaiter, {:release_runner_result, gold_execution_id, :ok})
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, events} = Storage.list_run_events(run_state.id)
+    sequences = Enum.map(events, & &1.sequence)
+    assert sequences == Enum.to_list(hd(sequences)..List.last(sequences))
   end
 
   test "failed attempt updates latest attempt without replacing prior freshness success" do
@@ -1129,6 +1461,11 @@ defmodule FavnOrchestrator.RunServerTest do
 
     assert_receive {:submitted, sixth_ref, sixth_execution_id}, 1_000
     assert sixth_ref == List.last(refs)
+
+    assert {:ok, ownerships} = Storage.list_execution_ownerships(run_state.id)
+
+    assert %{status: :completed} =
+             Enum.find(ownerships, &(&1.runner_execution_id == first_execution_id))
 
     awaiters = Map.merge(awaiters, receive_awaiters([{sixth_ref, sixth_execution_id}]))
 
@@ -1491,12 +1828,13 @@ defmodule FavnOrchestrator.RunServerTest do
     assert {:ok, stored} = Storage.get_run(run_state.id)
     assert stored.status == :error
 
-    assert [
-             %RunExecutionOwnership{
-               status: :cancel_acknowledged,
-               runner_execution_id: ^execution_id
-             }
-           ] = RunExecutionOwnership.list(run_state)
+    assert {:ok,
+            [
+              %RunExecutionOwnership{
+                status: :cancel_acknowledged,
+                runner_execution_id: ^execution_id
+              }
+            ]} = RunExecutionOwnership.fetch_all(run_state.id)
 
     assert {:ok, []} = RunExecutionOwnership.fetch_active(run_state.id)
   end
@@ -2135,13 +2473,12 @@ defmodule FavnOrchestrator.RunServerTest do
   end
 
   defp materialization_producer_identity(%RunState{} = run_state, %Version{} = version, node_key) do
-    node_token = node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+    node_token = AssetStepIdentity.node_fingerprint(node_key)
     Enum.join([version.content_hash, run_state.id, node_token], ":")
   end
 
   defp freshness_version(%RunState{} = run_state, node_key) do
-    encoded_node_key = node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
-    "#{run_state.id}:#{encoded_node_key}"
+    "#{run_state.id}:#{AssetStepIdentity.node_fingerprint(node_key)}"
   end
 
   defp start_memory_if_needed do

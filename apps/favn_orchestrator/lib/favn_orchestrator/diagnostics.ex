@@ -3,17 +3,18 @@ defmodule FavnOrchestrator.Diagnostics do
   Operator-facing diagnostics for the single-node orchestrator runtime.
   """
 
-  alias Favn.Contracts.RunnerClient
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ProjectionDiagnostics
   alias FavnOrchestrator.Redaction
-  alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
 
   @default_recent_limit 5
+  @max_recent_limit 100
   @in_flight_statuses [:pending, :running]
   @failed_statuses [:error, :timed_out, :partial]
 
@@ -34,7 +35,7 @@ defmodule FavnOrchestrator.Diagnostics do
           checks: [check()]
         }
   def report(opts \\ []) when is_list(opts) do
-    recent_limit = Keyword.get(opts, :recent_limit, @default_recent_limit)
+    recent_limit = normalize_recent_limit(Keyword.get(opts, :recent_limit, @default_recent_limit))
 
     checks = [
       safe_check(:storage_readiness, &storage_check/0),
@@ -122,7 +123,7 @@ defmodule FavnOrchestrator.Diagnostics do
     module = runtime_config.runner_client
     opts = runtime_config.runner_client_opts
 
-    case validate_runner_client(module) do
+    case RunnerClientValidator.validate(module) do
       :ok ->
         details = %{client: module_name(module)}
 
@@ -239,23 +240,7 @@ defmodule FavnOrchestrator.Diagnostics do
   defp error_summary(reason) when is_map(reason),
     do: %{kind: :map, keys: reason |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort()}
 
-  defp error_summary(reason),
-    do: %{kind: :term, type: reason |> :erlang.term_to_binary() |> byte_size()}
-
-  defp validate_runner_client(module) when is_atom(module) do
-    callbacks =
-      RunnerClient.behaviour_info(:callbacks) -- RunnerClient.behaviour_info(:optional_callbacks)
-
-    with {:module, ^module} <- Code.ensure_loaded(module),
-         true <-
-           Enum.all?(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end) do
-      :ok
-    else
-      _ -> {:error, :runner_client_not_available}
-    end
-  end
-
-  defp validate_runner_client(_module), do: {:error, :runner_client_not_available}
+  defp error_summary(_reason), do: %{kind: :term}
 
   defp safe_check(check, fun) when is_atom(check) and is_function(fun, 0) do
     fun.()
@@ -284,13 +269,18 @@ defmodule FavnOrchestrator.Diagnostics do
   defp error(check, summary, details, reason), do: build(check, :error, summary, details, reason)
 
   defp build(check, status, summary, details, nil) do
-    %{check: check, status: status, summary: summary, details: Redaction.redact(details)}
+    %{
+      check: check,
+      status: status,
+      summary: summary,
+      details: Redaction.redact_operational_bounded(details)
+    }
   end
 
   defp build(check, status, summary, details, reason) do
     check
     |> build(status, summary, details, nil)
-    |> Map.put(:reason, Redaction.redact(reason))
+    |> Map.put(:reason, Redaction.redact_operational_bounded(reason))
   end
 
   defp normalize_error({:raised, %{__exception__: true, __struct__: module}}),
@@ -306,4 +296,9 @@ defmodule FavnOrchestrator.Diagnostics do
 
   defp module_name(nil), do: nil
   defp module_name(module) when is_atom(module), do: Atom.to_string(module)
+
+  defp normalize_recent_limit(limit) when is_integer(limit) and limit in 1..@max_recent_limit,
+    do: limit
+
+  defp normalize_recent_limit(_limit), do: @default_recent_limit
 end

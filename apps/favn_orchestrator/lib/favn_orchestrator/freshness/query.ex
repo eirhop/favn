@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Freshness.Query do
   `FavnOrchestrator.explain_asset_staleness/2`.
   """
 
+  alias Favn.Freshness.Key, as: FreshnessKey
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Freshness.Staleness
   alias FavnOrchestrator.Page
@@ -66,7 +67,7 @@ defmodule FavnOrchestrator.Freshness.Query do
           {:ok, stale_explanation()} | {:error, term()}
   def explain_asset_staleness({module, name} = ref, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    freshness_key = Keyword.get(opts, :freshness_key, Favn.Freshness.Key.latest())
+    freshness_key = Keyword.get(opts, :freshness_key, FreshnessKey.latest())
     upstream_node_keys = Keyword.get(opts, :upstream_node_keys, [])
 
     with true <- is_binary(freshness_key) || {:error, {:invalid_freshness_key, freshness_key}},

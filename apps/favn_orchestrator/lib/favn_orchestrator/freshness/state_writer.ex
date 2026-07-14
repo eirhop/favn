@@ -7,8 +7,10 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
     fields while updating latest-attempt metadata.
   """
 
+  alias Favn.Freshness.Key, as: FreshnessKey
   alias Favn.Manifest.Version
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.Freshness.Staleness
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -167,12 +169,11 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
   end
 
   defp freshness_version(%RunState{} = run_state, node_key) do
-    encoded_node_key = node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
-    "#{run_state.id}:#{encoded_node_key}"
+    "#{run_state.id}:#{AssetStepIdentity.node_fingerprint(node_key)}"
   end
 
   defp decision_freshness_key(decision),
-    do: Map.get(decision, :freshness_key, Favn.Freshness.Key.latest())
+    do: Map.get(decision, :freshness_key, FreshnessKey.latest())
 
   defp previous_freshness_version(%AssetFreshnessState{} = state), do: state.freshness_version
   defp previous_freshness_version(_state), do: nil

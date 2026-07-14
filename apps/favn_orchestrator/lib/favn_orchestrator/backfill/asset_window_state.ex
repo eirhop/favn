@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.Backfill.AssetWindowState do
   the latest attempt.
   """
 
+  alias FavnOrchestrator.Backfill.ReadModelValues
+
   @enforce_keys [
     :asset_ref_module,
     :asset_ref_name,
@@ -42,7 +44,7 @@ defmodule FavnOrchestrator.Backfill.AssetWindowState do
     metadata: %{}
   ]
 
-  @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
+  @type status :: ReadModelValues.status()
 
   @type t :: %__MODULE__{
           asset_ref_module: module(),
@@ -72,7 +74,8 @@ defmodule FavnOrchestrator.Backfill.AssetWindowState do
     attrs = Map.new(attrs)
 
     with {:ok, attrs} <- normalize_attrs(attrs),
-         :ok <- require_keys(attrs, @required_keys) do
+         :ok <- require_keys(attrs, @required_keys),
+         :ok <- validate_fields(attrs) do
       {:ok, struct(__MODULE__, Map.merge(%{errors: [], metadata: %{}}, attrs))}
     end
   end
@@ -91,37 +94,94 @@ defmodule FavnOrchestrator.Backfill.AssetWindowState do
   defp missing?(attrs, key), do: Map.get(attrs, key) in [nil, ""]
 
   defp normalize_attrs(attrs) do
-    with {:ok, window_kind} <- normalize_window_kind(Map.get(attrs, :window_kind)),
-         {:ok, status} <- normalize_status(Map.get(attrs, :status)) do
-      {:ok, attrs |> Map.put(:window_kind, window_kind) |> Map.put(:status, status)}
+    with {:ok, window_kind} <- ReadModelValues.normalize_window_kind(Map.get(attrs, :window_kind)),
+         {:ok, status} <- ReadModelValues.normalize_status(Map.get(attrs, :status)),
+         {:ok, window_start_at} <- normalize_datetime(Map.get(attrs, :window_start_at)),
+         {:ok, window_end_at} <- normalize_datetime(Map.get(attrs, :window_end_at)),
+         {:ok, updated_at} <- normalize_datetime(Map.get(attrs, :updated_at)) do
+      {:ok,
+       attrs
+       |> Map.put(:window_kind, window_kind)
+       |> Map.put(:status, status)
+       |> Map.put(:window_start_at, window_start_at)
+       |> Map.put(:window_end_at, window_end_at)
+       |> Map.put(:updated_at, updated_at)}
     end
   end
 
-  defp normalize_window_kind(value) when value in [:hour, :day, :month, :year], do: {:ok, value}
-  defp normalize_window_kind(:hourly), do: {:ok, :hour}
-  defp normalize_window_kind(:daily), do: {:ok, :day}
-  defp normalize_window_kind(:monthly), do: {:ok, :month}
-  defp normalize_window_kind(:yearly), do: {:ok, :year}
-  defp normalize_window_kind("hour"), do: {:ok, :hour}
-  defp normalize_window_kind("hourly"), do: {:ok, :hour}
-  defp normalize_window_kind("day"), do: {:ok, :day}
-  defp normalize_window_kind("daily"), do: {:ok, :day}
-  defp normalize_window_kind("month"), do: {:ok, :month}
-  defp normalize_window_kind("monthly"), do: {:ok, :month}
-  defp normalize_window_kind("year"), do: {:ok, :year}
-  defp normalize_window_kind("yearly"), do: {:ok, :year}
-  defp normalize_window_kind(value), do: {:error, {:invalid_window_kind, value}}
+  defp normalize_datetime(%DateTime{} = value), do: {:ok, value}
 
-  defp normalize_status(value)
-       when value in [:pending, :running, :ok, :partial, :error, :cancelled, :timed_out],
-       do: {:ok, value}
+  defp normalize_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      {:error, _reason} -> {:error, {:invalid_datetime, value}}
+    end
+  end
 
-  defp normalize_status("pending"), do: {:ok, :pending}
-  defp normalize_status("running"), do: {:ok, :running}
-  defp normalize_status("ok"), do: {:ok, :ok}
-  defp normalize_status("partial"), do: {:ok, :partial}
-  defp normalize_status("error"), do: {:ok, :error}
-  defp normalize_status("cancelled"), do: {:ok, :cancelled}
-  defp normalize_status("timed_out"), do: {:ok, :timed_out}
-  defp normalize_status(value), do: {:error, {:invalid_status, value}}
+  defp normalize_datetime(value), do: {:error, {:invalid_datetime, value}}
+
+  defp validate_fields(attrs) do
+    with :ok <- validate_asset_ref(attrs.asset_ref_module, attrs.asset_ref_name),
+         :ok <- validate_pipeline_module(Map.get(attrs, :pipeline_module)),
+         :ok <- validate_required_binaries(attrs),
+         :ok <- validate_optional_binaries(attrs),
+         :ok <- validate_window_range(attrs.window_start_at, attrs.window_end_at),
+         :ok <- validate_rows_written(Map.get(attrs, :rows_written)) do
+      validate_collections(Map.get(attrs, :errors, []), Map.get(attrs, :metadata, %{}))
+    end
+  end
+
+  defp validate_asset_ref(module, name) do
+    cond do
+      not is_atom(module) -> {:error, {:invalid_asset_ref_module, module}}
+      not is_atom(name) -> {:error, {:invalid_asset_ref_name, name}}
+      true -> :ok
+    end
+  end
+
+  defp validate_pipeline_module(nil), do: :ok
+  defp validate_pipeline_module(module) when is_atom(module), do: :ok
+  defp validate_pipeline_module(module), do: {:error, {:invalid_pipeline_module, module}}
+
+  defp validate_required_binaries(attrs) do
+    validate_binaries(
+      attrs,
+      [:manifest_version_id, :timezone, :window_key, :latest_run_id],
+      false
+    )
+  end
+
+  defp validate_optional_binaries(attrs) do
+    validate_binaries(attrs, [:latest_parent_run_id, :latest_success_run_id], true)
+  end
+
+  defp validate_binaries(attrs, fields, optional?) do
+    Enum.reduce_while(fields, :ok, fn field, :ok ->
+      value = Map.get(attrs, field)
+
+      if (optional? and is_nil(value)) or (is_binary(value) and value != "") do
+        {:cont, :ok}
+      else
+        {:halt, {:error, {:invalid_asset_window_field, field, value}}}
+      end
+    end)
+  end
+
+  defp validate_window_range(%DateTime{} = start_at, %DateTime{} = end_at) do
+    if DateTime.compare(start_at, end_at) == :lt,
+      do: :ok,
+      else: {:error, {:invalid_window_range, start_at, end_at}}
+  end
+
+  defp validate_rows_written(nil), do: :ok
+  defp validate_rows_written(value) when is_integer(value) and value >= 0, do: :ok
+  defp validate_rows_written(value), do: {:error, {:invalid_rows_written, value}}
+
+  defp validate_collections(errors, metadata) do
+    cond do
+      not is_list(errors) -> {:error, {:invalid_errors, errors}}
+      not is_map(metadata) -> {:error, {:invalid_metadata, metadata}}
+      true -> :ok
+    end
+  end
 end

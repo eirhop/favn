@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.MixProject do
       lockfile: "../../mix.lock",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
+      test_ignore_filters: [~r/test\/support\//],
       deps: deps()
     ]
   end

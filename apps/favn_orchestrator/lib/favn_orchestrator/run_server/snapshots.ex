@@ -1,9 +1,16 @@
 defmodule FavnOrchestrator.RunServer.Snapshots do
-  @moduledoc false
+  @moduledoc """
+  Pure snapshot shaping helpers for run-server terminal paths.
+
+  These helpers refresh timestamps and hashes without advancing the durable
+  event sequence; the transition writer owns sequence advancement.
+  """
 
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
 
+  @doc "Builds a cancelled terminal snapshot with accumulated runner results."
+  @spec cancelled_terminal(RunState.t(), [term()]) :: RunState.t()
   def cancelled_terminal(%RunState{} = run_state, acc_results) do
     snapshot_update(run_state,
       status: :cancelled,
@@ -13,6 +20,8 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
     )
   end
 
+  @doc "Adds accumulated results to an already-failed run snapshot."
+  @spec terminalize_failed_run(RunState.t(), [term()]) :: RunState.t()
   def terminalize_failed_run(%RunState{} = failed_run, all_results) do
     snapshot_update(failed_run,
       runner_execution_id: nil,
@@ -24,23 +33,8 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
     )
   end
 
-  def cancelled_state(%RunState{} = run_state) do
-    case Storage.get_run(run_state.id) do
-      {:ok, %RunState{status: :cancelled} = cancelled} ->
-        {:error, cancelled, []}
-
-      _other ->
-        cancelled =
-          RunState.transition(run_state,
-            status: :cancelled,
-            runner_execution_id: nil,
-            error: {:cancelled, %{reason: :external_cancel_request}}
-          )
-
-        {:error, cancelled, []}
-    end
-  end
-
+  @doc "Returns the stored cancellation snapshot, or builds a cancelled terminal snapshot."
+  @spec cancelled_snapshot(RunState.t()) :: RunState.t()
   def cancelled_snapshot(%RunState{} = run_state) do
     case Storage.get_run(run_state.id) do
       {:ok, %RunState{status: :cancelled} = cancelled} -> cancelled
@@ -48,6 +42,8 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
     end
   end
 
+  @doc "Updates a snapshot timestamp and hash without advancing its event sequence."
+  @spec snapshot_update(RunState.t(), keyword()) :: RunState.t()
   def snapshot_update(%RunState{} = run_state, attrs) when is_list(attrs) do
     run_state
     |> Map.merge(Enum.into(attrs, %{}))

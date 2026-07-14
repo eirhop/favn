@@ -112,7 +112,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> Map.put("FAVN_SQLITE_POOL_SIZE", "2")
              |> ProductionRuntimeConfig.validate()
 
-    assert {:error, %{error: {:invalid_env, "FAVN_SCHEDULER_TICK_MS", ">= 100"}}} =
+    assert {:error, %{error: {:invalid_env, "FAVN_SCHEDULER_TICK_MS", "100..86400000"}}} =
              base
              |> Map.put("FAVN_SCHEDULER_TICK_MS", "99")
              |> ProductionRuntimeConfig.validate()
@@ -138,9 +138,37 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", ":#{@token}")
              |> ProductionRuntimeConfig.validate()
 
-    assert {:error, %{error: {:invalid_env, "FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", ">= 1"}}} =
+    assert {:error,
+            %{
+              error: {:invalid_env, "FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "1..2592000"}
+            }} =
              base
              |> Map.put("FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "0")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error: {:invalid_env, "FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "1..2592000"}
+            }} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "2592001")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", "15..1024 byte password"}
+            }} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", "short")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error: {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "viewer,operator,admin"}
+            }} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "root")
              |> ProductionRuntimeConfig.validate()
 
     assert {:error, %{error: {:invalid_env, "FAVN_RUNNER_MODE", "local"}}} =
@@ -202,7 +230,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
     assert Application.get_env(:favn_orchestrator, :scheduler)[:enabled] == false
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_username) == "admin"
-    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == ["admin"]
+    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == [:admin]
     assert Application.get_env(:favn_orchestrator, :local_dev_mode) == false
 
     assert Application.get_env(:favn_orchestrator, :runner_client) ==

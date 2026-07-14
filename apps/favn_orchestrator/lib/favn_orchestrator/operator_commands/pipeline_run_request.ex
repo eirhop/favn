@@ -12,7 +12,7 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineRunRequest do
           refresh_mode: refresh_mode(),
           window: WindowRequest.t() | nil,
           metadata: map() | nil,
-          timeout_ms: non_neg_integer() | nil
+          timeout_ms: pos_integer() | nil
         }
 
   defstruct refresh_mode: :auto,
@@ -30,22 +30,31 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineRunRequest do
     |> from_input()
   end
 
-  def from_input(input) when is_map(input) or is_list(input) or is_nil(input) do
-    input = input || %{}
+  def from_input(nil), do: normalize_input(%{})
+  def from_input(input) when is_map(input), do: normalize_input(input)
+
+  def from_input(input) when is_list(input) do
+    if Keyword.keyword?(input),
+      do: normalize_input(input),
+      else: {:error, {:invalid_operator_pipeline_run_request, input}}
+  end
+
+  def from_input(input), do: {:error, {:invalid_operator_pipeline_run_request, input}}
+
+  defp normalize_input(input) do
     refresh_value = Input.field(input, :refresh_mode, Input.field(input, :refresh, :auto))
 
     with {:ok, refresh_mode} <- Input.pipeline_refresh_mode(refresh_value),
          {:ok, window} <- Input.window(Input.field(input, :window)),
+         {:ok, metadata} <- Input.metadata(Input.field(input, :metadata)),
          {:ok, timeout_ms} <- Input.timeout_ms(Input.field(input, :timeout_ms)) do
       {:ok,
        %__MODULE__{
          refresh_mode: refresh_mode,
          window: window,
-         metadata: Input.field(input, :metadata),
+         metadata: metadata,
          timeout_ms: timeout_ms
        }}
     end
   end
-
-  def from_input(input), do: {:error, {:invalid_operator_pipeline_run_request, input}}
 end

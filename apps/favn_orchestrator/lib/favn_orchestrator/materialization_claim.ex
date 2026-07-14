@@ -67,6 +67,14 @@ defmodule FavnOrchestrator.MaterializationClaim do
 
   @statuses [:claimed, :succeeded, :failed, :cancelled, :timed_out, :expired]
   @terminal_failure_statuses [:failed, :cancelled, :timed_out, :expired]
+  @optional_binary_fields [
+    :run_id,
+    :asset_step_id,
+    :runner_execution_id,
+    :manifest_version_id,
+    :manifest_content_hash,
+    :freshness_version
+  ]
 
   @spec new(map() | keyword()) :: {:ok, t()} | {:error, term()}
   def new(attrs) when is_map(attrs) or is_list(attrs) do
@@ -75,6 +83,8 @@ defmodule FavnOrchestrator.MaterializationClaim do
     with {:ok, attrs} <- normalize_attrs(attrs),
          :ok <- validate_required(attrs),
          :ok <- validate_identity(attrs),
+         :ok <- validate_optional_binaries(attrs),
+         :ok <- validate_timestamps(attrs),
          :ok <- validate_metadata(Map.get(attrs, :metadata, %{})) do
       {:ok, struct(__MODULE__, Map.merge(%{metadata: %{}}, attrs))}
     end
@@ -206,6 +216,44 @@ defmodule FavnOrchestrator.MaterializationClaim do
 
   defp validate_metadata(value) when is_map(value), do: :ok
   defp validate_metadata(value), do: {:error, {:invalid_metadata, value}}
+
+  defp validate_optional_binaries(attrs) do
+    Enum.reduce_while(@optional_binary_fields, :ok, fn field, :ok ->
+      case Map.get(attrs, field) do
+        nil -> {:cont, :ok}
+        value when is_binary(value) and value != "" -> {:cont, :ok}
+        value -> {:halt, {:error, {:invalid_materialization_claim_field, field, value}}}
+      end
+    end)
+  end
+
+  defp validate_timestamps(attrs) do
+    claimed_at = Map.fetch!(attrs, :claimed_at)
+    expires_at = Map.fetch!(attrs, :expires_at)
+
+    cond do
+      DateTime.compare(expires_at, claimed_at) != :gt ->
+        {:error, {:invalid_materialization_claim_range, :expires_at, claimed_at, expires_at}}
+
+      not timestamp_after_claim?(Map.get(attrs, :heartbeat_at), claimed_at) ->
+        {:error,
+         {:invalid_materialization_claim_range, :heartbeat_at, claimed_at,
+          Map.get(attrs, :heartbeat_at)}}
+
+      not timestamp_after_claim?(Map.get(attrs, :finished_at), claimed_at) ->
+        {:error,
+         {:invalid_materialization_claim_range, :finished_at, claimed_at,
+          Map.get(attrs, :finished_at)}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp timestamp_after_claim?(nil, _claimed_at), do: true
+
+  defp timestamp_after_claim?(%DateTime{} = timestamp, %DateTime{} = claimed_at),
+    do: DateTime.compare(timestamp, claimed_at) in [:eq, :gt]
 
   defp field_value(map, field), do: Map.get(map, field) || Map.get(map, Atom.to_string(field))
 end

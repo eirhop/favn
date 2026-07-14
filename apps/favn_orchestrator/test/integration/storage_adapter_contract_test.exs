@@ -284,6 +284,56 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert Enum.map(group_events, & &1.run_id) == [run.id, child.id, child.id]
     [first_group_event | _] = group_events
 
+    assert {:ok, latest_per_run} =
+             Storage.list_execution_group_events(run.id, per_run_limit: 1)
+
+    assert Enum.map(latest_per_run, &{&1.run_id, &1.sequence}) == [
+             {run.id, 1},
+             {child.id, 2}
+           ]
+
+    assert {:ok, [filtered_group_event]} =
+             Storage.list_execution_group_events(run.id, event_types: [:run_updated])
+
+    assert {filtered_group_event.run_id, filtered_group_event.sequence} == {child.id, 2}
+
+    assert {:error, :invalid_opts} =
+             Storage.list_execution_group_events(run.id, event_types: [])
+
+    Enum.each(
+      [
+        {3, :step_queued, "step-one"},
+        {4, :step_started, "step-one"},
+        {5, :step_queued, "step-two"}
+      ],
+      fn {sequence, event_type, asset_step_id} ->
+        assert :ok =
+                 Storage.append_run_event(child.id, %{
+                   sequence: sequence,
+                   event_type: event_type,
+                   occurred_at: DateTime.utc_now(),
+                   data: %{asset_step_id: asset_step_id}
+                 })
+      end
+    )
+
+    assert {:ok, latest_step_events} =
+             Storage.list_execution_group_events(run.id,
+               event_types: [:step_queued, :step_started],
+               latest_per_step: true
+             )
+
+    assert Enum.map(latest_step_events, &{&1.sequence, &1.event_type}) == [
+             {4, :step_started},
+             {5, :step_queued}
+           ]
+
+    assert {:error, :invalid_opts} =
+             Storage.list_execution_group_events(run.id,
+               per_run_limit: 1,
+               latest_per_step: true
+             )
+
     assert {:ok, [group_cursor_event]} =
              Storage.list_execution_group_events(run.id,
                after_global_sequence: first_group_event.global_sequence,
@@ -472,7 +522,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert_freshness_lookup_contract(label, run)
     assert_target_status_contract(label, run)
-    assert_backfill_progress_contract(label, run)
+    assert_backfill_progress_contract(label, backfill)
     assert_cursor_scan_contract(label, run)
     assert_replacement_scope_contract(label, run)
   end
@@ -606,6 +656,11 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     Enum.each([quiet_pipeline | noisy_pipelines], &assert(:ok = Storage.put_run(&1)))
 
+    assert {:ok, [pipeline_run]} =
+             Storage.list_runs(pipeline_module: MyApp.Pipeline, limit: 10)
+
+    assert pipeline_run.id == quiet_pipeline.id
+
     assert {:ok, [target_run]} =
              Storage.list_target_runs(version.manifest_version_id, :pipeline, MyApp.Pipeline,
                limit: 1
@@ -702,6 +757,18 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert :ok = Storage.put_backfill_window(second_window)
 
     assert {:error, {:unsupported_filter, :unknown}} =
+             Storage.list_backfill_windows(unknown: :value)
+
+    assert {:ok, pending_windows} =
+             Storage.list_backfill_windows(
+               backfill_run_id: backfill_run_id,
+               status: "pending",
+               limit: 10
+             )
+
+    assert Enum.map(pending_windows.items, & &1.window_key) == ["m", "z"]
+
+    assert {:error, {:unsupported_filter, :unknown}} =
              Storage.scan_backfill_windows([unknown: :value], limit: 1)
 
     assert {:ok, first_page} =
@@ -754,6 +821,15 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert :ok = Storage.put_asset_freshness_state(first_state)
     assert :ok = Storage.put_asset_freshness_state(second_state)
+
+    assert {:ok, freshness_states} =
+             Storage.list_asset_freshness_states(
+               manifest_version_id: manifest_version_id,
+               status: "ok",
+               limit: 10
+             )
+
+    assert Enum.map(freshness_states.items, & &1.asset_ref_name) == [:a, :b]
 
     assert {:error, {:unsupported_filter, :unknown}} =
              Storage.scan_asset_freshness_states([unknown: :value], limit: 1)
@@ -812,6 +888,14 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     for baseline <- [stale_baseline, kept_baseline],
         do: assert(:ok = Storage.put_coverage_baseline(baseline))
 
+    assert {:error, {:unsupported_filter, :unknown}} =
+             Storage.list_coverage_baselines(unknown: :value)
+
+    assert {:ok, baselines} = Storage.list_coverage_baselines(status: "ok", limit: 10)
+
+    assert MapSet.new(baselines.items, & &1.baseline_id) ==
+             MapSet.new([stale_baseline.baseline_id, kept_baseline.baseline_id])
+
     for window <- [stale_window, kept_window],
         do: assert(:ok = Storage.put_backfill_window(window))
 
@@ -866,7 +950,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
   defp assert_backfill_progress_contract(label, run) do
     now = DateTime.utc_now()
-    backfill_run_id = "backfill_progress_#{label}_#{System.unique_integer([:positive])}"
+    backfill_run_id = run.id
 
     assert {:error, :not_found} = Storage.get_backfill_progress("#{backfill_run_id}_missing")
 
@@ -888,6 +972,31 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert progress.total_count == 2
     assert progress.pending_count == 2
     assert progress.status == :running
+
+    failed_second = %{
+      second
+      | status: :error,
+        last_error: %{message: "direct write failed"},
+        errors: [%{message: "direct write failed"}],
+        finished_at: DateTime.add(now, 1, :second),
+        updated_at: DateTime.add(now, 1, :second)
+    }
+
+    assert :ok = Storage.put_backfill_window(failed_second)
+    assert {:ok, directly_updated_progress} = Storage.get_backfill_progress(backfill_run_id)
+    assert directly_updated_progress.pending_count == 1
+    assert directly_updated_progress.error_count == 1
+
+    assert :ok = Storage.put_backfill_window(second)
+    assert {:ok, restored_progress} = Storage.get_backfill_progress(backfill_run_id)
+    assert restored_progress.pending_count == 2
+    assert restored_progress.error_count == 0
+
+    assert_execution_group_window_summary(backfill_run_id,
+      total_windows: 2,
+      completed_windows: 0,
+      failed_windows: 0
+    )
 
     assert {:ok, progress} = Storage.rebuild_backfill_progress(backfill_run_id)
     assert progress.total_count == 2
@@ -913,8 +1022,23 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert progress.ok_count == 1
     assert progress.status == :running
 
+    assert_execution_group_window_summary(backfill_run_id,
+      total_windows: 2,
+      completed_windows: 1,
+      failed_windows: 0
+    )
+
     assert {:ok, ^asset_state} =
              Storage.get_asset_window_state(MyApp.Asset, :asset, ok_window.window_key)
+
+    assert {:ok, asset_states} =
+             Storage.list_asset_window_states(
+               latest_parent_run_id: backfill_run_id,
+               status: "ok",
+               limit: 10
+             )
+
+    assert Enum.map(asset_states.items, & &1.window_key) == [ok_window.window_key]
 
     bulk_state = %{asset_state | window_key: "bulk-window-#{label}", updated_at: now}
 
@@ -965,6 +1089,33 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert stored_progress.status == :partial
     assert stored_progress.ok_count == 1
     assert stored_progress.error_count == 1
+
+    assert_execution_group_window_summary(backfill_run_id,
+      total_windows: 2,
+      completed_windows: 2,
+      failed_windows: 1
+    )
+
+    assert :ok =
+             Storage.replace_backfill_read_models(
+               {:backfill_run, backfill_run_id},
+               [],
+               [ok_window],
+               [asset_state]
+             )
+
+    assert_execution_group_window_summary(backfill_run_id,
+      total_windows: 1,
+      completed_windows: 1,
+      failed_windows: 0
+    )
+  end
+
+  defp assert_execution_group_window_summary(group_id, expected) do
+    assert {:ok, %{items: [summary]}} =
+             Storage.list_execution_group_summaries(search: group_id, limit: 10, offset: 0)
+
+    assert Map.take(summary, Keyword.keys(expected)) == Map.new(expected)
   end
 
   defp assert_concurrent_same_window_projection(label, run) do

@@ -1,0 +1,108 @@
+defmodule FavnOrchestrator.RunManager.SubmissionOptions do
+  @moduledoc false
+
+  alias Favn.Window.Anchor
+  alias FavnOrchestrator.RunState
+
+  @enforce_keys [
+    :run_id,
+    :params,
+    :trigger,
+    :metadata,
+    :max_attempts,
+    :retry_backoff_ms,
+    :timeout_ms,
+    :dependencies,
+    :exact_windows,
+    :lineage_depth
+  ]
+  defstruct @enforce_keys ++ [:anchor_window, :parent_run_id, :root_run_id]
+
+  @type t :: %__MODULE__{
+          run_id: String.t(),
+          params: map(),
+          trigger: map(),
+          metadata: map(),
+          max_attempts: pos_integer(),
+          retry_backoff_ms: non_neg_integer(),
+          timeout_ms: pos_integer(),
+          dependencies: :all | :none,
+          anchor_window: Anchor.t() | nil,
+          exact_windows: map(),
+          parent_run_id: String.t() | nil,
+          root_run_id: String.t() | nil,
+          lineage_depth: non_neg_integer()
+        }
+
+  @spec new(keyword(), keyword()) :: {:ok, t()} | {:error, term()}
+  def new(opts, defaults \\ []) when is_list(opts) and is_list(defaults) do
+    if Keyword.keyword?(opts) and Keyword.keyword?(defaults) do
+      build(opts, defaults)
+    else
+      {:error, :invalid_options}
+    end
+  end
+
+  defp build(opts, defaults) do
+    values = %{
+      run_id: option(opts, defaults, :run_id, new_run_id()),
+      params: option(opts, defaults, :params, %{}),
+      trigger: option(opts, defaults, :trigger, %{}),
+      metadata: option(opts, defaults, :metadata, %{}),
+      max_attempts: option(opts, defaults, :max_attempts, 1),
+      retry_backoff_ms: option(opts, defaults, :retry_backoff_ms, 0),
+      timeout_ms: option(opts, defaults, :timeout_ms, RunState.default_timeout_ms()),
+      dependencies: option(opts, defaults, :dependencies, :all),
+      anchor_window: option(opts, defaults, :anchor_window, nil),
+      exact_windows: option(opts, defaults, :exact_windows, %{}),
+      parent_run_id: option(opts, defaults, :parent_run_id, nil),
+      root_run_id: option(opts, defaults, :root_run_id, nil),
+      lineage_depth: option(opts, defaults, :lineage_depth, 0)
+    }
+
+    with :ok <- non_empty_string(values.run_id, :invalid_run_id),
+         :ok <- map(values.params, :invalid_run_params),
+         :ok <- map(values.trigger, :invalid_pipeline_trigger),
+         :ok <- map(values.metadata, :invalid_run_metadata),
+         :ok <- positive_integer(values.max_attempts, :invalid_max_attempts),
+         :ok <- non_negative_integer(values.retry_backoff_ms, :invalid_retry_backoff_ms),
+         :ok <- positive_integer(values.timeout_ms, :invalid_timeout_ms),
+         :ok <- dependencies(values.dependencies),
+         :ok <- anchor(values.anchor_window),
+         :ok <- map(values.exact_windows, :invalid_exact_windows),
+         :ok <- optional_string(values.parent_run_id, :invalid_parent_run_id),
+         :ok <- optional_string(values.root_run_id, :invalid_root_run_id),
+         :ok <- non_negative_integer(values.lineage_depth, :invalid_lineage_depth) do
+      {:ok, struct!(__MODULE__, values)}
+    end
+  end
+
+  defp option(opts, defaults, key, fallback),
+    do: Keyword.get(opts, key, Keyword.get(defaults, key, fallback))
+
+  defp non_empty_string(value, _error) when is_binary(value) and value != "", do: :ok
+  defp non_empty_string(_value, error), do: {:error, error}
+
+  defp optional_string(nil, _error), do: :ok
+  defp optional_string(value, error), do: non_empty_string(value, error)
+
+  defp map(value, _error) when is_map(value), do: :ok
+  defp map(_value, error), do: {:error, error}
+
+  defp positive_integer(value, _error) when is_integer(value) and value > 0, do: :ok
+  defp positive_integer(_value, error), do: {:error, error}
+
+  defp non_negative_integer(value, _error) when is_integer(value) and value >= 0, do: :ok
+  defp non_negative_integer(_value, error), do: {:error, error}
+
+  defp dependencies(value) when value in [:all, :none], do: :ok
+  defp dependencies(_value), do: {:error, :invalid_dependencies}
+
+  defp anchor(nil), do: :ok
+  defp anchor(%Anchor{} = anchor), do: Anchor.validate(anchor)
+  defp anchor(_value), do: {:error, :invalid_anchor_window}
+
+  defp new_run_id do
+    "run_" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+  end
+end

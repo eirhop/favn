@@ -18,6 +18,15 @@ defmodule FavnOrchestrator.AssetStepIdentity do
     persisted_key_id(node_key, asset_ref) || safe_id("#{run_id}:#{inspect(asset_ref)}")
   end
 
+  @doc "Returns a fixed-size fingerprint for a planned node identity."
+  @spec node_fingerprint(term()) :: String.t()
+  def node_fingerprint(node_key) do
+    node_key
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
   defp persisted_key_id(nil, _asset_ref), do: nil
   defp persisted_key_id(key, asset_ref) when is_binary(key) and key != asset_ref, do: safe_id(key)
 

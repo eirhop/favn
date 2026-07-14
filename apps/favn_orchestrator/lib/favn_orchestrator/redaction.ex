@@ -41,6 +41,10 @@ defmodule FavnOrchestrator.Redaction do
 
   @operational_untrusted_keys [:reason, :message, :detail, :details, :error, :exception]
 
+  @max_operational_depth 8
+  @max_operational_entries 50
+  @max_operational_string_bytes 8_192
+
   @sensitive_assignment ~r/(token|password|secret|authorization|cookie|credential|database|dsn|url|uri|api_key|apikey|access_key|accesskey|private_key|privatekey)\s*[:=]\s*((?:Bearer\s+)?[^\s,;]+)/i
   @bearer_token ~r/(bearer)\s+([^\s,;]+)/i
   @url_userinfo ~r/([a-z][a-z0-9+.-]*:\/\/)([^\s\/@:]+):([^\s\/@]+)@([^\s,;]+)/i
@@ -85,6 +89,21 @@ defmodule FavnOrchestrator.Redaction do
   """
   @spec redact_operational(term()) :: term()
   def redact_operational(value), do: redact_operational(nil, value)
+
+  @doc """
+  Redacts operational metadata and bounds container depth, size, and strings.
+
+  Use this at boundaries where untrusted diagnostics remain Elixir terms rather
+  than being normalized by a storage codec.
+  """
+  @spec redact_operational_bounded(term()) :: term()
+  def redact_operational_bounded(value) do
+    value
+    |> redact_operational()
+    |> bound_operational(@max_operational_depth)
+  rescue
+    _error -> "[REDACTED]"
+  end
 
   @doc """
   Redacts an untrusted value without preserving binary contents.
@@ -234,6 +253,87 @@ defmodule FavnOrchestrator.Redaction do
     |> String.replace(@url_userinfo, "[REDACTED_URL]")
     |> String.replace(@bearer_token, "\\1 [REDACTED]")
     |> String.replace(@sensitive_assignment, "\\1=[REDACTED]")
+  rescue
+    _error -> "[REDACTED]"
+  end
+
+  defp bound_operational(_value, depth) when depth <= 0, do: "[TRUNCATED]"
+  defp bound_operational(%DateTime{} = value, _depth), do: value
+
+  defp bound_operational(value, depth) when is_map(value) do
+    value
+    |> Enum.take(@max_operational_entries)
+    |> Map.new(fn {key, child} ->
+      {bound_operational_key(key), bound_operational(child, depth - 1)}
+    end)
+  end
+
+  defp bound_operational(value, depth) when is_list(value) do
+    value
+    |> Enum.take(@max_operational_entries)
+    |> Enum.map(&bound_operational(&1, depth - 1))
+  end
+
+  defp bound_operational(value, depth) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.take(@max_operational_entries)
+    |> Enum.map(&bound_operational(&1, depth - 1))
+    |> List.to_tuple()
+  end
+
+  defp bound_operational(value, _depth) when is_binary(value),
+    do: truncate_operational(value)
+
+  defp bound_operational(value, _depth)
+       when is_atom(value) or is_integer(value) or is_float(value) or is_boolean(value) or
+              is_nil(value),
+       do: value
+
+  defp bound_operational(value, _depth),
+    do:
+      value
+      |> inspect(limit: 20, printable_limit: @max_operational_string_bytes)
+      |> truncate_operational()
+
+  defp bound_operational_key(key) when is_atom(key), do: key
+  defp bound_operational_key(key) when is_binary(key), do: truncate_operational(key)
+  defp bound_operational_key(key), do: bound_operational(key, 1)
+
+  defp truncate_operational(value) do
+    value = json_safe_binary(value)
+
+    if byte_size(value) <= @max_operational_string_bytes do
+      value
+    else
+      truncate_valid_binary(value)
+    end
+  end
+
+  defp json_safe_binary(value) do
+    if String.valid?(value) do
+      value
+    else
+      inspect(value,
+        binaries: :as_binaries,
+        limit: @max_operational_entries,
+        printable_limit: @max_operational_string_bytes
+      )
+    end
+  end
+
+  defp truncate_valid_binary(value) do
+    suffix = "..."
+    prefix_bytes = @max_operational_string_bytes - byte_size(suffix)
+    valid_prefix(value, prefix_bytes) <> suffix
+  end
+
+  defp valid_prefix(_value, size) when size <= 0, do: ""
+
+  defp valid_prefix(value, size) do
+    prefix = binary_part(value, 0, size)
+
+    if String.valid?(prefix), do: prefix, else: valid_prefix(value, size - 1)
   end
 
   defp sensitive_key?(key) when is_binary(key) do

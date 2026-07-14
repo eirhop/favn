@@ -10,13 +10,14 @@ defmodule FavnOrchestrator.ManifestStoreTest do
   alias Favn.Window.Runtime, as: RuntimeWindow
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator
-  alias FavnOrchestrator.AssetWindowProjector
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.AssetWindowProjector
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
+  alias FavnOrchestrator.TargetStatus.Projector, as: TargetStatusProjector
   alias FavnOrchestrator.TransitionWriter
 
   setup do
@@ -187,6 +188,24 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert {:error, :not_found} =
              FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.AssetA:not_real")
 
+    assert {:error, :invalid_asset_detail_options} =
+             FavnOrchestrator.active_asset_detail(
+               "asset:Elixir.MyApp.AssetA:asset",
+               [:invalid]
+             )
+
+    assert {:error, {:unsupported_asset_detail_options, [:unknown]}} =
+             FavnOrchestrator.active_asset_detail(
+               "asset:Elixir.MyApp.AssetA:asset",
+               unknown: true
+             )
+
+    assert {:error, {:invalid_asset_detail_option, :now, "invalid"}} =
+             FavnOrchestrator.active_asset_detail(
+               "asset:Elixir.MyApp.AssetA:asset",
+               now: "invalid"
+             )
+
     assert {:ok, detail} =
              FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.AssetA:asset")
 
@@ -294,6 +313,41 @@ defmodule FavnOrchestrator.ManifestStoreTest do
 
     assert {:ok, full_refresh_run} = Storage.get_run(full_refresh_run_id)
     assert full_refresh_run.asset_ref == {MyApp.AssetB, :asset}
+  end
+
+  test "asset refresh cadence follows resolved pipeline selectors" do
+    asset_ref = {MyApp.ResolvedAsset, :asset}
+
+    version =
+      manifest_version(
+        "mv_resolved_selector",
+        asset_ref,
+        [
+          %Pipeline{
+            module: MyApp.ResolvedPipeline,
+            name: :resolved_pipeline,
+            selectors: [{:asset, asset_ref}],
+            deps: :all,
+            window: Policy.new!(:monthly),
+            source: :dsl,
+            outputs: [],
+            config: %{},
+            metadata: %{}
+          }
+        ]
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest(version.manifest_version_id)
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_asset_detail(
+               "asset:Elixir.MyApp.ResolvedAsset:asset",
+               now: ~U[2026-05-12 10:00:00Z]
+             )
+
+    assert detail.refresh_timeline_label == "Monthly refresh periods"
+    assert detail.refresh_cadence_label == "Monthly refresh Etc/UTC"
   end
 
   test "asset detail timeline uses the asset window policy kind for runnable windows" do
@@ -1065,7 +1119,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
       )
 
     assert :ok = Storage.put_asset_freshness_state(window_state)
-    assert :ok = FavnOrchestrator.TargetStatus.Projector.project_freshness_state(window_state)
+    assert :ok = TargetStatusProjector.project_freshness_state(window_state)
 
     assert {:ok, status} =
              Storage.get_target_status(

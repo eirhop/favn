@@ -38,6 +38,13 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSetTest do
     assert :ok = RunWorkSet.fail_entry_claim(%{}, :cancelled)
   end
 
+  test "reads string-keyed in-flight ids from persisted metadata" do
+    run = %{run_state() | metadata: %{"in_flight_execution_ids" => ["exec_a", nil, 7]}}
+
+    assert RunWorkSet.inflight_execution_ids(run) == ["exec_a"]
+    assert RunWorkSet.execution_ids(RunWorkSet.from_run_metadata(run)) == ["exec_a"]
+  end
+
   defp run_state do
     RunState.new(
       id: "run_work_set_test",

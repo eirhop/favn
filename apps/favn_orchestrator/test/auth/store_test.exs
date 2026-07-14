@@ -35,6 +35,30 @@ defmodule FavnOrchestrator.Auth.StoreTest do
     refute inspect(Auth.list_audit()) =~ "secret"
   end
 
+  test "trusted local dev context uses an unguessable credential and reuses its session" do
+    assert {:ok, first_session, actor} =
+             AuthStore.trusted_local_dev_context("local-dev-cli", "Local Dev CLI", [:admin])
+
+    assert {:ok, second_session, ^actor} =
+             AuthStore.trusted_local_dev_context("local-dev-cli", "Local Dev CLI", [:admin])
+
+    assert first_session.id == second_session.id
+    refute Map.has_key?(first_session, :token)
+
+    assert {:ok, credential} = Storage.get_auth_credential(actor.id)
+    refute Argon2.verify_pass("local-dev-cli-password-long", credential.password_hash)
+
+    assert {:error, :invalid_credentials} =
+             Auth.password_login("local-dev-cli", "local-dev-cli-password-long")
+
+    assert :ok = Auth.revoke_session(first_session.id)
+
+    assert {:ok, replacement_session, ^actor} =
+             AuthStore.trusted_local_dev_context("local-dev-cli", "Local Dev CLI", [:admin])
+
+    refute replacement_session.id == first_session.id
+  end
+
   test "rejects weak passwords and authenticates without user enumeration details" do
     assert {:error, :password_too_short} =
              Auth.create_actor("short", "fourteen-chars", "Short", [:admin])
@@ -55,6 +79,12 @@ defmodule FavnOrchestrator.Auth.StoreTest do
     assert {:ok, _actor} = Auth.create_actor("admin", "admin-password-long", "Admin", [:admin])
     assert {:error, :invalid_credentials} = Auth.password_login("admin", "wrong-password")
     assert {:error, :invalid_credentials} = Auth.password_login("missing", "wrong-password")
+
+    assert {:error, :invalid_roles} =
+             Auth.create_actor("roles", "admin-password-long", "Roles", [:superadmin])
+
+    assert {:error, :invalid_username} =
+             Auth.create_actor("invalid username", "admin-password-long", "Invalid", [:admin])
   end
 
   test "failed actor and credential states use invalid credentials result" do
@@ -115,6 +145,14 @@ defmodule FavnOrchestrator.Auth.StoreTest do
     assert DateTime.diff(session.expires_at, session.issued_at, :second) == 30
     assert {:error, :invalid_session_ttl} = AuthStore.issue_session(actor.id, ttl_seconds: 0)
 
+    assert {:error, :invalid_session_ttl} =
+             AuthStore.issue_session(actor.id, ttl_seconds: 2_592_001)
+
+    assert {:error, :invalid_session_provider} =
+             AuthStore.issue_session(actor.id, provider: "untrusted")
+
+    assert {:error, :invalid_session_options} = AuthStore.issue_session(actor.id, unknown: true)
+
     now = DateTime.utc_now()
     expired_token = "expired-session-token"
 
@@ -143,6 +181,14 @@ defmodule FavnOrchestrator.Auth.StoreTest do
   test "revoking a missing session returns an error without corrupting memory storage" do
     assert {:error, :not_found} = Auth.revoke_session("ses_missing")
     assert Auth.list_audit(limit: 10) == []
+  end
+
+  test "trusted local context refuses to elevate an actor using its reserved username" do
+    assert {:ok, _actor} =
+             Auth.create_actor("local-dev-cli", "local-dev-password-long", "User", [:viewer])
+
+    assert {:error, :reserved_local_dev_username} =
+             AuthStore.trusted_local_dev_context("local-dev-cli", "Local Dev CLI", [:admin])
   end
 
   defp ensure_auth_store_started do

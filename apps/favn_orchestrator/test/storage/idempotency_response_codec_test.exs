@@ -181,6 +181,29 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodecTest do
              IdempotencyResponseCodec.decode(payload)
   end
 
+  test "allow-lists replayed body fields and rejects unknown envelope fields" do
+    payload =
+      Jason.encode!(%{
+        "format" => "favn.idempotency_response.storage.v1",
+        "schema_version" => 1,
+        "operation" => "run.cancel",
+        "response_schema" => "favn.command.run_cancel.response.v1",
+        "body" => %{
+          "cancelled" => true,
+          "run_id" => "run_1",
+          "authorization" => "Bearer injected"
+        }
+      })
+
+    assert {:ok, %{"cancelled" => true, "run_id" => "run_1"}} =
+             IdempotencyResponseCodec.decode(payload)
+
+    payload = payload |> Jason.decode!() |> Map.put("unexpected", true) |> Jason.encode!()
+
+    assert {:error, {:unknown_idempotency_response_fields, ["unexpected"]}} =
+             IdempotencyResponseCodec.decode(payload)
+  end
+
   test "rejects invalid envelope format and version" do
     invalid_format = Jason.encode!(%{"format" => "payload_codec", "schema_version" => 1})
 

@@ -8,7 +8,13 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   supervised runtime components start.
   """
 
+  alias FavnOrchestrator.Auth.Credentials
   alias FavnOrchestrator.Auth.ServiceTokens
+
+  @max_session_ttl_seconds 30 * 24 * 60 * 60
+  @max_sqlite_busy_timeout_ms 60 * 60 * 1_000
+  @max_scheduler_tick_ms 24 * 60 * 60 * 1_000
+  @max_missed_occurrences 100_000
 
   @type config :: %{
           storage: :sqlite,
@@ -172,7 +178,14 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          :ok <- absolute_path("FAVN_SQLITE_PATH", path),
          {:ok, migration_mode} <-
            enum(env, "FAVN_SQLITE_MIGRATION_MODE", "manual", ~w(manual auto)),
-         {:ok, busy_timeout} <- int(env, "FAVN_SQLITE_BUSY_TIMEOUT_MS", "5000", 1, nil),
+         {:ok, busy_timeout} <-
+           int(
+             env,
+             "FAVN_SQLITE_BUSY_TIMEOUT_MS",
+             "5000",
+             1,
+             @max_sqlite_busy_timeout_ms
+           ),
          {:ok, pool_size} <- int(env, "FAVN_SQLITE_POOL_SIZE", "1", 1, nil),
          :ok <- phase_one_pool_size(pool_size) do
       {:ok,
@@ -202,26 +215,46 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
   defp auth_bootstrap(env) do
     with {:ok, username} <- required(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME"),
-         {:ok, password} <- required(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD"),
+         {:ok, password} <- required_secret(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD"),
          {:ok, display_name} <-
            required_or_default(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME", "Favn Admin"),
          {:ok, roles_raw} <-
-           required_or_default(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "admin") do
-      roles = roles_raw |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
-
-      {:ok, [username: username, password: password, display_name: display_name, roles: roles]}
+           required_or_default(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "admin"),
+         roles = roles_raw |> String.split(",", trim: true) |> Enum.map(&String.trim/1),
+         {:ok, actor} <- normalize_bootstrap_actor(username, display_name, roles),
+         :ok <- validate_bootstrap_password(password) do
+      {:ok,
+       [
+         username: actor.username,
+         password: password,
+         display_name: actor.display_name,
+         roles: actor.roles
+       ]}
     end
   end
 
   defp auth_session_ttl_seconds(env) do
-    int(env, "FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "43200", 1, nil)
+    int(
+      env,
+      "FAVN_ORCHESTRATOR_AUTH_SESSION_TTL",
+      "43200",
+      1,
+      @max_session_ttl_seconds
+    )
   end
 
   defp scheduler(env) do
     with {:ok, enabled?} <- bool(env, "FAVN_SCHEDULER_ENABLED", "true"),
-         {:ok, tick_ms} <- int(env, "FAVN_SCHEDULER_TICK_MS", "15000", 100, nil),
+         {:ok, tick_ms} <-
+           int(env, "FAVN_SCHEDULER_TICK_MS", "15000", 100, @max_scheduler_tick_ms),
          {:ok, max_missed} <-
-           int(env, "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES", "1000", 1, nil) do
+           int(
+             env,
+             "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES",
+             "1000",
+             1,
+             @max_missed_occurrences
+           ) do
       {:ok,
        [
          enabled: enabled?,
@@ -257,6 +290,16 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     case fetch(env, name) do
       {:ok, value} -> {:ok, value}
       :error -> {:ok, default}
+    end
+  end
+
+  defp required_secret(env, name) do
+    case Map.get(env, name) do
+      value when is_binary(value) ->
+        if String.trim(value) == "", do: {:error, {:missing_env, name}}, else: {:ok, value}
+
+      _other ->
+        {:error, {:missing_env, name}}
     end
   end
 
@@ -326,6 +369,32 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   defp phase_one_pool_size(1), do: :ok
   defp phase_one_pool_size(value), do: {:error, {:invalid_env, "FAVN_SQLITE_POOL_SIZE", value, 1}}
 
+  defp normalize_bootstrap_actor(username, display_name, roles) do
+    case Credentials.normalize_actor(username, display_name, roles) do
+      {:ok, actor} ->
+        {:ok, actor}
+
+      {:error, :invalid_roles} ->
+        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "viewer,operator,admin"}}
+
+      {:error, reason} when reason in [:invalid_display_name, :display_name_too_long] ->
+        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME", "display name"}}
+
+      {:error, _reason} ->
+        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME", "username"}}
+    end
+  end
+
+  defp validate_bootstrap_password(password) do
+    case Credentials.validate_password(password) do
+      :ok ->
+        :ok
+
+      {:error, _reason} ->
+        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", "15..1024 byte password"}}
+    end
+  end
+
   defp migration_mode_atom("manual"), do: :manual
   defp migration_mode_atom("auto"), do: :auto
 
@@ -334,4 +403,5 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   defp redact({:invalid_env, name, expected}), do: {:invalid_env, name, expected}
   defp redact({:invalid_env, name, _value, expected}), do: {:invalid_env, name, expected}
   defp redact({:runtime_config_unavailable, name}), do: {:runtime_config_unavailable, name}
+  defp redact(_reason), do: :invalid_runtime_config
 end

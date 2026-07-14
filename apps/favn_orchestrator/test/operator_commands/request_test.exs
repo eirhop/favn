@@ -37,6 +37,15 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
              AssetRunRequest.from_input(%{
                selection: %{source: "audit_log", id: "window:day:2026-05-10"}
              })
+
+    assert {:error, {:invalid_operator_timezone, ""}} =
+             AssetRunRequest.from_input(%{
+               selection: %{
+                 source: "refresh_timeline",
+                 id: "refresh:day:2026-05-10",
+                 timezone: ""
+               }
+             })
   end
 
   test "asset backfill requests normalize ranges and selected refresh modes" do
@@ -121,5 +130,48 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
 
     assert {:error, {:invalid_operator_coverage_baseline_id, ""}} =
              PipelineBackfillRequest.from_input(Map.put(base, :coverage_baseline_id, ""))
+  end
+
+  test "asset backfill requests validate retry fields consistently" do
+    base = %{range: %{kind: "day", from: "2026-05-01", to: "2026-05-03"}}
+
+    assert {:error, {:invalid_operator_max_attempts, 0}} =
+             AssetBackfillRequest.from_input(Map.put(base, :max_attempts, 0))
+
+    assert {:error, {:invalid_operator_retry_backoff_ms, -1}} =
+             AssetBackfillRequest.from_input(Map.put(base, :retry_backoff_ms, -1))
+
+    assert {:error, {:invalid_operator_timeout_ms, 0}} =
+             AssetBackfillRequest.from_input(Map.put(base, :timeout_ms, 0))
+  end
+
+  test "operator requests reject malformed metadata" do
+    range = %{kind: "day", from: "2026-05-01", to: "2026-05-03"}
+
+    assert {:error, {:invalid_operator_metadata, :invalid}} =
+             AssetRunRequest.from_input(%{metadata: :invalid})
+
+    assert {:error, {:invalid_operator_metadata, :invalid}} =
+             PipelineRunRequest.from_input(%{metadata: :invalid})
+
+    assert {:error, {:invalid_operator_metadata, :invalid}} =
+             AssetBackfillRequest.from_input(%{range: range, metadata: :invalid})
+
+    assert {:error, {:invalid_operator_metadata, :invalid}} =
+             PipelineBackfillRequest.from_input(%{range: range, metadata: :invalid})
+  end
+
+  test "operator requests reject malformed keyword lists without raising" do
+    assert {:error, {:invalid_operator_asset_run_request, [:invalid]}} =
+             AssetRunRequest.from_input([:invalid])
+
+    assert {:error, {:invalid_operator_pipeline_run_request, [:invalid]}} =
+             PipelineRunRequest.from_input([:invalid])
+
+    assert {:error, {:invalid_operator_asset_backfill_request, [:invalid]}} =
+             AssetBackfillRequest.from_input([:invalid])
+
+    assert {:error, {:invalid_operator_pipeline_backfill_request, [:invalid]}} =
+             PipelineBackfillRequest.from_input([:invalid])
   end
 end

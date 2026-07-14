@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Waiter do
   submitting runner work.
   """
 
+  alias FavnOrchestrator.ExecutionAdmission.Identity
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ExecutionLeaseCodec
 
@@ -92,7 +93,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Waiter do
 
   @doc "Normalizes atom-keyed or string-keyed waiter maps."
   @spec normalize(map() | t()) :: {:ok, t()} | {:error, term()}
-  def normalize(%__MODULE__{} = waiter), do: {:ok, waiter}
+  def normalize(%__MODULE__{} = waiter), do: waiter |> Map.from_struct() |> normalize()
 
   def normalize(waiter) when is_map(waiter) do
     with {:ok, waiter_id} <- fetch_string(waiter, :waiter_id),
@@ -102,6 +103,8 @@ defmodule FavnOrchestrator.ExecutionAdmission.Waiter do
          {:ok, blocked_scope} <-
            ExecutionLeaseCodec.normalize_scope(field_value(waiter, :blocked_scope)),
          {:ok, requested_scopes} <- normalize_scopes(field_value(waiter, :requested_scopes)),
+         :ok <- ensure_blocked_scope_requested(blocked_scope, requested_scopes),
+         :ok <- ensure_queue_reason_scope(queue_reason, blocked_scope),
          {:ok, stage} <- fetch_non_neg_integer(waiter, :stage),
          {:ok, attempt} <- fetch_positive_integer(waiter, :attempt),
          {:ok, inserted_at} <- fetch_datetime(waiter, :inserted_at),
@@ -132,9 +135,8 @@ defmodule FavnOrchestrator.ExecutionAdmission.Waiter do
   @spec waiter_id(String.t(), String.t(), non_neg_integer(), pos_integer()) :: String.t()
   def waiter_id(run_id, asset_step_id, stage, attempt)
       when is_binary(run_id) and is_binary(asset_step_id) and is_integer(stage) and
-             is_integer(attempt) do
-    "#{run_id}:#{stage}:#{attempt}:#{asset_step_id}"
-  end
+             stage >= 0 and is_integer(attempt) and attempt > 0,
+      do: Identity.waiter_id(run_id, asset_step_id, stage, attempt)
 
   defp default_deadline(%RunState{timeout_ms: timeout_ms}, %DateTime{} = now)
        when is_integer(timeout_ms) and timeout_ms > 0 do
@@ -158,6 +160,21 @@ defmodule FavnOrchestrator.ExecutionAdmission.Waiter do
   end
 
   defp normalize_scopes(_scopes), do: {:error, :invalid_execution_admission_waiter_scopes}
+
+  defp ensure_blocked_scope_requested(blocked_scope, requested_scopes) do
+    blocked_identity = ExecutionLeaseCodec.scope_identity(blocked_scope)
+
+    if Enum.any?(requested_scopes, &(ExecutionLeaseCodec.scope_identity(&1) == blocked_identity)),
+      do: :ok,
+      else: {:error, {:invalid_execution_admission_waiter_field, :blocked_scope}}
+  end
+
+  defp ensure_queue_reason_scope(:pipeline_concurrency, %{kind: :run}), do: :ok
+  defp ensure_queue_reason_scope(:global_concurrency, %{kind: :global}), do: :ok
+  defp ensure_queue_reason_scope(:execution_pool, %{kind: :pool}), do: :ok
+
+  defp ensure_queue_reason_scope(_reason, _scope),
+    do: {:error, {:invalid_execution_admission_waiter_field, :queue_reason}}
 
   defp normalize_queue_reason(reason)
        when reason in [:pipeline_concurrency, :execution_pool, :global_concurrency],
@@ -211,5 +228,10 @@ defmodule FavnOrchestrator.ExecutionAdmission.Waiter do
     end
   end
 
-  defp field_value(map, field), do: Map.get(map, field) || Map.get(map, Atom.to_string(field))
+  defp field_value(map, field) do
+    case Map.fetch(map, field) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(field))
+    end
+  end
 end
