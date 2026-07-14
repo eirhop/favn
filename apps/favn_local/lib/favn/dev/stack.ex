@@ -384,6 +384,10 @@ defmodule Favn.Dev.Stack do
       list when is_list(list) and list != [] ->
         :ok
 
+      %{runner: runner_spec, operator: operator_spec}
+      when is_map(runner_spec) and is_map(operator_spec) ->
+        :ok
+
       _ ->
         NodeControl.ensure_local_node_started(secrets["rpc_cookie"],
           name: control_short,
@@ -396,6 +400,10 @@ defmodule Favn.Dev.Stack do
     case Keyword.get(opts, :service_specs_override) do
       list when is_list(list) and list != [] ->
         start_service_specs(list, %{}, opts)
+
+      %{runner: runner_spec, operator: operator_spec}
+      when is_map(runner_spec) and is_map(operator_spec) ->
+        start_ordered_services(runner_spec, operator_spec, node_names, opts)
 
       _ ->
         start_default_services(runtime, config, secrets, node_names, opts)
@@ -466,15 +474,32 @@ defmodule Favn.Dev.Stack do
   defp do_wait_runner_node_ready(runner_node, deadline_ms) when is_atom(runner_node) do
     case :net_adm.ping(runner_node) do
       :pong ->
-        :ok
+        case receive_runner_service_exit(0) do
+          nil -> :ok
+          reason -> {:error, reason}
+        end
 
       :pang ->
-        if System.monotonic_time(:millisecond) >= deadline_ms do
-          {:error, {:runner_node_unreachable, runner_node}}
-        else
-          Process.sleep(100)
-          do_wait_runner_node_ready(runner_node, deadline_ms)
+        remaining_ms = max(deadline_ms - System.monotonic_time(:millisecond), 0)
+
+        case receive_runner_service_exit(min(remaining_ms, 100)) do
+          nil when remaining_ms == 0 ->
+            {:error, {:runner_node_unreachable, runner_node}}
+
+          nil ->
+            do_wait_runner_node_ready(runner_node, deadline_ms)
+
+          reason ->
+            {:error, reason}
         end
+    end
+  end
+
+  defp receive_runner_service_exit(timeout_ms) when is_integer(timeout_ms) and timeout_ms >= 0 do
+    receive do
+      {:service_exit, "runner", status} -> {:service_exit, "runner", status}
+    after
+      timeout_ms -> nil
     end
   end
 

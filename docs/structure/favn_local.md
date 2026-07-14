@@ -6,6 +6,8 @@ SQL data inspection, single-node bootstrap, and packaging commands, including
 the project-local backend-only SQLite `build.single` launcher.
 
 Code:
+- `apps/favn/lib/mix/tasks/favn.dev.ex` loads consumer runtime configuration
+  before delegating startup to `favn_local`
 - `apps/favn_local/lib/favn/dev.ex`
 - `apps/favn_local/lib/favn/dev/`
 - `apps/favn_local/lib/favn/dev/local_distribution.ex` for local distributed Erlang

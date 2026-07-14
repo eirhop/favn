@@ -7,6 +7,9 @@ defmodule Mix.Tasks.Favn.Dev do
 
   @moduledoc """
   Starts local `favn_view + favn_orchestrator + favn_runner` in foreground mode.
+
+  The consumer project's `config/runtime.exs` is loaded before local runtime
+  configuration is collected for the runner.
   """
 
   alias Favn.Dev
@@ -15,6 +18,7 @@ defmodule Mix.Tasks.Favn.Dev do
   @impl Mix.Task
   def run(args) do
     opts = args |> parse_args() |> Keyword.put(:progress_fun, &IO.puts/1)
+    Mix.Task.run("app.config")
 
     case Dev.dev(opts) do
       :ok ->

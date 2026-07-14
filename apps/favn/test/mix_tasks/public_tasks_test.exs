@@ -6,6 +6,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Favn.Connection.Definition
   alias Favn.Connection.Resolved
   alias Favn.Dev.Bootstrap.Single, as: BootstrapSingle
+  alias Favn.Dev.ConsumerConfigTransport
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.State
   alias Favn.SQL.Capabilities
@@ -171,6 +172,73 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       end)
 
     assert output =~ "Favn dev: checking local state"
+  end
+
+  test "mix favn.dev loads consumer runtime config before transport", %{root_dir: root_dir} do
+    consumer_dir = Path.join(root_dir, "consumer")
+    config_dir = Path.join(consumer_dir, "config")
+    previous_connections = Application.get_env(:favn, :connections)
+
+    File.mkdir_p!(config_dir)
+
+    File.write!(
+      Path.join(consumer_dir, "mix.exs"),
+      """
+      defmodule FavnDevRuntimeConfigConsumer.MixProject do
+        use Mix.Project
+
+        def project do
+          [app: :favn_dev_runtime_config_consumer, version: "0.1.0", elixir: "~> 1.20"]
+        end
+
+        def application, do: []
+      end
+      """
+    )
+
+    File.write!(
+      Path.join(config_dir, "runtime.exs"),
+      """
+      import Config
+
+      config :favn, :connections,
+        ducklake: [
+          open: [database: ":memory:"],
+          duckdb: [extensions: ["ducklake"]]
+        ]
+      """
+    )
+
+    Application.delete_env(:favn, :connections)
+
+    on_exit(fn ->
+      restore_env(:connections, previous_connections)
+      Mix.Task.reenable("app.config")
+      Mix.Task.reenable("compile")
+    end)
+
+    Mix.Project.in_project(:favn_dev_runtime_config_consumer, consumer_dir, fn _project ->
+      Mix.Task.reenable("app.config")
+      Mix.Task.reenable("compile")
+
+      capture_io(fn ->
+        assert_raise Mix.Error, ~r/install required; run mix favn.install/, fn ->
+          DevTask.run(["--root-dir", consumer_dir])
+        end
+      end)
+
+      encoded =
+        ConsumerConfigTransport.collect_and_encode(
+          [root_dir: consumer_dir],
+          only: [:connections]
+        )
+
+      assert {:ok, [connections: [ducklake: connection]]} =
+               ConsumerConfigTransport.decode(encoded)
+
+      assert connection[:open] == [database: ":memory:"]
+      assert connection[:duckdb] == [extensions: ["ducklake"]]
+    end)
   end
 
   test "Dev.dev stays quiet unless progress callback is provided", %{root_dir: root_dir} do
