@@ -346,6 +346,31 @@ defmodule Favn.SQLiteStorageTest do
     assert {:ok, [^expected_audit]} = OrchestratorStorage.list_auth_audit(limit: 10)
   end
 
+  test "duplicate auth usernames return the storage contract error" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    actor = %{
+      id: "act_first_admin",
+      username: "admin",
+      display_name: "First Admin",
+      roles: [:admin],
+      status: :active,
+      inserted_at: now,
+      updated_at: now
+    }
+
+    duplicate = %{actor | id: "act_second_admin", display_name: "Second Admin"}
+    credential = %{password_hash: "$argon2id$v=19$m=256,t=1,p=1$encoded-salt$encoded-hash"}
+
+    assert :ok = OrchestratorStorage.put_auth_actor_with_credential(actor, credential)
+
+    assert {:error, :username_taken} =
+             OrchestratorStorage.put_auth_actor_with_credential(duplicate, credential)
+
+    assert {:ok, ^actor} = OrchestratorStorage.get_auth_actor_by_username("admin")
+    assert {:error, :not_found} = OrchestratorStorage.get_auth_actor(duplicate.id)
+  end
+
   test "auth role DTO rejects unknown persisted roles" do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 

@@ -1359,7 +1359,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         encode_datetime(actor.updated_at)
       ]
 
-      query_ok(repo, sql, params)
+      put_auth_actor_record(repo, sql, params)
     end
   end
 
@@ -1674,6 +1674,21 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp auth_actor_columns do
     "actor_id, username, display_name, roles_blob, status, inserted_at, updated_at"
+  end
+
+  defp put_auth_actor_record(repo, sql, params) do
+    case SQL.query(repo, sql, params) do
+      {:ok, _result} ->
+        :ok
+
+      {:error, %Exqlite.Error{message: message}}
+      when is_binary(message) and
+             message == "UNIQUE constraint failed: favn_auth_actors.username" ->
+        {:error, :username_taken}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp auth_session_columns do

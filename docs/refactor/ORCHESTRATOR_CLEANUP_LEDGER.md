@@ -111,10 +111,14 @@ This is a working review record, not a public architecture contract.
   stale expectations exposed by the full umbrella run.
 - Every umbrella app was exercised under a 45-minute watchdog. The orchestrator
   passed; two `favn_local` production-acceptance tests and one environment-sensitive
-  DuckDB permission test fail with the configured `/mnt/c` temp directory. The
-  DuckDB test and one `favn_local` test pass under native Linux `/tmp`; the
-  packaged-runtime restart failure remains reproducible outside this refactor's
-  scope.
+  DuckDB permission test initially failed with the configured `/mnt/c` temp
+  directory. The DuckDB test and one `favn_local` test pass under native Linux
+  `/tmp`.
+- PR CI exposed the remaining packaged-runtime restart failure as a SQLite auth
+  contract regression in this refactor: a duplicate bootstrap username returned
+  a raw uniqueness error instead of `:username_taken`. The adapter contract and
+  focused regression coverage were corrected; `mix test.acceptance` now passes
+  all three acceptance tests, including the real stop/start cycle.
 
 ## Deliberate non-changes and follow-up
 

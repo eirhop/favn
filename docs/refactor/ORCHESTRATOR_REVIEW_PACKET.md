@@ -133,11 +133,13 @@ full favn_view suite after hardened-contract fixture correction   165 pass
 
 After the independent review, the user requested the full umbrella gate. Every
 app ran under a 45-minute watchdog with the ExUnit timeout forwarded to child
-apps. The orchestrator stayed green. The remaining umbrella failures are two
-`favn_local` production-acceptance tests and one environment-sensitive DuckDB
-permission test. Under native Linux `/tmp`, the DuckDB test and one `favn_local`
-test pass; the packaged-runtime restart test still fails. Their separate fixes
-are not part of this orchestrator review.
+apps. The orchestrator stayed green. That run exposed two `favn_local`
+production-acceptance failures and one environment-sensitive DuckDB permission
+failure. Under native Linux `/tmp`, the DuckDB test and one `favn_local` test
+passed. PR CI reproduced the remaining restart failure and identified it as a
+SQLite duplicate-username contract regression in this refactor. That regression
+now has focused storage coverage, and `mix test.acceptance` passes all three
+acceptance tests, including the real stop/start cycle.
 
 ## Required review output
 
