@@ -177,6 +177,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   test "mix favn.dev loads consumer runtime config before transport", %{root_dir: root_dir} do
     consumer_dir = Path.join(root_dir, "consumer")
     config_dir = Path.join(consumer_dir, "config")
+    code_path = :code.get_path()
     previous_connections = Application.get_env(:favn, :connections)
 
     File.mkdir_p!(config_dir)
@@ -217,28 +218,34 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       Mix.Task.reenable("compile")
     end)
 
-    Mix.Project.in_project(:favn_dev_runtime_config_consumer, consumer_dir, fn _project ->
-      Mix.Task.reenable("app.config")
-      Mix.Task.reenable("compile")
+    try do
+      Mix.Project.in_project(:favn_dev_runtime_config_consumer, consumer_dir, fn _project ->
+        Mix.Task.reenable("app.config")
+        Mix.Task.reenable("compile")
 
-      capture_io(fn ->
-        assert_raise Mix.Error, ~r/install required; run mix favn.install/, fn ->
-          DevTask.run(["--root-dir", consumer_dir])
-        end
+        capture_io(fn ->
+          assert_raise Mix.Error, ~r/install required; run mix favn.install/, fn ->
+            DevTask.run(["--root-dir", consumer_dir])
+          end
+        end)
+
+        encoded =
+          ConsumerConfigTransport.collect_and_encode(
+            [root_dir: consumer_dir],
+            only: [:connections]
+          )
+
+        assert {:ok, [connections: [ducklake: connection]]} =
+                 ConsumerConfigTransport.decode(encoded)
+
+        assert connection[:open] == [database: ":memory:"]
+        assert connection[:duckdb] == [extensions: ["ducklake"]]
       end)
+    after
+      _ = :code.set_path(code_path)
+    end
 
-      encoded =
-        ConsumerConfigTransport.collect_and_encode(
-          [root_dir: consumer_dir],
-          only: [:connections]
-        )
-
-      assert {:ok, [connections: [ducklake: connection]]} =
-               ConsumerConfigTransport.decode(encoded)
-
-      assert connection[:open] == [database: ":memory:"]
-      assert connection[:duckdb] == [extensions: ["ducklake"]]
-    end)
+    assert :code.get_path() == code_path
   end
 
   test "Dev.dev stays quiet unless progress callback is provided", %{root_dir: root_dir} do
