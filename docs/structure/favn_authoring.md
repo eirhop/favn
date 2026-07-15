@@ -29,3 +29,5 @@ runtime data forward; no authoring module is loaded to execute a check.
 `Favn.SQLAsset.RuntimeInputs` and exports `resolve/1`. Authoring emits one typed
 `Favn.RuntimeInputResolver.Ref`; functions, captures, MFA tuples, AST, and
 resolved values never cross into the manifest.
+The module attribute is the only public DSL form; anonymous functions, captures,
+MFA tuples, and inline resolver blocks are rejected rather than normalized.

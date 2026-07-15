@@ -368,6 +368,10 @@ to 30 seconds and by the remaining node deadline, rejects collisions and
 reserved window names, and exposes only the safe input identity and metadata in
 run results. Mark secret-bearing names with `sensitive_params`. Retry attempts
 resolve again until a future protected input-pinning contract is implemented.
+The module attribute is the only supported declaration; anonymous functions,
+captures, MFA tuples, and inline resolver blocks are not accepted. Read
+[Runtime Inputs For SQL Assets](apps/favn/guides/sql-runtime-inputs.md) for the
+full callback, result/error, limits, redaction, and retry contract.
 
 Table and incremental SQL assets can validate the exact candidate and published
 target inside the materialization transaction:

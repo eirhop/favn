@@ -21,6 +21,7 @@ persistence modules, repos, compiler internals, or plugin internals directly.
 
 - Favn is private pre-v1 software; breaking changes are allowed when they make the design cleaner. Always remove deprecated code.
 - Keep user documentation current in `README.md`, `docs/FEATURES.md`, `docs/ROADMAP.md`, and relevant `docs/structure/*.md` files.
+- Every public DSL change must remove stale forms and document the new canonical form in the HexDocs guides, public moduledocs, AI breadcrumbs starting at `Favn.AI`, and the repository docs listed above.
 - Prefer small, explicit modules and public boundary functions with moduledocs, docs, and typespecs.
 - Use shared fixtures and test helpers from `apps/favn_test_support` when available.
 
@@ -84,7 +85,22 @@ Replace `favn_local` with the affected app. Before finishing changes, run:
 
 - `mix format`
 - `mix compile --warnings-as-errors`
-- `mix test`
+- the full umbrella test command below
+
+The root `test` alias does not forward trailing ExUnit options to each child app,
+so `mix test --timeout 1200000` still leaves child tests at the default 60-second
+timeout. For the full umbrella suite, run the same app order explicitly through
+`cmd mix test` and keep the terminal session alive while it runs:
+
+```bash
+for app in \
+  favn_test_support favn_core favn_authoring favn_azure favn \
+  favn_sql_runtime favn_runner favn_orchestrator favn_storage_postgres \
+  favn_storage_sqlite favn_duckdb favn_duckdb_adbc favn_local favn_view
+do
+  MIX_ENV=test mix do --app "$app" cmd mix test --timeout 1200000 || exit $?
+done
+```
 
 Avoid plain `mix do --app <app> test ...` for scoped test arguments in this repo;
 the root `test` alias can recurse unexpectedly. Use `cmd mix test` under

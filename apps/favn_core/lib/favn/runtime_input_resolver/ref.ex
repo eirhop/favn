@@ -4,6 +4,10 @@ defmodule Favn.RuntimeInputResolver.Ref do
 
   The manifest stores this stable module reference only. Resolver functions,
   captured environments, and resolved parameter payloads are never serialized.
+
+  This is a manifest/compiler contract, not an authoring DSL. Authors should
+  start at `Favn.AI`, read `Favn.SQLAsset`, and declare
+  `@runtime_inputs MyApp.Inputs`; they do not construct this struct directly.
   """
 
   @enforce_keys [:module]

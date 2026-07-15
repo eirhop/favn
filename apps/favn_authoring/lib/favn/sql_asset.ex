@@ -228,6 +228,11 @@ defmodule Favn.SQLAsset do
         end
       end
 
+  `@runtime_inputs MyApp.Orders.Inputs` before `query` is the only supported
+  declaration. Anonymous functions, captures, MFA tuples, and inline resolver
+  blocks are not accepted. Remove those forms instead of wrapping or migrating
+  them at runtime; the manifest must contain one stable typed module reference.
+
   The resolver runs once only when the asset will execute, after the effective
   window is final and before SQL rendering or session admission. Its values use
   the normal SQL binding path and can be referenced by nested `defsql` calls.
@@ -240,6 +245,13 @@ defmodule Favn.SQLAsset do
   Sensitive names declared in the result are redacted. Resolved payloads are not
   persisted; retries and runner restarts resolve them again until an explicit
   pinning contract is added.
+
+  Read `Favn.SQLAsset.RuntimeInputs`, then
+  `Favn.SQLAsset.RuntimeInputs.Result` and
+  `Favn.SQLAsset.RuntimeInputs.Error`. The package guide
+  [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) provides the complete
+  authoring workflow, supported values, limits, redaction rules, and retry
+  boundary.
 
   During runtime execution, Favn scopes DuckDB/DuckLake session bootstrap from
   the rendered target relation and rendered Favn asset references. This lets the
@@ -254,6 +266,8 @@ defmodule Favn.SQLAsset do
   - forgetting `@materialized`
   - using interpolation inside `~SQL`
   - using invalid `@depends`, `@window`, `@freshness`, or `@relation` values
+  - using an inline function, capture, MFA tuple, or block instead of
+    `@runtime_inputs ResolverModule`
   - expecting `asset/1` to be user-defined in a `Favn.SQLAsset` module
   - returning multiple rows or a non-Boolean `passed` value from a check
   - adding checks to `:view` materialization
@@ -261,6 +275,9 @@ defmodule Favn.SQLAsset do
   ## See also
 
   - `Favn.SQL`
+  - `Favn.SQLAsset.RuntimeInputs`
+  - `Favn.SQLAsset.RuntimeInputs.Result`
+  - `Favn.SQLAsset.RuntimeInputs.Error`
   - `Favn.SQL.CheckResult`
   - `Favn.Window`
   - `Favn.Freshness.Policy`

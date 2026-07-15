@@ -15,6 +15,25 @@ defmodule Favn.SQLAsset.RuntimeInputs do
   Runtime inputs are resolved again for a later attempt or runner restart. Until
   an explicit pinning contract is added, replay-sensitive resolvers should not be
   used for work that requires the exact same selected inputs across retries.
+
+  ## Authoring breadcrumb
+
+  Start with `Favn.AI`, then read `Favn.SQLAsset` for SQL asset placement and
+  execution semantics. Declare the resolver in the asset with the sole public
+  form:
+
+      @runtime_inputs MyApp.Orders.Inputs
+
+  The attribute must appear at most once before `query`. Anonymous functions,
+  captures, MFA tuples, and inline resolver blocks are unsupported. Implement
+  `resolve/1` in the named module and return only
+  `Favn.SQLAsset.RuntimeInputs.Result` or
+  `Favn.SQLAsset.RuntimeInputs.Error`.
+
+  The HexDocs guide
+  [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) covers the complete
+  workflow, supported bind values, budgets, sensitive-value handling, and retry
+  boundary.
   """
 
   alias Favn.Run.Context
@@ -23,6 +42,9 @@ defmodule Favn.SQLAsset.RuntimeInputs do
 
   @doc """
   Resolves the SQL parameters for one execution using its final runtime context.
+
+  The resolver may perform bounded I/O. It must not return SQL source,
+  credentials in metadata, arbitrary terms, or an untyped error.
   """
   @callback resolve(Context.t()) :: {:ok, Result.t()} | {:error, Error.t()}
 end

@@ -58,7 +58,11 @@ defmodule Favn.AI do
     needed. Runtime input values remain bound parameters, including through
     reusable `defsql`. Checks use normal reusable `defsql`; `query()` is the
     exact staged candidate and `target()` is the transaction-visible owned
-    relation.
+    relation. The only runtime-input declaration is
+    `@runtime_inputs MyApp.Inputs`; do not invent an inline block, anonymous
+    function, capture, or MFA form. The HexDocs guide
+    [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) is the complete
+    author workflow.
   - To author many similar assets in one module, read `Favn.MultiAsset`.
   - To declare external source relations, read `Favn.Source`.
   - To share relation defaults, read `Favn.Namespace`.
@@ -185,6 +189,12 @@ defmodule Favn.AI do
      `Favn.SQLAsset.RuntimeInputs.Error` for the only accepted return shapes.
   4. `Favn.RuntimeInputResolver.Ref` only for manifest/compiler work; authors
      declare the module and do not construct this reference directly.
+
+  The canonical public declaration is `@runtime_inputs MyApp.Inputs` before
+  `query`. Anonymous functions, captures, MFA tuples, and inline resolver blocks
+  are unsupported. Read
+  [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) for the complete
+  human workflow, limits, redaction rules, retry boundary, and examples.
 
   ## About `Favn`
 
@@ -315,6 +325,8 @@ defmodule Favn.AI do
   - `docs/ROADMAP.md`: planned work only
   - `apps/favn/guides/sql-asset-checks.md`: complete transactional SQL check
     authoring and result reference
+  - `apps/favn/guides/sql-runtime-inputs.md`: canonical behaviour-based SQL
+    runtime input authoring, result/error contracts, limits, and retry boundary
   - `examples/basic-workflow-tutorial`: standalone consumer-style tutorial with
     the canonical source-system raw landing example in
     `FavnReferenceWorkload.Warehouse.Raw.Orders`

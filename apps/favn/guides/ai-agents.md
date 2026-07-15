@@ -27,6 +27,20 @@ contract from runtime code:
 4. Read [Transactional SQL Asset Checks](sql-asset-checks.md) for the full
    authoring workflow, result limits, and failure modes.
 
+For behaviour-based SQL runtime inputs, follow this path instead of inventing
+an inline resolver DSL:
+
+1. Read `mix favn.read_doc Favn.SQLAsset` for placement and execution timing.
+2. Read `mix favn.read_doc Favn.SQLAsset.RuntimeInputs` for `resolve/1`.
+3. Read `mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Result` and
+   `mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Error` for the only accepted
+   outcomes.
+4. Read [Runtime Inputs For SQL Assets](sql-runtime-inputs.md) for the full
+   workflow, supported values, budgets, redaction, and retry boundary.
+
+The canonical declaration is `@runtime_inputs MyApp.Inputs`. Anonymous
+functions, captures, MFA tuples, and inline resolver blocks are unsupported.
+
 ## Recommended Workflow
 
 - Use `:favn` as the public package surface for asset authoring, local commands,
@@ -63,6 +77,9 @@ Useful follow-up commands:
 mix favn.read_doc Favn
 mix favn.read_doc Favn.Asset
 mix favn.read_doc Favn.SQLAsset
+mix favn.read_doc Favn.SQLAsset.RuntimeInputs
+mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Result
+mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Error
 mix favn.read_doc Favn.SQLAsset check
 mix favn.read_doc Favn.SQL.CheckResult
 mix favn.read_doc Favn.Pipeline
