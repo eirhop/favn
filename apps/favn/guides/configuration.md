@@ -49,9 +49,10 @@ Explicit module keys:
 ## Local Runtime Config
 
 Local dev reads `config :favn, :local`. Task flags override config values.
-`mix favn.dev` loads the consumer project's `config/runtime.exs` before it
-collects connection, execution-pool, and plugin configuration for the local
-runner, so environment-specific values may be supplied there.
+`mix favn.dev` first loads the project's `.env`, then evaluates the consumer
+project's `config/runtime.exs` in a fresh Mix process before it collects
+connection, execution-pool, and plugin configuration for the local runner.
+Environment-specific values from `.env` may therefore be read in runtime config.
 
 Minimal default:
 
@@ -430,7 +431,9 @@ options for raw writes.
 
 ## `.env` Files
 
-Local dev loads `.env` from the project root before compile/runtime startup.
+`mix favn.dev` and `mix favn.reload` load `.env` from the project root before
+`config/runtime.exs`, compile, or runtime startup. Each command reads the file
+once and evaluates runtime config in a fresh Mix process.
 
 Rules:
 
@@ -439,6 +442,26 @@ Rules:
 - If `FAVN_ENV_FILE` is set and missing, startup fails.
 - Existing process env wins over values in the file.
 - Supports `KEY=value`, optional `export`, quotes, comments, and blank lines.
+
+For example:
+
+```dotenv
+FAVN_RUNTIME_MODE=cloud
+```
+
+```elixir
+# config/runtime.exs
+import Config
+
+database =
+  case System.fetch_env!("FAVN_RUNTIME_MODE") do
+    "cloud" -> "cloud.duckdb"
+    "local" -> "local.duckdb"
+  end
+
+config :favn, :connections,
+  warehouse: [open: [database: database]]
+```
 
 ## Common Config Failures
 

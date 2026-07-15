@@ -7,7 +7,9 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Favn.Connection.Resolved
   alias Favn.Dev.Bootstrap.Single, as: BootstrapSingle
   alias Favn.Dev.ConsumerConfigTransport
+  alias Favn.Dev.EnvBootstrap
   alias Favn.Dev.Process, as: DevProcess
+  alias Favn.Dev.RuntimeLaunch
   alias Favn.Dev.State
   alias Favn.SQL.Capabilities
   alias Favn.SQL.Column
@@ -20,6 +22,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Build.Single, as: BuildSingleTask
   alias Mix.Tasks.Favn.Build.Web, as: BuildWebTask
   alias Mix.Tasks.Favn.Dev, as: DevTask
+  alias Mix.Tasks.Favn.Dev.Configured, as: ConfiguredDevTask
   alias Mix.Tasks.Favn.Diagnostics, as: DiagnosticsTask
   alias Mix.Tasks.Favn.Doctor, as: DoctorTask
   alias Mix.Tasks.Favn.Init, as: InitTask
@@ -28,6 +31,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Logs, as: LogsTask
   alias Mix.Tasks.Favn.Query, as: QueryTask
   alias Mix.Tasks.Favn.Reload, as: ReloadTask
+  alias Mix.Tasks.Favn.Reload.Configured, as: ConfiguredReloadTask
   alias Mix.Tasks.Favn.Reset, as: ResetTask
   alias Mix.Tasks.Favn.Run, as: RunTask
   alias Mix.Tasks.Favn.Runs, as: RunsTask
@@ -158,7 +162,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     capture_io(fn ->
       assert_raise Mix.Error, ~r/local stack already running/, fn ->
-        DevTask.run(["--root-dir", root_dir])
+        run_configured_dev(["--root-dir", root_dir])
       end
     end)
   end
@@ -167,7 +171,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     output =
       capture_io(fn ->
         assert_raise Mix.Error, ~r/install required; run mix favn.install/, fn ->
-          DevTask.run(["--root-dir", root_dir])
+          run_configured_dev(["--root-dir", root_dir])
         end
       end)
 
@@ -179,6 +183,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     config_dir = Path.join(consumer_dir, "config")
     code_path = :code.get_path()
     previous_connections = Application.get_env(:favn, :connections)
+    previous_runtime_mode = System.get_env("FAVN_DEV_RUNTIME_CONFIG_MODE")
 
     File.mkdir_p!(config_dir)
 
@@ -202,25 +207,47 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       """
       import Config
 
+      database =
+        case System.fetch_env!("FAVN_DEV_RUNTIME_CONFIG_MODE") do
+          "cloud" -> "cloud.duckdb"
+          "local" -> "local.duckdb"
+        end
+
       config :favn, :connections,
         ducklake: [
-          open: [database: ":memory:"],
+          open: [database: database],
           duckdb: [extensions: ["ducklake"]]
         ]
       """
     )
 
+    File.write!(Path.join(consumer_dir, ".env"), "FAVN_DEV_RUNTIME_CONFIG_MODE=cloud\n")
+
     Application.delete_env(:favn, :connections)
+    System.delete_env("FAVN_DEV_RUNTIME_CONFIG_MODE")
 
     on_exit(fn ->
       restore_env(:connections, previous_connections)
+
+      if previous_runtime_mode do
+        System.put_env("FAVN_DEV_RUNTIME_CONFIG_MODE", previous_runtime_mode)
+      else
+        System.delete_env("FAVN_DEV_RUNTIME_CONFIG_MODE")
+      end
+
       Mix.Task.reenable("app.config")
       Mix.Task.reenable("compile")
     end)
 
     try do
       Mix.Project.in_project(:favn_dev_runtime_config_consumer, consumer_dir, fn _project ->
-        assert Mix.Task.requirements(DevTask) == ["app.config"]
+        assert Mix.Task.requirements(DevTask) == ["loadpaths"]
+        assert Mix.Task.requirements(ConfiguredDevTask) == ["app.config"]
+        assert Mix.Task.requirements(ReloadTask) == ["loadpaths"]
+        assert Mix.Task.requirements(ConfiguredReloadTask) == ["app.config"]
+
+        args = ["--root-dir", consumer_dir]
+        assert :ok = EnvBootstrap.install_for_current_process(:dev, DevTask.parse_args(args))
 
         Mix.Task.reenable("app.config")
         Mix.Task.reenable("compile")
@@ -231,22 +258,32 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         assert Code.ensure_loaded?(Favn.Dev)
         assert Code.ensure_loaded?(ConsumerConfigTransport)
 
-        capture_io(fn ->
-          assert_raise Mix.Error, ~r/install required; run mix favn.install/, fn ->
-            DevTask.run(["--root-dir", consumer_dir])
-          end
-        end)
+        assert {:ok, configured_opts} =
+                 EnvBootstrap.consume(:dev, DevTask.parse_args(args))
 
-        encoded =
-          ConsumerConfigTransport.collect_and_encode(
-            [root_dir: consumer_dir],
-            only: [:connections]
+        configured_opts =
+          Keyword.put(configured_opts, :local_distribution,
+            localhost: fn -> ~c"testhost.localdomain" end,
+            resolver: fn ~c"testhost" -> {:ok, [{127, 0, 1, 1}]} end,
+            epmd_executable: false
           )
 
-        assert {:ok, [connections: [ducklake: connection]]} =
-                 ConsumerConfigTransport.decode(encoded)
+        runner =
+          RuntimeLaunch.runner_spec(
+            %{"runner_root" => consumer_dir},
+            configured_opts,
+            %{runner_short: "favn_runner_runtime_config_test"},
+            %{"rpc_cookie" => "cookie"}
+          )
 
-        assert connection[:open] == [database: ":memory:"]
+        assert runner.env["FAVN_DEV_RUNTIME_CONFIG_MODE"] == "cloud"
+
+        encoded = runner.env["FAVN_DEV_CONSUMER_FAVN_CONFIG"]
+
+        assert {:ok, config} = ConsumerConfigTransport.decode(encoded)
+        connection = config |> Keyword.fetch!(:connections) |> Keyword.fetch!(:ducklake)
+
+        assert connection[:open] == [database: "cloud.duckdb"]
         assert connection[:duckdb] == [extensions: ["ducklake"]]
       end)
     after
@@ -504,7 +541,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     try do
       capture_io(fn ->
         assert_raise Mix.Error, ~r/local stack is in a partial\/dead state/, fn ->
-          DevTask.run(["--root-dir", root_dir])
+          run_configured_dev(["--root-dir", root_dir])
         end
       end)
     after
@@ -676,6 +713,27 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert message =~ "mix favn.runs cancel RUN_ID"
     assert message =~ "if these runs are stale"
     assert message =~ "mix favn.reset"
+  end
+
+  test "configured lifecycle tasks reject direct invocation" do
+    previous_token = System.get_env("FAVN_INTERNAL_ENV_BOOTSTRAP")
+    System.delete_env("FAVN_INTERNAL_ENV_BOOTSTRAP")
+
+    on_exit(fn ->
+      if previous_token do
+        System.put_env("FAVN_INTERNAL_ENV_BOOTSTRAP", previous_token)
+      else
+        System.delete_env("FAVN_INTERNAL_ENV_BOOTSTRAP")
+      end
+    end)
+
+    assert_raise Mix.Error, ~r/internal task; run mix favn.dev/, fn ->
+      ConfiguredDevTask.run([])
+    end
+
+    assert_raise Mix.Error, ~r/internal task; run mix favn.reload/, fn ->
+      ConfiguredReloadTask.run([])
+    end
   end
 
   test "mix favn.backfill parses submit command" do
@@ -961,7 +1019,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         assert_raise Mix.Error,
                      ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable|local Erlang shortname host .* must resolve to a loopback 127\.\* address|port conflict: .* cannot bind port)/,
                      fn ->
-                       DevTask.run(["--root-dir", root_dir])
+                       run_configured_dev(["--root-dir", root_dir])
                      end
       end)
     after
@@ -1213,7 +1271,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         assert_raise Mix.Error,
                      ~r/port conflict: web cannot bind port #{port}; free the port and retry/,
                      fn ->
-                       DevTask.run(["--root-dir", root_dir])
+                       run_configured_dev(["--root-dir", root_dir])
                      end
       end)
     after
@@ -1256,7 +1314,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
       capture_io(fn ->
         assert_raise Mix.Error, ~r/postgres unavailable at 127.0.0.1:1/, fn ->
-          DevTask.run(["--root-dir", root_dir])
+          run_configured_dev(["--root-dir", root_dir])
         end
       end)
     after
@@ -1465,6 +1523,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     {:ok, port} = :inet.port(socket)
     :ok = :gen_tcp.close(socket)
     port
+  end
+
+  defp run_configured_dev(args) do
+    :ok = EnvBootstrap.install_for_current_process(:dev, DevTask.parse_args(args))
+    DevTask.run_configured(args)
   end
 
   defp configure_query_connection! do

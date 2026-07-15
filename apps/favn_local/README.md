@@ -174,14 +174,19 @@ trimming whitespace. Malformed strings fall back to the documented defaults.
 
 Local env files:
 
-- `mix favn.dev` and `mix favn.reload` load `<project-root>/.env` before
-  compiling the project, building manifests, or launching/restarting services
+- `mix favn.dev` and `mix favn.reload` load `<project-root>/.env`, then use a
+  fresh Mix process to evaluate `config/runtime.exs` before compiling the
+  project, building manifests, or launching/restarting services
+- each command reads its env file once; a later `mix favn.reload` starts a new
+  bootstrap and therefore sees current env-file and runtime-config values
 - `FAVN_ENV_FILE` can point at an alternate env file; relative paths are resolved
   from the project root
 - existing shell environment variables win over values in the env file
 - Favn-owned service values such as local ports, runner node names, and service
   tokens override env-file values when launching managed services
 - raw env values are not written into `.favn/` runtime metadata
+- env values are inherited by the configured process and are not placed in
+  command-line arguments
 
 ## `.favn/` layout
 

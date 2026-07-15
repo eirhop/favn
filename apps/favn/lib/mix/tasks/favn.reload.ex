@@ -5,16 +5,56 @@ defmodule Mix.Tasks.Favn.Reload do
 
   @moduledoc """
   Recompiles the project, rebuilds the manifest, publishes it to orchestrator,
-  and activates it without restarting orchestrator.
+  and activates it without restarting orchestrator. The project's `.env` is
+  loaded before the consumer project's `config/runtime.exs` is reevaluated.
   """
 
   alias Favn.Dev
+  alias Favn.Dev.EnvBootstrap
   alias Mix.Tasks.Favn.CLIArgs
+
+  @requirements ["loadpaths"]
 
   @impl Mix.Task
   def run(args) do
-    opts = CLIArgs.parse_no_args!("favn.reload", args, root_dir: :string)
+    opts = parse_args(args)
 
+    case EnvBootstrap.exec(:reload, args, opts) do
+      {:ok, 0} ->
+        :ok
+
+      {:ok, status} ->
+        System.halt(status)
+
+      {:error, reason} ->
+        Mix.raise("reload failed: #{inspect(reason)}")
+    end
+  end
+
+  @doc false
+  @spec run_configured([String.t()]) :: :ok | no_return()
+  def run_configured(args) do
+    opts = parse_args(args)
+
+    with {:ok, opts} <- EnvBootstrap.consume(:reload, opts) do
+      run_reload(opts)
+    else
+      {:error, :env_bootstrap_required} ->
+        Mix.raise("favn.reload.configured is an internal task; run mix favn.reload")
+
+      {:error, reason} ->
+        Mix.raise(
+          "invalid favn.reload environment bootstrap: #{inspect(reason)}; run mix favn.reload"
+        )
+    end
+  end
+
+  @doc false
+  @spec parse_args([String.t()]) :: keyword()
+  def parse_args(args) when is_list(args),
+    do: CLIArgs.parse_no_args!("favn.reload", args, root_dir: :string)
+
+  defp run_reload(opts) do
     case Dev.reload(opts) do
       :ok ->
         :ok

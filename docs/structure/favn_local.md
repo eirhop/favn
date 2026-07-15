@@ -6,8 +6,10 @@ SQL data inspection, single-node bootstrap, and packaging commands, including
 the project-local backend-only SQLite `build.single` launcher.
 
 Code:
-- `apps/favn/lib/mix/tasks/favn.dev.ex` loads consumer runtime configuration
-  before delegating startup to `favn_local`
+- `apps/favn/lib/mix/tasks/favn.dev.ex` and `favn.reload.ex` load only the code
+  paths needed for a lightweight env bootstrap before delegating configured work
+  to guarded internal tasks whose `app.config` requirement evaluates consumer
+  runtime configuration in a fresh Mix process
 - `apps/favn_local/lib/favn/dev.ex`
 - `apps/favn_local/lib/favn/dev/`
 - `apps/favn_local/lib/favn/dev/local_distribution.ex` for local distributed Erlang
@@ -24,7 +26,8 @@ Code:
   tables/views are assets. The bundled DuckDB smoke path attaches local `raw`
   and `mart` catalog files during connection bootstrap.
 - `apps/favn_local/lib/favn/dev/env_file.ex` for local `.env` parsing/loading
-  before dev/reload compile, manifest, and service launch work
+  and `env_bootstrap.ex` for the bounded key-only handoff into the configured
+  dev/reload process before compile, manifest, and service launch work
 - single-node bootstrap implementation under `apps/favn_local/lib/favn/dev/bootstrap/`
 - `apps/favn_local/lib/favn_local.ex`
 - single-node artifact integration test harness under `apps/favn_local/test_support/`
@@ -36,7 +39,9 @@ Tests:
 - product-level single-node acceptance coverage under `apps/favn_local/test/acceptance/single_node_production_acceptance_test.exs`
 - single-node bootstrap tests under `apps/favn_local/test/dev_bootstrap_single_test.exs`
 - orchestrator bootstrap HTTP client tests under `apps/favn_local/test/dev_orchestrator_client_test.exs`
-- env-file parser/loader coverage under `apps/favn_local/test/dev_env_file_test.exs`
+- env-file parser/loader and configured-process bootstrap coverage under
+  `apps/favn_local/test/dev_env_file_test.exs` and
+  `apps/favn_local/test/dev_env_bootstrap_test.exs`
 
 Test tiers:
 - `:integration` means a test crosses an app, process, storage, or runtime boundary;

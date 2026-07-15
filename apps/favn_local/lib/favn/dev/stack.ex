@@ -8,6 +8,7 @@ defmodule Favn.Dev.Stack do
 
   alias Favn.Dev.Config
   alias Favn.Dev.DistributedErlang
+  alias Favn.Dev.EnvBootstrap
   alias Favn.Dev.EnvFile
   alias Favn.Dev.Install
   alias Favn.Dev.LocalContext
@@ -28,8 +29,7 @@ defmodule Favn.Dev.Stack do
 
   @spec start_foreground(root_opt()) :: :ok | {:error, term()}
   def start_foreground(opts \\ []) when is_list(opts) do
-    with {:ok, env_file} <- EnvFile.load(opts),
-         opts <- Keyword.put(opts, :env_file_loaded, env_file.loaded),
+    with {:ok, opts} <- EnvBootstrap.ensure_loaded(opts),
          {:ok, startup} <-
            progress_step(opts, "checking local state", fn -> prepare_startup(opts) end),
          :ok <-

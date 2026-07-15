@@ -8,19 +8,46 @@ defmodule Mix.Tasks.Favn.Dev do
   @moduledoc """
   Starts local `favn_view + favn_orchestrator + favn_runner` in foreground mode.
 
-  The consumer project's `config/runtime.exs` is loaded before local runtime
-  configuration is collected for the runner.
+  The project's `.env` is loaded before the consumer project's
+  `config/runtime.exs` is evaluated. Local runtime configuration is then
+  collected for the runner.
   """
 
   alias Favn.Dev
+  alias Favn.Dev.EnvBootstrap
   alias Mix.Tasks.Favn.CLIArgs
 
-  @requirements ["app.config"]
+  @requirements ["loadpaths"]
 
   @impl Mix.Task
   def run(args) do
     opts = args |> parse_args() |> Keyword.put(:progress_fun, &IO.puts/1)
 
+    case EnvBootstrap.exec(:dev, args, opts) do
+      {:ok, 0} ->
+        :ok
+
+      {:ok, status} ->
+        System.halt(status)
+
+      {:error, reason} ->
+        Mix.raise(error_message(reason))
+    end
+  end
+
+  @doc false
+  @spec run_configured([String.t()]) :: :ok | no_return()
+  def run_configured(args) do
+    opts = args |> parse_args() |> Keyword.put(:progress_fun, &IO.puts/1)
+
+    with {:ok, opts} <- EnvBootstrap.consume(:dev, opts) do
+      run_dev(opts)
+    else
+      {:error, reason} -> Mix.raise(configured_error_message(reason))
+    end
+  end
+
+  defp run_dev(opts) do
     case Dev.dev(opts) do
       :ok ->
         :ok
@@ -112,6 +139,12 @@ defmodule Mix.Tasks.Favn.Dev do
       "#{service} exited during startup (status=#{inspect(status)}); inspect .favn/logs/#{service}.log and check for stale state or port conflicts"
 
   defp error_message(reason), do: "failed to start local stack: #{inspect(reason)}"
+
+  defp configured_error_message(:env_bootstrap_required),
+    do: "favn.dev.configured is an internal task; run mix favn.dev"
+
+  defp configured_error_message(reason),
+    do: "invalid favn.dev environment bootstrap: #{inspect(reason)}; run mix favn.dev"
 
   defp normalize_storage_flags(opts) do
     sqlite? = Keyword.get(opts, :sqlite, false)
