@@ -373,6 +373,38 @@ captures, MFA tuples, and inline resolver blocks are not accepted. Read
 [Runtime Inputs For SQL Assets](apps/favn/guides/sql-runtime-inputs.md) for the
 full callback, result/error, limits, redaction, and retry contract.
 
+SQL table and incremental assets can publish a typed output contract alongside
+their query:
+
+```elixir
+contract do
+  grain by: [:record_id], description: "one normalized record"
+
+  column :record_id, :integer,
+    null: false,
+    from: [{MyApp.Assets.SourceRecords, :source_id}],
+    via: :transformation
+
+  column :payload, :json, from: [{"external.records", "payload"}]
+  unique [:record_id]
+
+  row_count min: 1,
+    when: :target_exists,
+    on_violation: :skip_materialization
+end
+```
+
+Favn validates the staged candidate's ordered names and types before target
+mutation, generates checks for non-null columns, structured grain, unique keys,
+and minimum row count, and persists explicit column lineage. Contract-generated
+and custom checks use the same `on_violation: :fail | :warn |
+:skip_materialization` vocabulary and appear together in asset assurance. The
+contract describes output; it does not generate the query's `select` list.
+
+Read [SQL Output Contracts](apps/favn/guides/sql-output-contracts.md) for the
+complete DSL, logical types, grain and lineage choices, automatic enforcement,
+semantic diffs, and runtime result model.
+
 Table and incremental SQL assets can validate the exact candidate and published
 target inside the materialization transaction:
 
@@ -380,20 +412,21 @@ target inside the materialization transaction:
 check :has_rows,
   at: :before_materialize,
   when: :target_exists,
-  on_false: :skip_materialization,
+  on_violation: :skip_materialization,
   message: "No rows were available; the existing target was kept" do
   ~SQL"select count(*) > 0 as passed, count(*) as incoming_rows from query()"
 end
 
-check :known_statuses, at: :after_materialize, on_false: :warn do
+check :known_statuses, at: :after_materialize, on_violation: :warn do
   ~SQL"select count(*) filter (where status not in ('open', 'closed')) = 0 as passed from target()"
 end
 ```
 
 Checks return one row with a native Boolean `passed` column and optional bounded
 scalar metrics. Failures roll back, warnings commit with durable quality
-metadata, and `:skip_materialization` is a successful no-op that preserves an
-existing target. Checked views are intentionally unsupported.
+metadata, and `:skip_materialization` is a successful no-op with
+`quality_status: :warning` that preserves an existing target. Checked views are
+intentionally unsupported.
 
 Read [Transactional SQL Asset Checks](apps/favn/guides/sql-asset-checks.md) for
 the complete DSL reference, transaction order, bootstrap behavior, metric

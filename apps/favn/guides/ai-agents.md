@@ -17,6 +17,20 @@ mix favn.read_doc Favn.AI
 SQL assets, namespaces, pipelines, local commands, manifest functions, windows,
 freshness, and `Favn.SQLClient`.
 
+For SQL output contracts, follow this path instead of inferring a schema or
+lineage DSL from runtime code:
+
+1. Read `mix favn.read_doc Favn.SQLAsset` and
+   `mix favn.read_doc Favn.SQLAsset contract` for public authoring.
+2. Read `mix favn.read_doc Favn.SQL.Contract` for the compiled typed model.
+3. Read `mix favn.read_doc Favn.SQL.ContractValidation` for candidate schema
+   enforcement and `mix favn.read_doc Favn.SQL.Contract.Diff` for evolution.
+4. Read [SQL Output Contracts](sql-output-contracts.md) for the complete DSL,
+   automatic checks, policy outcomes, assurance, and limits.
+
+The canonical lineage declaration is a plain `from:` list. Contracts describe
+output and never generate the query's `select` list.
+
 For transactional SQL asset checks, follow this path instead of inferring the
 contract from runtime code:
 
@@ -88,6 +102,10 @@ mix favn.read_doc Favn.SQLAsset.RuntimeInputs
 mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Result
 mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Error
 mix favn.read_doc Favn.SQLAsset check
+mix favn.read_doc Favn.SQLAsset contract
+mix favn.read_doc Favn.SQL.Contract
+mix favn.read_doc Favn.SQL.ContractValidation
+mix favn.read_doc Favn.SQL.Contract.Diff
 mix favn.read_doc Favn.SQL.CheckResult
 mix favn.read_doc Favn.Connection
 mix favn.read_doc Favn.Pipeline

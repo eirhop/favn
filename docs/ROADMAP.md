@@ -66,6 +66,9 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Evaluate explicit session-script composition only if real projects cannot
   keep native SQL resources self-contained. Do not add a Favn fragment or
   resource-dependency DSL pre-emptively.
+- Add opt-in deployment approval policies on top of the implemented semantic
+  SQL contract diff when a concrete promotion workflow needs compatibility
+  gates; current diffs remain review evidence rather than an implicit blocker.
 - A richer operator web experience once the current boundary and auth models are stable.
 - Richer landed-data inspection beyond the curated local preview, such as broader DuckLake snapshot metadata, pagination, and optional local-only SQL console behind an explicit feature flag.
 - More storage adapters and runner plugins beyond the current built-in set.

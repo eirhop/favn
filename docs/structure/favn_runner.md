@@ -53,8 +53,12 @@ error, and cancellation contracts.
 Checked SQL assets are coordinated by `Favn.SQLAsset.Runtime`: target existence,
 optional candidate staging, ordered before checks, the write plan, ordered after
 checks, and stage cleanup all run inside one admitted adapter transaction.
-Warnings and no-op writes remain successful; failures return bounded check
-metadata so the worker persists failed-attempt diagnostics.
+Contracted assets always stage their candidate. The runtime inspects candidate
+columns and applies `%Favn.SQL.ContractValidation{}` before target mutation,
+then executes generated data claims through the same check engine as authored
+checks. Warnings and no-op writes remain successful; a no-op also records
+`quality_status: :warning`. Failures return bounded contract/check metadata so
+the worker persists failed-attempt diagnostics.
 
 `FavnRunner.RuntimeInputResolver` owns behaviour-based SQL runtime input
 execution. The worker first builds the normal final `Favn.Run.Context`; the SQL

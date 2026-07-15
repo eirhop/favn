@@ -38,15 +38,16 @@ Checks are publication gates and quality annotations, not a general test runner.
 
 ## Define Checks
 
-Declare checks in the SQL asset module. Give every check a unique atom name and
-choose when it runs and what a false result means.
+Declare up to 50 authored checks in the SQL asset module. Give every check a
+unique atom name and choose when it runs and what a false result means. Output
+contracts have a separate budget of at most three grouped generated checks.
 
 ```elixir
-defmodule MyApp.Lakehouse.Mart.Sales.Orders do
-  @moduledoc "Validated order mart used by sales reporting."
+defmodule MyApp.Assets.NormalizedRecords do
+  @moduledoc "Normalized records with transactional quality checks."
 
   use Favn.Namespace,
-    relation: [connection: :warehouse, catalog: "mart", schema: "sales"]
+    relation: [connection: :main, catalog: "normalized", schema: "default"]
 
   use Favn.SQLAsset
 
@@ -54,12 +55,12 @@ defmodule MyApp.Lakehouse.Mart.Sales.Orders do
 
   check :candidate_has_valid_keys,
     at: :before_materialize,
-    on_false: :fail,
-    message: "Every candidate row must have an order id" do
+    on_violation: :fail,
+    message: "Every candidate row must have a record id" do
     ~SQL"""
     select
-      count(*) filter (where order_id is null) = 0 as passed,
-      count(*) filter (where order_id is null) as invalid_rows
+      count(*) filter (where record_id is null) = 0 as passed,
+      count(*) filter (where record_id is null) as invalid_rows
     from query()
     """
   end
@@ -67,25 +68,25 @@ defmodule MyApp.Lakehouse.Mart.Sales.Orders do
   check :keep_existing_target_when_empty,
     at: :before_materialize,
     when: :target_exists,
-    on_false: :skip_materialization,
+    on_violation: :skip_materialization,
     message: "The candidate was empty; the existing target was kept" do
     ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
   end
 
-  check :known_statuses,
+  check :values_are_supported,
     at: :after_materialize,
-    on_false: :warn,
-    message: "The order mart contains unknown statuses" do
+    on_violation: :warn,
+    message: "The target contains unsupported states" do
     ~SQL"""
     select
-      count(*) filter (where status not in ('open', 'closed')) = 0 as passed,
-      count(*) filter (where status not in ('open', 'closed')) as invalid_rows
+      count(*) filter (where state not in ('ready', 'pending')) = 0 as passed,
+      count(*) filter (where state not in ('ready', 'pending')) as invalid_rows
     from target()
     """
   end
 
   query do
-    ~SQL"select order_id, status from raw.sales.orders"
+    ~SQL"select source_id as record_id, state from source_records"
   end
 end
 ```
@@ -108,10 +109,11 @@ All before checks run before all after checks even if the declarations are
 interleaved. Group checks by phase in the module so their runtime order is easy
 to read.
 
-`on_false: :fail` and any SQL or result-shape error roll back the transaction.
+`on_violation: :fail` and any SQL or result-shape error roll back the transaction.
 A warning commits the write. A materialization skip commits a successful no-op
-without changing the target. Successful warnings and no-ops remain successful
-asset executions, so normal freshness updates and downstream gating continue.
+without changing the target and records `quality_status: :warning`. Successful
+warnings and no-ops remain successful asset executions, so normal freshness
+updates and downstream gating continue.
 
 Checked materialization requires an adapter that can execute Favn's write plan
 inside the active transaction. Views are unsupported because their future rows
@@ -134,7 +136,7 @@ it back.
 ```elixir
 check :unique_name,
   at: :before_materialize,
-  on_false: :fail,
+  on_violation: :fail,
   when: :target_exists,
   message: "Human-readable context" do
   ~SQL"select true as passed"
@@ -143,34 +145,34 @@ end
 
 | Input | Required | Values and meaning |
 | --- | --- | --- |
-| name | yes | A unique, non-`nil` atom. One asset supports at most 50 checks. |
+| name | yes | A unique, non-`nil` atom. One asset supports at most 50 authored checks; an output contract adds at most three grouped generated checks. |
 | `at` | yes | `:before_materialize` or `:after_materialize`. |
-| `on_false` | yes | `:fail`, `:warn`, or `:skip_materialization`. |
+| `on_violation` | yes | `:fail`, `:warn`, or `:skip_materialization`. |
 | `when` | no | `:target_exists` skips the check during first-target bootstrap. |
 | `message` | no | Static human-readable context, limited to 1,024 bytes. |
 
-`on_false` controls only a valid result whose `passed` value is `false`:
+`on_violation` controls only a valid result whose `passed` value is `false`:
 
 | Value | Behavior |
 | --- | --- |
 | `:fail` | Stop, roll back, and fail the asset attempt. |
 | `:warn` | Record a durable warning and continue in the same transaction. |
-| `:skip_materialization` | Before the write, commit a successful no-op and mark later checks `:not_run`. |
+| `:skip_materialization` | Before the write, commit a successful warning/no-op and mark later checks `:not_run`. |
 
 `:skip_materialization` is valid only at `:before_materialize` and requires
 `when: :target_exists`. This prevents a missing target from being treated as a
 successful no-op during bootstrap. A missing target condition-skips that check
 and allows the initial materialization to proceed.
 
-### Choose The False Policy
+### Choose The Violation Policy
 
 | Policy | Use it when | Do not use it when |
 | --- | --- | --- |
 | `:fail` | Publishing the candidate would violate a required invariant. | The condition is informational or an existing target is intentionally acceptable. |
 | `:warn` | The target remains safe to publish, but operators should see durable quality degradation. | Downstream consumers would receive unsafe or misleading data. |
-| `:skip_materialization` | Keeping an existing target is a valid successful outcome, such as an empty source extract. | Stale data is unsafe, the target must be refreshed, or the false result represents an actual failure. |
+| `:skip_materialization` | Keeping an existing target is a valid successful outcome for an empty candidate. | Stale data is unsafe, the target must be refreshed, or the false result represents an actual failure. |
 
-`on_false` never handles SQL, adapter, or result-contract errors. Those always
+`on_violation` never handles SQL, adapter, or result-contract errors. Those always
 fail and roll back. In particular, `:warn` and `:skip_materialization` must not
 be used as attempts to hide connectivity or query failures.
 
@@ -198,21 +200,21 @@ defmodule MyApp.SQL.Quality do
   end
 end
 
-defmodule MyApp.Lakehouse.Mart.Sales.Orders do
+defmodule MyApp.Assets.NormalizedRecords do
   use Favn.Namespace,
-    relation: [connection: :warehouse, catalog: "mart", schema: "sales"]
+    relation: [connection: :main, catalog: "normalized", schema: "default"]
 
   use MyApp.SQL.Quality
   use Favn.SQLAsset
 
   @materialized :table
 
-  check :candidate_has_rows, at: :before_materialize, on_false: :fail do
+  check :candidate_has_rows, at: :before_materialize, on_violation: :fail do
     ~SQL"select * from has_rows(query())"
   end
 
   query do
-    ~SQL"select * from raw.sales.orders"
+    ~SQL"select source_id as record_id, state from source_records"
   end
 end
 ```
@@ -231,14 +233,14 @@ Use a before fail check for a required invariant that can be evaluated from the
 candidate alone:
 
 ```elixir
-check :unique_order_ids,
+check :unique_record_ids,
   at: :before_materialize,
-  on_false: :fail,
-  message: "Order ids must be present and unique" do
+  on_violation: :fail,
+  message: "Record ids must be present and unique" do
   ~SQL"""
   select
-    count(*) = count(distinct order_id) as passed,
-    count(*) - count(distinct order_id) as invalid_rows
+    count(*) = count(distinct record_id) as passed,
+    count(*) - count(distinct record_id) as invalid_rows
   from query()
   """
 end
@@ -253,14 +255,14 @@ Use an after warning when the exact published target should be visible to
 downstream assets but operators still need a quality signal:
 
 ```elixir
-check :known_statuses,
+check :values_are_supported,
   at: :after_materialize,
-  on_false: :warn,
-  message: "The order mart contains unknown statuses" do
+  on_violation: :warn,
+  message: "The target contains unsupported states" do
   ~SQL"""
   select
-    count(*) filter (where status not in ('open', 'closed')) = 0 as passed,
-    count(*) filter (where status not in ('open', 'closed')) as invalid_rows
+    count(*) filter (where state not in ('ready', 'pending')) = 0 as passed,
+    count(*) filter (where state not in ('ready', 'pending')) as invalid_rows
   from target()
   """
 end
@@ -279,15 +281,15 @@ success policy:
 check :keep_existing_target_when_empty,
   at: :before_materialize,
   when: :target_exists,
-  on_false: :skip_materialization,
+  on_violation: :skip_materialization,
   message: "The candidate was empty; the existing target was kept" do
   ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
 end
 ```
 
 With an existing target and an empty candidate, the asset succeeds with
-`write_outcome: :no_op`, the target is unchanged, and later checks are
-`:not_run`. During first-target bootstrap, the condition produces
+`quality_status: :warning` and `write_outcome: :no_op`, the target is unchanged,
+and later checks are `:not_run`. During first-target bootstrap, the condition produces
 `:condition_skipped` and Favn writes the candidate. If an empty first target is
 invalid, add a separate unguarded `:fail` check or choose a different bootstrap
 policy.
@@ -304,7 +306,7 @@ should block publication:
 check :row_count_did_not_collapse,
   at: :before_materialize,
   when: :target_exists,
-  on_false: :fail,
+  on_violation: :fail,
   message: "Candidate row count fell by more than 20 percent" do
   ~SQL"""
   select
@@ -318,7 +320,7 @@ end
 ```
 
 The guard lets first-target bootstrap proceed because there is no baseline yet.
-Choose the threshold from the asset's business contract; do not copy a generic
+Choose the threshold from the asset's publication contract; do not copy a generic
 percentage without understanding expected volume changes.
 
 ## Return Contract And Metrics
@@ -332,7 +334,7 @@ date, time, naive datetime, and datetime values. Strings are limited to 4,096
 bytes and the JSON-encoded metric map is limited to 65,536 bytes. Column names
 must be unique.
 
-These are invalid regardless of `on_false` and cause rollback:
+These are invalid regardless of `on_violation` and cause rollback:
 
 - zero or multiple result rows;
 - a missing, null, duplicated, or non-Boolean `passed` column;
@@ -343,13 +345,15 @@ These are invalid regardless of `on_false` and cause rollback:
 ## Understand Persisted Outcomes
 
 Run detail metadata exposes `check_results`, `quality_status`, and
-`write_outcome`. Each check result follows `Favn.SQL.CheckResult`.
+`write_outcome`. Each check result follows `Favn.SQL.CheckResult`. Its `origin`
+is `:contract` for a generated contract claim and `:authored` for a custom
+check; contract results also expose a stable `claim_id`.
 
 | Check outcome | Meaning |
 | --- | --- |
 | `:passed` | The check returned `passed: true`. |
-| `:warned` | It returned false with `on_false: :warn`. |
-| `:failed` | It returned false with `on_false: :fail`. |
+| `:warned` | It returned false with `on_violation: :warn`. |
+| `:failed` | It returned false with `on_violation: :fail`. |
 | `:materialization_skipped` | It returned false and selected the successful no-op path. |
 | `:condition_skipped` | `when: :target_exists` was false during bootstrap. |
 | `:not_run` | Earlier work halted the transaction or selected a no-op. |
@@ -365,10 +369,10 @@ case rather than assuming the backend committed or rolled back.
 - Use `:fail` for invariants that make the target unsafe to publish.
 - Use `:warn` for important quality signals that should not block publication.
 - Use `:skip_materialization` only when keeping an existing target is a valid
-  successful outcome, such as an empty source extract.
+  successful outcome for an empty candidate.
 - Prefer small aggregate checks. Return diagnostic counts as scalar metrics
   instead of returning invalid rows.
-- Use stable, business-oriented check names and messages because they become
+- Use stable, descriptive check names and messages because they become
   durable run metadata.
 - Keep check SQL deterministic for the duration of the transaction. Prefer the
   staged `query()` and transaction-visible `target()` over re-reading mutable

@@ -126,7 +126,7 @@ defmodule Favn.SQLAsset.CheckResultNormalizerTest do
     Check.new!(%{
       name: :quality,
       at: :before_materialize,
-      on_false: :fail,
+      on_violation: :fail,
       sql: "select true as passed",
       template:
         Template.compile!("select true as passed",

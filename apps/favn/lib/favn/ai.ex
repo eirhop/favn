@@ -51,14 +51,17 @@ defmodule Favn.AI do
     `ctx.config`, call a source client outside the asset, write raw rows through
     `Favn.SQLClient`, and return structured metadata with row counts, relation,
     load mode, timestamp, and hashed source identity.
-  - To author one SQL asset, including behaviour-based runtime inputs or
-    transactional `check` declarations with fail, warning, or successful no-op
-    outcomes, read `Favn.SQLAsset`, then `Favn.SQLAsset.RuntimeInputs`,
-    `Favn.SQL`, `Favn.Connection`, `Favn.Namespace`, and `Favn.Window` as
-    needed. Runtime input values remain bound parameters, including through
-    reusable `defsql`. Checks use normal reusable `defsql`; `query()` is the
-    exact staged candidate and `target()` is the transaction-visible owned
-    relation. The only runtime-input declaration is
+  - To author one SQL asset, including a typed output `contract`,
+    behaviour-based runtime inputs, or transactional `check` declarations with
+    fail, warning, or successful warning/no-op outcomes, read `Favn.SQLAsset`,
+    then `Favn.SQL.Contract`, `Favn.SQLAsset.RuntimeInputs`, `Favn.SQL`,
+    `Favn.Connection`, `Favn.Namespace`, and `Favn.Window` as needed. A contract
+    describes ordered output columns, grain, keys, minimum row count, and
+    explicit lineage; it does not generate SQL. Runtime input values remain
+    bound parameters, including through reusable `defsql`. Contract-generated
+    and authored checks use the normal check engine; `query()` is the exact
+    staged candidate and `target()` is the transaction-visible owned relation.
+    The only runtime-input declaration is
     `@runtime_inputs MyApp.Inputs`; do not invent an inline block, anonymous
     function, capture, or MFA form. The HexDocs guide
     [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) is the complete
@@ -164,7 +167,7 @@ defmodule Favn.AI do
   ## Transactional SQL Check Breadcrumbs
 
   When a task mentions SQL quality checks, candidate validation, target
-  validation, `query()`, `target()`, `on_false`, `quality_status`,
+  validation, `query()`, `target()`, `on_violation`, `quality_status`,
   `write_outcome`, or a successful materialization no-op, read these docs in
   order:
 
@@ -180,6 +183,26 @@ defmodule Favn.AI do
   how-to and reference. It covers transaction order, first-target bootstrap,
   fail/warn/no-op policy, metric limits, invalid result shapes, and persisted
   outcomes.
+
+  ## SQL Output Contract Breadcrumbs
+
+  When a task mentions output schema, grain, data contract, column lineage,
+  logical types, nullable columns, unique keys, minimum row count, contract
+  diffs, `renamed_from`, expected-versus-observed schema, or Contract versus
+  Custom checks, read these docs in order:
+
+  1. `Favn.SQLAsset` and `Favn.SQLAsset.contract/1` for the public declaration.
+  2. `Favn.SQL.Contract` and its nested column, grain, lineage, unique-key, and
+     row-count modules for the typed compiled model.
+  3. `Favn.SQL.ContractValidation` for candidate schema enforcement.
+  4. `Favn.SQL.Contract.Diff` for semantic manifest-to-manifest changes.
+  5. `Favn.SQL.CheckResult` for durable generated and authored check outcomes.
+
+  The canonical lineage form is a plain `from:` list containing internal asset
+  tuples or external dataset/field string tuples. Do not invent `input()` or
+  `external()` wrappers. A contract never generates a `select` list. Read
+  [SQL Output Contracts](sql-output-contracts.html) for the complete human
+  workflow, policy behavior, automatic checks, evolution model, and limits.
 
   ## SQL Runtime Input Breadcrumbs
 
@@ -318,6 +341,12 @@ defmodule Favn.AI do
     keeping an existing target on an empty candidate, `query()`, `target()`,
     `quality_status`, `write_outcome`, or check result metrics. Read
     `Favn.SQL.Check` only for manifest/compiler work.
+  - Read `Favn.SQLAsset.contract/1`, `Favn.SQL.Contract`, and
+    `Favn.SQL.ContractValidation` whenever a task mentions SQL output shape,
+    grain, keys, column lineage, logical types, contract-generated checks, or
+    expected-versus-observed schema. Read `Favn.SQL.Contract.Diff` when
+    comparing manifest definitions. User code declares the DSL and does not
+    construct these core structs directly.
   - Read `FavnOrchestrator.MaterializationClaim` and
     `FavnOrchestrator.Repair.RuntimeState` when a task mentions duplicate asset
     materializations, stuck runs after a crash, orphaned `running`/`queued` steps,
@@ -349,6 +378,8 @@ defmodule Favn.AI do
   - `docs/ROADMAP.md`: planned work only
   - `apps/favn/guides/sql-asset-checks.md`: complete transactional SQL check
     authoring and result reference
+  - `apps/favn/guides/sql-output-contracts.md`: canonical SQL output contract
+    DSL, enforcement, lineage, policies, assurance, and evolution reference
   - `apps/favn/guides/sql-runtime-inputs.md`: canonical behaviour-based SQL
     runtime input authoring, result/error contracts, limits, and retry boundary
   - `apps/favn/guides/duckdb-session-scripts.md`: native DuckDB session setup,

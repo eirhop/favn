@@ -97,6 +97,8 @@ A manifest can include:
 - pipelines
 - schedules
 - relation metadata for SQL-backed assets
+- typed SQL output contracts, generated/custom check definitions, and explicit
+  column lineage
 - freshness and window metadata
 - runtime config requirements
 - version data used by the runtime

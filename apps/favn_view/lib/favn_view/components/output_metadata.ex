@@ -118,9 +118,16 @@ defmodule FavnView.Components.OutputMetadata do
             class="rounded-field border border-current/15 bg-base-100/55 p-2.5"
             data-testid="sql-check-result"
             data-check-outcome={check.outcome}
+            data-check-origin={check.origin}
           >
             <div class="flex flex-wrap items-center justify-between gap-2">
-              <p class="font-mono text-xs font-semibold">{check.name}</p>
+              <div class="flex flex-wrap items-center gap-2">
+                <span class={check_origin_badge(check.origin)}>{check.origin_label}</span>
+                <p class="font-mono text-xs font-semibold">{check.name}</p>
+              </div>
+              <p :if={check.claim_id} class="mt-1 font-mono text-[0.7rem] opacity-55">
+                {check.claim_id}
+              </p>
               <span class={check_badge_class(check.tone)}>{check.outcome_label}</span>
             </div>
             <p class="mt-1 text-xs opacity-65">
@@ -238,6 +245,10 @@ defmodule FavnView.Components.OutputMetadata do
             {"Rolled-back check diagnostics", :error, "Failed",
              "These results belong to a failed attempt and were not committed."}
 
+          warning? and no_op? ->
+            {"SQL quality checks", :warning, "Warning",
+             "The existing target was kept and the quality warning was reported."}
+
           warning? ->
             {"SQL quality checks", :warning, "Warning",
              "The write committed with quality warnings."}
@@ -276,6 +287,9 @@ defmodule FavnView.Components.OutputMetadata do
       phase_label: check |> metadata_value(:phase) |> humanize_value(),
       outcome: value_string(outcome),
       outcome_label: humanize_value(outcome),
+      origin: check |> metadata_value(:origin) |> value_string(),
+      origin_label: check |> metadata_value(:origin) |> check_origin_label(),
+      claim_id: metadata_value(check, :claim_id),
       tone: check_outcome_tone(outcome),
       message: metadata_value(check, :message),
       duration_label: if(is_integer(duration_ms), do: " · #{duration_ms} ms", else: ""),
@@ -289,6 +303,9 @@ defmodule FavnView.Components.OutputMetadata do
       phase_label: "Unknown phase",
       outcome: "unknown",
       outcome_label: "Unknown",
+      origin: "authored",
+      origin_label: "Custom",
+      claim_id: nil,
       tone: :neutral,
       message: nil,
       duration_label: "",
@@ -303,6 +320,12 @@ defmodule FavnView.Components.OutputMetadata do
   end
 
   defp normalize_metrics(_metrics), do: []
+
+  defp check_origin_label(origin) when origin in [:contract, "contract"], do: "Contract"
+  defp check_origin_label(_origin), do: "Custom"
+
+  defp check_origin_badge("contract"), do: "badge badge-info badge-soft badge-xs"
+  defp check_origin_badge(_origin), do: "badge badge-ghost badge-xs"
 
   defp metadata_value(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, Atom.to_string(key))

@@ -19,6 +19,8 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.Check
   alias Favn.SQL.SessionRequirements
+  alias Favn.SQL.Contract
+  alias Favn.SQL.Contract.{Column, Grain, Lineage, RowCount, UniqueKey}
   alias Favn.SQL.Template
   alias Favn.SQLAsset.RelationUsage
 
@@ -295,12 +297,21 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_sql_execution(nil), do: nil
 
   defp build_sql_execution(value) when is_map(value) do
+    contract = value |> field_value(:contract) |> build_sql_contract()
+
+    checks =
+      value
+      |> field_value(:checks, [])
+      |> build_sql_checks()
+      |> then(&Contract.validate_generated_checks!(contract, &1))
+
     execution = %SQLExecution{
       sql: field_value(value, :sql),
       template: value |> field_value(:template) |> build_template(),
       runtime_inputs: value |> field_value(:runtime_inputs) |> build_runtime_input_ref(),
+      contract: contract,
       sql_definitions: value |> field_value(:sql_definitions, []) |> build_sql_definitions(),
-      checks: value |> field_value(:checks, []) |> build_sql_checks() |> Check.validate_list!()
+      checks: checks
     }
 
     validate_query_runtime_relations!(execution)
@@ -384,9 +395,9 @@ defmodule Favn.Manifest.Rehydrate do
         value
         |> field_value(:at)
         |> decode_known_atom([:before_materialize, :after_materialize]),
-      on_false:
+      on_violation:
         value
-        |> field_value(:on_false)
+        |> field_value(:on_violation)
         |> decode_known_atom([:fail, :warn, :skip_materialization]),
       when:
         value
@@ -397,12 +408,118 @@ defmodule Favn.Manifest.Rehydrate do
       template: value |> field_value(:template) |> build_template(),
       file: field_value(value, :file),
       line: field_value(value, :line),
+      origin:
+        value
+        |> field_value(:origin, :authored)
+        |> decode_known_atom([:authored, :contract]),
+      claim_id: field_value(value, :claim_id),
       uses_query?: field_value(value, :uses_query?, false),
       uses_target?: field_value(value, :uses_target?, false)
     })
   end
 
   defp build_sql_check(other), do: raise(ArgumentError, "invalid SQL check #{inspect(other)}")
+
+  defp build_sql_contract(nil), do: nil
+  defp build_sql_contract(%Contract{} = contract), do: Contract.validate!(contract)
+
+  defp build_sql_contract(value) when is_map(value) do
+    Contract.new!(%{
+      grain: value |> field_value(:grain) |> build_contract_grain(),
+      columns: value |> field_value(:columns, []) |> Enum.map(&build_contract_column/1),
+      unique_keys:
+        value |> field_value(:unique_keys, []) |> Enum.map(&build_contract_unique_key/1),
+      row_count: value |> field_value(:row_count) |> build_contract_row_count()
+    })
+  end
+
+  defp build_sql_contract(other),
+    do: raise(ArgumentError, "invalid SQL output contract #{inspect(other)}")
+
+  defp build_contract_grain(nil), do: nil
+  defp build_contract_grain(%Grain{} = grain), do: Grain.validate!(grain)
+
+  defp build_contract_grain(value) when is_map(value) do
+    Grain.new!(%{
+      by: value |> field_value(:by, []) |> build_atom_list(),
+      description: field_value(value, :description)
+    })
+  end
+
+  defp build_contract_column(%Column{} = column), do: Column.validate!(column)
+
+  defp build_contract_column(value) when is_map(value) do
+    %Column{
+      name: value |> field_value(:name) |> decode_atom_optional(),
+      type:
+        value
+        |> field_value(:type)
+        |> decode_known_atom(Column.supported_types()),
+      nullable?: field_value(value, :nullable?, true),
+      description: field_value(value, :description),
+      renamed_from: value |> field_value(:renamed_from) |> decode_atom_optional(),
+      tags: value |> field_value(:tags, []) |> build_string_list(),
+      sources: value |> field_value(:sources, []) |> Enum.map(&build_contract_lineage/1),
+      via:
+        value
+        |> field_value(:via)
+        |> decode_known_atom_optional([:identity, :transformation, :aggregation])
+    }
+    |> Column.validate!()
+  end
+
+  defp build_contract_column(other),
+    do: raise(ArgumentError, "invalid SQL contract column #{inspect(other)}")
+
+  defp build_contract_lineage(%Lineage{} = lineage), do: Lineage.validate!(lineage)
+
+  defp build_contract_lineage(value) when is_map(value) do
+    kind = value |> field_value(:kind) |> decode_known_atom([:asset, :external])
+
+    %Lineage{
+      kind: kind,
+      asset_ref: value |> field_value(:asset_ref) |> decode_ref(),
+      dataset: field_value(value, :dataset),
+      column:
+        case kind do
+          :asset -> value |> field_value(:column) |> decode_atom_optional()
+          :external -> field_value(value, :column)
+        end
+    }
+    |> Lineage.validate!()
+  end
+
+  defp build_contract_lineage(other),
+    do: raise(ArgumentError, "invalid SQL contract lineage #{inspect(other)}")
+
+  defp build_contract_unique_key(%UniqueKey{} = key), do: UniqueKey.validate!(key)
+
+  defp build_contract_unique_key(value) when is_map(value) do
+    value |> field_value(:columns, []) |> build_atom_list() |> UniqueKey.new!()
+  end
+
+  defp build_contract_unique_key(other),
+    do: raise(ArgumentError, "invalid SQL contract unique key #{inspect(other)}")
+
+  defp build_contract_row_count(nil), do: nil
+  defp build_contract_row_count(%RowCount{} = row_count), do: RowCount.validate!(row_count)
+
+  defp build_contract_row_count(value) when is_map(value) do
+    RowCount.new!(%{
+      min: field_value(value, :min),
+      when:
+        value
+        |> field_value(:when)
+        |> decode_known_atom_optional([:target_exists]),
+      on_violation:
+        value
+        |> field_value(:on_violation)
+        |> decode_known_atom([:fail, :warn, :skip_materialization])
+    })
+  end
+
+  defp build_contract_row_count(other),
+    do: raise(ArgumentError, "invalid SQL contract row_count #{inspect(other)}")
 
   defp build_sql_definitions(values) when is_list(values),
     do: Enum.map(values, &build_sql_definition/1)

@@ -273,6 +273,7 @@ defmodule FavnView.AssetDetailLive do
       data_coverage_timeline={@asset.data_coverage_timeline}
       active_mode={@active_mode}
       freshness={@asset.freshness}
+      assurance={@asset.assurance}
       selected_window={@selected_window}
       run_config_open?={@run_config_open?}
       run_config={@run_config}
@@ -370,6 +371,7 @@ defmodule FavnView.AssetDetailLive do
       status: status_label(Map.get(detail, :status)),
       status_tone: status_tone(Map.get(detail, :status)),
       freshness: Map.get(detail, :freshness, missing_freshness_detail()),
+      assurance: Map.get(detail, :assurance),
       window_kind_label: window_kind_label(Map.get(detail, :window)),
       refresh_timeline_label: Map.get(detail, :refresh_timeline_label, "Refresh periods"),
       refresh_cadence_label: Map.get(detail, :refresh_cadence_label, "Refresh cadence"),

@@ -311,7 +311,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "max_attempts" => result.max_attempts,
       "runner_execution_id" => JsonSafe.data(result.runner_execution_id),
       "asset_step_id" => result.asset_step_id,
-      "meta" => JsonSafe.data(result.meta),
+      "meta" => JsonSafe.output_metadata(result.meta),
       "error" => JsonSafe.error(result.error),
       "attempts" => JsonSafe.data(result.attempts)
     }

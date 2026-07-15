@@ -329,6 +329,88 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored_result.next_retry_at == nil
   end
 
+  test "preserves bounded SQL assurance evidence without generic JSON truncation" do
+    version = manifest_version("mv_run_snapshot_assurance", __MODULE__.Asset)
+    now = DateTime.utc_now()
+
+    check_results =
+      for index <- 1..53 do
+        %{
+          name: "check_#{index}",
+          phase: :before_materialize,
+          outcome: :passed,
+          origin: if(index <= 3, do: :contract, else: :authored),
+          claim_id: if(index <= 3, do: "claim.#{index}", else: nil),
+          metrics: %{"evaluated_rows" => index}
+        }
+      end
+
+    expected_columns =
+      for index <- 1..60 do
+        %{name: "column_#{index}", type: :integer, nullable?: false}
+      end
+
+    observed_columns =
+      for index <- 1..60 do
+        %{
+          name: "column_#{index}",
+          type: :integer,
+          native_type: "INTEGER",
+          nullable?: true,
+          nullability_observed?: false
+        }
+      end
+
+    asset_result = %AssetResult{
+      ref: {__MODULE__.Asset, :asset},
+      stage: 0,
+      status: :ok,
+      started_at: now,
+      finished_at: now,
+      duration_ms: 1,
+      error: nil,
+      attempt_count: 1,
+      max_attempts: 1,
+      attempts: [],
+      meta: %{
+        quality_status: :passed,
+        write_outcome: :written,
+        check_results: check_results,
+        contract_validation: %Favn.SQL.ContractValidation{
+          status: :passed,
+          expected_columns: expected_columns,
+          observed_columns: observed_columns,
+          differences: [],
+          observed_column_count: 60,
+          observed_truncated?: false
+        }
+      }
+    }
+
+    run =
+      "run_snapshot_assurance"
+      |> run_state(version, __MODULE__.Asset)
+      |> RunState.transition(status: :ok, result: %{asset_results: [asset_result]})
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    refute payload =~ "[TRUNCATED]"
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert [%AssetResult{meta: meta}] = restored.result.asset_results
+    assert length(meta["check_results"]) == 53
+    assert List.last(meta["check_results"])["metrics"]["evaluated_rows"] == 53
+    assert length(meta["contract_validation"]["expected_columns"]) == 60
+    assert length(meta["contract_validation"]["observed_columns"]) == 60
+    assert hd(meta["contract_validation"]["expected_columns"])["type"] == "integer"
+    assert meta["contract_validation"]["observed_column_count"] == 60
+  end
+
   test "round-trips node results with freshness statuses" do
     version = manifest_version("mv_run_snapshot_node_results", __MODULE__.Asset)
     now = DateTime.utc_now()

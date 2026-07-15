@@ -15,6 +15,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.RelationRef
   alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL.Check
+  alias Favn.SQL.Column
+  alias Favn.SQL.Contract
   alias Favn.SQL.SessionRequirements
   alias Favn.SQL.Template
 
@@ -24,6 +26,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     previous_cleanup_failure = Application.get_env(:favn_runner, :checked_cleanup_failure)
     previous_rollback_failure = Application.get_env(:favn_runner, :checked_rollback_failure)
     previous_begin_failure = Application.get_env(:favn_runner, :checked_begin_failure)
+    previous_checked_columns = Application.get_env(:favn_runner, :checked_columns)
 
     previous_runtime_inputs_resolved =
       Application.get_env(:favn_runner, :runtime_inputs_resolved)
@@ -33,6 +36,11 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     Application.put_env(:favn_runner, :checked_cleanup_failure, false)
     Application.put_env(:favn_runner, :checked_rollback_failure, false)
     Application.put_env(:favn_runner, :checked_begin_failure, false)
+
+    Application.put_env(:favn_runner, :checked_columns, [
+      %Column{name: "id", position: 1, data_type: "INTEGER", nullable?: true}
+    ])
+
     Application.put_env(:favn_runner, :runtime_inputs_resolved, false)
 
     on_exit(fn ->
@@ -41,6 +49,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       restore_env(:checked_cleanup_failure, previous_cleanup_failure)
       restore_env(:checked_rollback_failure, previous_rollback_failure)
       restore_env(:checked_begin_failure, previous_begin_failure)
+      restore_env(:checked_columns, previous_checked_columns)
       restore_env(:runtime_inputs_resolved, previous_runtime_inputs_resolved)
       Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
     end)
@@ -624,6 +633,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert result.status == :ok
     assert [asset_result] = result.asset_results
     assert asset_result.meta.write_outcome == :no_op
+    assert asset_result.meta.quality_status == :warning
     assert asset_result.meta.reason == :unchanged
 
     assert Enum.map(asset_result.meta.check_results, &{&1.name, &1.outcome}) == [
@@ -633,6 +643,47 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     refute_received {:checked_materialize, _write_plan}
     assert_received :checked_transaction_commit
+  end
+
+  test "validates a contract candidate schema before writing and persists evidence" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+
+    contract = Contract.new!(%{columns: [%{name: :id, type: :integer, null: false}]})
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, [], nil, contract)
+
+    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_contract_schema"))
+    assert [%{status: :ok, meta: meta}] = result.asset_results
+    assert meta.contract_validation.status == :passed
+    assert [%{name: "id", type: :integer}] = meta.contract_validation.expected_columns
+    assert [%{name: "id", native_type: "INTEGER"}] = meta.contract_validation.observed_columns
+    assert_received {:checked_columns, %Favn.RelationRef{name: "favn_check_candidate_" <> _rest}}
+    assert_received {:checked_materialize, _write_plan}
+  end
+
+  test "fails a schema mismatch before target mutation with structured differences" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+
+    Application.put_env(:favn_runner, :checked_columns, [
+      %Column{name: "other", position: 1, data_type: "VARCHAR", nullable?: true}
+    ])
+
+    contract = Contract.new!(%{columns: [%{name: :id, type: :integer, null: false}]})
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedFailureSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, [], nil, contract)
+
+    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_contract_mismatch"))
+    assert result.status == :error
+    assert [%{error: %{type: :contract_violation}, meta: meta}] = result.asset_results
+    assert meta.contract_validation.status == :failed
+
+    assert Enum.any?(
+             meta.contract_validation.differences,
+             &match?(%{kind: :missing, column: "id"}, &1)
+           )
+
+    refute_received {:checked_materialize, _write_plan}
+    assert_received :checked_transaction_rollback
   end
 
   test "a target-existence check is condition-skipped during bootstrap and the write commits" do
@@ -950,7 +1001,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version
   end
 
-  defp register_checked_sql_manifest!(ref, checks, runtime_inputs \\ nil) do
+  defp register_checked_sql_manifest!(ref, checks, runtime_inputs \\ nil, contract \\ nil) do
     relation =
       RelationRef.new!(%{connection: :runner_sql_runtime, schema: "gold", name: "checked_asset"})
 
@@ -962,6 +1013,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         scope: :query,
         enforce_query_root: true
       )
+
+    checks = generated_contract_checks(contract) ++ checks
 
     manifest = %Manifest{
       schema_version: 5,
@@ -979,6 +1032,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
             sql: "SELECT 1 AS id",
             template: template,
             runtime_inputs: runtime_inputs,
+            contract: contract,
             sql_definitions: [],
             checks: checks
           }
@@ -1000,7 +1054,36 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version
   end
 
-  defp checked_check(name, at, on_false, sql, opts \\ []) do
+  defp generated_contract_checks(nil), do: []
+
+  defp generated_contract_checks(%Contract{} = contract) do
+    Enum.map(Contract.generated_check_specs(contract), fn spec ->
+      template =
+        Template.compile!(spec.sql,
+          file: "test/checked_sql_contract_manifest.sql",
+          line: 1,
+          module: __MODULE__,
+          scope: :query,
+          enforce_query_root: true
+        )
+
+      Check.new!(%{
+        name: spec.name,
+        at: spec.at,
+        on_violation: spec.on_violation,
+        when: spec.when,
+        message: spec.message,
+        sql: spec.sql,
+        template: template,
+        origin: :contract,
+        claim_id: spec.claim_id,
+        uses_query?: true,
+        uses_target?: false
+      })
+    end)
+  end
+
+  defp checked_check(name, at, on_violation, sql, opts \\ []) do
     template =
       Template.compile!(sql,
         file: "test/checked_sql_asset_manifest.sql",
@@ -1015,7 +1098,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     Check.new!(%{
       name: name,
       at: at,
-      on_false: on_false,
+      on_violation: on_violation,
       when: Keyword.get(opts, :when),
       message: Keyword.get(opts, :message),
       sql: sql,
@@ -1446,6 +1529,11 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedExecutionAdapter do
     else
       {:ok, nil}
     end
+  end
+
+  def columns(:checked_conn, ref, _opts) do
+    notify({:checked_columns, ref})
+    {:ok, Application.fetch_env!(:favn_runner, :checked_columns)}
   end
 
   def execute(:checked_conn, statement, _opts) do

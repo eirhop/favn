@@ -639,7 +639,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
     "Failed while draining in-flight work after root failure in #{root_failure_asset_ref}."
   end
 
-  defp output_metadata(metadata) when is_map(metadata), do: JsonSafe.data(metadata)
+  defp output_metadata(metadata) when is_map(metadata), do: JsonSafe.output_metadata(metadata)
   defp output_metadata(_metadata), do: nil
 
   defp output_from_metadata(metadata) when is_map(metadata),

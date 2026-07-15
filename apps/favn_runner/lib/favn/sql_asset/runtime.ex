@@ -10,7 +10,7 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.SQL.Client, as: SQLClient
   alias Favn.SQL.CancelToken
   alias Favn.SQL.Error, as: SQLError
-  alias Favn.SQL.{Check, CheckResult, Result, Session}
+  alias Favn.SQL.{Check, CheckResult, Contract, ContractValidation, Result, Session}
 
   alias Favn.SQL.{Explain, IncrementalWindow, MaterializationResult, Params, Preview, Render}
 
@@ -381,9 +381,16 @@ defmodule Favn.SQLAsset.Runtime do
     |> map_sql_result_error(rendered.asset_ref, phase)
   end
 
-  defp materialize_render(%Definition{checks: [_check | _rest]} = definition, rendered, opts) do
+  defp materialize_render(
+         %Definition{checks: [_check | _rest]} = definition,
+         rendered,
+         opts
+       ) do
     checked_materialize(definition, rendered, opts)
   end
+
+  defp materialize_render(%Definition{contract: %Contract{}} = definition, rendered, opts),
+    do: checked_materialize(definition, rendered, opts)
 
   defp materialize_render(%Definition{} = definition, %Render{} = rendered, opts) do
     with_session(
@@ -471,7 +478,9 @@ defmodule Favn.SQLAsset.Runtime do
     stage = candidate_stage(definition)
 
     with {:ok, target_exists?} <- checked_target(session, rendered),
-         :ok <- create_candidate_stage(session, stage, rendered, opts) do
+         :ok <- create_candidate_stage(session, stage, rendered, opts),
+         {:ok, contract_validation} <-
+           validate_candidate_contract(session, definition, stage, rendered) do
       runtime_relations = runtime_relations(rendered, stage)
 
       result =
@@ -483,6 +492,7 @@ defmodule Favn.SQLAsset.Runtime do
           runtime_relations,
           target_exists?
         )
+        |> put_contract_validation(contract_validation)
 
       finalize_candidate_stage(session, stage, result, opts, definition, rendered)
     else
@@ -490,6 +500,11 @@ defmodule Favn.SQLAsset.Runtime do
         {:error, checked_transaction_error(reason, definition, rendered, [])}
     end
   end
+
+  defp put_contract_validation({:ok, %CheckedMaterialization{} = output}, validation),
+    do: {:ok, %CheckedMaterialization{output | contract_validation: validation}}
+
+  defp put_contract_validation(result, _validation), do: result
 
   defp run_checked_body(
          session,
@@ -680,7 +695,7 @@ defmodule Favn.SQLAsset.Runtime do
     {:continue, check_result(check, :passed, metrics: metrics, duration_ms: duration_ms)}
   end
 
-  defp check_outcome(%Check{on_false: :warn} = check, false, metrics, duration_ms, _asset_ref) do
+  defp check_outcome(%Check{on_violation: :warn} = check, false, metrics, duration_ms, _asset_ref) do
     {:continue,
      check_result(check, :warned,
        metrics: metrics,
@@ -690,7 +705,7 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp check_outcome(
-         %Check{on_false: :skip_materialization} = check,
+         %Check{on_violation: :skip_materialization} = check,
          false,
          metrics,
          duration_ms,
@@ -704,7 +719,7 @@ defmodule Favn.SQLAsset.Runtime do
      )}
   end
 
-  defp check_outcome(%Check{on_false: :fail} = check, false, metrics, duration_ms, asset_ref) do
+  defp check_outcome(%Check{on_violation: :fail} = check, false, metrics, duration_ms, asset_ref) do
     result =
       check_result(check, :failed,
         metrics: metrics,
@@ -728,6 +743,8 @@ defmodule Favn.SQLAsset.Runtime do
       name: check.name,
       phase: check.at,
       outcome: outcome,
+      origin: check.origin,
+      claim_id: check.claim_id,
       message: check.message,
       metrics: Keyword.get(opts, :metrics, %{}),
       duration_ms: Keyword.get(opts, :duration_ms),
@@ -774,9 +791,62 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp candidate_stage(%Definition{} = definition) do
-    if Enum.any?(definition.checks, & &1.uses_query?) do
+    if match?(%Contract{}, definition.contract) or Enum.any?(definition.checks, & &1.uses_query?) do
       "favn_check_candidate_#{System.unique_integer([:positive, :monotonic])}"
     end
+  end
+
+  defp validate_candidate_contract(_session, %Definition{contract: nil}, _stage, _rendered),
+    do: {:ok, nil}
+
+  defp validate_candidate_contract(
+         %Session{} = session,
+         %Definition{contract: %Contract{} = contract},
+         stage,
+         %Render{} = rendered
+       )
+       when is_binary(stage) do
+    if function_exported?(session.adapter, :columns, 3) do
+      case SQLClient.columns(session, RelationRef.new!(name: stage)) do
+        {:ok, columns} when is_list(columns) ->
+          validation = ContractValidation.compare(contract, columns)
+
+          if validation.status == :passed do
+            {:ok, validation}
+          else
+            {:error, contract_violation_error(rendered, validation)}
+          end
+
+        {:error, reason} ->
+          {:error, contract_inspection_error(rendered, session, reason)}
+      end
+    else
+      {:error, contract_inspection_error(rendered, session, :columns_not_supported)}
+    end
+  end
+
+  defp contract_violation_error(%Render{} = rendered, %ContractValidation{} = validation) do
+    %Error{
+      type: :contract_violation,
+      phase: :before_materialize,
+      asset_ref: rendered.asset_ref,
+      message: "candidate schema does not satisfy the SQL output contract",
+      details: %{contract_validation: validation}
+    }
+  end
+
+  defp contract_inspection_error(%Render{} = rendered, %Session{} = session, reason) do
+    %Error{
+      type: :contract_violation,
+      phase: :before_materialize,
+      asset_ref: rendered.asset_ref,
+      message: "candidate schema could not be inspected for the SQL output contract",
+      details: %{
+        missing_capability: :candidate_columns,
+        adapter: session.adapter,
+        reason: inspect(reason)
+      }
+    }
   end
 
   defp create_candidate_stage(_session, nil, _rendered, _opts), do: :ok
@@ -960,8 +1030,12 @@ defmodule Favn.SQLAsset.Runtime do
 
     emit_check_telemetry(definition, check_results, transaction_outcome, write_outcome)
 
-    {:error, sql_asset_error,
-     failed_check_metadata(rendered, check_results, transaction_outcome, write_outcome)}
+    meta =
+      rendered
+      |> failed_check_metadata(check_results, transaction_outcome, write_outcome)
+      |> maybe_put_contract_validation(find_contract_validation(error))
+
+    {:error, sql_asset_error, meta}
   end
 
   defp map_checked_materialization_result(
@@ -972,7 +1046,12 @@ defmodule Favn.SQLAsset.Runtime do
     results = complete_check_results(definition, [], :transaction_not_started)
     emit_check_telemetry(definition, results, :not_started, :not_started)
 
-    {:error, error, failed_check_metadata(rendered, results, :not_started, :not_started)}
+    meta =
+      rendered
+      |> failed_check_metadata(results, :not_started, :not_started)
+      |> maybe_put_contract_validation(find_contract_validation(error))
+
+    {:error, error, meta}
   end
 
   defp map_checked_materialization_result(
@@ -1010,6 +1089,28 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp checked_error_results(%Error{cause: cause}), do: checked_error_results(cause)
   defp checked_error_results(_reason), do: []
+
+  defp find_contract_validation(%ContractValidation{} = validation), do: validation
+
+  defp find_contract_validation(%SQLError{details: details, cause: cause}) do
+    find_contract_validation(details || %{}) || find_contract_validation(cause)
+  end
+
+  defp find_contract_validation(%Error{details: details, cause: cause}) do
+    find_contract_validation(details || %{}) || find_contract_validation(cause)
+  end
+
+  defp find_contract_validation(%_{}), do: nil
+
+  defp find_contract_validation(value) when is_map(value) do
+    Map.get(value, :contract_validation) || Map.get(value, "contract_validation") ||
+      Enum.find_value(value, fn {_key, child} -> find_contract_validation(child) end)
+  end
+
+  defp find_contract_validation(value) when is_list(value),
+    do: Enum.find_value(value, &find_contract_validation/1)
+
+  defp find_contract_validation(_value), do: nil
 
   defp strip_internal_transaction_details(%SQLError{} = error) do
     %SQLError{
@@ -1177,7 +1278,9 @@ defmodule Favn.SQLAsset.Runtime do
           check: check.name,
           phase: check.at,
           outcome: result.outcome,
-          on_false: check.on_false,
+          on_violation: check.on_violation,
+          origin: check.origin,
+          claim_id: check.claim_id,
           transaction_outcome: transaction_outcome,
           write_outcome: write_outcome
         }
@@ -1444,6 +1547,7 @@ defmodule Favn.SQLAsset.Runtime do
        relation_inputs: asset.relation_inputs || [],
        sql_definitions: payload.sql_definitions,
        checks: payload.checks,
+       contract: payload.contract,
        runtime_inputs: payload.runtime_inputs,
        session_requirements: asset.session_requirements,
        raw_asset: %{
@@ -1485,9 +1589,12 @@ defmodule Favn.SQLAsset.Runtime do
          resolution
        ) do
     quality_status =
-      if Enum.any?(materialization.check_results, &(&1.outcome == :warned)),
-        do: :warning,
-        else: :passed
+      if Enum.any?(
+           materialization.check_results,
+           &(&1.outcome in [:warned, :materialization_skipped])
+         ),
+         do: :warning,
+         else: :passed
 
     output = %{
       materialized: rendered.relation,
@@ -1500,10 +1607,17 @@ defmodule Favn.SQLAsset.Runtime do
       reason: materialization.reason
     }
 
+    output = maybe_put_contract_validation(output, materialization.contract_validation)
+
     output
     |> maybe_put_no_op_details(materialization)
     |> maybe_put_runtime_inputs(resolution)
   end
+
+  defp maybe_put_contract_validation(output, nil), do: output
+
+  defp maybe_put_contract_validation(output, %ContractValidation{} = validation),
+    do: Map.put(output, :contract_validation, validation)
 
   defp maybe_put_runtime_inputs(output, nil), do: output
 

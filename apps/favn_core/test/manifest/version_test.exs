@@ -17,6 +17,8 @@ defmodule Favn.Manifest.VersionTest do
   alias Favn.RelationRef
   alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL.Check
+  alias Favn.SQL.Contract
+  alias Favn.SQL.Contract.{Column, Grain, Lineage, RowCount, UniqueKey}
   alias Favn.SQL.Template
 
   test "builds pinned manifest version with id and content hash" do
@@ -152,7 +154,7 @@ defmodule Favn.Manifest.VersionTest do
       Check.new!(%{
         name: :has_rows,
         at: :before_materialize,
-        on_false: :fail,
+        on_violation: :fail,
         sql: "SELECT count(*) > 0 AS passed FROM query()",
         template: check_template,
         file: "test/fixtures/version_check.sql",
@@ -160,6 +162,49 @@ defmodule Favn.Manifest.VersionTest do
         uses_query?: true,
         uses_target?: false
       })
+
+    contract =
+      Contract.new!(%{
+        grain: [by: [:id], description: "one generic record"],
+        columns: [
+          %{
+            name: :id,
+            type: :integer,
+            null: false,
+            renamed_from: :legacy_id,
+            from: [{MyApp.Assets.SourceRecords, :source_id}],
+            via: :transformation
+          }
+        ],
+        unique_keys: [[:id]],
+        row_count: [min: 1, on_violation: :warn]
+      })
+
+    contract_checks =
+      Enum.map(Contract.generated_check_specs(contract), fn spec ->
+        generated_template =
+          Template.compile!(spec.sql,
+            file: "test/fixtures/version_contract_check.sql",
+            line: 1,
+            module: __MODULE__,
+            scope: :query,
+            enforce_query_root: true
+          )
+
+        Check.new!(%{
+          name: spec.name,
+          at: spec.at,
+          on_violation: spec.on_violation,
+          when: spec.when,
+          message: spec.message,
+          sql: spec.sql,
+          template: generated_template,
+          origin: :contract,
+          claim_id: spec.claim_id,
+          uses_query?: true,
+          uses_target?: false
+        })
+      end)
 
     manifest = %Manifest{
       schema_version: 5,
@@ -178,8 +223,9 @@ defmodule Favn.Manifest.VersionTest do
             sql: "SELECT 1 AS id",
             template: template,
             runtime_inputs: %RuntimeInputResolverRef{module: MyApp.SalesSummary.Inputs},
+            contract: contract,
             sql_definitions: [],
-            checks: [check]
+            checks: contract_checks ++ [check]
           },
           metadata: %{category: :sales, tags: [:gold]}
         }
@@ -228,8 +274,33 @@ defmodule Favn.Manifest.VersionTest do
     assert asset.sql_execution.runtime_inputs ==
              %RuntimeInputResolverRef{module: MyApp.SalesSummary.Inputs}
 
-    assert [%Check{name: :has_rows, template: %Template{}, uses_query?: true}] =
+    assert [row_count_check, non_null_check, unique_check, authored_check] =
              asset.sql_execution.checks
+
+    assert row_count_check.claim_id == "row_count.min.1"
+    assert non_null_check.claim_id == "columns.not_null"
+    assert unique_check.claim_id == "keys.unique"
+
+    assert %Check{name: :has_rows, origin: :authored, template: %Template{}, uses_query?: true} =
+             authored_check
+
+    assert %Contract{
+             grain: %Grain{by: [:id]},
+             columns: [
+               %Column{
+                 name: :id,
+                 renamed_from: :legacy_id,
+                 sources: [
+                   %Lineage{
+                     asset_ref: {MyApp.Assets.SourceRecords, :asset},
+                     column: :source_id
+                   }
+                 ]
+               }
+             ],
+             unique_keys: [%UniqueKey{columns: [:id]}],
+             row_count: %RowCount{min: 1, on_violation: :warn}
+           } = asset.sql_execution.contract
 
     assert asset.metadata.category == "sales"
     assert asset.metadata.tags == ["gold"]
@@ -252,7 +323,7 @@ defmodule Favn.Manifest.VersionTest do
     invalid =
       put_in(
         decoded,
-        ["assets", Access.at(0), "sql_execution", "checks", Access.at(0), "on_false"],
+        ["assets", Access.at(0), "sql_execution", "checks", Access.at(0), "on_violation"],
         "ignore"
       )
 
@@ -286,7 +357,7 @@ defmodule Favn.Manifest.VersionTest do
     invalid_runtime_flags =
       put_in(
         decoded,
-        ["assets", Access.at(0), "sql_execution", "checks", Access.at(0), "uses_query?"],
+        ["assets", Access.at(0), "sql_execution", "checks", Access.at(3), "uses_query?"],
         false
       )
 
@@ -297,7 +368,7 @@ defmodule Favn.Manifest.VersionTest do
              }}} = Version.new(invalid_runtime_flags)
 
     check_payload =
-      get_in(decoded, ["assets", Access.at(0), "sql_execution", "checks", Access.at(0)])
+      get_in(decoded, ["assets", Access.at(0), "sql_execution", "checks", Access.at(3)])
 
     duplicate_checks =
       put_in(
@@ -319,8 +390,34 @@ defmodule Favn.Manifest.VersionTest do
 
     assert {:error,
             {:invalid_manifest_payload,
-             %ArgumentError{message: "SQL assets support at most 50 checks"}}} =
+             %ArgumentError{message: "SQL assets support at most 50 authored checks"}}} =
              Version.new(too_many_checks)
+
+    missing_generated_checks =
+      put_in(
+        decoded,
+        ["assets", Access.at(0), "sql_execution", "checks"],
+        [check_payload]
+      )
+
+    assert {:error,
+            {:invalid_manifest_payload,
+             %ArgumentError{
+               message: "SQL contract-generated checks do not match the contract claims"
+             }}} = Version.new(missing_generated_checks)
+
+    modified_generated_check =
+      put_in(
+        decoded,
+        ["assets", Access.at(0), "sql_execution", "checks", Access.at(0), "message"],
+        "modified"
+      )
+
+    assert {:error,
+            {:invalid_manifest_payload,
+             %ArgumentError{
+               message: "SQL contract-generated check row_count.min.1 was modified"
+             }}} = Version.new(modified_generated_check)
 
     invalid_resolver =
       put_in(

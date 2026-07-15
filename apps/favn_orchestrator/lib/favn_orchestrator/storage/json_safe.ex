@@ -4,11 +4,16 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   alias Favn.Contracts.RunnerAssetResult
   alias Favn.Contracts.RunnerError
   alias Favn.Run.AssetResult
+  alias Favn.SQL.{Check, CheckResult, ContractValidation}
   alias FavnOrchestrator.Redaction
 
   @max_depth 8
   @max_entries 50
   @max_string_bytes 8_192
+  @max_check_metrics 32
+  @max_sql_check_results Check.max_per_asset() + Check.max_contract_per_asset()
+  @max_contract_columns ContractValidation.max_observed_columns()
+  @max_contract_differences @max_contract_columns * 3 + 2
 
   @sensitive_key_fragments ~w(
     token tokens password secret authorization cookie credential credentials database dsn url uri
@@ -17,6 +22,32 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   @spec data(term()) :: map() | list() | String.t() | number() | boolean() | nil
   def data(value), do: data(value, nil, @max_depth)
+
+  @spec output_metadata(term()) :: map() | list() | String.t() | number() | boolean() | nil
+  def output_metadata(value) when is_map(value) do
+    ordinary =
+      value
+      |> Enum.reject(fn {key, _value} ->
+        key_to_string(key) in ["check_results", "contract_validation"]
+      end)
+      |> Enum.take(@max_entries)
+      |> Map.new(fn {key, child} ->
+        key_string = key_to_string(key)
+
+        normalized =
+          if sensitive_key?(key_string),
+            do: redact_sensitive_value(child),
+            else: data(child, key_string, @max_depth - 1)
+
+        {key_string, normalized}
+      end)
+
+    ordinary
+    |> maybe_put_assurance_field(value, :check_results, &check_results_to_dto/1)
+    |> maybe_put_assurance_field(value, :contract_validation, &contract_validation_to_dto/1)
+  end
+
+  def output_metadata(value), do: data(value)
 
   @spec error(term()) :: map() | nil
   def error(nil), do: nil
@@ -107,6 +138,11 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   def ref(_value), do: nil
 
+  defp data(%CheckResult{} = value, _key, _depth), do: check_result_to_dto(value)
+
+  defp data(%ContractValidation{} = value, _key, _depth),
+    do: contract_validation_to_dto(value)
+
   defp data(_value, _key, depth) when depth <= 0, do: "[TRUNCATED]"
   defp data(%Decimal{} = value, _key, _depth), do: Decimal.to_string(value)
   defp data(%Date{} = value, _key, _depth), do: Date.to_iso8601(value)
@@ -172,7 +208,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "started_at" => data(result.started_at, nil, depth - 1),
       "finished_at" => data(result.finished_at, nil, depth - 1),
       "duration_ms" => result.duration_ms,
-      "meta" => data(result.meta, "meta", depth - 1),
+      "meta" => output_metadata(result.meta),
       "error" => error(result.error),
       "attempt_count" => result.attempt_count,
       "max_attempts" => result.max_attempts,
@@ -188,7 +224,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "started_at" => data(result.started_at, nil, depth - 1),
       "finished_at" => data(result.finished_at, nil, depth - 1),
       "duration_ms" => result.duration_ms,
-      "meta" => data(result.meta, "meta", depth - 1),
+      "meta" => output_metadata(result.meta),
       "error" => error(result.error),
       "attempt_count" => result.attempt_count,
       "max_attempts" => result.max_attempts,
@@ -212,6 +248,89 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     |> Enum.take(@max_entries)
     |> Enum.map(&attempt(&1, depth - 1))
   end
+
+  defp maybe_put_assurance_field(dto, source, key, mapper) do
+    if has_field?(source, key) do
+      Map.put(dto, Atom.to_string(key), mapper.(field(source, key)))
+    else
+      dto
+    end
+  end
+
+  defp check_results_to_dto(results) when is_list(results) do
+    results
+    |> Enum.take(@max_sql_check_results)
+    |> Enum.map(&check_result_to_dto/1)
+  end
+
+  defp check_results_to_dto(value), do: data(value)
+
+  defp check_result_to_dto(value) when is_map(value) do
+    %{
+      "name" => scalar_string(field(value, :name), nil),
+      "phase" => scalar_string(field(value, :phase), nil),
+      "outcome" => scalar_string(field(value, :outcome), nil),
+      "origin" => scalar_string(field(value, :origin, :authored), "authored"),
+      "claim_id" => scalar_string(field(value, :claim_id), nil),
+      "message" => scalar_string(field(value, :message), nil),
+      "duration_ms" => data(field(value, :duration_ms), nil, @max_depth),
+      "reason" => data(field(value, :reason), nil, @max_depth),
+      "metrics" => check_metrics_to_dto(field(value, :metrics, %{}))
+    }
+    |> Enum.reject(fn {_key, child} -> is_nil(child) end)
+    |> Map.new()
+  end
+
+  defp check_result_to_dto(value), do: data(value)
+
+  defp check_metrics_to_dto(metrics) when is_map(metrics) do
+    metrics
+    |> Enum.take(@max_check_metrics)
+    |> Map.new(fn {key, metric} ->
+      key_string = key_to_string(key)
+
+      normalized =
+        if sensitive_key?(key_string),
+          do: redact_sensitive_value(metric),
+          else: data(metric, key_string, @max_depth)
+
+      {key_string, normalized}
+    end)
+  end
+
+  defp check_metrics_to_dto(_metrics), do: %{}
+
+  defp contract_validation_to_dto(value) when is_map(value) do
+    %{
+      "status" => scalar_string(field(value, :status), nil),
+      "expected_columns" =>
+        bounded_assurance_list(field(value, :expected_columns, []), @max_contract_columns),
+      "observed_columns" =>
+        bounded_assurance_list(field(value, :observed_columns, []), @max_contract_columns),
+      "differences" =>
+        bounded_assurance_list(field(value, :differences, []), @max_contract_differences),
+      "observed_column_count" => data(field(value, :observed_column_count), nil, @max_depth),
+      "observed_truncated?" => data(field(value, :observed_truncated?, false), nil, @max_depth)
+    }
+    |> Enum.reject(fn {_key, child} -> is_nil(child) end)
+    |> Map.new()
+  end
+
+  defp contract_validation_to_dto(value), do: data(value)
+
+  defp bounded_assurance_list(values, limit) when is_list(values) do
+    values
+    |> Enum.take(limit)
+    |> Enum.map(&data(&1, nil, @max_depth))
+  end
+
+  defp bounded_assurance_list(_values, _limit), do: []
+
+  defp has_field?(value, key) when is_map(value),
+    do: Map.has_key?(value, key) or Map.has_key?(value, Atom.to_string(key))
+
+  defp field(value, key, default \\ nil) when is_map(value),
+    do: Map.get(value, key, Map.get(value, Atom.to_string(key), default))
 
   defp runtime_config_diagnostic(value) when is_map(value) do
     value

@@ -25,10 +25,14 @@ windows, schedules, runtime config refs, backfill range resolution, or
 runner/orchestrator contract structs.
 
 Manifest schema 5 and runner contract 5 are the only accepted versions. SQL
-execution payloads carry typed `%Favn.SQL.Check{}` declarations, templates may
-contain runtime `query()`/`target()` relation nodes, and attempts carry bounded
-`%Favn.SQL.CheckResult{}` diagnostics. Older manifest schemas and missing-graph
-payloads are rejected rather than upgraded.
+execution payloads carry an optional typed `%Favn.SQL.Contract{}` plus typed
+`%Favn.SQL.Check{}` declarations. Contract-generated checks and authored checks
+share the same policy/result types and are distinguished by origin and stable
+claim identity. `%Favn.SQL.ContractValidation{}` owns candidate schema
+comparison and `%Favn.SQL.Contract.Diff{}` owns semantic authored-contract
+comparison. Templates may contain runtime `query()`/`target()` relation nodes,
+and attempts carry bounded `%Favn.SQL.CheckResult{}` diagnostics. Older manifest
+schemas and missing-graph payloads are rejected rather than upgraded.
 
 `%Favn.SQL.SessionRequirements{version: 1}` is the manifest-safe SQL asset
 physical-session contract. It stores bounded normalized string resource names
