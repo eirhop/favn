@@ -225,7 +225,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         Mix.Task.reenable("app.config")
         Mix.Task.reenable("compile")
 
-        capture_io(fn -> Mix.Task.run("app.config") end)
+        capture_io(fn -> Mix.Tasks.App.Config.run([]) end)
 
         assert true = :code.set_path(code_path)
         assert Code.ensure_loaded?(Favn.Dev)

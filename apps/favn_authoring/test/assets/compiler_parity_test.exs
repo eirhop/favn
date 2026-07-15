@@ -424,7 +424,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
       defmodule #{inspect(assets)} do
         use Favn.MultiAsset
 
-        source_config :source_api,
+        runtime_config :source_api,
           username: env!("SOURCE_API_USERNAME"),
           password: secret_env!("SOURCE_API_PASSWORD")
 
@@ -459,6 +459,63 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
 
       assert Favn.Manifest.Asset.from_asset(asset).runtime_config == asset.runtime_config
     end
+  end
+
+  test "runtime config bundle and namespace inheritance are parallel-compile safe" do
+    root = Module.concat(__MODULE__, "RuntimeConfigRoot#{unique_suffix()}")
+    configs = Module.concat(root, RuntimeConfigs)
+    landing = Module.concat(root, Landing)
+    asset = Module.concat(landing, Orders)
+    multi_asset = Module.concat(landing, Resources)
+
+    compile_modules_to_path!([
+      {"asset.ex",
+       """
+       defmodule #{inspect(asset)} do
+         use Favn.Asset
+         def asset(_ctx), do: :ok
+       end
+       """},
+      {"multi_asset.ex",
+       """
+       defmodule #{inspect(multi_asset)} do
+         use Favn.MultiAsset
+
+         asset :issues do
+           rest do
+             path "/issues"
+           end
+         end
+
+         def asset(_ctx), do: :ok
+       end
+       """},
+      {"landing.ex",
+       """
+       defmodule #{inspect(landing)} do
+         use Favn.Namespace, runtime_config: [#{inspect(configs)}.github()]
+       end
+       """},
+      {"runtime_configs.ex",
+       """
+       defmodule #{inspect(configs)} do
+         Process.sleep(500)
+         use Favn.RuntimeConfig
+
+         bundle :github,
+           api_key: secret_env!("GITHUB_API_KEY"),
+           enterprise_url: env!("GITHUB_ENTERPRISE_URL", required?: false)
+       end
+       """}
+    ])
+
+    assert {:ok, [%Asset{} = compiled_asset]} = Compiler.compile_module_assets(asset)
+    assert compiled_asset.runtime_config.github.api_key.secret?
+
+    assert {:ok, [%Asset{} = compiled_multi_asset]} =
+             Compiler.compile_module_assets(multi_asset)
+
+    refute compiled_multi_asset.runtime_config.github.enterprise_url.required?
   end
 
   test "relation normalization rejects duplicate canonical keys" do

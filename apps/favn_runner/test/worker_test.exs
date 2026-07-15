@@ -116,6 +116,29 @@ defmodule FavnRunner.WorkerTest do
     end
   end
 
+  test "worker preserves an absent optional secret through manifest roundtrip" do
+    previous = System.get_env("FAVN_TEST_OPTIONAL_TOKEN")
+
+    try do
+      System.delete_env("FAVN_TEST_OPTIONAL_TOKEN")
+
+      result =
+        run_single_asset(FavnRunner.WorkerTest.OptionalConfigAsset,
+          roundtrip_asset?: true,
+          runtime_config: %{
+            source_system: %{
+              token: Ref.secret_env!("FAVN_TEST_OPTIONAL_TOKEN", required?: false)
+            }
+          }
+        )
+
+      assert result.status == :ok
+      assert [%{meta: %{token: :redacted, token_missing?: true}}] = result.asset_results
+    after
+      restore_env("FAVN_TEST_OPTIONAL_TOKEN", previous)
+    end
+  end
+
   test "worker fails before invocation when required runtime config is missing" do
     previous = System.get_env("FAVN_TEST_MISSING_REQUIRED")
 
@@ -419,6 +442,14 @@ defmodule FavnRunner.WorkerTest.ConfigAsset do
        segment_id: ctx.config.source_system.segment_id,
        token_seen?: Map.get(ctx.config.source_system, :token) == "secret-token"
      }}
+  end
+end
+
+defmodule FavnRunner.WorkerTest.OptionalConfigAsset do
+  @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
+  def asset(ctx) do
+    token = ctx.config.source_system.token
+    {:ok, %{token: token, token_missing?: is_nil(token)}}
   end
 end
 

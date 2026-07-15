@@ -126,16 +126,27 @@ Common attributes:
 
 ## Runtime Config In Assets
 
-Use `source_config/2`, `env!/1`, and `secret_env!/1` when asset code needs values
-from the runtime environment.
+Use `runtime_config/1,2`, `env!/1,2`, and `secret_env!/1,2` when asset code needs
+values from the runtime environment.
+
+Define shared mappings once in ordinary authoring code:
+
+```elixir
+defmodule MyApp.RuntimeConfigs do
+  use Favn.RuntimeConfig
+
+  bundle :source_system,
+    segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
+    token: secret_env!("SOURCE_SYSTEM_TOKEN"),
+    endpoint: env!("SOURCE_SYSTEM_ENDPOINT", required?: false)
+end
+```
 
 ```elixir
 defmodule MyApp.Lakehouse.Raw.Sales.Orders do
   use Favn.Asset
 
-  source_config :source_system,
-    segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
-    token: secret_env!("SOURCE_SYSTEM_TOKEN")
+  runtime_config MyApp.RuntimeConfigs.source_system()
 
   def asset(ctx) do
     segment_id = ctx.config.source_system.segment_id
@@ -147,8 +158,13 @@ defmodule MyApp.Lakehouse.Raw.Sales.Orders do
 end
 ```
 
-Favn records the names of required values. It does not store secret values in the
-authored data. Missing values fail before asset code runs.
+Select bundles for a namespace with
+`use Favn.Namespace, runtime_config: [MyApp.RuntimeConfigs.source_system()]`.
+Only descendant Elixir assets inherit them; unrelated assets select the bundle
+explicitly. Favn records unresolved references, never values. Missing required
+values fail before asset code runs. Resolved asset values are public only through
+`ctx.config`; pass the needed scope explicitly to helper modules and never log
+resolved secrets.
 
 ## SQL Assets
 

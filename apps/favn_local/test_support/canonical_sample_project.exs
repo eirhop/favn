@@ -14,6 +14,7 @@ defmodule Favn.Local.CanonicalSampleProject do
     write!(project_dir, "mix.lock", "%{}\n")
     write!(project_dir, "config/config.exs", config_exs())
     write!(project_dir, "lib/favn_issue262_sample/connections/warehouse.ex", connection_ex())
+    write!(project_dir, "lib/favn_issue262_sample/runtime_configs.ex", runtime_configs_ex())
     write!(project_dir, "lib/favn_issue262_sample/assets/source_check.ex", source_check_ex())
     write!(project_dir, "lib/favn_issue262_sample/assets/missing_secret.ex", missing_secret_ex())
     write!(project_dir, "lib/favn_issue262_sample/lakehouse.ex", lakehouse_ex())
@@ -132,9 +133,7 @@ defmodule Favn.Local.CanonicalSampleProject do
       use Favn.Asset
 
       @meta owner: "acceptance", category: :source, tags: [:issue262]
-      source_config :source_system,
-        name: env!("FAVN_CANONICAL_SOURCE_NAME"),
-        token: secret_env!("FAVN_CANONICAL_SOURCE_TOKEN")
+      runtime_config FavnIssue262Sample.RuntimeConfigs.source_system()
 
       def asset(ctx) do
         true = ctx.config.source_system.name != ""
@@ -153,10 +152,26 @@ defmodule Favn.Local.CanonicalSampleProject do
       use Favn.Asset
 
       @meta owner: "acceptance", category: :failure_path, tags: [:issue262]
-      source_config :source_system,
-        token: secret_env!("FAVN_CANONICAL_MISSING_SECRET")
+      runtime_config FavnIssue262Sample.RuntimeConfigs.missing_source()
 
       def asset(_ctx), do: :ok
+    end
+    """
+  end
+
+  defp runtime_configs_ex do
+    """
+    defmodule FavnIssue262Sample.RuntimeConfigs do
+      @moduledoc false
+
+      use Favn.RuntimeConfig
+
+      bundle :source_system,
+        name: env!("FAVN_CANONICAL_SOURCE_NAME"),
+        token: secret_env!("FAVN_CANONICAL_SOURCE_TOKEN")
+
+      bundle :missing_source,
+        token: secret_env!("FAVN_CANONICAL_MISSING_SECRET")
     end
     """
   end

@@ -1,7 +1,7 @@
 # favn_core
 
 Purpose: shared compiler, manifest, planning, graph, execution policy,
-freshness, window, runtime config, backfill range, and cross-runtime contract
+freshness, window, runtime config refs/bundles/field-level merge contracts, backfill range, and cross-runtime contract
 types.
 
 Code:
