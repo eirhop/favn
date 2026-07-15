@@ -56,6 +56,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 ### 6. Harden The Production-Grade Runtime
 
 - Extend the initial SQL cancellation token contract into adapter-native cancellation callbacks where supported; adapters without native cancellation must continue reporting unknown or unsupported data-plane outcome.
+- Define protected resolve-once pinning for SQL asset runtime inputs, including encrypted/redacted payload storage, racing-attempt conflict semantics, and explicit retry, restart, rerun, replay, and new-run behavior. Until then, replay-sensitive resolvers remain unsuitable for attempts that require an identical external input selection.
 - Add broader production stress, failure-injection, and restore verification for DuckDB/plugin execution under the single-node contract.
 - Evaluate non-env runtime-config providers or provider-specific secret managers only when a production integration requires them; optional env refs and reusable scoped bundles are already supported.
 - Add broader production stress/failure-injection coverage for the service-authenticated diagnostics surface and keep end-to-end diagnostics coverage aligned with the PR #262 test plan.

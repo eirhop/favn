@@ -51,11 +51,14 @@ defmodule Favn.AI do
     `ctx.config`, call a source client outside the asset, write raw rows through
     `Favn.SQLClient`, and return structured metadata with row counts, relation,
     load mode, timestamp, and hashed source identity.
-  - To author one SQL asset, including transactional `check` declarations with
-    fail, warning, or successful no-op outcomes, read `Favn.SQLAsset`, then
+  - To author one SQL asset, including behaviour-based runtime inputs or
+    transactional `check` declarations with fail, warning, or successful no-op
+    outcomes, read `Favn.SQLAsset`, then `Favn.SQLAsset.RuntimeInputs`,
     `Favn.SQL`, `Favn.Connection`, `Favn.Namespace`, and `Favn.Window` as
-    needed. Checks use normal reusable `defsql`; `query()` is the exact staged
-    candidate and `target()` is the transaction-visible owned relation.
+    needed. Runtime input values remain bound parameters, including through
+    reusable `defsql`. Checks use normal reusable `defsql`; `query()` is the
+    exact staged candidate and `target()` is the transaction-visible owned
+    relation.
   - To author many similar assets in one module, read `Favn.MultiAsset`.
   - To declare external source relations, read `Favn.Source`.
   - To share relation defaults, read `Favn.Namespace`.
@@ -170,6 +173,19 @@ defmodule Favn.AI do
   fail/warn/no-op policy, metric limits, invalid result shapes, and persisted
   outcomes.
 
+  ## SQL Runtime Input Breadcrumbs
+
+  When a task mentions `@runtime_inputs`, external manifest or snapshot IDs,
+  runtime-selected files, watermarks, resolver timeouts, parameter collisions,
+  or sensitive SQL bind values, read these docs in order:
+
+  1. `Favn.SQLAsset` for declaration timing, budgets, binding, and retry limits.
+  2. `Favn.SQLAsset.RuntimeInputs` for the resolver callback contract.
+  3. `Favn.SQLAsset.RuntimeInputs.Result` and
+     `Favn.SQLAsset.RuntimeInputs.Error` for the only accepted return shapes.
+  4. `Favn.RuntimeInputResolver.Ref` only for manifest/compiler work; authors
+     declare the module and do not construct this reference directly.
+
   ## About `Favn`
 
   - you need helper functions like `generate_manifest`, `resolve_pipeline`, or
@@ -259,11 +275,15 @@ defmodule Favn.AI do
     a task mentions `max_concurrency`, `execution_pool`, rate-limited APIs,
     runner-local versus orchestrator-owned limits, queue reasons, execution
     leases, or why many independent assets should not start at once.
-  - Read `Favn.SQLAsset`, `Favn.SQLAsset.check/3`, and
-    `Favn.SQL.CheckResult` whenever a task mentions transactional SQL checks,
-    data quality warnings, keeping an existing target on an empty candidate,
-    `query()`, `target()`, `quality_status`, `write_outcome`, or check result
-    metrics. Read `Favn.SQL.Check` only for manifest/compiler work.
+  - Read `Favn.SQLAsset` and `Favn.SQLAsset.RuntimeInputs` whenever a task
+    mentions runtime-selected files, external manifests/snapshots, watermarks,
+    or resolver-provided SQL parameters. Read `Favn.RuntimeInputResolver.Ref`
+    only for manifest/compiler work.
+  - Read `Favn.SQLAsset`, `Favn.SQLAsset.check/3`, and `Favn.SQL.CheckResult`
+    whenever a task mentions transactional SQL checks, data quality warnings,
+    keeping an existing target on an empty candidate, `query()`, `target()`,
+    `quality_status`, `write_outcome`, or check result metrics. Read
+    `Favn.SQL.Check` only for manifest/compiler work.
   - Read `FavnOrchestrator.MaterializationClaim` and
     `FavnOrchestrator.Repair.RuntimeState` when a task mentions duplicate asset
     materializations, stuck runs after a crash, orphaned `running`/`queued` steps,

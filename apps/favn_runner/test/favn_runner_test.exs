@@ -322,8 +322,8 @@ defmodule FavnRunnerTest do
     refs = Enum.map(assets, & &1.ref)
 
     %Manifest{
-      schema_version: 3,
-      runner_contract_version: 3,
+      schema_version: 4,
+      runner_contract_version: 4,
       assets: assets,
       pipelines: [],
       schedules: [],

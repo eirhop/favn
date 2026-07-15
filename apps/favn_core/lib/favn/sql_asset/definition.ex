@@ -4,6 +4,7 @@ defmodule Favn.SQLAsset.Definition do
   """
 
   alias Favn.Asset.RelationInput
+  alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL
   alias Favn.SQL.Check
   alias Favn.SQLAsset.Materialization
@@ -15,6 +16,7 @@ defmodule Favn.SQLAsset.Definition do
     :sql,
     :template,
     :materialization,
+    :runtime_inputs,
     relation_inputs: [],
     sql_definitions: [],
     checks: [],
@@ -35,6 +37,7 @@ defmodule Favn.SQLAsset.Definition do
           sql: String.t(),
           template: SQL.Template.t(),
           materialization: Materialization.t(),
+          runtime_inputs: RuntimeInputResolverRef.t() | nil,
           relation_inputs: [RelationInput.t()],
           sql_definitions: [SQL.Definition.t()],
           checks: [Check.t()],

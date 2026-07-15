@@ -24,8 +24,15 @@ inference, effective execution-pool propagation, freshness keys/policies,
 windows, schedules, runtime config refs, backfill range resolution, or
 runner/orchestrator contract structs.
 
-Manifest schema 3 and runner contract 3 are the only accepted versions. SQL
+Manifest schema 4 and runner contract 4 are the only accepted versions. SQL
 execution payloads carry typed `%Favn.SQL.Check{}` declarations, templates may
 contain runtime `query()`/`target()` relation nodes, and attempts carry bounded
 `%Favn.SQL.CheckResult{}` diagnostics. Older manifest schemas and missing-graph
 payloads are rejected rather than upgraded.
+
+Runtime SQL input contracts are core-owned:
+`Favn.SQLAsset.RuntimeInputs` defines the behaviour, its `Result` and `Error`
+modules define typed resolver outcomes, and `Favn.RuntimeInputResolver.Ref`
+defines the serializable manifest reference. `%Favn.Manifest.SQLExecution{}`
+stores that reference only. Rehydration rejects malformed references and any
+attempt to smuggle a resolved payload into the reference.

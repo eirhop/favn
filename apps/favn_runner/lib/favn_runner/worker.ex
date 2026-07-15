@@ -76,7 +76,7 @@ defmodule FavnRunner.Worker do
           end
 
         :sql ->
-          execute_sql_asset(asset, version, work)
+          execute_sql_asset(asset, version, work, execution_id)
 
         _ ->
           {:error,
@@ -206,6 +206,15 @@ defmodule FavnRunner.Worker do
 
   defp redact_execution_result({:error, error}, %Asset{} = asset, %Context{} = context) do
     {:error, RuntimeConfigRedactor.redact(error, asset.runtime_config, context.config)}
+  end
+
+  defp redact_execution_result(
+         {:error, error, meta},
+         %Asset{} = asset,
+         %Context{} = context
+       ) do
+    {:error, RuntimeConfigRedactor.redact(error, asset.runtime_config, context.config),
+     RuntimeConfigRedactor.redact(meta, asset.runtime_config, context.config)}
   end
 
   defp invoke_asset(module, entrypoint, %Context{} = context) do
@@ -348,8 +357,25 @@ defmodule FavnRunner.Worker do
     })
   end
 
-  defp execute_sql_asset(%Asset{} = asset, %Version{} = version, %RunnerWork{} = work) do
-    SQLAssetRuntime.run_manifest(asset, version, work)
+  defp execute_sql_asset(
+         %Asset{} = asset,
+         %Version{} = version,
+         %RunnerWork{} = work,
+         execution_id
+       ) do
+    case ContextBuilder.build(work, asset, execution_id) do
+      {:ok, context} ->
+        asset
+        |> SQLAssetRuntime.run_manifest(version, work, context)
+        |> redact_execution_result(asset, context)
+
+      {:error, error} ->
+        {:error,
+         RunnerError.normalize(
+           RuntimeConfigDiagnostic.asset_resolution_failed(error, asset),
+           retryable?: false
+         )}
+    end
   rescue
     error ->
       {:error, RunnerError.exception(:error, error, __STACKTRACE__)}

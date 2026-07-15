@@ -27,6 +27,7 @@ defmodule FavnRunner.ContextBuilder do
       {:ok,
        %Context{
          run_id: run_id,
+         node_identity: work.node_identity,
          target_refs: [asset.ref],
          current_ref: asset.ref,
          asset: %{ref: asset.ref, relation: asset.relation, config: asset_config},

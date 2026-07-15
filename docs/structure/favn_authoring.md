@@ -23,3 +23,9 @@ authoring documentation behavior.
 `Favn.SQL.Template` and visible `defsql` catalog as the asset query. It validates
 phase/action/condition combinations at compile time and carries only manifest
 runtime data forward; no authoring module is loaded to execute a check.
+
+`@runtime_inputs ResolverModule` is optional, must appear at most once before
+`query`, and accepts only a compiled module that explicitly implements
+`Favn.SQLAsset.RuntimeInputs` and exports `resolve/1`. Authoring emits one typed
+`Favn.RuntimeInputResolver.Ref`; functions, captures, MFA tuples, AST, and
+resolved values never cross into the manifest.

@@ -43,8 +43,8 @@ defmodule Favn.Dev.OrchestratorClientTest do
     {:ok, base_url, _server} = start_server(~s({"data":{"ok":true}}), 200, parent: parent)
 
     manifest = %{
-      schema_version: 3,
-      runner_contract_version: 3,
+      schema_version: 4,
+      runner_contract_version: 4,
       assets: [],
       pipelines: [],
       schedules: [],

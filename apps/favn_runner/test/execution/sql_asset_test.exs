@@ -11,7 +11,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.Manifest.Graph
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
+  alias Favn.Plan.NodeIdentity
   alias Favn.RelationRef
+  alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL.Check
   alias Favn.SQL.Template
 
@@ -21,11 +23,16 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     previous_cleanup_failure = Application.get_env(:favn_runner, :checked_cleanup_failure)
     previous_rollback_failure = Application.get_env(:favn_runner, :checked_rollback_failure)
     previous_begin_failure = Application.get_env(:favn_runner, :checked_begin_failure)
+
+    previous_runtime_inputs_resolved =
+      Application.get_env(:favn_runner, :runtime_inputs_resolved)
+
     Application.put_env(:favn_runner, :execution_sql_asset_test_pid, self())
     Application.put_env(:favn_runner, :checked_target_exists, true)
     Application.put_env(:favn_runner, :checked_cleanup_failure, false)
     Application.put_env(:favn_runner, :checked_rollback_failure, false)
     Application.put_env(:favn_runner, :checked_begin_failure, false)
+    Application.put_env(:favn_runner, :runtime_inputs_resolved, false)
 
     on_exit(fn ->
       restore_env(:execution_sql_asset_test_pid, previous_test_pid)
@@ -33,6 +40,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       restore_env(:checked_cleanup_failure, previous_cleanup_failure)
       restore_env(:checked_rollback_failure, previous_rollback_failure)
       restore_env(:checked_begin_failure, previous_begin_failure)
+      restore_env(:runtime_inputs_resolved, previous_runtime_inputs_resolved)
       Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
     end)
 
@@ -138,6 +146,165 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert {:ok, result} = FavnRunner.run(work)
     if result.status != :ok, do: flunk(inspect(result, pretty: true))
     assert [%{status: :ok}] = result.asset_results
+  end
+
+  test "resolves manifest-declared runtime inputs before rendering and session acquisition" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver
+      )
+
+    node_identity =
+      NodeIdentity.new!(%{
+        manifest_version_id: version.manifest_version_id,
+        node_key: {ref, nil},
+        target_refs: [ref],
+        planned_asset_refs: [ref]
+      })
+
+    work = %RunnerWork{
+      run_id: "run_sql_runtime_inputs",
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      asset_ref: ref,
+      node_identity: node_identity,
+      params: %{submitted: 7}
+    }
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :ok
+
+    assert_received {:runtime_inputs_context, context}
+    assert context.run_id == work.run_id
+    assert context.current_ref == ref
+    assert context.node_identity == node_identity
+    assert context.params == %{submitted: 7}
+
+    assert_received {:connect_after_runtime_inputs, true}
+    assert_received {:materialize_params, ["runtime-value", 7]}
+
+    assert [asset_result] = result.asset_results
+
+    assert asset_result.meta.runtime_inputs == %{
+             resolver: FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver,
+             input_identity: "manifest:runtime-inputs",
+             input_metadata: %{file_count: 1},
+             duration_ms: asset_result.meta.runtime_inputs.duration_ms
+           }
+
+    refute inspect(asset_result.meta) =~ "runtime-value"
+  end
+
+  test "resolver failure prevents SQL rendering and connection mutation" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsFailureSQLAsset, :asset}
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.RuntimeInputsFailureResolver
+      )
+
+    work = work_for(version, ref, "run_sql_runtime_inputs_failure")
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :error
+    assert [%{error: %{type: :runtime_inputs_failed}}] = result.asset_results
+    refute_received {:connect_opts, :runner_sql_runtime, _opts}
+    refute_received {:materialize_params, _params}
+  end
+
+  test "resolver receives the final planned runtime window" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver
+      )
+
+    requested_start = ~U[2026-07-14 00:00:00Z]
+    requested_end = ~U[2026-07-15 00:00:00Z]
+    anchor_key = Favn.Window.Key.new!(:day, requested_start, "Etc/UTC")
+
+    requested_window =
+      Favn.Window.Runtime.new!(
+        :day,
+        requested_start,
+        requested_end,
+        anchor_key,
+        timezone: "Etc/UTC"
+      )
+
+    work =
+      version
+      |> work_for(ref, "run_sql_runtime_inputs_window")
+      |> Map.put(:params, %{submitted: 7})
+      |> Map.put(:trigger, %{window: requested_window})
+
+    assert {:ok, %{status: :ok}} = FavnRunner.run(work)
+    assert_received {:runtime_inputs_context, context}
+    assert context.window.start_at == requested_start
+    assert context.window.end_at == requested_end
+    assert context.window.anchor_key == anchor_key
+  end
+
+  test "sensitive resolved values are redacted from adapter failures" do
+    reload_fake_connection(
+      :runner_sql_runtime,
+      FavnRunner.ExecutionSQLAssetTest.FakeRuntimeInputSecretAdapter
+    )
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver
+      )
+
+    work =
+      version
+      |> work_for(ref, "run_sql_runtime_inputs_redaction")
+      |> Map.put(:params, %{submitted: 7})
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :error
+    refute inspect(result, limit: :infinity) =~ "runtime-value"
+    assert inspect(result, limit: :infinity) =~ "[REDACTED]"
+  end
+
+  test "shares resolved parameters with transactional SQL checks" do
+    reload_fake_connection(
+      :runner_sql_runtime,
+      FavnRunner.ExecutionSQLAssetTest.FakeCheckedExecutionAdapter
+    )
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
+
+    check =
+      checked_check(
+        :runtime_input_check,
+        :before_materialize,
+        :fail,
+        "SELECT @runtime_value = @runtime_value AS passed"
+      )
+
+    version =
+      register_checked_sql_manifest!(
+        ref,
+        [check],
+        %RuntimeInputResolverRef{
+          module: FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver
+        }
+      )
+
+    assert {:ok, %{status: :ok}} =
+             FavnRunner.run(work_for(version, ref, "run_checked_runtime_inputs"))
+
+    assert_received {:checked_query_params, ["runtime-value", "runtime-value"]}
   end
 
   test "elixir asset SQLClient sessions inherit owned relation catalog scope" do
@@ -617,8 +784,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_inspection_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 3,
-      runner_contract_version: 3,
+      schema_version: 4,
+      runner_contract_version: 4,
       assets: [
         %Asset{
           ref: ref,
@@ -662,8 +829,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 3,
-        runner_contract_version: 3,
+        schema_version: 4,
+        runner_contract_version: 4,
         assets: [
           %Asset{
             ref: ref,
@@ -697,7 +864,62 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version
   end
 
-  defp register_checked_sql_manifest!(ref, checks) do
+  defp register_runtime_input_sql_manifest!(ref, resolver, opts \\ []) do
+    relation =
+      RelationRef.new!(%{connection: :runner_sql_runtime, name: "runtime_input_sql_asset"})
+
+    sql = "SELECT @runtime_value AS value, @submitted AS submitted"
+    materialization = Keyword.get(opts, :materialization, :table)
+    window = Keyword.get(opts, :window)
+
+    template =
+      Template.compile!(sql,
+        file: "test/runtime_input_sql_asset_manifest.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    manifest = %Manifest{
+      schema_version: 4,
+      runner_contract_version: 4,
+      assets: [
+        %Asset{
+          ref: ref,
+          module: elem(ref, 0),
+          name: :asset,
+          type: :sql,
+          execution: %{entrypoint: :asset, arity: 1},
+          relation: relation,
+          window: window,
+          materialization: materialization,
+          sql_execution: %SQLExecution{
+            sql: sql,
+            template: template,
+            runtime_inputs: %RuntimeInputResolverRef{module: resolver},
+            sql_definitions: []
+          }
+        }
+      ],
+      pipelines: [],
+      schedules: [],
+      graph: %Graph{nodes: [ref], edges: [], topo_order: [ref]},
+      metadata: %{}
+    }
+
+    {:ok, version} =
+      Version.new(manifest,
+        manifest_version_id:
+          "mv_runtime_input_sql_" <>
+            Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      )
+
+    :ok = FavnRunner.register_manifest(version)
+    version
+  end
+
+  defp register_checked_sql_manifest!(ref, checks, runtime_inputs \\ nil) do
     relation =
       RelationRef.new!(%{connection: :runner_sql_runtime, schema: "gold", name: "checked_asset"})
 
@@ -711,8 +933,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     manifest = %Manifest{
-      schema_version: 3,
-      runner_contract_version: 3,
+      schema_version: 4,
+      runner_contract_version: 4,
       assets: [
         %Asset{
           ref: ref,
@@ -725,6 +947,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
           sql_execution: %SQLExecution{
             sql: "SELECT 1 AS id",
             template: template,
+            runtime_inputs: runtime_inputs,
             sql_definitions: [],
             checks: checks
           }
@@ -825,8 +1048,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 3,
-        runner_contract_version: 3,
+        schema_version: 4,
+        runner_contract_version: 4,
         assets: [
           %Asset{
             ref: ref,
@@ -865,8 +1088,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 3,
-        runner_contract_version: 3,
+        schema_version: 4,
+        runner_contract_version: 4,
         assets: [
           %Asset{
             ref: ref,
@@ -897,8 +1120,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 3,
-      runner_contract_version: 3,
+      schema_version: 4,
+      runner_contract_version: 4,
       assets: [
         %Asset{
           ref: ref,
@@ -961,6 +1184,51 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.SQLAsset do
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset do
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.RuntimeInputsFailureSQLAsset do
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver do
+  @behaviour Favn.SQLAsset.RuntimeInputs
+
+  alias Favn.SQLAsset.RuntimeInputs.Result
+
+  @impl true
+  def resolve(context) do
+    Application.put_env(:favn_runner, :runtime_inputs_resolved, true)
+
+    if pid = Application.get_env(:favn_runner, :execution_sql_asset_test_pid) do
+      send(pid, {:runtime_inputs_context, context})
+    end
+
+    {:ok,
+     %Result{
+       params: %{runtime_value: "runtime-value"},
+       identity: "manifest:runtime-inputs",
+       metadata: %{file_count: 1},
+       sensitive_params: [:runtime_value]
+     }}
+  end
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.RuntimeInputsFailureResolver do
+  @behaviour Favn.SQLAsset.RuntimeInputs
+
+  alias Favn.SQLAsset.RuntimeInputs.Error
+
+  @impl true
+  def resolve(_context) do
+    {:error,
+     %Error{
+       reason: :not_ready,
+       message: "external manifest is not ready",
+       retryable?: true
+     }}
+  end
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.PlainRelationInputSQLAsset do
@@ -1054,6 +1322,12 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter do
   def connect(%Resolved{} = resolved, opts) do
     if pid = Application.get_env(:favn_runner, :execution_sql_asset_test_pid) do
       send(pid, {:connect_opts, resolved.name, opts})
+
+      send(
+        pid,
+        {:connect_after_runtime_inputs,
+         Application.get_env(:favn_runner, :runtime_inputs_resolved)}
+      )
     end
 
     {:ok, :conn}
@@ -1065,8 +1339,13 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter do
   def query(:conn, _statement, _opts),
     do: {:ok, %Result{kind: :query, command: "SELECT", rows: [], columns: []}}
 
-  def materialize(:conn, _write_plan, _opts),
-    do: {:ok, %Result{command: :insert, rows_affected: 1}}
+  def materialize(:conn, _write_plan, opts) do
+    if pid = Application.get_env(:favn_runner, :execution_sql_asset_test_pid) do
+      send(pid, {:materialize_params, Keyword.get(opts, :params, [])})
+    end
+
+    {:ok, %Result{command: :insert, rows_affected: 1}}
+  end
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.FakeSecretExecutionAdapter do
@@ -1087,6 +1366,29 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeSecretExecutionAdapter do
        connection: :runner_sql_runtime,
        details: %{password: "super-secret", nested: %{reason: "credential=raw"}},
        cause: %{token: "super-secret"}
+     }}
+  end
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.FakeRuntimeInputSecretAdapter do
+  alias Favn.Connection.Resolved
+  alias Favn.SQL.Capabilities
+  alias Favn.SQL.Error
+
+  def connect(%Resolved{}, _opts), do: {:ok, :conn}
+  def disconnect(:conn, _opts), do: :ok
+  def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+  def materialize(:conn, _write_plan, opts) do
+    secret = opts |> Keyword.fetch!(:params) |> hd()
+
+    {:error,
+     %Error{
+       type: :execution_error,
+       message: "adapter rejected #{secret}",
+       operation: :materialize,
+       details: %{echo: secret},
+       cause: {:rejected, secret}
      }}
   end
 end
@@ -1127,9 +1429,10 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedExecutionAdapter do
     end
   end
 
-  def query(:checked_conn, statement, _opts) do
+  def query(:checked_conn, statement, opts) do
     statement = IO.iodata_to_binary(statement)
     notify({:checked_query, statement})
+    notify({:checked_query_params, Keyword.get(opts, :params, [])})
 
     cond do
       String.contains?(statement, "check:sql_error") ->
