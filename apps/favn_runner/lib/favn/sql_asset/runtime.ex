@@ -24,29 +24,35 @@ defmodule Favn.SQLAsset.Runtime do
   }
 
   alias Favn.Window.Runtime
+  alias FavnRunner.RuntimeInputResolver
+  alias FavnRunner.RuntimeInputResolver.Resolution, as: RuntimeInputResolution
   alias FavnRunner.SQL.MaterializationPlanner
 
   @runner_registry FavnRunner.ConnectionRegistry
 
-  @type opts :: [params: map(), runtime: map(), timeout_ms: pos_integer()]
+  @type opts :: [
+          params: map(),
+          runtime: map(),
+          context: Context.t(),
+          timeout_ms: pos_integer()
+        ]
 
-  @spec run_manifest(Asset.t(), Version.t(), RunnerWork.t()) ::
+  @spec run_manifest(Asset.t(), Version.t(), RunnerWork.t(), Context.t()) ::
           {:ok, map()} | {:error, Error.t()} | {:error, Error.t(), map()}
-  def run_manifest(%Asset{} = asset, %Version{} = version, work) do
-    opts =
-      [
-        params: Map.get(work, :params, %{}),
-        runtime: trigger_runtime(Map.get(work, :trigger, %{}))
-      ]
-      |> Keyword.merge(runner_runtime_opts(work))
+  def run_manifest(
+        %Asset{} = asset,
+        %Version{} = version,
+        %RunnerWork{} = work,
+        %Context{} = context
+      ) do
+    opts = context |> run_opts() |> Keyword.merge(runner_runtime_opts(work))
 
     with {:ok, %Definition{} = definition} <- manifest_definition(asset, version),
-         {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
-         {:ok, %CheckedMaterialization{} = materialization} <-
-           materialize_render(definition, rendered, opts) do
+         {:ok, %Render{} = rendered, %CheckedMaterialization{} = materialization, resolution} <-
+           execute_definition(definition, context, opts) do
       output =
         definition
-        |> runtime_output(rendered, materialization)
+        |> runtime_output(rendered, materialization, resolution)
         |> Map.put(:manifest_version_id, version.manifest_version_id)
         |> Map.put(:manifest_content_hash, version.content_hash)
 
@@ -103,21 +109,9 @@ defmodule Favn.SQLAsset.Runtime do
 
   @spec materialize(map(), opts()) :: {:ok, MaterializationResult.t()} | {:error, Error.t()}
   def materialize(%{type: :sql, module: module}, opts) when is_atom(module) and is_list(opts) do
-    with {:ok, %Definition{} = definition} <- fetch_definition(module),
-         {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
-         {:ok, %CheckedMaterialization{} = output} <-
-           materialize_render(definition, rendered, opts) do
-      {:ok,
-       %MaterializationResult{
-         render: rendered,
-         write_plan: output.write_plan,
-         result: output.result,
-         check_results: output.check_results,
-         write_outcome: output.write_outcome,
-         reason: output.reason
-       }}
+    with {:ok, %Definition{} = definition} <- fetch_definition(module) do
+      materialize_definition(definition, opts)
     else
-      {:error, %Error{} = error, _meta} -> {:error, error}
       {:error, %Error{} = error} -> {:error, error}
     end
   end
@@ -136,23 +130,14 @@ defmodule Favn.SQLAsset.Runtime do
 
   @spec run(module(), Context.t()) :: {:ok, map()} | {:error, Error.t()}
   def run(module, %Context{} = ctx) when is_atom(module) do
-    with {:ok, %Definition{asset: asset} = definition} <- fetch_definition(module),
+    with {:ok, %Definition{} = definition} <- fetch_definition(module),
          opts <- run_opts(ctx),
-         {:ok, %MaterializationResult{} = output} <- materialize(asset, opts) do
-      {:ok,
-       runtime_output(
-         definition,
-         output.render,
-         %CheckedMaterialization{
-           write_plan: output.write_plan,
-           result: output.result,
-           check_results: output.check_results,
-           write_outcome: output.write_outcome,
-           reason: output.reason
-         }
-       )}
+         {:ok, %Render{} = rendered, %CheckedMaterialization{} = output, resolution} <-
+           execute_definition(definition, ctx, opts) do
+      {:ok, runtime_output(definition, rendered, output, resolution)}
     else
       {:error, %Error{} = error} -> {:error, error}
+      {:error, %Error{} = error, _meta} -> {:error, error}
     end
   end
 
@@ -163,8 +148,160 @@ defmodule Favn.SQLAsset.Runtime do
         window -> %{window: window}
       end
 
-    [params: ctx.params || %{}, runtime: runtime]
+    [params: ctx.params || %{}, runtime: runtime, context: ctx]
   end
+
+  defp materialize_definition(%Definition{runtime_inputs: nil} = definition, opts) do
+    with {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
+         {:ok, %CheckedMaterialization{} = output} <-
+           materialize_render(definition, rendered, opts) do
+      {:ok, materialization_result(rendered, output)}
+    else
+      {:error, %Error{} = error, _meta} -> {:error, error}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp materialize_definition(%Definition{} = definition, opts) do
+    case Keyword.get(opts, :context) do
+      %Context{} = context ->
+        context_opts =
+          context
+          |> run_opts()
+          |> Keyword.merge(Keyword.drop(opts, [:params, :runtime, :context]))
+
+        with {:ok, %Render{} = rendered, %CheckedMaterialization{} = output, _resolution} <-
+               execute_definition(definition, context, context_opts) do
+          {:ok, materialization_result(rendered, output)}
+        else
+          {:error, %Error{} = error, _meta} -> {:error, error}
+          {:error, %Error{} = error} -> {:error, error}
+        end
+
+      _other ->
+        {:error,
+         %Error{
+           type: :runtime_inputs_invalid_result,
+           phase: :runtime_inputs,
+           asset_ref: definition.asset.ref,
+           message:
+             "materializing an asset with @runtime_inputs requires context: %Favn.Run.Context{}"
+         }}
+    end
+  end
+
+  defp materialization_result(rendered, output) do
+    %MaterializationResult{
+      render: rendered,
+      write_plan: output.write_plan,
+      result: output.result,
+      check_results: output.check_results,
+      write_outcome: output.write_outcome,
+      reason: output.reason
+    }
+  end
+
+  defp execute_definition(%Definition{} = definition, %Context{} = context, opts) do
+    with {:ok, final_context, final_opts} <- finalize_execution_window(definition, context, opts) do
+      case resolve_runtime_inputs(definition, final_context, final_opts) do
+        {:ok, resolution, resolved_opts} ->
+          result =
+            with {:ok, %Render{} = rendered} <- Renderer.render(definition, resolved_opts),
+                 {:ok, %CheckedMaterialization{} = output} <-
+                   materialize_render(definition, rendered, resolved_opts) do
+              {:ok, rendered, output, resolution}
+            end
+
+          redact_resolution_result(result, resolution)
+
+        {:error, %Error{} = error} ->
+          {:error, error}
+      end
+    end
+  end
+
+  defp finalize_execution_window(
+         %Definition{materialization: {:incremental, _opts}} = definition,
+         %Context{} = context,
+         opts
+       ) do
+    case context.window do
+      %Runtime{} = runtime_window ->
+        with {:ok, %IncrementalWindow{} = effective_window} <-
+               IncrementalWindow.resolve(runtime_window, definition.asset.window_spec),
+             {:ok, %Runtime{} = effective_runtime} <-
+               IncrementalWindow.to_runtime(effective_window) do
+          final_context = %Context{context | window: effective_runtime}
+
+          {:ok, final_context,
+           opts
+           |> Keyword.put(:context, final_context)
+           |> put_runtime_window(effective_runtime)}
+        else
+          {:error, reason} ->
+            {:error,
+             %Error{
+               type: :materialization_planning_failed,
+               phase: :materialize,
+               asset_ref: definition.asset.ref,
+               message: "failed to resolve the effective incremental window",
+               details: %{materialization: definition.materialization},
+               cause: reason
+             }}
+        end
+
+      _other ->
+        {:error,
+         %Error{
+           type: :materialization_planning_failed,
+           phase: :materialize,
+           asset_ref: definition.asset.ref,
+           message: "incremental materialization requires runtime.window",
+           details: %{materialization: definition.materialization}
+         }}
+    end
+  end
+
+  defp finalize_execution_window(%Definition{}, %Context{} = context, opts),
+    do: {:ok, context, Keyword.put(opts, :context, context)}
+
+  defp resolve_runtime_inputs(%Definition{runtime_inputs: nil}, _context, opts),
+    do: {:ok, nil, opts}
+
+  defp resolve_runtime_inputs(%Definition{runtime_inputs: resolver}, context, opts) do
+    submitted_params = context.params || %{}
+
+    case RuntimeInputResolver.resolve(resolver, context, submitted_params, opts) do
+      {:ok, %RuntimeInputResolution{} = resolution} ->
+        {:ok, resolution, Keyword.put(opts, :params, resolution.params)}
+
+      {:error, %Error{} = error} ->
+        {:error, %Error{error | asset_ref: context.current_ref}}
+    end
+  end
+
+  defp redact_resolution_result(result, nil), do: result
+
+  defp redact_resolution_result(
+         {:ok, %Render{} = rendered, %CheckedMaterialization{} = output, resolution},
+         %RuntimeInputResolution{} = runtime_input_resolution
+       ) do
+    safe_output = %CheckedMaterialization{
+      output
+      | write_plan:
+          RuntimeInputResolver.redact_write_plan(
+            output.write_plan,
+            runtime_input_resolution
+          ),
+        check_results: RuntimeInputResolver.redact(output.check_results, runtime_input_resolution)
+    }
+
+    {:ok, RuntimeInputResolver.redact_render(rendered, runtime_input_resolution), safe_output,
+     resolution}
+  end
+
+  defp redact_resolution_result(result, %RuntimeInputResolution{} = resolution),
+    do: RuntimeInputResolver.redact(result, resolution)
 
   defp render_sql_asset(%{type: :sql, module: module}, opts)
        when is_atom(module) and is_list(opts),
@@ -1292,6 +1429,7 @@ defmodule Favn.SQLAsset.Runtime do
        relation_inputs: asset.relation_inputs || [],
        sql_definitions: payload.sql_definitions,
        checks: payload.checks,
+       runtime_inputs: payload.runtime_inputs,
        raw_asset: %{
          manifest_relation_by_module: relation_map(version),
          deferred_resolution: :manifest_only
@@ -1324,13 +1462,11 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp relation_map(_), do: %{}
 
-  defp trigger_runtime(%{window: %Runtime{} = window}), do: %{window: window}
-  defp trigger_runtime(_), do: %{}
-
   defp runtime_output(
          %Definition{},
          %Render{} = rendered,
-         %CheckedMaterialization{} = materialization
+         %CheckedMaterialization{} = materialization,
+         resolution
        ) do
     quality_status =
       if Enum.any?(materialization.check_results, &(&1.outcome == :warned)),
@@ -1348,8 +1484,15 @@ defmodule Favn.SQLAsset.Runtime do
       reason: materialization.reason
     }
 
-    maybe_put_no_op_details(output, materialization)
+    output
+    |> maybe_put_no_op_details(materialization)
+    |> maybe_put_runtime_inputs(resolution)
   end
+
+  defp maybe_put_runtime_inputs(output, nil), do: output
+
+  defp maybe_put_runtime_inputs(output, %RuntimeInputResolution{} = resolution),
+    do: Map.put(output, :runtime_inputs, RuntimeInputResolver.lineage(resolution))
 
   defp maybe_put_no_op_details(
          output,

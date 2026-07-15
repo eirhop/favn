@@ -57,7 +57,7 @@ defmodule Favn.SQLAsset do
 
   - define exactly one `query/1` declaration
   - declare exactly one `@materialized`
-  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, `@materialized`, and optional `@relation` before `query`
+  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, `@materialized`, optional `@relation`, and optional `@runtime_inputs` before `query`
   - use `~SQL` for inline SQL bodies
   - use `query file: "..."` for asset-local file-backed SQL loaded at compile
     time
@@ -71,6 +71,7 @@ defmodule Favn.SQLAsset do
   - `@freshness`: optional asset freshness policy
   - `@relation`: optional owned relation declaration
   - `@materialized`: required SQL materialization strategy
+  - `@runtime_inputs`: optional module implementing `Favn.SQLAsset.RuntimeInputs`
 
   ## Freshness
 
@@ -195,6 +196,63 @@ defmodule Favn.SQLAsset do
   inputs such as window bounds and explicit `params` are resolved during render
   and execution, not inside user-authored Elixir code.
 
+  A SQL asset may declare one behaviour-based resolver for runtime-only bind
+  values that cannot be selected when the manifest is compiled:
+
+      defmodule MyApp.Orders.Inputs do
+        @behaviour Favn.SQLAsset.RuntimeInputs
+
+        alias Favn.SQLAsset.RuntimeInputs.Result
+
+        @impl true
+        def resolve(ctx) do
+          manifest = MyApp.Manifests.completed_for!(ctx.window)
+
+          {:ok,
+           %Result{
+             params: %{files_json: Jason.encode!(manifest.files)},
+             identity: manifest.id,
+             metadata: %{file_count: length(manifest.files)}
+           }}
+        end
+      end
+
+      defmodule MyApp.Orders do
+        use Favn.SQLAsset
+
+        @runtime_inputs MyApp.Orders.Inputs
+        @materialized :table
+
+        query do
+          ~SQL"select * from read_ndjson(from_json(@files_json, '[\"VARCHAR\"]'))"
+        end
+      end
+
+  `@runtime_inputs MyApp.Orders.Inputs` before `query` is the only supported
+  declaration. Anonymous functions, captures, MFA tuples, and inline resolver
+  blocks are not accepted. Remove those forms instead of wrapping or migrating
+  them at runtime; the manifest must contain one stable typed module reference.
+
+  The resolver runs once only when the asset will execute, after the effective
+  window is final and before SQL rendering or session admission. Its values use
+  the normal SQL binding path and can be referenced by nested `defsql` calls.
+  Resolver values never become SQL source. Submitted and resolved parameter
+  names may not collide, and `window_start`/`window_end` remain reserved.
+
+  Resolution has a 30-second upper bound, additionally limited by the remaining
+  node deadline. The runner accepts at most 128 parameters, a 4 MiB parameter
+  payload, a 1 KiB identity, and 64 KiB/128 entries of JSON-safe metadata.
+  Sensitive names declared in the result are redacted. Resolved payloads are not
+  persisted; retries and runner restarts resolve them again until an explicit
+  pinning contract is added.
+
+  Read `Favn.SQLAsset.RuntimeInputs`, then
+  `Favn.SQLAsset.RuntimeInputs.Result` and
+  `Favn.SQLAsset.RuntimeInputs.Error`. The package guide
+  [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) provides the complete
+  authoring workflow, supported values, limits, redaction rules, and retry
+  boundary.
+
   During runtime execution, Favn scopes DuckDB/DuckLake session bootstrap from
   the rendered target relation and rendered Favn asset references. This lets the
   runner attach only the catalogs declared by the SQL asset target and its
@@ -208,6 +266,8 @@ defmodule Favn.SQLAsset do
   - forgetting `@materialized`
   - using interpolation inside `~SQL`
   - using invalid `@depends`, `@window`, `@freshness`, or `@relation` values
+  - using an inline function, capture, MFA tuple, or block instead of
+    `@runtime_inputs ResolverModule`
   - expecting `asset/1` to be user-defined in a `Favn.SQLAsset` module
   - returning multiple rows or a non-Boolean `passed` value from a check
   - adding checks to `:view` materialization
@@ -215,6 +275,9 @@ defmodule Favn.SQLAsset do
   ## See also
 
   - `Favn.SQL`
+  - `Favn.SQLAsset.RuntimeInputs`
+  - `Favn.SQLAsset.RuntimeInputs.Result`
+  - `Favn.SQLAsset.RuntimeInputs.Error`
   - `Favn.SQL.CheckResult`
   - `Favn.Window`
   - `Favn.Freshness.Policy`
@@ -227,6 +290,7 @@ defmodule Favn.SQLAsset do
   alias Favn.Namespace
   alias Favn.Ref
   alias Favn.RelationRef
+  alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL
   alias Favn.SQL.Check
   alias Favn.SQL.Definition, as: SQLDefinition
@@ -246,7 +310,13 @@ defmodule Favn.SQLAsset do
       Module.register_attribute(__MODULE__, :relation, accumulate: true)
       Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :materialized, accumulate: true)
+      Module.register_attribute(__MODULE__, :runtime_inputs, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_asset_raw, persist: false)
+
+      Module.register_attribute(__MODULE__, :favn_sql_asset_runtime_inputs_at_query,
+        persist: false
+      )
+
       Module.register_attribute(__MODULE__, :favn_sql_checks, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_imports, accumulate: true)
 
@@ -431,6 +501,12 @@ defmodule Favn.SQLAsset do
     })
 
     quote do
+      Module.put_attribute(
+        __MODULE__,
+        :favn_sql_asset_runtime_inputs_at_query,
+        Module.get_attribute(__MODULE__, :runtime_inputs)
+      )
+
       :ok
     end
   end
@@ -458,6 +534,12 @@ defmodule Favn.SQLAsset do
     })
 
     quote do
+      Module.put_attribute(
+        __MODULE__,
+        :favn_sql_asset_runtime_inputs_at_query,
+        Module.get_attribute(__MODULE__, :runtime_inputs)
+      )
+
       :ok
     end
   end
@@ -481,6 +563,26 @@ defmodule Favn.SQLAsset do
         "Favn.SQLAsset modules must define exactly one query body"
       )
     end
+
+    all_runtime_inputs = DSLCompiler.fetch_accum_attribute(env.module, :runtime_inputs)
+
+    captured_runtime_inputs =
+      Module.get_attribute(env.module, :favn_sql_asset_runtime_inputs_at_query) || []
+
+    case all_runtime_inputs do
+      ^captured_runtime_inputs ->
+        :ok
+
+      _late_runtime_inputs ->
+        DSLCompiler.compile_error!(
+          env.file,
+          env.line,
+          "@runtime_inputs must be declared before query"
+        )
+    end
+
+    base_definition =
+      Map.put(base_definition, :runtime_inputs, Enum.reverse(captured_runtime_inputs))
 
     raw_definition =
       base_definition
@@ -571,6 +673,9 @@ defmodule Favn.SQLAsset do
     materialization =
       normalize_materialized!(raw_definition.materialized, window_spec, raw_definition)
 
+    runtime_inputs =
+      normalize_runtime_inputs!(Map.get(raw_definition, :runtime_inputs, []), raw_definition)
+
     validate_checked_materialization!(materialization, raw_definition.checks, raw_definition)
 
     relation =
@@ -630,6 +735,7 @@ defmodule Favn.SQLAsset do
       sql: raw_definition.sql,
       template: template,
       relation_inputs: relation_inputs,
+      runtime_inputs: runtime_inputs,
       sql_definitions: Map.values(known_definitions),
       checks: checks,
       materialization: materialization,
@@ -869,6 +975,72 @@ defmodule Favn.SQLAsset do
   defp validate_incremental_materialized!(materialization, _window_spec, _raw_definition),
     do: materialization
 
+  defp normalize_runtime_inputs!([], _raw_definition), do: nil
+
+  defp normalize_runtime_inputs!([module], raw_definition) when is_atom(module) do
+    expected = "@runtime_inputs MyApp.Inputs"
+
+    unless DSLCompiler.module_atom?(module) do
+      DSLCompiler.compile_error!(
+        raw_definition.file,
+        raw_definition.line,
+        "invalid @runtime_inputs value #{inspect(module)}; expected #{expected}"
+      )
+    end
+
+    case Code.ensure_compiled(module) do
+      {:module, ^module} ->
+        :ok
+
+      {:error, _reason} ->
+        DSLCompiler.compile_error!(
+          raw_definition.file,
+          raw_definition.line,
+          "runtime input resolver #{inspect(module)} could not be resolved; expected #{expected}"
+        )
+    end
+
+    behaviours =
+      module
+      |> apply(:__info__, [:attributes])
+      |> Keyword.get_values(:behaviour)
+      |> List.flatten()
+
+    unless Favn.SQLAsset.RuntimeInputs in behaviours do
+      DSLCompiler.compile_error!(
+        raw_definition.file,
+        raw_definition.line,
+        "runtime input resolver #{inspect(module)} must explicitly declare @behaviour Favn.SQLAsset.RuntimeInputs"
+      )
+    end
+
+    unless function_exported?(module, :resolve, 1) do
+      DSLCompiler.compile_error!(
+        raw_definition.file,
+        raw_definition.line,
+        "runtime input resolver #{inspect(module)} must export public resolve/1"
+      )
+    end
+
+    RuntimeInputResolverRef.new!(module)
+  end
+
+  defp normalize_runtime_inputs!([value], raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "invalid @runtime_inputs value #{inspect(value)}; expected @runtime_inputs MyApp.Inputs"
+    )
+  end
+
+  defp normalize_runtime_inputs!([_first, _second | _rest], raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "multiple @runtime_inputs attributes are not allowed; use at most one @runtime_inputs MyApp.Inputs before query"
+    )
+  end
+
   defp normalize_relation!(raw_definition, inferred_name) do
     defaults = Namespace.resolve_relation(raw_definition.module)
 
@@ -935,9 +1107,16 @@ defmodule Favn.SQLAsset do
     window = DSLCompiler.fetch_accum_attribute(env.module, :window)
     relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
     materialized = DSLCompiler.fetch_accum_attribute(env.module, :materialized)
+    runtime_inputs = DSLCompiler.fetch_accum_attribute(env.module, :runtime_inputs)
+
+    runtime_inputs_stray? =
+      case Module.get_attribute(env.module, :favn_sql_asset_runtime_inputs_at_query) do
+        nil -> runtime_inputs != []
+        captured -> runtime_inputs != captured
+      end
 
     if depends != [] or freshness != [] or not is_nil(meta) or window != [] or relation != [] or
-         materialized != [] do
+         materialized != [] or runtime_inputs_stray? do
       Module.delete_attribute(env.module, :depends)
       Module.delete_attribute(env.module, :freshness)
       Module.delete_attribute(env.module, :meta)
@@ -948,7 +1127,7 @@ defmodule Favn.SQLAsset do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "@depends/@freshness/@meta/@window/@relation/@materialized on #{kind} #{name}/#{arity} requires query immediately below those attributes"
+        "@depends/@freshness/@meta/@window/@relation/@materialized/@runtime_inputs on #{kind} #{name}/#{arity} requires query immediately below those attributes"
       )
     else
       :ok

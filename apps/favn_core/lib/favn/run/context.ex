@@ -4,10 +4,12 @@ defmodule Favn.Run.Context do
   """
 
   alias Favn.Ref
+  alias Favn.Plan.NodeIdentity
   alias Favn.Window.Runtime
 
   @type t :: %__MODULE__{
           run_id: String.t(),
+          node_identity: NodeIdentity.t() | nil,
           target_refs: [Ref.t()],
           current_ref: Ref.t(),
           asset: %{ref: Ref.t(), relation: Favn.RelationRef.t() | nil, config: map()},
@@ -23,6 +25,7 @@ defmodule Favn.Run.Context do
 
   defstruct [
     :run_id,
+    :node_identity,
     :target_refs,
     :current_ref,
     :asset,

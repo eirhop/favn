@@ -116,8 +116,8 @@ defmodule FavnStorageSqlite.SingleNodeBootstrapAcceptanceTest do
     }
 
     manifest = %Manifest{
-      schema_version: 3,
-      runner_contract_version: 3,
+      schema_version: 4,
+      runner_contract_version: 4,
       assets: [asset],
       pipelines: [],
       schedules: [],

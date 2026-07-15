@@ -261,6 +261,49 @@ Read [Transactional SQL Asset Checks](sql-asset-checks.md) for the complete
 option table, transaction order, result contract, persisted outcomes, limits,
 and reusable `defsql` examples.
 
+### Resolve Runtime-Only SQL Bind Parameters
+
+Use one behaviour-based resolver when the final run window determines an
+external snapshot, manifest, watermark, or other execution-specific SQL bind
+value:
+
+```elixir
+defmodule MyApp.Source.Orders.Inputs do
+  @behaviour Favn.SQLAsset.RuntimeInputs
+
+  alias Favn.SQLAsset.RuntimeInputs.Result
+
+  @impl true
+  def resolve(ctx) do
+    snapshot = MyApp.SourceManifests.completed_for!(ctx.window)
+
+    {:ok,
+     %Result{
+       params: %{snapshot_id: snapshot.id},
+       identity: snapshot.id,
+       metadata: %{file_count: length(snapshot.files)}
+     }}
+  end
+end
+```
+
+Attach it exactly once before `query`:
+
+```elixir
+@runtime_inputs MyApp.Source.Orders.Inputs
+```
+
+This module attribute is the only supported DSL form. Do not use an anonymous
+function, capture, MFA tuple, or inline resolver block. Returned values remain
+ordinary bound parameters; they cannot add SQL source or identifiers. Keep
+credentials in runtime configuration, mark sensitive bind names with
+`sensitive_params`, and remember that retries resolve the values again rather
+than reading a persisted pin.
+
+Read [Runtime Inputs For SQL Assets](sql-runtime-inputs.md) for the complete
+callback, result/error shapes, limits, timing, redaction, retry boundary, and AI
+documentation breadcrumb.
+
 ## Reusable SQL
 
 Use `Favn.SQL` for SQL fragments reused by several SQL assets.

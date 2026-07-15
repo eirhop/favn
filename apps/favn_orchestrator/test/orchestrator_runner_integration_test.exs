@@ -230,8 +230,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
-      schema_version: 3,
-      runner_contract_version: 3,
+      schema_version: 4,
+      runner_contract_version: 4,
       assets: assets,
       pipelines: [
         %Pipeline{
@@ -276,8 +276,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
-      schema_version: 3,
-      runner_contract_version: 3,
+      schema_version: 4,
+      runner_contract_version: 4,
       assets: assets,
       pipelines: [
         %Pipeline{
@@ -312,8 +312,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     ]
 
     manifest = %Manifest{
-      schema_version: 3,
-      runner_contract_version: 3,
+      schema_version: 4,
+      runner_contract_version: 4,
       assets: assets,
       pipelines: [],
       schedules: [],
@@ -340,8 +340,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     }
 
     manifest = %Manifest{
-      schema_version: 3,
-      runner_contract_version: 3,
+      schema_version: 4,
+      runner_contract_version: 4,
       assets: [asset],
       pipelines: [],
       schedules: [],

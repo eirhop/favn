@@ -56,6 +56,16 @@ checks, and stage cleanup all run inside one admitted adapter transaction.
 Warnings and no-op writes remain successful; failures return bounded check
 metadata so the worker persists failed-attempt diagnostics.
 
+`FavnRunner.RuntimeInputResolver` owns behaviour-based SQL runtime input
+execution. The worker first builds the normal final `Favn.Run.Context`; the SQL
+runtime finalizes any incremental window, resolves inputs in an owned child
+process, validates budgets/types/collisions, and merges parameters before the
+first render or SQL session. Resolver timeout is 30 seconds and additionally
+bounded by the node deadline. Cancellation kills resolver code, failures never
+open or mutate a connection, and only module, identity, JSON-safe metadata, and
+duration enter attempt metadata. Parameter payloads remain runner-local and
+sensitive names drive result/error redaction.
+
 DuckDB/ADBC session pooling is default-on for poolable adapters unless disabled
 with `pool: [enabled: false]`. It is runner-local and per BEAM. A pooled SQL
 session may be checked out by only one asset execution at a time, and the runner

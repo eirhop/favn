@@ -152,8 +152,8 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
     File.write!(
       path,
       JSON.encode_to_iodata!(%{
-        schema_version: 3,
-        runner_contract_version: 3,
+        schema_version: 4,
+        runner_contract_version: 4,
         assets: [],
         pipelines: [],
         schedules: [],

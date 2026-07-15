@@ -35,6 +35,15 @@ defmodule Favn.SQLAsset.Error do
           | :check_failed
           | :materialization_planning_failed
           | :backend_execution_failed
+          | :runtime_inputs_missing_module
+          | :runtime_inputs_missing_callback
+          | :runtime_inputs_raised
+          | :runtime_inputs_invalid_result
+          | :runtime_inputs_timeout
+          | :runtime_inputs_cancelled
+          | :runtime_inputs_failed
+          | :runtime_inputs_param_collision
+          | :runtime_inputs_payload_too_large
           | :unsupported_materialization
 
   @type phase ::
@@ -44,6 +53,7 @@ defmodule Favn.SQLAsset.Error do
           | :before_materialize
           | :materialize
           | :after_materialize
+          | :runtime_inputs
           | :runtime
 
   @type t :: %__MODULE__{

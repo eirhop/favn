@@ -14,6 +14,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.SQLExecution
   alias Favn.RelationRef
+  alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.RuntimeConfig.Ref, as: RuntimeConfigRef
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.Check
@@ -287,6 +288,7 @@ defmodule Favn.Manifest.Rehydrate do
     execution = %SQLExecution{
       sql: field_value(value, :sql),
       template: value |> field_value(:template) |> build_template(),
+      runtime_inputs: value |> field_value(:runtime_inputs) |> build_runtime_input_ref(),
       sql_definitions: value |> field_value(:sql_definitions, []) |> build_sql_definitions(),
       checks: value |> field_value(:checks, []) |> build_sql_checks() |> Check.validate_list!()
     }
@@ -297,6 +299,34 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_sql_execution(other), do: other
+
+  defp build_runtime_input_ref(nil), do: nil
+
+  defp build_runtime_input_ref(%RuntimeInputResolverRef{} = ref) do
+    case RuntimeInputResolverRef.validate(ref) do
+      :ok -> ref
+      {:error, :invalid_module} -> raise ArgumentError, "invalid runtime input resolver reference"
+    end
+  end
+
+  defp build_runtime_input_ref(value) when is_map(value) do
+    allowed_keys = MapSet.new([:module, "module"])
+
+    if map_size(value) != 1 or Enum.any?(Map.keys(value), &(!MapSet.member?(allowed_keys, &1))) do
+      raise ArgumentError,
+            "invalid runtime input resolver reference; expected %{module: MyApp.Inputs}"
+    end
+
+    value
+    |> field_value(:module)
+    |> decode_module()
+    |> RuntimeInputResolverRef.new!()
+  end
+
+  defp build_runtime_input_ref(_other) do
+    raise ArgumentError,
+          "invalid runtime input resolver reference; expected %{module: MyApp.Inputs}"
+  end
 
   defp validate_query_runtime_relations!(%SQLExecution{
          template: %Template{} = template,

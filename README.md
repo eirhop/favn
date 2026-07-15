@@ -336,6 +336,43 @@ releases it as part of failure cleanup. Runner-side SQL asset materialization
 planning emits the shared `%Favn.SQL.WritePlan{}` adapter contract consumed by
 SQL runtime adapters.
 
+SQL assets can resolve bounded runtime-only bind values after the final run
+window is known and immediately before SQL rendering:
+
+```elixir
+defmodule MyDataPlatform.Lakehouse.Raw.Orders.Inputs do
+  @behaviour Favn.SQLAsset.RuntimeInputs
+
+  alias Favn.SQLAsset.RuntimeInputs.Result
+
+  @impl true
+  def resolve(ctx) do
+    manifest = MyDataPlatform.SourceManifests.completed_for!(ctx.window)
+
+    {:ok,
+     %Result{
+       params: %{files_json: Jason.encode!(manifest.files)},
+       identity: manifest.id,
+       metadata: %{file_count: length(manifest.files)}
+     }}
+  end
+end
+```
+
+Declare it once before the query with
+`@runtime_inputs MyDataPlatform.Lakehouse.Raw.Orders.Inputs`. Returned values use
+the normal `@name` SQL placeholder and adapter binding path, including through
+nested `defsql`; they cannot add SQL source. The resolver module reference is
+stored in the manifest, while values remain runner-local. Resolution is bounded
+to 30 seconds and by the remaining node deadline, rejects collisions and
+reserved window names, and exposes only the safe input identity and metadata in
+run results. Mark secret-bearing names with `sensitive_params`. Retry attempts
+resolve again until a future protected input-pinning contract is implemented.
+The module attribute is the only supported declaration; anonymous functions,
+captures, MFA tuples, and inline resolver blocks are not accepted. Read
+[Runtime Inputs For SQL Assets](apps/favn/guides/sql-runtime-inputs.md) for the
+full callback, result/error, limits, redaction, and retry contract.
+
 Table and incremental SQL assets can validate the exact candidate and published
 target inside the materialization transaction:
 
