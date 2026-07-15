@@ -150,6 +150,26 @@ defmodule Favn.AI do
     `mix favn.read_doc`.
   - To inspect the public helper functions collected in one place, read `Favn`.
 
+  ## Transactional SQL Check Breadcrumbs
+
+  When a task mentions SQL quality checks, candidate validation, target
+  validation, `query()`, `target()`, `on_false`, `quality_status`,
+  `write_outcome`, or a successful materialization no-op, read these docs in
+  order:
+
+  1. `Favn.SQLAsset` for the public authoring and transaction contract.
+  2. `Favn.SQLAsset.check/3` for the exact check options and result shape.
+  3. `Favn.SQL` when the check calls reusable or file-backed `defsql`.
+  4. `Favn.SQL.CheckResult` when interpreting durable run metadata.
+  5. `Favn.SQL.Check` only when inspecting the compiled manifest contract; user
+     code declares checks through `Favn.SQLAsset.check/3` and does not construct
+     this struct directly.
+
+  The package guide `guides/sql-asset-checks.md` is the complete human-facing
+  how-to and reference. It covers transaction order, first-target bootstrap,
+  fail/warn/no-op policy, metric limits, invalid result shapes, and persisted
+  outcomes.
+
   ## About `Favn`
 
   - you need helper functions like `generate_manifest`, `resolve_pipeline`, or
@@ -239,6 +259,11 @@ defmodule Favn.AI do
     a task mentions `max_concurrency`, `execution_pool`, rate-limited APIs,
     runner-local versus orchestrator-owned limits, queue reasons, execution
     leases, or why many independent assets should not start at once.
+  - Read `Favn.SQLAsset`, `Favn.SQLAsset.check/3`, and
+    `Favn.SQL.CheckResult` whenever a task mentions transactional SQL checks,
+    data quality warnings, keeping an existing target on an empty candidate,
+    `query()`, `target()`, `quality_status`, `write_outcome`, or check result
+    metrics. Read `Favn.SQL.Check` only for manifest/compiler work.
   - Read `FavnOrchestrator.MaterializationClaim` and
     `FavnOrchestrator.Repair.RuntimeState` when a task mentions duplicate asset
     materializations, stuck runs after a crash, orphaned `running`/`queued` steps,
@@ -268,6 +293,8 @@ defmodule Favn.AI do
   - `README.md`: top-level product overview and quickstart
   - `docs/FEATURES.md`: implemented feature set only
   - `docs/ROADMAP.md`: planned work only
+  - `apps/favn/guides/sql-asset-checks.md`: complete transactional SQL check
+    authoring and result reference
   - `examples/basic-workflow-tutorial`: standalone consumer-style tutorial with
     the canonical source-system raw landing example in
     `FavnReferenceWorkload.Warehouse.Raw.Orders`

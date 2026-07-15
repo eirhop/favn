@@ -204,6 +204,47 @@ Materialization values:
 
 Unsupported incremental options include `:merge`, `:replace`, and `unique_key`.
 
+### Validate A SQL Materialization
+
+Table and incremental SQL assets can run ordered checks inside the same
+transaction as their materialization:
+
+```elixir
+check :candidate_has_rows,
+  at: :before_materialize,
+  on_false: :fail,
+  message: "The candidate must contain rows" do
+  ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
+end
+
+check :known_statuses,
+  at: :after_materialize,
+  on_false: :warn,
+  message: "The published target contains unknown statuses" do
+  ~SQL"""
+  select
+    count(*) filter (where status not in ('open', 'closed')) = 0 as passed,
+    count(*) filter (where status not in ('open', 'closed')) as invalid_rows
+  from target()
+  """
+end
+```
+
+`query()` is the exact staged candidate Favn will write. `target()` is the
+existing target before the write and the transaction-visible modified target
+afterward. Every check must return exactly one row containing a non-null native
+Boolean `passed` column; other bounded scalar columns become durable metrics.
+
+Use `on_false: :fail` to roll back, `:warn` to commit with a quality warning, or
+`:skip_materialization` before the write to keep an existing target and commit a
+successful no-op. Skip checks and before checks that read `target()` require
+`when: :target_exists`, so first-target bootstrap can proceed normally. Views
+cannot use checks.
+
+Read [Transactional SQL Asset Checks](sql-asset-checks.md) for the complete
+option table, transaction order, result contract, persisted outcomes, limits,
+and reusable `defsql` examples.
+
 ## Reusable SQL
 
 Use `Favn.SQL` for SQL fragments reused by several SQL assets.

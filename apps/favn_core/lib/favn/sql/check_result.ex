@@ -4,6 +4,26 @@ defmodule Favn.SQL.CheckResult do
 
   Metric keys remain strings because SQL result column names are runtime data
   and must not create atoms.
+
+  Asset authors do not construct this struct. They declare checks with
+  `Favn.SQLAsset.check/3`; the runner creates results and exposes them in durable
+  run detail metadata under `check_results`, alongside `quality_status` and
+  `write_outcome`.
+
+  Outcomes mean:
+
+  - `:passed` - the check returned `passed: true`
+  - `:warned` - it returned false with `on_false: :warn`
+  - `:failed` - it returned false with `on_false: :fail`
+  - `:materialization_skipped` - it selected the successful no-op policy
+  - `:condition_skipped` - `when: :target_exists` was false during bootstrap
+  - `:not_run` - earlier work halted or skipped the materialization
+  - `:errored` - SQL execution or result validation failed
+
+  `metrics` contains the check query's additional bounded scalar columns;
+  `duration_ms` is the check execution duration; and `reason` provides a stable
+  machine-oriented explanation such as `:condition_false` or
+  `:target_missing`. The optional static `message` supplies human context.
   """
 
   @outcomes [

@@ -327,6 +327,10 @@ scalar metrics. Failures roll back, warnings commit with durable quality
 metadata, and `:skip_materialization` is a successful no-op that preserves an
 existing target. Checked views are intentionally unsupported.
 
+Read [Transactional SQL Asset Checks](apps/favn/guides/sql-asset-checks.md) for
+the complete DSL reference, transaction order, bootstrap behavior, metric
+limits, persisted outcomes, and reusable SQL examples.
+
 For longer queries, place the SQL file next to the SQL asset module, for example
 `lakehouse/mart/sales/order_summary.ex` plus `lakehouse/mart/sales/order_summary.sql`, and
 use `query file: "order_summary.sql"`.

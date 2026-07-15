@@ -106,9 +106,16 @@ defmodule Favn.SQLAsset do
 
   ## Transactional Checks
 
-  Table and incremental assets can declare up to 50 ordered SQL-native checks. Checks use
-  the same compiler, reusable `defsql` definitions, parameters, window values,
-  and relation resolution as `query`.
+  Table and incremental assets can declare up to 50 uniquely named SQL-native
+  checks. Checks use the same compiler, reusable `defsql` definitions,
+  parameters, window values, and relation resolution as `query`.
+
+  Use checks for read-only aggregate invariants over the exact candidate or
+  owned target when the result must participate in the materialization commit.
+  Keep transformation logic in the main `query`, imperative or external-system
+  validation in an upstream `Favn.Asset`, and dependency/freshness policy in
+  their dedicated DSL declarations. Checks are publication gates and quality
+  annotations, not a general test runner.
 
       check :has_rows,
         at: :before_materialize,
@@ -125,17 +132,42 @@ defmodule Favn.SQLAsset do
       end
 
   Every executed check returns exactly one row with one non-null native Boolean
-  `passed` column. Up to 32 additional bounded scalar columns become metrics.
-  A false result can fail atomically, commit with a durable warning, or produce
-  a successful no-op that keeps an existing target. SQL errors and invalid
-  result shapes always fail. Checked views are rejected because their published
-  rows are not a transactionally fixed snapshot.
+  `passed` column. Up to 32 additional bounded scalar columns become durable
+  metrics. A false result follows its required `on_false` policy:
+
+  - `:fail` rolls back and fails the asset attempt
+  - `:warn` commits with `quality_status: :warning`
+  - `:skip_materialization` commits a successful `write_outcome: :no_op`
+
+  `:skip_materialization` is valid only before materialization and requires
+  `when: :target_exists`. SQL errors and invalid result shapes always fail and
+  roll back; `on_false` does not turn execution or contract errors into
+  warnings. Checked views are rejected because their published rows are not a
+  transactionally fixed snapshot.
 
   `query()` is the staged candidate that is also materialized; `target()` is the
   existing target before the write and the modified target afterward. A before
   check using `target()` must declare `when: :target_exists`. The same condition
   is required for `:skip_materialization`, allowing missing-target bootstrap to
   proceed normally.
+
+  Prefer a before check when the candidate alone answers the question. Use an
+  after check only when the exact transaction-visible published target matters.
+  Use `:warn` only when the target remains safe for consumers, and use
+  `:skip_materialization` only when retaining the existing target is a valid
+  successful outcome rather than hidden staleness.
+
+  Favn opens one transaction, runs all before checks in declaration order,
+  materializes the exact staged candidate, runs all after checks in declaration
+  order, and then commits. A failed check, invalid result, or SQL error rolls
+  back. A warning and a successful no-op remain successful asset executions for
+  freshness and downstream gating.
+
+  Check results use `Favn.SQL.CheckResult` and are exposed in durable run detail
+  metadata with `quality_status` and `write_outcome`. Read
+  `Favn.SQLAsset.check/3` for the exact option and return contract. The package
+  guide `guides/sql-asset-checks.md` provides the complete authoring workflow,
+  examples, metric limits, and failure modes.
 
   ## Dependency Inference
 
@@ -183,6 +215,7 @@ defmodule Favn.SQLAsset do
   ## See also
 
   - `Favn.SQL`
+  - `Favn.SQL.CheckResult`
   - `Favn.Window`
   - `Favn.Freshness.Policy`
   - `Favn.Connection`
@@ -228,10 +261,55 @@ defmodule Favn.SQLAsset do
   @doc """
   Declares a transactional SQL check for the asset query or target.
 
-  Checks run in declaration order inside the same transaction as the checked
-  materialization. `on_false: :fail` rolls back, `:warn` records a durable
-  warning and continues, and `:skip_materialization` produces a successful
-  no-op before materialization.
+  Checks run inside the same transaction as the checked materialization. All
+  `:before_materialize` checks run in declaration order, followed by the write,
+  then all `:after_materialize` checks in declaration order.
+
+  ## Arguments and options
+
+  `name` must be a unique non-`nil` atom. One SQL asset supports at most 50
+  checks.
+
+  The keyword options are:
+
+  - `:at` - required; `:before_materialize` or `:after_materialize`
+  - `:on_false` - required; `:fail`, `:warn`, or `:skip_materialization`
+  - `:when` - optional; `:target_exists` condition-skips the check when the
+    target is missing
+  - `:message` - optional human-readable context, limited to 1,024 bytes
+
+  `:skip_materialization` is valid only before the write and requires
+  `when: :target_exists`. A before check using `target()` also requires that
+  condition.
+
+  ## SQL result contract
+
+  The body must produce exactly one row with one non-null native Boolean column
+  named `passed`. Up to 32 other bounded scalar columns become metric entries in
+  `Favn.SQL.CheckResult.metrics`. Supported metric values are null, Boolean,
+  number, Decimal, string, date, time, naive datetime, and datetime scalars.
+  Strings are limited to 4,096 bytes and the JSON-encoded metric map to 65,536
+  bytes. A false `passed` value applies `:on_false`:
+
+  - `:fail` rolls back and fails the asset
+  - `:warn` records a durable warning and continues
+  - `:skip_materialization` commits a successful no-op without changing the
+    existing target
+
+  SQL errors and invalid result shapes always fail and roll back, regardless of
+  `:on_false`.
+
+  Choose `:fail` for required publication invariants, `:warn` for non-blocking
+  quality degradation, and `:skip_materialization` only when keeping an existing
+  target is explicitly a successful business outcome. Checks are for read-only
+  aggregate validation; transformations belong in the main `query` and
+  external or imperative validation belongs in an upstream `Favn.Asset`.
+
+  `query()` resolves to the exact staged candidate used by the write.
+  `target()` resolves to the transaction-visible owned target. Both helpers may
+  flow through nested reusable `defsql` calls.
+
+  ## Example
 
       check :has_rows,
         at: :before_materialize,
@@ -239,6 +317,9 @@ defmodule Favn.SQLAsset do
         on_false: :skip_materialization do
         ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
       end
+
+  Read the package guide `guides/sql-asset-checks.md` for complete examples,
+  metric limits, bootstrap semantics, and persisted outcome meanings.
   """
   defmacro check(name, check_opts, do: body) do
     name = expand_literal!(name, __CALLER__, "check name")
