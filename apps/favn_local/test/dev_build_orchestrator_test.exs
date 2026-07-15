@@ -58,7 +58,10 @@ defmodule Favn.Dev.Build.OrchestratorTest do
               "target" => "orchestrator",
               "build_id" => ^build_id,
               "artifact" => %{"kind" => "assembly_metadata", "operational" => false},
-              "compatibility" => %{"supported_storage_modes" => ["memory", "sqlite", "postgres"]},
+              "compatibility" => %{
+                "runner_contract_version" => 3,
+                "supported_storage_modes" => ["memory", "sqlite", "postgres"]
+              },
               "required_env" => required_env
             }} =
              JSON.decode(metadata_json)

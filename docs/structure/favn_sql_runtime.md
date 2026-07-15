@@ -19,6 +19,12 @@ session lifecycle, transaction behavior, adapter bootstrap, read-only relation
 inspection, write-plan adapter contracts, or SQL admission and concurrency policy
 behavior.
 
+Adapters may implement `materialize_in_transaction/3` so the runner can execute
+a generated write plan inside an already-active checked-materialization
+transaction without nesting adapter transactions. Checked transactions are
+never retried, retain bounded body diagnostics on commit failure, and remain
+mutation paths that are discarded rather than returned to an idle pool.
+
 SQL session pooling is default-on for poolable DuckDB/ADBC adapters and can be
 disabled with `pool: [enabled: false]`. Optional tuning is connection-level:
 `pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pooling

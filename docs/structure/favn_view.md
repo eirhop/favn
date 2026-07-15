@@ -56,3 +56,7 @@ Ownership rules:
   orchestrator read models.
 - Tidewave is plugged only in dev. PhoenixStorybook is mounted under
   `/storybook` when dev routes are enabled.
+- SQL quality warnings, no-op writes, and rolled-back check diagnostics render
+  from orchestrator-owned attempt `output_metadata` through the shared
+  `FavnView.Components.OutputMetadata` component. The view does not query runner
+  or SQL adapter state to reconstruct check outcomes.

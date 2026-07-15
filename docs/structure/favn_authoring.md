@@ -18,3 +18,8 @@ Tests:
 Use when changing asset, SQL asset, freshness DSL capture, execution pool DSL
 capture, pipeline concurrency clauses, namespace, source, connection, or
 authoring documentation behavior.
+
+`Favn.SQLAsset` compiles up to 50 ordered `check` declarations through the same
+`Favn.SQL.Template` and visible `defsql` catalog as the asset query. It validates
+phase/action/condition combinations at compile time and carries only manifest
+runtime data forward; no authoring module is loaded to execute a check.

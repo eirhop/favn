@@ -55,7 +55,6 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 6. Harden The Production-Grade Runtime
 
-- Harden the manifest-pinned SQL execution path enough for the `v1` support promise, especially around runtime payload handling and backend failure behavior.
 - Extend the initial SQL cancellation token contract into adapter-native cancellation callbacks where supported; adapters without native cancellation must continue reporting unknown or unsupported data-plane outcome.
 - Add broader production stress, failure-injection, and restore verification for DuckDB/plugin execution under the single-node contract.
 - Extend the initial runtime config contract beyond required env refs if production needs optional values, non-env providers, or provider-specific secret managers.

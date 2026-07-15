@@ -189,7 +189,20 @@ defmodule FavnOrchestrator.API.DTOTest do
       window: %{key: "window:day", label: "Jan 2"},
       input_versions: [%{upstream_ref: {SampleAsset, :raw_orders}, freshness_version: "raw:v1"}],
       runner_execution_id: "runner-1",
-      meta: %{rows_written: 0, relation: "gold.orders"},
+      meta: %{
+        rows_written: 0,
+        relation: "gold.orders",
+        check_results: [
+          %{
+            metrics: %{
+              ratio: Decimal.new("12.340"),
+              business_date: ~D[2026-01-02],
+              cutoff_time: ~T[03:04:05.678],
+              observed_at: ~N[2026-01-02 03:04:05.678]
+            }
+          }
+        ]
+      },
       attempt_count: 1,
       max_attempts: 1
     }
@@ -241,7 +254,22 @@ defmodule FavnOrchestrator.API.DTOTest do
     assert hd(detail.asset_results).error["type"] == "boom"
 
     assert [node] = detail.node_results
-    assert node.result["output_metadata"] == %{"relation" => "gold.orders", "rows_written" => 0}
+
+    assert node.result["output_metadata"] == %{
+             "relation" => "gold.orders",
+             "rows_written" => 0,
+             "check_results" => [
+               %{
+                 "metrics" => %{
+                   "ratio" => "12.340",
+                   "business_date" => "2026-01-02",
+                   "cutoff_time" => "03:04:05.678",
+                   "observed_at" => "2026-01-02T03:04:05.678"
+                 }
+               }
+             ]
+           }
+
     assert node.result["window"] == %{"key" => "window:day", "label" => "Jan 2"}
 
     assert node.result["input_versions"] == [

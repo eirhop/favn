@@ -16,7 +16,9 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.RelationRef
   alias Favn.RuntimeConfig.Ref, as: RuntimeConfigRef
   alias Favn.SQL.Definition, as: SQLDefinition
+  alias Favn.SQL.Check
   alias Favn.SQL.Template
+  alias Favn.SQLAsset.RelationUsage
 
   alias Favn.SQL.Template.{
     AssetRef,
@@ -26,6 +28,7 @@ defmodule Favn.Manifest.Rehydrate do
     Placeholder,
     Relation,
     Requirements,
+    RuntimeRelation,
     Text
   }
 
@@ -60,7 +63,7 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp build_manifest(value) do
     assets = value |> field_value(:assets, []) |> build_assets()
-    graph = value |> field_value(:graph, %Graph{}) |> build_graph() |> normalize_graph(assets)
+    graph = value |> field_value(:graph, %Graph{}) |> build_graph() |> validate_graph!(assets)
 
     %Manifest{
       schema_version: field_value(value, :schema_version),
@@ -281,14 +284,85 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_sql_execution(nil), do: nil
 
   defp build_sql_execution(value) when is_map(value) do
-    %SQLExecution{
+    execution = %SQLExecution{
       sql: field_value(value, :sql),
       template: value |> field_value(:template) |> build_template(),
-      sql_definitions: value |> field_value(:sql_definitions, []) |> build_sql_definitions()
+      sql_definitions: value |> field_value(:sql_definitions, []) |> build_sql_definitions(),
+      checks: value |> field_value(:checks, []) |> build_sql_checks() |> Check.validate_list!()
     }
+
+    validate_query_runtime_relations!(execution)
+    validate_check_runtime_relations!(execution)
+    execution
   end
 
   defp build_sql_execution(other), do: other
+
+  defp validate_query_runtime_relations!(%SQLExecution{
+         template: %Template{} = template,
+         sql_definitions: definitions
+       }) do
+    case RelationUsage.runtime_relations(template, definitions) |> MapSet.to_list() do
+      [] ->
+        :ok
+
+      relations ->
+        names = relations |> Enum.sort() |> Enum.map_join(", ", &"#{&1}()")
+        raise ArgumentError, "#{names} may only be used inside SQL check bodies"
+    end
+  end
+
+  defp validate_query_runtime_relations!(_execution), do: :ok
+
+  defp validate_check_runtime_relations!(%SQLExecution{
+         checks: checks,
+         sql_definitions: definitions
+       }) do
+    Enum.each(checks, fn %Check{} = check ->
+      relations = RelationUsage.runtime_relations(check.template, definitions)
+      uses_query? = MapSet.member?(relations, :query)
+      uses_target? = MapSet.member?(relations, :target)
+
+      if check.uses_query? != uses_query? or check.uses_target? != uses_target? do
+        raise ArgumentError,
+              "SQL check #{inspect(check.name)} runtime relation flags do not match its template"
+      end
+    end)
+  end
+
+  defp build_sql_checks(values) when is_list(values), do: Enum.map(values, &build_sql_check/1)
+
+  defp build_sql_checks(other),
+    do: raise(ArgumentError, "SQL execution checks must be a list, got: #{inspect(other)}")
+
+  defp build_sql_check(%Check{} = check), do: Check.validate!(check)
+
+  defp build_sql_check(value) when is_map(value) do
+    Check.new!(%{
+      name: value |> field_value(:name) |> decode_atom_optional(),
+      at:
+        value
+        |> field_value(:at)
+        |> decode_known_atom([:before_materialize, :after_materialize]),
+      on_false:
+        value
+        |> field_value(:on_false)
+        |> decode_known_atom([:fail, :warn, :skip_materialization]),
+      when:
+        value
+        |> field_value(:when)
+        |> decode_known_atom_optional([:target_exists]),
+      message: field_value(value, :message),
+      sql: field_value(value, :sql),
+      template: value |> field_value(:template) |> build_template(),
+      file: field_value(value, :file),
+      line: field_value(value, :line),
+      uses_query?: field_value(value, :uses_query?, false),
+      uses_target?: field_value(value, :uses_target?, false)
+    })
+  end
+
+  defp build_sql_check(other), do: raise(ArgumentError, "invalid SQL check #{inspect(other)}")
 
   defp build_sql_definitions(values) when is_list(values),
     do: Enum.map(values, &build_sql_definition/1)
@@ -408,6 +482,12 @@ defmodule Favn.Manifest.Rehydrate do
       template_fragment?(value) ->
         %Fragment{
           nodes: value |> field_value(:nodes, []) |> build_template_nodes(),
+          span: value |> field_value(:span) |> build_template_span()
+        }
+
+      template_runtime_relation?(value) ->
+        %RuntimeRelation{
+          kind: value |> field_value(:kind) |> decode_known_atom([:query, :target]),
           span: value |> field_value(:span) |> build_template_span()
         }
 
@@ -644,14 +724,11 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp build_graph(_other), do: %Graph{}
 
-  defp normalize_graph(%Graph{nodes: [], edges: [], topo_order: []}, assets) when assets != [] do
-    case Graph.build(assets) do
-      {:ok, graph} -> graph
-      {:error, reason} -> raise ArgumentError, "invalid manifest graph: #{inspect(reason)}"
-    end
+  defp validate_graph!(%Graph{nodes: [], edges: [], topo_order: []}, assets) when assets != [] do
+    raise ArgumentError, "manifest graph is required for non-empty assets"
   end
 
-  defp normalize_graph(%Graph{} = graph, _assets), do: graph
+  defp validate_graph!(%Graph{} = graph, _assets), do: graph
 
   defp build_edges(values) when is_list(values) do
     Enum.map(values, fn
@@ -741,6 +818,9 @@ defmodule Favn.Manifest.Rehydrate do
         map_has_key?(value, :resolution) and map_has_key?(value, :span)
 
   defp template_fragment?(value), do: map_has_key?(value, :nodes) and map_has_key?(value, :span)
+
+  defp template_runtime_relation?(value),
+    do: map_has_key?(value, :kind) and map_has_key?(value, :span)
 
   defp plain_map_or_nil(nil), do: nil
   defp plain_map_or_nil(value), do: plain_map(value)

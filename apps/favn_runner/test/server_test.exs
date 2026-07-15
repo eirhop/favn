@@ -385,8 +385,8 @@ defmodule FavnRunner.ServerTest do
     ref = {asset_module, :asset}
 
     %Manifest{
-      schema_version: 1,
-      runner_contract_version: 2,
+      schema_version: 3,
+      runner_contract_version: 3,
       assets: [
         %Asset{
           ref: ref,

@@ -858,7 +858,24 @@ defmodule FavnOrchestrator.RunReadModelTest do
           rows_written: 0,
           relation: "raw.mercatus.reporting_baseline_feeding",
           mode: :monthly_replace,
-          source: %{system: :mercatus}
+          source: %{system: :mercatus},
+          quality_status: :warning,
+          write_outcome: :written,
+          check_results: [
+            %{
+              name: :volume_is_reasonable,
+              phase: :before_materialize,
+              outcome: :warned,
+              metrics: %{
+                "incoming_rows" => 400,
+                "ratio" => Decimal.new("12.340"),
+                "business_date" => ~D[2026-06-01],
+                "cutoff_time" => ~T[12:34:56.789],
+                "observed_at" => ~N[2026-06-01 12:34:56.789]
+              },
+              duration_ms: 84
+            }
+          ]
         }
       )
 
@@ -872,7 +889,24 @@ defmodule FavnOrchestrator.RunReadModelTest do
              "rows_written" => 0,
              "relation" => "raw.mercatus.reporting_baseline_feeding",
              "mode" => "monthly_replace",
-             "source" => %{"system" => "mercatus"}
+             "source" => %{"system" => "mercatus"},
+             "quality_status" => "warning",
+             "write_outcome" => "written",
+             "check_results" => [
+               %{
+                 "name" => "volume_is_reasonable",
+                 "phase" => "before_materialize",
+                 "outcome" => "warned",
+                 "metrics" => %{
+                   "incoming_rows" => 400,
+                   "ratio" => "12.340",
+                   "business_date" => "2026-06-01",
+                   "cutoff_time" => "12:34:56.789",
+                   "observed_at" => "2026-06-01T12:34:56.789"
+                 },
+                 "duration_ms" => 84
+               }
+             ]
            }
   end
 

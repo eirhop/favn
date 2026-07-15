@@ -41,6 +41,21 @@ defmodule Favn.SQL.TemplateTest do
     assert [%Call{definition: %{name: :safe_macro, arity: 1}}] = Template.calls(template)
   end
 
+  test "accepts normal literals as defsql arguments" do
+    template =
+      Template.compile!("SELECT safe_macro(1, 'value', false) AS value",
+        known_definitions: %{{:safe_macro, 3} => definition(:safe_macro, 3)},
+        file: "test/fixtures/template_test.sql",
+        line: 1,
+        enforce_query_root: true
+      )
+
+    assert [%Call{definition: %{name: :safe_macro, arity: 3}, args: args}] =
+             Template.calls(template)
+
+    assert length(args) == 3
+  end
+
   test "does not create atoms for unknown SQL call candidates" do
     name = "unsafe_call_#{System.unique_integer([:positive])}"
 

@@ -4,16 +4,18 @@ defmodule Favn.Manifest.SQLExecution do
   """
 
   alias Favn.SQL.Definition, as: SQLDefinition
+  alias Favn.SQL.Check
   alias Favn.SQL.Template
   alias Favn.SQLAsset.Definition
 
   @enforce_keys [:sql, :template]
-  defstruct [:sql, :template, sql_definitions: []]
+  defstruct [:sql, :template, sql_definitions: [], checks: []]
 
   @type t :: %__MODULE__{
           sql: String.t(),
           template: Template.t(),
-          sql_definitions: [SQLDefinition.t()]
+          sql_definitions: [SQLDefinition.t()],
+          checks: [Check.t()]
         }
 
   @spec from_definition(Definition.t()) :: t()
@@ -21,7 +23,8 @@ defmodule Favn.Manifest.SQLExecution do
     %__MODULE__{
       sql: definition.sql,
       template: definition.template,
-      sql_definitions: definition.sql_definitions
+      sql_definitions: definition.sql_definitions,
+      checks: definition.checks
     }
   end
 end

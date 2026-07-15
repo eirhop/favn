@@ -119,10 +119,24 @@ defmodule Favn.SQL.MaterializationResult do
   SQL materialization output for one SQL asset.
   """
 
-  alias Favn.SQL.{Render, Result, WritePlan}
+  alias Favn.SQL.{CheckResult, Render, Result, WritePlan}
 
-  @enforce_keys [:render, :write_plan, :result]
-  defstruct [:render, :write_plan, :result]
+  @enforce_keys [:render, :result]
+  defstruct [
+    :render,
+    :write_plan,
+    :result,
+    :reason,
+    check_results: [],
+    write_outcome: :written
+  ]
 
-  @type t :: %__MODULE__{render: Render.t(), write_plan: WritePlan.t(), result: Result.t()}
+  @type t :: %__MODULE__{
+          render: Render.t(),
+          write_plan: WritePlan.t() | nil,
+          result: Result.t(),
+          check_results: [CheckResult.t()],
+          write_outcome: :written | :no_op,
+          reason: atom() | nil
+        }
 end

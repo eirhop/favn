@@ -40,20 +40,25 @@ defmodule Favn.Manifest.FreshnessTest do
   end
 
   test "manifest serialization and rehydration round-trips freshness policies" do
-    manifest = %Manifest{
-      schema_version: 2,
-      runner_contract_version: 2,
-      assets: [
-        asset(:missing, nil),
-        asset(:daily_oslo, %Policy{mode: :calendar_period, kind: :day, timezone: "Europe/Oslo"}),
-        asset(:max_age, %Policy{mode: :max_age, amount: 24, unit: :hour}),
-        asset(:window_success, %Policy{mode: :window_success}),
-        asset(:always, %Policy{mode: :always})
-      ],
-      pipelines: [],
-      schedules: [],
-      metadata: %{}
-    }
+    manifest =
+      FavnTestSupport.with_manifest_graph(%Manifest{
+        schema_version: 3,
+        runner_contract_version: 3,
+        assets: [
+          asset(:missing, nil),
+          asset(:daily_oslo, %Policy{
+            mode: :calendar_period,
+            kind: :day,
+            timezone: "Europe/Oslo"
+          }),
+          asset(:max_age, %Policy{mode: :max_age, amount: 24, unit: :hour}),
+          asset(:window_success, %Policy{mode: :window_success}),
+          asset(:always, %Policy{mode: :always})
+        ],
+        pipelines: [],
+        schedules: [],
+        metadata: %{}
+      })
 
     assert {:ok, encoded} = Serializer.encode_manifest(manifest)
     assert {:ok, decoded} = Serializer.decode_manifest(encoded)

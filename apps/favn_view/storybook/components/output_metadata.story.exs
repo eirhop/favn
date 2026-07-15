@@ -36,6 +36,49 @@ defmodule FavnView.Storybook.Components.OutputMetadata do
         attributes: %{id: "output-metadata-failed", status: :error, metadata: %{}}
       },
       %Variation{
+        id: :sql_quality_warning,
+        attributes: %{
+          id: "output-metadata-sql-quality-warning",
+          status: :ok,
+          metadata: %{
+            quality_status: :warning,
+            write_outcome: :written,
+            check_results: [
+              %{
+                name: :volume_is_reasonable,
+                phase: :before_materialize,
+                outcome: :warned,
+                message: "Incoming volume is below the expected range",
+                metrics: %{"incoming_rows" => 400, "existing_rows" => 1_000},
+                duration_ms: 84
+              }
+            ]
+          }
+        }
+      },
+      %Variation{
+        id: :sql_no_op,
+        attributes: %{
+          id: "output-metadata-sql-no-op",
+          status: :ok,
+          metadata: %{
+            quality_status: :passed,
+            write_outcome: :no_op,
+            reason: :has_rows_to_publish,
+            check_results: [
+              %{
+                name: :has_rows_to_publish,
+                phase: :before_materialize,
+                outcome: :materialization_skipped,
+                message: "No rows were available; the existing target was kept",
+                metrics: %{"incoming_rows" => 0},
+                duration_ms: 31
+              }
+            ]
+          }
+        }
+      },
+      %Variation{
         id: :nested_and_large,
         attributes: %{
           id: "output-metadata-nested-large",

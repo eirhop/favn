@@ -435,7 +435,12 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
 
   defp manifest_version(manifest_version_id, {module, name} = ref) do
     manifest = %Manifest{assets: [%Favn.Manifest.Asset{ref: ref, module: module, name: name}]}
-    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: manifest_version_id
+      )
+
     version
   end
 

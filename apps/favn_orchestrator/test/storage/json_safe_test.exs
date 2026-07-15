@@ -128,6 +128,20 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
     assert JsonSafe.data(datetime) == "2026-05-05T10:11:12Z"
   end
 
+  test "normalizes accepted SQL check metric scalar types" do
+    assert JsonSafe.data(%{
+             decimal: Decimal.new("12.340"),
+             date: ~D[2026-05-05],
+             time: ~T[10:11:12.123],
+             naive_datetime: ~N[2026-05-05 10:11:12.123]
+           }) == %{
+             "decimal" => "12.340",
+             "date" => "2026-05-05",
+             "time" => "10:11:12.123",
+             "naive_datetime" => "2026-05-05T10:11:12.123"
+           }
+  end
+
   test "normalizes nested maps and lists" do
     normalized =
       JsonSafe.data(%{

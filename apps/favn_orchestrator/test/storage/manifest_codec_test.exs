@@ -58,7 +58,11 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
       ]
     }
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: manifest_version_id
+      )
+
     version
   end
 
@@ -75,8 +79,8 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
       )
 
     manifest = %Manifest{
-      schema_version: 1,
-      runner_contract_version: 2,
+      schema_version: 3,
+      runner_contract_version: 3,
       assets: [
         %Asset{
           ref: ref,
@@ -126,7 +130,11 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
       metadata: %{}
     }
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: manifest_version_id
+      )
+
     version
   end
 end

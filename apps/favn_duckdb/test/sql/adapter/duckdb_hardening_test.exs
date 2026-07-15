@@ -240,6 +240,49 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
            end)
   end
 
+  test "commit failure can retain a bounded checked body result" do
+    TestSupport.put_mode(:commit_mode, :error)
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+    body_result = %{check_results: [%{name: :valid_keys, outcome: :passed}]}
+
+    assert {:error,
+            %Error{
+              details: %{
+                transaction_stage: :commit,
+                transaction_body_result: ^body_result
+              }
+            }} =
+             DuckDB.transaction(conn, fn _ -> {:ok, body_result} end,
+               preserve_body_result_on_commit_error?: true
+             )
+  end
+
+  test "materializes all checked write modes inside one existing transaction" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    for {mode, plan, expected_sql} <- transactional_write_plans() do
+      TestSupport.start_events()
+
+      assert {:ok, %Favn.SQL.Result{kind: :materialize}} =
+               DuckDB.transaction(
+                 conn,
+                 fn tx_conn -> DuckDB.materialize_in_transaction(tx_conn, plan, []) end,
+                 []
+               )
+
+      assert 1 == Enum.count(events(), &match?({:begin_transaction, _conn_ref}, &1)),
+             "mode=#{mode}"
+
+      assert 1 == Enum.count(events(), &match?({:commit, _conn_ref}, &1)), "mode=#{mode}"
+
+      assert Enum.any?(events(), fn
+               {:query, _conn_ref, sql} -> String.contains?(sql, expected_sql)
+               _event -> false
+             end),
+             "mode=#{mode}"
+    end
+  end
+
   test "rollback failure keeps original transaction failure context" do
     TestSupport.put_mode(:rollback_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
@@ -1148,6 +1191,52 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
   defp events do
     TestSupport.events()
+  end
+
+  defp transactional_write_plans do
+    target = %Relation{schema: "main", name: "checked_orders", type: :table}
+    window = %{start_at: ~U[2026-07-01 00:00:00Z], end_at: ~U[2026-07-02 00:00:00Z]}
+
+    [
+      {:table,
+       %WritePlan{
+         materialization: :table,
+         target: target,
+         select_sql: "SELECT 1 AS id",
+         replace_existing?: true,
+         transactional?: true
+       }, "CREATE OR REPLACE TABLE"},
+      {:bootstrap,
+       %WritePlan{
+         materialization: :incremental,
+         strategy: :append,
+         mode: :bootstrap,
+         target: target,
+         select_sql: "SELECT 1 AS id",
+         if_not_exists?: true,
+         transactional?: true
+       }, "CREATE TABLE IF NOT EXISTS"},
+      {:append,
+       %WritePlan{
+         materialization: :incremental,
+         strategy: :append,
+         mode: :incremental,
+         target: target,
+         select_sql: "SELECT 1 AS id",
+         transactional?: true
+       }, "INSERT INTO"},
+      {:delete_insert,
+       %WritePlan{
+         materialization: :incremental,
+         strategy: :delete_insert,
+         mode: :incremental,
+         target: target,
+         select_sql: "SELECT 1 AS id",
+         window: window,
+         options: %{window_column: "occurred_at"},
+         transactional?: true
+       }, "DELETE FROM"}
+    ]
   end
 
   defp opened_duckdb? do

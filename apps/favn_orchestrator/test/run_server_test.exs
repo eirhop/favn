@@ -2289,7 +2289,11 @@ defmodule FavnOrchestrator.RunServerTest do
         ]
       }
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: manifest_version_id
+      )
+
     version
   end
 
@@ -2300,7 +2304,9 @@ defmodule FavnOrchestrator.RunServerTest do
       end)
 
     {:ok, version} =
-      Version.new(%Manifest{assets: assets}, manifest_version_id: manifest_version_id)
+      Version.new(FavnTestSupport.with_manifest_graph(%Manifest{assets: assets}),
+        manifest_version_id: manifest_version_id
+      )
 
     version
   end

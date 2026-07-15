@@ -35,6 +35,7 @@ defmodule FavnOrchestrator.MixProject do
       {:bandit, "~> 1.12"},
       {:tidewave, "~> 0.5", only: :dev},
       {:argon2_elixir, "~> 4.0"},
+      {:decimal, "~> 3.0"},
       {:jason, "~> 1.4"}
     ]
   end

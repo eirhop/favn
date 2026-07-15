@@ -96,3 +96,9 @@ idempotency, bootstrap service-token/runner-registration endpoints, same-BEAM
 readiness facade behavior, backfill orchestration, execution leases,
 materialization claims, runtime-state repair, control-plane
 concurrency/admission, queue reasons, or storage contract semantics.
+
+SQL check results, `quality_status`, and `write_outcome` persist in the owning
+node attempt's JSON-safe output metadata. Successful warnings/no-ops keep normal
+success, freshness, and downstream gating; rolled-back attempts retain the same
+bounded diagnostics under an error attempt and are not presented as committed
+quality results.

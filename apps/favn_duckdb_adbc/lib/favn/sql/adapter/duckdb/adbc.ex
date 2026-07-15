@@ -954,9 +954,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   @impl true
   @spec transaction(Conn.t(), (Conn.t() -> {:ok, term()} | {:error, Error.t()}), opts()) ::
           {:ok, term()} | {:error, Error.t()}
-  def transaction(%Conn{} = conn, fun, _opts) when is_function(fun, 1) do
+  def transaction(%Conn{} = conn, fun, opts) when is_function(fun, 1) do
     case tx_begin(conn) do
-      :ok -> run_transaction(conn, fun)
+      :ok -> run_transaction(conn, fun, opts)
       {:error, %Error{} = error} -> {:error, error}
     end
   end
@@ -989,6 +989,13 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
       true ->
         run_plan_materialization(conn, plan, opts)
     end
+  end
+
+  @impl true
+  @spec materialize_in_transaction(Conn.t(), WritePlan.t(), opts()) ::
+          {:ok, Result.t()} | {:error, Error.t()}
+  def materialize_in_transaction(%Conn{} = conn, %WritePlan{} = plan, opts) do
+    run_materialization_statements(conn, plan, opts)
   end
 
   defp run_plan_materialization(%Conn{} = conn, %WritePlan{transactional?: true} = plan, opts) do
@@ -1231,12 +1238,15 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   defp no_active_transaction?({:error, reason}), do: no_active_transaction?(reason)
   defp no_active_transaction?(_reason), do: false
 
-  defp run_transaction(%Conn{} = conn, fun) do
+  defp run_transaction(%Conn{} = conn, fun, opts) do
     case fun.(conn) do
       {:ok, value} ->
         case tx_commit(conn) do
           :ok -> {:ok, value}
-          {:error, %Error{} = error} -> finalize_transaction_failure(conn, error)
+
+          {:error, %Error{} = error} ->
+            error = maybe_preserve_transaction_body_result(error, value, opts)
+            finalize_transaction_failure(conn, error)
         end
 
       {:error, %Error{} = error} ->
@@ -1279,6 +1289,14 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     case tx_rollback(conn) do
       :ok -> {:error, error}
       {:error, reason} -> {:error, ErrorMapper.rollback_failure(error, reason)}
+    end
+  end
+
+  defp maybe_preserve_transaction_body_result(%Error{} = error, value, opts) do
+    if Keyword.get(opts, :preserve_body_result_on_commit_error?, false) do
+      %Error{error | details: Map.put(error.details || %{}, :transaction_body_result, value)}
+    else
+      error
     end
   end
 

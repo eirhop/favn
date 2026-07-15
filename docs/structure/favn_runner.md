@@ -50,6 +50,12 @@ SQL asset materialization planning, runner production config validation,
 runner-owned inspection, or runner-side normalization into shared work/result,
 error, and cancellation contracts.
 
+Checked SQL assets are coordinated by `Favn.SQLAsset.Runtime`: target existence,
+optional candidate staging, ordered before checks, the write plan, ordered after
+checks, and stage cleanup all run inside one admitted adapter transaction.
+Warnings and no-op writes remain successful; failures return bounded check
+metadata so the worker persists failed-attempt diagnostics.
+
 DuckDB/ADBC session pooling is default-on for poolable adapters unless disabled
 with `pool: [enabled: false]`. It is runner-local and per BEAM. A pooled SQL
 session may be checked out by only one asset execution at a time, and the runner

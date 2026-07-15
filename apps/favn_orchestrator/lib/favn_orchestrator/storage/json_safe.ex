@@ -108,7 +108,11 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   def ref(_value), do: nil
 
   defp data(_value, _key, depth) when depth <= 0, do: "[TRUNCATED]"
+  defp data(%Decimal{} = value, _key, _depth), do: Decimal.to_string(value)
+  defp data(%Date{} = value, _key, _depth), do: Date.to_iso8601(value)
   defp data(%DateTime{} = value, _key, _depth), do: DateTime.to_iso8601(value)
+  defp data(%NaiveDateTime{} = value, _key, _depth), do: NaiveDateTime.to_iso8601(value)
+  defp data(%Time{} = value, _key, _depth), do: Time.to_iso8601(value)
   defp data(%RunnerAssetResult{} = value, _key, depth), do: runner_asset_result(value, depth)
   defp data(%AssetResult{} = value, _key, depth), do: asset_result(value, depth)
 

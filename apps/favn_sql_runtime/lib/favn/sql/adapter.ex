@@ -84,6 +84,9 @@ defmodule Favn.SQL.Adapter do
 
   @callback materialize(conn(), WritePlan.t(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
 
+  @callback materialize_in_transaction(conn(), WritePlan.t(), opts()) ::
+              {:ok, Result.t()} | {:error, Error.t()}
+
   @optional_callbacks [
     ping: 2,
     poolable?: 2,
@@ -106,6 +109,7 @@ defmodule Favn.SQL.Adapter do
     default_concurrency_policy: 1,
     concurrency_policies: 1,
     transaction: 3,
-    materialize: 3
+    materialize: 3,
+    materialize_in_transaction: 3
   ]
 end

@@ -474,7 +474,11 @@ defmodule FavnOrchestrator.ManifestStoreTest do
       ]
     }
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: "mv_refresh_marker")
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: "mv_refresh_marker"
+      )
+
     assert :ok = ManifestStore.register_manifest(version)
     assert :ok = ManifestStore.set_active_manifest("mv_refresh_marker")
 
@@ -876,7 +880,11 @@ defmodule FavnOrchestrator.ManifestStoreTest do
       ]
     }
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: "mv_freshness_detail")
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: "mv_freshness_detail"
+      )
+
     assert :ok = ManifestStore.register_manifest(version)
     assert :ok = ManifestStore.set_active_manifest("mv_freshness_detail")
 
@@ -1302,7 +1310,11 @@ defmodule FavnOrchestrator.ManifestStoreTest do
       pipelines: pipelines
     }
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: manifest_version_id
+      )
+
     version
   end
 
