@@ -102,3 +102,9 @@ node attempt's JSON-safe output metadata. Successful warnings/no-ops keep normal
 success, freshness, and downstream gating; rolled-back attempts retain the same
 bounded diagnostics under an error attempt and are not presented as committed
 quality results.
+
+Asset detail assurance is an orchestrator-owned read model. It joins the active
+manifest's typed SQL contract and check definitions with latest persisted run
+metadata, including candidate schema observations and structural differences.
+The public catalogue facade returns that complete read model; thin clients must
+not inspect manifests, runner state, or SQL adapters to reconstruct assurance.

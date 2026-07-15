@@ -895,6 +895,7 @@ defmodule FavnOrchestrator.RunReadModelTest do
              "check_results" => [
                %{
                  "name" => "volume_is_reasonable",
+                 "origin" => "authored",
                  "phase" => "before_materialize",
                  "outcome" => "warned",
                  "metrics" => %{

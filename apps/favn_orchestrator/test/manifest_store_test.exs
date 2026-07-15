@@ -2,10 +2,13 @@ defmodule FavnOrchestrator.ManifestStoreTest do
   use ExUnit.Case, async: false
 
   alias Favn.Manifest
+  alias Favn.Manifest.Asset, as: ManifestAsset
   alias Favn.Manifest.Pipeline
+  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
+  alias Favn.SQL.{Check, Contract, Template}
   alias Favn.Window.Policy
   alias Favn.Window.Runtime, as: RuntimeWindow
   alias Favn.Window.Spec, as: WindowSpec
@@ -40,6 +43,178 @@ defmodule FavnOrchestrator.ManifestStoreTest do
 
     assert :ok = ManifestStore.set_active_manifest("mv_b")
     assert {:ok, "mv_b"} = ManifestStore.get_active_manifest()
+  end
+
+  test "asset detail exposes contract, generated checks, custom checks, and latest evidence" do
+    ref = {MyApp.GenericContractAsset, :asset}
+    query_sql = "SELECT 1 AS record_id"
+    check_sql = "SELECT true AS passed FROM query()"
+
+    query_template =
+      Template.compile!(query_sql,
+        file: "test/generic_contract.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    check_template =
+      Template.compile!(check_sql,
+        file: "test/generic_contract_check.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    contract =
+      Contract.new!(%{
+        grain: [by: [:record_id], description: "one generic record"],
+        columns: [%{name: :record_id, type: :integer, null: false}],
+        unique_keys: [[:record_id]]
+      })
+
+    generated_checks =
+      Enum.map(Contract.generated_check_specs(contract), fn spec ->
+        generated_template =
+          Template.compile!(spec.sql,
+            file: "test/generic_generated_contract_check.sql",
+            line: 1,
+            module: __MODULE__,
+            scope: :query,
+            enforce_query_root: true
+          )
+
+        Check.new!(%{
+          name: spec.name,
+          at: spec.at,
+          on_violation: spec.on_violation,
+          when: spec.when,
+          message: spec.message,
+          sql: spec.sql,
+          template: generated_template,
+          uses_query?: true,
+          uses_target?: false,
+          origin: :contract,
+          claim_id: spec.claim_id
+        })
+      end)
+
+    custom =
+      Check.new!(%{
+        name: :value_is_acceptable,
+        at: :before_materialize,
+        on_violation: :warn,
+        sql: check_sql,
+        template: check_template,
+        uses_query?: true,
+        uses_target?: false
+      })
+
+    manifest = %Manifest{
+      assets: [
+        %ManifestAsset{
+          ref: ref,
+          module: elem(ref, 0),
+          name: :asset,
+          type: :sql,
+          materialization: :table,
+          sql_execution: %SQLExecution{
+            sql: query_sql,
+            template: query_template,
+            contract: contract,
+            checks: generated_checks ++ [custom]
+          }
+        }
+      ]
+    }
+
+    assert {:ok, version} =
+             manifest
+             |> FavnTestSupport.with_manifest_graph()
+             |> Version.new(manifest_version_id: "mv_generic_contract")
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest(version.manifest_version_id)
+
+    finished_at = ~U[2026-05-10 12:00:00Z]
+
+    run =
+      RunState.new(
+        id: "run_generic_contract",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref,
+        target_refs: [ref]
+      )
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          asset_results: [
+            %AssetResult{
+              ref: ref,
+              status: :ok,
+              started_at: DateTime.add(finished_at, -1, :second),
+              finished_at: finished_at,
+              duration_ms: 1,
+              meta: %{
+                "quality_status" => "warning",
+                "write_outcome" => "written",
+                "contract_validation" => %{
+                  "status" => "passed",
+                  "expected_columns" => [%{"name" => "record_id", "type" => "integer"}],
+                  "observed_columns" => [%{"name" => "record_id", "native_type" => "INTEGER"}],
+                  "differences" => []
+                },
+                "check_results" =>
+                  Enum.map(generated_checks, fn check ->
+                    %{
+                      "name" => Atom.to_string(check.name),
+                      "phase" => "before_materialize",
+                      "outcome" => "passed",
+                      "origin" => "contract",
+                      "claim_id" => check.claim_id,
+                      "metrics" => %{"evaluated" => 1}
+                    }
+                  end) ++
+                    [
+                      %{
+                        "name" => "value_is_acceptable",
+                        "phase" => "before_materialize",
+                        "outcome" => "warned",
+                        "origin" => "authored",
+                        "metrics" => %{}
+                      }
+                    ]
+              }
+            }
+          ]
+        }
+      )
+      |> Map.put(:updated_at, finished_at)
+      |> RunState.with_snapshot_hash()
+
+    assert :ok = Storage.put_run(run)
+    assert {:ok, _count} = FavnOrchestrator.rebuild_target_statuses(version.manifest_version_id)
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.GenericContractAsset:asset")
+
+    assert detail.assurance.contract.grain.by == [:record_id]
+    assert [%{name: :record_id, type: :integer}] = detail.assurance.contract.columns
+    assert detail.assurance.quality_status == :warning
+    assert detail.assurance.contract_validation.status == :passed
+
+    assert [required_detail, unique_detail, custom_detail] = detail.assurance.checks
+    assert required_detail.origin == :contract
+    assert required_detail.claim_id == "columns.not_null"
+    assert required_detail.latest_result.outcome == :passed
+    assert required_detail.latest_result.metrics == %{"evaluated" => 1}
+    assert unique_detail.claim_id == "keys.unique"
+    assert unique_detail.latest_result.outcome == :passed
+    assert custom_detail.origin == :authored
+    assert custom_detail.latest_result.outcome == :warned
   end
 
   test "exposes operator manifest summaries and active-manifest targets" do

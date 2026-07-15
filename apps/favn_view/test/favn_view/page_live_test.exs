@@ -829,6 +829,88 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "policy unavailable"
   end
 
+  test "asset detail renders contract and custom assurance in one view" do
+    html =
+      render_component(&AssetDetailPage.asset_detail_page/1, %{
+        title: "generic_records",
+        status: "Warning",
+        status_tone: :warning,
+        window_range: "No windows",
+        nav_items: AssetDetailPage.sample_nav_items(),
+        timeline: [],
+        active_mode: :details,
+        freshness: nil,
+        assurance: %{
+          quality_status: :warning,
+          write_outcome: :no_op,
+          latest_run_id: "run_generic_records",
+          contract: %{
+            grain: %{by: [:record_id], description: "one generic record"},
+            columns: [
+              %{
+                name: :record_id,
+                type: :integer,
+                nullable?: false,
+                description: "stable record identity",
+                tags: ["identifier"],
+                via: :transformation,
+                sources: [
+                  %{kind: :asset, asset_ref: {Generic.Source, :asset}, column: :source_id}
+                ]
+              }
+            ],
+            unique_keys: [[:record_id]],
+            row_count: %{min: 1, on_violation: :skip_materialization}
+          },
+          contract_validation: %{
+            status: :failed,
+            observed_columns: [%{name: "record_id", native_type: "VARCHAR", nullable?: true}],
+            differences: [
+              %{
+                kind: :type,
+                column: "record_id",
+                expected: :integer,
+                observed: "VARCHAR"
+              }
+            ]
+          },
+          checks: [
+            %{
+              name: :contract_required_columns,
+              origin: :contract,
+              claim_id: "columns.not_null",
+              phase: :before_materialize,
+              on_violation: :fail,
+              when: nil,
+              message: "Record identity is required",
+              latest_result: %{outcome: :passed, metrics: %{"null_count" => 0}}
+            },
+            %{
+              name: :value_is_acceptable,
+              origin: :authored,
+              claim_id: nil,
+              phase: :before_materialize,
+              on_violation: :warn,
+              when: nil,
+              message: "A custom quality signal",
+              latest_result: %{outcome: :warned, metrics: %{}}
+            }
+          ]
+        }
+      })
+
+    assert html =~ ~s(data-testid="asset-assurance-panel")
+    assert html =~ ~s(data-check-origin="contract")
+    assert html =~ ~s(data-check-origin="authored")
+    assert html =~ "Contract"
+    assert html =~ "Custom"
+    assert html =~ "columns.not_null"
+    assert html =~ "Schema differences"
+    assert html =~ "expected :integer"
+    assert html =~ "on violation"
+    assert html =~ "skip materialization"
+  end
+
   test "asset detail timeline renders backend-provided window labels" do
     yearly_window = %{
       id: "window:year:2026",

@@ -230,6 +230,36 @@ Materialization values:
 
 Unsupported incremental options include `:merge`, `:replace`, and `unique_key`.
 
+### Declare The Output Contract
+
+Table and incremental assets may declare one typed output contract:
+
+```elixir
+contract do
+  grain by: [:record_id], description: "one normalized record"
+
+  column :record_id, :integer,
+    null: false,
+    from: [{MyApp.Assets.SourceRecords, :source_id}],
+    via: :transformation
+
+  column :payload, :json, from: [{"external.records", "payload"}]
+  unique [:record_id]
+  row_count min: 1, on_violation: :fail
+end
+```
+
+Favn validates the staged candidate's ordered column names and types before
+target mutation. It generates ordinary transactional checks for non-null
+columns, structured grain, unique keys, and the row-count minimum. Use a grain
+description without `by:` when row identity cannot be represented by output
+columns; the description is visible to operators but cannot generate a check.
+
+The contract describes output and explicit lineage. It does not infer lineage
+or generate the query's select list. Read
+[SQL Output Contracts](sql-output-contracts.md) for logical types, all options,
+policy behavior, enforcement order, durable assurance, and semantic diffing.
+
 ### Validate A SQL Materialization
 
 Table and incremental SQL assets can run ordered checks inside the same
@@ -238,14 +268,14 @@ transaction as their materialization:
 ```elixir
 check :candidate_has_rows,
   at: :before_materialize,
-  on_false: :fail,
+  on_violation: :fail,
   message: "The candidate must contain rows" do
   ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
 end
 
 check :known_statuses,
   at: :after_materialize,
-  on_false: :warn,
+  on_violation: :warn,
   message: "The published target contains unknown statuses" do
   ~SQL"""
   select
@@ -261,11 +291,11 @@ existing target before the write and the transaction-visible modified target
 afterward. Every check must return exactly one row containing a non-null native
 Boolean `passed` column; other bounded scalar columns become durable metrics.
 
-Use `on_false: :fail` to roll back, `:warn` to commit with a quality warning, or
-`:skip_materialization` before the write to keep an existing target and commit a
-successful no-op. Skip checks and before checks that read `target()` require
-`when: :target_exists`, so first-target bootstrap can proceed normally. Views
-cannot use checks.
+Use `on_violation: :fail` to roll back, `:warn` to commit with a quality warning,
+or `:skip_materialization` before the write to keep an existing target and
+commit a successful warning/no-op. Skip checks and before checks that read
+`target()` require `when: :target_exists`, so first-target bootstrap can proceed
+normally. Views cannot use checks or contracts.
 
 Read [Transactional SQL Asset Checks](sql-asset-checks.md) for the complete
 option table, transaction order, result contract, persisted outcomes, limits,

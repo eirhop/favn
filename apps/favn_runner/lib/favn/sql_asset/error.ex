@@ -33,6 +33,7 @@ defmodule Favn.SQLAsset.Error do
           | :unresolved_runtime_relation
           | :invalid_check_result
           | :check_failed
+          | :contract_violation
           | :materialization_planning_failed
           | :backend_execution_failed
           | :runtime_inputs_missing_module

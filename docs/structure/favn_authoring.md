@@ -16,7 +16,8 @@ Tests:
   is an authoring macro layered on core schedule values.
 
 Use when changing asset, SQL asset, freshness DSL capture, execution pool DSL
-capture, SQL `@resources`, reusable runtime-config bundle authoring, pipeline concurrency clauses, namespace, source, connection, or
+capture, SQL `@resources`, reusable runtime-config bundle authoring, pipeline concurrency clauses,
+namespace, source, connection, or
 authoring documentation behavior.
 
 `Favn.SQLAsset` captures optional list-valued `@resources` before `query`.
@@ -24,10 +25,15 @@ authoring documentation behavior.
 defaults still override by key. Authoring emits only the normalized versioned
 session-requirements contract.
 
-`Favn.SQLAsset` compiles up to 50 ordered `check` declarations through the same
-`Favn.SQL.Template` and visible `defsql` catalog as the asset query. It validates
-phase/action/condition combinations at compile time and carries only manifest
-runtime data forward; no authoring module is loaded to execute a check.
+`Favn.SQLAsset` compiles one optional typed `contract` plus up to 50 ordered
+authored `check` declarations through the same `Favn.SQL.Template` and visible
+`defsql` catalog as the asset query. Contract columns, structured/descriptive
+grain, explicit lineage, unique keys, and row-count policy normalize into core
+types. Required columns and keys are grouped into bounded generated checks, and
+the compiler validates that the generated claim set exactly matches the
+contract before emitting manifest runtime data. It validates
+phase/policy/condition combinations at compile time; no authoring module is
+loaded to execute a check.
 
 `@runtime_inputs ResolverModule` is optional, must appear at most once before
 `query`, and accepts only a compiled module that explicitly implements

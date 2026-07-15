@@ -22,6 +22,11 @@ Use when changing public APIs, public docs breadcrumbs, public SQL client access
 or public Mix task argument/dispatch behavior, including `mix favn.runs cancel`,
 `mix favn.bootstrap.single`, and `mix favn.diagnostics`.
 
+Public SQL output-contract authoring is documented in
+`apps/favn/guides/sql-output-contracts.md` and routed from `Favn.AI`.
+`Favn.SQLAsset.contract/1` is the only public contract declaration; compiled
+contract structs belong to `favn_core` and are not authored directly.
+
 `Favn.SQLClient.with_connection/3` is the recommended public pattern for
 asset-scoped SQL session reuse from Elixir assets and helpers. It opens one
 session, passes it to the callback, and disconnects or returns it to the pool on

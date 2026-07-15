@@ -19,11 +19,11 @@ mix favn.run MyApp.Pipelines.LocalSmoke
 Define one Elixir asset:
 
 ```elixir
-defmodule MyApp.Assets.Orders do
+defmodule MyApp.Assets.SourceRecords do
   use Favn.Asset
 
-  @doc "Load raw orders."
-  @meta owner: "analytics", tags: [:daily]
+  @doc "Load source records."
+  @meta owner: "data_platform", tags: [:source]
   def asset(_ctx) do
     {:ok, %{rows_written: 0}}
   end
@@ -33,31 +33,42 @@ end
 Define one SQL asset:
 
 ```elixir
-defmodule MyApp.Assets.OrderSummary do
+defmodule MyApp.Assets.NormalizedRecords do
   use Favn.SQLAsset
 
-  @depends MyApp.Assets.Orders
+  @depends MyApp.Assets.SourceRecords
   @resources [:landing_storage]
   @materialized :table
 
+  contract do
+    grain by: [:record_id], description: "one normalized record"
+    column :record_id, :integer, null: false
+    column :payload, :json
+    row_count min: 1, on_violation: :fail
+  end
+
   check :candidate_has_rows,
     at: :before_materialize,
-    on_false: :fail do
+    on_violation: :fail do
     ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
   end
 
   query do
     ~SQL"""
-    select order_date, count(*) as order_count
-    from raw.orders
-    group by order_date
+    select source_id as record_id, payload
+    from source_records
     """
   end
 end
 ```
 
+Contracts support `grain`, ordered `column` declarations, `unique`, and
+`row_count`. Read `Favn.SQLAsset.contract/1` or
+`guides/sql-output-contracts.md`; contracts validate output but do not generate
+SQL.
+
 SQL checks support `at: :before_materialize | :after_materialize` and
-`on_false: :fail | :warn | :skip_materialization`. Read
+`on_violation: :fail | :warn | :skip_materialization`. Read
 `Favn.SQLAsset.check/3` or `guides/sql-asset-checks.md` before using
 `:skip_materialization` or `target()` because both have first-target bootstrap
 rules.

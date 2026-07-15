@@ -106,9 +106,54 @@ defmodule Favn.SQLAsset do
   - `:delete_insert` requires `:window_column`
   - `:merge`, `:replace`, and `unique_key` are not currently supported
 
+  ## Output Contracts
+
+  Table and incremental assets may declare one typed output contract. The
+  contract is compiled into the manifest and describes ordered columns,
+  structured or descriptive grain, unique keys, a minimum row count, and
+  explicit column lineage:
+
+      contract do
+        grain by: [:record_id], description: "one normalized record"
+
+        column :record_id, :integer,
+          null: false,
+          from: [{MyApp.Assets.SourceRecords, :source_id}],
+          via: :transformation
+
+        column :payload, :json, from: [{"external.records", "payload"}]
+        unique [:record_id]
+
+        row_count min: 1,
+          when: :target_exists,
+          on_violation: :skip_materialization
+      end
+
+  Candidate names, order, logical types, and reliable adapter nullability
+  metadata are hard requirements checked before target mutation. Non-null
+  columns, `grain by:`, unique keys, and minimum row counts compile into the
+  ordinary transactional check engine. Generated checks carry origin
+  `:contract` and stable claim identities; authored checks carry origin
+  `:authored`, and both appear in the same assurance result model.
+  Required-column and key enforcement is grouped, so a wide schema adds at most
+  three contract checks and does not consume the 50 authored-check budget.
+
+  Grain may use `by:`, `description:`, or both. A description is useful when
+  row identity cannot be expressed by output columns, but only structured `by:`
+  can generate a mechanical uniqueness check. Column `from:` is always a plain
+  list of `{Module, :column}`, `{{Module, :asset}, :column}`, or
+  `{"external.dataset", "field"}` tuples. `via:` may be `:identity`,
+  `:transformation`, or `:aggregation`. Favn does not infer lineage from SQL.
+
+  The contract describes the result; it does not generate `select` expressions,
+  aliases, casts, or SQL. Read `Favn.SQLAsset.contract/1` and the HexDocs guide
+  `guides/sql-output-contracts.md` for all logical types, options, automatic
+  checks, policy behavior, and semantic diffing.
+
   ## Transactional Checks
 
-  Table and incremental assets can declare up to 50 uniquely named SQL-native
+  Table and incremental assets can declare up to 50 uniquely named authored
+  SQL-native checks. An output contract adds at most three grouped generated
   checks. Checks use the same compiler, reusable `defsql` definitions,
   parameters, window values, and relation resolution as `query`.
 
@@ -122,28 +167,29 @@ defmodule Favn.SQLAsset do
       check :has_rows,
         at: :before_materialize,
         when: :target_exists,
-        on_false: :skip_materialization,
+        on_violation: :skip_materialization,
         message: "No rows were available; the existing target was kept" do
         ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
       end
 
       check :known_statuses,
         at: :after_materialize,
-        on_false: :warn do
+        on_violation: :warn do
         ~SQL"select count(*) filter (where status not in ('open', 'closed')) = 0 as passed from target()"
       end
 
   Every executed check returns exactly one row with one non-null native Boolean
   `passed` column. Up to 32 additional bounded scalar columns become durable
-  metrics. A false result follows its required `on_false` policy:
+  metrics. A false result follows its required `on_violation` policy:
 
   - `:fail` rolls back and fails the asset attempt
   - `:warn` commits with `quality_status: :warning`
-  - `:skip_materialization` commits a successful `write_outcome: :no_op`
+  - `:skip_materialization` commits a successful `quality_status: :warning`,
+    `write_outcome: :no_op`
 
   `:skip_materialization` is valid only before materialization and requires
   `when: :target_exists`. SQL errors and invalid result shapes always fail and
-  roll back; `on_false` does not turn execution or contract errors into
+  roll back; `on_violation` does not turn execution or contract errors into
   warnings. Checked views are rejected because their published rows are not a
   transactionally fixed snapshot.
 
@@ -317,6 +363,7 @@ defmodule Favn.SQLAsset do
   alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL
   alias Favn.SQL.Check
+  alias Favn.SQL.Contract
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.SessionRequirements
   alias Favn.SQL.Source
@@ -346,12 +393,13 @@ defmodule Favn.SQLAsset do
       Module.register_attribute(__MODULE__, :favn_sql_asset_resources_at_query, persist: false)
 
       Module.register_attribute(__MODULE__, :favn_sql_checks, accumulate: true)
+      Module.register_attribute(__MODULE__, :favn_sql_contracts, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_imports, accumulate: true)
 
       @on_definition Favn.SQLAsset
       @before_compile Favn.SQLAsset
 
-      import Favn.SQLAsset, only: [check: 3, query: 1]
+      import Favn.SQLAsset, only: [check: 3, contract: 1, query: 1]
       import Favn.SQL, only: [sigil_SQL: 2]
     end
   end
@@ -371,7 +419,7 @@ defmodule Favn.SQLAsset do
   The keyword options are:
 
   - `:at` - required; `:before_materialize` or `:after_materialize`
-  - `:on_false` - required; `:fail`, `:warn`, or `:skip_materialization`
+  - `:on_violation` - required; `:fail`, `:warn`, or `:skip_materialization`
   - `:when` - optional; `:target_exists` condition-skips the check when the
     target is missing
   - `:message` - optional human-readable context, limited to 1,024 bytes
@@ -387,19 +435,19 @@ defmodule Favn.SQLAsset do
   `Favn.SQL.CheckResult.metrics`. Supported metric values are null, Boolean,
   number, Decimal, string, date, time, naive datetime, and datetime scalars.
   Strings are limited to 4,096 bytes and the JSON-encoded metric map to 65,536
-  bytes. A false `passed` value applies `:on_false`:
+  bytes. A false `passed` value applies `:on_violation`:
 
   - `:fail` rolls back and fails the asset
   - `:warn` records a durable warning and continues
-  - `:skip_materialization` commits a successful no-op without changing the
-    existing target
+  - `:skip_materialization` commits a successful warning/no-op without changing
+    the existing target
 
   SQL errors and invalid result shapes always fail and roll back, regardless of
-  `:on_false`.
+  `:on_violation`.
 
   Choose `:fail` for required publication invariants, `:warn` for non-blocking
   quality degradation, and `:skip_materialization` only when keeping an existing
-  target is explicitly a successful business outcome. Checks are for read-only
+  target is explicitly a successful publication outcome. Checks are for read-only
   aggregate validation; transformations belong in the main `query` and
   external or imperative validation belongs in an upstream `Favn.Asset`.
 
@@ -412,7 +460,7 @@ defmodule Favn.SQLAsset do
       check :has_rows,
         at: :before_materialize,
         when: :target_exists,
-        on_false: :skip_materialization do
+        on_violation: :skip_materialization do
         ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
       end
 
@@ -445,6 +493,49 @@ defmodule Favn.SQLAsset do
 
     quote bind_quoted: [raw: Macro.escape(raw)] do
       @favn_sql_checks raw
+      :ok
+    end
+  end
+
+  @doc """
+  Declares the asset's typed output contract.
+
+  A SQL asset may declare at most one contract. Columns are ordered and use
+  backend-neutral logical types. Grain may be structured with `by:` and/or
+  descriptive when row identity cannot be expressed by output columns.
+  Column lineage is an explicit plain `from:` list; Favn does not infer it from
+  SQL text. `renamed_from:` records evolution intent for semantic diffing but
+  does not rename query output.
+
+      contract do
+        grain by: [:record_id], description: "one normalized record"
+
+        column :record_id, :integer,
+          null: false,
+          from: [{SourceAsset, :source_id}],
+          via: :transformation
+
+        column :payload, :string, null: true
+        unique [:record_id]
+
+        row_count min: 1,
+          when: :target_exists,
+          on_violation: :skip_materialization
+      end
+
+  `grain by:` and `unique` generate transactional uniqueness checks;
+  non-null columns generate non-null checks; and `row_count` generates the
+  normal policy-controlled row-count check. Candidate column names, order,
+  types, and observable nullability are hard contract requirements checked
+  before target mutation. The contract never generates the query or its select
+  list. See the HexDocs guide `guides/sql-output-contracts.md` for the complete
+  option, type, enforcement, bounds, and result reference.
+  """
+  defmacro contract(do: body) do
+    raw = parse_contract!(body, __CALLER__)
+
+    quote bind_quoted: [raw: Macro.escape(raw)] do
+      @favn_sql_contracts raw
       :ok
     end
   end
@@ -672,6 +763,10 @@ defmodule Favn.SQLAsset do
         :checks,
         env.module |> DSLCompiler.fetch_accum_attribute(:favn_sql_checks) |> Enum.reverse()
       )
+      |> Map.put(
+        :contracts,
+        env.module |> DSLCompiler.fetch_accum_attribute(:favn_sql_contracts) |> Enum.reverse()
+      )
 
     Module.put_attribute(env.module, :favn_sql_asset_generating, true)
 
@@ -752,8 +847,14 @@ defmodule Favn.SQLAsset do
       normalize_runtime_inputs!(Map.get(raw_definition, :runtime_inputs, []), raw_definition)
 
     session_requirements = normalize_session_requirements!(raw_definition)
+    contract = normalize_contract!(Map.get(raw_definition, :contracts, []), raw_definition)
 
-    validate_checked_materialization!(materialization, raw_definition.checks, raw_definition)
+    validate_checked_materialization!(
+      materialization,
+      raw_definition.checks,
+      contract,
+      raw_definition
+    )
 
     relation =
       normalize_relation!(
@@ -763,7 +864,7 @@ defmodule Favn.SQLAsset do
 
     known_definitions = fetch_sql_definitions!(raw_definition)
 
-    checks = compile_checks!(raw_definition, known_definitions)
+    checks = compile_checks!(raw_definition, known_definitions, contract)
 
     template =
       Template.compile!(raw_definition.sql,
@@ -815,6 +916,7 @@ defmodule Favn.SQLAsset do
       relation_inputs: relation_inputs,
       runtime_inputs: runtime_inputs,
       session_requirements: session_requirements,
+      contract: contract,
       sql_definitions: Map.values(known_definitions),
       checks: checks,
       materialization: materialization,
@@ -830,13 +932,16 @@ defmodule Favn.SQLAsset do
     end
   end
 
-  defp compile_checks!(raw_definition, known_definitions) do
-    raw_checks = Map.get(raw_definition, :checks, [])
+  defp compile_checks!(raw_definition, known_definitions, contract) do
+    raw_checks =
+      generated_contract_checks(contract, raw_definition) ++ Map.get(raw_definition, :checks, [])
+
     ensure_check_count!(raw_checks, raw_definition)
     ensure_unique_check_names!(raw_checks)
     sql_definitions = Map.values(known_definitions)
 
-    Enum.map(raw_checks, fn raw_check ->
+    raw_checks
+    |> Enum.map(fn raw_check ->
       try do
         template =
           Template.compile!(raw_check.sql,
@@ -854,13 +959,15 @@ defmodule Favn.SQLAsset do
         Check.new!(%{
           name: raw_check.name,
           at: Keyword.fetch!(raw_check.opts, :at),
-          on_false: Keyword.fetch!(raw_check.opts, :on_false),
+          on_violation: Keyword.fetch!(raw_check.opts, :on_violation),
           when: Keyword.get(raw_check.opts, :when),
           message: Keyword.get(raw_check.opts, :message),
           sql: raw_check.sql,
           template: template,
           file: raw_check.sql_file,
           line: raw_check.sql_line,
+          origin: Map.get(raw_check, :origin, :authored),
+          claim_id: Map.get(raw_check, :claim_id),
           uses_query?: MapSet.member?(usages, :query),
           uses_target?: MapSet.member?(usages, :target)
         })
@@ -869,14 +976,49 @@ defmodule Favn.SQLAsset do
           DSLCompiler.compile_error!(raw_check.file, raw_check.line, error.message)
       end
     end)
+    |> then(&Contract.validate_generated_checks!(contract, &1))
+  end
+
+  defp generated_contract_checks(nil, _raw_definition), do: []
+
+  defp generated_contract_checks(%Contract{} = contract, raw_definition) do
+    Enum.map(Contract.generated_check_specs(contract), fn spec ->
+      %{
+        name: spec.name,
+        opts: [
+          at: spec.at,
+          on_violation: spec.on_violation,
+          when: spec.when,
+          message: spec.message
+        ],
+        sql: spec.sql,
+        file: raw_definition.file,
+        line: raw_definition.line,
+        sql_file: raw_definition.file,
+        sql_line: raw_definition.line,
+        origin: :contract,
+        claim_id: spec.claim_id
+      }
+    end)
   end
 
   defp ensure_check_count!(raw_checks, raw_definition) do
-    if length(raw_checks) > Check.max_per_asset() do
+    authored_count = Enum.count(raw_checks, &(Map.get(&1, :origin, :authored) == :authored))
+    contract_count = Enum.count(raw_checks, &(Map.get(&1, :origin, :authored) == :contract))
+
+    if authored_count > Check.max_per_asset() do
       DSLCompiler.compile_error!(
         raw_definition.file,
         raw_definition.line,
-        "SQL assets support at most #{Check.max_per_asset()} checks"
+        "SQL assets support at most #{Check.max_per_asset()} authored checks"
+      )
+    end
+
+    if contract_count > Check.max_contract_per_asset() do
+      DSLCompiler.compile_error!(
+        raw_definition.file,
+        raw_definition.line,
+        "SQL contracts support at most #{Check.max_contract_per_asset()} grouped generated checks"
       )
     end
   end
@@ -893,7 +1035,7 @@ defmodule Favn.SQLAsset do
     end)
   end
 
-  defp validate_checked_materialization!(:view, [_check | _rest], raw_definition) do
+  defp validate_checked_materialization!(:view, [_check | _rest], _contract, raw_definition) do
     DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
@@ -901,7 +1043,35 @@ defmodule Favn.SQLAsset do
     )
   end
 
-  defp validate_checked_materialization!(_materialization, _checks, _raw_definition), do: :ok
+  defp validate_checked_materialization!(:view, [], %Contract{}, raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "SQL output contracts do not support :view materialization; use a snapshot table"
+    )
+  end
+
+  defp validate_checked_materialization!(_materialization, _checks, _contract, _raw_definition),
+    do: :ok
+
+  defp normalize_contract!([], _raw_definition), do: nil
+
+  defp normalize_contract!([raw_contract], _raw_definition) do
+    try do
+      Contract.new!(raw_contract.definition)
+    rescue
+      error in ArgumentError ->
+        DSLCompiler.compile_error!(raw_contract.file, raw_contract.line, error.message)
+    end
+  end
+
+  defp normalize_contract!([_first, second | _rest], _raw_definition) do
+    DSLCompiler.compile_error!(
+      second.file,
+      second.line,
+      "Favn.SQLAsset modules can declare at most one contract"
+    )
+  end
 
   defp normalize_depends!(depends, raw_definition) do
     Enum.map(depends, fn
@@ -1248,8 +1418,155 @@ defmodule Favn.SQLAsset do
     SQL.extract_sql!(body, env, "query body must contain a ~SQL literal")
   end
 
+  defp parse_contract!(body, env) do
+    statements =
+      case body do
+        {:__block__, _meta, statements} -> statements
+        statement -> [statement]
+      end
+
+    definition =
+      Enum.reduce(
+        statements,
+        %{grain: nil, columns: [], unique_keys: [], row_count: nil},
+        &parse_contract_statement!(&1, &2, env)
+      )
+
+    %{
+      definition: definition,
+      file: DSLCompiler.normalize_file(env.file),
+      line: env.line
+    }
+  end
+
+  defp parse_contract_statement!({:grain, meta, [opts_ast]}, definition, env) do
+    if definition.grain do
+      contract_compile_error!(env, meta, "contract can declare grain only once")
+    end
+
+    opts = contract_keyword!(opts_ast, env, meta, :grain, [:by, :description])
+    %{definition | grain: opts}
+  end
+
+  defp parse_contract_statement!({:column, meta, [name_ast, type_ast]}, definition, env) do
+    parse_contract_column!(name_ast, type_ast, [], meta, definition, env)
+  end
+
+  defp parse_contract_statement!(
+         {:column, meta, [name_ast, type_ast, opts_ast]},
+         definition,
+         env
+       ) do
+    parse_contract_column!(name_ast, type_ast, opts_ast, meta, definition, env)
+  end
+
+  defp parse_contract_statement!({:unique, meta, [columns_ast]}, definition, env) do
+    columns = contract_literal!(columns_ast, env, meta, "contract unique columns")
+    %{definition | unique_keys: definition.unique_keys ++ [columns]}
+  end
+
+  defp parse_contract_statement!({:row_count, meta, [opts_ast]}, definition, env) do
+    if definition.row_count do
+      contract_compile_error!(env, meta, "contract can declare row_count only once")
+    end
+
+    opts =
+      contract_keyword!(
+        opts_ast,
+        env,
+        meta,
+        :row_count,
+        [:min, :when, :on_violation]
+      )
+
+    unless Keyword.has_key?(opts, :min),
+      do: contract_compile_error!(env, meta, "contract row_count requires min:")
+
+    %{definition | row_count: opts}
+  end
+
+  defp parse_contract_statement!(statement, _definition, env) do
+    DSLCompiler.compile_error!(
+      env.file,
+      env.line,
+      "unsupported contract declaration: #{Macro.to_string(statement)}"
+    )
+  end
+
+  defp parse_contract_column!(name_ast, type_ast, opts_ast, meta, definition, env) do
+    name = contract_literal!(name_ast, env, meta, "contract column name")
+    type = contract_literal!(type_ast, env, meta, "contract column type")
+
+    opts =
+      contract_keyword!(
+        opts_ast,
+        env,
+        meta,
+        :column,
+        [:null, :description, :tags, :from, :via, :renamed_from]
+      )
+
+    column = %{name: name, type: type, opts: opts}
+    %{definition | columns: definition.columns ++ [column]}
+  end
+
+  defp contract_keyword!(ast, env, meta, declaration, allowed_keys) do
+    value = contract_literal!(ast, env, meta, "contract #{declaration} options")
+
+    unless is_list(value) and Keyword.keyword?(value) do
+      contract_compile_error!(env, meta, "contract #{declaration} options must be a keyword list")
+    end
+
+    duplicate_keys =
+      value
+      |> Keyword.keys()
+      |> Enum.frequencies()
+      |> Enum.filter(&(elem(&1, 1) > 1))
+
+    if duplicate_keys != [] do
+      keys = duplicate_keys |> Enum.map(&elem(&1, 0)) |> Enum.map_join(", ", &inspect/1)
+
+      contract_compile_error!(
+        env,
+        meta,
+        "duplicate contract #{declaration} options: #{keys}"
+      )
+    end
+
+    case Enum.find(Keyword.keys(value), &(&1 not in allowed_keys)) do
+      nil ->
+        value
+
+      key ->
+        contract_compile_error!(
+          env,
+          meta,
+          "unknown contract #{declaration} option #{inspect(key)}"
+        )
+    end
+  end
+
+  defp contract_literal!(ast, env, meta, label) do
+    expanded =
+      Macro.prewalk(ast, fn
+        {:__aliases__, _alias_meta, _parts} = alias_ast -> Macro.expand(alias_ast, env)
+        node -> node
+      end)
+
+    if Macro.quoted_literal?(expanded) do
+      {value, _binding} = Code.eval_quoted(expanded, [], env)
+      value
+    else
+      contract_compile_error!(env, meta, "#{label} must be literal, got: #{Macro.to_string(ast)}")
+    end
+  end
+
+  defp contract_compile_error!(env, meta, message) do
+    DSLCompiler.compile_error!(env.file, Keyword.get(meta, :line, env.line), message)
+  end
+
   defp normalize_check_opts!(opts, env) do
-    allowed = [:at, :on_false, :when, :message]
+    allowed = [:at, :on_violation, :when, :message]
 
     unless is_list(opts) and Keyword.keyword?(opts) do
       DSLCompiler.compile_error!(env.file, env.line, "SQL check options must be a keyword list")
@@ -1272,8 +1589,8 @@ defmodule Favn.SQLAsset do
     unless Keyword.has_key?(opts, :at),
       do: DSLCompiler.compile_error!(env.file, env.line, "SQL check requires at:")
 
-    unless Keyword.has_key?(opts, :on_false),
-      do: DSLCompiler.compile_error!(env.file, env.line, "SQL check requires on_false:")
+    unless Keyword.has_key?(opts, :on_violation),
+      do: DSLCompiler.compile_error!(env.file, env.line, "SQL check requires on_violation:")
 
     Enum.map(opts, fn {key, value} ->
       {key, expand_literal!(value, env, "check option #{key}")}

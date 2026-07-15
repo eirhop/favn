@@ -150,7 +150,7 @@ defmodule MyApp.Lakehouse.Raw.Sales.Orders do
   @runtime_inputs MyApp.Source.Orders.Inputs
   @materialized :table
 
-  check :snapshot_matches, at: :before_materialize, on_false: :fail do
+  check :snapshot_matches, at: :before_materialize, on_violation: :fail do
     ~SQL"select count(*) > 0 as passed from query() where snapshot_id = @snapshot_id"
   end
 

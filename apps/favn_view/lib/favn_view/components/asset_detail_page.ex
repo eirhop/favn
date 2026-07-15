@@ -29,6 +29,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :data_coverage_timeline, :list, default: nil
   attr :active_mode, :atom, default: :timeline
   attr :freshness, :map, default: nil
+  attr :assurance, :map, default: nil
   attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
@@ -62,6 +63,7 @@ defmodule FavnView.Components.AssetDetailPage do
         refresh_timeline={@refresh_timeline}
         data_coverage_timeline={@data_coverage_timeline}
         freshness={@freshness}
+        assurance={@assurance}
         selected_window={@selected_window}
         run_config_open?={@run_config_open?}
         run_config={@run_config}
@@ -92,6 +94,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :refresh_timeline, :list, default: []
   attr :data_coverage_timeline, :list, default: nil
   attr :freshness, :map, default: nil
+  attr :assurance, :map, default: nil
   attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
@@ -130,7 +133,10 @@ defmodule FavnView.Components.AssetDetailPage do
     <.placeholder_panel :if={@active_mode == :lineage} title="Lineage coming soon" />
     <.placeholder_panel :if={@active_mode == :docs} title="Docs coming soon" />
     <.placeholder_panel :if={@active_mode == :code} title="Code coming soon" />
-    <.freshness_detail_panel :if={@active_mode == :details} freshness={@freshness} />
+    <div :if={@active_mode == :details} class="mx-auto w-full max-w-6xl space-y-6">
+      <.assurance_panel :if={@assurance} assurance={@assurance} />
+      <.freshness_detail_panel freshness={@freshness} />
+    </div>
     """
   end
 
@@ -368,6 +374,185 @@ defmodule FavnView.Components.AssetDetailPage do
     """
   end
 
+  attr :assurance, :map, required: true
+
+  def assurance_panel(assigns) do
+    assigns =
+      assigns
+      |> assign(:contract, assigns.assurance[:contract])
+      |> assign(:checks, assigns.assurance[:checks] || [])
+      |> assign(:validation, assigns.assurance[:contract_validation])
+      |> assign(:observed_by_name, observed_by_name(assigns.assurance[:contract_validation]))
+
+    ~H"""
+    <GlassPanel.glass_panel class="p-6 sm:p-8" data-testid="asset-assurance-panel">
+      <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Data assurance</p>
+          <h2 class="mt-1 text-xl font-medium tracking-tight">Contract and quality checks</h2>
+          <p class="mt-2 max-w-3xl text-sm text-base-content/60">
+            Authored expectations, observed candidate evidence, and the latest generated and custom check outcomes.
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <span
+            :if={@assurance[:quality_status]}
+            class={assurance_status_badge(@assurance[:quality_status])}
+          >
+            Quality {humanize(@assurance[:quality_status])}
+          </span>
+          <span :if={@assurance[:write_outcome]} class="badge badge-outline badge-sm">
+            Write {humanize(@assurance[:write_outcome])}
+          </span>
+        </div>
+      </div>
+
+      <section :if={@contract} class="mt-8 space-y-5" data-testid="asset-output-contract">
+        <div class="grid gap-3 md:grid-cols-3">
+          <.assurance_fact label="Grain" value={grain_label(@contract[:grain])} />
+          <.assurance_fact label="Unique keys" value={unique_keys_label(@contract[:unique_keys])} />
+          <.assurance_fact label="Row count" value={row_count_label(@contract[:row_count])} />
+        </div>
+
+        <div class="overflow-x-auto rounded-box border border-base-content/10">
+          <table class="table table-sm min-w-[52rem]">
+            <thead>
+              <tr>
+                <th>Column</th>
+                <th>Expected</th>
+                <th>Observed</th>
+                <th>Lineage</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={column <- @contract[:columns]} data-testid="contract-column">
+                <td>
+                  <p class="font-mono text-xs font-semibold">{column[:name]}</p>
+                  <p :if={column[:description]} class="mt-1 max-w-xs text-xs text-base-content/55">
+                    {column[:description]}
+                  </p>
+                  <div :if={column[:tags] != []} class="mt-1 flex flex-wrap gap-1">
+                    <span :for={tag <- column[:tags]} class="badge badge-ghost badge-xs">{tag}</span>
+                  </div>
+                </td>
+                <td class="text-xs">
+                  <span class="font-mono">{column[:type]}</span>
+                  <span class="text-base-content/45"> · {nullability_label(column[:nullable?])}</span>
+                </td>
+                <td class="text-xs">
+                  <span :if={@observed_by_name[to_string(column[:name])]}>
+                    <span class="font-mono">
+                      {observed_type(@observed_by_name[to_string(column[:name])])}
+                    </span>
+                    <span class="text-base-content/45">
+                      · {observed_nullability(@observed_by_name[to_string(column[:name])])}
+                    </span>
+                  </span>
+                  <span
+                    :if={!@observed_by_name[to_string(column[:name])]}
+                    class="text-base-content/40"
+                  >
+                    Not observed
+                  </span>
+                </td>
+                <td class="text-xs">
+                  <div :if={column[:sources] != []} class="space-y-1">
+                    <p :for={source <- column[:sources]} class="font-mono text-[0.7rem]">
+                      {lineage_label(source)}
+                    </p>
+                    <span :if={column[:via]} class="badge badge-outline badge-xs">
+                      {column[:via]}
+                    </span>
+                  </div>
+                  <span :if={column[:sources] == []} class="text-base-content/40">Not declared</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div
+          :if={@validation && @validation[:differences] != []}
+          class="rounded-box border border-error/25 bg-error/10 p-4"
+          data-testid="contract-schema-differences"
+        >
+          <h3 class="text-sm font-medium text-error">Schema differences</h3>
+          <ul class="mt-2 space-y-1 text-xs text-base-content/70">
+            <li :for={difference <- @validation[:differences]}>{difference_label(difference)}</li>
+          </ul>
+        </div>
+
+        <p
+          :if={@validation && @validation[:observed_truncated?]}
+          class="text-xs text-warning"
+        >
+          Candidate schema evidence is bounded to the first {length(@validation[:observed_columns])} of {@validation[
+            :observed_column_count
+          ]} columns.
+        </p>
+      </section>
+
+      <section :if={@checks != []} class="mt-8" data-testid="asset-quality-checks">
+        <div class="flex items-center justify-between gap-3">
+          <h3 class="text-sm font-medium">Checks</h3>
+          <span :if={@assurance[:latest_run_id]} class="font-mono text-xs text-base-content/45">
+            {@assurance[:latest_run_id]}
+          </span>
+        </div>
+
+        <div class="mt-3 grid gap-3 lg:grid-cols-2">
+          <article
+            :for={check <- @checks}
+            class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
+            data-testid="asset-quality-check"
+            data-check-origin={check[:origin]}
+          >
+            <div class="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class={origin_badge(check[:origin])}>{origin_label(check[:origin])}</span>
+                  <p class="font-mono text-xs font-semibold">{check[:name]}</p>
+                </div>
+                <p :if={check[:claim_id]} class="mt-1 font-mono text-[0.7rem] text-base-content/45">
+                  {check[:claim_id]}
+                </p>
+              </div>
+              <span class={check_result_badge(check[:latest_result])}>
+                {check_result_label(check[:latest_result])}
+              </span>
+            </div>
+
+            <p class="mt-2 text-xs text-base-content/60">
+              {humanize(check[:phase])} · on violation {humanize(check[:on_violation])}
+              <span :if={check[:when]}> · when {humanize(check[:when])}</span>
+            </p>
+            <p :if={check[:message]} class="mt-2 text-xs text-base-content/75">{check[:message]}</p>
+
+            <dl :if={check_metrics(check) != []} class="mt-3 grid gap-1 text-xs">
+              <div :for={{key, value} <- check_metrics(check)} class="flex justify-between gap-3">
+                <dt class="text-base-content/50">{key}</dt>
+                <dd class="font-mono">{value}</dd>
+              </div>
+            </dl>
+          </article>
+        </div>
+      </section>
+    </GlassPanel.glass_panel>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :value, :string, required: true
+
+  defp assurance_fact(assigns) do
+    ~H"""
+    <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
+      <p class="text-xs uppercase tracking-[0.14em] text-base-content/40">{@label}</p>
+      <p class="mt-1 text-sm text-base-content/75">{@value}</p>
+    </div>
+    """
+  end
+
   attr :window, :map, required: true
   attr :selected, :boolean, default: false
 
@@ -573,6 +758,133 @@ defmodule FavnView.Components.AssetDetailPage do
       %{id: :details, label: "Details", icon: "hero-document-text"}
     ]
   end
+
+  defp observed_by_name(%{observed_columns: columns}) when is_list(columns),
+    do: Map.new(columns, &{to_string(value(&1, :name)), &1})
+
+  defp observed_by_name(_validation), do: %{}
+
+  defp grain_label(nil), do: "Not declared"
+
+  defp grain_label(%{by: [], description: description}), do: description || "Descriptive grain"
+
+  defp grain_label(%{by: columns, description: description}) do
+    names = Enum.map_join(columns, ", ", &to_string/1)
+    if description, do: "#{names} · #{description}", else: names
+  end
+
+  defp unique_keys_label([]), do: "None"
+
+  defp unique_keys_label(keys),
+    do: Enum.map_join(keys, " · ", &Enum.map_join(&1, ", ", fn name -> to_string(name) end))
+
+  defp row_count_label(nil), do: "Not declared"
+
+  defp row_count_label(row_count) do
+    "At least #{row_count[:min]} · #{humanize(row_count[:on_violation])} on violation"
+  end
+
+  defp nullability_label(true), do: "nullable"
+  defp nullability_label(false), do: "required"
+
+  defp observed_type(column),
+    do: value(column, :native_type) || value(column, :type) || "unknown"
+
+  defp observed_nullability(column) do
+    if value(column, :nullability_observed?) in [true, "true"] do
+      case value(column, :nullable?) do
+        true -> "nullable"
+        false -> "required"
+        _other -> "nullability unknown"
+      end
+    else
+      "nullability unverified"
+    end
+  end
+
+  defp lineage_label(%{kind: :asset, asset_ref: {module, name}, column: column}),
+    do: "#{inspect(module)}.#{name}.#{column}"
+
+  defp lineage_label(%{kind: :external, dataset: dataset, column: column}),
+    do: "#{dataset}.#{column}"
+
+  defp lineage_label(source), do: inspect(source)
+
+  defp difference_label(difference) do
+    kind = difference |> value(:kind) |> humanize()
+    column = value(difference, :column)
+    expected = value(difference, :expected)
+    observed = value(difference, :observed)
+
+    [
+      kind,
+      column && to_string(column),
+      expected && "expected #{inspect(expected)}",
+      observed && "observed #{inspect(observed)}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp assurance_status_badge(status) when status in [:passed, "passed"],
+    do: "badge badge-success badge-soft badge-sm"
+
+  defp assurance_status_badge(status) when status in [:warning, "warning"],
+    do: "badge badge-warning badge-soft badge-sm"
+
+  defp assurance_status_badge(_status), do: "badge badge-error badge-soft badge-sm"
+
+  defp origin_badge(:contract), do: "badge badge-info badge-soft badge-xs"
+  defp origin_badge(_origin), do: "badge badge-ghost badge-xs"
+  defp origin_label(:contract), do: "Contract"
+  defp origin_label(_origin), do: "Custom"
+
+  defp check_result_label(nil), do: "Not run"
+  defp check_result_label(result), do: result |> value(:outcome) |> humanize()
+
+  defp check_result_badge(nil), do: "badge badge-ghost badge-sm"
+
+  defp check_result_badge(result) do
+    case value(result, :outcome) do
+      outcome when outcome in [:passed, "passed", :condition_skipped, "condition_skipped"] ->
+        "badge badge-success badge-soft badge-sm"
+
+      outcome
+      when outcome in [
+             :warned,
+             "warned",
+             :materialization_skipped,
+             "materialization_skipped"
+           ] ->
+        "badge badge-warning badge-soft badge-sm"
+
+      outcome when outcome in [:not_run, "not_run"] ->
+        "badge badge-ghost badge-sm"
+
+      _outcome ->
+        "badge badge-error badge-soft badge-sm"
+    end
+  end
+
+  defp check_metrics(%{latest_result: result}) when is_map(result) do
+    result
+    |> value(:metrics, %{})
+    |> Enum.map(fn {key, metric_value} -> {to_string(key), inspect(metric_value)} end)
+    |> Enum.sort_by(&elem(&1, 0))
+  end
+
+  defp check_metrics(_check), do: []
+
+  defp humanize(nil), do: "unknown"
+
+  defp humanize(value) do
+    value
+    |> to_string()
+    |> String.replace("_", " ")
+  end
+
+  defp value(map, key, default \\ nil) when is_map(map),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 
   defp selected_window?(nil, _window), do: false
   defp selected_window?(selected_window, window), do: selected_window.id == window.id

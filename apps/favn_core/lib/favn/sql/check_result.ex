@@ -13,9 +13,9 @@ defmodule Favn.SQL.CheckResult do
   Outcomes mean:
 
   - `:passed` - the check returned `passed: true`
-  - `:warned` - it returned false with `on_false: :warn`
-  - `:failed` - it returned false with `on_false: :fail`
-  - `:materialization_skipped` - it selected the successful no-op policy
+  - `:warned` - it returned false with `on_violation: :warn`
+  - `:failed` - it returned false with `on_violation: :fail`
+  - `:materialization_skipped` - it selected the successful warning/no-op policy
   - `:condition_skipped` - `when: :target_exists` was false during bootstrap
   - `:not_run` - earlier work halted or skipped the materialization
   - `:errored` - SQL execution or result validation failed
@@ -24,6 +24,8 @@ defmodule Favn.SQL.CheckResult do
   `duration_ms` is the check execution duration; and `reason` provides a stable
   machine-oriented explanation such as `:condition_false` or
   `:target_missing`. The optional static `message` supplies human context.
+  `origin` distinguishes `:contract` claims from directly `:authored` checks;
+  generated results also carry the contract's stable `claim_id`.
   """
 
   @outcomes [
@@ -57,7 +59,17 @@ defmodule Favn.SQL.CheckResult do
           | DateTime.t()
 
   @enforce_keys [:name, :phase, :outcome]
-  defstruct [:name, :phase, :outcome, :message, :duration_ms, :reason, metrics: %{}]
+  defstruct [
+    :name,
+    :phase,
+    :outcome,
+    :message,
+    :duration_ms,
+    :reason,
+    origin: :authored,
+    claim_id: nil,
+    metrics: %{}
+  ]
 
   @type t :: %__MODULE__{
           name: atom(),
@@ -66,7 +78,9 @@ defmodule Favn.SQL.CheckResult do
           message: String.t() | nil,
           metrics: %{optional(String.t()) => metric_value()},
           duration_ms: non_neg_integer() | nil,
-          reason: atom() | String.t() | nil
+          reason: atom() | String.t() | nil,
+          origin: :authored | :contract,
+          claim_id: String.t() | nil
         }
 
   @doc "Builds a runtime result and rejects unknown outcomes."
@@ -82,6 +96,16 @@ defmodule Favn.SQL.CheckResult do
 
     unless result.outcome in @outcomes,
       do: raise(ArgumentError, "invalid SQL check result outcome #{inspect(result.outcome)}")
+
+    unless result.origin in [:authored, :contract],
+      do: raise(ArgumentError, "invalid SQL check result origin #{inspect(result.origin)}")
+
+    if result.origin == :contract and
+         (not is_binary(result.claim_id) or String.trim(result.claim_id) == ""),
+       do: raise(ArgumentError, "contract check results require a claim_id")
+
+    if result.origin == :authored and not is_nil(result.claim_id),
+      do: raise(ArgumentError, "authored check results cannot set a contract claim_id")
 
     unless is_map(result.metrics),
       do: raise(ArgumentError, "SQL check result metrics must be a map")
