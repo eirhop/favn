@@ -110,6 +110,13 @@ defmodule Favn.SQLAsset do
   checks. Checks use the same compiler, reusable `defsql` definitions,
   parameters, window values, and relation resolution as `query`.
 
+  Use checks for read-only aggregate invariants over the exact candidate or
+  owned target when the result must participate in the materialization commit.
+  Keep transformation logic in the main `query`, imperative or external-system
+  validation in an upstream `Favn.Asset`, and dependency/freshness policy in
+  their dedicated DSL declarations. Checks are publication gates and quality
+  annotations, not a general test runner.
+
       check :has_rows,
         at: :before_materialize,
         when: :target_exists,
@@ -143,6 +150,12 @@ defmodule Favn.SQLAsset do
   check using `target()` must declare `when: :target_exists`. The same condition
   is required for `:skip_materialization`, allowing missing-target bootstrap to
   proceed normally.
+
+  Prefer a before check when the candidate alone answers the question. Use an
+  after check only when the exact transaction-visible published target matters.
+  Use `:warn` only when the target remains safe for consumers, and use
+  `:skip_materialization` only when retaining the existing target is a valid
+  successful outcome rather than hidden staleness.
 
   Favn opens one transaction, runs all before checks in declaration order,
   materializes the exact staged candidate, runs all after checks in declaration
@@ -285,6 +298,12 @@ defmodule Favn.SQLAsset do
 
   SQL errors and invalid result shapes always fail and roll back, regardless of
   `:on_false`.
+
+  Choose `:fail` for required publication invariants, `:warn` for non-blocking
+  quality degradation, and `:skip_materialization` only when keeping an existing
+  target is explicitly a successful business outcome. Checks are for read-only
+  aggregate validation; transformations belong in the main `query` and
+  external or imperative validation belongs in an upstream `Favn.Asset`.
 
   `query()` resolves to the exact staged candidate used by the write.
   `target()` resolves to the transaction-visible owned target. Both helpers may
