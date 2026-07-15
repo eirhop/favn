@@ -15,7 +15,8 @@ defmodule Favn.SQL.Session do
     :concurrency_policies,
     :admission_lease,
     :pool_checkout,
-    required_catalogs: []
+    required_catalogs: [],
+    required_resources: []
   ]
 
   @type t :: %__MODULE__{
@@ -26,6 +27,7 @@ defmodule Favn.SQL.Session do
            concurrency_policy: ConcurrencyPolicy.t() | nil,
            concurrency_policies: ConcurrencyPolicies.t() | nil,
            required_catalogs: [binary()],
+           required_resources: [binary()],
            admission_lease: term(),
            pool_checkout: Checkout.t() | nil
          }

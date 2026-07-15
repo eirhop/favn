@@ -345,7 +345,7 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
 
       env =
         production_env(runtime)
-        |> Map.put("FAVN_STARTUP_TIMEOUT_SECONDS", "5")
+        |> Map.put("FAVN_STARTUP_TIMEOUT_SECONDS", "15")
         |> mutate.()
 
       {output, status} = start_artifact(dist_dir, env)

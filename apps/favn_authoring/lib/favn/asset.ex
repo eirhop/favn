@@ -251,6 +251,7 @@ defmodule Favn.Asset do
   alias Favn.Ref
   alias Favn.RelationRef
   alias Favn.RuntimeConfig.Requirements
+  alias Favn.SQL.SessionRequirements
   alias Favn.SQLAsset.Materialization
   alias Favn.Window.Spec
 
@@ -443,6 +444,7 @@ defmodule Favn.Asset do
           materialization: Favn.SQLAsset.Materialization.t() | nil,
           relation_inputs: [RelationInput.t()],
           runtime_config: Requirements.declarations(),
+          session_requirements: SessionRequirements.t(),
           diagnostics: [Diagnostic.t()]
         }
 
@@ -473,6 +475,7 @@ defmodule Favn.Asset do
     materialization: nil,
     relation_inputs: [],
     runtime_config: %{},
+    session_requirements: %SessionRequirements{version: 1},
     diagnostics: []
   ]
 
@@ -498,6 +501,7 @@ defmodule Favn.Asset do
     validate_execution_pool!(asset.execution_pool)
     validate_relation!(asset.relation)
     validate_runtime_config!(asset.runtime_config)
+    validate_session_requirements!(asset.session_requirements)
     validate_type!(asset.type)
     validate_materialization!(asset.materialization)
 
@@ -600,6 +604,16 @@ defmodule Favn.Asset do
   defp validate_runtime_config!(runtime_config) do
     raise ArgumentError,
           "asset runtime_config must be a map, got: #{inspect(runtime_config)}"
+  end
+
+  defp validate_session_requirements!(%SessionRequirements{} = requirements) do
+    SessionRequirements.validate!(requirements)
+    :ok
+  end
+
+  defp validate_session_requirements!(requirements) do
+    raise ArgumentError,
+          "asset session_requirements must be a Favn.SQL.SessionRequirements struct, got: #{inspect(requirements)}"
   end
 
   defp validate_window_spec!(nil), do: :ok

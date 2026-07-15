@@ -40,7 +40,8 @@ Do not use catalog and schema interchangeably in new projects.
 
 ## Namespaces
 
-Use `Favn.Namespace` to share relation defaults across many assets.
+Use `Favn.Namespace` to share relation defaults and additive SQL session
+resources across many assets.
 
 ```elixir
 defmodule MyApp.Lakehouse do
@@ -48,7 +49,9 @@ defmodule MyApp.Lakehouse do
 end
 
 defmodule MyApp.Lakehouse.Raw do
-  use Favn.Namespace, relation: [catalog: "raw"]
+  use Favn.Namespace,
+    relation: [catalog: "raw"],
+    resources: [:azure_extension]
 end
 
 defmodule MyApp.Lakehouse.Raw.Sales do
@@ -66,6 +69,10 @@ Supported namespace relation keys:
 
 Leaf asset modules can then use `@relation true` to infer the relation name from
 the module name.
+
+Relation fields override by key; resources accumulate from every ancestor and
+apply only to descendant `Favn.SQLAsset` modules. Keep resources local unless
+every SQL asset below the namespace needs them.
 
 ## Elixir Assets
 
@@ -177,6 +184,7 @@ defmodule MyApp.Lakehouse.Mart.Sales.OrderSummary do
   @doc "Build a daily order summary."
   @meta owner: "analytics", category: :sales, tags: [:mart, :daily]
   @depends MyApp.Lakehouse.Raw.Sales.Orders
+  @resources [:landing_storage]
   @materialized :view
   @relation true
   query do
@@ -195,6 +203,8 @@ Rules:
 
 - Use exactly one `query` declaration.
 - Add exactly one `@materialized` attribute.
+- Put optional `@resources [...]` before `query`; names select trusted native
+  physical-session SQL files and are stored in the manifest.
 - Do not define `asset/1`; `Favn.SQLAsset` generates runtime work.
 - Inline SQL must use `~SQL`.
 - `~SQL` does not allow interpolation.
@@ -325,6 +335,11 @@ end
 
 Keep runnable asset settings such as `@materialized`, `@window`, and `@relation`
 on `Favn.SQLAsset` modules.
+
+Read [DuckDB Session Scripts And Resources](duckdb-session-scripts.md) for
+connection configuration, `{:priv, otp_app, path}` locators, `@name` script
+parameters, physical-session lifecycle, and safety guidance. Do not put durable
+business writes in a session script.
 
 ## Multi-Assets
 

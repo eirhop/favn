@@ -39,6 +39,16 @@ the same DuckDB bootstrap schema helpers as the `favn_duckdb` adapter.
 config :favn, :runner_plugins, [FavnDuckdbADBC]
 ```
 
+Session setup uses trusted native SQL files through `duckdb.startup` and named
+`duckdb.resources`; SQL assets select stable names with `@resources`.
+`duckdb.catalogs` contains only Favn resource and write-admission metadata. The
+old structured `load`, `settings`, `secrets`, `attach`, and `use` forms are not
+supported. See `apps/favn/guides/duckdb-session-scripts.md`.
+
+Environment-backed credentials resolve at runner startup. Use a native
+refresh-capable provider or restart the runner after rotation; idle timeout does
+not impose a maximum physical-session age.
+
 ## DuckDB ADBC Installation
 
 This plugin requires a DuckDB ADBC driver to be available on the machine. See
@@ -126,7 +136,9 @@ Run the real in-memory DuckDB ADBC smoke test only in environments where the
 DuckDB ADBC driver is installed or configured:
 
 ```sh
-FAVN_DUCKDB_ADBC_INTEGRATION=1 MIX_ENV=test mix test test/sql/adapter/duckdb_adbc_integration_test.exs
+FAVN_DUCKDB_ADBC_INTEGRATION=1 \
+DUCKDB_ADBC_DRIVER=/opt/duckdb/1.5.3/libduckdb.so \
+MIX_ENV=test mix test test/sql/adapter/duckdb_adbc_integration_test.exs
 ```
 
 The smoke test honors `DUCKDB_ADBC_DRIVER` when set, using

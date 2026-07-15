@@ -5,7 +5,10 @@ Azure integration helpers.
 
 Documentation type: reference.
 
-`favn_azure` owns Azure-specific token acquisition helpers used by Favn adapters.
+`favn_azure` owns optional Azure-specific token acquisition helpers available to
+adapter plugins. The built-in DuckDB adapters no longer depend on it; native
+session SQL and deployment-owned credential mechanisms replace the removed
+structured DuckDB secret bootstrap.
 It is an internal plugin-support app, not a public HexDocs target. Public user
 docs should mention Azure behavior through adapter configuration guides rather
 than exposing these modules as the primary API.

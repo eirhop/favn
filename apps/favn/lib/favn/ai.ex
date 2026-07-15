@@ -103,22 +103,25 @@ defmodule Favn.AI do
     modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
     If connection values come from environment variables or secrets, also read
     `Favn.RuntimeConfig.Ref`.
-  - To configure DuckDB/DuckLake connection bootstrap with `open: [...]` and
-    `duckdb: [...]`, attached DuckDB/DuckLake catalogs, scoped
-    `:required_catalogs` attach behavior, Azure credential-chain secrets,
-    optional ADLS `SCOPE`, credential `CHAIN`, PostgreSQL metadata secrets,
-    DuckLake `META_SECRET` attach, catalog-level bootstrap/write concurrency, or
-    ADLS paths, read
-    `Favn.Connection`, `Favn.RuntimeConfig.Ref`, `Favn.SQL.Adapter.DuckDB`, and
-    `Favn.Azure.PostgresEntraToken`. If the deployment uses the ADBC DuckDB
-    adapter, also read `Favn.SQL.Adapter.DuckDB.ADBC`. Azure PostgreSQL Entra
-    auth can fetch managed identity or Azure CLI tokens during session bootstrap
-    for DuckLake PostgreSQL metadata catalogs. The PostgreSQL `user` must be the
-    role created for the Entra principal, and token expiry requires reconnect and
-    rebootstrap. When sizing DuckLake PostgreSQL metadata capacity, remember that
-    one concurrent DuckLake writer can use multiple PostgreSQL backend
-    connections; observed deployments used about three backends per writer, so
-    `write_concurrency` needs PostgreSQL headroom beyond the logical writer count.
+  - To configure DuckDB/DuckLake physical-session setup, read
+    [DuckDB Session Scripts And Resources](duckdb-session-scripts.html), then
+    `Favn.Connection`, `Favn.RuntimeConfig.Ref`, `Favn.SQLAsset`,
+    `Favn.Namespace`, and `Favn.SQL.Adapter.DuckDB`. The canonical shape is
+    `open: [...]` plus `duckdb: [startup: ..., resources: ..., catalogs: ...]`.
+    Native SQL files own `INSTALL`, `LOAD`, `SET`, `CREATE SECRET`, `ATTACH`,
+    `USE`, and extension-specific syntax; the removed structured
+    `load/settings/secrets/attach/use` forms must not be suggested. SQL assets
+    select stable names with `@resources [...]`, while namespaces can add
+    resources for every descendant SQL asset. Treat Quack and other evolving
+    extensions as native SQL resources with a deployment-pinned compatible
+    DuckDB build; do not invent extension-specific Favn fields or version gates.
+    Runtime refs resolve at runner startup, so recommend refresh-capable native
+    credential providers or a runner restart after rotation; pool idle timeout
+    is not a maximum physical-session age. In local development,
+    `mix favn.reload` performs that runner restart and reevaluates runtime config.
+    If the deployment uses ADBC, also read `Favn.SQL.Adapter.DuckDB.ADBC`. Keep
+    DuckLake `write_concurrency` conservative because one logical writer may use
+    several PostgreSQL backend connections.
   - To run SQL queries or raw landing writes from plain Elixir code using named
     Favn connections, read `Favn.SQLClient`. For Elixir asset landing helpers,
     prefer `Favn.SQLClient.with_connection/3` so one asset execution can reuse a
@@ -197,6 +200,24 @@ defmodule Favn.AI do
   [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) for the complete
   human workflow, limits, redaction rules, retry boundary, and examples.
 
+  ## DuckDB Session Script Breadcrumbs
+
+  When a task mentions DuckDB extensions, settings, secrets, attach, `USE`,
+  `@resources`, session startup, or native SQL setup, read these docs in order:
+
+  1. [DuckDB Session Scripts And Resources](duckdb-session-scripts.html) for the
+     complete public configuration, lifecycle, safety, and misuse example.
+  2. `Favn.SQLAsset` for leaf `@resources` declaration and manifest behavior.
+  3. `Favn.Namespace` for additive inherited resources.
+  4. `Favn.Connection` and `Favn.RuntimeConfig.Ref` for runtime values and secret
+     parameters.
+  5. The selected DuckDB adapter module only for adapter-specific deployment
+     behavior.
+
+  Session-script and asset SQL parameters both use `@name`, not `{{name}}`, but
+  they are separate scopes. Never reconstruct the removed structured DuckDB
+  feature allowlist.
+
   ## About `Favn`
 
   - you need helper functions like `generate_manifest`, `resolve_pipeline`, or
@@ -250,14 +271,11 @@ defmodule Favn.AI do
   - `Favn.RuntimeConfig.Ref`: when you need the manifest-safe representation of
     required environment values and secret environment values
   - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs
-    `config_schema_fields/0`, `open: [database: ...]`, keyed `duckdb.attach`
-    catalogs, DuckLake session setup, Azure ADLS DuckDB secrets, PostgreSQL
-    metadata secret wiring, DuckLake PostgreSQL connection sizing, or
+    `config_schema_fields/0`, `open: [database: ...]`, native startup/resource
+    SQL files, catalog-to-resource metadata, script pool fingerprints, or
     catalog-level write admission
   - `Favn.SQL.Adapter.DuckDB.ADBC`: when the ADBC DuckDB adapter needs the same
     DuckDB/DuckLake config shape with explicit DuckDB driver control
-  - `Favn.Azure.PostgresEntraToken`: when DuckDB bootstrap needs runtime Azure
-    PostgreSQL Entra token acquisition through managed identity or Azure CLI
 
   ## Working Style
 
@@ -290,6 +308,11 @@ defmodule Favn.AI do
     mentions runtime-selected files, external manifests/snapshots, watermarks,
     or resolver-provided SQL parameters. Read `Favn.RuntimeInputResolver.Ref`
     only for manifest/compiler work.
+  - Read the DuckDB session-script guide, `Favn.SQLAsset`, and `Favn.Namespace`
+    whenever a task mentions `@resources`, extension setup, settings, secrets,
+    catalog attach, or physical-session lifecycle. Treat the files as trusted
+    deployment code, keep durable business writes out of them, and account for
+    runner restarts when resolved credentials rotate.
   - Read `Favn.SQLAsset`, `Favn.SQLAsset.check/3`, and `Favn.SQL.CheckResult`
     whenever a task mentions transactional SQL checks, data quality warnings,
     keeping an existing target on an empty candidate, `query()`, `target()`,
@@ -328,6 +351,8 @@ defmodule Favn.AI do
     authoring and result reference
   - `apps/favn/guides/sql-runtime-inputs.md`: canonical behaviour-based SQL
     runtime input authoring, result/error contracts, limits, and retry boundary
+  - `apps/favn/guides/duckdb-session-scripts.md`: native DuckDB session setup,
+    resources DSL, file locators, pooling lifecycle, and safety rules
   - `examples/basic-workflow-tutorial`: standalone consumer-style tutorial with
     the canonical source-system raw landing example in
     `FavnReferenceWorkload.Warehouse.Raw.Orders`

@@ -113,7 +113,11 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
       config :favn, :connections,
         ducklake: [
           open: [database: database],
-          duckdb: [extensions: ["ducklake"]]
+          duckdb: [
+            startup: [
+              file: {:priv, :favn_env_bootstrap_integration_consumer, "duckdb/startup.sql"}
+            ]
+          ]
         ]
       """
     )

@@ -46,8 +46,8 @@ defmodule Favn.SQLClient do
       end)
 
   For DuckDB/DuckLake landing assets, combine the asset relation scope with one
-  callback-owned session so bootstrap, catalog attach, and secret setup are paid
-  once per asset execution instead of once per helper call:
+  callback-owned session so native startup/resource setup is paid once per
+  physical session instead of once per helper call:
 
       Favn.SQLClient.with_required_catalogs(ctx.asset.relation, fn ->
         Favn.SQLClient.with_connection(ctx.asset.relation.connection, [], fn session ->
@@ -96,6 +96,14 @@ defmodule Favn.SQLClient do
   PostgreSQL backend connections per concurrent DuckLake writer, so size
   `write_concurrency` with that headroom instead of treating it as a raw
   PostgreSQL connection count.
+
+  A SQL session is one physical adapter connection while it is checked out
+  exclusively to its owner process. DuckDB startup and selected resource SQL
+  files run only when Favn creates that physical connection. They do not rerun
+  on every pool checkout, and a pipeline does not share one session across all
+  assets. The session ends on discard, idle eviction, disabled pooling, error,
+  or runner shutdown. Read
+  [DuckDB Session Scripts And Resources](duckdb-session-scripts.html).
   """
 
   alias Favn.RelationRef
@@ -134,6 +142,16 @@ defmodule Favn.SQLClient do
   they open that same relation connection without an explicit `:required_catalogs`
   option.
 
+  `required_resources: [resource]` explicitly selects named native session SQL
+  resources for plain SQLClient work. Prefer SQL asset `@resources` for SQL
+  assets so requirements remain visible in the manifest.
+
+  When a DuckDB caller omits `:required_catalogs`, all configured catalogs are
+  prepared for backward-compatible inspection and maintenance behavior. Pass
+  `required_catalogs: []` when the session needs no configured catalog. Prefer
+  the narrowest catalog and resource sets because their trusted setup SQL runs
+  with the connection's authority.
+
   Public callers should only pass adapter-facing options here. Internal runtime
   routing controls such as `:registry_name` are not accepted by this facade.
 
@@ -141,6 +159,11 @@ defmodule Favn.SQLClient do
 
       {:ok, session} = Favn.SQLClient.connect(:warehouse)
       {:ok, raw_session} = Favn.SQLClient.connect(:warehouse, required_catalogs: ["raw"])
+      {:ok, storage_session} =
+        Favn.SQLClient.connect(:warehouse,
+          required_catalogs: [],
+          required_resources: [:landing_storage]
+        )
   """
   @spec connect(connection_name(), opts()) :: {:ok, session()} | {:error, term()}
   def connect(connection, opts \\ [])

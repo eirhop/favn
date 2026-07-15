@@ -6,20 +6,37 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
 
   @moduletag :adbc_integration
 
-  test "runs a real in-memory DuckDB ADBC query" do
+  test "runs a native multi-statement session script through DuckDB ADBC" do
+    script =
+      Path.join(
+        System.tmp_dir!(),
+        "favn_adbc_session_#{System.unique_integer([:positive])}.sql"
+      )
+
+    File.write!(
+      script,
+      "CREATE TEMP TABLE session_ready(value INTEGER);\nINSERT INTO session_ready VALUES (42);"
+    )
+
+    on_exit(fn -> File.rm(script) end)
+
     resolved = %Resolved{
       name: :warehouse,
       adapter: ADBC,
       module: __MODULE__,
-      config: %{database: ":memory:"}
+      config: %{open: [database: ":memory:"], duckdb: [startup: [file: script]]}
     }
 
     assert {:ok, conn} = ADBC.connect(resolved, connect_opts())
-    assert :ok = ADBC.ping(conn, [])
-    assert {:ok, _result} = ADBC.execute(conn, "CREATE TABLE orders AS SELECT 1 AS id", [])
-    assert {:ok, result} = ADBC.query(conn, "SELECT id FROM orders", [])
-    assert result.rows == [%{"id" => 1}]
-    assert :ok = ADBC.disconnect(conn, [])
+
+    try do
+      assert :ok = ADBC.bootstrap(conn, resolved, connect_opts())
+      assert :ok = ADBC.ping(conn, [])
+      assert {:ok, result} = ADBC.query(conn, "SELECT value FROM session_ready", [])
+      assert result.rows == [%{"value" => 42}]
+    after
+      ADBC.disconnect(conn, [])
+    end
   end
 
   defp connect_opts do

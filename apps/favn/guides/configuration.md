@@ -142,7 +142,7 @@ config :favn,
   connections: [
     warehouse: [
       open: [database: ":memory:"],
-      duckdb: [load: [:parquet]]
+      duckdb: [startup: [file: {:priv, :my_app, "duckdb/startup.sql"}]]
     ]
   ]
 ```
@@ -207,10 +207,12 @@ config :favn,
   connections: [
     warehouse: [
       open: [database: ":memory:"],
-      duckdb: [load: [:parquet]]
+      duckdb: [startup: [file: {:priv, :my_app, "duckdb/startup.sql"}]]
     ]
   ]
 ```
+
+The SQL file contains the native statement, for example `LOAD parquet;`.
 
 `open`:
 
@@ -221,115 +223,60 @@ config :favn,
 Old root keys such as `:database`, `:duckdb_bootstrap`, and root
 `:write_concurrency` are rejected. Use `open: [...]` and `duckdb: [...]`.
 
-`duckdb` groups:
+`duckdb` accepts only native session-script configuration:
 
 | Key | Meaning |
 | --- | --- |
-| `:load` | DuckDB extensions to load. |
-| `:settings` | DuckDB settings. |
-| `:secrets` | Temporary DuckDB secrets. |
-| `:attach` | Attached DuckDB or DuckLake catalogs. |
-| `:use` | Attached catalog to select after attach. |
-
-Standard DuckDB settings currently support:
-
-| Setting | Values |
-| --- | --- |
-| `:azure_transport_option_type` | `:default` or `:curl` |
-
-## DuckDB Attach Config
-
-Attach a DuckDB file catalog:
+| `:startup` | Optional SQL file run for every new physical session. |
+| `:resources` | Named SQL files selected by SQL assets and catalog metadata. |
+| `:catalogs` | Favn-owned resource and write-admission metadata; it does not generate SQL. |
 
 ```elixir
 duckdb: [
-  attach: [
-    raw: [type: :duckdb, path: ".favn/data/raw.duckdb", write_concurrency: 1]
+  startup: [
+    file: {:priv, :my_app, "duckdb/startup.sql"},
+    params: [timezone: "Europe/Oslo"]
+  ],
+  resources: [
+    landing_storage: [
+      file: {:priv, :my_app, "duckdb/landing_storage.sql"},
+      params: [
+        token: Favn.RuntimeConfig.Ref.secret_env!("LANDING_TOKEN")
+      ]
+    ]
+  ],
+  catalogs: [
+    landing: [
+      resource: :landing_storage,
+      write_concurrency: 1,
+      write_scope: "production-ducklake-metadata"
+    ]
   ]
 ]
 ```
 
-Attach a DuckLake catalog:
+Script `file` is either `{:priv, otp_app, "relative/path.sql"}` or an absolute
+path. A runtime ref may resolve to an absolute path. `params` values may be
+literals or runtime refs and are referenced as `@name` in the SQL file. They
+are value-only typed literals, not identifiers or SQL fragments.
 
-```elixir
-duckdb: [
-  secrets: [
-    lakehouse_meta: [
-      type: :postgres,
-      host: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_POSTGRES_HOST"),
-      port: 5432,
-      database: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_POSTGRES_DATABASE"),
-      user: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_POSTGRES_USER"),
-      password: Favn.RuntimeConfig.Ref.secret_env!("DUCKLAKE_POSTGRES_PASSWORD"),
-      sslmode: :require
-    ]
-  ],
-  attach: [
-    lake: [
-      type: :ducklake,
-      metadata: "ducklake:postgres:",
-      meta_secret: :lakehouse_meta,
-      data_path: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_DATA_PATH"),
-      write_concurrency: 1
-    ]
-  ],
-  use: :lake
-]
-```
+Catalog `write_concurrency` is a positive integer or `:unlimited` and defaults
+to `1`. `write_scope` is an optional stable string shared by catalog aliases or
+connections that compete for the same backend capacity. Favn does not infer
+that identity from arbitrary SQL.
 
-Attach `write_concurrency` values:
+Write native `INSTALL`, `LOAD`, `SET`, `CREATE SECRET`, `ATTACH`, and `USE`
+statements in the files. The removed structured `load`, `settings`, `secrets`,
+`attach`, and `use` keys are rejected. Read
+[DuckDB Session Scripts And Resources](duckdb-session-scripts.md) for complete
+examples, physical-session lifecycle, pooling identity, safety rules, and a
+failure example.
 
-- `:unlimited`
-- `:single`
-- positive integer
-
-Defaults:
-
-| Attach type | Default |
-| --- | --- |
-| `:duckdb` | `1` |
-| `:ducklake` | `:unlimited` |
-
-For DuckLake on PostgreSQL metadata, keep `write_concurrency` conservative. One
-admitted writer can use multiple PostgreSQL backend connections.
-
-## DuckDB Secrets
-
-Azure ADLS credential-chain secret:
-
-```elixir
-secrets: [
-  azure_adls: [
-    type: :azure,
-    provider: :credential_chain,
-    account_name: "myaccount",
-    chain: [:cli, :env],
-    scope: "abfss://container@myaccount.dfs.core.windows.net/path/"
-  ]
-]
-```
-
-Postgres secret fields:
-
-| Field | Required | Notes |
-| --- | --- | --- |
-| `:type` | yes | `:postgres` |
-| `:host` | yes | non-empty string |
-| `:port` | yes | `1..65_535` |
-| `:database` | yes | non-empty string |
-| `:user` | yes | non-empty string |
-| `:password` | password or auth | string or secret ref |
-| `:auth` | password or auth | Azure Postgres Entra auth config |
-| `:sslmode` | no | `:disable`, `:allow`, `:prefer`, `:require`, `:verify-ca`, or `:verify-full` |
-
-`password` and `auth` are mutually exclusive.
-
-Azure Postgres Entra auth examples:
-
-```elixir
-auth: [type: :azure_postgres_entra, provider: :managed_identity, endpoint: :auto]
-auth: [type: :azure_postgres_entra, provider: :azure_cli]
-```
+Runtime refs resolve when the runner starts, not on every checkout. Rotating an
+environment-backed credential therefore requires a runner restart unless the
+native DuckDB provider refreshes it itself; idle-pool timeout is not a maximum
+session age. In local development, `mix favn.reload` restarts the runner and
+reevaluates runtime config.
 
 ## DuckDB ADBC Config
 
@@ -343,8 +290,8 @@ config :favn, :duckdb_adbc,
   entrypoint: "duckdb_adbc_init"
 ```
 
-ADBC uses the same connection shape: `open: [...]`, `duckdb: [...]`, and
-`pool: [...]`.
+ADBC uses the same `open`, native `duckdb.startup/resources/catalogs`, and
+`pool` shape.
 
 Runner plugin result bounds:
 
@@ -357,31 +304,10 @@ config :favn,
   ]
 ```
 
-ADBC DuckDB settings include standard settings plus:
-
-| Setting | Values |
-| --- | --- |
-| `:pg_pool_acquire_mode` | `:force`, `:wait`, `:try` |
-| `:threads` | positive integer |
-| `:pg_pool_max_connections` | non-negative integer |
-| `:pg_pool_wait_timeout_millis` | non-negative integer |
-| `:pg_pool_max_lifetime_millis` | non-negative integer |
-| `:pg_pool_idle_timeout_millis` | non-negative integer |
-| `:pg_pool_enable_thread_local_cache` | boolean |
-| `:pg_pool_enable_reaper_thread` | boolean |
-| `:pg_pool_health_check_query` | string |
-
-`pg_connection_limit` is rejected. Use `pg_pool_max_connections`.
-
-For DuckLake on Postgres, prefer:
-
-```elixir
-settings: [
-  pg_pool_acquire_mode: :wait,
-  pg_pool_max_connections: 5,
-  pg_pool_enable_thread_local_cache: false
-]
-```
+DuckDB and extension settings are native SQL in `startup` or a named resource,
+so the ADBC adapter does not maintain a separate setting allowlist. For
+DuckLake on PostgreSQL, configure its pool settings in SQL and keep Favn catalog
+`write_concurrency` below the usable metadata connection budget.
 
 ## Session Pooling
 

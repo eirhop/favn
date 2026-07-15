@@ -11,6 +11,7 @@ defmodule Favn.Connection.Resolved do
     :config,
     required_keys: [],
     secret_fields: [],
+    secret_paths: [],
     schema_keys: [],
     metadata: %{}
   ]
@@ -22,6 +23,7 @@ defmodule Favn.Connection.Resolved do
           config: map(),
           required_keys: [atom()],
           secret_fields: [atom()],
+          secret_paths: [[atom() | String.t() | non_neg_integer()]],
           schema_keys: [atom()],
           metadata: map()
         }

@@ -16,8 +16,13 @@ Tests:
   is an authoring macro layered on core schedule values.
 
 Use when changing asset, SQL asset, freshness DSL capture, execution pool DSL
-capture, reusable runtime-config bundle authoring, pipeline concurrency clauses, namespace, source, connection, or
+capture, SQL `@resources`, reusable runtime-config bundle authoring, pipeline concurrency clauses, namespace, source, connection, or
 authoring documentation behavior.
+
+`Favn.SQLAsset` captures optional list-valued `@resources` before `query`.
+`Favn.Namespace` resources inherit additively from root to leaf, while relation
+defaults still override by key. Authoring emits only the normalized versioned
+session-requirements contract.
 
 `Favn.SQLAsset` compiles up to 50 ordered `check` declarations through the same
 `Favn.SQL.Template` and visible `defsql` catalog as the asset query. It validates

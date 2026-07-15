@@ -93,7 +93,11 @@ defmodule Favn.Dev.Init do
       {Path.join([project.lib_root, "lakehouse", "mart", "sales", "order_summary.ex"]),
        order_summary_asset(project)},
       {Path.join([project.lib_root, "pipelines", "local_smoke.ex"]),
-       local_smoke_pipeline(project)}
+       local_smoke_pipeline(project)},
+      {Path.join([project.root_dir, "priv", "duckdb", "raw_catalog.sql"]),
+       duckdb_catalog_script("raw")},
+      {Path.join([project.root_dir, "priv", "duckdb", "mart_catalog.sql"]),
+       duckdb_catalog_script("mart")}
     ]
   end
 
@@ -232,9 +236,13 @@ defmodule Favn.Dev.Init do
         important_lakehouse: [
           open: [database: ".favn/data/local_smoke.duckdb"],
           duckdb: [
-            attach: [
-              raw: [type: :duckdb, path: ".favn/data/raw.duckdb"],
-              mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]
+            resources: [
+              raw_catalog: [file: {:priv, #{inspect(project.app)}, "duckdb/raw_catalog.sql"}],
+              mart_catalog: [file: {:priv, #{inspect(project.app)}, "duckdb/mart_catalog.sql"}]
+            ],
+            catalogs: [
+              raw: [resource: :raw_catalog, write_concurrency: 1],
+              mart: [resource: :mart_catalog, write_concurrency: 1]
             ]
           ]
         ]
@@ -246,6 +254,10 @@ defmodule Favn.Dev.Init do
         storage: :memory
       ]
     '''
+  end
+
+  defp duckdb_catalog_script(catalog) do
+    "ATTACH '.favn/data/#{catalog}.duckdb' AS #{catalog};\n"
   end
 
   defp connection_module(project) do

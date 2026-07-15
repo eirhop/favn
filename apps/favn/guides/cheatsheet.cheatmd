@@ -37,6 +37,7 @@ defmodule MyApp.Assets.OrderSummary do
   use Favn.SQLAsset
 
   @depends MyApp.Assets.Orders
+  @resources [:landing_storage]
   @materialized :table
 
   check :candidate_has_rows,
@@ -80,9 +81,16 @@ defmodule MyApp.Lakehouse do
 end
 
 defmodule MyApp.Lakehouse.Raw do
-  use Favn.Namespace, relation: [catalog: "raw"]
+  use Favn.Namespace,
+    relation: [catalog: "raw"],
+    resources: [:azure_extension]
 end
 ```
+
+Namespace and leaf resources are additive. They select trusted native DuckDB
+session SQL files; read `guides/duckdb-session-scripts.md` before configuring
+them. Session-script and asset parameters both use `@name`, never `{{name}}`,
+but have separate value sources.
 
 Define a pipeline:
 
@@ -104,7 +112,7 @@ Common modules:
 | `Favn.Asset` | Elixir asset modules. |
 | `Favn.SQLAsset` | SQL asset modules. |
 | `Favn.Pipeline` | Named groups of assets to run together. |
-| `Favn.Namespace` | Shared relation defaults such as connection, catalog, and schema. |
+| `Favn.Namespace` | Shared relation defaults and additive SQL session resources. |
 | `Favn.Connection` | Named SQL connection definitions. |
 | `Favn.SQLClient` | SQL calls from Elixir code through configured Favn connections. |
 

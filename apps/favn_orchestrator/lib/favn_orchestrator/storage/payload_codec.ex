@@ -37,6 +37,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     "Elixir.Favn.SQL.Column" => :"Elixir.Favn.SQL.Column",
     "Elixir.Favn.SQL.Relation" => :"Elixir.Favn.SQL.Relation",
     "Elixir.Favn.SQL.RelationRef" => :"Elixir.Favn.SQL.RelationRef",
+    "Elixir.Favn.SQL.SessionRequirements" => :"Elixir.Favn.SQL.SessionRequirements",
     "Elixir.Favn.SQL.Template" => :"Elixir.Favn.SQL.Template",
     "Elixir.Favn.SQL.Template.AssetRef" => :"Elixir.Favn.SQL.Template.AssetRef",
     "Elixir.Favn.SQL.Template.Call" => :"Elixir.Favn.SQL.Template.Call",

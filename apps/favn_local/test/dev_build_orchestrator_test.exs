@@ -59,7 +59,7 @@ defmodule Favn.Dev.Build.OrchestratorTest do
               "build_id" => ^build_id,
               "artifact" => %{"kind" => "assembly_metadata", "operational" => false},
               "compatibility" => %{
-                "runner_contract_version" => 4,
+                "runner_contract_version" => 5,
                 "supported_storage_modes" => ["memory", "sqlite", "postgres"]
               },
               "required_env" => required_env

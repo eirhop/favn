@@ -17,14 +17,35 @@ defmodule Favn.SQL.PoolKey do
   Builds a pool key from resolved connection identity and runtime inputs.
   """
   @spec build(Resolved.t(), keyword(), [atom() | String.t()], term()) :: t()
-  def build(%Resolved{} = resolved, adapter_opts, required_catalogs, adapter_fingerprint \\ nil)
+  def build(%Resolved{} = resolved, adapter_opts, required_catalogs, adapter_fingerprint)
       when is_list(adapter_opts) and is_list(required_catalogs) do
+    build(resolved, adapter_opts, required_catalogs, [], adapter_fingerprint)
+  end
+
+  @spec build(
+          Resolved.t(),
+          keyword(),
+          [atom() | String.t()],
+          [atom() | String.t()],
+          term()
+        ) :: t()
+  def build(
+        %Resolved{} = resolved,
+        adapter_opts,
+        required_catalogs,
+        required_resources,
+        adapter_fingerprint
+      )
+      when is_list(adapter_opts) and is_list(required_catalogs) and is_list(required_resources) do
     payload = {
       resolved.name,
       resolved.adapter,
       resolved.config,
-      adapter_opts |> Keyword.delete(:required_catalogs) |> Enum.sort(),
-      normalize_catalogs(required_catalogs),
+      adapter_opts
+      |> Keyword.drop([:required_catalogs, :required_resources])
+      |> Enum.sort(),
+      normalize_names(required_catalogs),
+      normalize_names(required_resources),
       adapter_fingerprint
     }
 
@@ -37,8 +58,8 @@ defmodule Favn.SQL.PoolKey do
     %__MODULE__{hash: hash}
   end
 
-  defp normalize_catalogs(catalogs) do
-    catalogs
+  defp normalize_names(names) do
+    names
     |> Enum.map(&to_string/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()

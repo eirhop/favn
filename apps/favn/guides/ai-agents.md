@@ -41,6 +41,13 @@ an inline resolver DSL:
 The canonical declaration is `@runtime_inputs MyApp.Inputs`. Anonymous
 functions, captures, MFA tuples, and inline resolver blocks are unsupported.
 
+For DuckDB session setup, do not invent structured extension, setting, secret,
+or attach options. Read
+[DuckDB Session Scripts And Resources](duckdb-session-scripts.md), then
+`Favn.SQLAsset` and `Favn.Namespace`. Native trusted SQL files own DuckDB syntax;
+SQL assets declare stable `@resources [...]` names. Both session scripts and
+asset SQL use `@name` for values, but they have separate parameter sources.
+
 ## Recommended Workflow
 
 - Use `:favn` as the public package surface for asset authoring, local commands,
@@ -82,6 +89,7 @@ mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Result
 mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Error
 mix favn.read_doc Favn.SQLAsset check
 mix favn.read_doc Favn.SQL.CheckResult
+mix favn.read_doc Favn.Connection
 mix favn.read_doc Favn.Pipeline
 mix favn.read_doc Favn.Namespace
 mix favn.read_doc Favn.SQLClient

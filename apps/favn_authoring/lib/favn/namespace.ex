@@ -1,6 +1,7 @@
 defmodule Favn.Namespace do
   @moduledoc """
-  Public helper for inherited relation defaults and runtime-config selection.
+  Public helper for inherited relation defaults, SQL session resources, and
+  runtime-config selection.
 
   Use `Favn.Namespace` to declare relation defaults once on parent modules, then
   let `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, `Favn.Assets`, and
@@ -10,8 +11,8 @@ defmodule Favn.Namespace do
   ## When to use it
 
   Use this module when many assets share the same warehouse connection, catalog,
-  or schema and you want those values inherited from explicit namespace modules
-  instead of repeated in every asset.
+  schema, or SQL session resources and you want those values inherited from
+  explicit namespace modules instead of repeated in every asset.
 
   The recommended lakehouse convention is one namespace module per level:
 
@@ -56,7 +57,9 @@ defmodule Favn.Namespace do
 
       # lib/my_app/lakehouse/raw.ex
       defmodule MyApp.Lakehouse.Raw do
-        use Favn.Namespace, relation: [catalog: "raw"]
+        use Favn.Namespace,
+          relation: [catalog: "raw"],
+          resources: [:azure_extension]
       end
 
       # lib/my_app/lakehouse/raw/sales.ex
@@ -79,6 +82,8 @@ defmodule Favn.Namespace do
   - `relation: [connection: ...]` for a root lakehouse namespace
   - `relation: [catalog: ...]` for database or phase namespaces such as raw or mart
   - `relation: [schema: ...]` for segment/domain namespaces such as sales or finance
+  - `resources: [...]` for additive named SQL session resources inherited by
+    descendant `Favn.SQLAsset` modules
   - `runtime_config: [bundle, ...]` for explicit descendant Elixir asset requirements
 
   Supported relation keys:
@@ -98,6 +103,15 @@ defmodule Favn.Namespace do
   broad root namespace unless every descendant executable Elixir asset needs
   them.
 
+  Resource inheritance is additive from root to leaf, unlike relation defaults,
+  which override by key. Names normalize to lowercase snake_case strings in the
+  manifest. A namespace resource applies only to descendant SQL assets. Put a
+  resource on a broad namespace only when every descendant SQL asset needs that
+  physical-session capability; otherwise use local `@resources [...]` on the
+  leaf asset. Resources are configured as trusted native DuckDB SQL files; read
+  the HexDocs guide
+  [DuckDB Session Scripts And Resources](duckdb-session-scripts.html).
+
   ## See also
 
   - `Favn.Asset`
@@ -106,6 +120,7 @@ defmodule Favn.Namespace do
   """
 
   alias Favn.RuntimeConfig.Bundle
+  alias Favn.SQL.SessionRequirements
 
   @supported_keys [:connection, :catalog, :schema]
 
@@ -154,6 +169,26 @@ defmodule Favn.Namespace do
     end)
   end
 
+  @doc """
+  Resolves SQL session resources selected by ancestor namespaces.
+
+  Resources are inherited additively from root to leaf, normalized to stable
+  strings, deduplicated, and sorted. They apply only when a descendant
+  `Favn.SQLAsset` compiles its session requirements.
+  """
+  @spec resolve_resources(module()) :: [String.t()]
+  def resolve_resources(module) when is_atom(module) do
+    module
+    |> ancestors()
+    |> Enum.flat_map(fn ancestor ->
+      case namespace_config(ancestor) do
+        nil -> []
+        config -> config.resources
+      end
+    end)
+    |> SessionRequirements.normalize_resources!()
+  end
+
   @doc false
   @spec normalize_config!(keyword() | map()) :: map()
   def normalize_config!(opts) when is_list(opts) do
@@ -168,8 +203,9 @@ defmodule Favn.Namespace do
   def normalize_config!(opts) when is_map(opts) do
     relation_defaults = normalize_relation_defaults!(Map.get(opts, :relation, %{}))
     runtime_config = normalize_runtime_config!(Map.get(opts, :runtime_config, []))
-    validate_no_legacy_keys!(Map.drop(opts, [:relation, :runtime_config]))
-    %{relation: relation_defaults, runtime_config: runtime_config}
+    resources = normalize_resources!(Map.get(opts, :resources, []))
+    validate_no_legacy_keys!(Map.drop(opts, [:relation, :runtime_config, :resources]))
+    %{relation: relation_defaults, runtime_config: runtime_config, resources: resources}
   end
 
   def normalize_config!(opts) do
@@ -210,12 +246,19 @@ defmodule Favn.Namespace do
           "namespace runtime_config must be a list of Favn.RuntimeConfig.Bundle values"
   end
 
+  defp normalize_resources!(resources) do
+    SessionRequirements.normalize_resources!(resources)
+  rescue
+    error in ArgumentError ->
+      raise ArgumentError, "namespace resources are invalid: #{error.message}"
+  end
+
   defp validate_no_legacy_keys!(opts_without_relation) when map_size(opts_without_relation) == 0,
     do: :ok
 
   defp validate_no_legacy_keys!(opts_without_relation) do
     raise ArgumentError,
-          "namespace config contains unsupported key(s) #{inspect(Map.keys(opts_without_relation))}; supported keys are :relation and :runtime_config"
+          "namespace config contains unsupported key(s) #{inspect(Map.keys(opts_without_relation))}; supported keys are :relation, :runtime_config, and :resources"
   end
 
   defp namespace_config(module) do

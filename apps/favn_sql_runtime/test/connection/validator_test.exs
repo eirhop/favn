@@ -5,6 +5,7 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
   alias Favn.Connection.Resolved
   alias Favn.Connection.Validator
   alias Favn.RuntimeConfig.Ref
+  alias Favn.SQL.SessionScript.Config
 
   test "allows reserved runtime write concurrency config" do
     definition = %Definition{
@@ -18,11 +19,16 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
             %Resolved{
               name: :warehouse,
               config: %{database: "warehouse.duckdb", write_concurrency: 1}
-             }} = Validator.resolve(definition, %{database: "warehouse.duckdb", write_concurrency: 1})
+            }} =
+             Validator.resolve(definition, %{database: "warehouse.duckdb", write_concurrency: 1})
   end
 
-  test "resolves nested runtime config refs and marks nested secret refs for redaction" do
-    System.put_env("FAVN_TEST_DUCKLAKE_DATA_PATH", "abfss://lake@example.dfs.core.windows.net/raw")
+  test "resolves nested refs and records exact secret paths" do
+    System.put_env(
+      "FAVN_TEST_DUCKLAKE_DATA_PATH",
+      "abfss://lake@example.dfs.core.windows.net/raw"
+    )
+
     System.put_env("FAVN_TEST_DUCKLAKE_METADATA", "postgres://user:password@example/db")
 
     on_exit(fn ->
@@ -37,8 +43,10 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
       config_schema: [
         %{key: :database, required: true, type: :path},
         %{
-          key: :duckdb_bootstrap,
-          type: {:custom, fn value -> if is_list(value), do: :ok, else: {:error, :expected_keyword} end}
+          key: :duckdb,
+          type:
+            {:custom,
+             fn value -> if is_list(value), do: :ok, else: {:error, :expected_keyword} end}
         }
       ]
     }
@@ -46,23 +54,67 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
     assert {:ok,
             %Resolved{
               config: %{
-                duckdb_bootstrap: [
-                  attach: [
-                    data_path: "abfss://lake@example.dfs.core.windows.net/raw",
-                    metadata: "postgres://user:password@example/db"
+                duckdb: [
+                  resources: [
+                    landing_storage: [
+                      params: [
+                        data_path: "abfss://lake@example.dfs.core.windows.net/raw",
+                        metadata: "postgres://user:password@example/db"
+                      ]
+                    ]
                   ]
                 ]
               },
-              secret_fields: [:duckdb_bootstrap]
+              secret_fields: [:duckdb],
+              secret_paths: [
+                [:duckdb, :resources, :landing_storage, :params, :metadata]
+              ]
             }} =
              Validator.resolve(definition, %{
                database: ":memory:",
-               duckdb_bootstrap: [
-                 attach: [
-                    data_path: Ref.env!("FAVN_TEST_DUCKLAKE_DATA_PATH"),
-                    metadata: Ref.secret_env!("FAVN_TEST_DUCKLAKE_METADATA")
+               duckdb: [
+                 resources: [
+                   landing_storage: [
+                     params: [
+                       data_path: Ref.env!("FAVN_TEST_DUCKLAKE_DATA_PATH"),
+                       metadata: Ref.secret_env!("FAVN_TEST_DUCKLAKE_METADATA")
+                     ]
+                   ]
                  ]
                ]
              })
+  end
+
+  test "custom session-script validation never exposes a resolved secret value" do
+    System.put_env("FAVN_TEST_INVALID_SCRIPT_FILE", "do-not-expose-this-secret")
+
+    on_exit(fn -> System.delete_env("FAVN_TEST_INVALID_SCRIPT_FILE") end)
+
+    definition = %Definition{
+      name: :warehouse,
+      adapter: Favn.SQL.Adapter.DuckDB,
+      module: __MODULE__,
+      config_schema: [
+        %{key: :database, required: true, type: :path},
+        %{key: :duckdb, type: {:custom, &Config.validate/1}}
+      ]
+    }
+
+    assert {:error, [error]} =
+             Validator.resolve(definition, %{
+               database: ":memory:",
+               duckdb: [
+                 catalogs: [
+                   lake: [
+                     write_concurrency: Ref.secret_env!("FAVN_TEST_INVALID_SCRIPT_FILE")
+                   ]
+                 ]
+               ]
+             })
+
+    assert error.details.reason ==
+             {:invalid_catalog_write_concurrency, :expected_positive_integer_or_unlimited}
+
+    refute inspect(error) =~ "do-not-expose-this-secret"
   end
 end

@@ -251,7 +251,7 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
     assert :ok = SessionPool.creation_finished(key, name: context.pool_name)
   end
 
-  test "pool keys hash stable inputs and sort required catalogs" do
+  test "pool keys hash stable inputs and sort required catalogs and resources" do
     resolved = resolved(:stable, %{database: "secret.duckdb"})
 
     assert PoolKey.build(resolved, [mode: :read], [:mart, "raw"], :v1) ==
@@ -259,6 +259,12 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
 
     refute PoolKey.build(resolved, [mode: :write], [:mart, "raw"], :v1) ==
              PoolKey.build(resolved, [mode: :read], ["raw", :mart], :v1)
+
+    assert PoolKey.build(resolved, [], [:raw], [:landing_storage, "azure_extension"], :v1) ==
+             PoolKey.build(resolved, [], ["raw"], ["azure_extension", :landing_storage], :v1)
+
+    refute PoolKey.build(resolved, [], [:raw], [:landing_storage], :v1) ==
+             PoolKey.build(resolved, [], [:raw], [:azure_extension], :v1)
 
     assert %PoolKey{hash: hash} = PoolKey.build(resolved, [], [], nil)
     assert is_binary(hash)

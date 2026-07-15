@@ -30,3 +30,8 @@ session where practical so DuckDB/DuckLake bootstrap costs are paid once per ass
 execution instead of once per helper call. Sessions are process-owned and should
 not be shared concurrently across child tasks; child tasks should open their own
 scoped session with `with_required_catalogs/2` or explicit `required_catalogs`.
+
+The public HexDocs guide `guides/duckdb-session-scripts.md` is canonical for
+native DuckDB startup/resources config, `@resources`, physical-session
+lifecycle, and script safety. `Favn.AI`, `Favn.Connection`, `Favn.SQLAsset`, and
+`Favn.Namespace` must retain breadcrumbs to it.
