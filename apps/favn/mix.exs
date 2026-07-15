@@ -45,6 +45,7 @@ defmodule Favn.MixProject do
         "README.md",
         "guides/getting-started.md",
         "guides/authoring-assets.md",
+        "guides/sql-asset-checks.md",
         "guides/local-development.md",
         "guides/configuration.md",
         "guides/sql-client.md",

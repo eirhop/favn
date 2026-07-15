@@ -38,6 +38,13 @@ defmodule MyApp.Assets.OrderSummary do
 
   @depends MyApp.Assets.Orders
   @materialized :table
+
+  check :candidate_has_rows,
+    at: :before_materialize,
+    on_false: :fail do
+    ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
+  end
+
   query do
     ~SQL"""
     select order_date, count(*) as order_count
@@ -47,6 +54,12 @@ defmodule MyApp.Assets.OrderSummary do
   end
 end
 ```
+
+SQL checks support `at: :before_materialize | :after_materialize` and
+`on_false: :fail | :warn | :skip_materialization`. Read
+`Favn.SQLAsset.check/3` or `guides/sql-asset-checks.md` before using
+`:skip_materialization` or `target()` because both have first-target bootstrap
+rules.
 
 Share relation defaults:
 

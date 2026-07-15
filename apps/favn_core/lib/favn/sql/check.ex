@@ -4,6 +4,25 @@ defmodule Favn.SQL.Check do
 
   Checks contain only runtime-required SQL IR and metadata. They can therefore
   render and execute without loading the authoring module that declared them.
+
+  This is the typed compile-time/runtime contract, not the user authoring API.
+  Asset authors declare checks with `Favn.SQLAsset.check/3`. Read
+  `Favn.SQLAsset` first for transaction semantics and `Favn.SQL.CheckResult` for
+  the durable runtime outcome.
+
+  A compiled check records:
+
+  - a unique `name`
+  - the `:before_materialize` or `:after_materialize` phase in `at`
+  - the `:fail`, `:warn`, or `:skip_materialization` false policy
+  - the optional `:target_exists` condition and static message
+  - authored SQL plus compiled `Favn.SQL.Template` IR
+  - whether nested SQL uses the runtime `query()` or `target()` relation
+
+  Validation also enforces the cross-field rules needed by the runner:
+  `:skip_materialization` is before-only and target-existence guarded, and any
+  before check using `target()` has the same guard. One asset may carry at most
+  50 uniquely named checks; messages are limited to 1,024 bytes.
   """
 
   alias Favn.SQL.Template

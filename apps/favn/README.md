@@ -99,6 +99,7 @@ not depend on Favn runtime, storage, or UI implementation apps directly.
 
 - [Getting Started](guides/getting-started.md): start Favn locally and run a pipeline.
 - [Authoring Assets](guides/authoring-assets.md): define assets, SQL assets, multi-assets, namespaces, pipelines, schedules, windows, and freshness.
+- [Transactional SQL Asset Checks](guides/sql-asset-checks.md): validate staged candidates and published targets atomically with fail, warn, and successful no-op policies.
 - [Local Development](guides/local-development.md): use `mix favn.*` commands locally.
 - [Configuration](guides/configuration.md): configure discovery, local runtime, SQL connections, DuckDB, ADBC, pooling, and env files.
 - [SQL Client](guides/sql-client.md): use `Favn.SQLClient` from Elixir code.

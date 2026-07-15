@@ -17,6 +17,16 @@ mix favn.read_doc Favn.AI
 SQL assets, namespaces, pipelines, local commands, manifest functions, windows,
 freshness, and `Favn.SQLClient`.
 
+For transactional SQL asset checks, follow this path instead of inferring the
+contract from runtime code:
+
+1. Read `mix favn.read_doc Favn.SQLAsset` for placement and execution semantics.
+2. Read `mix favn.read_doc Favn.SQLAsset check` for the macro's exact options.
+3. Read `mix favn.read_doc Favn.SQL.CheckResult` when interpreting persisted run
+   metadata and check outcomes.
+4. Read [Transactional SQL Asset Checks](sql-asset-checks.md) for the full
+   authoring workflow, result limits, and failure modes.
+
 ## Recommended Workflow
 
 - Use `:favn` as the public package surface for asset authoring, local commands,
@@ -53,6 +63,8 @@ Useful follow-up commands:
 mix favn.read_doc Favn
 mix favn.read_doc Favn.Asset
 mix favn.read_doc Favn.SQLAsset
+mix favn.read_doc Favn.SQLAsset check
+mix favn.read_doc Favn.SQL.CheckResult
 mix favn.read_doc Favn.Pipeline
 mix favn.read_doc Favn.Namespace
 mix favn.read_doc Favn.SQLClient
