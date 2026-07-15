@@ -6,6 +6,9 @@ defmodule FavnView.Components.OutputMetadata do
   use FavnView, :html
 
   @priority_keys [
+    "quality_status",
+    "write_outcome",
+    "reason",
     "rows_written",
     "rows_read",
     "rows_inserted",
@@ -59,6 +62,7 @@ defmodule FavnView.Components.OutputMetadata do
       |> assign(:empty?, empty_metadata?(assigns.metadata))
       |> assign(:failed?, failed_status?(assigns.status))
       |> assign(:active?, active_status?(assigns.status))
+      |> assign(:check_summary, check_summary(assigns.metadata, assigns.status))
 
     ~H"""
     <section
@@ -81,6 +85,56 @@ defmodule FavnView.Components.OutputMetadata do
         >
           <.icon name="hero-clipboard-document" class="size-4" /> Copy JSON
         </button>
+      </div>
+
+      <div
+        :if={@check_summary}
+        class={[
+          "mt-4 rounded-box border p-3",
+          check_summary_class(@check_summary.tone)
+        ]}
+        data-testid="sql-check-summary"
+        data-quality-status={@check_summary.quality_status}
+        data-write-outcome={@check_summary.write_outcome}
+      >
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-sm font-medium">{@check_summary.title}</p>
+          <div class="flex flex-wrap gap-1.5">
+            <span class={check_badge_class(@check_summary.tone)}>
+              {@check_summary.quality_label}
+            </span>
+            <span :if={@check_summary.write_label} class="badge badge-outline badge-sm">
+              {@check_summary.write_label}
+            </span>
+          </div>
+        </div>
+        <p :if={@check_summary.description} class="mt-1 text-xs opacity-70">
+          {@check_summary.description}
+        </p>
+
+        <div :if={@check_summary.checks != []} class="mt-3 grid gap-2">
+          <article
+            :for={check <- @check_summary.checks}
+            class="rounded-field border border-current/15 bg-base-100/55 p-2.5"
+            data-testid="sql-check-result"
+            data-check-outcome={check.outcome}
+          >
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <p class="font-mono text-xs font-semibold">{check.name}</p>
+              <span class={check_badge_class(check.tone)}>{check.outcome_label}</span>
+            </div>
+            <p class="mt-1 text-xs opacity-65">
+              {check.phase_label}{check.duration_label}
+            </p>
+            <p :if={check.message} class="mt-1 text-xs">{check.message}</p>
+            <dl :if={check.metrics != []} class="mt-2 grid gap-1 text-xs">
+              <div :for={{key, value} <- check.metrics} class="flex justify-between gap-3">
+                <dt class="opacity-60">{key}</dt>
+                <dd class="break-all font-mono">{value}</dd>
+              </div>
+            </dl>
+          </article>
+        </div>
       </div>
 
       <p
@@ -144,6 +198,7 @@ defmodule FavnView.Components.OutputMetadata do
 
   defp metadata_rows(metadata) when is_map(metadata) do
     metadata
+    |> Map.drop([:check_results, "check_results"])
     |> flatten_map()
     |> Enum.map(fn {key, value} ->
       %{key: key, label: label(key), value: value_label(value), mono?: structured?(value)}
@@ -157,6 +212,138 @@ defmodule FavnView.Components.OutputMetadata do
     [%{key: "result", label: "Result", value: value_label(value), mono?: structured?(value)}]
   end
 
+  defp check_summary(metadata, status) when is_map(metadata) do
+    quality_status = metadata_value(metadata, :quality_status)
+    write_outcome = metadata_value(metadata, :write_outcome)
+    checks = metadata |> metadata_value(:check_results) |> normalize_checks()
+
+    if checks == [] and write_outcome not in [:no_op, "no_op"] do
+      nil
+    else
+      failed? = failed_status?(status) or quality_status in [:failed, "failed"]
+      warning? = quality_status in [:warning, "warning"]
+      no_op? = write_outcome in [:no_op, "no_op"]
+
+      {title, tone, quality_label, description} =
+        cond do
+          failed? and write_outcome in [:unknown, "unknown"] ->
+            {"Check diagnostics from failed attempt", :error, "Outcome unknown",
+             "The transaction outcome is unknown; verify the target state before retrying."}
+
+          failed? and write_outcome in [:not_started, "not_started"] ->
+            {"SQL checks not run", :error, "Not started",
+             "The transaction did not begin, so no write was attempted."}
+
+          failed? ->
+            {"Rolled-back check diagnostics", :error, "Failed",
+             "These results belong to a failed attempt and were not committed."}
+
+          warning? ->
+            {"SQL quality checks", :warning, "Warning",
+             "The write committed with quality warnings."}
+
+          no_op? ->
+            {"SQL quality checks", :info, "Passed", "The existing target was kept unchanged."}
+
+          true ->
+            {"SQL quality checks", :success, "Passed", nil}
+        end
+
+      %{
+        title: title,
+        tone: tone,
+        quality_label: quality_label,
+        quality_status: value_string(quality_status || if(failed?, do: :failed, else: :passed)),
+        write_label: if(no_op?, do: "No-op write", else: nil),
+        write_outcome: value_string(write_outcome),
+        description: description,
+        checks: checks
+      }
+    end
+  end
+
+  defp check_summary(_metadata, _status), do: nil
+
+  defp normalize_checks(checks) when is_list(checks), do: Enum.map(checks, &normalize_check/1)
+  defp normalize_checks(_checks), do: []
+
+  defp normalize_check(check) when is_map(check) do
+    outcome = metadata_value(check, :outcome)
+    duration_ms = metadata_value(check, :duration_ms)
+
+    %{
+      name: check |> metadata_value(:name) |> value_string(),
+      phase_label: check |> metadata_value(:phase) |> humanize_value(),
+      outcome: value_string(outcome),
+      outcome_label: humanize_value(outcome),
+      tone: check_outcome_tone(outcome),
+      message: metadata_value(check, :message),
+      duration_label: if(is_integer(duration_ms), do: " · #{duration_ms} ms", else: ""),
+      metrics: check |> metadata_value(:metrics) |> normalize_metrics()
+    }
+  end
+
+  defp normalize_check(check) do
+    %{
+      name: value_string(check),
+      phase_label: "Unknown phase",
+      outcome: "unknown",
+      outcome_label: "Unknown",
+      tone: :neutral,
+      message: nil,
+      duration_label: "",
+      metrics: []
+    }
+  end
+
+  defp normalize_metrics(metrics) when is_map(metrics) do
+    metrics
+    |> Enum.map(fn {key, value} -> {key_string(key), value_label(value)} end)
+    |> Enum.sort_by(&elem(&1, 0))
+  end
+
+  defp normalize_metrics(_metrics), do: []
+
+  defp metadata_value(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp check_outcome_tone(outcome) when outcome in [:warned, "warned"], do: :warning
+
+  defp check_outcome_tone(outcome)
+       when outcome in [:failed, :errored, "failed", "errored"],
+       do: :error
+
+  defp check_outcome_tone(outcome)
+       when outcome in [:passed, "passed", :materialization_skipped, "materialization_skipped"],
+       do: :success
+
+  defp check_outcome_tone(_outcome), do: :neutral
+
+  defp check_summary_class(:error), do: "border-error/30 bg-error/10 text-error"
+  defp check_summary_class(:warning), do: "border-warning/30 bg-warning/10 text-warning"
+  defp check_summary_class(:info), do: "border-info/30 bg-info/10 text-info"
+  defp check_summary_class(_tone), do: "border-success/30 bg-success/10 text-success"
+
+  defp check_badge_class(:error), do: "badge badge-error badge-sm"
+  defp check_badge_class(:warning), do: "badge badge-warning badge-sm"
+  defp check_badge_class(:success), do: "badge badge-success badge-sm"
+  defp check_badge_class(_tone), do: "badge badge-ghost badge-sm"
+
+  defp humanize_value(nil), do: "Unknown"
+
+  defp humanize_value(value) do
+    value
+    |> value_string()
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp value_string(nil), do: ""
+  defp value_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp value_string(value) when is_binary(value), do: value
+  defp value_string(value), do: inspect(value)
+
   defp flatten_map(map), do: flatten_map(map, nil)
 
   defp flatten_map(map, prefix) do
@@ -164,6 +351,7 @@ defmodule FavnView.Components.OutputMetadata do
       key = joined_key(prefix, key)
 
       case value do
+        %_{} = scalar -> [{key, scalar}]
         nested when is_map(nested) and map_size(nested) > 0 -> flatten_map(nested, key)
         other -> [{key, other}]
       end

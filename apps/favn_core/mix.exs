@@ -24,6 +24,7 @@ defmodule FavnCore.MixProject do
 
   defp deps do
     [
+      {:decimal, "~> 3.0"},
       {:jason, "~> 1.4"},
       {:tz, "~> 0.28.2"},
       internal_dep(:favn_test_support, "../favn_test_support", only: :test)

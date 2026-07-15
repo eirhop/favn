@@ -3,9 +3,8 @@ defmodule Favn.Manifest.Compatibility do
   Manifest schema and runner contract compatibility checks.
   """
 
-  @current_schema_version 2
-  @minimum_schema_version 1
-  @current_runner_contract_version 2
+  @current_schema_version 3
+  @current_runner_contract_version 3
 
   @type error ::
           {:invalid_manifest_input, term()}
@@ -32,10 +31,7 @@ defmodule Favn.Manifest.Compatibility do
   def validate_manifest(other), do: {:error, {:invalid_manifest_input, other}}
 
   @spec validate_schema_version(term()) :: :ok | {:error, error()}
-  def validate_schema_version(version)
-      when is_integer(version) and version >= @minimum_schema_version and
-             version <= @current_schema_version,
-      do: :ok
+  def validate_schema_version(@current_schema_version), do: :ok
 
   def validate_schema_version(other),
     do: {:error, {:unsupported_schema_version, other, @current_schema_version}}

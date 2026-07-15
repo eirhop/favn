@@ -54,6 +54,8 @@ defmodule Favn.SQL.Client do
 
   @resolution_opt_keys [:registry_name]
   @default_required_catalogs_key {__MODULE__, :default_required_catalogs_by_connection}
+  @transaction_context_key {__MODULE__, :transaction_context}
+  @nested_timeout_exit_tag {__MODULE__, :nested_operation_timeout}
 
   @type operation_result :: {:ok, term()} | {:error, term()}
 
@@ -224,6 +226,36 @@ defmodule Favn.SQL.Client do
 
   def materialize(_session, _write_plan, _opts), do: {:error, invalid_session_error()}
 
+  @doc false
+  @spec materialize_in_transaction(Session.t(), WritePlan.t(), keyword()) :: operation_result()
+  def materialize_in_transaction(%Session{} = session, %WritePlan{} = write_plan, opts)
+      when is_list(opts) do
+    {_admission_opts, adapter_opts} = split_operation_opts(opts)
+
+    if function_exported?(session.adapter, :materialize_in_transaction, 3) do
+      session
+      |> run_session_operation(
+        :materialize,
+        write_plan,
+        operation_runtime_opts(opts),
+        fn session ->
+          Admission.with_permit(session, :materialize, write_plan, fn ->
+            session.adapter.materialize_in_transaction(session.conn, write_plan, adapter_opts)
+          end)
+        end
+      )
+    else
+      {:error, unsupported_transactional_materialization_error(session)}
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(:materialize, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(:materialize, reason)}
+  end
+
+  def materialize_in_transaction(_session, _write_plan, _opts),
+    do: {:error, invalid_session_error()}
+
   @spec relation(Session.t(), RelationRef.t()) :: operation_result()
   def relation(%Session{} = session, %RelationRef{} = relation_ref) do
     session
@@ -351,13 +383,17 @@ defmodule Favn.SQL.Client do
 
     if function_exported?(adapter, :transaction, 3) do
       session
-      |> run_session_operation(:transaction, nil, operation_runtime_opts(opts), fn %Session{} = session ->
+      |> run_session_operation(:transaction, nil, operation_runtime_opts(opts), fn %Session{} =
+                                                                                     session ->
         Admission.with_permit(session, :transaction, admission_opts, fn ->
           adapter.transaction(
             session.conn,
             fn tx_conn ->
               tx_session = %Session{session | conn: tx_conn, required_catalogs: required_catalogs}
-              fun.(put_checkout_owner(tx_session, self()))
+
+              tx_session
+              |> put_checkout_owner(self())
+              |> with_transaction_context(fun)
             end,
             adapter_opts
           )
@@ -883,7 +919,14 @@ defmodule Favn.SQL.Client do
        when is_function(fun, 1) do
     deadline = Deadline.from_opts(opts, default_operation_timeout_ms())
 
-    case run_with_deadline(session, operation, deadline, fun) do
+    result =
+      if transaction_context?(session) do
+        run_inline_in_transaction(session, operation, deadline, fun)
+      else
+        run_with_deadline(session, operation, deadline, fun)
+      end
+
+    case result do
       {:ok, _value} = result ->
         maybe_mark_pooled_session_success(session, operation, opts)
         result
@@ -897,6 +940,123 @@ defmodule Favn.SQL.Client do
     end
   end
 
+  defp with_transaction_context(%Session{} = session, fun) when is_function(fun, 1) do
+    previous = Process.get(@transaction_context_key)
+    Process.put(@transaction_context_key, {session.adapter, session.conn})
+
+    try do
+      fun.(session)
+    after
+      if is_nil(previous) do
+        Process.delete(@transaction_context_key)
+      else
+        Process.put(@transaction_context_key, previous)
+      end
+    end
+  end
+
+  defp transaction_context?(%Session{} = session) do
+    Process.get(@transaction_context_key) == {session.adapter, session.conn}
+  end
+
+  # A transaction already runs inside the deadline worker. Its child operations
+  # stay in that process to preserve connection ownership. A shorter child
+  # deadline terminates the owning transaction worker so no adapter call can
+  # continue after the caller observes a timeout.
+  defp run_inline_in_transaction(
+         %Session{} = session,
+         operation,
+         %Deadline{} = deadline,
+         fun
+       ) do
+    if Deadline.expired?(deadline) do
+      operation_timeout(session, operation, deadline)
+    else
+      watchdog = start_nested_deadline_watchdog(session, operation, deadline)
+
+      Observability.emit(
+        [:operation, :start],
+        %{},
+        operation_metadata(session, operation, deadline)
+      )
+
+      result =
+        try do
+          normalize_operation_result(operation, fun.(session))
+        rescue
+          error -> {:error, normalize_runtime_error(operation, error)}
+        catch
+          :exit, reason -> {:error, normalize_runtime_error(operation, reason)}
+          kind, reason -> {:error, normalize_runtime_error(operation, {kind, reason})}
+        after
+          stop_nested_deadline_watchdog(watchdog)
+        end
+
+      case result do
+        {:ok, value} ->
+          Observability.emit(
+            [:operation, :stop],
+            %{duration_ms: elapsed_ms(deadline)},
+            operation_metadata(session, operation, deadline)
+          )
+
+          value
+
+        {:error, %Error{}} = error ->
+          Observability.emit(
+            [:operation, :exception],
+            %{duration_ms: elapsed_ms(deadline)},
+            operation_metadata(session, operation, deadline)
+          )
+
+          error
+      end
+    end
+  end
+
+  defp start_nested_deadline_watchdog(%Session{} = session, operation, %Deadline{} = deadline) do
+    owner = self()
+    ref = make_ref()
+
+    {watchdog, monitor} =
+      spawn_monitor(fn ->
+        owner_monitor = Process.monitor(owner)
+
+        receive do
+          {:cancel, ^ref} ->
+            Process.demonitor(owner_monitor, [:flush])
+
+          {:DOWN, ^owner_monitor, :process, ^owner, _reason} ->
+            :ok
+        after
+          Deadline.remaining_ms(deadline) ->
+            {:error, error} = operation_timeout(session, operation, deadline)
+
+            Observability.emit(
+              [:operation, :timeout],
+              %{duration_ms: elapsed_ms(deadline)},
+              operation_metadata(session, operation, deadline)
+            )
+
+            Process.exit(owner, {@nested_timeout_exit_tag, error})
+
+            receive do
+              {:DOWN, ^owner_monitor, :process, ^owner, _reason} -> :ok
+            end
+        end
+      end)
+
+    {watchdog, monitor, ref}
+  end
+
+  defp stop_nested_deadline_watchdog({watchdog, monitor, ref}) do
+    send(watchdog, {:cancel, ref})
+
+    receive do
+      {:DOWN, ^monitor, :process, ^watchdog, _reason} -> :ok
+    end
+  end
+
   defp run_with_deadline(%Session{} = session, operation, %Deadline{} = deadline, fun) do
     if Deadline.expired?(deadline) do
       operation_timeout(session, operation, deadline)
@@ -905,22 +1065,16 @@ defmodule Favn.SQL.Client do
       ref = make_ref()
       admission_permits = Process.get({Admission, :permits}, %{})
 
-      {pid, monitor} =
+      {guard, monitor} =
         spawn_monitor(fn ->
-          Process.put({Admission, :permits}, admission_permits)
-          session = put_checkout_owner(session, self())
-
-          result =
-            try do
-              normalize_operation_result(operation, fun.(session))
-            rescue
-              error -> {:error, normalize_runtime_error(operation, error)}
-            catch
-              :exit, reason -> {:error, normalize_runtime_error(operation, reason)}
-              kind, reason -> {:error, normalize_runtime_error(operation, {kind, reason})}
-            end
-
-          send(parent, {ref, result})
+          supervise_deadline_worker(
+            parent,
+            ref,
+            session,
+            operation,
+            fun,
+            admission_permits
+          )
         end)
 
       Observability.emit(
@@ -932,7 +1086,7 @@ defmodule Favn.SQL.Client do
       receive do
         {^ref, {:ok, result}} ->
           receive do
-            {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+            {:DOWN, ^monitor, :process, ^guard, _reason} -> :ok
           after
             0 -> Process.demonitor(monitor, [:flush])
           end
@@ -947,7 +1101,7 @@ defmodule Favn.SQL.Client do
 
         {^ref, {:error, %Error{} = error}} ->
           receive do
-            {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+            {:DOWN, ^monitor, :process, ^guard, _reason} -> :ok
           after
             0 -> Process.demonitor(monitor, [:flush])
           end
@@ -960,7 +1114,7 @@ defmodule Favn.SQL.Client do
 
           {:error, error}
 
-        {:DOWN, ^monitor, :process, ^pid, reason} ->
+        {:DOWN, ^monitor, :process, ^guard, reason} ->
           error = normalize_runtime_error(operation, reason)
 
           Observability.emit(
@@ -972,12 +1126,10 @@ defmodule Favn.SQL.Client do
           {:error, error}
       after
         Deadline.remaining_ms(deadline) ->
-          Process.exit(pid, :kill)
+          send(guard, {:cancel, ref})
 
           receive do
-            {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
-          after
-            0 -> :ok
+            {:DOWN, ^monitor, :process, ^guard, _reason} -> :ok
           end
 
           Observability.emit(
@@ -988,6 +1140,69 @@ defmodule Favn.SQL.Client do
 
           operation_timeout(session, operation, deadline)
       end
+    end
+  end
+
+  defp supervise_deadline_worker(
+         parent,
+         ref,
+         %Session{} = session,
+         operation,
+         fun,
+         admission_permits
+       ) do
+    parent_monitor = Process.monitor(parent)
+    guard = self()
+    worker_ref = make_ref()
+
+    {worker, worker_monitor} =
+      spawn_monitor(fn ->
+        Process.put({Admission, :permits}, admission_permits)
+        session = put_checkout_owner(session, self())
+
+        result =
+          try do
+            normalize_operation_result(operation, fun.(session))
+          rescue
+            error -> {:error, normalize_runtime_error(operation, error)}
+          catch
+            :exit, reason -> {:error, normalize_runtime_error(operation, reason)}
+            kind, reason -> {:error, normalize_runtime_error(operation, {kind, reason})}
+          end
+
+        send(guard, {worker_ref, result})
+      end)
+
+    receive do
+      {^worker_ref, result} ->
+        receive do
+          {:DOWN, ^worker_monitor, :process, ^worker, _reason} -> :ok
+        end
+
+        send(parent, {ref, result})
+
+      {:cancel, ^ref} ->
+        stop_deadline_worker(worker, worker_monitor)
+
+      {:DOWN, ^parent_monitor, :process, ^parent, _reason} ->
+        stop_deadline_worker(worker, worker_monitor)
+
+      {:DOWN, ^worker_monitor, :process, ^worker, reason} ->
+        error =
+          case reason do
+            {@nested_timeout_exit_tag, %Error{} = error} -> error
+            _other -> normalize_runtime_error(operation, reason)
+          end
+
+        send(parent, {ref, {:error, error}})
+    end
+  end
+
+  defp stop_deadline_worker(worker, monitor) do
+    Process.exit(worker, :kill)
+
+    receive do
+      {:DOWN, ^monitor, :process, ^worker, _reason} -> :ok
     end
   end
 
@@ -1145,6 +1360,17 @@ defmodule Favn.SQL.Client do
       message: "adapter does not support transactions",
       connection: connection,
       operation: :transaction
+    }
+  end
+
+  defp unsupported_transactional_materialization_error(%Session{
+         resolved: %Resolved{name: connection}
+       }) do
+    %Error{
+      type: :unsupported_capability,
+      message: "adapter cannot materialize inside an active transaction",
+      connection: connection,
+      operation: :materialize
     }
   end
 

@@ -20,6 +20,7 @@ defmodule Favn.SQL do
   - `defsql` for reusable SQL definitions with named arguments
   - compile-time validation of imported SQL definitions
   - compile-time template analysis before runtime execution exists
+  - `query()` and `target()` runtime relation arguments inside SQL asset checks
 
   ## Example
 
@@ -48,6 +49,9 @@ defmodule Favn.SQL do
   - prefer `~SQL` literals over string interpolation
   - keep runnable asset concerns such as `@materialized` and `@window` in
     `Favn.SQLAsset`, not in the reusable SQL provider module
+  - `query` and `target` are reserved definition names; inside a SQL asset
+    check, `query()` means the exact staged candidate and `target()` means the
+    transaction-visible target
 
   ## See also
 
@@ -133,6 +137,7 @@ defmodule Favn.SQL do
   """
   defmacro defsql({name, _meta, args_ast}, do: body)
            when is_atom(name) and (is_list(args_ast) or is_nil(args_ast)) do
+    validate_reserved_definition_name!(name, __CALLER__)
     args = normalize_defsql_args!(args_ast || [], __CALLER__)
     validate_reserved_arg_names!(args, __CALLER__)
     sql = extract_sql!(body, __CALLER__, "defsql body must contain a ~SQL literal")
@@ -158,6 +163,7 @@ defmodule Favn.SQL do
 
   defmacro defsql({name, _meta, args_ast}, file: path)
            when is_atom(name) and (is_list(args_ast) or is_nil(args_ast)) and is_binary(path) do
+    validate_reserved_definition_name!(name, __CALLER__)
     args = normalize_defsql_args!(args_ast || [], __CALLER__)
     validate_reserved_arg_names!(args, __CALLER__)
     arity = length(args)
@@ -367,6 +373,16 @@ defmodule Favn.SQL do
       end
     end)
   end
+
+  defp validate_reserved_definition_name!(name, env) when name in [:query, :target] do
+    DSLCompiler.compile_error!(
+      env.file,
+      env.line,
+      "defsql name #{name} is reserved for transactional SQL check relations"
+    )
+  end
+
+  defp validate_reserved_definition_name!(_name, _env), do: :ok
 
   defp ensure_unique_definition_keys!(raw_definitions) do
     duplicates =

@@ -30,11 +30,21 @@ defmodule Favn.SQLAsset.Error do
           | :cross_connection_asset_ref
           | :defsql_expansion_failed
           | :binding_failure
+          | :unresolved_runtime_relation
+          | :invalid_check_result
+          | :check_failed
           | :materialization_planning_failed
           | :backend_execution_failed
           | :unsupported_materialization
 
-  @type phase :: :render | :preview | :explain | :materialize | :runtime
+  @type phase ::
+          :render
+          | :preview
+          | :explain
+          | :before_materialize
+          | :materialize
+          | :after_materialize
+          | :runtime
 
   @type t :: %__MODULE__{
           type: type(),

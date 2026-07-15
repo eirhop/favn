@@ -304,6 +304,29 @@ remains retryable or explicitly releasable, and adapter-owned materialization
 releases it as part of failure cleanup. Runner-side SQL asset materialization
 planning emits the shared `%Favn.SQL.WritePlan{}` adapter contract consumed by
 SQL runtime adapters.
+
+Table and incremental SQL assets can validate the exact candidate and published
+target inside the materialization transaction:
+
+```elixir
+check :has_rows,
+  at: :before_materialize,
+  when: :target_exists,
+  on_false: :skip_materialization,
+  message: "No rows were available; the existing target was kept" do
+  ~SQL"select count(*) > 0 as passed, count(*) as incoming_rows from query()"
+end
+
+check :known_statuses, at: :after_materialize, on_false: :warn do
+  ~SQL"select count(*) filter (where status not in ('open', 'closed')) = 0 as passed from target()"
+end
+```
+
+Checks return one row with a native Boolean `passed` column and optional bounded
+scalar metrics. Failures roll back, warnings commit with durable quality
+metadata, and `:skip_materialization` is a successful no-op that preserves an
+existing target. Checked views are intentionally unsupported.
+
 For longer queries, place the SQL file next to the SQL asset module, for example
 `lakehouse/mart/sales/order_summary.ex` plus `lakehouse/mart/sales/order_summary.sql`, and
 use `query file: "order_summary.sql"`.

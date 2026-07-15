@@ -5,7 +5,8 @@ defmodule Favn.SQLAsset.Renderer do
   alias Favn.RelationRef
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.{ParamBinding, Params, Render, Template}
-  alias Favn.SQL.Template.{AssetRef, Call, Placeholder, Relation, Text}
+  alias Favn.SQL.Template.{AssetRef, Call, Placeholder, Relation, RuntimeRelation, Text}
+  alias Favn.SQL.Check
   alias Favn.SQLAsset.{Definition, Error}
   alias Favn.Window.Runtime
 
@@ -21,7 +22,7 @@ defmodule Favn.SQLAsset.Renderer do
     with {:ok, params} <- normalize_params(opts),
          {:ok, runtime_inputs} <- normalize_runtime_inputs(definition, opts),
          {:ok, definition_catalog} <- definition_catalog(definition),
-         env <- base_env(definition, params, runtime_inputs, definition_catalog),
+         env <- base_env(definition, params, runtime_inputs, definition_catalog, opts),
          :ok <- validate_target_relation(definition, env),
          {:ok, %Fragment{} = fragment, _env} <- render_nodes(definition.template.nodes, env),
          {:ok, %Params{} = normalized_params} <- normalize_bindings(fragment.bindings) do
@@ -45,6 +46,20 @@ defmodule Favn.SQLAsset.Renderer do
          }
        }}
     end
+  end
+
+  @doc false
+  @spec render_check(Definition.t(), Check.t(), opts()) ::
+          {:ok, Render.t()} | {:error, Error.t()}
+  def render_check(%Definition{} = definition, %Check{} = check, opts) when is_list(opts) do
+    raw_asset =
+      (definition.raw_asset || %{})
+      |> Map.put(:sql_file, check.file || definition.asset.file)
+
+    render(
+      %Definition{definition | sql: check.sql, template: check.template, raw_asset: raw_asset},
+      opts
+    )
   end
 
   defp normalize_params(opts) do
@@ -116,7 +131,7 @@ defmodule Favn.SQLAsset.Renderer do
     {:ok, catalog}
   end
 
-  defp base_env(definition, params, runtime_inputs, definition_catalog) do
+  defp base_env(definition, params, runtime_inputs, definition_catalog, opts) do
     %{
       asset_ref: definition.asset.ref,
       root_connection: definition.asset.relation.connection,
@@ -131,6 +146,7 @@ defmodule Favn.SQLAsset.Renderer do
       stack: [],
       cache: %{},
       current_file: Map.get(definition.raw_asset || %{}, :sql_file, definition.asset.file),
+      runtime_relations: Keyword.get(opts, :runtime_relations, %{}),
       manifest_relation_by_module:
         Map.get(definition.raw_asset || %{}, :manifest_relation_by_module, %{}),
       deferred_resolution:
@@ -174,6 +190,26 @@ defmodule Favn.SQLAsset.Renderer do
   end
 
   defp render_node(%Text{sql: sql}, env), do: {:ok, %Fragment{sql: sql}, env}
+
+  defp render_node(%RuntimeRelation{kind: kind, span: span}, env) do
+    case Map.fetch(env.runtime_relations, kind) do
+      {:ok, sql} when is_binary(sql) and sql != "" ->
+        {:ok, %Fragment{sql: sql}, env}
+
+      _other ->
+        {:error,
+         %Error{
+           type: :unresolved_runtime_relation,
+           phase: :render,
+           asset_ref: env.asset_ref,
+           span: span,
+           line: span.start_line,
+           file: env.current_file,
+           message: "SQL runtime relation #{kind}() is unavailable in this context",
+           details: %{relation: kind}
+         }}
+    end
+  end
 
   defp render_node(%Relation{} = relation, env) do
     with {:ok, relation_sql} <- plain_relation_to_sql(relation, env) do

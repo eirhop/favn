@@ -220,8 +220,16 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     try do
       Mix.Project.in_project(:favn_dev_runtime_config_consumer, consumer_dir, fn _project ->
+        assert Mix.Task.requirements(DevTask) == ["app.config"]
+
         Mix.Task.reenable("app.config")
         Mix.Task.reenable("compile")
+
+        capture_io(fn -> Mix.Task.run("app.config") end)
+
+        assert true = :code.set_path(code_path)
+        assert Code.ensure_loaded?(Favn.Dev)
+        assert Code.ensure_loaded?(ConsumerConfigTransport)
 
         capture_io(fn ->
           assert_raise Mix.Error, ~r/install required; run mix favn.install/, fn ->
@@ -1297,8 +1305,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     File.write!(
       path,
       JSON.encode_to_iodata!(%{
-        schema_version: 1,
-        runner_contract_version: 2,
+        schema_version: 3,
+        runner_contract_version: 3,
         assets: [],
         pipelines: [],
         schedules: [],

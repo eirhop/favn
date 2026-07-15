@@ -104,6 +104,39 @@ defmodule Favn.SQLAsset do
   - `:delete_insert` requires `:window_column`
   - `:merge`, `:replace`, and `unique_key` are not currently supported
 
+  ## Transactional Checks
+
+  Table and incremental assets can declare up to 50 ordered SQL-native checks. Checks use
+  the same compiler, reusable `defsql` definitions, parameters, window values,
+  and relation resolution as `query`.
+
+      check :has_rows,
+        at: :before_materialize,
+        when: :target_exists,
+        on_false: :skip_materialization,
+        message: "No rows were available; the existing target was kept" do
+        ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
+      end
+
+      check :known_statuses,
+        at: :after_materialize,
+        on_false: :warn do
+        ~SQL"select count(*) filter (where status not in ('open', 'closed')) = 0 as passed from target()"
+      end
+
+  Every executed check returns exactly one row with one non-null native Boolean
+  `passed` column. Up to 32 additional bounded scalar columns become metrics.
+  A false result can fail atomically, commit with a durable warning, or produce
+  a successful no-op that keeps an existing target. SQL errors and invalid
+  result shapes always fail. Checked views are rejected because their published
+  rows are not a transactionally fixed snapshot.
+
+  `query()` is the staged candidate that is also materialized; `target()` is the
+  existing target before the write and the modified target afterward. A before
+  check using `target()` must declare `when: :target_exists`. The same condition
+  is required for `:skip_materialization`, allowing missing-target bootstrap to
+  proceed normally.
+
   ## Dependency Inference
 
   Relation-style references are the preferred way to reference upstream SQL
@@ -144,6 +177,8 @@ defmodule Favn.SQLAsset do
   - using interpolation inside `~SQL`
   - using invalid `@depends`, `@window`, `@freshness`, or `@relation` values
   - expecting `asset/1` to be user-defined in a `Favn.SQLAsset` module
+  - returning multiple rows or a non-Boolean `passed` value from a check
+  - adding checks to `:view` materialization
 
   ## See also
 
@@ -160,6 +195,7 @@ defmodule Favn.SQLAsset do
   alias Favn.Ref
   alias Favn.RelationRef
   alias Favn.SQL
+  alias Favn.SQL.Check
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.Source
   alias Favn.SQL.Template
@@ -178,13 +214,59 @@ defmodule Favn.SQLAsset do
       Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :materialized, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_asset_raw, persist: false)
+      Module.register_attribute(__MODULE__, :favn_sql_checks, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_imports, accumulate: true)
 
       @on_definition Favn.SQLAsset
       @before_compile Favn.SQLAsset
 
-      import Favn.SQLAsset, only: [query: 1]
+      import Favn.SQLAsset, only: [check: 3, query: 1]
       import Favn.SQL, only: [sigil_SQL: 2]
+    end
+  end
+
+  @doc """
+  Declares a transactional SQL check for the asset query or target.
+
+  Checks run in declaration order inside the same transaction as the checked
+  materialization. `on_false: :fail` rolls back, `:warn` records a durable
+  warning and continues, and `:skip_materialization` produces a successful
+  no-op before materialization.
+
+      check :has_rows,
+        at: :before_materialize,
+        when: :target_exists,
+        on_false: :skip_materialization do
+        ~SQL"select count(*) > 0 as passed, count(*) as row_count from query()"
+      end
+  """
+  defmacro check(name, check_opts, do: body) do
+    name = expand_literal!(name, __CALLER__, "check name")
+
+    unless is_atom(name) and not is_nil(name) do
+      DSLCompiler.compile_error!(
+        __CALLER__.file,
+        __CALLER__.line,
+        "check name must be a non-nil atom, got: #{Macro.to_string(name)}"
+      )
+    end
+
+    normalized_opts = normalize_check_opts!(check_opts, __CALLER__)
+    sql = extract_sql!(body, __CALLER__)
+
+    raw = %{
+      name: name,
+      opts: normalized_opts,
+      sql: sql,
+      file: DSLCompiler.normalize_file(__CALLER__.file),
+      line: __CALLER__.line,
+      sql_file: DSLCompiler.normalize_file(__CALLER__.file),
+      sql_line: __CALLER__.line
+    }
+
+    quote bind_quoted: [raw: Macro.escape(raw)] do
+      @favn_sql_checks raw
+      :ok
     end
   end
 
@@ -347,6 +429,10 @@ defmodule Favn.SQLAsset do
         :sql_imports,
         env.module |> DSLCompiler.fetch_accum_attribute(:favn_sql_imports) |> Enum.reverse()
       )
+      |> Map.put(
+        :checks,
+        env.module |> DSLCompiler.fetch_accum_attribute(:favn_sql_checks) |> Enum.reverse()
+      )
 
     Module.put_attribute(env.module, :favn_sql_asset_generating, true)
 
@@ -404,6 +490,8 @@ defmodule Favn.SQLAsset do
     materialization =
       normalize_materialized!(raw_definition.materialized, window_spec, raw_definition)
 
+    validate_checked_materialization!(materialization, raw_definition.checks, raw_definition)
+
     relation =
       normalize_relation!(
         raw_definition,
@@ -411,6 +499,8 @@ defmodule Favn.SQLAsset do
       )
 
     known_definitions = fetch_sql_definitions!(raw_definition)
+
+    checks = compile_checks!(raw_definition, known_definitions)
 
     template =
       Template.compile!(raw_definition.sql,
@@ -423,8 +513,14 @@ defmodule Favn.SQLAsset do
         enforce_query_root: true
       )
 
+    sql_definitions = Map.values(known_definitions)
+    validate_query_runtime_relations!(template, sql_definitions, raw_definition)
+
     relation_inputs =
-      RelationUsage.collect(raw_definition.module, template, Map.values(known_definitions))
+      RelationUsage.collect(raw_definition.module, template, sql_definitions) ++
+        Enum.flat_map(checks, fn %Check{template: check_template} ->
+          RelationUsage.collect(raw_definition.module, check_template, sql_definitions)
+        end)
 
     asset = %Asset{
       module: raw_definition.module,
@@ -454,6 +550,7 @@ defmodule Favn.SQLAsset do
       template: template,
       relation_inputs: relation_inputs,
       sql_definitions: Map.values(known_definitions),
+      checks: checks,
       materialization: materialization,
       raw_asset: raw_definition
     }
@@ -466,6 +563,79 @@ defmodule Favn.SQLAsset do
         DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
     end
   end
+
+  defp compile_checks!(raw_definition, known_definitions) do
+    raw_checks = Map.get(raw_definition, :checks, [])
+    ensure_check_count!(raw_checks, raw_definition)
+    ensure_unique_check_names!(raw_checks)
+    sql_definitions = Map.values(known_definitions)
+
+    Enum.map(raw_checks, fn raw_check ->
+      try do
+        template =
+          Template.compile!(raw_check.sql,
+            known_definitions: known_definitions,
+            file: raw_check.sql_file,
+            line: raw_check.sql_line,
+            module: raw_definition.module,
+            scope: :query,
+            local_args: [],
+            enforce_query_root: true
+          )
+
+        usages = RelationUsage.runtime_relations(template, sql_definitions)
+
+        Check.new!(%{
+          name: raw_check.name,
+          at: Keyword.fetch!(raw_check.opts, :at),
+          on_false: Keyword.fetch!(raw_check.opts, :on_false),
+          when: Keyword.get(raw_check.opts, :when),
+          message: Keyword.get(raw_check.opts, :message),
+          sql: raw_check.sql,
+          template: template,
+          file: raw_check.sql_file,
+          line: raw_check.sql_line,
+          uses_query?: MapSet.member?(usages, :query),
+          uses_target?: MapSet.member?(usages, :target)
+        })
+      rescue
+        error in ArgumentError ->
+          DSLCompiler.compile_error!(raw_check.file, raw_check.line, error.message)
+      end
+    end)
+  end
+
+  defp ensure_check_count!(raw_checks, raw_definition) do
+    if length(raw_checks) > Check.max_per_asset() do
+      DSLCompiler.compile_error!(
+        raw_definition.file,
+        raw_definition.line,
+        "SQL assets support at most #{Check.max_per_asset()} checks"
+      )
+    end
+  end
+
+  defp ensure_unique_check_names!(raw_checks) do
+    raw_checks
+    |> Enum.group_by(& &1.name)
+    |> Enum.each(fn
+      {_name, [_check]} ->
+        :ok
+
+      {name, [check | _rest]} ->
+        DSLCompiler.compile_error!(check.file, check.line, "duplicate SQL check #{inspect(name)}")
+    end)
+  end
+
+  defp validate_checked_materialization!(:view, [_check | _rest], raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "SQL checks do not support :view materialization; use a snapshot table"
+    )
+  end
+
+  defp validate_checked_materialization!(_materialization, _checks, _raw_definition), do: :ok
 
   defp normalize_depends!(depends, raw_definition) do
     Enum.map(depends, fn
@@ -706,6 +876,68 @@ defmodule Favn.SQLAsset do
 
   defp extract_sql!(body, env) do
     SQL.extract_sql!(body, env, "query body must contain a ~SQL literal")
+  end
+
+  defp normalize_check_opts!(opts, env) do
+    allowed = [:at, :on_false, :when, :message]
+
+    unless is_list(opts) and Keyword.keyword?(opts) do
+      DSLCompiler.compile_error!(env.file, env.line, "SQL check options must be a keyword list")
+    end
+
+    duplicate_keys =
+      opts |> Keyword.keys() |> Enum.frequencies() |> Enum.filter(&(elem(&1, 1) > 1))
+
+    if duplicate_keys != [] do
+      keys = duplicate_keys |> Enum.map(&elem(&1, 0)) |> Enum.map_join(", ", &inspect/1)
+      DSLCompiler.compile_error!(env.file, env.line, "duplicate SQL check options: #{keys}")
+    end
+
+    Enum.each(Keyword.keys(opts), fn key ->
+      unless key in allowed do
+        DSLCompiler.compile_error!(env.file, env.line, "unknown SQL check option #{inspect(key)}")
+      end
+    end)
+
+    unless Keyword.has_key?(opts, :at),
+      do: DSLCompiler.compile_error!(env.file, env.line, "SQL check requires at:")
+
+    unless Keyword.has_key?(opts, :on_false),
+      do: DSLCompiler.compile_error!(env.file, env.line, "SQL check requires on_false:")
+
+    Enum.map(opts, fn {key, value} ->
+      {key, expand_literal!(value, env, "check option #{key}")}
+    end)
+  end
+
+  defp validate_query_runtime_relations!(template, sql_definitions, raw_definition) do
+    case RelationUsage.runtime_relations(template, sql_definitions) |> MapSet.to_list() do
+      [] ->
+        :ok
+
+      relations ->
+        names = relations |> Enum.sort() |> Enum.map_join(", ", &"#{&1}()")
+
+        DSLCompiler.compile_error!(
+          raw_definition.sql_file,
+          raw_definition.sql_line,
+          "#{names} may only be used inside SQL check bodies"
+        )
+    end
+  end
+
+  defp expand_literal!(ast, env, label) do
+    value = Macro.expand(ast, env)
+
+    if is_atom(value) or is_binary(value) do
+      value
+    else
+      DSLCompiler.compile_error!(
+        env.file,
+        env.line,
+        "#{label} must be a literal atom or string, got: #{Macro.to_string(ast)}"
+      )
+    end
   end
 
   defp fetch_sql_definitions!(raw_definition) do

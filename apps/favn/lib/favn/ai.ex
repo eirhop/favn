@@ -51,8 +51,11 @@ defmodule Favn.AI do
     `ctx.config`, call a source client outside the asset, write raw rows through
     `Favn.SQLClient`, and return structured metadata with row counts, relation,
     load mode, timestamp, and hashed source identity.
-  - To author one SQL asset, read `Favn.SQLAsset`, then `Favn.SQL`,
-    `Favn.Connection`, `Favn.Namespace`, and `Favn.Window` as needed.
+  - To author one SQL asset, including transactional `check` declarations with
+    fail, warning, or successful no-op outcomes, read `Favn.SQLAsset`, then
+    `Favn.SQL`, `Favn.Connection`, `Favn.Namespace`, and `Favn.Window` as
+    needed. Checks use normal reusable `defsql`; `query()` is the exact staged
+    candidate and `target()` is the transaction-visible owned relation.
   - To author many similar assets in one module, read `Favn.MultiAsset`.
   - To declare external source relations, read `Favn.Source`.
   - To share relation defaults, read `Favn.Namespace`.

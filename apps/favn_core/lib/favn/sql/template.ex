@@ -151,7 +151,24 @@ defmodule Favn.SQL.Template do
           }
   end
 
-  @type ir_node :: Text.t() | Placeholder.t() | Call.t() | AssetRef.t() | Relation.t()
+  defmodule RuntimeRelation do
+    @moduledoc false
+    @enforce_keys [:kind, :span]
+    defstruct [:kind, :span]
+
+    @type t :: %__MODULE__{
+            kind: :query | :target,
+            span: Favn.SQL.Template.Span.t()
+          }
+  end
+
+  @type ir_node ::
+          Text.t()
+          | Placeholder.t()
+          | Call.t()
+          | AssetRef.t()
+          | Relation.t()
+          | RuntimeRelation.t()
 
   @enforce_keys [:source, :root_kind, :nodes, :span, :requires]
   defstruct [:source, :root_kind, :nodes, :span, :requires]
@@ -263,6 +280,13 @@ defmodule Favn.SQL.Template do
   @spec calls(t()) :: [Call.t()]
   def calls(%__MODULE__{nodes: nodes}), do: collect_calls(nodes)
 
+  @spec runtime_relations(t()) :: MapSet.t(:query | :target)
+  def runtime_relations(%__MODULE__{nodes: nodes}) do
+    nodes
+    |> collect_runtime_relations()
+    |> MapSet.new()
+  end
+
   defp called_definition_keys_from_nodes(nodes) do
     nodes
     |> Enum.flat_map(fn
@@ -298,14 +322,60 @@ defmodule Favn.SQL.Template do
     end)
   end
 
+  defp collect_runtime_relations(nodes) do
+    Enum.flat_map(nodes, fn
+      %RuntimeRelation{kind: kind} -> [kind]
+      %Call{args: args} -> Enum.flat_map(args, &collect_runtime_relations(&1.nodes))
+      _other -> []
+    end)
+  end
+
   defp infer_root_kind!(sql, file, line, _start_pos) do
-    case first_top_level_token(String.to_charlist(sql), :code, 0) do
-      nil -> compile_error!(file, line, "SQL body cannot be empty")
-      "select" -> :query
-      "with" -> :query
-      _other -> :expression
+    chars = String.to_charlist(sql)
+
+    case first_top_level_token(chars, :code, 0) do
+      nil ->
+        if substantive_sql?(chars, :code) do
+          :expression
+        else
+          compile_error!(file, line, "SQL body cannot be empty")
+        end
+
+      "select" ->
+        :query
+
+      "with" ->
+        :query
+
+      _other ->
+        :expression
     end
   end
+
+  defp substantive_sql?([], _state), do: false
+
+  defp substantive_sql?([?-, ?- | rest], :code),
+    do: substantive_sql?(rest, :line_comment)
+
+  defp substantive_sql?([?/, ?* | rest], :code),
+    do: substantive_sql?(rest, :block_comment)
+
+  defp substantive_sql?([char | rest], :code) when char in [32, 9, 10, 13],
+    do: substantive_sql?(rest, :code)
+
+  defp substantive_sql?([_char | _rest], :code), do: true
+
+  defp substantive_sql?([?\n | rest], :line_comment),
+    do: substantive_sql?(rest, :code)
+
+  defp substantive_sql?([_char | rest], :line_comment),
+    do: substantive_sql?(rest, :line_comment)
+
+  defp substantive_sql?([?*, ?/ | rest], :block_comment),
+    do: substantive_sql?(rest, :code)
+
+  defp substantive_sql?([_char | rest], :block_comment),
+    do: substantive_sql?(rest, :block_comment)
 
   defp first_top_level_token([], _lex_state, _depth), do: nil
 
@@ -500,6 +570,9 @@ defmodule Favn.SQL.Template do
     context = if state.relation_entry?, do: :relation, else: :expression
 
     cond do
+      runtime_relation_candidate?(word, tail) ->
+        parse_runtime_relation(word, tail, state, acc)
+
       asset_ref_candidate?(word, tail, state) ->
         parse_asset_ref(word, tail, state, acc)
 
@@ -513,6 +586,46 @@ defmodule Favn.SQL.Template do
         next_state =
           advance_state(state, String.to_charlist(word))
           |> update_relation_context(String.downcase(word))
+
+        parse_nodes(tail, next_state, [text_node(word, state.position, next_state.position) | acc])
+    end
+  end
+
+  defp parse_runtime_relation(word, tail, state, acc) do
+    {space_chars, after_spaces} = take_horizontal_space(tail, [])
+    kind = String.to_existing_atom(word)
+
+    case after_spaces do
+      [?( | rest_after_open] ->
+        {inner_space, after_inner_space} = take_horizontal_space(rest_after_open, [])
+
+        case after_inner_space do
+          [?) | rest] ->
+            consumed = String.to_charlist(word) ++ space_chars ++ ~c"(" ++ inner_space ++ ~c")"
+
+            next_state =
+              state
+              |> advance_state(consumed)
+              |> Map.put(:relation_entry?, false)
+              |> Map.put(:join_prefix, nil)
+
+            node = %RuntimeRelation{
+              kind: kind,
+              span: span(state.position, next_state.position)
+            }
+
+            parse_nodes(rest, next_state, [node | acc])
+
+          _other ->
+            compile_error!(
+              state.file,
+              state.position.line,
+              "runtime SQL relation #{word}() does not accept arguments"
+            )
+        end
+
+      _other ->
+        next_state = advance_state(state, String.to_charlist(word))
 
         parse_nodes(tail, next_state, [text_node(word, state.position, next_state.position) | acc])
     end
@@ -926,6 +1039,9 @@ defmodule Favn.SQL.Template do
       visible_arities(word, state.known_definitions) != [] and
       peek_nonspace_char(tail) == ?(
   end
+
+  defp runtime_relation_candidate?(word, tail),
+    do: word in ["query", "target"] and peek_nonspace_char(tail) == ?(
 
   defp visible_arities(word, known_definitions) do
     known_definitions

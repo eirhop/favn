@@ -2975,7 +2975,11 @@ defmodule FavnOrchestrator.API.RouterTest do
       ]
     }
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: manifest_version_id
+      )
+
     version
   end
 
@@ -2992,7 +2996,12 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   defp put_manifest_metadata(%Version{} = version, metadata) when is_map(metadata) do
     manifest = Map.put(version.manifest, :metadata, metadata)
-    {:ok, updated} = Version.new(manifest, manifest_version_id: version.manifest_version_id)
+
+    {:ok, updated} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: version.manifest_version_id
+      )
+
     updated
   end
 
@@ -3020,7 +3029,11 @@ defmodule FavnOrchestrator.API.RouterTest do
       ]
     }
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: manifest_version_id
+      )
+
     version
   end
 
@@ -3037,7 +3050,11 @@ defmodule FavnOrchestrator.API.RouterTest do
       ]
     }
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: manifest_version_id
+      )
+
     version
   end
 

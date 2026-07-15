@@ -5,6 +5,7 @@ defmodule FavnView.PageLiveTest do
 
   alias Favn.Log.Entry
   alias Favn.Manifest
+  alias Favn.Manifest.Graph
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
@@ -13,6 +14,7 @@ defmodule FavnView.PageLiveTest do
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnView.Components.AssetDetailPage
+  alias FavnView.Components.OutputMetadata
   alias FavnView.Components.RunDetailPage.AttemptDrawer
   alias FavnView.Components.RunDetailPage.Timeline
   alias FavnView.Auth.BrowserSessionStore
@@ -2561,6 +2563,17 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="output-metadata-copy"]), "Copy JSON")
   end
 
+  test "output metadata renders DateTime structs as scalar values" do
+    html =
+      render_component(&OutputMetadata.output_metadata/1,
+        metadata: %{loaded_at: ~U[2026-05-20 18:06:44Z]},
+        status: :ok
+      )
+
+    assert html =~ "Loaded at"
+    assert html =~ "2026-05-20 18:06:44Z"
+  end
+
   test "run detail attempt drawer distinguishes empty success and failed attempts", %{conn: conn} do
     {:ok, success_view, _html} = live(conn, ~p"/runs/run_daily_orders")
 
@@ -2625,6 +2638,54 @@ defmodule FavnView.PageLiveTest do
     assert html =~ ~s(href="/runs/run_existing_window")
     refute html =~ "existing_success"
     refute html =~ "border-error"
+  end
+
+  test "run detail attempt drawer distinguishes committed warnings from rolled-back checks" do
+    warning_attempt = %{
+      timeline_attempt(:succeeded)
+      | output_metadata: %{
+          quality_status: :warning,
+          write_outcome: :written,
+          check_results: [
+            %{
+              name: :volume_is_reasonable,
+              phase: :before_materialize,
+              outcome: :warned,
+              message: "Incoming volume is below the expected range",
+              metrics: %{"incoming_rows" => 4},
+              duration_ms: 12
+            }
+          ]
+        }
+    }
+
+    warning_html = render_component(&AttemptDrawer.attempt_drawer/1, attempt: warning_attempt)
+
+    assert warning_html =~ ~s(data-testid="sql-check-summary")
+    assert warning_html =~ ~s(data-quality-status="warning")
+    assert warning_html =~ "The write committed with quality warnings."
+    assert warning_html =~ "volume_is_reasonable"
+
+    failed_attempt = %{
+      timeline_attempt(:error)
+      | output_metadata: %{
+          quality_status: :failed,
+          write_outcome: :rolled_back,
+          check_results: [
+            %{name: :valid_keys, phase: :after_materialize, outcome: :failed, metrics: %{}}
+          ]
+        }
+    }
+
+    failed_html = render_component(&AttemptDrawer.attempt_drawer/1, attempt: failed_attempt)
+    assert failed_html =~ "Rolled-back check diagnostics"
+    assert failed_html =~ "were not committed"
+
+    unknown_attempt = put_in(failed_attempt.output_metadata.write_outcome, :unknown)
+    unknown_html = render_component(&AttemptDrawer.attempt_drawer/1, attempt: unknown_attempt)
+    assert unknown_html =~ "Check diagnostics from failed attempt"
+    assert unknown_html =~ "transaction outcome is unknown"
+    refute unknown_html =~ "were not committed"
   end
 
   test "run detail mode rail changes to events mode", %{conn: conn} do
@@ -2894,21 +2955,25 @@ defmodule FavnView.PageLiveTest do
   end
 
   defp manifest_version do
+    assets = [
+      asset(:raw_payments, :s3, "finance", :source,
+        freshness: Favn.Freshness.Policy.from_value!(max_age: {:hours, 24})
+      ),
+      asset(:customer_orders_daily, :snowflake, "sales", :sql,
+        window: WindowSpec.new!(:day),
+        freshness: Favn.Freshness.Policy.from_value!({:daily, timezone: "Europe/Oslo"}),
+        depends_on: [{__MODULE__.Assets, :raw_payments}]
+      ),
+      asset(:stg_payments, :postgres, "finance", :sql),
+      asset(:always_refresh, :snowflake, "sales", :sql,
+        freshness: Favn.Freshness.Policy.from_value!(:always)
+      )
+    ]
+
+    {:ok, graph} = Graph.build(assets)
+
     manifest = %Manifest{
-      assets: [
-        asset(:raw_payments, :s3, "finance", :source,
-          freshness: Favn.Freshness.Policy.from_value!(max_age: {:hours, 24})
-        ),
-        asset(:customer_orders_daily, :snowflake, "sales", :sql,
-          window: WindowSpec.new!(:day),
-          freshness: Favn.Freshness.Policy.from_value!({:daily, timezone: "Europe/Oslo"}),
-          depends_on: [{__MODULE__.Assets, :raw_payments}]
-        ),
-        asset(:stg_payments, :postgres, "finance", :sql),
-        asset(:always_refresh, :snowflake, "sales", :sql,
-          freshness: Favn.Freshness.Policy.from_value!(:always)
-        )
-      ],
+      assets: assets,
       pipelines: [
         %Pipeline{
           module: __MODULE__.Pipelines.DailyOrders,
@@ -2937,7 +3002,8 @@ defmodule FavnView.PageLiveTest do
           overlap: :forbid,
           active: true
         }
-      ]
+      ],
+      graph: graph
     }
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_view_assets")
@@ -3239,6 +3305,7 @@ defmodule FavnView.PageLiveTest do
       finished_at: "May 1, 2026 00:00 UTC",
       duration: "10s",
       error_summary: nil,
+      output_metadata: nil,
       logs_href: "/runs/run_window_test/assets/attempt-#{status}/logs"
     }
   end

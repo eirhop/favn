@@ -23,3 +23,9 @@ Use when changing manifest generation/serialization, graph planning, dependency
 inference, effective execution-pool propagation, freshness keys/policies,
 windows, schedules, runtime config refs, backfill range resolution, or
 runner/orchestrator contract structs.
+
+Manifest schema 3 and runner contract 3 are the only accepted versions. SQL
+execution payloads carry typed `%Favn.SQL.Check{}` declarations, templates may
+contain runtime `query()`/`target()` relation nodes, and attempts carry bounded
+`%Favn.SQL.CheckResult{}` diagnostics. Older manifest schemas and missing-graph
+payloads are rejected rather than upgraded.

@@ -24,6 +24,46 @@ defmodule Favn.SQLAsset.RelationUsage do
     inputs
   end
 
+  @doc false
+  @spec runtime_relations(Template.t(), [SQLDefinition.t()]) :: MapSet.t(:query | :target)
+  def runtime_relations(%Template{} = template, sql_definitions \\ []) do
+    definition_catalog =
+      Map.new(sql_definitions, fn %SQLDefinition{} = definition ->
+        {SQLDefinition.key(definition), definition}
+      end)
+
+    collect_runtime_relations(template, definition_catalog, MapSet.new())
+  end
+
+  defp collect_runtime_relations(%Template{} = template, definition_catalog, visited) do
+    direct = Template.runtime_relations(template)
+
+    template
+    |> Template.called_definition_keys()
+    |> Enum.reduce(direct, fn key, acc ->
+      case Map.fetch(definition_catalog, key) do
+        {:ok, %SQLDefinition{} = definition} ->
+          id = {definition.module, definition.name, definition.arity}
+
+          if MapSet.member?(visited, id) do
+            acc
+          else
+            MapSet.union(
+              acc,
+              collect_runtime_relations(
+                definition.template,
+                definition_catalog,
+                MapSet.put(visited, id)
+              )
+            )
+          end
+
+        :error ->
+          acc
+      end
+    end)
+  end
+
   defp collect_template(
          module,
          %Template{} = template,

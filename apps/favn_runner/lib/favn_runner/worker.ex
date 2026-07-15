@@ -117,6 +117,25 @@ defmodule FavnRunner.Worker do
           status: :error,
           error: error
         )
+
+      {:error, error, meta} when is_map(meta) ->
+        emit_event(server, execution_id, work, :asset_failed, %{
+          asset_ref: asset.ref,
+          error: error
+        })
+
+        emit_log(server, execution_id, work, asset, 2, :error, "asset execution failed", %{
+          error: error,
+          quality_status: Map.get(meta, :quality_status)
+        })
+
+        build_runner_result(
+          work,
+          version,
+          [asset_result(work, asset, started_at, finished_at, :error, meta, error)],
+          status: :error,
+          error: error
+        )
     end
   end
 

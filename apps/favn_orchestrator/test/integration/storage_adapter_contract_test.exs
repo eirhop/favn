@@ -539,7 +539,11 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
       ]
     }
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: manifest_version_id
+      )
+
     version
   end
 
