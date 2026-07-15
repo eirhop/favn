@@ -809,12 +809,15 @@ favn.dev` validates that fingerprint and compiles the installed runtime
 workspace before startup so live runner/orchestrator processes do not boot stale
 internal runtime beams. During foreground startup it prints concise terminal
 progress lines before slow phases such as runtime compile, project compile,
-service startup, manifest publication, and HTTP readiness checks. It loads the
-consumer project's `config/runtime.exs` before transporting connection and
-plugin configuration to the runner. A runner process that exits during startup
-is reported as a service exit with log guidance instead of only as an
-unreachable node. `--root-dir` remains an install/runtime-source override for
-split-root workflows.
+service startup, manifest publication, and HTTP readiness checks. For both
+`mix favn.dev` and `mix favn.reload`, a lightweight bootstrap loads the project
+`.env` and then starts a fresh Mix process that evaluates the consumer project's
+`config/runtime.exs`. This makes `.env` values available to runtime config before
+connection and plugin configuration is collected; existing shell values still
+win, and env values are inherited rather than placed in command arguments. A
+runner process that exits during startup is reported as a service exit with log
+guidance instead of only as an unreachable node. `--root-dir` remains an
+install/runtime-source override for split-root workflows.
 
 Local tooling HTTP calls are plain HTTP loopback calls to Favn-managed local
 services. They intentionally do not support remote or HTTPS URLs in the local

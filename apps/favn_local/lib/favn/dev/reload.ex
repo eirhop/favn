@@ -12,7 +12,7 @@ defmodule Favn.Dev.Reload do
 
   alias Favn.Dev.Config
   alias Favn.Dev.DistributedErlang
-  alias Favn.Dev.EnvFile
+  alias Favn.Dev.EnvBootstrap
   alias Favn.Dev.LocalContext
   alias Favn.Dev.Lock
   alias Favn.Dev.NodeControl
@@ -29,8 +29,7 @@ defmodule Favn.Dev.Reload do
 
   @spec run(reload_opt()) :: :ok | {:error, term()}
   def run(opts \\ []) when is_list(opts) do
-    with {:ok, env_file} <- EnvFile.load(opts),
-         opts <- Keyword.put(opts, :env_file_loaded, env_file.loaded),
+    with {:ok, opts} <- EnvBootstrap.ensure_loaded(opts),
          :ok <- ensure_running(opts),
          {:ok, runtime, installed_runtime, secrets} <- read_runtime_snapshot(opts),
          :ok <- ensure_no_in_flight_runs(runtime, secrets, opts),

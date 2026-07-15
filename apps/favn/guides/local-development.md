@@ -37,6 +37,12 @@ mix favn.stop
 `mix favn.dev` stays in the foreground. It prints service logs and URLs. Stop it
 with `mix favn.stop` from another terminal or by ending the foreground process.
 
+Before startup, `mix favn.dev` loads the project `.env` and starts a fresh Mix
+process that evaluates `config/runtime.exs`. This means runtime config can branch
+on env-file values. Existing shell values take precedence. `mix favn.reload`
+repeats the same bootstrap, so changes to `.env` or `config/runtime.exs` are
+picked up together.
+
 ## Runtime Commands
 
 ### Run Work

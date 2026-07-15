@@ -154,7 +154,8 @@ defmodule Favn.AI do
     `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
     `mix favn.build.web`, `mix favn.build.orchestrator`,
     `mix favn.build.single`, `mix favn.bootstrap.single`, and
-    `mix favn.read_doc`.
+    `mix favn.read_doc`. Dev and reload load the project `.env` before evaluating
+    `config/runtime.exs`; existing shell values take precedence.
   - To inspect the public helper functions collected in one place, read `Favn`.
 
   ## Transactional SQL Check Breadcrumbs
