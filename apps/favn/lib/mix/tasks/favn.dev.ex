@@ -15,10 +15,11 @@ defmodule Mix.Tasks.Favn.Dev do
   alias Favn.Dev
   alias Mix.Tasks.Favn.CLIArgs
 
+  @requirements ["app.config"]
+
   @impl Mix.Task
   def run(args) do
     opts = args |> parse_args() |> Keyword.put(:progress_fun, &IO.puts/1)
-    Mix.Task.run("app.config")
 
     case Dev.dev(opts) do
       :ok ->
