@@ -102,7 +102,7 @@ client returning JSON and then load those JSON payloads into concrete DuckDB
 `raw.*` tables with `read_json(...)`.
 
 `Raw.Orders` is the canonical source-system raw landing example. It declares
-`source_config :source_system`, reads the resolved source segment and token from
+the reusable `RuntimeConfigs.source_system()` bundle, reads the resolved source segment and token from
 `ctx.config.source_system`, keeps the fake source client outside the asset, lands
 rows into the owned raw relation, and returns metadata with `rows_written`,
 `mode`, `relation`, `loaded_at`, and a SHA-256 `segment_id_hash`. The raw segment

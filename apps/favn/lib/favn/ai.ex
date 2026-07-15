@@ -47,7 +47,7 @@ defmodule Favn.AI do
   - To author a source-system raw landing asset, read `Favn.Asset`, then
     `Favn.SQLClient`, `Favn.Namespace`, and the standalone tutorial at
     `examples/basic-workflow-tutorial`. The canonical pattern is: declare
-    source IDs/tokens with `source_config/2`, read resolved values from
+    source IDs/tokens with `runtime_config/2`, read resolved values from
     `ctx.config`, call a source client outside the asset, write raw rows through
     `Favn.SQLClient`, and return structured metadata with row counts, relation,
     load mode, timestamp, and hashed source identity.

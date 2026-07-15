@@ -77,7 +77,7 @@ defmodule Favn.MultiAsset do
   - `@relation`
   - `asset :name do ... end`
 
-  Per module you can use `source_config/2` for runtime config shared by every
+  Per module you can use `runtime_config/1,2` for runtime config shared by every
   generated asset.
 
   `defaults do ... end` currently supports:
@@ -146,7 +146,7 @@ defmodule Favn.MultiAsset do
   ## Runtime context notes
 
   The shared runtime usually reads `ctx.asset.config` to decide what to extract.
-  Module-level `source_config/2` declarations are compiled into every generated
+  Module-level `runtime_config/1,2` declarations are compiled into every generated
   asset and resolved into `ctx.config` by the runner. Relation ownership,
   metadata, and window specs remain per generated asset.
 
@@ -204,7 +204,16 @@ defmodule Favn.MultiAsset do
       @before_compile Favn.MultiAsset
 
       import Favn.MultiAsset,
-        only: [defaults: 1, asset: 2, source_config: 2, env!: 1, secret_env!: 1]
+        only: [
+          defaults: 1,
+          asset: 2,
+          runtime_config: 1,
+          runtime_config: 2,
+          env!: 1,
+          env!: 2,
+          secret_env!: 1,
+          secret_env!: 2
+        ]
     end
   end
 
@@ -214,34 +223,60 @@ defmodule Favn.MultiAsset do
   Values are resolved by the runner at execution time and exposed through
   `ctx.config`. Runtime values are not embedded in the manifest.
   """
-  defmacro source_config(scope, fields) do
-    quote bind_quoted: [scope: scope, fields: fields] do
-      {runtime_config_scope, runtime_config_fields} =
-        if is_atom(scope), do: {scope, fields}, else: {fields, scope}
-
+  defmacro runtime_config(bundle) do
+    quote bind_quoted: [bundle: bundle] do
       Module.put_attribute(
         __MODULE__,
         :runtime_config,
-        %{runtime_config_scope => runtime_config_fields}
+        Favn.RuntimeConfig.Bundle.validate!(bundle)
       )
     end
   end
 
   @doc """
-  Declares a required environment variable runtime config value.
+  Declares inline runtime configuration fields required by every generated asset.
   """
-  defmacro env!(key) when is_binary(key) do
-    quote do
-      Favn.RuntimeConfig.Ref.env!(unquote(key))
+  defmacro runtime_config(scope, fields) do
+    caller = __CALLER__
+
+    quote bind_quoted: [
+            scope: scope,
+            fields: fields,
+            module: caller.module,
+            file: caller.file,
+            line: caller.line
+          ] do
+      Module.put_attribute(
+        __MODULE__,
+        :runtime_config,
+        Favn.RuntimeConfig.Bundle.inline!(scope, fields,
+          module: module,
+          file: file,
+          line: line
+        )
+      )
     end
   end
 
   @doc """
-  Declares a required secret environment variable runtime config value.
+  Declares an environment variable runtime config value.
+
+  Use `required?: false` for an optional value.
   """
-  defmacro secret_env!(key) when is_binary(key) do
+  defmacro env!(key, opts \\ []) do
     quote do
-      Favn.RuntimeConfig.Ref.secret_env!(unquote(key))
+      Favn.RuntimeConfig.Ref.env!(unquote(key), unquote(opts))
+    end
+  end
+
+  @doc """
+  Declares a secret environment variable runtime config value.
+
+  Use `required?: false` for an optional secret.
+  """
+  defmacro secret_env!(key, opts \\ []) do
+    quote do
+      Favn.RuntimeConfig.Ref.secret_env!(unquote(key), unquote(opts))
     end
   end
 
@@ -403,10 +438,7 @@ defmodule Favn.MultiAsset do
 
     ensure_no_pending_attributes!(env)
 
-    runtime_config =
-      env.module
-      |> Module.get_attribute(:runtime_config)
-      |> normalize_runtime_config!(env)
+    runtime_config = normalize_runtime_config!(env.module, env)
 
     raw_assets =
       env.module
@@ -581,24 +613,13 @@ defmodule Favn.MultiAsset do
     end
   end
 
-  defp normalize_runtime_config!([], _env), do: %{}
-
-  defp normalize_runtime_config!(entries, env) do
-    entries
-    |> Enum.reverse()
-    |> Enum.reduce(%{}, &Map.merge(&2, &1))
-    |> normalize_runtime_config_entry_order()
-    |> Requirements.normalize!()
+  defp normalize_runtime_config!(module, env) do
+    inherited = Namespace.resolve_runtime_config(module)
+    entries = module |> Module.get_attribute(:runtime_config) |> Enum.reverse()
+    Requirements.merge_all!(inherited ++ entries, consumer: module)
   rescue
     error in ArgumentError ->
       DSLCompiler.compile_error!(env.file, env.line, error.message)
-  end
-
-  defp normalize_runtime_config_entry_order(%{} = declarations) do
-    Map.new(declarations, fn
-      {scope, fields} when is_atom(scope) -> {scope, fields}
-      {fields, scope} when is_atom(scope) -> {scope, fields}
-    end)
   end
 
   defp normalize_defaults_block!(block, env) do

@@ -110,10 +110,23 @@ defmodule Favn.Asset do
 
   ## Runtime Config
 
-  Use `source_config/2` for runtime values that must be resolved by the runner
-  instead of read directly with `System.get_env/1` inside asset code:
+  Use `runtime_config/1,2` for runtime values that must be resolved by the runner
+  instead of read directly with `System.get_env/1` inside asset code. Reusable
+  bundles are defined with `Favn.RuntimeConfig`:
 
-      source_config :source_system,
+      defmodule MyApp.RuntimeConfigs do
+        use Favn.RuntimeConfig
+
+        bundle :source_system,
+          segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
+          token: secret_env!("SOURCE_SYSTEM_TOKEN")
+      end
+
+      runtime_config MyApp.RuntimeConfigs.source_system()
+
+  One-off requirements can be declared inline:
+
+      runtime_config :source_system,
         segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
         token: secret_env!("SOURCE_SYSTEM_TOKEN")
 
@@ -144,16 +157,16 @@ defmodule Favn.Asset do
         alias MyApp.SourceClient
         alias MyApp.RawLanding
 
-        source_config :source_system,
+        runtime_config :source_system,
           segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
           token: secret_env!("SOURCE_SYSTEM_TOKEN")
 
         @relation true
         def asset(ctx) do
           relation = ctx.asset.relation
-          source_config = ctx.config.source_system
+          runtime_config = ctx.config.source_system
 
-          with {:ok, rows} <- SourceClient.fetch_all(source_config),
+          with {:ok, rows} <- SourceClient.fetch_all(runtime_config),
                :ok <- RawLanding.replace_rows(relation, rows) do
             {:ok,
              %{
@@ -163,7 +176,7 @@ defmodule Favn.Asset do
                loaded_at: DateTime.utc_now(),
                source: %{
                  system: :source_system,
-                 segment_id_hash: hash_identity(source_config.segment_id)
+                 segment_id_hash: hash_identity(runtime_config.segment_id)
                }
              }}
           end
@@ -207,7 +220,7 @@ defmodule Favn.Asset do
 
   - `ctx.asset` for canonical asset metadata
   - `ctx.asset.config` for compiled config when present
-  - `ctx.config` for resolved runtime config declared with `source_config/2`
+  - `ctx.config` for resolved runtime config declared with `runtime_config/1,2`
   - `ctx.asset.relation` for owned relation identity
   - `ctx.window` for resolved runtime windows on windowed assets
 
@@ -234,6 +247,7 @@ defmodule Favn.Asset do
   alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Freshness.Policy, as: FreshnessPolicy
   alias Favn.Manifest.Labels
+  alias Favn.Namespace
   alias Favn.Ref
   alias Favn.RelationRef
   alias Favn.RuntimeConfig.Requirements
@@ -252,7 +266,15 @@ defmodule Favn.Asset do
       Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_single_asset_raw, persist: false)
 
-      import Favn.Asset, only: [source_config: 2, env!: 1, secret_env!: 1]
+      import Favn.Asset,
+        only: [
+          runtime_config: 1,
+          runtime_config: 2,
+          env!: 1,
+          env!: 2,
+          secret_env!: 1,
+          secret_env!: 2
+        ]
 
       @on_definition Favn.Asset
       @before_compile Favn.Asset
@@ -265,34 +287,60 @@ defmodule Favn.Asset do
   Values are resolved by the runner at execution time and exposed through
   `ctx.config`. Runtime values are not embedded in the manifest.
   """
-  defmacro source_config(scope, fields) do
-    quote bind_quoted: [scope: scope, fields: fields] do
-      {runtime_config_scope, runtime_config_fields} =
-        if is_atom(scope), do: {scope, fields}, else: {fields, scope}
-
+  defmacro runtime_config(bundle) do
+    quote bind_quoted: [bundle: bundle] do
       Module.put_attribute(
         __MODULE__,
         :runtime_config,
-        %{runtime_config_scope => runtime_config_fields}
+        Favn.RuntimeConfig.Bundle.validate!(bundle)
       )
     end
   end
 
   @doc """
-  Declares a required environment variable runtime config value.
+  Declares inline runtime configuration fields under one `ctx.config` scope.
   """
-  defmacro env!(key) when is_binary(key) do
-    quote do
-      Favn.RuntimeConfig.Ref.env!(unquote(key))
+  defmacro runtime_config(scope, fields) do
+    caller = __CALLER__
+
+    quote bind_quoted: [
+            scope: scope,
+            fields: fields,
+            module: caller.module,
+            file: caller.file,
+            line: caller.line
+          ] do
+      Module.put_attribute(
+        __MODULE__,
+        :runtime_config,
+        Favn.RuntimeConfig.Bundle.inline!(scope, fields,
+          module: module,
+          file: file,
+          line: line
+        )
+      )
     end
   end
 
   @doc """
-  Declares a required secret environment variable runtime config value.
+  Declares an environment variable runtime config value.
+
+  Use `required?: false` for an optional value.
   """
-  defmacro secret_env!(key) when is_binary(key) do
+  defmacro env!(key, opts \\ []) do
     quote do
-      Favn.RuntimeConfig.Ref.secret_env!(unquote(key))
+      Favn.RuntimeConfig.Ref.env!(unquote(key), unquote(opts))
+    end
+  end
+
+  @doc """
+  Declares a secret environment variable runtime config value.
+
+  Use `required?: false` for an optional secret.
+  """
+  defmacro secret_env!(key, opts \\ []) do
+    quote do
+      Favn.RuntimeConfig.Ref.secret_env!(unquote(key), unquote(opts))
     end
   end
 
@@ -354,7 +402,7 @@ defmodule Favn.Asset do
         DSLCompiler.compile_error!(
           env.file,
           env.line,
-          "@depends/@freshness/@execution_pool/@meta/@window/@relation and source_config/2 must be attached to def asset(ctx)"
+          "@depends/@freshness/@execution_pool/@meta/@window/@relation and runtime_config/1,2 must be attached to def asset(ctx)"
         )
     end
 
@@ -755,23 +803,12 @@ defmodule Favn.Asset do
       DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
   end
 
-  defp normalize_single_asset_runtime_config!([], _raw_asset), do: %{}
-
   defp normalize_single_asset_runtime_config!(entries, raw_asset) do
-    entries
-    |> Enum.reduce(%{}, &Map.merge(&2, &1))
-    |> normalize_runtime_config_entry_order()
-    |> Requirements.normalize!()
+    inherited = Namespace.resolve_runtime_config(raw_asset.module)
+    Requirements.merge_all!(inherited ++ entries, consumer: raw_asset.module)
   rescue
     error in ArgumentError ->
       DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
-  end
-
-  defp normalize_runtime_config_entry_order(%{} = declarations) do
-    Map.new(declarations, fn
-      {scope, fields} when is_atom(scope) -> {scope, fields}
-      {fields, scope} when is_atom(scope) -> {scope, fields}
-    end)
   end
 
   defp normalize_single_asset_window!([], _raw_asset), do: nil

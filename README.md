@@ -191,7 +191,7 @@ defmodule MyDataPlatform.Lakehouse.Raw.Sales.Orders do
 
   @doc "Fetch, normalize, and write raw orders."
   @meta owner: "data-platform", category: :sales, tags: [:raw]
-  source_config :source_system,
+  runtime_config :source_system,
     segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
     token: secret_env!("SOURCE_SYSTEM_TOKEN")
   @relation true
@@ -222,13 +222,44 @@ atoms or strings, but persisted manifests normalize them to strings so pipeline
 selectors behave the same before and after JSON persistence without creating
 atoms from stored label data.
 
-Assets and generated multi-assets can declare required runtime configuration with
-`source_config/2`, `env!/1`, and `secret_env!/1`. Manifests record the required
-environment keys and secret flags, but never embed resolved runtime values. The
-runner resolves the values before asset execution and exposes them through
-`ctx.config`, failing the run early with stable `:missing_runtime_config`
-diagnostics such as `missing_env SOURCE_SYSTEM_TOKEN` when a required value is
-absent.
+Assets and generated multi-assets declare runtime requirements with
+`runtime_config/1,2`, `env!/1,2`, and `secret_env!/1,2`. Reusable bundles live in
+ordinary authoring code:
+
+```elixir
+defmodule MyDataPlatform.RuntimeConfigs do
+  use Favn.RuntimeConfig
+
+  bundle :github,
+    url: env!("GITHUB_URL"),
+    username: env!("GITHUB_USERNAME"),
+    api_key: secret_env!("GITHUB_API_KEY"),
+    enterprise_url: env!("GITHUB_ENTERPRISE_URL", required?: false)
+end
+```
+
+Select a bundle directly with
+`runtime_config MyDataPlatform.RuntimeConfigs.github()`, or select it for a
+namespace's descendant Elixir assets with
+`use Favn.Namespace, runtime_config: [MyDataPlatform.RuntimeConfigs.github()]`.
+Namespace selection follows module ancestry; it is not a global configuration
+registry. Unrelated assets can explicitly select the same bundle. A root
+namespace can select a bundle, but avoid placing secrets there unless every
+descendant executable Elixir asset genuinely requires them.
+
+Manifests record environment keys and secret/required flags, but never resolved
+values. The runner resolves only the selected asset's manifest requirements and
+exposes them through `ctx.config`. This is the only public access path for
+resolved asset config; pass narrow maps such as `ctx.config.github` explicitly
+to helper code. Missing required values fail before asset code runs. Favn
+redacts supported structured results and diagnostics, but cannot redact
+arbitrary logs emitted directly by asset or third-party code, so do not log
+resolved secrets.
+
+Keep named SQL adapter/session settings under Favn connection configuration.
+Keep process-wide telemetry and plugin settings under the owning OTP
+application's boot configuration. Neither belongs in asset `ctx.config` merely
+to make it globally accessible.
 
 Assets can also declare freshness with `@freshness`, for example `@freshness :daily`,
 `@freshness {:daily, timezone: "Europe/Oslo"}`, `@freshness [max_age: {:hours, 6}]`,
@@ -1038,7 +1069,7 @@ part of the stable `v1` contract unless they are documented here or in
 `Favn.Assets` remains available as a compatibility-only authoring DSL for compact
 multi-asset modules. Prefer `Favn.Asset` for new single assets and
 `Favn.MultiAsset` for generated or repetitive multi-asset modules. Multi-assets
-support module-level `source_config/2`; each generated asset carries the same
+support module-level `runtime_config/1,2`; each generated asset carries the same
 runtime config declarations and shared runtime code reads resolved values from
 `ctx.config`. At runtime, Favn rehydrates `ctx.asset.config.rest` structural keys
 and known Favn enum fields for idiomatic access. Arbitrary adapter-specific

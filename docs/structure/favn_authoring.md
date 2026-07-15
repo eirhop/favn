@@ -16,7 +16,7 @@ Tests:
   is an authoring macro layered on core schedule values.
 
 Use when changing asset, SQL asset, freshness DSL capture, execution pool DSL
-capture, pipeline concurrency clauses, namespace, source, connection, or
+capture, reusable runtime-config bundle authoring, pipeline concurrency clauses, namespace, source, connection, or
 authoring documentation behavior.
 
 `Favn.SQLAsset` compiles up to 50 ordered `check` declarations through the same

@@ -5,7 +5,7 @@ defmodule Favn.DSLCompilerTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
     use Favn.Asset
 
-    source_config(:source_system,
+    runtime_config(:source_system,
       segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
       token: secret_env!("SOURCE_SYSTEM_TOKEN")
     )

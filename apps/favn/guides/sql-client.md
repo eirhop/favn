@@ -136,7 +136,7 @@ raw rows to SQL storage:
 defmodule MyApp.Lakehouse.Raw.Sales.Orders do
   use Favn.Asset
 
-  source_config :source,
+  runtime_config :source,
     token: secret_env!("SOURCE_TOKEN")
 
   @relation true

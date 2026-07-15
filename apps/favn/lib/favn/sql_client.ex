@@ -62,7 +62,7 @@ defmodule Favn.SQLClient do
   `with_required_catalogs/2` or an explicit `required_catalogs: [...]` option.
 
   For source-system assets, declare source IDs and tokens with
-  `Favn.Asset.source_config/2`, read them from `ctx.config`, and return only
+  `Favn.Asset.runtime_config/2`, read them from `ctx.config`, and return only
   redacted or hashed source identity metadata.
 
   ## Functions and when to use them

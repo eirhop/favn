@@ -1,10 +1,11 @@
 defmodule Favn.Namespace do
   @moduledoc """
-  Public helper for inherited relation defaults.
+  Public helper for inherited relation defaults and runtime-config selection.
 
   Use `Favn.Namespace` to declare relation defaults once on parent modules, then
   let `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, `Favn.Assets`, and
-  `Favn.Source` inherit them.
+  `Favn.Source` inherit them. Runtime-config bundle selection applies only to
+  descendant `Favn.Asset` and `Favn.MultiAsset` executable Elixir assets.
 
   ## When to use it
 
@@ -78,6 +79,7 @@ defmodule Favn.Namespace do
   - `relation: [connection: ...]` for a root lakehouse namespace
   - `relation: [catalog: ...]` for database or phase namespaces such as raw or mart
   - `relation: [schema: ...]` for segment/domain namespaces such as sales or finance
+  - `runtime_config: [bundle, ...]` for explicit descendant Elixir asset requirements
 
   Supported relation keys:
 
@@ -85,7 +87,16 @@ defmodule Favn.Namespace do
   - `catalog`: string or atom
   - `schema`: string or atom
 
-  Only `relation:` is supported at the top level.
+  Runtime config bundles may also be selected for descendant Elixir assets:
+
+      use Favn.Namespace,
+        relation: [schema: "sales"],
+        runtime_config: [MyApp.RuntimeConfigs.github()]
+
+  Namespaces select reusable bundles; they do not define or resolve values and
+  are not a global configuration registry. Avoid selecting secret bundles at a
+  broad root namespace unless every descendant executable Elixir asset needs
+  them.
 
   ## See also
 
@@ -93,6 +104,8 @@ defmodule Favn.Namespace do
   - `Favn.SQLAsset`
   - `Favn.Source`
   """
+
+  alias Favn.RuntimeConfig.Bundle
 
   @supported_keys [:connection, :catalog, :schema]
 
@@ -119,7 +132,24 @@ defmodule Favn.Namespace do
     |> Enum.reduce(%{}, fn ancestor, acc ->
       case namespace_config(ancestor) do
         nil -> acc
-        config -> Map.merge(acc, config)
+        config -> Map.merge(acc, config.relation)
+      end
+    end)
+  end
+
+  @doc """
+  Resolves runtime configuration bundles selected by ancestor namespaces.
+
+  Bundles are returned from root to leaf and remain unresolved.
+  """
+  @spec resolve_runtime_config(module()) :: [Bundle.t()]
+  def resolve_runtime_config(module) when is_atom(module) do
+    module
+    |> ancestors()
+    |> Enum.flat_map(fn ancestor ->
+      case namespace_config(ancestor) do
+        nil -> []
+        config -> config.runtime_config
       end
     end)
   end
@@ -137,8 +167,9 @@ defmodule Favn.Namespace do
 
   def normalize_config!(opts) when is_map(opts) do
     relation_defaults = normalize_relation_defaults!(Map.get(opts, :relation, %{}))
-    validate_no_legacy_keys!(Map.delete(opts, :relation))
-    relation_defaults
+    runtime_config = normalize_runtime_config!(Map.get(opts, :runtime_config, []))
+    validate_no_legacy_keys!(Map.drop(opts, [:relation, :runtime_config]))
+    %{relation: relation_defaults, runtime_config: runtime_config}
   end
 
   def normalize_config!(opts) do
@@ -170,12 +201,21 @@ defmodule Favn.Namespace do
           "namespace relation config must be a keyword list or map, got: #{inspect(defaults)}"
   end
 
+  defp normalize_runtime_config!(bundles) when is_list(bundles) do
+    Enum.map(bundles, &Bundle.validate!/1)
+  end
+
+  defp normalize_runtime_config!(_other) do
+    raise ArgumentError,
+          "namespace runtime_config must be a list of Favn.RuntimeConfig.Bundle values"
+  end
+
   defp validate_no_legacy_keys!(opts_without_relation) when map_size(opts_without_relation) == 0,
     do: :ok
 
   defp validate_no_legacy_keys!(opts_without_relation) do
     raise ArgumentError,
-          "namespace config contains unsupported key(s) #{inspect(Map.keys(opts_without_relation))}; use relation: [connection: ...], relation: [catalog: ...], or relation: [schema: ...]"
+          "namespace config contains unsupported key(s) #{inspect(Map.keys(opts_without_relation))}; supported keys are :relation and :runtime_config"
   end
 
   defp namespace_config(module) do

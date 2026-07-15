@@ -99,6 +99,7 @@ defmodule Favn.Dev.LifecycleTest do
 
   test "staged runner startup failure stops the already-started runner", %{root_dir: root_dir} do
     cookie = "favn_staged_cleanup_cookie"
+    root_dir = root_with_free_distribution_ports(root_dir)
 
     case NodeControl.ensure_local_node_started(cookie) do
       :ok ->

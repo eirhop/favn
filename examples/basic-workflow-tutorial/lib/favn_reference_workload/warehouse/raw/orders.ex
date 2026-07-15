@@ -26,11 +26,9 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Orders do
 
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
   alias FavnReferenceWorkload.Client.FakeAPI
+  alias FavnReferenceWorkload.RuntimeConfigs
 
-  source_config(:source_system,
-    segment_id: env!("FAVN_REFERENCE_SOURCE_SEGMENT_ID"),
-    token: secret_env!("FAVN_REFERENCE_SOURCE_TOKEN")
-  )
+  runtime_config(RuntimeConfigs.source_system())
 
   @meta owner: "reference-workload", category: :orders, tags: [:raw, :synthetic]
   @depends FavnReferenceWorkload.Warehouse.Raw.Customers
@@ -38,9 +36,9 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Orders do
   @relation true
   def asset(ctx) do
     relation = ctx.asset.relation
-    source_config = ctx.config.source_system
+    runtime_config = ctx.config.source_system
 
-    with {:ok, rows} <- FakeAPI.fetch_rows(:orders, source_config),
+    with {:ok, rows} <- FakeAPI.fetch_rows(:orders, runtime_config),
          :ok <-
            DuckDBJSONLoader.replace_relation_from_rows(
              relation,
@@ -56,7 +54,7 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Orders do
          loaded_at: DateTime.utc_now(),
          source: %{
            system: :reference_source,
-           segment_id_hash: hash_identity(source_config.segment_id)
+           segment_id_hash: hash_identity(runtime_config.segment_id)
          }
        }}
     end

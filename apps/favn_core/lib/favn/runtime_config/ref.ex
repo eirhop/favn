@@ -14,7 +14,7 @@ defmodule Favn.RuntimeConfig.Ref do
       defmodule MyApp.SourceOrders do
         use Favn.Asset
 
-        source_config :source_system,
+        runtime_config :source_system,
           segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
           token: secret_env!("SOURCE_SYSTEM_TOKEN")
 
@@ -27,7 +27,7 @@ defmodule Favn.RuntimeConfig.Ref do
         end
       end
 
-  `source_config/2`, `env!/1`, and `secret_env!/1` are imported by
+  `runtime_config/1,2`, `env!/1,2`, and `secret_env!/1,2` are imported by
   `use Favn.Asset`. The manifest stores the environment variable names and
   secret flags, not the resolved values.
 
@@ -66,9 +66,10 @@ defmodule Favn.RuntimeConfig.Ref do
 
   @spec env!(String.t(), keyword()) :: t()
   @doc """
-  Builds a required environment-variable reference.
+  Builds an environment-variable reference.
 
-  Pass `secret?: true` when the value must be redacted anywhere it is displayed.
+  Pass `required?: false` for an optional value and `secret?: true` when the
+  value must be redacted anywhere it is displayed.
   """
   def env!(key, opts \\ []) when is_binary(key) and key != "" do
     %__MODULE__{
@@ -79,11 +80,15 @@ defmodule Favn.RuntimeConfig.Ref do
     }
   end
 
-  @spec secret_env!(String.t()) :: t()
+  @spec secret_env!(String.t(), keyword()) :: t()
   @doc """
-  Builds a required secret environment-variable reference.
+  Builds a secret environment-variable reference.
+
+  Pass `required?: false` for an optional secret.
   """
-  def secret_env!(key) when is_binary(key) and key != "", do: env!(key, secret?: true)
+  def secret_env!(key, opts \\ []) when is_binary(key) and key != "" do
+    env!(key, Keyword.put(opts, :secret?, true))
+  end
 
   @spec validate!(t()) :: t()
   @doc false

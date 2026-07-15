@@ -57,7 +57,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 - Extend the initial SQL cancellation token contract into adapter-native cancellation callbacks where supported; adapters without native cancellation must continue reporting unknown or unsupported data-plane outcome.
 - Add broader production stress, failure-injection, and restore verification for DuckDB/plugin execution under the single-node contract.
-- Extend the initial runtime config contract beyond required env refs if production needs optional values, non-env providers, or provider-specific secret managers.
+- Evaluate non-env runtime-config providers or provider-specific secret managers only when a production integration requires them; optional env refs and reusable scoped bundles are already supported.
 - Add broader production stress/failure-injection coverage for the service-authenticated diagnostics surface and keep end-to-end diagnostics coverage aligned with the PR #262 test plan.
 
 ## Later / Future Ideas

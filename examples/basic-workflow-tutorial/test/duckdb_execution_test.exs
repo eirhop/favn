@@ -164,7 +164,7 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
   # Test-only shortcut for prerequisite setup. This bypasses runner config
   # resolution, so do not copy it as application execution code.
   defp run_elixir_asset_directly_for_test_setup(asset) do
-    ctx = %Context{asset: %{relation: asset.relation}, config: source_config()}
+    ctx = %Context{asset: %{relation: asset.relation}, config: runtime_config()}
     apply(asset.module, :asset, [ctx])
   end
 
@@ -228,7 +228,7 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
   defp assert_successful_asset_return(:ok), do: :ok
   defp assert_successful_asset_return({:ok, meta}) when is_map(meta), do: :ok
 
-  defp source_config do
+  defp runtime_config do
     %{source_system: %{segment_id: "northbeam-demo-segment", token: "direct-test-token"}}
   end
 
