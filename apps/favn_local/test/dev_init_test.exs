@@ -54,6 +54,8 @@ defmodule Favn.Dev.InitTest do
     assert "lib/#{Macro.underscore(base_module(app))}/connections/important_lakehouse.ex" in result.created
     assert "config/config.exs" in result.updated
     assert "mix.exs" in result.updated
+    assert "priv/duckdb/raw_catalog.sql" in result.created
+    assert "priv/duckdb/mart_catalog.sql" in result.created
 
     raw_orders =
       File.read!(
@@ -95,8 +97,12 @@ defmodule Favn.Dev.InitTest do
     assert config =~ "schedules: :all"
     assert config =~ "connections: :all"
     assert config =~ "important_lakehouse: ["
-    assert config =~ ~S|raw: [type: :duckdb, path: ".favn/data/raw.duckdb"]|
-    assert config =~ ~S|mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]|
+    assert config =~ "resources: ["
+    assert config =~ "raw_catalog: [file: {:priv, #{inspect(app)}, \"duckdb/raw_catalog.sql\"}]"
+    assert config =~ "catalogs: ["
+    assert config =~ "raw: [resource: :raw_catalog, write_concurrency: 1]"
+    assert File.read!(Path.join(root_dir, "priv/duckdb/raw_catalog.sql")) =~
+             "ATTACH '.favn/data/raw.duckdb' AS raw"
     assert config =~ "runner_plugins: ["
     assert config =~ "FavnDuckdb"
 

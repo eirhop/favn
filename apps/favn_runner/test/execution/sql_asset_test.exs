@@ -15,6 +15,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.RelationRef
   alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL.Check
+  alias Favn.SQL.SessionRequirements
   alias Favn.SQL.Template
 
   setup do
@@ -73,6 +74,30 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert result.status == :ok
     assert_received {:connect_opts, :runner_sql_runtime, opts}
     assert Keyword.fetch!(opts, :required_catalogs) == ["raw"]
+  end
+
+  test "manifest execution passes declared session resources to the SQL client" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+
+    version =
+      register_sql_manifest!(
+        ref,
+        nil,
+        [],
+        SessionRequirements.new!([:landing_storage, :azure_extension])
+      )
+
+    work = %RunnerWork{
+      run_id: "run_sql_resource_scope",
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      asset_ref: ref
+    }
+
+    assert {:ok, %{status: :ok}} = FavnRunner.run(work)
+    assert_received {:connect_opts, :runner_sql_runtime, opts}
+    assert Keyword.fetch!(opts, :required_catalogs) == []
+    assert Keyword.fetch!(opts, :required_resources) == ["azure_extension", "landing_storage"]
   end
 
   test "manifest execution scopes SQL sessions to declared relation input catalogs" do
@@ -784,8 +809,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_inspection_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 4,
-      runner_contract_version: 4,
+      schema_version: 5,
+      runner_contract_version: 5,
       assets: [
         %Asset{
           ref: ref,
@@ -814,7 +839,12 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version
   end
 
-  defp register_sql_manifest!(ref, relation \\ nil, relation_inputs \\ []) do
+  defp register_sql_manifest!(
+         ref,
+         relation \\ nil,
+         relation_inputs \\ [],
+         session_requirements \\ SessionRequirements.empty()
+       ) do
     relation =
       relation || RelationRef.new!(%{connection: :runner_sql_runtime, name: "manifest_sql_asset"})
 
@@ -829,8 +859,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 4,
-        runner_contract_version: 4,
+        schema_version: 5,
+        runner_contract_version: 5,
         assets: [
           %Asset{
             ref: ref,
@@ -841,6 +871,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
             relation: relation,
             materialization: :table,
             relation_inputs: relation_inputs,
+            session_requirements: session_requirements,
             sql_execution: %SQLExecution{
               sql: "SELECT 1 AS id",
               template: template,
@@ -882,8 +913,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     manifest = %Manifest{
-      schema_version: 4,
-      runner_contract_version: 4,
+      schema_version: 5,
+      runner_contract_version: 5,
       assets: [
         %Asset{
           ref: ref,
@@ -933,8 +964,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     manifest = %Manifest{
-      schema_version: 4,
-      runner_contract_version: 4,
+      schema_version: 5,
+      runner_contract_version: 5,
       assets: [
         %Asset{
           ref: ref,
@@ -1048,8 +1079,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 4,
-        runner_contract_version: 4,
+        schema_version: 5,
+        runner_contract_version: 5,
         assets: [
           %Asset{
             ref: ref,
@@ -1088,8 +1119,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 4,
-        runner_contract_version: 4,
+        schema_version: 5,
+        runner_contract_version: 5,
         assets: [
           %Asset{
             ref: ref,
@@ -1120,8 +1151,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 4,
-      runner_contract_version: 4,
+      schema_version: 5,
+      runner_contract_version: 5,
       assets: [
         %Asset{
           ref: ref,

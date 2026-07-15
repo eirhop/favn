@@ -520,38 +520,51 @@ For this flow, configure app-scoped `discovery` and runtime `:connections` under
 
 Connection runtime values can also use `Favn.RuntimeConfig.Ref.env!/1` and
 `Favn.RuntimeConfig.Ref.secret_env!/1` when values should be resolved from the
-runner environment just before adapter connection.
+runner environment when the runner starts. Environment changes are not observed
+on each adapter connection or pool checkout. Prefer native refresh-capable
+credential providers; otherwise restart the runner after rotating a resolved
+credential so its config and old physical sessions are both replaced. Local
+development can use `mix favn.reload`, which restarts the runner and reevaluates
+runtime config.
 
-DuckDB runtime config separates the opened DuckDB session database from attached
-persistent catalogs. Use `open: [database: ":memory:"]` for production-style
-DuckLake sessions where persistence lives in attached DuckLake catalogs, or use a
-file-backed `open.database` for local debugging. Configure DuckDB session setup
-under `duckdb: [...]`: extension `load`, typed settings, secrets, keyed catalog
-`attach`, and optional `use`.
-
-DuckDB ADBC validates first-class DuckDB settings used by DuckLake-on-Postgres
-deployments and emits them before `ATTACH`, so they apply to newly attached
-Postgres-backed catalogs. `pg_pool_max_connections` is per attached Postgres
-database, `pg_pool_acquire_mode: :wait` makes exhausted pools wait instead of
-opening extra connections, `pg_pool_enable_thread_local_cache: false` avoids
-thread-local connection pinning during parallel work, and `threads` bounds DuckDB
-parallel scan workers. Do not use deprecated `pg_connection_limit`.
+DuckDB runtime config separates the opened DuckDB session database from native
+session setup. Use trusted SQL files for `INSTALL`, `LOAD`, `SET`,
+`CREATE SECRET`, `ATTACH`, `USE`, and future DuckDB syntax instead of a
+Favn-owned allowlist.
 
 ```elixir
 duckdb: [
-  load: [:ducklake, :postgres, :azure],
-  settings: [
-    azure_transport_option_type: :curl,
-    threads: 4,
-    pg_pool_max_connections: 5,
-    pg_pool_acquire_mode: :wait,
-    pg_pool_enable_thread_local_cache: false,
-    pg_pool_wait_timeout_millis: 60_000,
-    pg_pool_idle_timeout_millis: 300_000,
-    pg_pool_enable_reaper_thread: true
+  startup: [
+    file: {:priv, :my_app, "duckdb/startup.sql"},
+    params: [timezone: "Europe/Oslo"]
+  ],
+  resources: [
+    landing_storage: [
+      file: {:priv, :my_app, "duckdb/landing_storage.sql"},
+      params: [token: Favn.RuntimeConfig.Ref.secret_env!("LANDING_TOKEN")]
+    ]
+  ],
+  catalogs: [
+    landing: [
+      resource: :landing_storage,
+      write_concurrency: 1,
+      write_scope: "production-ducklake-metadata"
+    ]
   ]
 ]
 ```
+
+SQL assets request stable names with `@resources [:landing_storage]`; namespaces
+may add resources for all descendant SQL assets. Both session-script and asset
+SQL values use `@name`, but script values come only from that script's configured
+`params`. `{:priv, :my_app, "duckdb/startup.sql"}` means the path is relative to
+the `priv/` directory of OTP application `:my_app`; an absolute path is the other
+supported locator.
+
+Read [DuckDB Session Scripts And Resources](apps/favn/guides/duckdb-session-scripts.md)
+for the full example, simple physical-session lifecycle, pooling identity,
+security warnings, and an unsafe retry example. The removed structured
+`duckdb.load/settings/secrets/attach/use` keys are rejected.
 
 DuckDB and DuckDB ADBC connections use runner-local warm session reuse by default
 when the adapter is poolable. Disable it per connection with:
@@ -569,17 +582,10 @@ config :favn,
       open: [database: ":memory:"],
       pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000],
       duckdb: [
-        load: [:ducklake, :postgres, :azure],
-        attach: [
-          raw: [
-            type: :ducklake,
-            metadata: "ducklake:postgres:",
-            meta_secret: :raw_meta,
-            data_path: "abfss://lakehouse.dfs.core.windows.net/raw/",
-            write_concurrency: 1
-          ]
+        resources: [
+          raw_catalog: [file: {:priv, :my_app, "duckdb/raw_catalog.sql"}]
         ],
-        use: :raw
+        catalogs: [raw: [resource: :raw_catalog, write_concurrency: 1]]
       ]
     ]
   ]
@@ -587,34 +593,12 @@ config :favn,
 
 Pooling is local to one runner BEAM and is not distributed across runner nodes.
 It reuses warm DuckDB/ADBC sessions only when the connection/config hash,
-required catalog set, and adapter fingerprint match. A checked-out pooled session
-is exclusive to its checkout owner process; the shared SQL client rejects
-non-owner operations and disconnect attempts. Existing catalog/write concurrency
-still bounds active work and new session/bootstrap, so enabling pooling does not
+required catalog and resource sets, script-content hashes, parameter
+fingerprints, and adapter fingerprint match. A checked-out pooled session is
+exclusive to its checkout owner process; the shared SQL client rejects non-owner
+operations and disconnect attempts. Existing catalog/write concurrency still
+bounds active work and new session bootstrap, so enabling pooling does not
 increase write concurrency.
-
-Local DuckLake catalogs can use SQLite metadata without a PostgreSQL metadata
-secret. Both DuckDB adapters accept the same attachment shape:
-
-```elixir
-duckdb: [
-  load: [:ducklake],
-  attach: [
-    source: [
-      type: :ducklake,
-      metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
-      data_path: "/absolute/path/files/source",
-      write_concurrency: 1
-    ]
-  ]
-]
-```
-
-`meta_secret` is omitted only for the `ducklake:sqlite:` metadata scheme.
-Catalog aliases and named connections that resolve to the same SQLite metadata
-file share one write-admission scope.
-PostgreSQL-backed DuckLake attachments continue to require a known PostgreSQL
-secret referenced by `meta_secret`.
 
 If `required_catalogs` is omitted for a connection with configured catalog
 policies, Favn treats bootstrap as all-catalog bootstrap and acquires every

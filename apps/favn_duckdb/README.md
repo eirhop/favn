@@ -62,6 +62,15 @@ config :favn, :runner_plugins, [
 
 ## Notes
 
+- physical-session setup uses trusted native SQL files configured as
+  `duckdb.startup` and named `duckdb.resources`; SQL assets select stable names
+  with `@resources`, while `duckdb.catalogs` contains only Favn resource and
+  write-admission metadata
+- the structured `load`, `settings`, `secrets`, `attach`, and `use` config forms
+  are removed; see `apps/favn/guides/duckdb-session-scripts.md`
+- environment-backed credentials resolve at runner startup; use a native
+  refresh-capable provider or restart the runner after rotation because idle
+  timeout does not impose a maximum physical-session age
 - placement is runtime/plugin config only (not manifest or DSL)
 - separate-process mode uses one long-lived worker (no pooling/autoscaling in Phase 7)
 - separate-process worker unavailability and worker-call timeouts are normalized

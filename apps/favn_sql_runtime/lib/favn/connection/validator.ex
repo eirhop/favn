@@ -23,7 +23,7 @@ defmodule Favn.Connection.Validator do
   @spec resolve(Definition.t(), map()) :: {:ok, Resolved.t()} | {:error, [Error.t()]}
   def resolve(%Definition{} = definition, runtime_values) when is_map(runtime_values) do
     with :ok <- validate_definition(definition),
-         {:ok, config, required_keys, secret_fields, schema_keys} <-
+         {:ok, config, required_keys, secret_fields, secret_paths, schema_keys} <-
            build_config(definition, runtime_values) do
       {:ok,
        %Resolved{
@@ -33,6 +33,7 @@ defmodule Favn.Connection.Validator do
          config: config,
          required_keys: required_keys,
          secret_fields: secret_fields,
+         secret_paths: secret_paths,
          schema_keys: schema_keys,
          metadata: definition.metadata
        }}
@@ -63,7 +64,9 @@ defmodule Favn.Connection.Validator do
 
         secret_fields = secret_fields(definition.config_schema, merged)
 
-        {:ok, resolved_values, required_keys, secret_fields, schema_keys}
+        secret_paths = collect_secret_paths(merged)
+
+        {:ok, resolved_values, required_keys, secret_fields, secret_paths, schema_keys}
       else
         {:error, Enum.reverse(errors)}
       end
@@ -154,6 +157,37 @@ defmodule Favn.Connection.Validator do
   end
 
   defp nested_secret_ref?(_value), do: false
+
+  defp collect_secret_paths(value), do: collect_secret_paths(value, []) |> Enum.sort()
+
+  defp collect_secret_paths(%Favn.RuntimeConfig.Ref{secret?: true}, path),
+    do: [Enum.reverse(path)]
+
+  defp collect_secret_paths(%Favn.RuntimeConfig.Ref{}, _path), do: []
+  defp collect_secret_paths(%_{} = _value, _path), do: []
+
+  defp collect_secret_paths(value, path) when is_map(value) do
+    Enum.flat_map(value, fn {key, child} -> collect_secret_paths(child, [key | path]) end)
+  end
+
+  defp collect_secret_paths(value, path) when is_list(value) do
+    if Keyword.keyword?(value) do
+      Enum.flat_map(value, fn {key, child} -> collect_secret_paths(child, [key | path]) end)
+    else
+      value
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {child, index} -> collect_secret_paths(child, [index | path]) end)
+    end
+  end
+
+  defp collect_secret_paths(value, path) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {child, index} -> collect_secret_paths(child, [index | path]) end)
+  end
+
+  defp collect_secret_paths(_value, _path), do: []
 
   defp validate_name(errors, %Definition{name: name, module: module}) do
     if is_atom(name) do

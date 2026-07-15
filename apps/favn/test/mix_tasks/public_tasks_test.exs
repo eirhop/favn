@@ -216,7 +216,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       config :favn, :connections,
         ducklake: [
           open: [database: database],
-          duckdb: [extensions: ["ducklake"]]
+          duckdb: [
+            startup: [
+              file: {:priv, :favn_dev_runtime_config_consumer, "duckdb/startup.sql"}
+            ]
+          ]
         ]
       """
     )
@@ -284,7 +288,12 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         connection = config |> Keyword.fetch!(:connections) |> Keyword.fetch!(:ducklake)
 
         assert connection[:open] == [database: "cloud.duckdb"]
-        assert connection[:duckdb] == [extensions: ["ducklake"]]
+
+        assert connection[:duckdb] == [
+                 startup: [
+                   file: {:priv, :favn_dev_runtime_config_consumer, "duckdb/startup.sql"}
+                 ]
+               ]
       end)
     after
       _ = :code.set_path(code_path)
@@ -1363,8 +1372,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     File.write!(
       path,
       JSON.encode_to_iodata!(%{
-        schema_version: 4,
-        runner_contract_version: 4,
+        schema_version: 5,
+        runner_contract_version: 5,
         assets: [],
         pipelines: [],
         schedules: [],

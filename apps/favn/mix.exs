@@ -45,6 +45,7 @@ defmodule Favn.MixProject do
         "README.md",
         "guides/getting-started.md",
         "guides/authoring-assets.md",
+        "guides/duckdb-session-scripts.md",
         "guides/sql-runtime-inputs.md",
         "guides/sql-asset-checks.md",
         "guides/local-development.md",

@@ -52,8 +52,8 @@ defmodule Favn.Connection do
   Favn also reserves `:write_concurrency` as runtime connection config for SQL
   admission control. Use `write_concurrency: 1` or `:single` for single-writer
   backends, and `write_concurrency: :unlimited` for backends that safely support
-  parallel writes. DuckDB uses per-attached-catalog `write_concurrency` under
-  `duckdb.attach.<catalog>` instead of this connection-level key.
+  parallel writes. DuckDB uses per-catalog `write_concurrency` under
+  `duckdb.catalogs.<catalog>` instead of this connection-level key.
 
   DuckDB connections can use adapter-owned schema fields for the DuckDB session
   database and bootstrap SQL:
@@ -68,11 +68,15 @@ defmodule Favn.Connection do
         config_schema: Favn.SQL.Adapter.DuckDB.config_schema_fields()
       }
 
-  Runtime config then uses `open: [database: ...]` for the DuckDB session database
-  and `duckdb: [...]` for extension loads, settings, secrets, attached catalogs,
-  and optional `USE`. `Favn.RuntimeConfig.Ref.secret_env!/1` values inside nested
-  DuckDB config are resolved before adapter connection and redacted from
-  diagnostics.
+  Runtime config then uses `open: [database: ...]` for the DuckDB session
+  database and `duckdb: [startup: ..., resources: ..., catalogs: ...]` for
+  trusted native SQL session setup. SQL files own DuckDB-specific `INSTALL`,
+  `LOAD`, `SET`, `CREATE SECRET`, `ATTACH`, and `USE` syntax. Catalog entries
+  contain only Favn-owned resource and write-admission metadata.
+  `Favn.RuntimeConfig.Ref.secret_env!/1` values inside script `params` are
+  resolved before adapter connection and redacted from Favn diagnostics. Read
+  the HexDocs guide
+  [DuckDB Session Scripts And Resources](duckdb-session-scripts.html).
 
   ## Runtime Environment Values
 

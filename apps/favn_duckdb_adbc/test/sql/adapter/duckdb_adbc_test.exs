@@ -304,14 +304,8 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
             }} = ADBC.diagnostics(resolved(), duckdb_adbc_client: FakeClient)
   end
 
-  test "pool lifecycle hooks validate, reset rollback, and restore configured USE" do
-    resolved = %Resolved{
-      resolved()
-      | config: %{
-          open: [database: ":memory:"],
-          duckdb: [attach: [lake: [type: :ducklake]], use: :lake]
-        }
-    }
+  test "pool lifecycle hooks validate and reset with rollback only" do
+    resolved = resolved()
 
     {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
 
@@ -331,31 +325,18 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
              _event -> false
            end)
 
-    assert Enum.any?(events(), fn
-             {:execute, "USE \"lake\"", []} -> true
-             _event -> false
-           end)
+    refute Enum.any?(events(), &match?({:execute, "USE " <> _, []}, &1))
   end
 
-  test "pool reset tolerates no-active-transaction rollback and skips USE outside required catalogs" do
+  test "pool reset tolerates no-active-transaction rollback" do
     TestSupport.put_mode(:rollback_mode, :no_active_transaction)
-
-    resolved = %Resolved{
-      resolved()
-      | config: %{
-          open: [database: ":memory:"],
-          duckdb: [attach: [lake: [type: :ducklake]], use: :lake]
-        }
-    }
+    resolved = resolved()
 
     {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
 
     assert :ok = ADBC.reset_session(conn, resolved, required_catalogs: [:main])
 
-    refute Enum.any?(events(), fn
-             {:execute, "USE \"lake\"", []} -> true
-             _event -> false
-           end)
+    refute Enum.any?(events(), &match?({:execute, "USE " <> _, []}, &1))
   end
 
   test "metadata capacity errors classify as retryable capacity" do
@@ -382,19 +363,15 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
              ADBC.default_concurrency_policy(resolved)
   end
 
-  test "ducklake catalogs on the same postgres metadata server share admission scope" do
+  test "catalogs with the same explicit write scope share admission limits" do
     resolved = %Resolved{
       resolved()
       | config: %{
           open: [database: ":memory:"],
           duckdb: [
-            secrets: [
-              raw_meta: [type: :postgres, host: " PG.EXAMPLE.COM ", port: "5432"],
-              mart_meta: [type: :postgres, host: "pg.example.com", port: 5432]
-            ],
-            attach: [
-              raw: [type: :ducklake, meta_secret: :raw_meta, write_concurrency: 1],
-              mart: [type: :ducklake, meta_secret: :mart_meta, write_concurrency: 10]
+            catalogs: [
+              raw: [write_concurrency: 1, write_scope: "postgres:pg.example.com:5432"],
+              mart: [write_concurrency: 10, write_scope: "postgres:pg.example.com:5432"]
             ]
           ]
         }
@@ -422,7 +399,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     assert other_scope == hd(scopes)
   end
 
-  test "ducklake catalogs on the same SQLite metadata file share admission scope" do
+  test "catalog write scope can represent shared SQLite metadata" do
     metadata_path = Path.join(System.tmp_dir!(), "favn-ducklake-metadata.sqlite")
 
     equivalent_path =
@@ -438,17 +415,9 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
       | config: %{
           open: [database: ":memory:"],
           duckdb: [
-            attach: [
-              raw: [
-                type: :ducklake,
-                metadata: "ducklake:sqlite:#{metadata_path}",
-                write_concurrency: 1
-              ],
-              mart: [
-                type: :ducklake,
-                metadata: "ducklake:sqlite:#{equivalent_path}",
-                write_concurrency: 10
-              ]
+            catalogs: [
+              raw: [write_scope: metadata_path, write_concurrency: 1],
+              mart: [write_scope: Path.expand(equivalent_path), write_concurrency: 10]
             ]
           ]
         }

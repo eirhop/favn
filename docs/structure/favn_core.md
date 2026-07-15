@@ -24,11 +24,16 @@ inference, effective execution-pool propagation, freshness keys/policies,
 windows, schedules, runtime config refs, backfill range resolution, or
 runner/orchestrator contract structs.
 
-Manifest schema 4 and runner contract 4 are the only accepted versions. SQL
+Manifest schema 5 and runner contract 5 are the only accepted versions. SQL
 execution payloads carry typed `%Favn.SQL.Check{}` declarations, templates may
 contain runtime `query()`/`target()` relation nodes, and attempts carry bounded
 `%Favn.SQL.CheckResult{}` diagnostics. Older manifest schemas and missing-graph
 payloads are rejected rather than upgraded.
+
+`%Favn.SQL.SessionRequirements{version: 1}` is the manifest-safe SQL asset
+physical-session contract. It stores bounded normalized string resource names
+only; script locators, SQL content, resolved runtime values, and secrets remain
+runtime connection config.
 
 Runtime SQL input contracts are core-owned:
 `Favn.SQLAsset.RuntimeInputs` defines the behaviour, its `Result` and `Error`

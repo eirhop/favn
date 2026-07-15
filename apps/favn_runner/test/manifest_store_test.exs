@@ -43,8 +43,8 @@ defmodule FavnRunner.ManifestStoreTest do
 
   defp build_manifest(metadata \\ %{}) do
     %Manifest{
-      schema_version: 4,
-      runner_contract_version: 4,
+      schema_version: 5,
+      runner_contract_version: 5,
       assets: [],
       pipelines: [],
       schedules: [],

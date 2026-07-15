@@ -65,12 +65,21 @@ config :favn,
   connections: [
     warehouse: [
       open: [database: ":memory:"],
-      duckdb: [load: [:parquet]]
+      duckdb: [
+        startup: [file: {:priv, :my_app, "duckdb/startup.sql"}],
+        resources: [
+          landing_storage: [file: {:priv, :my_app, "duckdb/landing_storage.sql"}]
+        ]
+      ]
     ]
   ]
 ```
 
-See [Configuration](configuration.md) for the full option reference.
+DuckDB capabilities are configured in the SQL files with native `INSTALL`,
+`LOAD`, `SET`, `CREATE SECRET`, `ATTACH`, and `USE` syntax. See
+[DuckDB Session Scripts And Resources](duckdb-session-scripts.md) for the full
+lifecycle and safety contract, then [Configuration](configuration.md) for the
+option reference.
 
 ## Common Problems
 
@@ -79,6 +88,6 @@ See [Configuration](configuration.md) for the full option reference.
 | DuckDB dependency is missing | Add `:favn_duckdb` or `:favn_duckdb_adbc`. |
 | Connection cannot load | Check the `Favn.Connection` module and discovery config. |
 | Missing `open.database` | Add `open: [database: ...]`. |
-| DuckLake attach fails | Check extensions, secrets, `meta_secret`, and `data_path`. |
+| DuckDB session script fails | Read the reported startup/resource id, then run the redacted SQL directly against the pinned DuckDB version. |
 | Session ownership error | Open a session per process. |
 | SQL timeout after a write | Treat the result as unknown and inspect before retrying. |

@@ -56,11 +56,31 @@ DuckDB/DuckLake catalog scope:
 Favn.SQLClient.connect(:warehouse, required_catalogs: ["raw"])
 ```
 
+Native DuckDB session resources without any configured catalog:
+
+```elixir
+Favn.SQLClient.connect(:warehouse,
+  required_catalogs: [],
+  required_resources: [:azure_extension]
+)
+```
+
 Rules:
 
 - Connection name must be an atom.
 - Options must be a keyword list.
 - Public callers cannot pass internal routing options such as `:registry_name`.
+- Omitting `required_catalogs` on a DuckDB SQLClient call prepares all configured
+  catalogs for inspection and maintenance compatibility. Pass an explicit list,
+  including `[]`, for least-privilege setup.
+- `required_resources` selects exact trusted native SQL files. SQL assets should
+  use `@resources` so the requirement is visible in the manifest.
+
+DuckDB startup and selected resources run only when a physical session is
+created, before client SQL. A compatible pooled session can be reused later
+without rerunning setup. Read
+[DuckDB Session Scripts And Resources](duckdb-session-scripts.html) for the full
+lifecycle, retry warning, and safe authoring rules.
 
 ## Query And Execute Options
 

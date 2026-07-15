@@ -76,6 +76,10 @@ finite admission/catalog limit, but the pool does not coordinate across runner
 nodes, does not increase catalog/write concurrency, and does not replace finite
 DuckLake catalog `write_concurrency`, especially on low-tier Azure PostgreSQL
 metadata stores.
+SQL asset manifest payloads carry versioned stable session resource names. The
+runner combines those names with rendered catalog requirements and passes both
+sets to the SQL client before physical-session creation; it never embeds script
+files or resolved secret values in the manifest.
 For DuckLake with PostgreSQL metadata, one concurrent DuckLake writer can use
 multiple PostgreSQL backend connections; observed deployments used about three,
 so size `write_concurrency` with that multiplier and leave operational headroom.

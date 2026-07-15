@@ -7,6 +7,8 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
   alias Favn.SQL.Error
   alias FavnDuckdbADBC.TestSupport
 
+  @moduletag :tmp_dir
+
   defmodule FakeClient do
     use FavnDuckdbADBC.TestSupport.FakeClient
 
@@ -16,666 +18,106 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
     def execute(_conn_ref, sql, params) do
       TestSupport.record({:execute, sql, params})
 
-      if TestSupport.mode(:bootstrap_fail_sql, nil) == sql do
-        {:error, "failed while running #{sql}"}
-      else
-        {:ok, nil}
-      end
-    end
-  end
-
-  defmodule FakeTokenProvider do
-    @behaviour Favn.Azure.PostgresEntraTokenProvider
-
-    alias Favn.Azure.Token
-
-    @impl true
-    def fetch_token(_auth, _opts) do
-      {:ok, %Token{access_token: "entra-token", expires_on: "1770000000"}}
-    end
-  end
-
-  defmodule FailingTokenProvider do
-    @behaviour Favn.Azure.PostgresEntraTokenProvider
-
-    alias Favn.Azure.TokenError
-
-    @impl true
-    def fetch_token(_auth, _opts) do
-      {:error,
-       %TokenError{
-         type: :connection_error,
-         message: "managed identity token request failed",
-         retryable?: true,
-         details: %{status: 429, access_token: "entra-token"}
-       }}
+      if TestSupport.mode(:bootstrap_fail_sql, nil) == sql,
+        do: {:error, "failed while running #{sql}"},
+        else: {:ok, nil}
     end
   end
 
   setup do
     TestSupport.start_events()
-
-    on_exit(fn ->
-      TestSupport.reset()
-    end)
-
+    on_exit(&TestSupport.reset/0)
     :ok
   end
 
-  test "config schema fields accept open and duckdb config" do
+  test "config schema accepts native script configuration and rejects structured bootstrap", %{tmp_dir: dir} do
+    script = write_sql!(dir, "startup.sql", "SET timezone = 'UTC';")
+
     assert [
              %{key: :open, type: {:custom, open_validator}},
-             %{key: :duckdb, type: {:custom, validator}} | _
-           ] =
-             ADBC.config_schema_fields()
+             %{key: :duckdb, type: {:custom, duckdb_validator}} | _
+           ] = ADBC.config_schema_fields()
 
     assert :ok = open_validator.(database: ":memory:")
-    assert :ok = validator.([])
-    assert :ok = validator.(%{})
-    assert {:error, :expected_duckdb_keyword_or_map} = validator.(:invalid)
+    assert :ok = duckdb_validator.(startup: [file: script])
+
+    assert {:error, {:unknown_config_keys, :duckdb, [:attach]}} =
+             duckdb_validator.(attach: [lake: []])
   end
 
-  test "schema field accepts typed settings and rejects unknown settings" do
-    assert %{type: {:custom, validator}} = duckdb_schema_field()
+  test "bootstrap executes startup then selected resources as whole SQL files", %{tmp_dir: dir} do
+    startup = write_sql!(dir, "startup.sql", "SET timezone = @timezone;")
+    extension = write_sql!(dir, "extension.sql", "INSTALL azure;\nLOAD azure;")
+    storage = write_sql!(dir, "storage.sql", "CREATE SECRET landing (TOKEN @token);")
 
-    assert :ok = validator.(settings: [azure_transport_option_type: :curl])
-    assert :ok = validator.(settings: [azure_transport_option_type: "default"])
-
-    assert :ok =
-             validator.(
-               settings: [
-                 threads: 4,
-                 pg_pool_max_connections: 5,
-                 pg_pool_acquire_mode: :wait,
-                 pg_pool_enable_thread_local_cache: false,
-                 pg_pool_wait_timeout_millis: 60_000,
-                 pg_pool_max_lifetime_millis: 900_000,
-                 pg_pool_idle_timeout_millis: 300_000,
-                 pg_pool_enable_reaper_thread: true,
-                 pg_pool_health_check_query: "SELECT 1"
-               ]
-             )
-
-    assert :ok = validator.(settings: [pg_pool_max_connections: 0])
-    assert :ok = validator.(settings: [pg_pool_health_check_query: ""])
-
-    assert {:error, {:unsupported_setting, :some_unknown_setting}} =
-             validator.(settings: [some_unknown_setting: "value"])
-
-    assert {:error, {:invalid_setting_value, :azure_transport_option_type, "bad"}} =
-             validator.(settings: [azure_transport_option_type: :bad])
-
-    assert {:error, {:invalid_setting_value, :pg_pool_acquire_mode, "bad"}} =
-             validator.(settings: [pg_pool_acquire_mode: :bad])
-
-    assert {:error, {:invalid_setting_value, :threads, 0}} =
-             validator.(settings: [threads: 0])
-
-    assert {:error, {:invalid_setting_value, :pg_pool_max_connections, -1}} =
-             validator.(settings: [pg_pool_max_connections: -1])
-
-    assert {:error, {:invalid_setting_value, :pg_pool_enable_thread_local_cache, "false"}} =
-             validator.(settings: [pg_pool_enable_thread_local_cache: "false"])
-
-    assert {:error, {:deprecated_setting, :pg_connection_limit, :pg_pool_max_connections}} =
-             validator.(settings: [pg_connection_limit: 5])
-  end
-
-  test "normalizes setting atom and string values into SET statements" do
-    assert {:ok, atom_steps} = Bootstrap.build_steps(settings_resolved(:curl))
-    assert {:ok, string_steps} = Bootstrap.build_steps(settings_resolved("default"))
-
-    assert Enum.find(atom_steps, &(&1.id == "set_azure_transport_option_type"))
-           |> Map.fetch!(:statement)
-           |> IO.iodata_to_binary() == "SET azure_transport_option_type = 'curl'"
-
-    assert Enum.find(string_steps, &(&1.id == "set_azure_transport_option_type"))
-           |> Map.fetch!(:statement)
-           |> IO.iodata_to_binary() == "SET azure_transport_option_type = 'default'"
-  end
-
-  test "runs DuckLake bootstrap statements in configured order" do
-    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
-
-    assert :ok = ADBC.bootstrap(conn, resolved(), [])
-
-    assert statements() == [
-             "LOAD ducklake",
-             "LOAD postgres",
-             "LOAD azure",
-             "CREATE SECRET \"azure_adls\" (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'storageaccount')",
-             "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')",
-             "ATTACH 'ducklake:postgres:' AS \"lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/raw', META_SECRET \"lakehouse_meta\")",
-             ~s(USE "lake")
-           ]
-  end
-
-  test "runs multiple DuckDB catalog attach statements" do
-    resolved = duckdb_catalogs_resolved()
-    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
-
-    assert :ok = ADBC.bootstrap(conn, resolved, [])
-
-    assert statements() == [
-             ~s(ATTACH '.favn/data/raw.duckdb' AS "raw"),
-             ~s(ATTACH '.favn/data/mart.duckdb' AS "mart")
-           ]
-  end
-
-  test "required_catalogs filters planned DuckDB catalog attach steps" do
-    assert {:ok, steps} =
-             Bootstrap.build_steps(duckdb_catalogs_resolved(), required_catalogs: ["raw"])
-
-    assert planned_statements(steps) == [~s(ATTACH '.favn/data/raw.duckdb' AS "raw")]
-  end
-
-  test "validates SQLite and PostgreSQL DuckLake attachment requirements" do
-    assert %{type: {:custom, validator}} = duckdb_schema_field()
-
-    assert :ok =
-             validator.(
-               attach: [
-                 source: [
-                   type: :ducklake,
-                   metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
-                   data_path: "/absolute/path/files/source",
-                   write_concurrency: 1
-                 ]
-               ]
-             )
-
-    assert {:error, :empty_ducklake_sqlite_metadata_path} =
-             validator.(
-               attach: [
-                 source: [
-                   type: :ducklake,
-                   metadata: "ducklake:sqlite:",
-                   data_path: "/absolute/path/files/source"
-                 ]
-               ]
-             )
-
-    for data_path <- [nil, ""] do
-      assert {:error, {:missing_attach_field, :data_path}} =
-               validator.(
-                 attach: [
-                   source: [
-                     type: :ducklake,
-                     metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
-                     data_path: data_path
-                   ]
-                 ]
-               )
-    end
-
-    assert {:error, {:invalid_write_concurrency, 0}} =
-             validator.(
-               attach: [
-                 source: [
-                   type: :ducklake,
-                   metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
-                   data_path: "/absolute/path/files/source",
-                   write_concurrency: 0
-                 ]
-               ]
-             )
-
-    assert {:error, {:missing_attach_field, :meta_secret}} =
-             validator.(
-               attach: [
-                 source: [
-                   type: :ducklake,
-                   metadata: "ducklake:postgres:",
-                   data_path: "/absolute/path/files/source"
-                 ]
-               ]
-             )
-
-    assert {:error, {:unknown_ducklake_meta_secret, "source", "missing_meta"}} =
-             validator.(
-               attach: [
-                 source: [
-                   type: :ducklake,
-                   metadata: "ducklake:postgres:",
-                   meta_secret: :missing_meta,
-                   data_path: "/absolute/path/files/source"
-                 ]
-               ]
-             )
-  end
-
-  test "builds exact SQLite DuckLake attach statements without META_SECRET" do
-    assert {:ok, steps} = Bootstrap.build_steps(ducklake_sqlite_resolved())
-
-    assert planned_statements(steps) == [
-             "ATTACH 'ducklake:sqlite:/absolute/path/source.sqlite' AS \"source\" (DATA_PATH '/absolute/path/files/source')",
-             "ATTACH 'ducklake:sqlite:/absolute/path/mart.sqlite' AS \"mart\" (DATA_PATH '/absolute/path/files/mart')"
-           ]
-
-    source_step = Enum.find(steps, &(&1.id == "attach_source"))
-    safe_statement = IO.iodata_to_binary(source_step.safe_statement)
-
-    refute safe_statement =~ "/absolute/path"
-    refute safe_statement =~ "META_SECRET"
-  end
-
-  test "required_catalogs filters SQLite DuckLake attachment steps" do
-    assert {:ok, steps} =
-             Bootstrap.build_steps(ducklake_sqlite_resolved(), required_catalogs: [:source])
-
-    assert planned_statements(steps) == [
-             "ATTACH 'ducklake:sqlite:/absolute/path/source.sqlite' AS \"source\" (DATA_PATH '/absolute/path/files/source')"
-           ]
-  end
-
-  test "nil required_catalogs preserves all planned DuckDB catalog attach steps" do
-    assert {:ok, steps} =
-             Bootstrap.build_steps(duckdb_catalogs_resolved(), required_catalogs: nil)
-
-    assert planned_statements(steps) == [
-             ~s(ATTACH '.favn/data/raw.duckdb' AS "raw"),
-             ~s(ATTACH '.favn/data/mart.duckdb' AS "mart")
-           ]
-  end
-
-  test "required_catalogs skips planned USE when configured catalog is filtered out" do
-    resolved = duckdb_catalogs_resolved(use: :mart)
-
-    assert {:ok, steps} = Bootstrap.build_steps(resolved, required_catalogs: [:raw])
-
-    assert planned_statements(steps) == [~s(ATTACH '.favn/data/raw.duckdb' AS "raw")]
-  end
-
-  test "required_catalogs filters DuckLake secrets when catalog is filtered out" do
-    assert {:ok, steps} =
-             Bootstrap.build_steps(ducklake_postgres_resolved(), required_catalogs: [:raw])
-
-    assert planned_statements(steps) == [
-             "LOAD ducklake",
-             "LOAD postgres",
-             "LOAD azure"
-           ]
-  end
-
-  test "runs DuckLake bootstrap with ADLS and PostgreSQL secrets" do
-    resolved = ducklake_postgres_resolved()
-    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
-
-    assert :ok = ADBC.bootstrap(conn, resolved, [])
-
-    assert statements() == [
-             "LOAD ducklake",
-             "LOAD postgres",
-             "LOAD azure",
-             "CREATE SECRET \"azure_adls\" (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'storageaccount', CHAIN 'cli;env', SCOPE 'abfss://lake@storageaccount.dfs.core.windows.net/')",
-             "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')",
-             "ATTACH 'ducklake:postgres:sslmode=require' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
-             ~s(USE "lakehouse_lake")
-           ]
-  end
-
-  test "runs settings after extension load and before secrets, attach, and use" do
-    resolved = ducklake_postgres_resolved(settings: [azure_transport_option_type: :curl])
-    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
-
-    assert :ok = ADBC.bootstrap(conn, resolved, [])
-
-    assert statements() == [
-             "LOAD ducklake",
-             "LOAD postgres",
-             "LOAD azure",
-             "SET azure_transport_option_type = 'curl'",
-             "CREATE SECRET \"azure_adls\" (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'storageaccount', CHAIN 'cli;env', SCOPE 'abfss://lake@storageaccount.dfs.core.windows.net/')",
-             "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')",
-             "ATTACH 'ducklake:postgres:sslmode=require' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
-             ~s(USE "lakehouse_lake")
-           ]
-  end
-
-  test "runs Postgres pool settings before DuckLake attach" do
     resolved =
-      ducklake_postgres_resolved(
-        settings: [
-          threads: 4,
-          pg_pool_max_connections: 5,
-          pg_pool_acquire_mode: :wait,
-          pg_pool_enable_thread_local_cache: false,
-          pg_pool_wait_timeout_millis: 60_000,
-          pg_pool_idle_timeout_millis: 300_000,
-          pg_pool_enable_reaper_thread: true
-        ]
+      resolved([
+        startup: [file: startup, params: [timezone: "UTC"]],
+        resources: [
+          landing_storage: [file: storage, params: [token: "token"]],
+          azure_extension: [file: extension]
+        ],
+        catalogs: [lake: [resource: :landing_storage]]
+      ])
+
+    assert :ok =
+             Bootstrap.run(conn(), resolved,
+               required_catalogs: [:lake],
+               required_resources: [:azure_extension]
+             )
+
+    assert statements() == [
+             "SET timezone = 'UTC';",
+             "INSTALL azure;\nLOAD azure;",
+             "CREATE SECRET landing (TOKEN 'token');"
+           ]
+  end
+
+  test "bootstrap errors identify the resource and redact secret parameters", %{tmp_dir: dir} do
+    script = write_sql!(dir, "storage.sql", "CREATE SECRET landing (TOKEN @token);")
+    statement = "CREATE SECRET landing (TOKEN 'super-secret');"
+    TestSupport.put_mode(:bootstrap_fail_sql, statement)
+
+    resolved =
+      resolved(
+        [resources: [landing_storage: [file: script, params: [token: "super-secret"]]]],
+        [[:duckdb, :resources, :landing_storage, :params, :token]]
       )
 
-    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
+    assert {:error, %Error{} = error} =
+             Bootstrap.run(conn(), resolved, required_resources: [:landing_storage])
 
-    assert :ok = ADBC.bootstrap(conn, resolved, [])
-
-    assert statements() == [
-             "LOAD ducklake",
-             "LOAD postgres",
-             "LOAD azure",
-             "SET threads = 4",
-             "SET pg_pool_max_connections = 5",
-             "SET pg_pool_acquire_mode = 'wait'",
-             "SET pg_pool_enable_thread_local_cache = false",
-             "SET pg_pool_wait_timeout_millis = 60000",
-             "SET pg_pool_idle_timeout_millis = 300000",
-             "SET pg_pool_enable_reaper_thread = true",
-             "CREATE SECRET \"azure_adls\" (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'storageaccount', CHAIN 'cli;env', SCOPE 'abfss://lake@storageaccount.dfs.core.windows.net/')",
-             "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')",
-             "ATTACH 'ducklake:postgres:sslmode=require' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
-             ~s(USE "lakehouse_lake")
-           ]
+    assert error.details.step == "resource:landing_storage"
+    assert error.details.statement =~ "[REDACTED]"
+    refute inspect(error) =~ "super-secret"
   end
 
-  test "injects Azure PostgreSQL Entra token into temporary PostgreSQL secret" do
-    resolved = ducklake_postgres_entra_resolved()
-    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
+  test "bootstrap rejects a changed pool fingerprint", %{tmp_dir: dir} do
+    script = write_sql!(dir, "startup.sql", "select 1;")
+    resolved = resolved(startup: [file: script])
 
-    assert :ok = ADBC.bootstrap(conn, resolved, azure_token_provider_module: FakeTokenProvider)
-
-    assert statements() == [
-             "LOAD ducklake",
-             "LOAD postgres",
-             "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'entra-token')",
-             "ATTACH 'ducklake:postgres:sslmode=require' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
-             ~s(USE "lakehouse_lake")
-           ]
+    assert {:error, %Error{details: %{reason: :session_script_fingerprint_changed}}} =
+             Bootstrap.run(conn(), resolved, favn_pool_fingerprint: %{session_scripts: %{old: true}})
   end
 
-  test "builds Azure PostgreSQL Entra bootstrap steps without fetching token" do
-    resolved = ducklake_postgres_entra_resolved()
-
-    assert {:ok, steps} =
-             Bootstrap.build_steps(resolved, azure_token_provider_module: FakeTokenProvider)
-
-    create_secret = Enum.find(steps, &(&1.id == "create_secret_lakehouse_meta"))
-
-    refute IO.iodata_to_binary(create_secret.statement) =~ "entra-token"
-    assert IO.iodata_to_binary(create_secret.safe_statement) =~ "PASSWORD 'redacted'"
-    assert statements() == []
-  end
-
-  test "token acquisition failure returns redacted bootstrap error" do
-    resolved = ducklake_postgres_entra_resolved()
-    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
-
-    assert {:error,
-            %Error{
-              type: :connection_error,
-              operation: :bootstrap,
-              message: "DuckDB ADBC connection bootstrap failed at create_secret_lakehouse_meta",
-              details: %{statement: safe_statement, adapter_details: adapter_details}
-            }} = ADBC.bootstrap(conn, resolved, azure_token_provider_module: FailingTokenProvider)
-
-    assert safe_statement =~ "PASSWORD 'redacted'"
-    refute safe_statement =~ "entra-token"
-    refute inspect(adapter_details) =~ "entra-token"
-    assert adapter_details.access_token == :redacted
-    assert statements() == ["LOAD ducklake", "LOAD postgres"]
-  end
-
-  test "PostgreSQL Entra secret execution failure redacts fetched token" do
-    resolved = ducklake_postgres_entra_resolved()
-    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
-
-    failing_sql =
-      "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'entra-token')"
-
-    TestSupport.put_mode(:bootstrap_fail_sql, failing_sql)
-
-    assert {:error,
-            %Error{
-              operation: :bootstrap,
-              details: %{
-                statement: safe_statement,
-                reason: reason,
-                adapter_details: adapter_details
-              }
-            }} = ADBC.bootstrap(conn, resolved, azure_token_provider_module: FakeTokenProvider)
-
-    refute safe_statement =~ "entra-token"
-    refute reason =~ "entra-token"
-    refute inspect(adapter_details) =~ "entra-token"
-    assert safe_statement =~ "PASSWORD 'redacted'"
-    assert reason =~ "PASSWORD 'redacted'"
-  end
-
-  test "bootstrap failure reports failing step without exposing secret values" do
-    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
-
-    secret_metadata = "ducklake:postgres:"
-
-    failing_sql =
-      "ATTACH '#{secret_metadata}' AS \"lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/raw', META_SECRET \"lakehouse_meta\")"
-
-    TestSupport.put_mode(:bootstrap_fail_sql, failing_sql)
-
-    assert {:error,
-            %Error{
-              operation: :bootstrap,
-              connection: :warehouse,
-              message: "DuckDB ADBC connection bootstrap failed at attach_lake",
-              details: %{
-                statement: safe_statement,
-                reason: reason,
-                adapter_details: adapter_details
-              }
-            }} = ADBC.bootstrap(conn, resolved(), [])
-
-    refute safe_statement =~ secret_metadata
-    refute safe_statement =~ "abfss://lake@storageaccount.dfs.core.windows.net/raw"
-    refute reason =~ secret_metadata
-    refute inspect(adapter_details) =~ secret_metadata
-    assert safe_statement =~ "redacted"
-    assert reason =~ "redacted"
-  end
-
-  test "setting execution failure reports bootstrap setting step" do
-    resolved = settings_resolved(:curl)
-    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
-
-    TestSupport.put_mode(:bootstrap_fail_sql, "SET azure_transport_option_type = 'curl'")
-
-    assert {:error,
-            %Error{
-              operation: :bootstrap,
-              details: %{
-                step: "set_azure_transport_option_type",
-                bootstrap_kind: :set_setting,
-                statement: "SET azure_transport_option_type = 'curl'"
-              }
-            }} = ADBC.bootstrap(conn, resolved, [])
-  end
-
-  defp resolved do
+  defp resolved(duckdb, secret_paths \\ []) do
     %Resolved{
       name: :warehouse,
       adapter: ADBC,
       module: __MODULE__,
-      config: %{
-        open: [database: ":memory:"],
-        duckdb: [
-          load: [:ducklake, :postgres, :azure],
-          secrets: [
-            azure_adls: [
-              type: :azure,
-              provider: :credential_chain,
-              account_name: "storageaccount"
-            ],
-            lakehouse_meta: [
-              type: :postgres,
-              host: "pg.example.com",
-              port: 5432,
-              database: "ducklake",
-              user: "ducklake_user",
-              password: "super-secret"
-            ]
-          ],
-          attach: [
-            lake: [
-              type: :ducklake,
-              metadata: "ducklake:postgres:",
-              meta_secret: :lakehouse_meta,
-              data_path: "abfss://lake@storageaccount.dfs.core.windows.net/raw"
-            ]
-          ],
-          use: :lake
-        ]
-      },
-      secret_fields: [:duckdb]
+      config: %{open: [database: ":memory:"], duckdb: duckdb},
+      secret_paths: secret_paths
     }
   end
 
-  defp duckdb_schema_field do
-    Enum.find(ADBC.config_schema_fields(), &(&1.key == :duckdb))
-  end
-
-  defp ducklake_postgres_resolved(opts \\ []) do
-    settings = Keyword.get(opts, :settings, [])
-
-    %Resolved{
-      name: :warehouse,
-      adapter: ADBC,
-      module: __MODULE__,
-      config: %{
-        open: [database: ":memory:"],
-        duckdb: [
-          load: [:ducklake, :postgres, :azure],
-          settings: settings,
-          secrets: [
-            azure_adls: [
-              type: :azure,
-              provider: :credential_chain,
-              account_name: "storageaccount",
-              chain: [:cli, :env],
-              scope: "abfss://lake@storageaccount.dfs.core.windows.net/"
-            ],
-            lakehouse_meta: [
-              type: :postgres,
-              host: "pg.example.com",
-              port: 5432,
-              database: "ducklake",
-              user: "ducklake_user",
-              password: "super-secret",
-              sslmode: :require
-            ]
-          ],
-          attach: [
-            lakehouse_lake: [
-              type: :ducklake,
-              metadata: "ducklake:postgres:",
-              meta_secret: :lakehouse_meta,
-              data_path: "abfss://lake@storageaccount.dfs.core.windows.net/data/"
-            ]
-          ],
-          use: :lakehouse_lake
-        ]
-      },
-      secret_fields: [:duckdb]
-    }
-  end
-
-  defp duckdb_catalogs_resolved(opts \\ []) do
-    use_catalog = Keyword.get(opts, :use)
-
-    duckdb = [
-      attach: [
-        raw: [type: :duckdb, path: ".favn/data/raw.duckdb"],
-        mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]
-      ]
-    ]
-
-    duckdb = duckdb ++ if(use_catalog, do: [use: use_catalog], else: [])
-
-    %Resolved{
-      name: :important_lakehouse,
-      adapter: ADBC,
-      module: __MODULE__,
-      config: %{
-        open: [database: ":memory:"],
-        duckdb: duckdb
-      },
-      secret_fields: []
-    }
-  end
-
-  defp ducklake_sqlite_resolved do
-    %Resolved{
-      name: :local_lakehouse,
-      adapter: ADBC,
-      module: __MODULE__,
-      config: %{
-        open: [database: ":memory:"],
-        duckdb: [
-          attach: [
-            source: [
-              type: :ducklake,
-              metadata: "ducklake:sqlite:/absolute/path/source.sqlite",
-              data_path: "/absolute/path/files/source",
-              write_concurrency: 1
-            ],
-            mart: [
-              type: :ducklake,
-              metadata: "ducklake:sqlite:/absolute/path/mart.sqlite",
-              data_path: "/absolute/path/files/mart",
-              write_concurrency: 1
-            ]
-          ]
-        ]
-      },
-      secret_fields: []
-    }
-  end
-
-  defp settings_resolved(value) do
-    %Resolved{
-      name: :warehouse,
-      adapter: ADBC,
-      module: __MODULE__,
-      config: %{
-        open: [database: ":memory:"],
-        duckdb: [
-          load: [:azure],
-          settings: [azure_transport_option_type: value]
-        ]
-      },
-      secret_fields: [:duckdb]
-    }
-  end
-
-  defp ducklake_postgres_entra_resolved do
-    %Resolved{
-      name: :warehouse,
-      adapter: ADBC,
-      module: __MODULE__,
-      config: %{
-        open: [database: ":memory:"],
-        duckdb: [
-          load: [:ducklake, :postgres],
-          secrets: [
-            lakehouse_meta: [
-              type: :postgres,
-              host: "pg.example.com",
-              port: 5432,
-              database: "ducklake",
-              user: "ducklake_user",
-              auth: [type: :azure_postgres_entra, provider: :azure_cli],
-              sslmode: :require
-            ]
-          ],
-          attach: [
-            lakehouse_lake: [
-              type: :ducklake,
-              metadata: "ducklake:postgres:",
-              meta_secret: :lakehouse_meta,
-              data_path: "abfss://lake@storageaccount.dfs.core.windows.net/data/"
-            ]
-          ],
-          use: :lakehouse_lake
-        ]
-      },
-      secret_fields: [:duckdb]
+  defp conn do
+    %ADBC.Conn{
+      db_ref: make_ref(),
+      conn_ref: make_ref(),
+      connection: :warehouse,
+      client: FakeClient,
+      max_rows: 100,
+      max_result_bytes: 1_000_000
     }
   end
 
@@ -687,7 +129,9 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
     end)
   end
 
-  defp planned_statements(steps) do
-    Enum.map(steps, &IO.iodata_to_binary(&1.statement))
+  defp write_sql!(dir, name, sql) do
+    path = Path.join(dir, name)
+    File.write!(path, sql)
+    path
   end
 end

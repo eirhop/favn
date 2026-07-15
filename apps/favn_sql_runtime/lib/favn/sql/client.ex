@@ -8,7 +8,9 @@ defmodule Favn.SQL.Client do
 
   The pool is local to one runner BEAM and does not increase catalog/write
   concurrency. Checked-out sessions are exclusive, and reuse requires matching
-  connection identity/config, required catalog set, and adapter fingerprint. A
+  connection identity/config, required catalog and resource sets, and adapter
+  fingerprint. DuckDB adapter fingerprints include selected script content and
+  parameter fingerprints. A
   pooled session is process-affine: only the checkout owner may run operations or
   disconnect it; non-owner use returns `:invalid_checkout_owner` and marks the
   checkout for discard.
@@ -28,7 +30,8 @@ defmodule Favn.SQL.Client do
   block a new incompatible pool key that needs the same catalog until the idle
   session is reused or closed.
 
-  SQL sessions retain their normalized `:required_catalogs` scope. Raw write
+  SQL sessions retain their normalized `:required_catalogs` and
+  `:required_resources` scopes. Raw write
   operations use explicit `admission: [...]` operation catalog targets when
   provided and otherwise use that retained session scope for catalog admission;
   arbitrary SQL text is not parsed to infer target catalogs.
@@ -528,7 +531,9 @@ defmodule Favn.SQL.Client do
   end
 
   defp connect_with_pool(%Resolved{} = resolved, concurrency_policies, adapter_opts, pool_config) do
-    key = pool_key(resolved, adapter_opts)
+    fingerprint = adapter_fingerprint(resolved.adapter, resolved, adapter_opts)
+    key = pool_key(resolved, adapter_opts, fingerprint)
+    adapter_opts = Keyword.put(adapter_opts, :favn_pool_fingerprint, fingerprint)
 
     case checkout_or_create_session(key, resolved, concurrency_policies, adapter_opts) do
       {:ok, %Session{} = session} ->
@@ -729,8 +734,23 @@ defmodule Favn.SQL.Client do
     |> normalize_catalogs()
   end
 
+  defp normalized_required_resources(adapter_opts) do
+    adapter_opts
+    |> Keyword.get(:required_resources, [])
+    |> List.wrap()
+    |> normalize_names()
+  end
+
   defp normalize_catalogs(catalogs) when is_list(catalogs) do
     catalogs
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp normalize_names(names) when is_list(names) do
+    names
     |> Enum.map(&to_string/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
@@ -749,14 +769,16 @@ defmodule Favn.SQL.Client do
 
   defp pool_enabled?(_resolved, _adapter_opts, _pool_config), do: false
 
-  defp pool_key(%Resolved{adapter: adapter} = resolved, adapter_opts) do
+  defp pool_key(%Resolved{} = resolved, adapter_opts, adapter_fingerprint) do
     required_catalogs = Keyword.get(adapter_opts, :required_catalogs, []) |> List.wrap()
+    required_resources = Keyword.get(adapter_opts, :required_resources, []) |> List.wrap()
 
     PoolKey.build(
       resolved,
       adapter_opts,
       required_catalogs,
-      adapter_fingerprint(adapter, resolved, adapter_opts)
+      required_resources,
+      adapter_fingerprint
     )
   end
 
@@ -785,6 +807,7 @@ defmodule Favn.SQL.Client do
         concurrency_policy: singular_policy(concurrency_policies),
         concurrency_policies: policy_container(concurrency_policies),
         required_catalogs: normalized_required_catalogs(adapter_opts),
+        required_resources: normalized_required_resources(adapter_opts),
         admission_lease: lease
     }
   end
@@ -868,6 +891,7 @@ defmodule Favn.SQL.Client do
            concurrency_policy: singular_policy(concurrency_policies),
            concurrency_policies: policy_container(concurrency_policies),
            required_catalogs: normalized_required_catalogs(adapter_opts),
+           required_resources: normalized_required_resources(adapter_opts),
            admission_lease: lease
          }}
 

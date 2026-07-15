@@ -15,7 +15,7 @@ Tests:
 - `apps/favn_sql_runtime/test/`
 
 Use when changing connection runtime config validation, SQL client behavior,
-session lifecycle, transaction behavior, adapter bootstrap, read-only relation
+session lifecycle, native script planning, transaction behavior, adapter bootstrap, read-only relation
 inspection, write-plan adapter contracts, or SQL admission and concurrency policy
 behavior.
 
@@ -29,7 +29,9 @@ SQL session pooling is default-on for poolable DuckDB/ADBC adapters and can be
 disabled with `pool: [enabled: false]`. Optional tuning is connection-level:
 `pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pooling
 keeps warm sessions only inside the current runner BEAM. Pool reuse must be keyed
-by connection identity/config hash, required catalog set, and adapter fingerprint.
+by connection identity/config hash, required catalog/resource sets, and adapter fingerprint.
+DuckDB adapters extend that fingerprint with selected file content and parameter
+fingerprints.
 Checked-out sessions remain exclusive to one asset execution at a time; the pool
 is not a distributed coordinator and does not increase configured write/catalog
 concurrency. The SQL client enforces checkout ownership, so copied session structs
@@ -49,9 +51,9 @@ key that needs the same catalog until the idle session is reused or closed.
 
 Catalog-level admission is driven by materialization write plans whose target
 relations include a catalog. Session bootstrap can also acquire catalog permits
-when callers pass `required_catalogs: [...]` to the SQL client; this is how
-DuckDB/DuckLake attach work is serialized before a session opens. The normalized
-required catalog set is retained on the SQL session. Raw write operations such as
+when callers pass `required_catalogs: [...]` to the SQL client; SQL assets also
+pass versioned `required_resources`. The normalized sets are retained on the SQL
+session. Raw write operations such as
 `Favn.SQLClient.execute/3`, write-style `Favn.SQLClient.query/3`, and
 `Favn.SQLClient.transaction/3` use an explicit `admission: [...]` operation
 target when one is provided, otherwise they use the session required catalog
@@ -72,12 +74,10 @@ backend connections per admitted DuckLake writer. Observed deployments used abou
 three PostgreSQL backends per concurrent writer, so operators should size
 DuckLake `write_concurrency` with that multiplier and leave headroom for admin
 tools, migrations, monitoring, and other traffic.
-DuckDB ADBC deployments can further bound newly attached Postgres-backed catalogs
-with `duckdb.settings` such as `threads`, `pg_pool_max_connections`,
-`pg_pool_acquire_mode: :wait`, and `pg_pool_enable_thread_local_cache: false`.
-Those settings complement, but do not replace, Favn admission: total metadata
-pressure is a product of admitted Favn work, DuckLake catalog concurrency, DuckDB
-parallelism, attached Postgres-backed catalogs, and each catalog's pool limit.
+DuckDB extension settings are native startup/resource SQL and complement, but
+do not replace, Favn admission. Total metadata pressure is a product of admitted
+Favn work, DuckLake catalog concurrency, DuckDB parallelism, attached
+Postgres-backed catalogs, and each catalog's pool limit.
 
 Retry handling must stay operation-aware. Bounded retries are acceptable around
 session creation/bootstrap and read-only inspection/query paths. Blind retries of

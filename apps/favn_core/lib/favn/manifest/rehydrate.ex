@@ -18,6 +18,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.RuntimeConfig.Ref, as: RuntimeConfigRef
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.Check
+  alias Favn.SQL.SessionRequirements
   alias Favn.SQL.Template
   alias Favn.SQLAsset.RelationUsage
 
@@ -95,6 +96,10 @@ defmodule Favn.Manifest.Rehydrate do
       materialization: value |> field_value(:materialization) |> decode_materialization(),
       relation_inputs: value |> field_value(:relation_inputs, []) |> build_relation_inputs(),
       runtime_config: value |> field_value(:runtime_config, %{}) |> build_runtime_config(),
+      session_requirements:
+        value
+        |> field_value(:session_requirements, %{})
+        |> build_session_requirements(),
       sql_execution: value |> field_value(:sql_execution) |> build_sql_execution(),
       execution_pool: value |> field_value(:execution_pool) |> decode_atom_optional(),
       metadata: value |> field_value(:metadata, %{}) |> build_metadata()
@@ -102,6 +107,11 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_asset(other), do: other
+
+  defp build_session_requirements(value) when value in [nil, %{}],
+    do: SessionRequirements.empty()
+
+  defp build_session_requirements(value), do: SessionRequirements.validate!(value)
 
   defp build_execution(value) when is_map(value) do
     %{

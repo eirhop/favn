@@ -366,6 +366,7 @@ defmodule Favn.SQLAsset.Runtime do
       rendered.connection,
       opts,
       session_required_catalogs(definition, rendered),
+      session_required_resources(definition),
       fn session ->
         SQLClient.query(
           session,
@@ -389,6 +390,7 @@ defmodule Favn.SQLAsset.Runtime do
       rendered.connection,
       opts,
       session_required_catalogs(definition, rendered),
+      session_required_resources(definition),
       fn session ->
         with {:ok, write_plan} <- MaterializationPlanner.build(session, definition, rendered),
              {:ok, result} <-
@@ -415,6 +417,7 @@ defmodule Favn.SQLAsset.Runtime do
       rendered.connection,
       opts,
       session_required_catalogs(definition, rendered),
+      session_required_resources(definition),
       fn session ->
         with :ok <- ensure_checked_materialization_supported(session, definition, rendered) do
           SQLClient.transaction(
@@ -1231,7 +1234,8 @@ defmodule Favn.SQLAsset.Runtime do
     Keyword.put(opts, :runtime, Map.put(runtime_map, :window, runtime_window))
   end
 
-  defp with_session(connection, opts, required_catalogs, fun) when is_function(fun, 1) do
+  defp with_session(connection, opts, required_catalogs, required_resources, fun)
+       when is_function(fun, 1) do
     timeout_opts =
       case Keyword.get(opts, :timeout_ms) do
         timeout when is_integer(timeout) and timeout > 0 -> [timeout_ms: timeout]
@@ -1242,6 +1246,7 @@ defmodule Favn.SQLAsset.Runtime do
       timeout_opts
       |> Keyword.put(:registry_name, @runner_registry)
       |> maybe_put_required_catalogs(required_catalogs)
+      |> maybe_put_required_resources(required_resources)
 
     with {:ok, session} <-
            SQLClient.connect(connection, connect_opts) do
@@ -1291,7 +1296,7 @@ defmodule Favn.SQLAsset.Runtime do
       |> Enum.flat_map(&relation_catalog/1)
       |> Enum.uniq()
 
-    if catalogs == [], do: nil, else: catalogs
+    catalogs
   end
 
   defp definition_relation_inputs(%Definition{relation_inputs: inputs}) when is_list(inputs) do
@@ -1325,10 +1330,19 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp relation_catalog(_relation), do: []
 
-  defp maybe_put_required_catalogs(opts, nil), do: opts
-
   defp maybe_put_required_catalogs(opts, catalogs),
     do: Keyword.put(opts, :required_catalogs, catalogs)
+
+  defp session_required_resources(%Definition{session_requirements: requirements}) do
+    requirements
+    |> Favn.SQL.SessionRequirements.validate!()
+    |> Map.fetch!(:resources)
+  end
+
+  defp maybe_put_required_resources(opts, []), do: opts
+
+  defp maybe_put_required_resources(opts, resources),
+    do: Keyword.put(opts, :required_resources, resources)
 
   defp map_sql_result_error({:ok, result}, _asset_ref, _phase), do: {:ok, result}
 
@@ -1416,7 +1430,8 @@ defmodule Favn.SQLAsset.Runtime do
       window_spec: asset.window,
       relation: asset.relation,
       materialization: asset.materialization,
-      relation_inputs: asset.relation_inputs || []
+      relation_inputs: asset.relation_inputs || [],
+      session_requirements: asset.session_requirements
     }
 
     {:ok,
@@ -1430,6 +1445,7 @@ defmodule Favn.SQLAsset.Runtime do
        sql_definitions: payload.sql_definitions,
        checks: payload.checks,
        runtime_inputs: payload.runtime_inputs,
+       session_requirements: asset.session_requirements,
        raw_asset: %{
          manifest_relation_by_module: relation_map(version),
          deferred_resolution: :manifest_only

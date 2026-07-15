@@ -18,6 +18,7 @@ defmodule Favn.Manifest.Asset do
   alias Favn.Freshness.Policy, as: FreshnessPolicy
   alias Favn.Manifest.SQLExecution
   alias Favn.RuntimeConfig.Requirements
+  alias Favn.SQL.SessionRequirements
   alias Favn.SQLAsset.Compiler
 
   @type t :: %__MODULE__{
@@ -37,6 +38,7 @@ defmodule Favn.Manifest.Asset do
           materialization: map() | struct() | nil,
           relation_inputs: [map() | struct()],
           runtime_config: Requirements.declarations(),
+          session_requirements: SessionRequirements.t(),
           sql_execution: SQLExecution.t() | nil,
           execution_pool: atom() | nil,
           metadata: map()
@@ -56,6 +58,7 @@ defmodule Favn.Manifest.Asset do
     materialization: nil,
     relation_inputs: [],
     runtime_config: %{},
+    session_requirements: %SessionRequirements{version: 1},
     sql_execution: nil,
     execution_pool: nil,
     metadata: %{}
@@ -77,6 +80,7 @@ defmodule Favn.Manifest.Asset do
       materialization: Map.get(asset, :materialization),
       relation_inputs: normalize_list(Map.get(asset, :relation_inputs, [])),
       runtime_config: normalize_runtime_config(Map.get(asset, :runtime_config, %{})),
+      session_requirements: normalize_session_requirements(Map.get(asset, :session_requirements)),
       sql_execution: build_sql_execution(asset),
       execution_pool: normalize_execution_pool(Map.get(asset, :execution_pool)),
       metadata: normalize_map(Map.get(asset, :meta, %{}))
@@ -111,6 +115,10 @@ defmodule Favn.Manifest.Asset do
 
   defp normalize_runtime_config(value) when is_map(value), do: Requirements.normalize!(value)
   defp normalize_runtime_config(_other), do: %{}
+
+  defp normalize_session_requirements(nil), do: SessionRequirements.empty()
+
+  defp normalize_session_requirements(value), do: SessionRequirements.validate!(value)
 
   defp normalize_freshness(value) do
     case FreshnessPolicy.from_value(value) do
