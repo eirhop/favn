@@ -6,10 +6,12 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
   alias Favn.Plan
+  alias Favn.Replay.InputMode
   alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.RefreshPolicy
+  alias FavnOrchestrator.RetryPolicyResolver
   alias FavnOrchestrator.RunManager.Submission
   alias FavnOrchestrator.RunManager.SubmissionOptions
   alias FavnOrchestrator.RunState
@@ -95,11 +97,13 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
 
   defp build_run_submission(asset_ref, opts) do
     with {:ok, input} <- SubmissionOptions.new(opts, trigger: %{kind: :manual}),
+         {:ok, input_mode} <- runtime_input_mode(opts, :manual),
          {:ok, refresh_policy} <- refresh_policy_metadata(opts, input.dependencies),
          metadata_with_selection <-
            input.metadata
            |> Map.put(:asset_dependencies, input.dependencies)
-           |> Map.put(:refresh_policy, refresh_policy),
+           |> Map.put(:refresh_policy, refresh_policy)
+           |> Map.put(:runtime_input_mode, input_mode),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
@@ -110,7 +114,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              dependencies: input.dependencies,
              anchor_window: input.anchor_window,
              exact_windows: input.exact_windows
-           ) do
+           ),
+         plan <- RetryPolicyResolver.annotate(plan, index, nil, input.retry_policy_override) do
       input = %{input | metadata: metadata_with_selection}
       run_state = new_run_state(input, version, plan, asset_ref, :manual)
 
@@ -120,6 +125,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
 
   defp build_pipeline_submission(target_refs, opts) when is_list(target_refs) and is_list(opts) do
     with {:ok, input} <- SubmissionOptions.new(opts, trigger: %{kind: :pipeline}),
+         {:ok, input_mode} <- runtime_input_mode(opts, :manual),
          {:ok, refresh_policy} <- refresh_policy_metadata(opts, input.dependencies),
          metadata <-
            input.metadata
@@ -129,13 +135,15 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              pipeline_context: Keyword.get(opts, :_pipeline_context),
              pipeline_dependencies: input.dependencies,
              pipeline_submit_ref: Keyword.get(opts, :_submit_ref),
+             runtime_input_mode: input_mode,
              refresh_policy: refresh_policy
            }),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
          input <- %{input | metadata: metadata},
-         {:ok, run_state} <- build_pipeline_run_state(target_refs, input, version, index) do
+         {:ok, run_state} <-
+           build_pipeline_run_state(target_refs, input, version, index, nil) do
       {:ok, run_state, version}
     end
   end
@@ -145,6 +153,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     window_request = Keyword.get(opts, :window_request)
 
     with {:ok, input} <- SubmissionOptions.new(opts, trigger: %{kind: :pipeline}),
+         {:ok, input_mode} <- runtime_input_mode(opts, :manual),
          {:ok, request} <-
            normalize_pipeline_window_request(input.anchor_window, window_request),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
@@ -168,6 +177,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              pipeline_dependencies: resolution.dependencies,
              pipeline_submit_ref: pipeline_module,
              pipeline_execution_policy: pipeline_execution_policy(resolution.pipeline),
+             runtime_input_mode: input_mode,
              refresh_policy: refresh_policy
            }),
          input <-
@@ -178,18 +188,37 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
                anchor_window: resolved_anchor_window
            },
          {:ok, run_state} <-
-           build_pipeline_run_state(resolution.target_refs, input, version, index) do
+           build_pipeline_run_state(
+             resolution.target_refs,
+             input,
+             version,
+             index,
+             resolution.pipeline.retry_policy
+           ) do
       {:ok, run_state, version}
     end
   end
 
-  defp build_pipeline_run_state(target_refs, %SubmissionOptions{} = input, version, index) do
+  defp build_pipeline_run_state(
+         target_refs,
+         %SubmissionOptions{} = input,
+         version,
+         index,
+         pipeline_retry_policy
+       ) do
     with :ok <- ensure_assets_exist(index, target_refs),
          {:ok, plan} <-
            Planner.plan(target_refs,
              planning_index: index.planning_index,
              dependencies: input.dependencies,
              anchor_window: input.anchor_window
+           ),
+         plan <-
+           RetryPolicyResolver.annotate(
+             plan,
+             index,
+             pipeline_retry_policy,
+             input.retry_policy_override
            ) do
       {:ok, new_run_state(input, version, plan, List.first(plan.target_refs), :pipeline)}
     end
@@ -217,8 +246,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       parent_run_id: input.parent_run_id,
       root_run_id: input.root_run_id,
       lineage_depth: input.lineage_depth,
-      max_attempts: input.max_attempts,
-      retry_backoff_ms: input.retry_backoff_ms,
+      max_attempts: plan_max_attempts(plan),
+      retry_backoff_ms: 0,
       timeout_ms: input.timeout_ms
     ]
 
@@ -232,6 +261,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
 
     with {:ok, metadata} <- rerun_metadata(source_run, opts),
          {:ok, replay_mode} <- replay_mode(opts),
+         {:ok, input_mode} <- runtime_input_mode(opts, replay_mode),
          rerun_opts <-
            opts
            |> Keyword.put(:metadata, metadata)
@@ -241,8 +271,6 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
            SubmissionOptions.new(rerun_opts,
              params: source_run.params,
              trigger: %{kind: :rerun, source_run_id: source_run.id},
-             max_attempts: source_run.max_attempts,
-             retry_backoff_ms: source_run.retry_backoff_ms,
              timeout_ms: source_run.timeout_ms,
              parent_run_id: source_run.id,
              root_run_id: source_run.root_run_id || source_run.id
@@ -259,12 +287,21 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              dependencies: input.dependencies,
              anchor_window: input.anchor_window
            ),
-         {:ok, plan} <- maybe_filter_replay_plan(plan, Keyword.get(opts, :replay_node_keys)) do
+         {:ok, plan} <- maybe_filter_replay_plan(plan, Keyword.get(opts, :replay_node_keys)),
+         pipeline_retry_policy <- replay_pipeline_retry_policy(source_run, index),
+         plan <-
+           RetryPolicyResolver.annotate(
+             plan,
+             index,
+             pipeline_retry_policy,
+             input.retry_policy_override
+           ) do
       rerun_of_run_id = source_run.rerun_of_run_id || source_run.id
 
       metadata_with_source =
         input.metadata
         |> Map.put(:source_run_id, source_run.id)
+        |> Map.put(:runtime_input_mode, input_mode)
         |> Map.put(:refresh_policy, refresh_policy)
 
       metadata_with_replay =
@@ -294,10 +331,43 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   end
 
   defp replay_mode(opts) do
-    case Keyword.get(opts, :replay_mode, :exact_replay) do
-      mode when mode in [:exact_replay, :resume_from_failure] -> {:ok, mode}
-      _invalid -> {:error, :invalid_replay_mode}
+    replay_mode = Keyword.get(opts, :replay_mode)
+
+    with {:ok, input_mode} <- optional_input_mode(Keyword.get(opts, :input_mode)) do
+      reconcile_replay_mode(replay_mode, input_mode)
     end
+  end
+
+  defp optional_input_mode(nil), do: {:ok, nil}
+  defp optional_input_mode(value), do: InputMode.normalize(value)
+
+  defp reconcile_replay_mode(nil, nil), do: {:ok, :exact_replay}
+  defp reconcile_replay_mode(nil, :pinned), do: {:ok, :exact_replay}
+  defp reconcile_replay_mode(nil, :inherit), do: {:ok, :resume_from_failure}
+  defp reconcile_replay_mode(nil, :fresh), do: {:ok, :fresh_rerun}
+
+  defp reconcile_replay_mode(mode, nil)
+       when mode in [:exact_replay, :resume_from_failure, :fresh_rerun],
+       do: {:ok, mode}
+
+  defp reconcile_replay_mode(mode, input_mode)
+       when mode in [:exact_replay, :resume_from_failure, :fresh_rerun] do
+    if InputMode.default_for(mode) == input_mode,
+      do: {:ok, mode},
+      else: {:error, {:incompatible_replay_input_mode, mode, input_mode}}
+  end
+
+  defp reconcile_replay_mode(_mode, _input_mode), do: {:error, :invalid_replay_mode}
+
+  defp runtime_input_mode(opts, operation) do
+    InputMode.normalize(Keyword.get(opts, :input_mode, InputMode.default_for(operation)))
+  end
+
+  defp plan_max_attempts(%Plan{nodes: nodes}) do
+    nodes
+    |> Map.values()
+    |> Enum.map(& &1.retry_policy.max_attempts)
+    |> Enum.max(fn -> 1 end)
   end
 
   defp resolve_pipeline_anchor_window(%Pipeline{} = pipeline, nil, request),
@@ -519,6 +589,19 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   defp present_atom?(value) when is_atom(value) and not is_nil(value), do: true
   defp present_atom?(_value), do: false
 
+  defp replay_pipeline_retry_policy(%RunState{} = source_run, %Index{} = index) do
+    case metadata_value(source_run.metadata, :pipeline_submit_ref) do
+      pipeline_module when is_atom(pipeline_module) and not is_nil(pipeline_module) ->
+        case fetch_pipeline_by_module(index, pipeline_module) do
+          {:ok, pipeline} -> pipeline.retry_policy
+          {:error, _reason} -> nil
+        end
+
+      _other ->
+        nil
+    end
+  end
+
   defp normalize_dependencies(:none), do: :none
   defp normalize_dependencies("none"), do: :none
   defp normalize_dependencies(_value), do: :all
@@ -564,8 +647,18 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     end
   end
 
-  defp validate_opts(opts),
-    do: if(Keyword.keyword?(opts), do: :ok, else: {:error, :invalid_options})
+  defp validate_opts(opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, :invalid_options}
+
+      key = Enum.find([:max_attempts, :retry_backoff_ms], &Keyword.has_key?(opts, &1)) ->
+        {:error, {:unsupported_retry_option, key, :use_retry_policy}}
+
+      true ->
+        :ok
+    end
+  end
 
   defp validate_metadata(value) when is_map(value), do: :ok
   defp validate_metadata(_value), do: {:error, :invalid_run_metadata}

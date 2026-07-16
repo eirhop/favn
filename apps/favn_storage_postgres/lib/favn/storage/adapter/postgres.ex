@@ -7,6 +7,7 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   alias Ecto.Adapters.SQL
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -35,6 +36,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.RunQuery
   alias FavnOrchestrator.Storage.RunSnapshotCodec
   alias FavnOrchestrator.Storage.RunStateCodec
+  alias FavnOrchestrator.Storage.RuntimeInputPinCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
   alias FavnOrchestrator.Storage.TargetStatusCodec
   alias FavnOrchestrator.Storage.WriteSemantics
@@ -230,6 +232,50 @@ defmodule Favn.Storage.Adapter.Postgres do
     with {:ok, repo} <- resolve_repo(opts),
          {:ok, normalized} <- RunStateCodec.normalize(run) do
       persist_run(repo, normalized)
+    end
+  end
+
+  @impl true
+  def create_runtime_input_pin(%Pin{} = pin, opts) when is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, payload} <- RuntimeInputPinCodec.encode(pin, opts),
+         hash <- RuntimeInputPinCodec.node_key_hash(pin.node_key),
+         {:ok, _result} <-
+           SQL.query(
+             repo,
+             """
+             INSERT INTO favn_runtime_input_pins
+               (run_id, node_key_hash, payload_fingerprint, record_payload, inserted_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT(run_id, node_key_hash) DO NOTHING
+             """,
+             [pin.run_id, hash, pin.payload_fingerprint, payload, pin.inserted_at, pin.updated_at]
+           ),
+         {:ok, stored} <- fetch_runtime_input_pin(repo, pin.run_id, hash, opts) do
+      if Pin.equivalent?(stored, pin),
+        do: {:ok, stored},
+        else: {:error, :runtime_input_pin_conflict}
+    end
+  end
+
+  @impl true
+  def get_runtime_input_pin(run_id, node_key, opts)
+      when is_binary(run_id) and is_tuple(node_key) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      fetch_runtime_input_pin(repo, run_id, RuntimeInputPinCodec.node_key_hash(node_key), opts)
+    end
+  end
+
+  @impl true
+  def list_runtime_input_pins(run_id, opts) when is_binary(run_id) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, %{rows: rows}} <-
+           SQL.query(
+             repo,
+             "SELECT record_payload FROM favn_runtime_input_pins WHERE run_id = $1 ORDER BY inserted_at, node_key_hash",
+             [run_id]
+           ) do
+      decode_runtime_input_pin_rows(rows, opts)
     end
   end
 
@@ -4499,6 +4545,31 @@ defmodule Favn.Storage.Adapter.Postgres do
         else
           false
         end
+    end
+  end
+
+  defp fetch_runtime_input_pin(repo, run_id, node_key_hash, opts) do
+    case SQL.query(
+           repo,
+           "SELECT record_payload FROM favn_runtime_input_pins WHERE run_id = $1 AND node_key_hash = $2 LIMIT 1",
+           [run_id, node_key_hash]
+         ) do
+      {:ok, %{rows: [[payload]]}} -> RuntimeInputPinCodec.decode(payload, opts)
+      {:ok, %{rows: []}} -> {:error, :runtime_input_pin_not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_runtime_input_pin_rows(rows, opts) do
+    Enum.reduce_while(rows, {:ok, []}, fn [payload], {:ok, pins} ->
+      case RuntimeInputPinCodec.decode(payload, opts) do
+        {:ok, pin} -> {:cont, {:ok, [pin | pins]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, pins} -> {:ok, Enum.reverse(pins)}
+      error -> error
     end
   end
 

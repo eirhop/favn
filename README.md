@@ -363,15 +363,39 @@ Declare it once before the query with
 `@runtime_inputs MyDataPlatform.Lakehouse.Raw.Orders.Inputs`. Returned values use
 the normal `@name` SQL placeholder and adapter binding path, including through
 nested `defsql`; they cannot add SQL source. The resolver module reference is
-stored in the manifest, while values remain runner-local. Resolution is bounded
-to 30 seconds and by the remaining node deadline, rejects collisions and
-reserved window names, and exposes only the safe input identity and metadata in
-run results. Mark secret-bearing names with `sensitive_params`. Retry attempts
-resolve again until a future protected input-pinning contract is implemented.
+stored in the manifest. Resolution is bounded to 30 seconds and by the remaining
+node deadline, rejects collisions and reserved window names, and exposes only
+safe identity/lineage. Before SQL starts, the orchestrator atomically persists a
+run/node pin; automatic attempts and safe restart recovery reuse it. Mark
+secret-bearing names with `sensitive_params`; SQLite/Postgres require a valid
+`runtime_input_pin_key` for protected persistence and fail before materializing
+instead of storing sensitive parameters as plaintext.
 The module attribute is the only supported declaration; anonymous functions,
 captures, MFA tuples, and inline resolver blocks are not accepted. Read
 [Runtime Inputs For SQL Assets](apps/favn/guides/sql-runtime-inputs.md) for the
-full callback, result/error, limits, redaction, and retry contract.
+full callback, result/error, limits, protection, pinning, and replay contract.
+
+### Retry, rerun, and replay
+
+Node retries are configured with one typed policy: pipeline `retry` supplies a
+default, asset/SQL `@retry` overrides it, and an explicit operator
+`retry_policy` overrides both. `max_attempts` includes the first attempt and
+defaults to `1`. Fixed and bounded exponential backoff are supported, including
+bounded jitter and typed retry-after hints.
+
+Policy controls count and timing only. Favn schedules another node attempt only
+for an explicitly retryable, known-safe failure. Unknown write,
+materialization, transaction, and external-side-effect outcomes are terminal.
+Successful same-stage siblings are preserved.
+
+Reruns/replays create new runs. Normal runs, schedules, and backfill children
+resolve fresh runtime inputs; exact replay requires source pins; resume and
+retry-remaining inherit existing pins and resolve only nodes the source run
+never reached. Schedule overlap/missed behavior, SQL safety retries, persistence
+retries, execution admission, and HTTP command idempotency are separate
+mechanisms and do not consume node attempts. Read
+[Retries, Replay, And Runtime-Input Pins](apps/favn/guides/retries-and-replay.md)
+before configuring retries at more than one level.
 
 SQL table and incremental assets can publish a typed output contract alongside
 their query:

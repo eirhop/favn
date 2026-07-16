@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.RunManager.SubmissionOptions do
   @moduledoc false
 
+  alias Favn.Retry.Policy
   alias Favn.Window.Anchor
   alias FavnOrchestrator.RunState
 
@@ -9,8 +10,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
     :params,
     :trigger,
     :metadata,
-    :max_attempts,
-    :retry_backoff_ms,
+    :retry_policy_override,
     :timeout_ms,
     :dependencies,
     :exact_windows,
@@ -23,8 +23,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
           params: map(),
           trigger: map(),
           metadata: map(),
-          max_attempts: pos_integer(),
-          retry_backoff_ms: non_neg_integer(),
+          retry_policy_override: Policy.t() | nil,
           timeout_ms: pos_integer(),
           dependencies: :all | :none,
           anchor_window: Anchor.t() | nil,
@@ -44,36 +43,48 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
   end
 
   defp build(opts, defaults) do
-    values = %{
-      run_id: option(opts, defaults, :run_id, new_run_id()),
-      params: option(opts, defaults, :params, %{}),
-      trigger: option(opts, defaults, :trigger, %{}),
-      metadata: option(opts, defaults, :metadata, %{}),
-      max_attempts: option(opts, defaults, :max_attempts, 1),
-      retry_backoff_ms: option(opts, defaults, :retry_backoff_ms, 0),
-      timeout_ms: option(opts, defaults, :timeout_ms, RunState.default_timeout_ms()),
-      dependencies: option(opts, defaults, :dependencies, :all),
-      anchor_window: option(opts, defaults, :anchor_window, nil),
-      exact_windows: option(opts, defaults, :exact_windows, %{}),
-      parent_run_id: option(opts, defaults, :parent_run_id, nil),
-      root_run_id: option(opts, defaults, :root_run_id, nil),
-      lineage_depth: option(opts, defaults, :lineage_depth, 0)
-    }
+    with {:ok, retry_policy_override} <- retry_policy_override(opts, defaults) do
+      values = %{
+        run_id: option(opts, defaults, :run_id, new_run_id()),
+        params: option(opts, defaults, :params, %{}),
+        trigger: option(opts, defaults, :trigger, %{}),
+        metadata: option(opts, defaults, :metadata, %{}),
+        retry_policy_override: retry_policy_override,
+        timeout_ms: option(opts, defaults, :timeout_ms, RunState.default_timeout_ms()),
+        dependencies: option(opts, defaults, :dependencies, :all),
+        anchor_window: option(opts, defaults, :anchor_window, nil),
+        exact_windows: option(opts, defaults, :exact_windows, %{}),
+        parent_run_id: option(opts, defaults, :parent_run_id, nil),
+        root_run_id: option(opts, defaults, :root_run_id, nil),
+        lineage_depth: option(opts, defaults, :lineage_depth, 0)
+      }
 
-    with :ok <- non_empty_string(values.run_id, :invalid_run_id),
-         :ok <- map(values.params, :invalid_run_params),
-         :ok <- map(values.trigger, :invalid_pipeline_trigger),
-         :ok <- map(values.metadata, :invalid_run_metadata),
-         :ok <- positive_integer(values.max_attempts, :invalid_max_attempts),
-         :ok <- non_negative_integer(values.retry_backoff_ms, :invalid_retry_backoff_ms),
-         :ok <- positive_integer(values.timeout_ms, :invalid_timeout_ms),
-         :ok <- dependencies(values.dependencies),
-         :ok <- anchor(values.anchor_window),
-         :ok <- map(values.exact_windows, :invalid_exact_windows),
-         :ok <- optional_string(values.parent_run_id, :invalid_parent_run_id),
-         :ok <- optional_string(values.root_run_id, :invalid_root_run_id),
-         :ok <- non_negative_integer(values.lineage_depth, :invalid_lineage_depth) do
-      {:ok, struct!(__MODULE__, values)}
+      with :ok <- non_empty_string(values.run_id, :invalid_run_id),
+           :ok <- map(values.params, :invalid_run_params),
+           :ok <- map(values.trigger, :invalid_pipeline_trigger),
+           :ok <- map(values.metadata, :invalid_run_metadata),
+           :ok <- positive_integer(values.timeout_ms, :invalid_timeout_ms),
+           :ok <- dependencies(values.dependencies),
+           :ok <- anchor(values.anchor_window),
+           :ok <- map(values.exact_windows, :invalid_exact_windows),
+           :ok <- optional_string(values.parent_run_id, :invalid_parent_run_id),
+           :ok <- optional_string(values.root_run_id, :invalid_root_run_id),
+           :ok <- non_negative_integer(values.lineage_depth, :invalid_lineage_depth) do
+        {:ok, struct!(__MODULE__, values)}
+      end
+    end
+  end
+
+  defp retry_policy_override(opts, defaults) do
+    cond do
+      Keyword.has_key?(opts, :retry_policy) ->
+        Policy.new(Keyword.fetch!(opts, :retry_policy))
+
+      Keyword.has_key?(defaults, :retry_policy) ->
+        Policy.new(Keyword.fetch!(defaults, :retry_policy))
+
+      true ->
+        {:ok, nil}
     end
   end
 

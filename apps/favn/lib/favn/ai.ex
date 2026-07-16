@@ -75,6 +75,13 @@ defmodule Favn.AI do
     `Favn.Window.Request`. If the pipeline or its assets touch rate-limited
     source systems or shared infrastructure, read the `max_concurrency` and
     `execution_pool` sections in `Favn.Pipeline` and `Favn.Asset`.
+  - To configure retries, reruns, replay input behavior, or runtime-input pins,
+    first read [Retries, Replay, And Runtime-Input Pins](retries-and-replay.html),
+    then `Favn.Retry.Policy`, `Favn.Retry.Backoff`, `Favn.Pipeline`, and the
+    applicable asset DSL. Retry policy controls attempt count and timing only;
+    it never authorizes an unknown-outcome write or external side effect. Read
+    [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) when a SQL asset
+    selects execution-specific bind values.
   - To limit asset execution before asset code starts, use orchestrator-owned
     execution concurrency controls: pipeline `max_concurrency`, pipeline
     `execution_pool`, asset `@execution_pool`, and `config :favn,

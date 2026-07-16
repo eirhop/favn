@@ -14,6 +14,7 @@ defmodule FavnRunner.Worker do
   alias Favn.Run.Context
   alias Favn.SQL.Client, as: SQLClient
   alias Favn.RuntimeConfig.Redactor, as: RuntimeConfigRedactor
+  alias Favn.SQLAsset.Error, as: SQLAssetError
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
   alias FavnRunner.EventSink
@@ -303,6 +304,18 @@ defmodule FavnRunner.Worker do
 
   defp normalize_error(nil), do: nil
   defp normalize_error(%RunnerError{} = error), do: error
+
+  defp normalize_error(%SQLAssetError{details: details} = error) do
+    retryable? =
+      is_map(details) and
+        Map.get(details, :asset_retryable?, Map.get(details, "asset_retryable?", false)) == true
+
+    RunnerError.normalize(error,
+      retryable?: retryable?,
+      outcome: if(retryable?, do: :safe_failure, else: :unknown)
+    )
+  end
+
   defp normalize_error(error), do: RunnerError.normalize(error)
 
   defp duration_ms(started_at, finished_at) do

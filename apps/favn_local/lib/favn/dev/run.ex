@@ -23,6 +23,8 @@ defmodule Favn.Dev.Run do
           timeout_ms: non_neg_integer(),
           wait_timeout_ms: pos_integer(),
           run_timeout_ms: pos_integer(),
+          retry_max_attempts: pos_integer(),
+          retry_backoff_ms: non_neg_integer(),
           poll_interval_ms: pos_integer()
         ]
 
@@ -52,7 +54,8 @@ defmodule Favn.Dev.Run do
              target,
              window_request,
              run_idempotency_key(opts),
-             run_timeout_ms(opts)
+             run_timeout_ms(opts),
+             retry_policy(opts)
            ),
          {:ok, final_run} <-
            maybe_wait(run, runtime, credentials.service_token, session_context, opts),
@@ -69,7 +72,9 @@ defmodule Favn.Dev.Run do
         with :ok <- validate_positive_integer(opts, :timeout_ms),
              :ok <- validate_positive_integer(opts, :wait_timeout_ms),
              :ok <- validate_positive_integer(opts, :run_timeout_ms),
-             :ok <- validate_positive_integer(opts, :poll_interval_ms) do
+             :ok <- validate_positive_integer(opts, :retry_max_attempts),
+             :ok <- validate_positive_integer(opts, :poll_interval_ms),
+             :ok <- validate_non_negative_integer(opts, :retry_backoff_ms) do
           validate_idempotency_key(opts)
         else
           {:error, _reason} = error -> error
@@ -90,6 +95,14 @@ defmodule Favn.Dev.Run do
     case Keyword.fetch(opts, key) do
       :error -> :ok
       {:ok, value} when is_integer(value) and value > 0 -> :ok
+      {:ok, _value} -> {:error, {:invalid_option, key}}
+    end
+  end
+
+  defp validate_non_negative_integer(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, value} when is_integer(value) and value >= 0 -> :ok
       {:ok, _value} -> {:error, {:invalid_option, key}}
     end
   end
@@ -191,7 +204,8 @@ defmodule Favn.Dev.Run do
          target,
          window_request,
          idempotency_key,
-         timeout_ms
+         timeout_ms,
+         retry_policy
        ) do
     case target do
       %{"target_id" => target_id, "target_type" => target_type}
@@ -203,6 +217,7 @@ defmodule Favn.Dev.Run do
           }
           |> maybe_put_window(window_request)
           |> maybe_put(:timeout_ms, timeout_ms)
+          |> maybe_put(:retry_policy, retry_policy)
 
         case OrchestratorClient.submit_run(base_url, service_token, session_context, payload,
                idempotency_key: idempotency_key
@@ -255,6 +270,15 @@ defmodule Favn.Dev.Run do
 
   defp run_timeout_ms(opts),
     do: Keyword.get(opts, :run_timeout_ms, Keyword.get(opts, :timeout_ms))
+
+  defp retry_policy(opts) do
+    if Keyword.has_key?(opts, :retry_max_attempts) or Keyword.has_key?(opts, :retry_backoff_ms) do
+      %{
+        max_attempts: Keyword.get(opts, :retry_max_attempts, 1),
+        backoff: Keyword.get(opts, :retry_backoff_ms, 0)
+      }
+    end
+  end
 
   defp wait_timeout_ms(opts),
     do:

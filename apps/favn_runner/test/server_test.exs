@@ -179,7 +179,13 @@ defmodule FavnRunner.ServerTest do
                server: server
              )
 
-    assert {:error, %RunnerError{type: :runner_overloaded, kind: :boundary, retryable?: true}} =
+    assert {:error,
+            %RunnerError{
+              type: :runner_overloaded,
+              kind: :boundary,
+              retryable?: true,
+              outcome: :safe_failure
+            }} =
              FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.SlowAsset),
                server: server
              )
@@ -213,7 +219,13 @@ defmodule FavnRunner.ServerTest do
                server: server
              )
 
-    assert {:error, %RunnerError{type: :runner_overloaded, kind: :boundary, retryable?: true}} =
+    assert {:error,
+            %RunnerError{
+              type: :runner_overloaded,
+              kind: :boundary,
+              retryable?: true,
+              outcome: :safe_failure
+            }} =
              FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.SlowAsset),
                server: server
              )

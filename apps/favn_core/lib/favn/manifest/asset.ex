@@ -35,6 +35,7 @@ defmodule Favn.Manifest.Asset do
           relation: map() | struct() | nil,
           window: map() | struct() | nil,
           freshness: FreshnessPolicy.t() | nil,
+          retry_policy: Favn.Retry.Policy.t() | nil,
           materialization: map() | struct() | nil,
           relation_inputs: [map() | struct()],
           runtime_config: Requirements.declarations(),
@@ -55,6 +56,7 @@ defmodule Favn.Manifest.Asset do
     relation: nil,
     window: nil,
     freshness: nil,
+    retry_policy: nil,
     materialization: nil,
     relation_inputs: [],
     runtime_config: %{},
@@ -77,6 +79,7 @@ defmodule Favn.Manifest.Asset do
       relation: Map.get(asset, :relation),
       window: Map.get(asset, :window_spec),
       freshness: normalize_freshness(Map.get(asset, :freshness)),
+      retry_policy: normalize_retry_policy(Map.get(asset, :retry_policy)),
       materialization: Map.get(asset, :materialization),
       relation_inputs: normalize_list(Map.get(asset, :relation_inputs, [])),
       runtime_config: normalize_runtime_config(Map.get(asset, :runtime_config, %{})),
@@ -126,6 +129,9 @@ defmodule Favn.Manifest.Asset do
       {:error, reason} -> raise ArgumentError, "invalid freshness policy: #{inspect(reason)}"
     end
   end
+
+  defp normalize_retry_policy(nil), do: nil
+  defp normalize_retry_policy(value), do: Favn.Retry.Policy.new!(value)
 
   defp compare_refs({left_module, left_name}, {right_module, right_name}) do
     left = {Atom.to_string(left_module), Atom.to_string(left_name)}

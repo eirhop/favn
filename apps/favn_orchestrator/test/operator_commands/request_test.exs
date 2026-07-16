@@ -107,23 +107,19 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
     assert {:ok, request} =
              PipelineBackfillRequest.from_input(
                Map.merge(base, %{
-                 max_attempts: 2,
-                 retry_backoff_ms: 0,
+                 retry_policy: %{max_attempts: 2, backoff: 0},
                  timeout_ms: 1_000,
                  coverage_baseline_id: "baseline_1"
                })
              )
 
-    assert request.max_attempts == 2
-    assert request.retry_backoff_ms == 0
+    assert request.retry_policy.max_attempts == 2
+    assert request.retry_policy.backoff.initial_ms == 0
     assert request.timeout_ms == 1_000
     assert request.coverage_baseline_id == "baseline_1"
 
-    assert {:error, {:invalid_operator_max_attempts, 0}} =
-             PipelineBackfillRequest.from_input(Map.put(base, :max_attempts, 0))
-
-    assert {:error, {:invalid_operator_retry_backoff_ms, -1}} =
-             PipelineBackfillRequest.from_input(Map.put(base, :retry_backoff_ms, -1))
+    assert {:error, {:invalid_operator_retry_policy, {:invalid_retry_max_attempts, 0}}} =
+             PipelineBackfillRequest.from_input(Map.put(base, :retry_policy, %{max_attempts: 0}))
 
     assert {:error, {:invalid_operator_timeout_ms, 0}} =
              PipelineBackfillRequest.from_input(Map.put(base, :timeout_ms, 0))
@@ -132,14 +128,14 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
              PipelineBackfillRequest.from_input(Map.put(base, :coverage_baseline_id, ""))
   end
 
-  test "asset backfill requests validate retry fields consistently" do
+  test "asset backfill requests reject removed retry fields consistently" do
     base = %{range: %{kind: "day", from: "2026-05-01", to: "2026-05-03"}}
 
-    assert {:error, {:invalid_operator_max_attempts, 0}} =
-             AssetBackfillRequest.from_input(Map.put(base, :max_attempts, 0))
+    assert {:error, {:unsupported_retry_option, :max_attempts, :use_retry_policy}} =
+             AssetBackfillRequest.from_input(Map.put(base, :max_attempts, 2))
 
-    assert {:error, {:invalid_operator_retry_backoff_ms, -1}} =
-             AssetBackfillRequest.from_input(Map.put(base, :retry_backoff_ms, -1))
+    assert {:error, {:unsupported_retry_option, :retry_backoff_ms, :use_retry_policy}} =
+             AssetBackfillRequest.from_input(Map.put(base, :retry_backoff_ms, 0))
 
     assert {:error, {:invalid_operator_timeout_ms, 0}} =
              AssetBackfillRequest.from_input(Map.put(base, :timeout_ms, 0))

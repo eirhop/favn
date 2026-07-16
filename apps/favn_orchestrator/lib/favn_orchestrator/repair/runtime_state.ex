@@ -33,7 +33,7 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
   @active_run_statuses [:pending, :running]
   @active_backfill_window_statuses [:pending, :running]
   @terminal_run_statuses [:ok, :partial, :error, :cancelled, :timed_out]
-  @active_step_events [:step_started, :step_queued, :step_retry_scheduled]
+  @active_step_events [:step_started, :step_retry_started, :step_queued, :step_retry_scheduled]
   @terminal_step_events [
     :step_finished,
     :step_failed,

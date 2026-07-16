@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineRunRequest do
   """
 
   alias Favn.Window.Request, as: WindowRequest
+  alias Favn.Retry.Policy
   alias FavnOrchestrator.OperatorCommands.Input
 
   @type refresh_mode :: :auto | :missing | :force_all
@@ -12,12 +13,14 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineRunRequest do
           refresh_mode: refresh_mode(),
           window: WindowRequest.t() | nil,
           metadata: map() | nil,
+          retry_policy: Policy.t() | nil,
           timeout_ms: pos_integer() | nil
         }
 
   defstruct refresh_mode: :auto,
             window: nil,
             metadata: nil,
+            retry_policy: nil,
             timeout_ms: nil
 
   @doc """
@@ -44,15 +47,18 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineRunRequest do
   defp normalize_input(input) do
     refresh_value = Input.field(input, :refresh_mode, Input.field(input, :refresh, :auto))
 
-    with {:ok, refresh_mode} <- Input.pipeline_refresh_mode(refresh_value),
+    with :ok <- Input.reject_legacy_retry_fields(input),
+         {:ok, refresh_mode} <- Input.pipeline_refresh_mode(refresh_value),
          {:ok, window} <- Input.window(Input.field(input, :window)),
          {:ok, metadata} <- Input.metadata(Input.field(input, :metadata)),
+         {:ok, retry_policy} <- Input.retry_policy(Input.field(input, :retry_policy)),
          {:ok, timeout_ms} <- Input.timeout_ms(Input.field(input, :timeout_ms)) do
       {:ok,
        %__MODULE__{
          refresh_mode: refresh_mode,
          window: window,
          metadata: metadata,
+         retry_policy: retry_policy,
          timeout_ms: timeout_ms
        }}
     end

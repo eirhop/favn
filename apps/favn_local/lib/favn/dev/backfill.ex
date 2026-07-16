@@ -42,7 +42,7 @@ defmodule Favn.Dev.Backfill do
           timezone: String.t(),
           coverage_baseline_id: String.t(),
           wait: boolean(),
-          max_attempts: pos_integer(),
+          retry_max_attempts: pos_integer(),
           retry_backoff_ms: non_neg_integer(),
           timeout_ms: pos_integer(),
           wait_timeout_ms: pos_integer(),
@@ -224,8 +224,7 @@ defmodule Favn.Dev.Backfill do
      |> maybe_put(:coverage_baseline_id, Keyword.get(opts, :coverage_baseline_id))
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
      |> maybe_put(:refresh, Keyword.get(opts, :refresh))
-     |> maybe_put(:max_attempts, Keyword.get(opts, :max_attempts))
-     |> maybe_put(:retry_backoff_ms, Keyword.get(opts, :retry_backoff_ms))
+     |> maybe_put(:retry_policy, retry_policy(opts))
      |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
   end
 
@@ -248,8 +247,7 @@ defmodule Favn.Dev.Backfill do
      |> maybe_put(:coverage_baseline_id, Keyword.get(opts, :coverage_baseline_id))
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
      |> maybe_put(:refresh, Keyword.get(opts, :refresh))
-     |> maybe_put(:max_attempts, Keyword.get(opts, :max_attempts))
-     |> maybe_put(:retry_backoff_ms, Keyword.get(opts, :retry_backoff_ms))
+     |> maybe_put(:retry_policy, retry_policy(opts))
      |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
   end
 
@@ -325,6 +323,7 @@ defmodule Favn.Dev.Backfill do
       :timeout_ms,
       :wait_timeout_ms,
       :run_timeout_ms,
+      :retry_max_attempts,
       :poll_interval_ms
     ]
     |> Enum.reduce_while(:ok, fn key, :ok ->
@@ -333,6 +332,10 @@ defmodule Favn.Dev.Backfill do
         {:error, _reason} = error -> {:halt, error}
       end
     end)
+    |> case do
+      :ok -> validate_non_negative_integer(opts, :retry_backoff_ms)
+      error -> error
+    end
   end
 
   defp rerun_window_payload(opts) do
@@ -345,6 +348,14 @@ defmodule Favn.Dev.Backfill do
     case Keyword.fetch(opts, key) do
       :error -> :ok
       {:ok, value} when is_integer(value) and value > 0 -> :ok
+      {:ok, _value} -> {:error, {:invalid_option, key}}
+    end
+  end
+
+  defp validate_non_negative_integer(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, value} when is_integer(value) and value >= 0 -> :ok
       {:ok, _value} -> {:error, {:invalid_option, key}}
     end
   end
@@ -418,6 +429,15 @@ defmodule Favn.Dev.Backfill do
 
   defp run_timeout_ms(opts),
     do: Keyword.get(opts, :run_timeout_ms, Keyword.get(opts, :timeout_ms))
+
+  defp retry_policy(opts) do
+    if Keyword.has_key?(opts, :retry_max_attempts) or Keyword.has_key?(opts, :retry_backoff_ms) do
+      %{
+        max_attempts: Keyword.get(opts, :retry_max_attempts, 1),
+        backoff: Keyword.get(opts, :retry_backoff_ms, 0)
+      }
+    end
+  end
 
   defp maybe_wait(run, base_url, service_token, session_context, opts) do
     case {Keyword.get(opts, :wait, true), run} do

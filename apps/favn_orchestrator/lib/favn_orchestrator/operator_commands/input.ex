@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.OperatorCommands.Input do
   @moduledoc false
 
   alias Favn.Backfill.RangeRequest
+  alias Favn.Retry.Policy
   alias Favn.Window.Request, as: WindowRequest
 
   @dependency_modes [:all, :none]
@@ -94,23 +95,25 @@ defmodule FavnOrchestrator.OperatorCommands.Input do
   def timeout_ms(value) when is_integer(value) and value > 0, do: {:ok, value}
   def timeout_ms(value), do: {:error, {:invalid_operator_timeout_ms, value}}
 
+  def retry_policy(nil), do: {:ok, nil}
+
+  def retry_policy(value) do
+    case Policy.new(value) do
+      {:ok, policy} -> {:ok, policy}
+      {:error, reason} -> {:error, {:invalid_operator_retry_policy, reason}}
+    end
+  end
+
+  def reject_legacy_retry_fields(input) do
+    case Enum.find([:max_attempts, :retry_backoff_ms], &has_field?(input, &1)) do
+      nil -> :ok
+      field -> {:error, {:unsupported_retry_option, field, :use_retry_policy}}
+    end
+  end
+
   def metadata(nil), do: {:ok, nil}
   def metadata(value) when is_map(value), do: {:ok, value}
   def metadata(value), do: {:error, {:invalid_operator_metadata, value}}
-
-  def positive_integer(nil, _field), do: {:ok, nil}
-
-  def positive_integer(value, _field) when is_integer(value) and value > 0,
-    do: {:ok, value}
-
-  def positive_integer(value, field), do: {:error, {invalid_numeric_field(field), value}}
-
-  def non_neg_integer(nil, _field), do: {:ok, nil}
-
-  def non_neg_integer(value, _field) when is_integer(value) and value >= 0,
-    do: {:ok, value}
-
-  def non_neg_integer(value, field), do: {:error, {invalid_numeric_field(field), value}}
 
   def non_empty_binary(nil, _field), do: {:ok, nil}
   def non_empty_binary(value, _field) when is_binary(value) and value != "", do: {:ok, value}
@@ -128,13 +131,13 @@ defmodule FavnOrchestrator.OperatorCommands.Input do
     _exception -> {:error, {:invalid_operator_window, original}}
   end
 
-  defp invalid_numeric_field(:max_attempts), do: :invalid_operator_max_attempts
-  defp invalid_numeric_field(:retry_backoff_ms), do: :invalid_operator_retry_backoff_ms
-  defp invalid_numeric_field(:timeout_ms), do: :invalid_operator_timeout_ms
-  defp invalid_numeric_field(field), do: {:invalid_operator_numeric_field, field}
-
   defp invalid_text_field(:coverage_baseline_id), do: :invalid_operator_coverage_baseline_id
   defp invalid_text_field(field), do: {:invalid_operator_text_field, field}
+
+  defp has_field?(input, field) when is_map(input),
+    do: Map.has_key?(input, field) or Map.has_key?(input, Atom.to_string(field))
+
+  defp has_field?(input, field) when is_list(input), do: Keyword.has_key?(input, field)
 
   defp refresh_mode(:force, modes), do: maybe_refresh_mode(:force_all, modes, :force)
 

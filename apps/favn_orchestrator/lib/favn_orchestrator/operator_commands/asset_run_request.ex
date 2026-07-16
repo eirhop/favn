@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.OperatorCommands.AssetRunRequest do
   """
 
   alias FavnOrchestrator.OperatorCommands.Input
+  alias Favn.Retry.Policy
 
   @type dependency_mode :: :all | :none
   @type refresh_mode :: :auto | :missing | :force_all | :force_selected | :force_selected_upstream
@@ -25,6 +26,7 @@ defmodule FavnOrchestrator.OperatorCommands.AssetRunRequest do
           refresh_mode: refresh_mode(),
           selection: selection() | nil,
           metadata: map() | nil,
+          retry_policy: Policy.t() | nil,
           timeout_ms: pos_integer() | nil
         }
 
@@ -32,6 +34,7 @@ defmodule FavnOrchestrator.OperatorCommands.AssetRunRequest do
             refresh_mode: :auto,
             selection: nil,
             metadata: nil,
+            retry_policy: nil,
             timeout_ms: nil
 
   @doc """
@@ -61,10 +64,12 @@ defmodule FavnOrchestrator.OperatorCommands.AssetRunRequest do
 
     refresh_value = Input.field(input, :refresh_mode, Input.field(input, :refresh, :auto))
 
-    with {:ok, dependency_mode} <- Input.dependency_mode(dependency_value),
+    with :ok <- Input.reject_legacy_retry_fields(input),
+         {:ok, dependency_mode} <- Input.dependency_mode(dependency_value),
          {:ok, refresh_mode} <- Input.asset_refresh_mode(refresh_value),
          {:ok, selection} <- Input.selection(Input.field(input, :selection)),
          {:ok, metadata} <- Input.metadata(Input.field(input, :metadata)),
+         {:ok, retry_policy} <- Input.retry_policy(Input.field(input, :retry_policy)),
          {:ok, timeout_ms} <- Input.timeout_ms(Input.field(input, :timeout_ms)) do
       {:ok,
        %__MODULE__{
@@ -72,6 +77,7 @@ defmodule FavnOrchestrator.OperatorCommands.AssetRunRequest do
          refresh_mode: refresh_mode,
          selection: selection,
          metadata: metadata,
+         retry_policy: retry_policy,
          timeout_ms: timeout_ms
        }}
     end

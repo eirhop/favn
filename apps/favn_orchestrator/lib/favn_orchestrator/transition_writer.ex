@@ -117,6 +117,7 @@ defmodule FavnOrchestrator.TransitionWriter do
   defp transition_log_level(_event_type), do: :info
 
   defp transition_log_message(:step_started), do: "asset execution started"
+  defp transition_log_message(:step_retry_started), do: "asset execution retry started"
   defp transition_log_message(:step_finished), do: "asset execution finished"
   defp transition_log_message(:step_failed), do: "asset execution failed"
   defp transition_log_message(:step_timed_out), do: "asset execution timed out"

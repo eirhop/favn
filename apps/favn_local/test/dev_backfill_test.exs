@@ -21,7 +21,7 @@ defmodule Favn.Dev.BackfillTest do
                %{"target_id" => "pipeline:Elixir.MyApp.Pipeline"},
                %{from: "2026-01-01", to: "2026-01-03", kind: "day", timezone: "Etc/UTC"},
                coverage_baseline_id: "baseline_1",
-               max_attempts: 2
+               retry_max_attempts: 2
              )
 
     assert payload == %{
@@ -29,7 +29,7 @@ defmodule Favn.Dev.BackfillTest do
              manifest_selection: %{mode: "active"},
              range: %{from: "2026-01-01", to: "2026-01-03", kind: "day", timezone: "Etc/UTC"},
              coverage_baseline_id: "baseline_1",
-             max_attempts: 2
+             retry_policy: %{max_attempts: 2, backoff: 0}
            }
   end
 

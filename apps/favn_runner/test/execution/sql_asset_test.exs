@@ -5,6 +5,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.Connection.Resolved
   alias Favn.Asset.RelationInput
   alias Favn.Contracts.RelationInspectionRequest
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -13,6 +14,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.Manifest.Version
   alias Favn.Plan.NodeIdentity
   alias Favn.RelationRef
+  alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL.Check
   alias Favn.SQL.Column
@@ -182,7 +184,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert [%{status: :ok}] = result.asset_results
   end
 
-  test "resolves manifest-declared runtime inputs before rendering and session acquisition" do
+  test "resolves and pins manifest-declared runtime inputs before execution" do
     ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
 
     version =
@@ -208,17 +210,22 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       params: %{submitted: 7}
     }
 
-    assert {:ok, result} = FavnRunner.run(work)
-    assert result.status == :ok
+    assert {:ok, resolution} = FavnRunner.resolve_runtime_inputs(work)
 
     assert_received {:runtime_inputs_context, context}
     assert context.run_id == work.run_id
     assert context.current_ref == ref
     assert context.node_identity == node_identity
     assert context.params == %{submitted: 7}
+    refute_received {:connect_after_runtime_inputs, _resolved?}
+
+    pinned = %{work | runtime_input_pin: Pin.new(work.run_id, {ref, nil}, resolution)}
+    assert {:ok, result} = FavnRunner.run(pinned)
+    assert result.status == :ok
 
     assert_received {:connect_after_runtime_inputs, true}
     assert_received {:materialize_params, ["runtime-value", 7]}
+    refute_received {:runtime_inputs_context, _context}
 
     assert [asset_result] = result.asset_results
 
@@ -243,9 +250,51 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     work = work_for(version, ref, "run_sql_runtime_inputs_failure")
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:error,
+            %RunnerError{
+              type: :runtime_inputs_failed,
+              retryable?: true,
+              outcome: :safe_failure
+            }} =
+             FavnRunner.resolve_runtime_inputs(work)
+
+    refute_received {:connect_opts, :runner_sql_runtime, _opts}
+    refute_received {:materialize_params, _params}
+  end
+
+  test "known-safe SQL connection failures carry an explicit safe outcome" do
+    reload_fake_connection(
+      :runner_sql_runtime,
+      FavnRunner.ExecutionSQLAssetTest.FakeRetryableConnectErrorAdapter
+    )
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+    version = register_sql_manifest!(ref)
+
+    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_sql_safe_connect_failure"))
     assert result.status == :error
-    assert [%{error: %{type: :runtime_inputs_failed}}] = result.asset_results
+
+    assert %RunnerError{retryable?: true, outcome: :safe_failure} = result.error
+
+    assert [%{error: %RunnerError{retryable?: true, outcome: :safe_failure}}] =
+             result.asset_results
+  end
+
+  test "manifest execution refuses runtime inputs that were not pinned first" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver
+      )
+
+    assert {:ok, result} =
+             FavnRunner.run(work_for(version, ref, "run_sql_runtime_inputs_unpinned"))
+
+    assert result.status == :error
+    assert [%{error: %{type: :runtime_inputs_invalid_result}}] = result.asset_results
+    refute_received {:runtime_inputs_context, _context}
     refute_received {:connect_opts, :runner_sql_runtime, _opts}
     refute_received {:materialize_params, _params}
   end
@@ -278,11 +327,96 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> Map.put(:params, %{submitted: 7})
       |> Map.put(:trigger, %{window: requested_window})
 
+    work = resolve_and_pin!(work)
     assert {:ok, %{status: :ok}} = FavnRunner.run(work)
     assert_received {:runtime_inputs_context, context}
     assert context.window.start_at == requested_start
     assert context.window.end_at == requested_end
     assert context.window.anchor_key == anchor_key
+  end
+
+  test "incremental runtime-input resolution receives the effective lookback window" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+    window_spec = Favn.Window.Spec.new!(:day, lookback: 1, timezone: "Etc/UTC")
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver,
+        materialization: {:incremental, strategy: :delete_insert, unique_key: [:id]},
+        window: window_spec
+      )
+
+    requested_start = ~U[2026-07-14 00:00:00Z]
+    requested_end = ~U[2026-07-15 00:00:00Z]
+    anchor_key = Favn.Window.Key.new!(:day, requested_start, "Etc/UTC")
+
+    requested_window =
+      Favn.Window.Runtime.new!(
+        :day,
+        requested_start,
+        requested_end,
+        anchor_key,
+        timezone: "Etc/UTC"
+      )
+
+    work =
+      version
+      |> work_for(ref, "run_sql_runtime_inputs_lookback")
+      |> Map.put(:trigger, %{window: requested_window})
+
+    assert {:ok, _resolution} = FavnRunner.resolve_runtime_inputs(work)
+    assert_received {:runtime_inputs_context, context}
+    assert context.window.start_at == ~U[2026-07-13 00:00:00Z]
+    assert context.window.end_at == requested_end
+    assert context.window.anchor_key == anchor_key
+    assert work.trigger.window == requested_window
+  end
+
+  test "runtime-input resolution honors the remaining work deadline" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.SlowRuntimeInputsResolver
+      )
+
+    work =
+      version
+      |> work_for(ref, "run_sql_runtime_inputs_deadline")
+      |> Map.put(:metadata, %{deadline_at: DateTime.add(DateTime.utc_now(), 40, :millisecond)})
+
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:error, %RunnerError{type: :runtime_inputs_timeout, outcome: :unknown}} =
+             FavnRunner.resolve_runtime_inputs(work)
+
+    assert System.monotonic_time(:millisecond) - started_at < 400
+  end
+
+  test "runtime-input boundary redacts sensitive values from pin lineage" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.SensitiveLineageRuntimeInputsResolver
+      )
+
+    work = work_for(version, ref, "run_sql_runtime_inputs_sensitive_lineage")
+
+    assert {:ok, resolution} = FavnRunner.resolve_runtime_inputs(work)
+    assert resolution.input_identity == "[REDACTED]"
+    assert resolution.metadata == %{echo: :redacted, nested: ["prefix-[REDACTED]"]}
+    refute inspect(resolution) =~ "lineage-secret"
+
+    pin = Pin.new(work.run_id, {ref, nil}, resolution)
+    lineage = Pin.lineage(pin)
+
+    assert lineage.input_identity == "[REDACTED]"
+    refute inspect(pin) =~ "lineage-secret"
+    refute inspect(lineage) =~ "lineage-secret"
   end
 
   test "sensitive resolved values are redacted from adapter failures" do
@@ -303,6 +437,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       version
       |> work_for(ref, "run_sql_runtime_inputs_redaction")
       |> Map.put(:params, %{submitted: 7})
+      |> resolve_and_pin!()
 
     assert {:ok, result} = FavnRunner.run(work)
     assert result.status == :error
@@ -335,8 +470,12 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         }
       )
 
-    assert {:ok, %{status: :ok}} =
-             FavnRunner.run(work_for(version, ref, "run_checked_runtime_inputs"))
+    work =
+      version
+      |> work_for(ref, "run_checked_runtime_inputs")
+      |> resolve_and_pin!()
+
+    assert {:ok, %{status: :ok}} = FavnRunner.run(work)
 
     assert_received {:checked_query_params, ["runtime-value", "runtime-value"]}
   end
@@ -1119,6 +1258,12 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     }
   end
 
+  defp resolve_and_pin!(%RunnerWork{} = work) do
+    {:ok, resolution} = FavnRunner.resolve_runtime_inputs(work)
+    node_key = RunnerWork.node_key(work) || {work.asset_ref, nil}
+    %{work | runtime_input_pin: Pin.new(work.run_id, node_key, resolution)}
+  end
+
   defp attach_check_telemetry do
     handler_id = "#{inspect(__MODULE__)}-#{System.unique_integer([:positive])}"
     test_pid = self()
@@ -1345,6 +1490,35 @@ defmodule FavnRunner.ExecutionSQLAssetTest.RuntimeInputsFailureResolver do
   end
 end
 
+defmodule FavnRunner.ExecutionSQLAssetTest.SlowRuntimeInputsResolver do
+  @behaviour Favn.SQLAsset.RuntimeInputs
+
+  alias Favn.SQLAsset.RuntimeInputs.Result
+
+  @impl true
+  def resolve(_context) do
+    Process.sleep(500)
+    {:ok, %Result{params: %{runtime_value: "late"}, identity: "late"}}
+  end
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.SensitiveLineageRuntimeInputsResolver do
+  @behaviour Favn.SQLAsset.RuntimeInputs
+
+  alias Favn.SQLAsset.RuntimeInputs.Result
+
+  @impl true
+  def resolve(_context) do
+    {:ok,
+     %Result{
+       params: %{runtime_value: "lineage-secret"},
+       identity: "lineage-secret",
+       metadata: %{echo: "lineage-secret", nested: ["prefix-lineage-secret"]},
+       sensitive_params: [:runtime_value]
+     }}
+  end
+end
+
 defmodule FavnRunner.ExecutionSQLAssetTest.PlainRelationInputSQLAsset do
   use Favn.Namespace,
     relation: [connection: :runner_sql_runtime, catalog: "int", schema: "sales"]
@@ -1459,6 +1633,21 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter do
     end
 
     {:ok, %Result{command: :insert, rows_affected: 1}}
+  end
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.FakeRetryableConnectErrorAdapter do
+  alias Favn.Connection.Resolved
+  alias Favn.SQL.Error
+
+  def connect(%Resolved{}, _opts) do
+    {:error,
+     %Error{
+       type: :connection_error,
+       message: "connection failed before SQL execution",
+       operation: :connect,
+       retryable?: true
+     }}
   end
 end
 

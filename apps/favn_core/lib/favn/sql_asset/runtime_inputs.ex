@@ -12,9 +12,13 @@ defmodule Favn.SQLAsset.RuntimeInputs do
   relation names, or lifecycle callbacks. Favn keeps the parameter payload local
   to the runner and exposes only the result identity and explicitly safe metadata.
 
-  Runtime inputs are resolved again for a later attempt or runner restart. Until
-  an explicit pinning contract is added, replay-sensitive resolvers should not be
-  used for work that requires the exact same selected inputs across retries.
+  The orchestrator atomically pins a successful resolution before execution.
+  Later attempts and safe restart recovery reuse that run/node pin without
+  invoking the resolver again. New-run behavior is explicit: normal runs resolve
+  fresh, exact replay requires source pins, and resume/retry-remaining inherit
+  existing pins while resolving nodes the source run never reached. Resolvers
+  are selection-only code and must not claim, consume, delete, or write external
+  state.
 
   ## Authoring breadcrumb
 
@@ -32,8 +36,10 @@ defmodule Favn.SQLAsset.RuntimeInputs do
 
   The HexDocs guide
   [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) covers the complete
-  workflow, supported bind values, budgets, sensitive-value handling, and retry
-  boundary.
+  workflow, supported bind values, budgets, protected sensitive-value handling,
+  and pin/replay boundary. The companion
+  [Retries, Replay, And Runtime-Input Pins](retries-and-replay.html) guide covers
+  retry precedence and failure safety.
   """
 
   alias Favn.Run.Context

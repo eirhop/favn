@@ -24,6 +24,13 @@ inference, effective execution-pool propagation, freshness keys/policies,
 windows, schedules, runtime config refs, backfill range resolution, or
 runner/orchestrator contract structs.
 
+`Favn.Retry.Policy` and `Favn.Retry.Backoff` own serializable node-attempt
+count/timing. `Favn.Contracts.RunnerError` independently owns explicit
+retryability, retry-after, and safe/unknown/cancelled outcome. Planned nodes
+carry the frozen effective policy and source. `Favn.RuntimeInput.Pin`,
+`Favn.RuntimeInput.Resolution`, and `Favn.Replay.InputMode` own the cross-app
+pin/replay contracts without storage dependencies.
+
 Manifest schema 5 and runner contract 5 are the only accepted versions. SQL
 execution payloads carry an optional typed `%Favn.SQL.Contract{}` plus typed
 `%Favn.SQL.Check{}` declarations. Contract-generated checks and authored checks

@@ -13,6 +13,7 @@ defmodule FavnOrchestrator do
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerClient
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Pin
   alias Favn.Window.Anchor
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator.Auth
@@ -555,6 +556,11 @@ defmodule FavnOrchestrator do
   - `:refresh` or `:refresh_policy` accepts `:auto`, `:force`, `:missing`,
     `{:force_assets, refs}`, `{:force_assets, refs, include_upstream: true}`, or
     equivalent maps. See `FavnOrchestrator.RefreshPolicy`.
+
+  `:retry_policy` accepts `%Favn.Retry.Policy{}` or its map/keyword input form
+  and is the explicit operator override for every planned node. It takes
+  precedence over asset and pipeline policy. The override changes attempt
+  count/timing only and never makes an unknown outcome safe to repeat.
   """
   @spec submit_asset_run(Favn.Ref.t(), keyword()) :: {:ok, run_id()} | {:error, term()}
   def submit_asset_run(asset_ref, opts \\ [])
@@ -578,6 +584,11 @@ defmodule FavnOrchestrator do
   Under `:auto`, manifest freshness policies decide which planned nodes run or
   skip. `:missing` skips nodes with prior successful freshness state. `:force`
   runs every planned node.
+
+  `:retry_policy` accepts `%Favn.Retry.Policy{}` or its map/keyword input form
+  and overrides asset/pipeline policy for this run only. `max_attempts` includes
+  the initial attempt. The effective policy and source are frozen per node and
+  exposed in run details.
 
   """
   @spec submit_pipeline_run([Favn.Ref.t()], keyword()) :: {:ok, run_id()} | {:error, term()}
@@ -635,8 +646,9 @@ defmodule FavnOrchestrator do
   - `:refresh` or `:refresh_policy` - forwarded to child pipeline runs. Defaults
     to `:missing` when neither option is provided.
   - `:metadata` - user metadata merged into the parent run metadata.
-  - `:max_attempts`, `:retry_backoff_ms`, and `:timeout_ms` - forwarded to child
-    runs.
+  - `:retry_policy` and `:timeout_ms` - forwarded to child runs. Retry policy is
+    one typed node policy and does not alter schedule overlap or backfill child
+    identity.
   """
   @spec submit_pipeline_backfill(module(), keyword()) :: {:ok, run_id()} | {:error, term()}
   def submit_pipeline_backfill(pipeline_module, opts \\ [])
@@ -941,6 +953,12 @@ defmodule FavnOrchestrator do
 
   @doc """
   Submits a rerun pinned to the source run's manifest version.
+
+  Exact replay defaults to `input_mode: :pinned`: every selected SQL asset with
+  runtime inputs must reuse a source-run pin. `:inherit` copies available pins
+  and resolves nodes the source run never reached; `:fresh` deliberately
+  resolves again and therefore is not exact replay. A `:retry_policy` option is
+  an explicit run-only operator override.
   """
   @spec rerun(run_id(), keyword()) :: {:ok, run_id()} | {:error, term()}
   def rerun(source_run_id, opts \\ []) when is_binary(source_run_id) and is_list(opts) do
@@ -1086,9 +1104,11 @@ defmodule FavnOrchestrator do
   """
   @spec get_run(run_id()) :: {:ok, Favn.Run.t()} | {:error, term()}
   def get_run(run_id) when is_binary(run_id) do
-    case Storage.get_run(run_id) do
-      {:ok, run_state} -> {:ok, Projector.project_run(run_state)}
-      {:error, _reason} = error -> error
+    with {:ok, run_state} <- Storage.get_run(run_id),
+         {:ok, pins} <- runtime_input_pins_for_read(run_id) do
+      run = Projector.project_run(run_state)
+      metadata = maybe_put_runtime_input_lineage(run.metadata, pins)
+      {:ok, %{run | metadata: metadata}}
     end
   end
 
@@ -1470,8 +1490,7 @@ defmodule FavnOrchestrator do
         |> maybe_put_opt(:coverage_baseline_id, field_value(opts, :coverage_baseline_id))
         |> maybe_put_opt(:refresh, field_value(opts, :refresh))
         |> maybe_put_opt(:refresh_policy, field_value(opts, :refresh_policy))
-        |> maybe_put_opt(:max_attempts, field_value(opts, :max_attempts))
-        |> maybe_put_opt(:retry_backoff_ms, field_value(opts, :retry_backoff_ms))
+        |> maybe_put_opt(:retry_policy, field_value(opts, :retry_policy))
         |> maybe_put_opt(:timeout_ms, field_value(opts, :timeout_ms))
 
       {:ok, submit_opts}
@@ -1501,6 +1520,19 @@ defmodule FavnOrchestrator do
   defp configured_runner_opts do
     RuntimeConfig.current().runner_client_opts
   end
+
+  defp runtime_input_pins_for_read(run_id) do
+    case Storage.list_runtime_input_pins(run_id) do
+      {:ok, pins} -> {:ok, pins}
+      {:error, :runtime_input_pins_not_supported} -> {:ok, []}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp maybe_put_runtime_input_lineage(metadata, []), do: metadata
+
+  defp maybe_put_runtime_input_lineage(metadata, pins),
+    do: Map.put(metadata, :runtime_input_lineage, Enum.map(pins, &Pin.lineage/1))
 
   defp default_log_filter do
     case Code.ensure_loaded(Favn.Log.Filter) do

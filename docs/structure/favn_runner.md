@@ -61,14 +61,19 @@ checks. Warnings and no-op writes remain successful; a no-op also records
 the worker persists failed-attempt diagnostics.
 
 `FavnRunner.RuntimeInputResolver` owns behaviour-based SQL runtime input
-execution. The worker first builds the normal final `Favn.Run.Context`; the SQL
-runtime finalizes any incremental window, resolves inputs in an owned child
-process, validates budgets/types/collisions, and merges parameters before the
-first render or SQL session. Resolver timeout is 30 seconds and additionally
-bounded by the node deadline. Cancellation kills resolver code, failures never
-open or mutate a connection, and only module, identity, JSON-safe metadata, and
-duration enter attempt metadata. Parameter payloads remain runner-local and
+resolution. The public runner boundary can perform a bounded selection-only
+phase, returning a typed resolution to the orchestrator without opening a SQL
+session. Normal execution requires the orchestrator-persisted pin and validates
+that it matches the manifest resolver before rendering. Resolver timeout is 30
+seconds and additionally bounded by the node deadline. Cancellation kills
+resolver code; failures never open or mutate a connection. The runner does not
+write orchestrator storage. Parameters stay out of generic metadata and
 sensitive names drive result/error redaction.
+
+Runner failures use `%Favn.Contracts.RunnerError{}`. `retryable?: true` plus
+`outcome: :safe_failure` may permit an orchestrator node retry when policy has
+an attempt left. Boundary timeouts and unknown write/materialization outcomes
+remain terminal; runner code never decides attempt count.
 
 DuckDB/ADBC session pooling is default-on for poolable adapters unless disabled
 with `pool: [enabled: false]`. It is runner-local and per BEAM. A pooled SQL

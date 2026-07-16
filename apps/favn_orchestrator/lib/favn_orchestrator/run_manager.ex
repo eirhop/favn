@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.RunManager do
   use GenServer
 
   alias FavnOrchestrator.OperationalEvents
+  alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunExecutionCleanup
   alias FavnOrchestrator.RunExecutionOwnership
@@ -70,6 +71,10 @@ defmodule FavnOrchestrator.RunManager do
     call_manager({:cancel_run, run_id, reason})
   end
 
+  @doc false
+  @spec recover_run(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def recover_run(run_id) when is_binary(run_id), do: call_manager({:recover_run, run_id})
+
   @impl true
   def init(_args), do: {:ok, %{run_pids: %{}, monitors: %{}}}
 
@@ -125,6 +130,13 @@ defmodule FavnOrchestrator.RunManager do
     {:reply, reply, state}
   end
 
+  def handle_call({:recover_run, run_id}, _from, state) do
+    case recover_run_server(run_id, state) do
+      {{:ok, ^run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     case Map.pop(state.monitors, ref) do
@@ -132,11 +144,21 @@ defmodule FavnOrchestrator.RunManager do
         {:noreply, %{state | monitors: monitors}}
 
       {run_id, monitors} ->
-        if reason != :normal do
-          terminalize_active_run(run_id, run_server_down_error(reason))
-        end
+        next_state = %{state | monitors: monitors, run_pids: Map.delete(state.run_pids, run_id)}
 
-        {:noreply, %{state | monitors: monitors, run_pids: Map.delete(state.run_pids, run_id)}}
+        if reason != :normal and retry_wait_run?(run_id) do
+          case recover_run_server(run_id, next_state) do
+            {{:ok, ^run_id}, recovered_state} ->
+              {:noreply, recovered_state}
+
+            {:error, _reason} ->
+              terminalize_active_run(run_id, run_server_down_error(reason))
+              {:noreply, next_state}
+          end
+        else
+          if reason != :normal, do: terminalize_active_run(run_id, run_server_down_error(reason))
+          {:noreply, next_state}
+        end
     end
   end
 
@@ -204,6 +226,34 @@ defmodule FavnOrchestrator.RunManager do
     {{:ok, run_id}, next_state}
   end
 
+  defp recover_run_server(run_id, state) do
+    with false <- active_run_server?(state, run_id),
+         {:ok, %RunState{} = run} <- Storage.get_run(run_id),
+         true <- retry_wait?(run),
+         {:ok, version} <- ManifestStore.get_manifest(run.manifest_version_id),
+         {:ok, pid} <- start_run_server(run, version, recovering?: true) do
+      track_run_server(state, run_id, pid)
+    else
+      true -> {:error, {:run_already_active, run_id}}
+      false -> {:error, :run_not_recoverable}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp retry_wait_run?(run_id) do
+    case Storage.get_run(run_id) do
+      {:ok, run} -> retry_wait?(run)
+      {:error, _reason} -> false
+    end
+  end
+
+  defp retry_wait?(%RunState{status: status, metadata: metadata})
+       when status in [:pending, :running] and is_map(metadata) do
+    is_map(Map.get(metadata, :retry_state, Map.get(metadata, "retry_state")))
+  end
+
+  defp retry_wait?(%RunState{}), do: false
+
   defp compensate_run_server_start(%RunState{} = run, reason) do
     diagnostic = JsonSafe.error(reason)
 
@@ -232,10 +282,16 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
-  defp start_run_server(%RunState{} = run_state, version) do
+  defp start_run_server(%RunState{} = run_state, version, opts \\ []) when is_list(opts) do
+    args = %{
+      run_state: run_state,
+      version: version,
+      recovering?: Keyword.get(opts, :recovering?, false)
+    }
+
     child_spec = %{
       id: {RunServer, run_state.id},
-      start: {RunServer, :start_link, [%{run_state: run_state, version: version}]},
+      start: {RunServer, :start_link, [args]},
       restart: :temporary,
       shutdown: 5000,
       type: :worker

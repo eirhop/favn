@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.RunReadModel do
   """
 
   alias Favn.Log.Filter
+  alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.ExecutionStatus
   alias FavnOrchestrator.Page
@@ -23,6 +24,7 @@ defmodule FavnOrchestrator.RunReadModel do
   @operator_step_state_event_types [
     :step_queued,
     :step_started,
+    :step_retry_started,
     :step_finished,
     :step_failed,
     :step_timed_out,
@@ -91,7 +93,9 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:steps) => [step_summary()],
           required(:backfill_failures) => [backfill_failure()],
           required(:backfill_failure_count) => non_neg_integer(),
-          required(:events) => [RunEvent.t()]
+          required(:events) => [RunEvent.t()],
+          required(:retry) => map(),
+          required(:runtime_input_pins) => [map()]
         }
 
   @type asset_attempt_summary :: %{
@@ -203,7 +207,8 @@ defmodule FavnOrchestrator.RunReadModel do
   def get_run_detail(run_id) when is_binary(run_id) do
     with {:ok, %RunState{} = run} <- Storage.get_run(run_id),
          {:ok, events} <- Storage.list_run_events(run_id),
-         {:ok, backfill_windows} <- detail_backfill_windows(run) do
+         {:ok, backfill_windows} <- detail_backfill_windows(run),
+         {:ok, runtime_input_pins} <- runtime_input_pins_for_read(run_id) do
       events = Enum.map(events, &RunEvent.from_map/1)
       public_run = with_public_status(run)
       {backfill_failures, backfill_failure_count} = backfill_failures(run, backfill_windows)
@@ -218,6 +223,8 @@ defmodule FavnOrchestrator.RunReadModel do
          error: run.error,
          runner_execution_id: run.runner_execution_id,
          event_seq: run.event_seq,
+         retry: retry_detail(run),
+         runtime_input_pins: Enum.map(runtime_input_pins, &Pin.lineage/1),
          steps: StepProjection.build(run, events),
          backfill_failures: backfill_failures,
          backfill_failure_count: backfill_failure_count,
@@ -614,7 +621,8 @@ defmodule FavnOrchestrator.RunReadModel do
         backfill_failure_count: backfill_failure_count,
         root_event_sequence: group.root.event_seq,
         latest_global_event_sequence: latest_event && latest_event.global_sequence,
-        latest_event: latest_event
+        latest_event: latest_event,
+        retry: retry_detail(group.root)
       }
 
       if event_opts.include_events? do
@@ -622,6 +630,46 @@ defmodule FavnOrchestrator.RunReadModel do
       else
         {:ok, detail}
       end
+    end
+  end
+
+  defp retry_detail(%RunState{} = run) do
+    %{
+      input_mode: metadata_value(run.metadata, :runtime_input_mode),
+      next_retry_at: retry_datetime(metadata_value(run.metadata, :next_retry_at)),
+      retrying?: metadata_value(run.metadata, :retrying) == true,
+      nodes: retry_nodes(run.plan)
+    }
+  end
+
+  defp retry_nodes(%Favn.Plan{nodes: nodes}) do
+    nodes
+    |> Map.values()
+    |> Enum.map(fn node ->
+      %{
+        asset_ref: node.ref,
+        policy: Map.get(node, :retry_policy) || Favn.Retry.Policy.default(),
+        source: Map.get(node, :retry_policy_source) || :default
+      }
+    end)
+    |> Enum.sort_by(& &1.asset_ref)
+  end
+
+  defp retry_nodes(_plan), do: []
+
+  defp metadata_value(metadata, key) when is_map(metadata),
+    do: Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
+
+  defp metadata_value(_metadata, _key), do: nil
+
+  defp retry_datetime(value) when is_integer(value), do: DateTime.from_unix!(value, :millisecond)
+  defp retry_datetime(value), do: value
+
+  defp runtime_input_pins_for_read(run_id) do
+    case Storage.list_runtime_input_pins(run_id) do
+      {:ok, pins} -> {:ok, pins}
+      {:error, :runtime_input_pins_not_supported} -> {:ok, []}
+      {:error, _reason} = error -> error
     end
   end
 

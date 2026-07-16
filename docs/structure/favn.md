@@ -40,3 +40,10 @@ The public HexDocs guide `guides/duckdb-session-scripts.md` is canonical for
 native DuckDB startup/resources config, `@resources`, physical-session
 lifecycle, and script safety. `Favn.AI`, `Favn.Connection`, `Favn.SQLAsset`, and
 `Favn.Namespace` must retain breadcrumbs to it.
+
+The public HexDocs guide `guides/retries-and-replay.md` is canonical for node
+retry precedence/safety, internal retries, replay input modes, runtime-input
+pins, schedule interaction, cancellation, and recovery. `Favn`, `Favn.AI`,
+`Favn.Pipeline`, `Favn.Asset`, and `Favn.SQLAsset` must retain prominent
+breadcrumbs to it. Public operator submission uses one typed `retry_policy`;
+`mix favn.run` exposes a fixed-backoff convenience override.

@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Storage do
 
   alias Favn.Log.Redactor
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Pin
   alias Favn.Storage.Adapter, as: StorageAdapter
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
@@ -126,6 +127,35 @@ defmodule FavnOrchestrator.Storage do
   @spec persist_run_transition(RunState.t(), map()) :: :ok | :idempotent | {:error, term()}
   def persist_run_transition(%RunState{} = run, event) when is_map(event) do
     adapter_call(fn adapter, opts -> adapter.persist_run_transition(run, event, opts) end)
+  end
+
+  @spec create_runtime_input_pin(Pin.t()) ::
+          {:ok, Pin.t()} | {:error, :runtime_input_pin_conflict | term()}
+  def create_runtime_input_pin(%Pin{} = pin) do
+    optional_adapter_call(
+      :create_runtime_input_pin,
+      [pin],
+      :runtime_input_pins_not_supported
+    )
+  end
+
+  @spec get_runtime_input_pin(String.t(), Favn.Plan.node_key()) ::
+          {:ok, Pin.t()} | {:error, term()}
+  def get_runtime_input_pin(run_id, node_key) when is_binary(run_id) and is_tuple(node_key) do
+    optional_adapter_call(
+      :get_runtime_input_pin,
+      [run_id, node_key],
+      :runtime_input_pins_not_supported
+    )
+  end
+
+  @spec list_runtime_input_pins(String.t()) :: {:ok, [Pin.t()]} | {:error, term()}
+  def list_runtime_input_pins(run_id) when is_binary(run_id) do
+    optional_adapter_call(
+      :list_runtime_input_pins,
+      [run_id],
+      :runtime_input_pins_not_supported
+    )
   end
 
   @spec put_execution_ownership(RunExecutionOwnership.t() | map()) :: :ok | {:error, term()}

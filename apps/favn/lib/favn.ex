@@ -48,6 +48,71 @@ defmodule Favn do
       {:ok, manifest} = Favn.generate_manifest()
       {:ok, version} = Favn.pin_manifest_version(manifest)
 
+  ## Retries, replay, and runtime-input stability
+
+  Favn deliberately has no global "retry everything" switch. Several
+  mechanisms can repeat work, but they have different scopes:
+
+  - SQL safety retries cover only proven-safe session bootstrap and read-only
+    inspection/query operations. They do not consume an asset attempt and never
+    blindly retry a write, materialization, or transaction.
+  - Persistence retries repeat a failed control-plane state write. They do not
+    rerun asset code or consume an asset attempt.
+  - A node-attempt retry repeats one failed asset node inside the same run. It
+    consumes an attempt and preserves successful sibling nodes.
+  - A rerun, replay, backfill child, or admitted schedule occurrence creates a
+    new run with independent attempt counts. Schedule overlap and missed-run
+    policy decide whether such a run exists; they are not execution retries.
+  - HTTP command idempotency prevents duplicate commands. It does not retry or
+    prove the success of asset execution.
+
+  `max_attempts` includes the initial attempt. The effective node policy is
+  frozen into the run plan using this precedence:
+
+      explicit operator submission override
+      -> asset @retry
+      -> pipeline retry
+      -> max_attempts: 1
+
+  Pipeline and asset policies share `%Favn.Retry.Policy{}` and support fixed or
+  bounded exponential `Favn.Retry.Backoff`. A policy answers how often and when
+  a node may repeat; it never makes a failure safe. Another attempt is scheduled
+  only when the normalized runner failure explicitly says both that it is
+  retryable and that its outcome is a known safe failure. Unknown write,
+  transaction, materialization, and external-side-effect outcomes remain
+  terminal regardless of `max_attempts`. A typed `retry_after_ms` raises the
+  policy delay but cannot exceed the global delay bound.
+
+  Public submissions accept one typed `retry_policy` override. HTTP JSON uses
+  the backoff fields `strategy`, `initial_ms`, `max_ms`, and `jitter`; the local
+  Mix tasks expose only fixed `--retry-max-attempts`/`--retry-backoff-ms`
+  shorthand. A backoff with the default `max_attempts: 1` does not cause a
+  retry.
+
+  SQL assets with `@runtime_inputs` use a resolve/pin/execute handshake. Before
+  SQL work starts, the selected parameters are atomically stored under
+  `{run_id, planned_node_key}`; retries and safe orchestrator recovery reuse that
+  exact pin. Sensitive pins require protected storage and fail closed when no
+  valid protection key is configured. Generic metadata, events, logs, and
+  telemetry expose only safe pin identity and lineage.
+
+  New-run input behavior is explicit: normal runs, schedules, and backfill
+  children default to `:fresh`; exact replay uses `:pinned` and fails if a
+  required source pin is missing; resume and retry-remaining use `:inherit`,
+  copying existing pins and resolving only nodes the source run never reached.
+  Choosing fresh input for a rerun is valid, but it is not exact replay.
+
+  Cancellation during backoff prevents dispatch. Safe pending retry state and
+  its absolute `next_retry_at` are durable across an orchestrator restart.
+  Recovery does not dispatch replacement work when an earlier side effect may
+  have succeeded.
+
+  Read [Retries, Replay, And Runtime-Input Pins](retries-and-replay.html) before
+  setting retry policy at more than one level. It includes the complete
+  precedence rules, safety boundary, schedule timeline, replay input matrix,
+  transaction caveats, and operator checklist. Runtime-input authors should
+  also read [Runtime Inputs For SQL Assets](sql-runtime-inputs.html).
+
   ## See also
 
   - `Favn.AI`
