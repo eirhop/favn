@@ -40,3 +40,9 @@ The public HexDocs guide `guides/duckdb-session-scripts.md` is canonical for
 native DuckDB startup/resources config, `@resources`, physical-session
 lifecycle, and script safety. `Favn.AI`, `Favn.Connection`, `Favn.SQLAsset`, and
 `Favn.Namespace` must retain breadcrumbs to it.
+
+The public HexDocs guide `guides/runner-plugins.md` is canonical for isolated
+runner lifecycle extensions, the simple supervised-children path, disposable
+runner-local state, Azure credential-cache usage, and DuckDB token injection.
+`Favn`, `Favn.AI`, `Favn.Runner.Plugin`, and `Favn.Runner.SupervisedChildren`
+must retain breadcrumbs to it.

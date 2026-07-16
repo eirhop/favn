@@ -2,16 +2,18 @@ defmodule Favn.SQL.PoolKey do
   @moduledoc """
   Stable, redacted identity for pooling compatible SQL sessions.
 
-  The key exposes only a SHA-256 hash. Raw connection configuration and adapter
-  options are intentionally retained only inside the hashed term.
+  The key exposes only SHA-256 hashes. `scope_hash` identifies the stable
+  connection and session requirements, while `hash` also includes the adapter's
+  runtime fingerprint. Raw connection configuration, adapter options, and
+  runtime values are intentionally retained only inside the hashed terms.
   """
 
   alias Favn.Connection.Resolved
 
-  @enforce_keys [:hash]
-  defstruct [:hash]
+  @enforce_keys [:scope_hash, :hash]
+  defstruct [:scope_hash, :hash]
 
-  @type t :: %__MODULE__{hash: binary()}
+  @type t :: %__MODULE__{scope_hash: binary(), hash: binary()}
 
   @doc """
   Builds a pool key from resolved connection identity and runtime inputs.
@@ -37,7 +39,7 @@ defmodule Favn.SQL.PoolKey do
         adapter_fingerprint
       )
       when is_list(adapter_opts) and is_list(required_catalogs) and is_list(required_resources) do
-    payload = {
+    scope_payload = {
       resolved.name,
       resolved.adapter,
       resolved.config,
@@ -45,17 +47,20 @@ defmodule Favn.SQL.PoolKey do
       |> Keyword.drop([:required_catalogs, :required_resources])
       |> Enum.sort(),
       normalize_names(required_catalogs),
-      normalize_names(required_resources),
-      adapter_fingerprint
+      normalize_names(required_resources)
     }
 
-    hash =
-      payload
-      |> :erlang.term_to_binary()
-      |> then(&:crypto.hash(:sha256, &1))
-      |> Base.encode16(case: :lower)
+    scope_hash = digest(scope_payload)
+    hash = digest({scope_payload, adapter_fingerprint})
 
-    %__MODULE__{hash: hash}
+    %__MODULE__{scope_hash: scope_hash, hash: hash}
+  end
+
+  defp digest(term) do
+    term
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 
   defp normalize_names(names) do

@@ -50,6 +50,20 @@ Typical run states are:
 Inspect runs through public commands such as `mix favn.runs`, `mix favn.logs`,
 and `mix favn.diagnostics`.
 
+## Runner-Local Services
+
+The consumer application's normal supervision tree may not be running in an
+isolated Favn runner. `Favn.Runner.Plugin` is the public lifecycle for services
+that must be there before assets execute. `Favn.Runner.SupervisedChildren` is the
+simple path for ordinary OTP child specs.
+
+Plugin state can outlive one asset run, but only inside that runner. A runner
+restart, replacement, or reschedule deletes it. Use it for rebuildable caches,
+credential/session reuse, pools, and rate limiting. Do not use it for durable
+business state or correctness-sensitive communication between runs.
+
+Read [Runner Plugins And Runner-Local Services](runner-plugins.md).
+
 ## Schedules
 
 Schedules are declared in the manifest and acted on by the runtime.
@@ -89,5 +103,6 @@ They do not use UI state as the source of truth.
 
 - [Manifest-First](manifest-first.md)
 - [Local Development](local-development.md)
+- [Runner Plugins And Runner-Local Services](runner-plugins.md)
 - `docs/architecture/runtime-model.md` for contributor-facing architecture notes
 - `docs/operators/runs-and-schedules.md` for operator procedures

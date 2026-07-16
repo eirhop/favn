@@ -107,6 +107,56 @@ The other supported locator is an absolute path. A
 value must also be absolute. Relative filesystem paths are rejected because a
 runner's working directory is not a stable deployment contract.
 
+### Cached Azure token parameters
+
+When native `PROVIDER credential_chain` is not suitable, the optional
+`:favn_azure` package can provide a runner-cached access token as a secret
+parameter:
+
+```elixir
+config :favn,
+  runner_plugins: [
+    Favn.Azure.RunnerPlugin,
+    {FavnDuckdb, execution_mode: :in_process}
+  ],
+  connections: [
+    warehouse: [
+      open: [database: ":memory:"],
+      duckdb: [
+        resources: [
+          landing_storage: [
+            file: {:priv, :my_app, "duckdb/landing_storage.sql"},
+            params: [
+              azure_token:
+                Favn.Azure.Credentials.token_ref(
+                  "https://storage.azure.com/",
+                  provider: :managed_identity
+                )
+            ]
+          ]
+        ]
+      ]
+    ]
+  ]
+```
+
+The trusted SQL file uses `@azure_token` in the deployment's native DuckDB
+`CREATE SECRET` statement. Favn does not own or freeze that extension-specific
+syntax.
+
+For DuckLake metadata in Azure Database for PostgreSQL, request the audience
+`https://ossrdbms-aad.database.windows.net` and use the resulting secret
+parameter as `PASSWORD @access_token` in a native `TYPE postgres` DuckDB secret.
+The complete managed-identity configuration and SQL are in
+[Runner Plugins And Runner-Local Services](runner-plugins.md#ducklake-postgresql-with-managed-identity).
+
+`token_ref/2` contains no token. It resolves from the shared cache when Favn
+builds a physical-session plan. The rendered value is treated as secret, and a
+refresh changes the parameter fingerprint so the new plan cannot select a
+pooled session initialized with the old token. Read
+[Runner Plugins And Runner-Local Services](runner-plugins.md) for provider
+options, direct use from Elixir code, and the disposable runner-state boundary.
+
 Declare resources on a SQL asset:
 
 ```elixir
@@ -313,15 +363,24 @@ session may happen to be reused later. Startup and resource scripts run on
 physical-session creation, not at the beginning of every pipeline and not on
 every pool checkout.
 
-Runtime references, including `secret_env!/1`, are resolved when the runner
-starts. Changing an environment variable does not update an already resolved
-connection, and an idle timeout is not a maximum physical-session age. A
-frequently reused session may therefore keep its original credential after that
-credential expires or rotates. Prefer native providers that refresh credentials
-themselves. When a deployment rotates a resolved value, restart the runner so it
-resolves the new value and closes its old session pool; do not assume the next
-asset or pool checkout will do that. In local development, `mix favn.reload`
-performs that runner restart and reevaluates runtime config.
+Environment-backed references, including `secret_env!/1`, are resolved when the
+runner starts. Changing an environment variable does not update an already
+resolved connection, and an idle timeout is not a maximum physical-session age.
+Prefer native providers that refresh credentials themselves. When a deployment
+rotates an environment-resolved value, restart the runner so it resolves the new
+value and closes its old session pool; do not assume the next asset or pool
+checkout will do that. In local development, `mix favn.reload` performs that
+runner restart and reevaluates runtime config.
+
+Supported deferred `Favn.RuntimeValue` parameters have a different lifecycle:
+they resolve while Favn builds the session plan. The Azure token ref uses this
+path, refreshes through a runner-local cache before expiry, and changes the pool
+fingerprint when the token changes. If refresh fails, planning can reuse the old
+token only while it is still valid; an expired token is never returned. When a
+fingerprint changes for otherwise identical session requirements, Favn evicts
+the superseded idle physical session and closes an active superseded session on
+checkin. This releases its finite admission lease so the replacement can
+bootstrap with the current credential.
 
 Catalog entries do not generate SQL. They give Favn the small amount of metadata
 it still owns: which resource prepares a catalog, its write-admission limit, and
@@ -346,9 +405,10 @@ Follow these rules:
   its on-disk storage and lifecycle deliberately.
 - Use `Favn.RuntimeConfig.Ref.secret_env!/1` for secret parameters. Never place
   secret literals in source-controlled SQL or config.
-- Treat credential rotation as a runner lifecycle event. Prefer refresh-capable
-  native providers; otherwise restart the runner after rotation so both resolved
-  config and physical sessions are replaced.
+- Treat environment-resolved credential rotation as a runner lifecycle event.
+  Prefer refresh-capable native providers; otherwise restart the runner after
+  rotation so both resolved config and physical sessions are replaced. Deferred
+  Azure token refs instead use the bounded runner cache and session fingerprint.
 - Do not print, select, copy, or otherwise expose a secret from the script.
   Redaction cannot protect a secret that trusted SQL deliberately writes out.
 - Review extension installation and remote access like application code. Pin

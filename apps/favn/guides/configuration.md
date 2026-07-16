@@ -164,8 +164,8 @@ Reserved runtime keys:
 
 ## Runner Plugins
 
-Local SQL execution needs a runner plugin for the SQL backend you use. The
-generated DuckDB sample uses:
+Runner plugins start supervised services inside the isolated execution runtime.
+The generated DuckDB sample uses its execution plugin:
 
 ```elixir
 config :favn,
@@ -175,6 +175,38 @@ config :favn,
 ```
 
 Use `FavnDuckdbADBC` instead when using the ADBC DuckDB plugin.
+
+For ordinary consumer-owned OTP children, use the built-in simple path:
+
+```elixir
+config :favn,
+  runner_plugins: [
+    {Favn.Runner.SupervisedChildren,
+     children: [MyApp.RuntimeCache, MyApp.ApiSession]}
+  ]
+```
+
+Use a module implementing `Favn.Runner.Plugin` when it needs to validate options
+or compute child specifications. `child_specs/1` returns `{:ok, children}` or
+`{:error, reason}`. The optional `applications/1` callback declares packaged OTP
+applications that Favn must start first. Consumers depend on the public `:favn`
+package, not `:favn_runner`.
+
+Plugin state is local to one runner and disappears on restart or replacement.
+It is suitable for rebuildable caches, pools, sessions, and rate limiters, not
+business data, checkpoints, idempotency, or correctness-sensitive communication
+between runs. Read
+[Runner Plugins And Runner-Local Services](runner-plugins.md).
+
+The optional Azure package contributes a cached credential service:
+
+```elixir
+config :favn,
+  runner_plugins: [
+    Favn.Azure.RunnerPlugin,
+    {FavnDuckdb, execution_mode: :in_process}
+  ]
+```
 
 ## Runtime Config Refs
 
@@ -257,8 +289,23 @@ duckdb: [
 
 Script `file` is either `{:priv, otp_app, "relative/path.sql"}` or an absolute
 path. A runtime ref may resolve to an absolute path. `params` values may be
-literals or runtime refs and are referenced as `@name` in the SQL file. They
-are value-only typed literals, not identifiers or SQL fragments.
+literals, environment-backed runtime-config refs, or supported deferred
+`Favn.RuntimeValue` refs and are referenced as `@name` in the SQL file. They are
+value-only typed literals, not identifiers or SQL fragments.
+
+For example, `Favn.Azure.Credentials.token_ref/2` from the optional
+`:favn_azure` package supplies a secret cached token at physical-session
+planning time:
+
+```elixir
+params: [
+  azure_token:
+    Favn.Azure.Credentials.token_ref(
+      "https://storage.azure.com/",
+      provider: :managed_identity
+    )
+]
+```
 
 Catalog `write_concurrency` is a positive integer or `:unlimited` and defaults
 to `1`. `write_scope` is an optional stable string shared by catalog aliases or
@@ -272,11 +319,15 @@ statements in the files. The removed structured `load`, `settings`, `secrets`,
 examples, physical-session lifecycle, pooling identity, safety rules, and a
 failure example.
 
-Runtime refs resolve when the runner starts, not on every checkout. Rotating an
-environment-backed credential therefore requires a runner restart unless the
-native DuckDB provider refreshes it itself; idle-pool timeout is not a maximum
-session age. In local development, `mix favn.reload` restarts the runner and
-reevaluates runtime config.
+Environment-backed `Favn.RuntimeConfig.Ref` values resolve when the runner
+starts, not on every checkout. Rotating one therefore requires a runner restart
+unless the native DuckDB provider refreshes it itself. Deferred Azure token refs
+resolve when a physical-session plan is built; a refresh changes the pool
+fingerprint so a session initialized with the old token is not selected for the
+new plan. Superseded idle sessions for the same connection requirements are
+closed so their admission leases cannot block refreshed session bootstrap.
+Idle-pool timeout is not a maximum session age. In local development,
+`mix favn.reload` restarts the runner and reevaluates runtime config.
 
 ## DuckDB ADBC Config
 

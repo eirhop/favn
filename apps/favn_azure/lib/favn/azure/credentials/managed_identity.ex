@@ -1,40 +1,40 @@
-defmodule Favn.Azure.PostgresEntraToken.ManagedIdentity do
+defmodule Favn.Azure.Credentials.ManagedIdentity do
   @moduledoc """
-  Managed identity token provider for Azure Database for PostgreSQL Entra auth.
+  Managed-identity source for runner-local Azure credentials.
 
   `endpoint: :auto` selects Azure App Service managed identity when both
-  `IDENTITY_ENDPOINT` and `IDENTITY_HEADER` are present; otherwise it falls back
-  to the Azure Instance Metadata Service endpoint.
+  `IDENTITY_ENDPOINT` and `IDENTITY_HEADER` are present; otherwise it uses the
+  Azure Instance Metadata Service endpoint.
   """
 
+  alias Favn.Azure.Credentials.Request
   alias Favn.Azure.{Token, TokenError}
 
-  @behaviour Favn.Azure.PostgresEntraTokenProvider
+  @behaviour Favn.Azure.CredentialProvider
 
-  @resource "https://ossrdbms-aad.database.windows.net"
   @imds_endpoint "http://169.254.169.254/metadata/identity/oauth2/token"
   @imds_api_version "2018-02-01"
   @azure_app_service_api_version "2019-08-01"
   @retry_statuses [404, 429, 500, 502, 503, 504]
   @retry_delays [100, 200, 400]
+  @max_response_bytes 1_048_576
 
   @impl true
-  def fetch_token(auth, opts) do
-    with {:ok, request} <- build_request(auth, opts) do
-      request_with_retry(request, opts, @retry_delays)
+  def fetch_token(%Request{} = request, opts) do
+    with {:ok, http_request} <- build_request(request, opts) do
+      request_with_retry(http_request, opts, @retry_delays)
     end
   end
 
-  defp build_request(auth, opts) do
+  defp build_request(request, opts) do
     env = Keyword.get(opts, :env, &System.get_env/1)
-    endpoint = Keyword.get(auth, :endpoint, :auto)
 
-    case resolve_endpoint(endpoint, env) do
+    case resolve_endpoint(request.endpoint, env) do
       {:ok, :imds, url, headers} ->
-        {:ok, request(url, headers, auth, @imds_api_version)}
+        {:ok, request(url, headers, request, @imds_api_version)}
 
       {:ok, :azure_app_service, url, headers} ->
-        {:ok, request(url, headers, auth, @azure_app_service_api_version)}
+        {:ok, request(url, headers, request, @azure_app_service_api_version)}
 
       {:error, %TokenError{} = error} ->
         {:error, error}
@@ -70,19 +70,10 @@ defmodule Favn.Azure.PostgresEntraToken.ManagedIdentity do
     end
   end
 
-  defp resolve_endpoint(endpoint, _env) do
-    {:error,
-     %TokenError{
-       type: :invalid_config,
-       message: "invalid managed identity endpoint",
-       details: %{endpoint: inspect(endpoint)}
-     }}
-  end
-
-  defp request(url, headers, auth, api_version) do
+  defp request(url, headers, request, api_version) do
     query =
-      [{:"api-version", api_version}, {:resource, @resource}]
-      |> maybe_put(:client_id, Keyword.get(auth, :client_id))
+      [{:"api-version", api_version}, {:resource, request.resource}]
+      |> maybe_put(:client_id, request.client_id)
       |> URI.encode_query()
 
     separator = if String.contains?(url, "?"), do: "&", else: "?"
@@ -124,21 +115,23 @@ defmodule Favn.Azure.PostgresEntraToken.ManagedIdentity do
       {:error, :timeout} ->
         {:error, timeout_error()}
 
-      {:error, reason} ->
+      {:error, _reason} ->
         {:error,
          %TokenError{
            type: :connection_error,
            message: "managed identity token request failed",
            retryable?: false,
-           details: %{reason: inspect(reason)}
+           details: %{reason: :request_failed}
          }}
     end
   end
 
   defp parse_token(json) do
-    with {:ok, decoded} <- Jason.decode(json),
-         token when is_binary(token) and token != "" <- decoded["access_token"] do
-      {:ok, %Token{access_token: token, expires_on: decoded["expires_on"]}}
+    with true <- is_binary(json) and byte_size(json) <= @max_response_bytes,
+         {:ok, decoded} <- Jason.decode(json),
+         token when is_binary(token) and token != "" <- decoded["access_token"],
+         {:ok, token} <- Token.new(token, decoded["expires_on"]) do
+      {:ok, token}
     else
       _other ->
         {:error,

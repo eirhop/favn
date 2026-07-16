@@ -7,22 +7,26 @@ defmodule FavnDuckdb do
   connection configuration.
   """
 
-  @behaviour FavnRunner.Plugin
+  @behaviour Favn.Runner.Plugin
+
+  @impl true
+  def applications(_opts), do: {:ok, [:duckdbex]}
 
   @impl true
   def child_specs(opts) when is_list(opts) do
     case FavnDuckdb.Runtime.execution_mode(opts) do
       :in_process ->
-        []
+        {:ok, []}
 
       :separate_process ->
-        [
-          {FavnDuckdb.Worker,
-           [
-             name: FavnDuckdb.Runtime.worker_name(opts),
-             client: Favn.SQL.Adapter.DuckDB.Client.Duckdbex
-           ]}
-        ]
+        {:ok,
+         [
+           {FavnDuckdb.Worker,
+            [
+              name: FavnDuckdb.Runtime.worker_name(opts),
+              client: Favn.SQL.Adapter.DuckDB.Client.Duckdbex
+            ]}
+         ]}
     end
   end
 end

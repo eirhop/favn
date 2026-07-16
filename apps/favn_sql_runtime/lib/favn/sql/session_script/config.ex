@@ -8,6 +8,7 @@ defmodule Favn.SQL.SessionScript.Config do
   """
 
   alias Favn.SQL.SessionRequirements
+  alias Favn.RuntimeValue.Ref
 
   defmodule Script do
     @moduledoc "One configured SQL script file and its runtime value parameters."
@@ -218,10 +219,11 @@ defmodule Favn.SQL.SessionScript.Config do
 
   defp secret_params(params, path, secret_paths) do
     params
-    |> Map.keys()
-    |> Enum.filter(fn name ->
-      MapSet.member?(secret_paths, normalize_path(path ++ [:params, name]))
+    |> Enum.filter(fn {name, value} ->
+      match?(%Ref{secret?: true}, value) or
+        MapSet.member?(secret_paths, normalize_path(path ++ [:params, name]))
     end)
+    |> Enum.map(&elem(&1, 0))
     |> MapSet.new()
   end
 

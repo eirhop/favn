@@ -24,6 +24,18 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     end
   end
 
+  defmodule ChangingProvider do
+    @behaviour Favn.RuntimeValue.Provider
+
+    @impl true
+    def fetch_runtime_value(counter) do
+      value =
+        Agent.get_and_update(counter, fn count -> {{:ok, "token-#{count + 1}"}, count + 1} end)
+
+      value
+    end
+  end
+
   setup do
     TestSupport.start_events()
     on_exit(&TestSupport.reset/0)
@@ -106,6 +118,29 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
              Bootstrap.run(conn(), resolved,
                favn_pool_fingerprint: %{session_scripts: %{old: true}}
              )
+  end
+
+  test "pool preparation resolves a deferred token only once for bootstrap", %{tmp_dir: dir} do
+    script = write_sql!(dir, "storage.sql", "CREATE SECRET landing (TOKEN @token);")
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    token = Favn.RuntimeValue.new(ChangingProvider, counter, secret?: true)
+
+    resolved =
+      resolved(resources: [landing_storage: [file: script, params: [token: token]]])
+
+    opts = [required_resources: [:landing_storage], duckdb_client: FakeClient]
+
+    assert {:ok, fingerprint, preparation} = DuckDB.prepare_pool(resolved, opts)
+    assert Agent.get(counter, & &1) == 1
+
+    bootstrap_opts =
+      opts
+      |> Keyword.put(:favn_pool_preparation, preparation)
+      |> Keyword.put(:favn_pool_fingerprint, fingerprint)
+
+    assert :ok = Bootstrap.run(conn(), resolved, bootstrap_opts)
+    assert Agent.get(counter, & &1) == 1
+    assert statements() == ["CREATE SECRET landing (TOKEN 'token-1');"]
   end
 
   test "the native client executes a multi-statement SQL file as one script", %{tmp_dir: dir} do

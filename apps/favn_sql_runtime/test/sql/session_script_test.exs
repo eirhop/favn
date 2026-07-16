@@ -9,6 +9,16 @@ defmodule FavnSQLRuntime.SQLSessionScriptTest do
 
   @moduletag :tmp_dir
 
+  defmodule RuntimeValueProvider do
+    @behaviour Favn.RuntimeValue.Provider
+
+    @impl true
+    def fetch_runtime_value({:notify, owner, value}) do
+      send(owner, :runtime_value_resolved)
+      {:ok, value}
+    end
+  end
+
   test "plans startup and the exact required resources in deterministic order", %{tmp_dir: dir} do
     startup = write_sql!(dir, "startup.sql", "SET timezone = @timezone;")
     azure = write_sql!(dir, "azure.sql", "INSTALL azure; LOAD azure;")
@@ -68,6 +78,33 @@ defmodule FavnSQLRuntime.SQLSessionScriptTest do
              SessionScript.fingerprint(changed_params, required_resources: [:runtime])
 
     refute changed_file == changed_params
+  end
+
+  test "resolves secret runtime values immediately before session planning", %{tmp_dir: dir} do
+    script = write_sql!(dir, "azure.sql", "CREATE SECRET azure (TOKEN @token);")
+
+    token_ref =
+      Favn.RuntimeValue.new(
+        RuntimeValueProvider,
+        {:notify, self(), "azure-secret"},
+        secret?: true
+      )
+
+    resolved =
+      resolved(%{
+        duckdb: [resources: [azure_storage: [file: script, params: [token: token_ref]]]]
+      })
+
+    assert {:ok, plan} =
+             SessionScript.plan(resolved, required_resources: [:azure_storage])
+
+    assert_received :runtime_value_resolved
+    assert [step] = plan.steps
+    assert step.statement == "CREATE SECRET azure (TOKEN 'azure-secret');"
+    assert step.safe_statement == "CREATE SECRET azure (TOKEN '[REDACTED]');"
+    assert "azure-secret" in step.secret_values
+    refute inspect(plan.fingerprint) =~ "azure-secret"
+    refute inspect(plan) =~ "azure-secret"
   end
 
   test "omitted catalogs select all configured catalogs while an explicit empty set selects none",
