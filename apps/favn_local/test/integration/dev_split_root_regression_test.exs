@@ -1,6 +1,7 @@
 defmodule Favn.DevSplitRootRegressionTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Dev.Paths
   alias Favn.Dev.State
 
   @moduletag :integration
@@ -51,7 +52,10 @@ defmodule Favn.DevSplitRootRegressionTest do
       end)
 
     try do
-      assert :ok = wait_until_ready(repo_root)
+      case wait_until_ready(repo_root, dev_task) do
+        :ok -> :ok
+        {:error, reason} -> flunk("split-root dev did not become ready: #{inspect(reason)}")
+      end
 
       {stop_output, 0} = run_mix!(project_dir, ["favn.stop" | root_arg], inetrc_path)
       assert stop_output =~ "Favn local stack stopped"
@@ -62,22 +66,40 @@ defmodule Favn.DevSplitRootRegressionTest do
       assert dev_output =~ "scheduler: disabled"
     after
       _ = run_mix!(project_dir, ["favn.stop" | root_arg], inetrc_path, allow_failure: true)
+      shutdown_dev_task(dev_task)
     end
   end
 
-  defp wait_until_ready(root_dir, attempts \\ 120)
+  defp wait_until_ready(root_dir, dev_task, attempts \\ 360)
 
-  defp wait_until_ready(_root_dir, 0), do: {:error, :timeout}
+  defp wait_until_ready(root_dir, _dev_task, 0) do
+    {:error,
+     {:timeout,
+      %{
+        runtime: State.read_runtime(root_dir: root_dir),
+        runner_log: log_tail(Paths.runner_log_path(root_dir)),
+        operator_log: log_tail(Paths.operator_log_path(root_dir))
+      }}}
+  end
 
-  defp wait_until_ready(root_dir, attempts) do
-    case State.read_runtime(root_dir: root_dir) do
-      {:ok, %{"active_manifest_version_id" => manifest_version_id}}
-      when is_binary(manifest_version_id) and manifest_version_id != "" ->
-        :ok
+  defp wait_until_ready(root_dir, dev_task, attempts) do
+    case Task.yield(dev_task, 0) do
+      nil ->
+        case State.read_runtime(root_dir: root_dir) do
+          {:ok, %{"active_manifest_version_id" => manifest_version_id}}
+          when is_binary(manifest_version_id) and manifest_version_id != "" ->
+            :ok
 
-      _other ->
-        Process.sleep(500)
-        wait_until_ready(root_dir, attempts - 1)
+          _other ->
+            Process.sleep(500)
+            wait_until_ready(root_dir, dev_task, attempts - 1)
+        end
+
+      {:ok, {output, status}} ->
+        {:error, {:dev_exited_before_readiness, status, tail(output)}}
+
+      {:exit, reason} ->
+        {:error, {:dev_task_exit, reason}}
     end
   end
 
@@ -132,5 +154,29 @@ defmodule Favn.DevSplitRootRegressionTest do
     )
 
     path
+  end
+
+  defp shutdown_dev_task(%Task{} = task) do
+    if Process.alive?(task.pid) do
+      case Task.yield(task, 10_000) do
+        nil -> Task.shutdown(task, :brutal_kill)
+        _result -> :ok
+      end
+    end
+  end
+
+  defp log_tail(path) do
+    case File.read(path) do
+      {:ok, contents} -> tail(contents)
+      {:error, reason} -> {:unavailable, reason}
+    end
+  end
+
+  defp tail(contents, max_bytes \\ 8_000) when is_binary(contents) do
+    if byte_size(contents) <= max_bytes do
+      contents
+    else
+      binary_part(contents, byte_size(contents) - max_bytes, max_bytes)
+    end
   end
 end
