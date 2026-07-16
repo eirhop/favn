@@ -4,7 +4,8 @@ defmodule Favn.Azure.Credentials.Source do
   alias Favn.Azure.Credentials.{AzureCLI, ManagedIdentity, Request}
   alias Favn.Azure.{Token, TokenError}
 
-  @spec fetch_token(Request.t(), keyword()) :: {:ok, Favn.Azure.Token.t()} | {:error, TokenError.t()}
+  @spec fetch_token(Request.t(), keyword()) ::
+          {:ok, Favn.Azure.Token.t()} | {:error, TokenError.t()}
   def fetch_token(%Request{provider: provider} = request, opts) do
     provider = provider_module(provider)
 
@@ -23,8 +24,8 @@ defmodule Favn.Azure.Credentials.Source do
     _kind, _reason -> provider_failure(provider, :threw)
   end
 
-  defp provider_module(:azure_cli), do: AzureCLI
-  defp provider_module(:managed_identity), do: ManagedIdentity
+  defp provider_module("cli"), do: AzureCLI
+  defp provider_module("managed_identity"), do: ManagedIdentity
   defp provider_module(provider), do: provider
 
   defp normalize_result({:ok, %Token{} = token}) do

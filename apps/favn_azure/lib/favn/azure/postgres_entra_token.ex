@@ -3,7 +3,9 @@ defmodule Favn.Azure.PostgresEntraToken do
   Fetches Microsoft Entra access tokens for Azure Database for PostgreSQL.
 
   This compatibility facade delegates to the shared runner-local credential
-  cache. New integrations may call `Favn.Azure.Credentials` directly.
+  cache. Its `:provider` option uses the same `"cli"`, `"managed_identity"`, or
+  custom provider-module contract. New integrations may call
+  `Favn.Azure.Credentials` directly.
   """
 
   alias Favn.Azure.Credentials

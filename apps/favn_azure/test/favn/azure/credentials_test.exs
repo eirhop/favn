@@ -57,7 +57,7 @@ defmodule Favn.Azure.CredentialsTest do
 
     assert {:ok, %Token{} = token} =
              Credentials.fetch_token(@postgres_resource,
-               provider: :azure_cli,
+               provider: "cli",
                cache: false,
                provider_options: [system_cmd: system_cmd]
              )
@@ -69,13 +69,12 @@ defmodule Favn.Azure.CredentialsTest do
 
   test "Azure CLI accepts a timezone-qualified legacy expiresOn timestamp" do
     system_cmd = fn _command, _args, _opts ->
-      {Jason.encode!(%{accessToken: "cli-token", expiresOn: "2030-05-12 12:00:00.000000Z"}),
-       0}
+      {Jason.encode!(%{accessToken: "cli-token", expiresOn: "2030-05-12 12:00:00.000000Z"}), 0}
     end
 
     assert {:ok, token} =
              Credentials.fetch_token(@postgres_resource,
-               provider: :azure_cli,
+               provider: "cli",
                cache: false,
                provider_options: [system_cmd: system_cmd]
              )
@@ -85,13 +84,12 @@ defmodule Favn.Azure.CredentialsTest do
 
   test "Azure CLI rejects an ambiguous timezone-less expiresOn timestamp" do
     system_cmd = fn _command, _args, _opts ->
-      {Jason.encode!(%{accessToken: "cli-token", expiresOn: "2030-05-12 12:00:00.000000"}),
-       0}
+      {Jason.encode!(%{accessToken: "cli-token", expiresOn: "2030-05-12 12:00:00.000000"}), 0}
     end
 
     assert {:error, %TokenError{type: :execution_error}} =
              Credentials.fetch_token(@postgres_resource,
-               provider: :azure_cli,
+               provider: "cli",
                cache: false,
                provider_options: [system_cmd: system_cmd]
              )
@@ -118,7 +116,7 @@ defmodule Favn.Azure.CredentialsTest do
 
     assert {:ok, token} =
              Credentials.fetch_token(@postgres_resource,
-               provider: :managed_identity,
+               provider: "managed_identity",
                client_id: "client-1",
                endpoint: :auto,
                cache: false,
@@ -150,7 +148,7 @@ defmodule Favn.Azure.CredentialsTest do
 
     assert {:ok, token} =
              Credentials.fetch_token(@postgres_resource,
-               provider: :managed_identity,
+               provider: "managed_identity",
                endpoint: :imds,
                cache: false,
                provider_options: [
@@ -164,6 +162,30 @@ defmodule Favn.Azure.CredentialsTest do
     assert_received :request
     assert_received :request
     assert_received {:sleep, 100}
+  end
+
+  test "built-in provider identifiers are canonical strings" do
+    assert {:ok, %Request{provider: "cli"}} =
+             Request.new("https://vault.azure.net", provider: "cli")
+
+    assert {:ok, %Request{provider: "managed_identity"}} =
+             Request.new("https://vault.azure.net", provider: "managed_identity")
+  end
+
+  test "legacy names, built-in atoms, and invalid provider strings are rejected" do
+    for provider <- ["azure_cli", "unknown", :cli, :azure_cli, :managed_identity] do
+      assert {:error,
+              %TokenError{
+                type: :invalid_config,
+                details: %{reason: :invalid_provider}
+              }} = Credentials.fetch_token("https://vault.azure.net", provider: provider)
+    end
+  end
+
+  test "token refs raise a structured Favn configuration error for invalid providers" do
+    assert_raise TokenError, "invalid Azure credential provider", fn ->
+      Credentials.token_ref("https://storage.azure.com/", provider: "azure_cli")
+    end
   end
 
   test "concurrent cache misses share one provider fetch" do
@@ -421,9 +443,7 @@ defmodule Favn.Azure.CredentialsTest do
     owner = self()
 
     responses =
-      start_supervised!(
-        {Agent, fn -> [{:block, owner, token("never-returned", 3_600)}] end}
-      )
+      start_supervised!({Agent, fn -> [{:block, owner, token("never-returned", 3_600)}] end})
 
     request = Request.new!("https://vault.azure.net", provider: TestProvider)
 
@@ -448,7 +468,7 @@ defmodule Favn.Azure.CredentialsTest do
     request = Request.new!("https://vault.azure.net", provider: TestProvider)
 
     assert {:error, %TokenError{type: :invalid_config}} =
-             Credentials.fetch_token(request, provider: :azure_cli, cache: false)
+             Credentials.fetch_token(request, provider: "cli", cache: false)
   end
 
   test "a direct provider kill does not exit its caller" do
@@ -478,7 +498,7 @@ defmodule Favn.Azure.CredentialsTest do
 
   test "credential requests and provider options are size bounded" do
     assert {:error, %TokenError{type: :invalid_config}} =
-             Request.new(String.duplicate("r", 4_097), provider: :azure_cli)
+             Request.new(String.duplicate("r", 4_097), provider: "cli")
 
     request = Request.new!("https://vault.azure.net", provider: TestProvider)
 
@@ -492,11 +512,16 @@ defmodule Favn.Azure.CredentialsTest do
   test "token refs are secret, inert, and do not inspect credentials" do
     ref =
       Credentials.token_ref("https://storage.azure.com/",
-        provider: :managed_identity,
+        provider: "managed_identity",
         client_id: "identity-1"
       )
 
-    assert %Favn.RuntimeValue.Ref{provider: Credentials, secret?: true} = ref
+    assert %Favn.RuntimeValue.Ref{
+             provider: Credentials,
+             request: %{provider: "managed_identity"},
+             secret?: true
+           } = ref
+
     refute inspect(ref) =~ "identity-1"
   end
 
@@ -507,7 +532,7 @@ defmodule Favn.Azure.CredentialsTest do
 
     assert {:ok, %Token{access_token: "postgres-token"}} =
              PostgresEntraToken.fetch_token(
-               [provider: :azure_cli],
+               [provider: "cli"],
                cache: false,
                system_cmd: system_cmd
              )
@@ -561,7 +586,9 @@ defmodule Favn.Azure.CredentialsTest do
 
   defp new_cache_pid(name, previous, attempts) do
     case Process.whereis(name) do
-      pid when is_pid(pid) and pid != previous -> pid
+      pid when is_pid(pid) and pid != previous ->
+        pid
+
       _other ->
         Process.sleep(5)
         new_cache_pid(name, previous, attempts - 1)

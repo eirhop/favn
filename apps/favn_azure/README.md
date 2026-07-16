@@ -26,13 +26,17 @@ config :favn,
 {:ok, token} =
   Favn.Azure.Credentials.fetch_access_token(
     "https://vault.azure.net",
-    provider: :managed_identity
+    provider: "managed_identity"
   )
 ```
 
-Use `provider: :azure_cli` for a local `az login` session. For managed identity,
-`endpoint: :auto` selects Azure App Service when its identity environment is
-present and otherwise uses IMDS. Pass `client_id` for a user-assigned identity.
+Use `provider: "cli"` for a local `az login` session. Use
+`provider: "managed_identity"` for managed identity; `endpoint: :auto` selects
+Azure App Service when its identity environment is present and otherwise uses
+IMDS. Pass `client_id` for a user-assigned identity. These canonical string
+names can come directly from environment configuration and can also be passed
+unchanged to DuckDB's native Azure `CHAIN` parameter. Built-in atom names and
+the legacy `azure_cli` name are not accepted.
 
 The cache shares concurrent fetches for the same request and provider options,
 refreshes on demand before expiry, and returns a cached token after refresh
@@ -51,7 +55,7 @@ params: [
   azure_token:
     Favn.Azure.Credentials.token_ref(
       "https://storage.azure.com/",
-      provider: :managed_identity
+      provider: "managed_identity"
     )
 ]
 ```

@@ -29,7 +29,13 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
 
   test "roundtrips supported consumer config and module atoms" do
     config = [
-      discovery: [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all, connections: :all],
+      discovery: [
+        apps: [:my_app],
+        assets: :all,
+        pipelines: :all,
+        schedules: :all,
+        connections: :all
+      ],
       connection_modules: [MyApp.Connections.Warehouse],
       connections: [
         warehouse: [adapter: Favn.SQL.Adapter.DuckDB, database: "/tmp/warehouse.duckdb"]
@@ -66,7 +72,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
         MyApp.AzureProvider,
         %{
           resource: "https://storage.azure.com/",
-          provider: :managed_identity,
+          provider: "managed_identity",
           client_id: nil,
           endpoint: :auto
         },
@@ -159,7 +165,9 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     assert_raise ArgumentError,
                  ~r/unsupported Favn consumer config transport keys: \[:execution_pool\]/,
                  fn ->
-                   ConsumerConfigTransport.collect([root_dir: "/tmp/consumer"], only: [:execution_pool])
+                   ConsumerConfigTransport.collect([root_dir: "/tmp/consumer"],
+                     only: [:execution_pool]
+                   )
                  end
   end
 
@@ -193,10 +201,10 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     assert {:error, :invalid_payload} =
              ConsumerConfigTransport.decode(
                encode_payload(%{
-                  "schema_version" => 1,
-                   "entries" => duplicate_entries(8)
-                })
-              )
+                 "schema_version" => 1,
+                 "entries" => duplicate_entries(8)
+               })
+             )
 
     assert {:error, :invalid_payload} =
              ConsumerConfigTransport.decode(

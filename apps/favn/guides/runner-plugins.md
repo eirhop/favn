@@ -105,7 +105,7 @@ Asset code or another runner plugin calls the public API, not the cache process:
 {:ok, access_token} =
   Favn.Azure.Credentials.fetch_access_token(
     "https://vault.azure.net",
-    provider: :managed_identity
+    provider: "managed_identity"
   )
 
 MyApp.KeyVault.get_secret("orders-api", access_token)
@@ -134,7 +134,7 @@ defp start_login(%{login_task: nil} = state) do
       with {:ok, azure_token} <-
              Favn.Azure.Credentials.fetch_access_token(
                "api://downstream-service",
-               provider: :managed_identity
+               provider: "managed_identity"
              ) do
         MyApp.Downstream.login(azure_token)
       end
@@ -196,9 +196,30 @@ and call duration are bounded. Direct provider work also runs in an owned task
 with a finite timeout. Tokens and provider error details are redacted from
 Inspect output and Favn diagnostics.
 
-Use `provider: :azure_cli` for a developer signed in through `az login`. Use
-`provider: :managed_identity` for Azure App Service or IMDS; `client_id` selects
-a user-assigned identity when needed.
+Use `provider: "cli"` for a developer signed in through `az login`. Use
+`provider: "managed_identity"` for Azure App Service or IMDS; `client_id`
+selects a user-assigned identity when needed. Those are the only built-in
+provider names. Atom forms and the legacy `azure_cli` name are rejected with a
+structured configuration error.
+
+Because both names match DuckDB's native Azure credential-chain values, one
+environment value can configure both systems without conversion:
+
+```elixir
+provider = System.fetch_env!("AZURE_CREDENTIAL_PROVIDER")
+
+token_ref =
+  Favn.Azure.Credentials.token_ref(
+    "https://storage.azure.com/",
+    provider: provider
+  )
+
+duckdb_chain = provider
+```
+
+Pass `duckdb_chain` to the deployment's trusted native DuckDB `CHAIN`
+parameter. Custom Elixir providers remain separate: pass a module implementing
+`Favn.Azure.CredentialProvider` instead of a built-in string.
 
 Calls in an application without the plugin fetch directly with a finite timeout;
 `cache: false` makes that choice explicit. When the plugin is configured, a
@@ -223,7 +244,7 @@ config :favn,
               azure_token:
                 Favn.Azure.Credentials.token_ref(
                   "https://storage.azure.com/",
-                  provider: :managed_identity
+                  provider: "managed_identity"
                 )
             ]
           ]
@@ -249,7 +270,7 @@ Azure Database for PostgreSQL uses this token audience:
 access_token =
   Favn.Azure.Credentials.token_ref(
     "https://ossrdbms-aad.database.windows.net",
-    provider: :managed_identity
+    provider: "managed_identity"
   )
 ```
 
