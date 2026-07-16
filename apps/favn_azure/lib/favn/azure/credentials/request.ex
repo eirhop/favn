@@ -13,7 +13,11 @@ defmodule Favn.Azure.Credentials.Request do
   @enforce_keys [:resource, :provider]
   defstruct [:resource, :provider, :client_id, endpoint: :auto]
 
-  @type provider :: :azure_cli | :managed_identity | module()
+  @typedoc "Canonical built-in provider string: `\"cli\"` or `\"managed_identity\"`."
+  @type built_in_provider :: String.t()
+
+  @typedoc "A built-in provider name or a custom credential-provider module."
+  @type provider :: built_in_provider() | module()
   @type endpoint :: :auto | :imds | :azure_app_service
   @type t :: %__MODULE__{
           resource: String.t(),
@@ -45,35 +49,39 @@ defmodule Favn.Azure.Credentials.Request do
          endpoint: endpoint
        }}
     else
+      {:error, %TokenError{} = error} -> {:error, error}
       _other -> invalid_request()
     end
   end
 
   def new(_resource, _opts), do: invalid_request()
 
-  @doc "Builds an Azure credential request and raises for invalid deployment configuration."
+  @doc "Builds an Azure credential request and raises `Favn.Azure.TokenError` for invalid configuration."
   @spec new!(String.t(), keyword() | map()) :: t()
   def new!(resource, opts \\ []) do
     case new(resource, opts) do
       {:ok, request} -> request
-      {:error, error} -> raise ArgumentError, error.message
+      {:error, error} -> raise error
     end
   end
 
   defp normalize_provider(provider)
-       when provider in [:azure_cli, :managed_identity],
+       when provider in ["cli", "managed_identity"],
        do: {:ok, provider}
 
-  defp normalize_provider(provider) when is_atom(provider) and not is_nil(provider),
-    do: {:ok, provider}
+  defp normalize_provider(provider)
+       when is_atom(provider) and provider not in [nil, :cli, :azure_cli, :managed_identity],
+       do: {:ok, provider}
 
-  defp normalize_provider(_provider), do: :error
+  defp normalize_provider(_provider), do: invalid_provider()
 
   defp normalize_client_id(nil), do: {:ok, nil}
+
   defp normalize_client_id(value)
        when is_binary(value) and value != "" and byte_size(value) <= @max_client_id_bytes do
     if String.valid?(value), do: {:ok, value}, else: :error
   end
+
   defp normalize_client_id(_value), do: :error
 
   defp normalize_endpoint(value) when value in [:auto, :imds, :azure_app_service],
@@ -87,6 +95,15 @@ defmodule Favn.Azure.Credentials.Request do
        type: :invalid_config,
        message: "invalid Azure credential request",
        details: %{reason: :invalid_request}
+     }}
+  end
+
+  defp invalid_provider do
+    {:error,
+     %TokenError{
+       type: :invalid_config,
+       message: "invalid Azure credential provider",
+       details: %{reason: :invalid_provider}
      }}
   end
 end

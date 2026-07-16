@@ -13,7 +13,7 @@ defmodule Favn.Azure.Credentials do
       {:ok, token} =
         Favn.Azure.Credentials.fetch_token(
           "https://vault.azure.net",
-          provider: :managed_identity
+          provider: "managed_identity"
         )
 
       headers = [{"authorization", "Bearer " <> token.access_token}]
@@ -29,7 +29,7 @@ defmodule Favn.Azure.Credentials do
         azure_token:
           Favn.Azure.Credentials.token_ref(
             "https://storage.azure.com/",
-            provider: :managed_identity
+            provider: "managed_identity"
           )
       ]
 
@@ -43,8 +43,14 @@ defmodule Favn.Azure.Credentials do
 
       Favn.Azure.Credentials.token_ref(
         "https://ossrdbms-aad.database.windows.net",
-        provider: :managed_identity
+        provider: "managed_identity"
       )
+
+  Built-in provider names are the strings `"cli"` and `"managed_identity"`.
+  This lets an environment value be passed unchanged both to Favn and to a
+  native DuckDB Azure `CHAIN` parameter. A custom module implementing
+  `Favn.Azure.CredentialProvider` may be passed instead when extending the
+  credential source in Elixir.
 
   Cache state is runner-local and disposable. It is not a credential store and
   is never a durability mechanism.
@@ -55,12 +61,23 @@ defmodule Favn.Azure.Credentials do
   alias Favn.Azure.Credentials.{Cache, Request, Source}
   alias Favn.Azure.{Token, TokenError}
 
+  @typedoc "Canonical built-in provider string: `\"cli\"` or `\"managed_identity\"`."
+  @type built_in_provider :: Request.built_in_provider()
+
+  @typedoc "A built-in provider name or a custom credential-provider module."
+  @type provider :: Request.provider()
+
   @default_cache Cache
   @default_call_timeout 12_000
   @max_call_timeout 60_000
   @max_provider_options_bytes 65_536
 
-  @doc "Fetches a normalized Azure token, using the runner cache when available."
+  @doc """
+  Fetches a normalized Azure token, using the runner cache when available.
+
+  The `:provider` option accepts `"cli"`, `"managed_identity"`, or a custom
+  module implementing `Favn.Azure.CredentialProvider`.
+  """
   @spec fetch_token(String.t() | Request.t(), keyword() | map()) ::
           {:ok, Token.t()} | {:error, TokenError.t()}
   def fetch_token(resource_or_request, opts \\ [])
@@ -90,7 +107,11 @@ defmodule Favn.Azure.Credentials do
 
   def fetch_token(_request, _opts), do: invalid_options()
 
-  @doc "Fetches only the access-token string."
+  @doc """
+  Fetches only the access-token string.
+
+  Provider selection follows `fetch_token/2`.
+  """
   @spec fetch_access_token(String.t() | Request.t(), keyword() | map()) ::
           {:ok, String.t()} | {:error, TokenError.t()}
   def fetch_access_token(resource_or_request, opts \\ []) do
@@ -99,7 +120,13 @@ defmodule Favn.Azure.Credentials do
     end
   end
 
-  @doc "Builds a secret runtime-value ref for a DuckDB session-script parameter."
+  @doc """
+  Builds a secret runtime-value ref for a DuckDB session-script parameter.
+
+  The `:provider` option accepts `"cli"`, `"managed_identity"`, or a custom
+  module implementing `Favn.Azure.CredentialProvider`. Raises
+  `Favn.Azure.TokenError` when the credential request is invalid.
+  """
   @spec token_ref(String.t(), keyword() | map()) :: Favn.RuntimeValue.Ref.t()
   def token_ref(resource, opts \\ []) do
     request = Request.new!(resource, opts)

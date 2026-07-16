@@ -27,7 +27,7 @@ state, or durable credential storage.
 | `apps/favn_azure/lib/favn/azure/credentials.ex` | Public token/access-token API and secret DuckDB runtime-value refs. Calls use the configured cache, fail closed while that cache is unavailable, and otherwise run direct providers in an owned timeout-bounded task. |
 | `apps/favn_azure/lib/favn/azure/credentials/cache.ex` | Bounded runner-local token cache, asynchronous single-flight fetch coordination, on-demand refresh, still-valid stale fallback, global in-flight/entry/per-key-waiter limits, and timeouts. Provider I/O never runs in the GenServer. |
 | `apps/favn_azure/lib/favn/azure/credentials/supervisor.ex` | Task supervisor and cache lifecycle. |
-| `apps/favn_azure/lib/favn/azure/credentials/request.ex` | Normalized non-secret token cache identity: resource, provider, client id, and endpoint mode. |
+| `apps/favn_azure/lib/favn/azure/credentials/request.ex` | Normalized non-secret token cache identity and structured configuration validation: resource, canonical built-in provider string or custom module, client id, and endpoint mode. |
 | `apps/favn_azure/lib/favn/azure/credential_provider.ex` | Provider behaviour for one raw token acquisition. |
 | `apps/favn_azure/lib/favn/azure/credentials/azure_cli.ex` | Azure CLI provider for an arbitrary requested Azure resource. |
 | `apps/favn_azure/lib/favn/azure/credentials/managed_identity.ex` | IMDS and Azure App Service managed-identity provider with bounded transient retry. |
@@ -44,6 +44,10 @@ state, or durable credential storage.
   channel.
 - Callers use `Favn.Azure.Credentials`, never `GenServer.call` against cache
   internals.
+- Public built-in provider identifiers are exactly `"cli"` and
+  `"managed_identity"`, matching native DuckDB Azure chain values. Built-in atom
+  forms and `azure_cli` are rejected. Custom provider modules implement
+  `Favn.Azure.CredentialProvider` and remain a separate extension path.
 - Cached tokens are keyed by normalized request identity plus a cryptographic
   fingerprint of bounded provider options, never by the access token or App
   Service identity header.

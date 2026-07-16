@@ -124,7 +124,9 @@ defmodule Favn.AI do
     survive a restart. Use the optional plugin application callback when a
     packaged OTP application must start inside the isolated runner. For Azure,
     also read `Favn.Azure.RunnerPlugin` and
-    `Favn.Azure.Credentials` from the optional `:favn_azure` package.
+    `Favn.Azure.Credentials` from the optional `:favn_azure` package. Its
+    built-in provider names are the strings `"cli"` and `"managed_identity"`,
+    matching native DuckDB Azure chain values.
   - To configure DuckDB/DuckLake physical-session setup, read
     [DuckDB Session Scripts And Resources](duckdb-session-scripts.html), then
     `Favn.Connection`, `Favn.RuntimeConfig.Ref`, `Favn.SQLAsset`,

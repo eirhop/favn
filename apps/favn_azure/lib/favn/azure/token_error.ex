@@ -1,10 +1,14 @@
 defmodule Favn.Azure.TokenError do
   @moduledoc """
-  Redacted Azure token acquisition error.
+  Redacted Azure credential configuration or token-acquisition error.
+
+  Credential fetch functions return this struct in an `{:error, error}` tuple.
+  Configuration-only builders such as `Favn.Azure.Credentials.token_ref/2`
+  raise it because they return an inert value rather than a result tuple.
   """
 
   @enforce_keys [:type, :message]
-  defstruct [:type, :message, retryable?: false, details: %{}]
+  defexception [:type, :message, retryable?: false, details: %{}]
 
   @type type :: :invalid_config | :authentication_error | :connection_error | :execution_error
 

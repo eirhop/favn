@@ -302,7 +302,7 @@ params: [
   azure_token:
     Favn.Azure.Credentials.token_ref(
       "https://storage.azure.com/",
-      provider: :managed_identity
+      provider: "managed_identity"
     )
 ]
 ```

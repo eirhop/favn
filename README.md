@@ -618,17 +618,19 @@ config :favn,
 {:ok, token} =
   Favn.Azure.Credentials.fetch_access_token(
     "https://vault.azure.net",
-    provider: :managed_identity
+    provider: "managed_identity"
   )
 ```
 
 Concurrent callers reuse one fetch per resource, identity, and provider
 configuration. Global fetch work, per-key waiters, entries, request sizes, and
 timeouts are bounded. The cache refreshes before expiry and never returns an
-expired token. DuckDB session-script params can use
-`Favn.Azure.Credentials.token_ref/2`; the ref resolves once per pool-identity
-decision, is reused for bootstrap, is always treated as secret, and changes pool
-identity when refreshed. Read
+expired token. Built-in providers use the canonical strings `"cli"` and
+`"managed_identity"`, so the same environment value can be passed unchanged to
+Favn and DuckDB's native Azure `CHAIN` parameter. DuckDB session-script params
+can use `Favn.Azure.Credentials.token_ref/2`; the ref resolves once per
+pool-identity decision, is reused for bootstrap, is always treated as secret,
+and changes pool identity when refreshed. Read
 [Runner Plugins And Runner-Local Services](apps/favn/guides/runner-plugins.md).
 
 DuckDB runtime config separates the opened DuckDB session database from native
