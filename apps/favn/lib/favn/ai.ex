@@ -26,6 +26,8 @@ defmodule Favn.AI do
   A normal consumer project depends on `:favn` for the public DSL, helper
   functions, and `mix favn.*` tasks. Add `:favn_duckdb` only when the project
   executes DuckDB-backed SQL assets or uses DuckDB through `Favn.SQLClient`.
+  Add the optional `:favn_azure` package when runner code or DuckDB session
+  scripts need cached Azure CLI or managed-identity access tokens.
 
   Do not add internal runtime/control-plane apps such as `:favn_storage_sqlite`,
   `:favn_orchestrator`, `:favn_runner`, `:favn_local`, `:favn_core`, or
@@ -106,6 +108,16 @@ defmodule Favn.AI do
     modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
     If connection values come from environment variables or secrets, also read
     `Favn.RuntimeConfig.Ref`.
+  - To start consumer-owned credential caches, API sessions, client pools, rate
+    limiters, or other supervised services inside an isolated runner, read
+    `Favn.Runner.Plugin`, `Favn.Runner.SupervisedChildren`, and
+    [Runner Plugins And Runner-Local Services](runner-plugins.html). Plugin state
+    is runner-local and disposable: use it only for rebuildable operational
+    state, never durable business data or cross-run coordination that must
+    survive a restart. Use the optional plugin application callback when a
+    packaged OTP application must start inside the isolated runner. For Azure,
+    also read `Favn.Azure.RunnerPlugin` and
+    `Favn.Azure.Credentials` from the optional `:favn_azure` package.
   - To configure DuckDB/DuckLake physical-session setup, read
     [DuckDB Session Scripts And Resources](duckdb-session-scripts.html), then
     `Favn.Connection`, `Favn.RuntimeConfig.Ref`, `Favn.SQLAsset`,
@@ -118,9 +130,15 @@ defmodule Favn.AI do
     resources for every descendant SQL asset. Treat Quack and other evolving
     extensions as native SQL resources with a deployment-pinned compatible
     DuckDB build; do not invent extension-specific Favn fields or version gates.
-    Runtime refs resolve at runner startup, so recommend refresh-capable native
-    credential providers or a runner restart after rotation; pool idle timeout
-    is not a maximum physical-session age. In local development,
+    Environment-backed `Favn.RuntimeConfig.Ref` values resolve at runner startup,
+    so they still require a refresh-capable native provider or runner restart
+    after rotation. A secret `Favn.RuntimeValue` such as
+    `Favn.Azure.Credentials.token_ref/2` instead resolves once during pooled
+    session preparation, is reused for that bootstrap, and changes pool identity
+    when its token refreshes. DuckLake metadata using Azure Database for
+    PostgreSQL requests `https://ossrdbms-aad.database.windows.net` and injects
+    the ref as the password in a native DuckDB PostgreSQL secret. Pool idle
+    timeout is not a maximum physical-session age. In local development,
     `mix favn.reload` performs that runner restart and reevaluates runtime config.
     If the deployment uses ADBC, also read `Favn.SQL.Adapter.DuckDB.ADBC`. Keep
     DuckLake `write_concurrency` conservative because one logical writer may use
@@ -241,6 +259,25 @@ defmodule Favn.AI do
   they are separate scopes. Never reconstruct the removed structured DuckDB
   feature allowlist.
 
+  ## Runner Plugin Breadcrumbs
+
+  When a task mentions a service needed inside an isolated runner, runner-local
+  state, a GenServer plugin, credential caching, Azure CLI, managed identity, or
+  a future AWS runner integration, read these docs in order:
+
+  1. [Runner Plugins And Runner-Local Services](runner-plugins.html) for the
+     public lifecycle, examples, and state-lifetime rule.
+  2. `Favn.Runner.Plugin` for computed child specifications or validation.
+  3. `Favn.Runner.SupervisedChildren` for the no-boilerplate path.
+  4. `Favn.Azure.RunnerPlugin` and `Favn.Azure.Credentials` when using the
+     optional Azure package.
+  5. `Favn.RuntimeValue` only when an integration must inject a deferred value
+     into a boundary that explicitly supports it.
+
+  Plugin state is not durable, replicated, or shared across runners. Never
+  describe it as a general way for assets to pass correctness-sensitive data
+  between runs.
+
   ## About `Favn`
 
   - you need helper functions like `generate_manifest`, `resolve_pipeline`, or
@@ -335,7 +372,14 @@ defmodule Favn.AI do
     whenever a task mentions `@resources`, extension setup, settings, secrets,
     catalog attach, or physical-session lifecycle. Treat the files as trusted
     deployment code, keep durable business writes out of them, and account for
-    runner restarts when resolved credentials rotate.
+    runner restarts when environment-resolved credentials rotate. For cached
+    Azure token injection, also read the runner-plugin guide and
+    `Favn.Azure.Credentials`.
+  - Read the runner-plugin guide, `Favn.Runner.Plugin`, and
+    `Favn.Runner.SupervisedChildren` whenever a task mentions consumer-owned
+    services inside a runner, GenServer plugins, credential/session caches,
+    runner-local state, or future cloud authentication plugins. Preserve the
+    disposable-state boundary.
   - Read `Favn.SQLAsset`, `Favn.SQLAsset.check/3`, and `Favn.SQL.CheckResult`
     whenever a task mentions transactional SQL checks, data quality warnings,
     keeping an existing target on an empty candidate, `query()`, `target()`,

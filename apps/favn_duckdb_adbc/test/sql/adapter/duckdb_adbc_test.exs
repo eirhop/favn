@@ -311,11 +311,15 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
 
     assert ADBC.poolable?(resolved, [])
 
-    assert %{adapter: ADBC, client: FakeClient, driver: "/opt/duckdb/libduckdb.so"} =
-             ADBC.pool_fingerprint(resolved,
+    assert {:ok,
+            %{adapter: ADBC, client: FakeClient, driver: "/opt/duckdb/libduckdb.so"},
+            preparation} =
+             ADBC.prepare_pool(resolved,
                duckdb_adbc_client: FakeClient,
                duckdb_adbc: [driver: "/opt/duckdb/libduckdb.so"]
              )
+
+    assert %Favn.SQL.SessionScript.Plan{} = preparation
 
     assert :ok = ADBC.validate_session(conn, [])
     assert :ok = ADBC.reset_session(conn, resolved, required_catalogs: [:lake])

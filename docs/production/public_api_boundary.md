@@ -29,6 +29,12 @@ execution with explicit shared-library/driver control:
 Both DuckDB plugins are supported optional dependencies. Do not add internal
 runtime apps directly for either path.
 
+Add `favn_azure` when runner code or DuckDB session setup needs shared Azure CLI
+or managed-identity tokens. Its supported public surface is
+`Favn.Azure.RunnerPlugin`, `Favn.Azure.Credentials`, and the token/error/request
+types returned by that API. It uses the public runner lifecycle and does not
+make `favn_runner` a consumer dependency.
+
 The other umbrella apps are not ordinary user dependencies:
 
 - `favn_authoring` owns authoring implementation behind `favn`.
@@ -44,7 +50,8 @@ The other umbrella apps are not ordinary user dependencies:
 
 Before Hex publishing, local private consumer projects may use path dependencies
 from one checkout. The supported shape is `favn` plus optional plugins such as
-`favn_duckdb_adbc` or `favn_duckdb`, not manually listing internal runtime apps.
+`favn_duckdb_adbc`, `favn_duckdb`, or `favn_azure`, not manually listing
+internal runtime apps.
 
 ## Stable V1 API Focus
 
@@ -59,6 +66,9 @@ The stable `v1` API should focus on the parts users build authored projects on:
   `Favn.asset_module?/1` and `Favn.plan_asset_run/2`
 - `Favn.SQLClient` connect, query, execute, transaction, capabilities, relation,
   columns, with-connection, and disconnect functions against named connections
+- `Favn.Runner.Plugin` and `Favn.Runner.SupervisedChildren` for consumer-owned
+  runner lifecycle services, plus `Favn.RuntimeValue` for integration boundaries
+  that explicitly document deferred-value support
 - supported local commands: `mix favn.init`, `mix favn.doctor`,
   `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
   `mix favn.runs`, `mix favn.reload`, `mix favn.status`, `mix favn.logs`,

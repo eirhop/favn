@@ -15,7 +15,9 @@ supported `duckdbex`-backed plugin for bundled local/in-memory DuckDB execution.
 
 Allowed umbrella dependency direction:
 
-- `favn_duckdb_adbc -> favn_runner`
+- `favn_duckdb_adbc -> favn_core` for the public plugin contract
+- `favn_duckdb_adbc -> favn_runner` to provide the packaged execution runtime
+  without making consumers add it directly
 - `favn_duckdb_adbc -> favn_sql_runtime`
 
 External dependency:
@@ -48,6 +50,14 @@ supported. See `apps/favn/guides/duckdb-session-scripts.md`.
 Environment-backed credentials resolve at runner startup. Use a native
 refresh-capable provider or restart the runner after rotation; idle timeout does
 not impose a maximum physical-session age.
+Supported deferred `Favn.RuntimeValue` parameters resolve during session
+planning. The optional `Favn.Azure.Credentials.token_ref/2` provider is treated
+as secret and changes session-pool identity when its cached token refreshes. A
+superseded idle physical session is closed before replacement bootstrap, so an
+old finite admission lease cannot block a new PostgreSQL Entra token. Use the
+Azure Database for PostgreSQL audience
+`https://ossrdbms-aad.database.windows.net`; the complete native DuckDB secret
+example is in `apps/favn/guides/runner-plugins.md`.
 
 ## DuckDB ADBC Installation
 

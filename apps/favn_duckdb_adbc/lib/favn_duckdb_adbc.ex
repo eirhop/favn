@@ -7,12 +7,15 @@ defmodule FavnDuckdbADBC do
   DuckLake runtime connection configuration.
   """
 
-  @behaviour FavnRunner.Plugin
+  @behaviour Favn.Runner.Plugin
+
+  @impl true
+  def applications(_opts), do: {:ok, [:adbc]}
 
   @impl true
   def child_specs(opts) when is_list(opts) do
     case FavnDuckdbADBC.Runtime.execution_mode(opts) do
-      :in_process -> []
+      :in_process -> {:ok, []}
     end
   end
 end

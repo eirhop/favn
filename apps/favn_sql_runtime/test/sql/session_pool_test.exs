@@ -107,6 +107,74 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
     assert %{active: 0, idle: 0, keys: []} = SessionPool.diagnostics(name: context.pool_name)
   end
 
+  test "a new runtime fingerprint evicts an idle session in the same scope", context do
+    resolved = resolved(:rotating_credentials, %{})
+    old_key = PoolKey.build(resolved, [], [], :old_token)
+    new_key = PoolKey.build(resolved, [], [], :new_token)
+    config = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+    admission_scope = {:rotating_credentials, make_ref()}
+
+    assert old_key.scope_hash == new_key.scope_hash
+    refute old_key.hash == new_key.hash
+    assert :ok = Limiter.acquire(admission_scope, 1, 50)
+    assert :create = SessionPool.checkout_or_create(old_key, name: context.pool_name)
+    assert :ok = SessionPool.creation_finished(old_key, name: context.pool_name)
+
+    session =
+      checked_out_session(
+        context.tracker,
+        old_key,
+        config,
+        self(),
+        {:held, admission_scope, self()}
+      )
+
+    assert :ok = SessionPool.track_checkout(session, name: context.pool_name)
+    assert :ok = SessionPool.checkin(session, :ok, name: context.pool_name)
+    assert %{idle: 1} = SessionPool.diagnostics(name: context.pool_name)
+
+    assert :create = SessionPool.checkout_or_create(new_key, name: context.pool_name)
+    assert :ok = SessionPool.creation_finished(new_key, name: context.pool_name)
+
+    assert eventually(fn -> Agent.get(context.tracker, & &1.disconnects) == 1 end)
+    assert eventually(fn -> Limiter.acquire(admission_scope, 1, 10) == :ok end)
+    assert %{active: 0, idle: 0} = SessionPool.diagnostics(name: context.pool_name)
+
+    Limiter.release(admission_scope)
+  end
+
+  test "an active superseded fingerprint is closed instead of returned to idle", context do
+    resolved = resolved(:active_rotating_credentials, %{})
+    old_key = PoolKey.build(resolved, [], [], :old_token)
+    new_key = PoolKey.build(resolved, [], [], :new_token)
+    config = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+
+    assert :create = SessionPool.checkout_or_create(old_key, name: context.pool_name)
+    assert :ok = SessionPool.creation_finished(old_key, name: context.pool_name)
+
+    session = checked_out_session(context.tracker, old_key, config)
+    assert :ok = SessionPool.track_checkout(session, name: context.pool_name)
+
+    assert :create = SessionPool.checkout_or_create(new_key, name: context.pool_name)
+    assert :ok = SessionPool.creation_finished(new_key, name: context.pool_name)
+    assert :ok = SessionPool.checkin(session, :ok, name: context.pool_name)
+
+    assert eventually(fn -> Agent.get(context.tracker, & &1.disconnects) == 1 end)
+    assert %{active: 0, idle: 0} = SessionPool.diagnostics(name: context.pool_name)
+  end
+
+  test "pool generation tracking prunes historical scopes", context do
+    Enum.each(1..20, fn index ->
+      key = PoolKey.build(resolved(:historical_scope, %{index: index}), [], [], nil)
+
+      assert :create = SessionPool.checkout_or_create(key, name: context.pool_name)
+      assert :ok = SessionPool.creation_finished(key, name: context.pool_name)
+    end)
+
+    state = :sys.get_state(context.pool_pid)
+    assert map_size(state.latest_by_scope) == 1
+  end
+
   test "disabled pool closes sessions on checkin", context do
     key = pool_key(:disabled)
     config = %PoolConfig{enabled: false, max_idle_per_key: 1, idle_timeout_ms: 60_000}
@@ -266,8 +334,10 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
     refute PoolKey.build(resolved, [], [:raw], [:landing_storage], :v1) ==
              PoolKey.build(resolved, [], [:raw], [:azure_extension], :v1)
 
-    assert %PoolKey{hash: hash} = PoolKey.build(resolved, [], [], nil)
+    assert %PoolKey{scope_hash: scope_hash, hash: hash} = PoolKey.build(resolved, [], [], nil)
+    assert is_binary(scope_hash)
     assert is_binary(hash)
+    refute String.contains?(scope_hash, "secret")
     refute String.contains?(hash, "secret")
   end
 

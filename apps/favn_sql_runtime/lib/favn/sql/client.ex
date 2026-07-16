@@ -26,9 +26,11 @@ defmodule Favn.SQL.Client do
   arbitrary raw SQL writes on fresh, discarded sessions by default.
 
   Idle pooled sessions keep their catalog admission leases until reuse or idle
-  eviction. With finite catalog concurrency, an idle session for one pool key can
-  block a new incompatible pool key that needs the same catalog until the idle
-  session is reused or closed.
+  eviction. When an adapter fingerprint changes for the same connection and
+  session requirements, the pool evicts idle sessions from the superseded
+  fingerprint and closes active ones on checkin before creating a replacement.
+  Unrelated incompatible pool scopes can still compete for the same finite
+  catalog capacity.
 
   SQL sessions retain their normalized `:required_catalogs` and
   `:required_resources` scopes. Raw write
@@ -531,19 +533,25 @@ defmodule Favn.SQL.Client do
   end
 
   defp connect_with_pool(%Resolved{} = resolved, concurrency_policies, adapter_opts, pool_config) do
-    fingerprint = adapter_fingerprint(resolved.adapter, resolved, adapter_opts)
-    key = pool_key(resolved, adapter_opts, fingerprint)
-    adapter_opts = Keyword.put(adapter_opts, :favn_pool_fingerprint, fingerprint)
+    with {:ok, fingerprint, preparation} <-
+           prepare_pool(resolved.adapter, resolved, adapter_opts) do
+      key = pool_key(resolved, adapter_opts, fingerprint)
 
-    case checkout_or_create_session(key, resolved, concurrency_policies, adapter_opts) do
-      {:ok, %Session{} = session} ->
-        {:ok, session}
+      adapter_opts =
+        adapter_opts
+        |> Keyword.put(:favn_pool_preparation, preparation)
+        |> Keyword.put(:favn_pool_fingerprint, fingerprint)
 
-      :create ->
-        create_pooled_session(resolved, concurrency_policies, adapter_opts, pool_config, key)
+      case checkout_or_create_session(key, resolved, concurrency_policies, adapter_opts) do
+        {:ok, %Session{} = session} ->
+          {:ok, session}
 
-      {:error, %Error{}} = error ->
-        error
+        :create ->
+          create_pooled_session(resolved, concurrency_policies, adapter_opts, pool_config, key)
+
+        {:error, %Error{}} = error ->
+          error
+      end
     end
   end
 
@@ -782,16 +790,37 @@ defmodule Favn.SQL.Client do
     )
   end
 
-  defp adapter_fingerprint(adapter, resolved, adapter_opts) do
-    if function_exported?(adapter, :pool_fingerprint, 2) do
-      adapter.pool_fingerprint(resolved, adapter_opts)
+  defp prepare_pool(adapter, resolved, adapter_opts) do
+    if function_exported?(adapter, :prepare_pool, 2) do
+      case adapter.prepare_pool(resolved, adapter_opts) do
+        {:ok, fingerprint, preparation} ->
+          {:ok, fingerprint, preparation}
+
+        {:error, %Error{}} = error ->
+          error
+
+        _other ->
+          {:error, invalid_pool_preparation_error(resolved)}
+      end
     else
-      adapter
+      {:ok, adapter, nil}
     end
   rescue
-    _ -> adapter
+    _error -> {:error, invalid_pool_preparation_error(resolved)}
   catch
-    :exit, _ -> adapter
+    _kind, _reason -> {:error, invalid_pool_preparation_error(resolved)}
+  end
+
+  defp invalid_pool_preparation_error(%Resolved{} = resolved) do
+    %Error{
+      type: :execution_error,
+      message: "SQL adapter could not prepare a pool identity",
+      adapter: resolved.adapter,
+      connection: resolved.name,
+      operation: :connect,
+      retryable?: false,
+      details: %{reason: :invalid_pool_preparation}
+    }
   end
 
   defp put_session_runtime(

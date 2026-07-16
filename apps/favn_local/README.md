@@ -251,11 +251,14 @@ The local tooling HTTP client is intentionally limited to plain HTTP loopback
 URLs for Favn-managed local services.
 
 Runner-side consumer config transport is local-dev-only. It carries only
-`:connection_modules`, `:connections`, `:runner_plugins`, and
-`:duckdb_in_process_client` from the consumer project's `config :favn`. Relative
+`:discovery`, `:connection_modules`, `:connections`, `:execution_pools`,
+`:runner_plugins`, `:duckdb_in_process_client`, and `:duckdb_adbc` from the
+consumer project's `config :favn`. Relative
 connection database paths are expanded against the consumer project root before
-the runner starts. Secrets can be present for local use, but diagnostics redact
-connection values, tokens, passwords, database URLs, and plugin config.
+the runner starts. Tagged `Favn.RuntimeConfig.Ref` and `Favn.RuntimeValue.Ref`
+values are preserved as inert refs, so Azure token refs resolve only inside the
+runner. Secrets can be present for local use, but diagnostics redact connection
+values, tokens, passwords, database URLs, and plugin config.
 
 Before startup, `favn_local` force-compiles the installed runtime workspace
 under `.favn/install/runtime_root` so orchestrator/runner startup does not boot

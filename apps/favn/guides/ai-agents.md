@@ -62,6 +62,14 @@ or attach options. Read
 SQL assets declare stable `@resources [...]` names. Both session scripts and
 asset SQL use `@name` for values, but they have separate parameter sources.
 
+For consumer-owned services inside an isolated runner, read
+[Runner Plugins And Runner-Local Services](runner-plugins.md) and
+`Favn.Runner.Plugin`. Use `Favn.Runner.SupervisedChildren` for ordinary OTP
+children. Treat all plugin state as runner-local and disposable; never suggest
+it for durable business state or correctness-sensitive cross-run messages. The
+optional `:favn_azure` package is the reference credential-cache plugin and can
+inject secret cached tokens through `Favn.Azure.Credentials.token_ref/2`.
+
 ## Recommended Workflow
 
 - Use `:favn` as the public package surface for asset authoring, local commands,

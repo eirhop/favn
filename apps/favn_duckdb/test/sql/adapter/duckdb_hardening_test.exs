@@ -445,8 +445,10 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     assert DuckDB.poolable?(resolved, [])
 
-    assert %{adapter: DuckDB, client: FakeClient} =
-             DuckDB.pool_fingerprint(resolved, duckdb_client: FakeClient)
+    assert {:ok, %{adapter: DuckDB, client: FakeClient}, preparation} =
+             DuckDB.prepare_pool(resolved, duckdb_client: FakeClient)
+
+    assert %Favn.SQL.SessionScript.Plan{} = preparation
 
     assert :ok = DuckDB.validate_session(conn, [])
     assert :ok = DuckDB.reset_session(conn, resolved, required_catalogs: [:lake])

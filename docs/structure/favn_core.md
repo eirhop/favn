@@ -12,6 +12,11 @@ Code:
   seam consumed by runner work without exposing graph/index internals
 - `apps/favn_core/lib/favn/manifest/labels.ex` owns tag/category label
   normalization so selector-facing metadata persists and matches as strings
+- `apps/favn_core/lib/favn/runner/` owns the public runner plugin lifecycle and
+  simple supervised-children implementation
+- `apps/favn_core/lib/favn/runtime_value*` owns inert provider refs for deferred,
+  explicitly supported runtime-boundary values; refs never contain resolved
+  credentials
 
 Tests:
 - `apps/favn_core/test/`
@@ -23,6 +28,11 @@ Use when changing manifest generation/serialization, graph planning, dependency
 inference, effective execution-pool propagation, freshness keys/policies,
 windows, schedules, runtime config refs, backfill range resolution, or
 runner/orchestrator contract structs.
+
+`Favn.RuntimeValue` is not a global configuration-resolution mechanism.
+Integration boundaries opt in explicitly; DuckDB session-script parameters are
+the first consumer. Providers return bounded errors, refs have redacted Inspect
+output, and secret refs are tracked by connection redaction.
 
 Manifest schema 5 and runner contract 5 are the only accepted versions. SQL
 execution payloads carry an optional typed `%Favn.SQL.Contract{}` plus typed

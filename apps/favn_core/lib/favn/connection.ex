@@ -77,6 +77,10 @@ defmodule Favn.Connection do
   resolved before adapter connection and redacted from Favn diagnostics. Read
   the HexDocs guide
   [DuckDB Session Scripts And Resources](duckdb-session-scripts.html).
+  Integrations may also provide a secret `Favn.RuntimeValue.Ref` for a script
+  parameter fetched later during physical-session planning. The optional
+  `:favn_azure` package uses this for refreshable Azure access tokens; read
+  [Runner Plugins And Runner-Local Services](runner-plugins.html).
 
   ## Runtime Environment Values
 
@@ -99,6 +103,8 @@ defmodule Favn.Connection do
   - `Favn.SQLAsset`
   - `Favn.SQL`
   - `Favn.RuntimeConfig.Ref`
+  - `Favn.RuntimeValue`
+  - `Favn.Runner.Plugin`
   """
 
   alias Favn.Connection.Definition

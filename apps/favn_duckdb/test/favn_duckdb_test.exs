@@ -95,11 +95,12 @@ defmodule FavnDuckdbTest do
   end
 
   test "plugin has no child specs in in_process mode" do
-    assert [] == FavnDuckdb.child_specs(execution_mode: :in_process)
+    assert {:ok, [:duckdbex]} = FavnDuckdb.applications([])
+    assert {:ok, []} == FavnDuckdb.child_specs(execution_mode: :in_process)
   end
 
   test "plugin starts a long-lived worker in separate_process mode" do
-    [worker_spec] = FavnDuckdb.child_specs(execution_mode: :separate_process)
+    {:ok, [worker_spec]} = FavnDuckdb.child_specs(execution_mode: :separate_process)
 
     assert %{start: {Worker, :start_link, [_opts]}} =
              Supervisor.child_spec(worker_spec, [])

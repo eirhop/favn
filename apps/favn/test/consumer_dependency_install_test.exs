@@ -106,6 +106,26 @@ defmodule Favn.ConsumerDependencyInstallTest do
     refute output =~ "Dependencies have diverged"
 
     assert {_, 0} = System.cmd("mix", ["compile"], cd: consumer_dir, stderr_to_stdout: true)
+
+    runner_boot = """
+    Application.put_env(:favn, :runner_plugins, [Favn.Azure.RunnerPlugin])
+    {:ok, _started} = Application.ensure_all_started(:favn_runner)
+
+    started = Application.started_applications() |> Enum.map(&elem(&1, 0))
+
+    unless :favn_azure in started and :inets in started and :ssl in started and
+             is_pid(Process.whereis(Favn.Azure.Credentials.Cache)) do
+      raise "Azure runner plugin did not boot its packaged applications and cache"
+    end
+    """
+
+    assert {_, 0} =
+             System.cmd(
+               "mix",
+               ["run", "--no-start", "--no-compile", "--eval", runner_boot],
+               cd: consumer_dir,
+               stderr_to_stdout: true
+             )
   end
 
   defp runtime_deps(deps) do
@@ -179,7 +199,8 @@ defmodule Favn.ConsumerDependencyInstallTest do
       defp deps do
         [
           {:favn, path: "#{Path.join(repo_root, "apps/favn")}"},
-          {:favn_duckdb, path: "#{Path.join(repo_root, "apps/favn_duckdb")}"}
+          {:favn_duckdb, path: "#{Path.join(repo_root, "apps/favn_duckdb")}"},
+          {:favn_azure, path: "#{Path.join(repo_root, "apps/favn_azure")}"}
         ]
       end
     end
