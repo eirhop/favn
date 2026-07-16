@@ -39,6 +39,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert "mix" in runner.args
     assert "--no-compile" in operator.args
     assert "mix" in operator.args
+    assert runner.env["MIX_OS_CONCURRENCY_LOCK"] == "0"
+    assert operator.env["MIX_OS_CONCURRENCY_LOCK"] == "0"
     assert operator.exec == (System.find_executable("elixir") || "elixir")
     assert operator.env["FAVN_DEV_STORAGE"] == "sqlite"
     assert operator.env["FAVN_DEV_SQLITE_PATH"] == Path.expand(config.sqlite_path)
@@ -265,6 +267,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     Application.put_env(:favn, :connection_modules, [MyApp.Connections.Warehouse])
     Application.put_env(:favn, :connections, warehouse: [database: "warehouse.duckdb"])
+
     Application.put_env(:favn, :execution_pools,
       global: [max_concurrency: 5],
       partner_api: [max_concurrency: 2]
@@ -297,17 +300,14 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     assert {:connections, [warehouse: [database: "/tmp/consumer/warehouse.duckdb"]]} in decoded_config
 
-    assert {:execution_pools, [global: [max_concurrency: 5], partner_api: [max_concurrency: 2]]} in
-             decoded_config
+    assert {:execution_pools, [global: [max_concurrency: 5], partner_api: [max_concurrency: 2]]} in decoded_config
 
     assert {:runner_plugins, [{FavnDuckdb, [execution_mode: :in_process]}]} in decoded_config
-    assert code =~ "FAVN_DEV_CONSUMER_FAVN_CONFIG"
-    assert code =~ "Base.decode64(encoded)"
-    assert code =~ ":erlang.binary_to_term(binary, [:safe])"
+    assert code =~ "Favn.Dev.ConsumerConfigTransport.apply_from_env!()"
 
     assert before?(
              code,
-             "Application.put_env(:favn, key, value)",
+             "Favn.Dev.ConsumerConfigTransport.apply_from_env!()",
              "Application.ensure_all_started(:favn_runner)"
            )
   end
@@ -360,6 +360,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     Application.put_env(:favn, :connections, warehouse: [database: "warehouse.duckdb"])
     Application.put_env(:favn, :duckdb_adbc, driver: "/opt/duckdb/1.5.2/libduckdb.so")
     Application.put_env(:favn, :duckdb_in_process_client, enabled: true)
+
     Application.put_env(:favn, :execution_pools,
       global: [max_concurrency: 5],
       partner_api: [max_concurrency: 2]
@@ -375,15 +376,16 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       restore_env(:runner_plugins, previous_runner_plugins)
     end)
 
-    operator = RuntimeLaunch.operator_spec(runtime, config, distribution_opts(), node_names, secrets)
+    operator =
+      RuntimeLaunch.operator_spec(runtime, config, distribution_opts(), node_names, secrets)
+
     code = eval_code!(operator)
 
     decoded_config =
       ConsumerConfigTransport.decode(operator.env["FAVN_DEV_CONSUMER_FAVN_CONFIG"])
       |> then(fn {:ok, config} -> config end)
 
-    assert {:execution_pools, [global: [max_concurrency: 5], partner_api: [max_concurrency: 2]]} in
-             decoded_config
+    assert {:execution_pools, [global: [max_concurrency: 5], partner_api: [max_concurrency: 2]]} in decoded_config
 
     refute Keyword.has_key?(decoded_config, :connections)
     refute Keyword.has_key?(decoded_config, :duckdb_adbc)
@@ -392,7 +394,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     assert before?(
              code,
-             "Application.put_env(:favn, key, value)",
+             "Favn.Dev.ConsumerConfigTransport.apply_from_env!()",
              "Application.ensure_all_started(:favn_orchestrator)"
            )
   end
@@ -521,8 +523,6 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       elem(earlier_index, 0) < elem(later_index, 0)
   end
 
-  defp restore_env(key, nil) when is_binary(key), do: System.delete_env(key)
-  defp restore_env(key, value) when is_binary(key), do: System.put_env(key, value)
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)
   defp restore_env(key, value), do: Application.put_env(:favn, key, value)
 end

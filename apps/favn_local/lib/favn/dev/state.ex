@@ -114,6 +114,14 @@ defmodule Favn.Dev.State do
     end
   end
 
+  @spec clear_install(root_opt()) :: :ok | {:error, term()}
+  def clear_install(opts \\ []) when is_list(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Paths.install_path()
+    |> delete_if_exists()
+  end
+
   @spec read_install_runtime(root_opt()) :: {:ok, map()} | {:error, read_error()}
   def read_install_runtime(opts \\ []) when is_list(opts) do
     opts
@@ -147,6 +155,24 @@ defmodule Favn.Dev.State do
       |> Paths.root_dir()
       |> Paths.toolchain_path()
       |> write_json(toolchain)
+    end
+  end
+
+  @spec read_secrets(root_opt()) :: {:ok, map()} | {:error, read_error()}
+  def read_secrets(opts \\ []) when is_list(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Paths.secrets_path()
+    |> read_json()
+  end
+
+  @spec write_secrets(map(), root_opt()) :: :ok | {:error, term()}
+  def write_secrets(secrets, opts \\ []) when is_map(secrets) and is_list(opts) do
+    with :ok <- ensure_layout(opts) do
+      opts
+      |> Paths.root_dir()
+      |> Paths.secrets_path()
+      |> write_json(secrets)
     end
   end
 
@@ -190,11 +216,45 @@ defmodule Favn.Dev.State do
   defp write_json(path, map) when is_map(map) do
     with :ok <- File.mkdir_p(Path.dirname(path)),
          {:ok, encoded} <- encode_json(path, map),
-         :ok <- File.write(path, [encoded, "\n"]) do
+         :ok <- atomic_write(path, [encoded, "\n"]) do
       :ok
     else
       {:error, {:encode_failed, _path, _reason} = reason} -> {:error, reason}
       {:error, reason} -> {:error, {:write_failed, path, reason}}
+    end
+  end
+
+  defp atomic_write(path, contents) do
+    temporary = path <> ".tmp.#{System.unique_integer([:positive, :monotonic])}"
+
+    result =
+      with :ok <- File.write(temporary, contents, [:binary]),
+           :ok <- restrict_permissions(temporary),
+           :ok <- replace_file(temporary, path) do
+        :ok
+      end
+
+    _ = File.rm(temporary)
+    result
+  end
+
+  defp restrict_permissions(path) do
+    case :os.type() do
+      {:unix, _name} -> File.chmod(path, 0o600)
+      {:win32, _name} -> :ok
+    end
+  end
+
+  defp replace_file(temporary, path) do
+    case File.rename(temporary, path) do
+      :ok ->
+        :ok
+
+      {:error, reason} when reason in [:eacces, :eexist] ->
+        with :ok <- delete_if_exists(path), do: File.rename(temporary, path)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

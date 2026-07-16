@@ -144,14 +144,14 @@ defmodule Favn.Manifest.GeneratorTest do
       {"root.ex",
        """
        defmodule #{inspect(root)} do
-         Process.sleep(700)
+         Process.sleep(100)
          use Favn.Namespace, relation: [connection: :warehouse]
        end
        """},
       {"gold.ex",
        """
        defmodule #{inspect(gold)} do
-         Process.sleep(700)
+         Process.sleep(100)
          use Favn.Namespace, relation: [schema: :gold]
        end
        """}

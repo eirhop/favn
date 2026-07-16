@@ -78,7 +78,7 @@ defmodule Favn.Dev.Reload do
   defp compile_project do
     Mix.Task.reenable("compile")
 
-    case Mix.Task.run("compile", ["--force"]) do
+    case Mix.Task.run("compile", []) do
       _ -> :ok
     end
   rescue

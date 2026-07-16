@@ -181,6 +181,7 @@ defmodule Favn.Dev.InitTest do
            end)
   end
 
+  @tag :slow
   @tag timeout: 180_000
   test "generated sample executes raw and SQL assets against DuckDB", %{root_dir: root_dir} do
     repo_root = Path.expand("../../..", __DIR__)

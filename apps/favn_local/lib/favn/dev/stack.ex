@@ -9,7 +9,6 @@ defmodule Favn.Dev.Stack do
   alias Favn.Dev.Config
   alias Favn.Dev.DistributedErlang
   alias Favn.Dev.EnvBootstrap
-  alias Favn.Dev.EnvFile
   alias Favn.Dev.Install
   alias Favn.Dev.LocalContext
   alias Favn.Dev.LocalHttpClient
@@ -19,6 +18,7 @@ defmodule Favn.Dev.Stack do
   alias Favn.Dev.Paths
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.RunnerControl
+  alias Favn.Dev.RuntimeCompiler
   alias Favn.Dev.RuntimeLaunch
   alias Favn.Dev.RuntimeWorkspace
   alias Favn.Dev.Secrets
@@ -34,9 +34,12 @@ defmodule Favn.Dev.Stack do
            progress_step(opts, "checking local state", fn -> prepare_startup(opts) end),
          :ok <-
            progress_step(opts, "compiling Favn runtime", fn ->
-             compile_runtime_apps(startup.runtime, opts)
+             RuntimeCompiler.compile_runtime(startup.runtime, opts)
            end),
-         :ok <- progress_step(opts, "compiling current project", fn -> compile_project(opts) end),
+         :ok <-
+           progress_step(opts, "compiling current project", fn ->
+             RuntimeCompiler.compile_project(opts)
+           end),
          {:ok, startup} <-
            progress_step(opts, "starting local services", fn ->
              initialize_stack(startup, opts)
@@ -314,46 +317,6 @@ defmodule Favn.Dev.Stack do
     end
   end
 
-  defp compile_runtime_apps(runtime, opts) when is_map(runtime) do
-    cond do
-      Keyword.get(opts, :skip_runtime_compile, false) ->
-        :ok
-
-      Keyword.has_key?(opts, :service_specs_override) ->
-        :ok
-
-      true ->
-        runtime_root = runtime["materialized_root"]
-        mix = System.find_executable("mix") || "mix"
-
-        case System.cmd(mix, ["compile", "--force"],
-               cd: runtime_root,
-               env: Map.merge(EnvFile.loaded_env(opts), %{"MIX_ENV" => "dev"}),
-               stderr_to_stdout: true
-             ) do
-          {_output, 0} ->
-            :ok
-
-          {output, status} ->
-            {:error, {:runtime_compile_failed, :runtime_root, status, String.trim(output)}}
-        end
-    end
-  end
-
-  defp compile_project(opts) do
-    if Keyword.get(opts, :skip_bootstrap, false) do
-      :ok
-    else
-      Mix.Task.reenable("compile")
-
-      case Mix.Task.run("compile", ["--force"]) do
-        _ -> :ok
-      end
-    end
-  rescue
-    error -> {:error, {:compile_failed, error}}
-  end
-
   defp build_node_names(secrets, opts) when is_map(secrets) do
     root_dir = Paths.root_dir(opts)
     suffix = Integer.to_string(:erlang.phash2(root_dir, 1_000_000))
@@ -579,7 +542,10 @@ defmodule Favn.Dev.Stack do
          {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
          :ok <-
            progress_step(opts, "waiting for orchestrator API", fn ->
-             wait_orchestrator_health(config.orchestrator_base_url, 15_000)
+             wait_orchestrator_health(
+               config.orchestrator_base_url,
+               orchestrator_wait_timeout_ms(opts)
+             )
            end),
          _ <- progress(opts, "publishing manifest"),
          {:ok, published} <-
@@ -684,7 +650,10 @@ defmodule Favn.Dev.Stack do
       :ok
     else
       case progress_step(opts, "checking orchestrator readiness", fn ->
-             wait_orchestrator_health(config.orchestrator_base_url, 15_000)
+             wait_orchestrator_health(
+               config.orchestrator_base_url,
+               orchestrator_wait_timeout_ms(opts)
+             )
            end) do
         :ok ->
           progress_step(opts, "checking web readiness", fn ->
@@ -712,6 +681,10 @@ defmodule Favn.Dev.Stack do
   defp wait_orchestrator_health(url, timeout_ms) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_orchestrator_health(url, deadline)
+  end
+
+  defp orchestrator_wait_timeout_ms(opts) do
+    Keyword.get(opts, :orchestrator_wait_timeout_ms, 30_000)
   end
 
   defp do_wait_orchestrator_health(url, deadline_ms) do

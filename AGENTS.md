@@ -85,21 +85,17 @@ Replace `favn_local` with the affected app. Before finishing changes, run:
 
 - `mix format`
 - `mix compile --warnings-as-errors`
-- the full umbrella test command below
+- the fast, acceptance, and slow umbrella commands below
 
-The root `test` alias does not forward trailing ExUnit options to each child app,
-so `mix test --timeout 1200000` still leaves child tests at the default 60-second
-timeout. For the full umbrella suite, run the same app order explicitly through
-`cmd mix test` and keep the terminal session alive while it runs:
+The root runner forwards supported ExUnit arguments to every child app, keeps
+running after a child failure, and reports all failing app slices. It excludes
+the explicit acceptance, slow, and browser tiers. Run all three commands for the
+complete suite:
 
 ```bash
-for app in \
-  favn_test_support favn_core favn_authoring favn_azure favn \
-  favn_sql_runtime favn_runner favn_orchestrator favn_storage_postgres \
-  favn_storage_sqlite favn_duckdb favn_duckdb_adbc favn_local favn_view
-do
-  MIX_ENV=test mix do --app "$app" cmd mix test --timeout 1200000 || exit $?
-done
+mix test --no-compile --timeout 1200000
+mix test.acceptance
+mix test.slow
 ```
 
 Avoid plain `mix do --app <app> test ...` for scoped test arguments in this repo;

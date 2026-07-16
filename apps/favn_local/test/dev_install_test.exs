@@ -177,4 +177,29 @@ defmodule Favn.Dev.InstallTest do
                "sha256"
              ])
   end
+
+  test "failed forced reinstall cannot leave stale install state ready", %{root_dir: root_dir} do
+    install_opts = [
+      root_dir: root_dir,
+      skip_web_install: true,
+      skip_tool_checks: true,
+      skip_runtime_deps_install: true
+    ]
+
+    assert {:ok, :installed} = Install.run(install_opts)
+    File.write!(Path.join(root_dir, "mix.exs"), "raise \"invalid runtime project\"\n")
+
+    failing_runner = fn _mix, ["deps.get"], _opts -> {"dependency resolution failed", 7} end
+
+    assert {:error, {:runtime_deps_install_failed, 7, "dependency resolution failed"}} =
+             Install.run(
+               root_dir: root_dir,
+               force: true,
+               skip_web_install: true,
+               skip_tool_checks: true,
+               runtime_deps_command_runner: failing_runner
+             )
+
+    assert {:error, :install_required} = Install.ensure_ready(root_dir: root_dir)
+  end
 end

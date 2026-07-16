@@ -2,6 +2,7 @@ defmodule Favn.DevStackSmokeTest do
   use ExUnit.Case, async: false
 
   @moduletag :integration
+  @moduletag :slow
 
   test "local stack lifecycle smoke path" do
     if System.get_env("FAVN_RUN_DEV_SMOKE") != "1" do

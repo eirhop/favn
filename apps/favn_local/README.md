@@ -201,10 +201,13 @@ Local env files:
 - `data/` local sqlite data
 - `manifests/` latest and cached manifest metadata
 - `history/` failure metadata
+- `secrets.json` generated project-local service, session, and Distributed
+  Erlang credentials; owner-readable/writable only on POSIX filesystems
 - `runtime.json` live stack state
 
-`.favn/` is local runtime state, not a secret store. Local dev does not persist
-passwords, service tokens, RPC cookies, or session secrets there.
+`.favn/` is local runtime state and must stay uncommitted. Favn persists only
+generated local credentials in `secrets.json`; configured password/token/secret
+overrides are used at runtime and are not copied into Favn state files.
 
 ## How core flows work
 
@@ -213,9 +216,9 @@ passwords, service tokens, RPC cookies, or session secrets there.
 `mix favn.install`:
 
 - validates Elixir runtime metadata
-- computes and stores an install fingerprint, including a deterministic hash of
-  the copied runtime source tree while excluding generated dependency/build
-  directories
+- computes and stores an install fingerprint, using filtered Git tree metadata
+  for clean Git sources and deterministic content hashing otherwise, while
+  excluding generated dependency/build directories
 - captures toolchain metadata
 - resolves a runnable Favn runtime workspace under `.favn/install/runtime_root`
 - records runtime source/materialization metadata in `.favn/install/runtime.json`
@@ -224,7 +227,8 @@ passwords, service tokens, RPC cookies, or session secrets there.
 `mix favn.dev` and build tasks validate install freshness before running. When
 the source-tree hash changes, rerunning `mix favn.install` refreshes the
 materialized runtime; `mix favn.install --force` remains available for an
-unconditional rebuild.
+unconditional rebuild. Failed reinstalls invalidate readiness so a partially
+prepared workspace cannot be mistaken for the previous working install.
 
 ### Local dev startup
 
@@ -236,6 +240,9 @@ The local scheduler is disabled by default so active pipeline schedules do not
 surprise one-time local ETL work. Manual `mix favn.run PipelineModule` is the
 recommended safe default. Scheduled tutorial or smoke flows should opt in with
 `mix favn.dev --scheduler`.
+
+Runtime and consumer compilation is incremental. Unchanged starts reuse Mix
+compiler manifests; they do not force a full rebuild.
 
 The orchestrator process starts with local-dev mode enabled. Local CLI calls use
 an explicit trusted local-dev context that is accepted only while the API is
@@ -273,15 +280,18 @@ values are preserved as inert refs, so Azure token refs resolve only inside the
 runner. Secrets can be present for local use, but diagnostics redact connection
 values, tokens, passwords, database URLs, and plugin config.
 
-Before startup, `favn_local` force-compiles the installed runtime workspace
-under `.favn/install/runtime_root` so orchestrator/runner startup does not boot
-stale internal runtime beams.
+Before startup, `favn_local` incrementally compiles the installed runtime
+workspace under `.favn/install/runtime_root`. Runner and operator services then
+use those beams with `--no-compile` and without taking Mix's OS build lock; the
+shared build tree is read-only while they run. Consumer-config validation also
+uses the compiled transport module instead of compiling a generated decoder in
+each service process.
 
 `--root-dir` remains supported as a runtime-source override for install
 resolution. Local dev and reload then launch from the installed runtime
 workspace.
 
-Readiness is checked by TCP connection to configured service URLs.
+Readiness is checked through the configured loopback HTTP health endpoints.
 
 Phoenix asset watchers are managed by the `favn_view` endpoint during local dev.
 

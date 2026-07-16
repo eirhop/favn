@@ -22,6 +22,17 @@ defmodule Favn.Dev.RuntimeTreePolicy do
   @spec ignored_entries() :: [String.t()]
   def ignored_entries, do: @ignored_entries
 
+  @spec ignored_relative_entries() :: [[String.t()]]
+  def ignored_relative_entries, do: @ignored_relative_entries
+
+  @spec included_relative_path?(Path.t()) :: boolean()
+  def included_relative_path?(relative) when is_binary(relative) do
+    segments = Path.split(relative)
+
+    not Enum.any?(segments, &(&1 in @ignored_entries)) and
+      not Enum.any?(@ignored_relative_entries, &path_segments_start_with?(segments, &1))
+  end
+
   @spec reduce_required_entries(Path.t(), term(), (Path.t(), Path.t(), term() ->
                                                      {:ok, term()} | {:error, term()})) ::
           {:ok, term()} | {:error, term()}
@@ -88,5 +99,9 @@ defmodule Favn.Dev.RuntimeTreePolicy do
 
     path_length >= relative_length and
       Enum.slice(path_segments, path_length - relative_length, relative_length) == relative_segments
+  end
+
+  defp path_segments_start_with?(path_segments, relative_segments) do
+    Enum.take(path_segments, length(relative_segments)) == relative_segments
   end
 end

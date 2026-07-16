@@ -60,10 +60,17 @@ Test tiers:
 Useful commands:
 - Fast local-tooling slice: `MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser`
 - Local acceptance suite: `MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --only acceptance`
-- Full fast PR job: use the per-app commands in `.github/workflows/ci.yml`.
+- Full fast umbrella suite: `mix test --no-compile --timeout 1200000`.
 - Full acceptance suite: `mix test.acceptance`
 - Non-acceptance slow suite: `mix test.slow`
 - Test tag coverage guard: `elixir scripts/check_test_tag_tiers.exs`
+
+The root fast runner forwards ExUnit arguments to every app and reports all
+failing app slices. On Unix it runs children with native `/tmp` storage so WSL
+Windows-mounted temporary directories cannot change POSIX filesystem behavior.
+Dependency installation, generated-consumer execution, split-root lifecycle,
+and production artifact tests live only in the explicit slow or acceptance
+tiers.
 
 Single-node artifact invariant:
 - `dist_dir` is immutable after build. Runtime state must be written outside the

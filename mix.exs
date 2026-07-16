@@ -33,6 +33,7 @@ defmodule FavnUmbrella.MixProject do
   def cli do
     [
       preferred_envs: [
+        test: :test,
         "test.acceptance": :test,
         "test.slow": :test
       ]
@@ -53,31 +54,31 @@ defmodule FavnUmbrella.MixProject do
 
   defp aliases do
     [
-      test: Enum.map(test_apps(), &"do --app #{&1} test"),
-      "test.acceptance": ["do --app favn_local cmd mix test --no-compile --only acceptance"],
+      test: &test/1,
+      "test.acceptance": [
+        "do --app favn_local cmd mix test --no-compile --only acceptance --timeout 1200000"
+      ],
       "test.slow": [
-        "do --app favn cmd mix test --no-compile --only slow",
-        "do --app favn_local cmd mix test --no-compile --only slow"
+        "do --app favn cmd mix test --no-compile --only slow --timeout 1200000",
+        "do --app favn_local cmd mix test --no-compile --only slow --timeout 1200000"
       ]
     ]
   end
 
-  defp test_apps do
-    [
-      :favn_test_support,
-      :favn_core,
-      :favn_authoring,
-      :favn_azure,
-      :favn,
-      :favn_sql_runtime,
-      :favn_runner,
-      :favn_orchestrator,
-      :favn_storage_postgres,
-      :favn_storage_sqlite,
-      :favn_duckdb,
-      :favn_duckdb_adbc,
-      :favn_local,
-      :favn_view
-    ]
+  defp test(args) do
+    elixir =
+      System.find_executable("elixir") ||
+        Mix.raise("could not find the elixir executable required by the umbrella test runner")
+
+    case System.cmd(elixir, ["scripts/test_umbrella.exs" | args],
+           into: IO.stream(:stdio, :line),
+           stderr_to_stdout: true
+         ) do
+      {_stream, 0} ->
+        :ok
+
+      {_stream, status} ->
+        Mix.raise("umbrella fast tests failed (status=#{status})")
+    end
   end
 end

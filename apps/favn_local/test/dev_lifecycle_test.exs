@@ -32,6 +32,7 @@ defmodule Favn.Dev.LifecycleTest do
     %{root_dir: root_dir}
   end
 
+  @tag :slow
   @tag skip: if(@run_real_stack_lifecycle?, do: false, else: @real_stack_skip_reason)
   test "foreground lifecycle leaves lock free and supports second-terminal control" do
     root_dir = Path.expand("../../..", __DIR__)

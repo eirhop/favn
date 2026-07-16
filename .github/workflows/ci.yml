@@ -50,6 +50,9 @@ jobs:
       - name: Check test tag coverage
         run: elixir scripts/check_test_tag_tiers.exs
 
+      - name: Test umbrella runner
+        run: elixir scripts/umbrella_test_runner_test.exs
+
       - name: Check removed asset DSL forms
         run: elixir scripts/check_no_legacy_asset_dsl.exs
 
@@ -76,21 +79,7 @@ jobs:
       - name: Test
         env:
           MIX_ENV: test
-        run: |
-          mix do --app favn_test_support cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_core cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_authoring cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_azure cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_sql_runtime cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_runner cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_orchestrator cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_storage_postgres cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_storage_sqlite cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_duckdb cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_duckdb_adbc cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_view cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+        run: mix test --no-compile --timeout 1200000
 
       - name: Install pinned DuckDB ADBC driver
         run: |
