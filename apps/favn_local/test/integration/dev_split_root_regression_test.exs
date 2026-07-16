@@ -30,6 +30,7 @@ defmodule Favn.DevSplitRootRegressionTest do
 
     root_arg = ["--root-dir", repo_root]
 
+    {_deps_output, 0} = run_mix!(project_dir, ["deps.get", "--check-locked"])
     _ = run_mix!(project_dir, ["favn.stop" | root_arg], allow_failure: true)
     _ = run_mix!(project_dir, ["favn.reset" | root_arg], allow_failure: true)
 
