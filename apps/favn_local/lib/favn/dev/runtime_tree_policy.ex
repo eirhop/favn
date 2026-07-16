@@ -9,7 +9,9 @@ defmodule Favn.Dev.RuntimeTreePolicy do
     ".git",
     "_build",
     "cover",
-    "deps"
+    "deps",
+    "doc",
+    "tmp"
   ]
   @ignored_relative_entries [["apps", "favn_view", "priv", "static", "assets"]]
 
@@ -56,9 +58,12 @@ defmodule Favn.Dev.RuntimeTreePolicy do
     end)
   end
 
-  @spec reduce_child_entries(Path.t(), term(), (File.posix() -> term()), (
-                                Path.t(), String.t(), term() -> {:ok, term()} | {:error, term()}
-                              )) :: {:ok, term()} | {:error, term()}
+  @spec reduce_child_entries(Path.t(), term(), (File.posix() -> term()), (Path.t(),
+                                                                          String.t(),
+                                                                          term() ->
+                                                                            {:ok, term()}
+                                                                            | {:error, term()})) ::
+          {:ok, term()} | {:error, term()}
   def reduce_child_entries(path, acc, list_error, fun)
       when is_binary(path) and is_function(list_error, 1) and is_function(fun, 3) do
     case File.ls(path) do
@@ -98,7 +103,8 @@ defmodule Favn.Dev.RuntimeTreePolicy do
     relative_length = length(relative_segments)
 
     path_length >= relative_length and
-      Enum.slice(path_segments, path_length - relative_length, relative_length) == relative_segments
+      Enum.slice(path_segments, path_length - relative_length, relative_length) ==
+        relative_segments
   end
 
   defp path_segments_start_with?(path_segments, relative_segments) do

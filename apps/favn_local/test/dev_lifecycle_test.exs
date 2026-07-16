@@ -4,13 +4,10 @@ defmodule Favn.Dev.LifecycleTest do
   @moduletag :integration
 
   alias Favn.Dev
-  alias Favn.Dev.Config
   alias Favn.Dev.Lock
-  alias Favn.Dev.NodeControl
   alias Favn.Dev.Paths
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.RuntimeLaunch
-  alias Favn.Dev.Secrets
   alias Favn.Dev.State
 
   @run_real_stack_lifecycle? System.get_env("FAVN_RUN_DEV_LIFECYCLE") == "1" and
@@ -98,62 +95,38 @@ defmodule Favn.Dev.LifecycleTest do
     assert {:ok, %{"error" => _}} = State.read_last_failure(root_dir: root_dir)
   end
 
-  test "staged runner startup failure stops the already-started runner", %{root_dir: root_dir} do
-    cookie = "favn_staged_cleanup_cookie"
+  test "staged runner startup timeout cleans partial startup state", %{root_dir: root_dir} do
     root_dir = root_with_free_distribution_ports(root_dir)
 
-    case NodeControl.ensure_local_node_started(cookie) do
-      :ok ->
-        runtime_root = Path.expand("../../..", __DIR__)
+    [runner_spec, operator_spec] = service_specs(root_dir)
+    observer_table = :ets.new(:service_started_observer, [:set, :public])
 
-        assert :ok = State.ensure_layout(root_dir: root_dir)
+    {elapsed_us, result} =
+      :timer.tc(fn ->
+        Dev.dev(
+          root_dir: root_dir,
+          orchestrator_port: free_port(),
+          web_port: free_port(),
+          skip_install_check: true,
+          skip_runtime_compile: true,
+          skip_web_build: true,
+          skip_bootstrap: true,
+          skip_readiness: true,
+          runner_wait_node_name: "missing_runner@nohost",
+          runner_wait_timeout_ms: 100,
+          service_started_observer: &:ets.insert(observer_table, {&1.name, &1}),
+          service_specs_override: %{runner: runner_spec, operator: operator_spec}
+        )
+      end)
 
-        assert :ok =
-                 State.write_install_runtime(
-                   %{
-                     "schema_version" => 1,
-                     "resolved_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
-                     "source_kind" => "test",
-                     "source_root" => runtime_root,
-                     "materialized_root" => runtime_root,
-                     "runner_root" => runtime_root,
-                     "orchestrator_root" => runtime_root,
-                     "web_root" => Path.join(runtime_root, "apps/favn_view")
-                   },
-                   root_dir: root_dir
-                 )
+    assert {:error, {:runner_node_unreachable, :missing_runner@nohost}} = result
+    assert elapsed_us < 5_000_000
 
-        runner_full = expected_runner_full(root_dir)
+    assert [{"runner", %{pid: runner_pid}}] = :ets.lookup(observer_table, "runner")
+    refute DevProcess.alive?(runner_pid)
 
-        try do
-          assert {:error, {:runner_node_unreachable, :missing_runner@nohost}} =
-                   Dev.dev(
-                     root_dir: root_dir,
-                     orchestrator_port: free_port(),
-                     web_port: free_port(),
-                     skip_install_check: true,
-                     skip_runtime_compile: true,
-                     skip_web_build: true,
-                     skip_bootstrap: true,
-                     skip_readiness: true,
-                     runner_wait_node_name: "missing_runner@nohost",
-                     runner_wait_timeout_ms: 100
-                   )
-
-          assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
-          assert {:ok, %{"error" => _}} = State.read_last_failure(root_dir: root_dir)
-
-          assert :ok =
-                   wait_until(fn ->
-                     :net_adm.ping(String.to_atom(runner_full)) == :pang
-                   end)
-        after
-          stop_remote_node(runner_full, root_dir)
-        end
-
-      {:error, _reason} ->
-        :ok
-    end
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+    assert {:ok, %{"error" => _}} = State.read_last_failure(root_dir: root_dir)
   end
 
   test "dev auto-clears stale runtime before continuing", %{root_dir: root_dir} do
@@ -346,6 +319,7 @@ defmodule Favn.Dev.LifecycleTest do
                orchestrator_port: free_port(),
                web_port: free_port(),
                storage: :postgres,
+               postgres_connect_timeout_ms: 50,
                postgres: [
                  hostname: "127.0.0.1",
                  port: 1,
@@ -484,18 +458,23 @@ defmodule Favn.Dev.LifecycleTest do
     [runner_spec, operator_spec] =
       service_specs(root_dir, runner_args: ["-lc", "exit 23"])
 
-    assert {:error, {:service_exit, "runner", 23}} =
-             Dev.dev(
-               root_dir: root_dir,
-               orchestrator_port: free_port(),
-               web_port: free_port(),
-               skip_install_check: true,
-               skip_bootstrap: true,
-               skip_readiness: true,
-               runner_wait_node_name: "missing_runner@nohost",
-               runner_wait_timeout_ms: 2_000,
-               service_specs_override: %{runner: runner_spec, operator: operator_spec}
-             )
+    {elapsed_us, result} =
+      :timer.tc(fn ->
+        Dev.dev(
+          root_dir: root_dir,
+          orchestrator_port: free_port(),
+          web_port: free_port(),
+          skip_install_check: true,
+          skip_bootstrap: true,
+          skip_readiness: true,
+          runner_wait_node_name: "missing_runner@nohost",
+          runner_wait_timeout_ms: 2_000,
+          service_specs_override: %{runner: runner_spec, operator: operator_spec}
+        )
+      end)
+
+    assert {:error, {:service_exit, "runner", 23}} = result
+    assert elapsed_us < 5_000_000
 
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
   after
@@ -569,29 +548,6 @@ defmodule Favn.Dev.LifecycleTest do
   end
 
   defp short_host?(host) when is_binary(host), do: host != "" and not String.contains?(host, ".")
-
-  defp expected_runner_full(root_dir) do
-    suffix = Integer.to_string(:erlang.phash2(root_dir, 1_000_000))
-    runner_short = "favn_runner_#{suffix}"
-    {:ok, runner_full} = NodeControl.shortname_to_full(runner_short)
-    runner_full
-  end
-
-  defp stop_remote_node(runner_full, root_dir) when is_binary(runner_full) do
-    with {:ok, secrets} <- Secrets.resolve(Config.resolve(), root_dir: root_dir),
-         cookie when is_binary(cookie) <- secrets["rpc_cookie"] do
-      runner_node = String.to_atom(runner_full)
-      true = Node.set_cookie(runner_node, String.to_atom(cookie))
-
-      if Node.connect(runner_node) do
-        _ = :erpc.call(runner_node, :init, :stop, [], 2_000)
-      end
-    else
-      _ -> :ok
-    end
-  catch
-    :exit, _reason -> :ok
-  end
 
   defp wait_until(fun, attempts \\ 120)
   defp wait_until(_fun, 0), do: {:error, :timeout}

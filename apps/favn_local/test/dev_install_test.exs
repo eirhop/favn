@@ -18,6 +18,10 @@ defmodule Favn.Dev.InstallTest do
     File.write!(Path.join(root_dir, "apps/favn_runner/_build/dev/lib/generated/file"), "beam")
     File.mkdir_p!(Path.join(root_dir, "apps/favn_runner/deps/generated"))
     File.write!(Path.join(root_dir, "apps/favn_runner/deps/generated/file"), "dep")
+    File.mkdir_p!(Path.join(root_dir, "apps/favn_runner/doc/generated"))
+    File.write!(Path.join(root_dir, "apps/favn_runner/doc/generated/index.html"), "docs")
+    File.mkdir_p!(Path.join(root_dir, "apps/favn_runner/tmp/generated"))
+    File.write!(Path.join(root_dir, "apps/favn_runner/tmp/generated/file"), "temporary")
 
     File.write!(
       Path.join(root_dir, "apps/favn_runner/mix.exs"),
@@ -67,19 +71,17 @@ defmodule Favn.Dev.InstallTest do
              Path.join(root_dir, ".favn/install/runtime_root/apps/favn_orchestrator/mix.exs")
            )
 
-    assert File.exists?(
-             Path.join(root_dir, ".favn/install/runtime_root/apps/favn_view/mix.exs")
-           )
+    assert File.exists?(Path.join(root_dir, ".favn/install/runtime_root/apps/favn_view/mix.exs"))
 
     refute File.exists?(
              Path.join(root_dir, ".favn/install/runtime_root/apps/favn_view/priv/static/assets")
            )
 
-    refute File.exists?(
-             Path.join(root_dir, ".favn/install/runtime_root/apps/favn_runner/_build")
-           )
+    refute File.exists?(Path.join(root_dir, ".favn/install/runtime_root/apps/favn_runner/_build"))
 
     refute File.exists?(Path.join(root_dir, ".favn/install/runtime_root/apps/favn_runner/deps"))
+    refute File.exists?(Path.join(root_dir, ".favn/install/runtime_root/apps/favn_runner/doc"))
+    refute File.exists?(Path.join(root_dir, ".favn/install/runtime_root/apps/favn_runner/tmp"))
   end
 
   test "run/1 returns already_installed when fingerprint matches", %{root_dir: root_dir} do
