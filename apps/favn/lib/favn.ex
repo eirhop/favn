@@ -25,6 +25,22 @@ defmodule Favn do
   `@freshness`; read `Favn.Freshness` and `Favn.Freshness.Policy` for the
   authoring contract.
 
+  ## Runner lifecycle extensions
+
+  Consumer-owned services that must run inside the isolated execution runtime
+  use the public `Favn.Runner.Plugin` lifecycle. The no-boilerplate path is
+  `Favn.Runner.SupervisedChildren`. Both are configured with `config :favn,
+  runner_plugins: [...]`; consumers do not depend on the internal
+  `:favn_runner` application. Custom plugins can explicitly declare packaged
+  OTP applications that the isolated runner must start before their children.
+
+  Plugin processes are suitable for rebuildable runner-local caches, sessions,
+  pools, and rate limiters. They are not durable storage or a correctness-safe
+  way to pass data between asset runs. Read
+  [Runner Plugins And Runner-Local Services](runner-plugins.html).
+  That guide also documents cached Azure managed-identity injection for
+  DuckLake metadata backed by Azure Database for PostgreSQL.
+
   ## Runtime-dependent helpers
 
   This module also keeps callable helper functions for SQL runtime operations,
@@ -117,6 +133,8 @@ defmodule Favn do
 
   - `Favn.AI`
   - `Favn.SQLClient`
+  - `Favn.Runner.Plugin`
+  - `Favn.Runner.SupervisedChildren`
   - `Favn.Freshness`
   - task-specific DSL modules such as `Favn.Asset`, `Favn.SQLAsset`,
     `Favn.Pipeline`, and `Favn.Dev`

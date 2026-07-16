@@ -32,6 +32,14 @@ keeps warm sessions only inside the current runner BEAM. Pool reuse must be keye
 by connection identity/config hash, required catalog/resource sets, and adapter fingerprint.
 DuckDB adapters extend that fingerprint with selected file content and parameter
 fingerprints.
+Deferred `Favn.RuntimeValue` session-script parameters resolve immediately
+before plan rendering. Secret refs are redacted like secret environment refs,
+and the resolved value contributes only a hash to session-pool identity. A
+credential refresh therefore selects a different pool key rather than reusing a
+session initialized with the old credential. The pool tracks the latest adapter
+fingerprint for each stable connection/requirements scope, evicts superseded
+idle sessions, and closes superseded active sessions on checkin. This releases
+finite admission leases before replacement bootstrap.
 Checked-out sessions remain exclusive to one asset execution at a time; the pool
 is not a distributed coordinator and does not increase configured write/catalog
 concurrency. The SQL client enforces checkout ownership, so copied session structs
@@ -45,9 +53,9 @@ session reuse safe. If the relevant policy is unlimited, same-key fresh creation
 stays conservative unless a finite catalog policy such as DuckLake
 `write_concurrency` is configured.
 Idle pooled sessions retain catalog admission until reuse or eviction. That keeps
-physical pooled sessions inside the configured catalog budget, but with finite
-catalog concurrency an idle session for one pool key can block a different pool
-key that needs the same catalog until the idle session is reused or closed.
+physical pooled sessions inside the configured catalog budget. Superseded
+fingerprints in the same stable pool scope are evicted automatically; unrelated
+incompatible scopes can still compete for the same finite catalog capacity.
 
 Catalog-level admission is driven by materialization write plans whose target
 relations include a catalog. Session bootstrap can also acquire catalog permits

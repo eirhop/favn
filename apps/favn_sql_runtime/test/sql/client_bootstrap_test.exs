@@ -195,7 +195,7 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     def poolable?(%Resolved{}, _opts), do: true
 
     @impl true
-    def pool_fingerprint(%Resolved{}, _opts), do: :test_pool_adapter
+    def prepare_pool(%Resolved{}, _opts), do: {:ok, :test_pool_adapter, nil}
 
     @impl true
     def concurrency_policies(%Resolved{} = resolved) do

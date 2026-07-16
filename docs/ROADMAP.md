@@ -70,7 +70,9 @@ Based on the current feature audit, the main path to a stable production `v1` is
   gates; current diffs remain review evidence rather than an implicit blocker.
 - A richer operator web experience once the current boundary and auth models are stable.
 - Richer landed-data inspection beyond the curated local preview, such as broader DuckLake snapshot metadata, pagination, and optional local-only SQL console behind an explicit feature flag.
-- More storage adapters and runner plugins beyond the current built-in set.
+- More storage adapters and runner plugins beyond the current DuckDB and Azure
+  lifecycle examples, including AWS credential providers when a real consumer
+  integration defines the required service-specific semantics.
 - Additional API-triggered or externally triggered execution flows.
 - Distributed execution and resource-aware scheduling beyond the orchestrator-owned execution admission contract.
 - Deeper observability, diagnostics, and operator tooling.

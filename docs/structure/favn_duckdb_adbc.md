@@ -39,6 +39,11 @@ The adapter does not generate or allowlist DuckDB setup statements.
 contain only resource mapping, `write_concurrency`, and optional `write_scope`.
 Scripts must be idempotent and retry-safe because partial execution can be
 followed by fresh-session retry.
+Supported deferred `Favn.RuntimeValue` parameters resolve during session
+planning. Secret values are redacted and their hashes participate in pool
+identity; provider packages remain outside this adapter. The Azure PostgreSQL
+regression path proves a cached Entra token is reused with a warm physical
+session, then refreshes and bootstraps a replacement ADBC session after expiry.
 DuckLake catalogs backed by PostgreSQL metadata can use multiple PostgreSQL
 backend connections per concurrent DuckLake writer; observed deployments used
 about three. Size DuckLake `write_concurrency` with that multiplier and leave

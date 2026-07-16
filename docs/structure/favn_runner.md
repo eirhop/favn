@@ -9,6 +9,12 @@ Code:
 - `apps/favn_runner/lib/favn_runner/`
 - `apps/favn_runner/lib/favn_runner/production_runtime_config.ex` owns
   runner-side production env validation for the first local single-node setup
+- `apps/favn_runner/lib/favn_runner/plugin_loader.ex` consumes the public
+  `Favn.Runner.Plugin` contract with explicit packaged-application startup,
+  bounded callback and child-spec expansion, plugin/child counts, duplicate-id
+  rejection, and redacted errors
+- `apps/favn_runner/lib/favn_runner/extension_supervisor.ex` owns the dedicated
+  plugin child subtree that starts before connection and execution services
 - `apps/favn_runner/lib/favn_runner/sql_runtime_preflight.ex` validates planned SQL
   connection runtime config from explicit runner work planned scope before worker
   execution begins
@@ -49,6 +55,16 @@ timeouts, manifest registration/resolution, plugin config, SQL asset execution,
 SQL asset materialization planning, runner production config validation,
 runner-owned inspection, or runner-side normalization into shared work/result,
 error, and cancellation contracts.
+
+Consumer and integration packages implement `Favn.Runner.Plugin` from
+`favn_core`; they never depend on this internal app merely to extend the runner
+lifecycle. The root uses `:rest_for_one` ordering with the extension supervisor
+first. A plugin subtree failure therefore cannot leave later runner services
+operating without their required lifecycle dependencies.
+
+Plugin state is runner-local and disposable. It may cache credentials, sessions,
+pools, rate limits, or other rebuildable operational state, but cannot be a
+durable or cross-run correctness channel.
 
 Checked SQL assets are coordinated by `Favn.SQLAsset.Runtime`: target existence,
 optional candidate staging, ordered before checks, the write plan, ordered after

@@ -41,6 +41,8 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
   bundled local/in-memory DuckDB execution
 - `{:favn_duckdb_adbc, ...}` is the supported ADBC-backed DuckDB plugin for
   deployments that need explicit DuckDB shared-library/driver control
+- `{:favn_azure, ...}` is the optional runner credential plugin for cached Azure
+  CLI and managed-identity access tokens
 - storage, orchestrator, runner, local tooling, and web apps are internal runtime
   or product components, not ordinary user dependencies
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.runs`, `mix favn.logs`, `mix favn.inspect`, `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
@@ -71,6 +73,8 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - local runtime workflow support for authoring, safe landed-data inspection, and orchestration
 - SQL-aware asset authoring with reusable SQL definitions and relation references
 - public SQL client access for named Favn connections via `Favn.SQLClient`
+- a public `Favn.Runner.Plugin` lifecycle for consumer-owned supervised caches,
+  pools, sessions, and rate limiters inside isolated runners
 - DuckDB connection bootstrap for DuckDB catalog files and DuckLake sessions, including extension load, Azure credential-chain secrets, keyed DuckDB/DuckLake attaches, catalog selection, and catalog-level write admission
 - an ADBC-backed DuckDB SQL adapter with bounded query results and explicit external-output expectations for large data
 
@@ -584,6 +588,49 @@ credential so its config and old physical sessions are both replaced. Local
 development can use `mix favn.reload`, which restarts the runner and reevaluates
 runtime config.
 
+Consumer services needed inside an isolated runner use the public runner plugin
+lifecycle. The simple path accepts ordinary OTP child specs:
+
+```elixir
+config :favn,
+  runner_plugins: [
+    {Favn.Runner.SupervisedChildren,
+     children: [MyApp.RuntimeCache, MyApp.ApiSession]}
+  ]
+```
+
+Implement `Favn.Runner.Plugin` when child specs depend on validated options. Its
+optional `applications/1` callback declares packaged OTP applications that must
+start first in an isolated runner. Children start before asset work and follow
+normal OTP restart semantics. Their state is runner-local and disposable: use
+it for rebuildable caches, sessions, pools, and rate limiting, never durable
+business data or correctness-sensitive communication between runs.
+
+The optional Azure package uses that lifecycle for one shared token cache:
+
+```elixir
+config :favn,
+  runner_plugins: [
+    Favn.Azure.RunnerPlugin,
+    {FavnDuckdb, execution_mode: :in_process}
+  ]
+
+{:ok, token} =
+  Favn.Azure.Credentials.fetch_access_token(
+    "https://vault.azure.net",
+    provider: :managed_identity
+  )
+```
+
+Concurrent callers reuse one fetch per resource, identity, and provider
+configuration. Global fetch work, per-key waiters, entries, request sizes, and
+timeouts are bounded. The cache refreshes before expiry and never returns an
+expired token. DuckDB session-script params can use
+`Favn.Azure.Credentials.token_ref/2`; the ref resolves once per pool-identity
+decision, is reused for bootstrap, is always treated as secret, and changes pool
+identity when refreshed. Read
+[Runner Plugins And Runner-Local Services](apps/favn/guides/runner-plugins.md).
+
 DuckDB runtime config separates the opened DuckDB session database from native
 session setup. Use trusted SQL files for `INSTALL`, `LOAD`, `SET`,
 `CREATE SECRET`, `ATTACH`, `USE`, and future DuckDB syntax instead of a
@@ -656,6 +703,12 @@ exclusive to its checkout owner process; the shared SQL client rejects non-owner
 operations and disconnect attempts. Existing catalog/write concurrency still
 bounds active work and new session bootstrap, so enabling pooling does not
 increase write concurrency.
+
+If a deferred credential changes while the stable connection and resource scope
+stays the same, Favn evicts the superseded idle session and closes an active old
+generation on checkin. Its admission lease is released before replacement
+bootstrap, which lets DuckLake PostgreSQL metadata sessions adopt a refreshed
+Entra token without waiting for the normal idle timeout.
 
 If `required_catalogs` is omitted for a connection with configured catalog
 policies, Favn treats bootstrap as all-catalog bootstrap and acquires every

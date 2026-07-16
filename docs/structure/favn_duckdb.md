@@ -41,6 +41,12 @@ retry-safe session preparation without durable business writes or external side
 effects. The runtime validates file locators and exact value parameters but does
 not interpret arbitrary DuckDB SQL. Operators set an explicit catalog
 `write_scope` when aliases or named connections share backend capacity.
+Supported deferred `Favn.RuntimeValue` parameters resolve during session
+planning. Secret values are redacted and their hashes participate in pool
+identity; the optional Azure credential ref uses this without adding an Azure
+dependency to the DuckDB adapter. Refreshed fingerprints supersede idle physical
+sessions in the same stable pool scope, releasing their admission leases before
+replacement bootstrap.
 DuckLake catalogs backed by PostgreSQL metadata can use multiple PostgreSQL
 backend connections per concurrent DuckLake writer; observed deployments used
 about three. Size DuckLake `write_concurrency` with that multiplier and leave
