@@ -36,7 +36,7 @@ defmodule Favn.SQL do
         use MyApp.SQL.Reporting
         use Favn.SQLAsset
 
-        @materialized :view
+        materialized :view
 
         query do
           ~SQL"select * from orders_in_window(@window_start, @window_end)"
@@ -47,7 +47,7 @@ defmodule Favn.SQL do
 
   - keep `defsql` definitions small and composable
   - prefer `~SQL` literals over string interpolation
-  - keep runnable asset concerns such as `@materialized` and `@window` in
+  - keep runnable asset concerns such as `materialized` and `window` in
     `Favn.SQLAsset`, not in the reusable SQL provider module
   - `query` and `target` are reserved definition names; inside a SQL asset
     check, `query()` means the exact staged candidate and `target()` means the

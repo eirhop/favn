@@ -74,7 +74,7 @@ Rules:
   catalogs for inspection and maintenance compatibility. Pass an explicit list,
   including `[]`, for least-privilege setup.
 - `required_resources` selects exact trusted native SQL files. SQL assets should
-  use `@resources` so the requirement is visible in the manifest.
+  use `resources` so the requirement is visible in the manifest.
 
 DuckDB startup and selected resources run only when a physical session is
 created, before client SQL. A compatible pooled session can be reused later
@@ -159,9 +159,9 @@ defmodule MyApp.Lakehouse.Raw.Sales.Orders do
   runtime_config :source,
     token: secret_env!("SOURCE_TOKEN")
 
-  @relation true
+  relation true
   def asset(ctx) do
-    rows = MyApp.SourceClient.fetch_orders(ctx.config.source.token)
+    rows = MyApp.SourceClient.fetch_orders(ctx.runtime_config.source.token)
 
     Favn.SQLClient.with_required_catalogs(ctx.asset.relation, fn ->
       Favn.SQLClient.with_connection(ctx.asset.relation.connection, [], fn session ->

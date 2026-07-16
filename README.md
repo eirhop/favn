@@ -194,13 +194,16 @@ defmodule MyDataPlatform.Lakehouse.Raw.Sales.Orders do
   use Favn.Asset
 
   @doc "Fetch, normalize, and write raw orders."
-  @meta owner: "data-platform", category: :sales, tags: [:raw]
+  settings endpoint: "/orders"
+  meta owner: "data-platform"
+  meta category: :sales, tags: [:raw]
   runtime_config :source_system,
     segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
     token: secret_env!("SOURCE_SYSTEM_TOKEN")
-  @relation true
+  relation true
   def asset(ctx) do
-    _segment_id = ctx.config.source_system.segment_id
+    _segment_id = ctx.runtime_config.source_system.segment_id
+    _endpoint = ctx.asset.settings.endpoint
     :ok
   end
 end
@@ -210,8 +213,8 @@ Namespace defaults are inherited from parent modules. The recommended default is
 `connections/important_lakehouse.ex` for server/session/auth configuration,
 `lakehouse.ex` for the connection namespace, `lakehouse/raw.ex` or
 `lakehouse/mart.ex` for lakehouse phase catalogs, `lakehouse/raw/sales.ex` for a
-segment/domain schema, and leaf files for assets. `@relation true` is the normal
-leaf-module path, while `@relation [name: "..."]` overrides only the relation
+segment/domain schema, and leaf files for assets. `relation true` is the normal
+leaf-module path, while `relation [name: "..."]` overrides only the relation
 name. SQL asset namespace inheritance is finalized during explicit asset/manifest
 compilation, so parent namespace modules do not need to compile before child SQL
 asset modules in the same parallel compiler batch. Use your own phase names,
@@ -221,7 +224,7 @@ segment/domain, and table/view is the asset name.
 Keep asset-specific logic near the asset; move code to `integrations/` or `sql/`
 only when it is transport-specific or genuinely reusable.
 
-Asset `@meta` category and tag values are manifest labels. You may author them as
+Asset `meta` category and tag values are manifest labels. You may author them as
 atoms or strings, but persisted manifests normalize them to strings so pipeline
 selectors behave the same before and after JSON persistence without creating
 atoms from stored label data.
@@ -253,8 +256,8 @@ descendant executable Elixir asset genuinely requires them.
 
 Manifests record environment keys and secret/required flags, but never resolved
 values. The runner resolves only the selected asset's manifest requirements and
-exposes them through `ctx.config`. This is the only public access path for
-resolved asset config; pass narrow maps such as `ctx.config.github` explicitly
+exposes them through `ctx.runtime_config`. This is the only public access path for
+resolved asset config; pass narrow maps such as `ctx.runtime_config.github` explicitly
 to helper code. Missing required values fail before asset code runs. Favn
 redacts supported structured results and diagnostics, but cannot redact
 arbitrary logs emitted directly by asset or third-party code, so do not log
@@ -262,12 +265,12 @@ resolved secrets.
 
 Keep named SQL adapter/session settings under Favn connection configuration.
 Keep process-wide telemetry and plugin settings under the owning OTP
-application's boot configuration. Neither belongs in asset `ctx.config` merely
+application's boot configuration. Neither belongs in asset `ctx.runtime_config` merely
 to make it globally accessible.
 
-Assets can also declare freshness with `@freshness`, for example `@freshness :daily`,
-`@freshness {:daily, timezone: "Europe/Oslo"}`, `@freshness [max_age: {:hours, 6}]`,
-or `@freshness :always`. Windowed assets default to exact window-success freshness.
+Assets can also declare freshness with `freshness`, for example `freshness :daily`,
+`freshness {:daily, timezone: "Europe/Oslo"}`, `freshness [max_age: {:hours, 6}]`,
+or `freshness :always`. Windowed assets default to exact window-success freshness.
 During pipeline execution, the orchestrator records latest freshness state, skips
 fresh nodes under the selected refresh policy, and keeps stale explanations as an
 internal control-plane query surface.
@@ -284,7 +287,7 @@ Read `Favn.Freshness` as the breadcrumb module for freshness concepts and
 `Favn.Freshness.Key` when you need the stable keys used by orchestrator state.
 
 For source-system raw landing assets, keep the source client outside the asset,
-read source IDs/tokens through `ctx.config`, write raw rows through
+read source IDs/tokens through `ctx.runtime_config`, write raw rows through
 `Favn.SQLClient`, and return structured metadata such as row counts, mode,
 relation, load timestamp, and hashed source identity. The standalone tutorial in
 `examples/basic-workflow-tutorial` shows this pattern with a full-refresh raw
@@ -311,9 +314,11 @@ defmodule MyDataPlatform.Lakehouse.Mart.Sales.OrderSummary do
 
   use Favn.SQLAsset
 
-  @meta owner: "analytics", category: :sales, tags: [:mart]
-  @depends MyDataPlatform.Lakehouse.Raw.Sales.Orders
-  @materialized :view
+  meta owner: "analytics"
+  meta category: :sales
+  meta tags: [:mart]
+  depends MyDataPlatform.Lakehouse.Raw.Sales.Orders
+  materialized :view
 
   query do
     ~SQL"""
@@ -330,7 +335,7 @@ are read as `schema.table`; three-part names are read as
 also include schema, so `raw.orders` is treated as `schema.table`, not
 `catalog.table`; use `raw.sales.orders` for catalog/schema/table. When a
 reference resolves to an owned asset relation on the same connection, Favn
-infers the dependency automatically. Use `@depends` when the dependency is not
+infers the dependency automatically. Use `depends` when the dependency is not
 visible in SQL or cannot be resolved from owned relations.
 DuckDB-backed SQL materialization creates the owned target schema when needed
 before creating the table or view. DuckDB appender materialization treats a
@@ -364,7 +369,7 @@ end
 ```
 
 Declare it once before the query with
-`@runtime_inputs MyDataPlatform.Lakehouse.Raw.Orders.Inputs`. Returned values use
+`runtime_inputs MyDataPlatform.Lakehouse.Raw.Orders.Inputs`. Returned values use
 the normal `@name` SQL placeholder and adapter binding path, including through
 nested `defsql`; they cannot add SQL source. The resolver module reference is
 stored in the manifest. Resolution is bounded to 30 seconds and by the remaining
@@ -374,7 +379,7 @@ run/node pin; automatic attempts and safe restart recovery reuse it. Mark
 secret-bearing names with `sensitive_params`; SQLite/Postgres require a valid
 `runtime_input_pin_key` for protected persistence and fail before materializing
 instead of storing sensitive parameters as plaintext.
-The module attribute is the only supported declaration; anonymous functions,
+The declaration macro is the only supported form; anonymous functions,
 captures, MFA tuples, and inline resolver blocks are not accepted. Read
 [Runtime Inputs For SQL Assets](apps/favn/guides/sql-runtime-inputs.md) for the
 full callback, result/error, limits, protection, pinning, and replay contract.
@@ -382,7 +387,7 @@ full callback, result/error, limits, protection, pinning, and replay contract.
 ### Retry, rerun, and replay
 
 Node retries are configured with one typed policy: pipeline `retry` supplies a
-default, asset/SQL `@retry` overrides it, and an explicit operator
+default, asset/SQL `retry` overrides it, and an explicit operator
 `retry_policy` overrides both. `max_attempts` includes the first attempt and
 defaults to `1`. Fixed and bounded exponential backoff are supported, including
 bounded jitter and typed retry-after hints.
@@ -515,9 +520,9 @@ config :favn,
 defmodule MyDataPlatform.Lakehouse.Raw.GitHub.PullRequests do
   use Favn.Asset
 
-  @execution_pool :github_api
+  execution_pool :github_api
   def asset(ctx) do
-    MyDataPlatform.GitHub.fetch_pull_requests(ctx.config.github)
+    MyDataPlatform.GitHub.fetch_pull_requests(ctx.runtime_config.github)
   end
 end
 
@@ -535,7 +540,7 @@ end
 `max_concurrency` is per pipeline run. `execution_pool` is global to the
 orchestrator; every admitted asset step using the same pool consumes a shared
 slot until the step finishes, fails, is cancelled, or times out. Asset-level
-`@execution_pool` overrides the pipeline default for that asset. The reserved
+`execution_pool` overrides the pipeline default for that asset. The reserved
 `:global` pool, when configured, applies to every admitted asset step. Declared
 execution pools must be configured; unknown pools fail closed instead of running
 unprotected.
@@ -658,7 +663,7 @@ duckdb: [
 ]
 ```
 
-SQL assets request stable names with `@resources [:landing_storage]`; namespaces
+SQL assets request stable names with `resources [:landing_storage]`; namespaces
 may add resources for all descendant SQL assets. Both session-script and asset
 SQL values use `@name`, but script values come only from that script's configured
 `params`. `{:priv, :my_app, "duckdb/startup.sql"}` means the path is relative to
@@ -892,7 +897,7 @@ local path dependencies back to `apps/favn` and `apps/favn_duckdb`, and has its
 own compile/test workflow. The embedded tutorial also exercises the
 `mix favn.install` and `mix favn.dev` local-tooling loop from a consumer-style
 project. Its raw orders asset is the canonical source-system landing example:
-it resolves a source segment and token through `ctx.config`, calls a small source
+it resolves a source segment and token through `ctx.runtime_config`, calls a small source
 client, lands JSON rows into DuckDB through `Favn.SQLClient`, and returns
 structured run metadata for inspection.
 
@@ -1211,15 +1216,46 @@ part of the stable `v1` contract unless they are documented here or in
   `capabilities/1`, `relation/2`, `columns/2`, `with_connection/2,3`, and
   `disconnect/1`
 
-`Favn.Assets` remains available as a compatibility-only authoring DSL for compact
-multi-asset modules. Prefer `Favn.Asset` for new single assets and
-`Favn.MultiAsset` for generated or repetitive multi-asset modules. Multi-assets
-support module-level `runtime_config/1,2`; each generated asset carries the same
-runtime config declarations and shared runtime code reads resolved values from
-`ctx.config`. At runtime, Favn rehydrates `ctx.asset.config.rest` structural keys
-and known Favn enum fields for idiomatic access. Arbitrary adapter-specific
-`rest.extra` payload keys and static `rest.params` entries remain
-manifest/JSON-shaped unless Favn explicitly supports that key.
+Use `Favn.Asset` for one Elixir asset, `Favn.SQLAsset` for one SQL asset,
+`Favn.Source` for an external relation, and `Favn.MultiAsset` when several
+generated assets share one Elixir runtime. The obsolete `Favn.Assets` function
+attribute DSL has been removed.
+
+All asset forms use the same declaration vocabulary. Non-secret static values
+go in `settings`; runtime code reads them from `ctx.asset.settings`. MultiAsset
+module-level declarations become defaults, while child declarations add or
+shallowly override them:
+
+```elixir
+defmodule MyDataPlatform.Mercatus do
+  use Favn.MultiAsset
+
+  settings method: "GET"
+  meta owner: "data-platform"
+  execution_pool :mercatus_api
+
+  asset :orders do
+    description "Extract orders."
+    settings path: "/orders"
+  end
+
+  asset :events do
+    description "Extract events."
+    settings path: "/events"
+    freshness :daily
+  end
+
+  @doc "Execute one generated extraction."
+  def asset(ctx), do: MyDataPlatform.Client.extract(ctx.asset.settings, ctx)
+end
+```
+
+Pipeline `settings` are available at `ctx.pipeline.settings`; per-run inputs are
+available at `ctx.params`. Environment-dependent values and secrets use
+`runtime_config` and are resolved separately into `ctx.runtime_config`. Metadata
+remains descriptive and is not a configuration bag; pipeline metadata keys
+normalize to strings. Top-level settings keys are atoms; nested maps retain a
+JSON-safe shape with string keys.
 
 ## Documentation
 

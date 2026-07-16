@@ -16,8 +16,8 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Customers do
 
   - `use Favn.Namespace` is enough here because connection and schema are
     inherited from parent namespace modules.
-  - `@relation true` uses default relation name `customers`.
-  - `@depends` declares upstream requirements for this Elixir asset.
+  - `relation true` uses default relation name `customers`.
+  - `depends` declares upstream requirements for this Elixir asset.
   - the asset passes only `ctx.asset.relation` into the DuckDB client, because
     that client only needs relation metadata.
 
@@ -30,7 +30,7 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Customers do
 
   Alternative:
 
-  - You can set `@relation [name: "raw_customers"]` for explicit naming.
+  - You can set `relation [name: "raw_customers"]` for explicit naming.
   - You can switch back to `Favn.SQLAsset` if you want all logic inline as SQL.
   """
 
@@ -40,9 +40,9 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Customers do
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
   alias FavnReferenceWorkload.Client.FakeAPI
 
-  @meta owner: "reference-workload", category: :customers, tags: [:raw, :synthetic]
-  @depends FavnReferenceWorkload.Warehouse.Sources.CountryRegions
-  @relation true
+  meta owner: "reference-workload", category: :customers, tags: [:raw, :synthetic]
+  depends FavnReferenceWorkload.Warehouse.Sources.CountryRegions
+  relation true
   def asset(ctx) do
     with {:ok, rows} <- FakeAPI.fetch_rows(:customers) do
       DuckDBJSONLoader.replace_relation_from_rows(

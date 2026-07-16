@@ -54,6 +54,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
       module_atom(Map.get(asset, "module")),
       manifest_atom(Map.get(asset, "name")),
       manifest_atom(Map.get(asset, "execution_pool")),
+      settings_atoms(Map.get(asset, "settings")),
       ref_atoms(Map.get(asset, "ref")),
       refs_atoms(Map.get(asset, "depends_on")),
       refs_atoms(Map.get(asset, "relation_inputs"))
@@ -67,6 +68,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
       module_atom(Map.get(pipeline, "module")),
       manifest_atom(Map.get(pipeline, "name")),
       manifest_atom(Map.get(pipeline, "execution_pool")),
+      manifest_atom(Map.get(pipeline, "source")),
+      manifest_atoms(Map.get(pipeline, "outputs")),
+      settings_atoms(Map.get(pipeline, "settings")),
       selector_atoms(Map.get(pipeline, "selectors"))
     ])
   end
@@ -96,6 +100,12 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
 
   defp selector_atoms(selectors) when is_list(selectors), do: collect(selectors, &selector_atom/1)
   defp selector_atoms(_selectors), do: {:ok, []}
+
+  defp settings_atoms(%{} = settings), do: collect(Map.keys(settings), &setting_atom/1)
+  defp settings_atoms(_settings), do: {:ok, []}
+
+  defp manifest_atoms(values) when is_list(values), do: collect(values, &manifest_atom/1)
+  defp manifest_atoms(_values), do: {:ok, []}
 
   defp selector_atom([kind, value]) when kind in [:asset, "asset"], do: ref_atoms(value)
   defp selector_atom([kind, value]) when kind in [:module, "module"], do: module_atom(value)
@@ -187,6 +197,14 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
   end
 
   defp manifest_atom(value), do: {:error, {:invalid_manifest_atom, value}}
+
+  defp setting_atom(value) when is_binary(value) do
+    if Favn.Settings.valid_key_string?(value),
+      do: {:ok, [value]},
+      else: {:error, {:invalid_manifest_setting_key, value}}
+  end
+
+  defp setting_atom(value), do: {:error, {:invalid_manifest_setting_key, value}}
 
   defp validate_count(atoms) do
     if MapSet.size(atoms) <= @max_atom_count,

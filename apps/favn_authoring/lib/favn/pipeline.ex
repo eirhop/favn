@@ -31,7 +31,7 @@ defmodule Favn.Pipeline do
   - `assets refs_or_modules`: add many target assets
   - `select do ... end`: additive selectors using `asset`, `tag`, `category`, and `module`
   - `deps :all | :none`: include upstream dependencies or not
-  - `config map_or_keyword`: runtime pipeline config exposed through pipeline context
+  - `settings map_or_keyword`: non-secret static values exposed through `ctx.pipeline.settings`
   - `meta map_or_keyword`: descriptive metadata for operators and tooling
   - `schedule {Module, :name}`: reference a named schedule
   - `schedule cron: ..., ...`: declare an inline schedule
@@ -54,7 +54,7 @@ defmodule Favn.Pipeline do
       end
 
   `execution_pool` declares the default shared pool for assets in the pipeline.
-  Asset-level `@execution_pool` declarations override this default for that
+  Asset-level `execution_pool` declarations override this default for that
   asset. Pools are configured at runtime with `config :favn, execution_pools:
   [...]`; the orchestrator owns admission globally, not the runner.
 
@@ -81,7 +81,7 @@ defmodule Favn.Pipeline do
               backoff: {:exponential, initial: 5_000, max: 300_000, jitter: 0.2}
       end
 
-  The effective precedence is explicit operator override, asset `@retry`, this
+  The effective precedence is explicit operator override, asset `retry`, this
   pipeline default, then one attempt. It is frozen into each planned node.
   Retry policy controls count and timing; it never makes an unsafe or
   unknown-outcome write retryable. A safely failed node can repeat while its
@@ -120,7 +120,7 @@ defmodule Favn.Pipeline do
   the normal full-load path.
 
   Assets can mark their asset-level window spec as required with
-  `@window Favn.Window.monthly(required: true)`. Planning fails before runner
+  `window Favn.Window.monthly(required: true)`. Planning fails before runner
   execution if a required-window asset is selected without a resolved anchor
   window.
 
@@ -141,16 +141,20 @@ defmodule Favn.Pipeline do
       defmodule MyApp.Lakehouse.Raw.Sales.Orders do
         use Favn.Asset
 
-        @meta owner: "data-platform", category: :sales, tags: [:raw, :daily]
-        @relation true
+        meta owner: "data-platform"
+        meta category: :sales
+        meta tags: [:raw, :daily]
+        relation true
         def asset(_ctx), do: :ok
       end
 
       defmodule MyApp.Lakehouse.Raw.Sales.OrderLines do
         use Favn.Asset
 
-        @meta owner: "data-platform", category: :sales, tags: [:raw, :daily]
-        @relation [name: "order_line_items"]
+        meta owner: "data-platform"
+        meta category: :sales
+        meta tags: [:raw, :daily]
+        relation [name: "order_line_items"]
         def asset(_ctx), do: :ok
       end
 
@@ -165,9 +169,11 @@ defmodule Favn.Pipeline do
       defmodule MyApp.Lakehouse.Mart.Sales.OrderSummary do
         use Favn.SQLAsset
 
-        @meta owner: "analytics", category: :sales, tags: [:mart, :daily]
-        @depends MyApp.Lakehouse.Raw.Sales.Orders
-        @materialized :view
+        meta owner: "analytics"
+        meta category: :sales
+        meta tags: [:mart, :daily]
+        depends MyApp.Lakehouse.Raw.Sales.Orders
+        materialized :view
 
         query do
           ~SQL\"""
@@ -188,8 +194,9 @@ defmodule Favn.Pipeline do
           end
 
           deps :all
-          config requested_by: "scheduler", priority: :normal
-          meta owner: "analytics", purpose: :daily_refresh
+          settings requested_by: "scheduler", priority: :normal
+          meta owner: "analytics"
+          meta purpose: :daily_refresh
           schedule cron: "0 2 * * *", timezone: "Europe/Oslo", missed: :one
           window :daily
           source :scheduler
@@ -199,9 +206,9 @@ defmodule Favn.Pipeline do
 
   Namespace defaults are inherited from parent modules, so leaf asset modules
   only need `use Favn.Namespace` when they want to add or override shared
-  relation defaults. `@relation true` is the normal path when the module leaf
-  should become the relation name, while `@relation [name: "..."]` is the
-  normal way to override only the relation name. `@meta` stays module-local and
+  relation defaults. `relation true` is the normal path when the module leaf
+  should become the relation name, while `relation [name: "..."]` is the
+  normal way to override only the relation name. `meta` stays module-local and
   is not inherited from namespace modules.
 
   ## Rules
@@ -235,8 +242,8 @@ defmodule Favn.Pipeline do
       Module.register_attribute(__MODULE__, :favn_pipeline_selectors, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_pipeline_selection_mode, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_deps, persist: false)
-      Module.register_attribute(__MODULE__, :favn_pipeline_config, persist: false)
-      Module.register_attribute(__MODULE__, :favn_pipeline_meta, persist: false)
+      Module.register_attribute(__MODULE__, :favn_pipeline_settings, accumulate: true)
+      Module.register_attribute(__MODULE__, :favn_pipeline_meta, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_pipeline_schedule, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_window, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_retry, persist: false)
@@ -291,22 +298,21 @@ defmodule Favn.Pipeline do
   end
 
   @doc """
-  Attaches pipeline-level config metadata as a map or keyword list.
+  Attaches non-secret pipeline settings as a map or keyword list.
 
-  `config` is intended for runtime-facing values that assets or orchestration
-  code may read from pipeline context.
+  Repeated declarations shallow-merge from left to right. Assets read the
+  result through `ctx.pipeline.settings`. Per-run inputs remain in `ctx.params`.
 
   ## Examples
 
-      config requested_by: "scheduler", priority: :high
-      config %{requested_by: "operator", dry_run: true}
+      settings requested_by: "scheduler", priority: :high
+      settings %{requested_by: "operator", dry_run: true}
   """
-  defmacro config(opts) do
+  defmacro settings(opts) do
     quote bind_quoted: [opts: opts] do
-      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "config")
-      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_config, "config")
-      Favn.Pipeline.validate_map_like_clause!(opts, "config")
-      @favn_pipeline_config Map.new(opts)
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "settings")
+      Favn.Pipeline.validate_map_like_clause!(opts, "settings")
+      @favn_pipeline_settings opts
     end
   end
 
@@ -314,19 +320,20 @@ defmodule Favn.Pipeline do
   Attaches pipeline metadata as a map or keyword list.
 
   `meta` is intended for descriptive or classification data rather than runtime
-  control fields.
+  control fields. Repeated declarations shallow-merge from left to right. Keys
+  are normalized to strings so metadata remains stable through JSON persistence.
 
   ## Examples
 
-      meta owner: "analytics", purpose: :daily_refresh
+      meta owner: "analytics"
+      meta purpose: :daily_refresh
       meta %{team: "data-platform", tier: :mart}
   """
   defmacro meta(opts) do
     quote bind_quoted: [opts: opts] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "meta")
-      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_meta, "meta")
       Favn.Pipeline.validate_map_like_clause!(opts, "meta")
-      @favn_pipeline_meta Map.new(opts)
+      @favn_pipeline_meta opts
     end
   end
 
@@ -430,7 +437,7 @@ defmodule Favn.Pipeline do
   @doc """
   Declares the default automatic node-attempt retry policy.
 
-  `max_attempts` includes the initial attempt. An asset-level `@retry` overrides
+  `max_attempts` includes the initial attempt. An asset-level `retry` overrides
   this default, and an explicit operator policy overrides both. A retry policy
   never makes an unsafe or unknown-outcome failure retryable.
 
@@ -448,7 +455,7 @@ defmodule Favn.Pipeline do
   @doc """
   Declares the default shared execution pool for selected pipeline assets.
 
-  Asset-level `@execution_pool` declarations override this default. The pool must
+  Asset-level `execution_pool` declarations override this default. The pool must
   be configured in the orchestrator runtime; unknown pools fail closed instead of
   running unprotected.
 
@@ -619,6 +626,7 @@ defmodule Favn.Pipeline do
   end
 
   defmacro __before_compile__(env) do
+    Favn.DSL.AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
     name = Module.get_attribute(env.module, :favn_pipeline_name)
 
     if is_nil(name) do
@@ -636,8 +644,16 @@ defmodule Favn.Pipeline do
         selectors: selectors,
         selection_mode: mode,
         deps: Module.get_attribute(env.module, :favn_pipeline_deps) || :all,
-        config: Module.get_attribute(env.module, :favn_pipeline_config) || %{},
-        meta: Module.get_attribute(env.module, :favn_pipeline_meta) || %{},
+        settings:
+          env.module
+          |> Module.get_attribute(:favn_pipeline_settings)
+          |> Enum.reverse()
+          |> Favn.Settings.merge_all!(),
+        meta:
+          env.module
+          |> Module.get_attribute(:favn_pipeline_meta)
+          |> Enum.reverse()
+          |> normalize_meta_declarations!(),
         schedule: Module.get_attribute(env.module, :favn_pipeline_schedule),
         window: Module.get_attribute(env.module, :favn_pipeline_window),
         retry_policy: Module.get_attribute(env.module, :favn_pipeline_retry),
@@ -668,6 +684,18 @@ defmodule Favn.Pipeline do
   end
 
   def fetch(_invalid), do: {:error, :not_pipeline_module}
+
+  @doc false
+  @spec normalize_meta_declarations!([map() | keyword()]) :: map()
+  def normalize_meta_declarations!(declarations) when is_list(declarations) do
+    merged =
+      Enum.reduce(declarations, %{}, fn declaration, acc ->
+        normalized = Favn.Settings.normalize!(metadata: Map.new(declaration)).metadata
+        Map.merge(acc, normalized)
+      end)
+
+    Favn.Settings.normalize!(metadata: merged).metadata
+  end
 
   @doc false
   def ensure_singleton_clause!(module, attribute, label) do

@@ -62,7 +62,7 @@ defmodule Favn.SQLClient do
   `with_required_catalogs/2` or an explicit `required_catalogs: [...]` option.
 
   For source-system assets, declare source IDs and tokens with
-  `Favn.Asset.runtime_config/2`, read them from `ctx.config`, and return only
+  asset `runtime_config/2`, read them from `ctx.runtime_config`, and return only
   redacted or hashed source identity metadata.
 
   ## Functions and when to use them
@@ -143,7 +143,7 @@ defmodule Favn.SQLClient do
   option.
 
   `required_resources: [resource]` explicitly selects named native session SQL
-  resources for plain SQLClient work. Prefer SQL asset `@resources` for SQL
+  resources for plain SQLClient work. Prefer SQL asset `resources` for SQL
   assets so requirements remain visible in the manifest.
 
   When a DuckDB caller omits `:required_catalogs`, all configured catalogs are

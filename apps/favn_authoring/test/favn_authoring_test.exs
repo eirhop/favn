@@ -19,7 +19,7 @@ defmodule FavnAuthoringTest do
 
     use Favn.Asset
 
-    @relation [name: "orders"]
+    relation(name: "orders")
 
     def asset(_ctx), do: :ok
   end
@@ -30,7 +30,7 @@ defmodule FavnAuthoringTest do
 
     use Favn.Asset
 
-    @relation [name: "customers"]
+    relation(name: "customers")
 
     def asset(_ctx), do: :ok
   end
@@ -41,7 +41,7 @@ defmodule FavnAuthoringTest do
 
     use Favn.SQLAsset
 
-    @materialized :view
+    materialized(:view)
 
     query do
       ~SQL"select o.id, c.id as customer_id from raw.commerce.orders o

@@ -233,7 +233,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
             window: Policy.new!(:daily),
             source: :dsl,
             outputs: [],
-            config: %{},
+            settings: %{},
             metadata: %{}
           }
         ],
@@ -506,7 +506,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
             window: Policy.new!(:monthly),
             source: :dsl,
             outputs: [],
-            config: %{},
+            settings: %{},
             metadata: %{}
           }
         ]
@@ -541,7 +541,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
             window: Policy.new!(:monthly),
             source: :dsl,
             outputs: [],
-            config: %{},
+            settings: %{},
             metadata: %{}
           }
         ],
@@ -704,7 +704,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
             window: Policy.new!(:monthly),
             source: :dsl,
             outputs: [],
-            config: %{},
+            settings: %{},
             metadata: %{}
           }
         ],
@@ -890,7 +890,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
             window: Policy.new!(:hourly),
             source: :dsl,
             outputs: [],
-            config: %{},
+            settings: %{},
             metadata: %{}
           }
         ],
@@ -963,7 +963,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
             window: Policy.new!(:yearly),
             source: :dsl,
             outputs: [],
-            config: %{},
+            settings: %{},
             metadata: %{}
           }
         ],

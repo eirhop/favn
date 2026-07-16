@@ -21,40 +21,44 @@ end
 
 defmodule Favn.Test.Fixtures.Assets.Pipeline.SalesAssets do
   @moduledoc false
-  use Favn.Assets
+  use Favn.MultiAsset
 
   alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder
 
-  @asset true
-  @meta tags: [:daily], category: :bronze
-  def extract_orders(_ctx), do: :ok
-
-  @asset true
-  @depends :extract_orders
-  @meta tags: [:daily], category: :silver
-  def normalize_orders(_ctx), do: :ok
-
-  @asset true
-  @depends :normalize_orders
-  @meta tags: [:daily], category: :gold
-  def sales_daily(ctx) do
-    CtxRecorder.record(ctx)
-    :ok
+  asset :extract_orders do
+    meta(tags: [:daily], category: :bronze)
   end
 
-  @asset true
-  @depends :normalize_orders
-  @meta tags: [:inventory], category: :gold
-  def inventory_daily(_ctx), do: :ok
+  asset :normalize_orders do
+    depends(:extract_orders)
+    meta(tags: [:daily], category: :silver)
+  end
+
+  asset :sales_daily do
+    depends(:normalize_orders)
+    meta(tags: [:daily], category: :gold)
+  end
+
+  asset :inventory_daily do
+    depends(:normalize_orders)
+    meta(tags: [:inventory], category: :gold)
+  end
+
+  def asset(ctx) do
+    if ctx.asset.ref == {__MODULE__, :sales_daily}, do: CtxRecorder.record(ctx)
+    :ok
+  end
 end
 
 defmodule Favn.Test.Fixtures.Assets.Pipeline.ReportingAssets do
   @moduledoc false
-  use Favn.Assets
+  use Favn.MultiAsset
 
-  @asset true
-  @meta tags: [:daily], category: :gold
-  def marketing_snapshot(_ctx), do: :ok
+  asset :marketing_snapshot do
+    meta(tags: [:daily], category: :gold)
+  end
+
+  def asset(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.SimplePipeline do
@@ -68,7 +72,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SimplePipeline do
     asset({SalesAssets, :sales_daily})
     deps(:all)
 
-    config(timezone: "UTC", notify: false)
+    settings(timezone: "UTC", notify: false)
     meta(owner: "data-platform", domain: :sales)
 
     schedule({Schedules, :daily_default})

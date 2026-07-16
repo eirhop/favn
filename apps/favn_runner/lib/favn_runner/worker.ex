@@ -202,11 +202,11 @@ defmodule FavnRunner.Worker do
   defp catalog_name(_catalog), do: nil
 
   defp redact_execution_result({:ok, meta}, %Asset{} = asset, %Context{} = context) do
-    {:ok, RuntimeConfigRedactor.redact(meta, asset.runtime_config, context.config)}
+    {:ok, RuntimeConfigRedactor.redact(meta, asset.runtime_config, context.runtime_config)}
   end
 
   defp redact_execution_result({:error, error}, %Asset{} = asset, %Context{} = context) do
-    {:error, RuntimeConfigRedactor.redact(error, asset.runtime_config, context.config)}
+    {:error, RuntimeConfigRedactor.redact(error, asset.runtime_config, context.runtime_config)}
   end
 
   defp redact_execution_result(
@@ -214,8 +214,8 @@ defmodule FavnRunner.Worker do
          %Asset{} = asset,
          %Context{} = context
        ) do
-    {:error, RuntimeConfigRedactor.redact(error, asset.runtime_config, context.config),
-     RuntimeConfigRedactor.redact(meta, asset.runtime_config, context.config)}
+    {:error, RuntimeConfigRedactor.redact(error, asset.runtime_config, context.runtime_config),
+     RuntimeConfigRedactor.redact(meta, asset.runtime_config, context.runtime_config)}
   end
 
   defp invoke_asset(module, entrypoint, %Context{} = context) do

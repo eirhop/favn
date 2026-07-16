@@ -10,7 +10,7 @@ defmodule FavnOrchestrator.RefreshPolicy do
   - `nil` or `:auto`: use each asset's manifest freshness policy.
   - `:force`: run every planned node regardless of stored freshness state.
   - `:missing`: skip any node with a prior successful freshness state, including
-    assets declared with `@freshness :always`.
+    assets declared with `freshness :always`.
   - `{:force_assets, refs}`: force planned nodes whose refs are listed.
   - `{:force_assets, refs, include_upstream: true}`: force selected refs and their
     planned transitive upstream dependencies.

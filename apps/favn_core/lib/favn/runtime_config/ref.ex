@@ -19,8 +19,8 @@ defmodule Favn.RuntimeConfig.Ref do
           token: secret_env!("SOURCE_SYSTEM_TOKEN")
 
         def asset(ctx) do
-          segment_id = ctx.config.source_system.segment_id
-          token = ctx.config.source_system.token
+          segment_id = ctx.runtime_config.source_system.segment_id
+          token = ctx.runtime_config.source_system.token
 
           MyApp.Client.fetch_orders(segment_id, token)
           :ok

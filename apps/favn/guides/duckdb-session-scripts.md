@@ -163,8 +163,8 @@ Declare resources on a SQL asset:
 defmodule MyApp.Lakehouse.Raw.Orders do
   use Favn.SQLAsset
 
-  @resources [:landing_storage]
-  @materialized :table
+  resources [:landing_storage]
+  materialized :table
 
   query do
     ~SQL"""
@@ -233,10 +233,10 @@ shown in the complete example above.
 defmodule MyApp.Lakehouse.Mart.ImportedOrders do
   use Favn.SQLAsset
 
-  @depends MyApp.Lakehouse.Core.Orders
-  @resources [:landing_storage]
-  @relation [connection: :warehouse, catalog: :mart, schema: :sales]
-  @materialized :table
+  depends MyApp.Lakehouse.Core.Orders
+  resources [:landing_storage]
+  relation [connection: :warehouse, catalog: :mart, schema: :sales]
+  materialized :table
 
   query do
     ~SQL"""
@@ -299,8 +299,8 @@ duckdb: [
 ```
 
 An asset whose target relation is in catalog `mart` selects `mart_quack`
-through catalog metadata; it does not also need `@resources [:mart_quack]`.
-Use `@resources` for capabilities that relation inference cannot see, such as
+through catalog metadata; it does not also need `resources [:mart_quack]`.
+Use `resources` for capabilities that relation inference cannot see, such as
 the separate `landing_storage` secret above.
 
 The asset statement is submitted to the local DuckDB client session. The Quack
@@ -330,7 +330,7 @@ different scopes:
 - session-script values come from `duckdb.startup.params` or the selected
   `duckdb.resources.<name>.params`;
 - asset-query values come from the asset runtime, windows, submitted params, or
-  `@runtime_inputs`.
+  `runtime_inputs`.
 
 Favn recognizes script parameters only in SQL code, not in quoted strings,
 quoted identifiers, line comments, nested block comments, or dollar-quoted

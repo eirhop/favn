@@ -61,7 +61,7 @@ defmodule Favn.Dev.DoctorTest do
     defmodule #{inspect(asset)} do
       use Favn.Asset
 
-      @relation [connection: :warehouse, schema: "raw", name: "orders"]
+      relation [connection: :warehouse, schema: "raw", name: "orders"]
       def asset(_ctx), do: :ok
     end
 
@@ -145,7 +145,7 @@ defmodule Favn.Dev.DoctorTest do
     defmodule #{inspect(asset)} do
       use Favn.Asset
 
-      @relation [connection: :lakehouse, catalog: :raw, schema: "sales", name: "orders"]
+      relation [connection: :lakehouse, catalog: :raw, schema: "sales", name: "orders"]
       def asset(_ctx), do: :ok
     end
 
@@ -207,7 +207,7 @@ defmodule Favn.Dev.DoctorTest do
     defmodule #{inspect(asset)} do
       use Favn.Asset
 
-      @relation [connection: :lakehouse, catalog: :raw, schema: "sales", name: "orders"]
+      relation [connection: :lakehouse, catalog: :raw, schema: "sales", name: "orders"]
       def asset(_ctx), do: :ok
     end
 
@@ -267,7 +267,7 @@ defmodule Favn.Dev.DoctorTest do
     defmodule #{inspect(asset)} do
       use Favn.Asset
 
-      @relation [connection: :warehouse, catalog: :raw, schema: "sales", name: "orders"]
+      relation [connection: :warehouse, catalog: :raw, schema: "sales", name: "orders"]
       def asset(_ctx), do: :ok
     end
 
@@ -327,7 +327,7 @@ defmodule Favn.Dev.DoctorTest do
     defmodule #{inspect(asset)} do
       use Favn.Asset
 
-      @relation [connection: :lakehouse, schema: "sales", name: "orders"]
+      relation [connection: :lakehouse, schema: "sales", name: "orders"]
       def asset(_ctx), do: :ok
     end
 
@@ -387,7 +387,7 @@ defmodule Favn.Dev.DoctorTest do
     defmodule #{inspect(asset)} do
       use Favn.Asset
 
-      @relation [connection: :lakehouse, schema: "sales", name: "orders"]
+      relation [connection: :lakehouse, schema: "sales", name: "orders"]
       def asset(_ctx), do: :ok
     end
 

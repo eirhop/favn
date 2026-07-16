@@ -2,14 +2,14 @@ defmodule Favn.Window do
   @moduledoc """
   Public window constructors for assets and pipelines.
 
-  Use this module when authoring `@window` declarations or when constructing
+  Use this module when authoring `window` declarations or when constructing
   anchor/runtime windows directly in tests and runtime code.
 
   The helpers return canonical window structs used across Elixir assets, SQL
   assets, pipelines, backfills, and freshness checks.
 
   Windowed assets default to exact window-success freshness unless they declare
-  an explicit `@freshness` policy. Read `Favn.Freshness.Policy` for the authoring
+  an explicit `freshness` policy. Read `Favn.Freshness.Policy` for the authoring
   values and `Favn.Freshness.Key` for the keys used by orchestrator freshness
   state.
 
@@ -70,7 +70,7 @@ defmodule Favn.Window do
 
   ## When to use what
 
-  - use spec helpers in asset DSLs such as `@window Favn.Window.daily(...)`
+  - use spec helpers in asset DSLs such as `window Favn.Window.daily(...)`
   - use `required: true` when an asset must not run without `ctx.window`
   - use pipeline `window :hourly | :daily | :monthly | :yearly` to declare the
     default operational policy for a pipeline

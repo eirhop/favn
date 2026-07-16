@@ -4,23 +4,23 @@ defmodule Favn.Freshness do
 
   Freshness answers whether a previously successful asset result is good enough
   for the current run request. Authors declare freshness on assets with
-  `@freshness`; the compiler stores the normalized policy in the manifest; the
+  `freshness`; the compiler stores the normalized policy in the manifest; the
   orchestrator records successful freshness state and decides whether planned
   execution nodes should run, skip, or block.
 
   ## Authoring
 
-  In `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, and `Favn.Assets`, attach
-  at most one `@freshness` directly above the asset declaration it belongs to.
+  In `Favn.Asset`, `Favn.SQLAsset`, and `Favn.MultiAsset`, attach
+  at most one `freshness` directly above the asset declaration it belongs to.
 
-      @freshness :daily
-      @freshness {:daily, timezone: "Europe/Oslo"}
-      @freshness [max_age: {:hours, 6}]
-      @freshness [window_success: true]
-      @freshness :always
+      freshness :daily
+      freshness {:daily, timezone: "Europe/Oslo"}
+      freshness [max_age: {:hours, 6}]
+      freshness [window_success: true]
+      freshness :always
 
   Windowed assets default to exact window-success freshness when no explicit
-  `@freshness` is declared. Non-windowed assets have no implicit freshness policy.
+  `freshness` is declared. Non-windowed assets have no implicit freshness policy.
 
   ## Policy Input
 

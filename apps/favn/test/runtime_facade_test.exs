@@ -18,7 +18,7 @@ defmodule Favn.RuntimeFacadeTest do
   defmodule GoldAsset do
     use Favn.Asset
 
-    @depends RawAsset
+    depends(RawAsset)
     def asset(_ctx), do: :ok
   end
 

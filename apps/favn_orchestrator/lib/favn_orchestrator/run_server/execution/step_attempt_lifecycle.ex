@@ -100,16 +100,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
         asset_step_id: lifecycle.asset_step_id,
         stage: lifecycle.stage,
         params: lifecycle.run.params,
-        trigger:
-          lifecycle.run.trigger
-          |> Map.put(:window, node_identity.window)
-          |> maybe_put_pipeline_trigger(
-            Map.get(
-              lifecycle.run.metadata,
-              :pipeline_context,
-              Map.get(lifecycle.run.metadata, "pipeline_context")
-            )
-          ),
+        pipeline:
+          lifecycle.run.metadata
+          |> Map.get(:pipeline_context, Map.get(lifecycle.run.metadata, "pipeline_context"))
+          |> Favn.Run.PipelineContext.from_map(),
+        trigger: Map.put(lifecycle.run.trigger, :window, node_identity.window),
         metadata: work_metadata(lifecycle.run.metadata)
       }
 
@@ -129,13 +124,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
           nil
       end
 
-    %{work | metadata: Map.put(work.metadata, :deadline_at, deadline_at)}
+    %{work | deadline_at: deadline_at}
   end
 
   @doc "Returns the absolute deadline already attached to runner work."
   @spec deadline_at(RunnerWork.t()) :: DateTime.t() | nil
-  def deadline_at(%RunnerWork{metadata: metadata}) when is_map(metadata),
-    do: Map.get(metadata, :deadline_at, Map.get(metadata, "deadline_at"))
+  def deadline_at(%RunnerWork{deadline_at: deadline_at}), do: deadline_at
 
   @doc "Returns the persisted event type and base retryability for a run status."
   @spec step_outcome(RunState.status()) :: {atom(), boolean()}
@@ -327,14 +321,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   defp planned_asset_refs(%RunState{asset_ref: ref}) when is_tuple(ref), do: [ref]
   defp planned_asset_refs(%RunState{}), do: []
 
-  defp maybe_put_pipeline_trigger(trigger, pipeline_context) when is_map(pipeline_context),
-    do: Map.put(trigger, :pipeline, pipeline_context)
-
-  defp maybe_put_pipeline_trigger(trigger, _pipeline_context), do: trigger
-
   defp work_metadata(metadata) when is_map(metadata) do
     metadata
     |> Map.delete(:runner_metadata)
     |> Map.delete("runner_metadata")
+    |> Map.delete(:pipeline_context)
+    |> Map.delete("pipeline_context")
   end
 end

@@ -6,7 +6,7 @@ defmodule FavnReferenceWorkload.Warehouse.Ops.ReferenceWorkloadComplete do
 
   In simple terms:
 
-  - `@depends FavnReferenceWorkload.Warehouse.Gold.ExecutiveOverview` says
+  - `depends FavnReferenceWorkload.Warehouse.Gold.ExecutiveOverview` says
     "only run this when the full business summary is ready".
   - `def asset(_ctx), do: :ok` acts as a successful completion marker.
 
@@ -24,8 +24,8 @@ defmodule FavnReferenceWorkload.Warehouse.Ops.ReferenceWorkloadComplete do
   use Favn.Namespace
   use Favn.Asset
 
-  @meta owner: "reference-workload", category: :ops, tags: [:terminal]
-  @depends FavnReferenceWorkload.Warehouse.Gold.ExecutiveOverview
-  @relation true
+  meta owner: "reference-workload", category: :ops, tags: [:terminal]
+  depends FavnReferenceWorkload.Warehouse.Gold.ExecutiveOverview
+  relation true
   def asset(_ctx), do: :ok
 end

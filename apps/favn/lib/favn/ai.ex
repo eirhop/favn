@@ -39,18 +39,24 @@ defmodule Favn.AI do
 
   - To author one Elixir asset, read `Favn.Asset`, then `Favn.Namespace` and
     `Favn.Window` if needed.
+  - To choose where a value belongs, use this fixed runtime model: non-secret
+    static asset values use `settings` and `ctx.asset.settings`; pipeline
+    settings use `ctx.pipeline.settings`; submitted run values use `ctx.params`;
+    environment-dependent values and secrets use `runtime_config` and
+    `ctx.runtime_config`; metadata remains descriptive. Read `Favn.Settings` and
+    `Favn.Run.Context` for the exact shapes.
   - To declare required runtime configuration or secrets for assets, read
     `Favn.Asset` and `Favn.RuntimeConfig.Ref`.
   - To declare asset freshness or understand skip/force behavior, read
-    `Favn.Freshness`, then `Favn.Freshness.Policy` for `@freshness` input values
+    `Favn.Freshness`, then `Favn.Freshness.Policy` for `freshness` input values
     and `Favn.Freshness.Key` for stored freshness keys. Asset DSL docs for
-    `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, and `Favn.Assets` show
-    where `@freshness` must be attached.
+    `Favn.Asset`, `Favn.SQLAsset`, and `Favn.MultiAsset` show
+    where `freshness` must be attached.
   - To author a source-system raw landing asset, read `Favn.Asset`, then
     `Favn.SQLClient`, `Favn.Namespace`, and the standalone tutorial at
     `examples/basic-workflow-tutorial`. The canonical pattern is: declare
     source IDs/tokens with `runtime_config/2`, read resolved values from
-    `ctx.config`, call a source client outside the asset, write raw rows through
+    `ctx.runtime_config`, call a source client outside the asset, write raw rows through
     `Favn.SQLClient`, and return structured metadata with row counts, relation,
     load mode, timestamp, and hashed source identity.
   - To author one SQL asset, including a typed output `contract`,
@@ -60,16 +66,23 @@ defmodule Favn.AI do
     `Favn.Connection`, `Favn.Namespace`, and `Favn.Window` as needed. A contract
     describes ordered output columns, grain, keys, minimum row count, and
     explicit lineage; it does not generate SQL. Runtime input values remain
-    bound parameters, including through reusable `defsql`. Contract-generated
+    bound parameters, including through reusable `defsql`. Referenced scalar
+    SQLAsset settings also become bound parameters; settings cannot provide
+    relation identifiers, and a settings/params collision is an error.
+    Contract-generated
     and authored checks use the normal check engine; `query()` is the exact
     staged candidate and `target()` is the transaction-visible owned relation.
     The only runtime-input declaration is
-    `@runtime_inputs MyApp.Inputs`; do not invent an inline block, anonymous
+    `runtime_inputs MyApp.Inputs`; do not invent an inline block, anonymous
     function, capture, or MFA form. The HexDocs guide
     [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) is the complete
     author workflow.
   - To author many similar assets in one module, read `Favn.MultiAsset`.
-  - To declare external source relations, read `Favn.Source`.
+    Shared declarations are defaults, child declarations override, and child
+    descriptions use `description`; the removed `Favn.Assets` DSL must not be
+    suggested.
+  - To declare external source relations, read `Favn.Source`; use the real
+    module `@moduledoc` for its description.
   - To share relation defaults, read `Favn.Namespace`.
   - To define a pipeline, read `Favn.Pipeline`, then
     `Favn.Triggers.Schedules` if schedules are involved. If the pipeline is
@@ -86,7 +99,7 @@ defmodule Favn.AI do
     selects execution-specific bind values.
   - To limit asset execution before asset code starts, use orchestrator-owned
     execution concurrency controls: pipeline `max_concurrency`, pipeline
-    `execution_pool`, asset `@execution_pool`, and `config :favn,
+    `execution_pool`, asset `execution_pool`, and `config :favn,
     execution_pools: [...]`. Do not model artificial dependencies only to
     serialize independent assets, and do not confuse these controls with SQL
     `write_concurrency`, which protects writer/backend admission after asset
@@ -133,7 +146,7 @@ defmodule Favn.AI do
     Native SQL files own `INSTALL`, `LOAD`, `SET`, `CREATE SECRET`, `ATTACH`,
     `USE`, and extension-specific syntax; the removed structured
     `load/settings/secrets/attach/use` forms must not be suggested. SQL assets
-    select stable names with `@resources [...]`, while namespaces can add
+    select stable names with `resources [...]`, while namespaces can add
     resources for every descendant SQL asset. Treat Quack and other evolving
     extensions as native SQL resources with a deployment-pinned compatible
     DuckDB build; do not invent extension-specific Favn fields or version gates.
@@ -237,7 +250,7 @@ defmodule Favn.AI do
 
   ## SQL Runtime Input Breadcrumbs
 
-  When a task mentions `@runtime_inputs`, external manifest or snapshot IDs,
+  When a task mentions `runtime_inputs`, external manifest or snapshot IDs,
   runtime-selected files, watermarks, resolver timeouts, parameter collisions,
   or sensitive SQL bind values, read these docs in order:
 
@@ -248,7 +261,7 @@ defmodule Favn.AI do
   4. `Favn.RuntimeInputResolver.Ref` only for manifest/compiler work; authors
      declare the module and do not construct this reference directly.
 
-  The canonical public declaration is `@runtime_inputs MyApp.Inputs` before
+  The canonical public declaration is `runtime_inputs MyApp.Inputs` before
   `query`. Anonymous functions, captures, MFA tuples, and inline resolver blocks
   are unsupported. Read
   [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) for the complete
@@ -257,11 +270,11 @@ defmodule Favn.AI do
   ## DuckDB Session Script Breadcrumbs
 
   When a task mentions DuckDB extensions, settings, secrets, attach, `USE`,
-  `@resources`, session startup, or native SQL setup, read these docs in order:
+  `resources`, session startup, or native SQL setup, read these docs in order:
 
   1. [DuckDB Session Scripts And Resources](duckdb-session-scripts.html) for the
      complete public configuration, lifecycle, safety, and misuse example.
-  2. `Favn.SQLAsset` for leaf `@resources` declaration and manifest behavior.
+  2. `Favn.SQLAsset` for leaf `resources` declaration and manifest behavior.
   3. `Favn.Namespace` for additive inherited resources.
   4. `Favn.Connection` and `Favn.RuntimeConfig.Ref` for runtime values and secret
      parameters.
@@ -321,7 +334,7 @@ defmodule Favn.AI do
   - `FavnOrchestrator.Repair.RuntimeState`: when implementing or running
     reusable crash repair for orphaned runs, stale active step events, claims,
     leases, backfill parent reprojection, or conservative freshness rebuilds
-  - `Favn.Freshness.Policy`: when you need accepted `@freshness` values such as
+  - `Favn.Freshness.Policy`: when you need accepted `freshness` values such as
     `:daily`, `{:daily, timezone: "Europe/Oslo"}`, `[max_age: {:hours, 6}]`,
     `[window_success: true]`, and `:always`
   - `Favn.Freshness.Key`: when you need exact freshness-state keys for latest,
@@ -370,7 +383,7 @@ defmodule Favn.AI do
     `Favn.Window.Request` when the task mentions pipeline windows, scheduler
     anchor resolution, `mix favn.run --window`, or operator/API run input.
   - Read `Favn.Freshness`, `Favn.Freshness.Policy`, and the relevant asset DSL
-    docs whenever a task mentions `@freshness`, skipping fresh work, forcing
+    docs whenever a task mentions `freshness`, skipping fresh work, forcing
     refresh, stale downstream assets, or backfill children running only missing
     windows.
   - Read `Favn.Pipeline`, `Favn.Asset`, and orchestrator admission docs whenever
@@ -382,7 +395,7 @@ defmodule Favn.AI do
     or resolver-provided SQL parameters. Read `Favn.RuntimeInputResolver.Ref`
     only for manifest/compiler work.
   - Read the DuckDB session-script guide, `Favn.SQLAsset`, and `Favn.Namespace`
-    whenever a task mentions `@resources`, extension setup, settings, secrets,
+    whenever a task mentions `resources`, extension setup, settings, secrets,
     catalog attach, or physical-session lifecycle. Treat the files as trusted
     deployment code, keep durable business writes out of them, and account for
     runner restarts when environment-resolved credentials rotate. For cached

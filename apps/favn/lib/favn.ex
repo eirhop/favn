@@ -22,7 +22,7 @@ defmodule Favn do
   - `plan_asset_run/2`: build a deterministic execution plan
 
   Compiled assets include normalized freshness policies when authored with
-  `@freshness`; read `Favn.Freshness` and `Favn.Freshness.Policy` for the
+  `freshness`; read `Favn.Freshness` and `Favn.Freshness.Policy` for the
   authoring contract.
 
   ## Runner lifecycle extensions
@@ -86,7 +86,7 @@ defmodule Favn do
   frozen into the run plan using this precedence:
 
       explicit operator submission override
-      -> asset @retry
+      -> asset retry
       -> pipeline retry
       -> max_attempts: 1
 
@@ -105,7 +105,7 @@ defmodule Favn do
   shorthand. A backoff with the default `max_attempts: 1` does not cause a
   retry.
 
-  SQL assets with `@runtime_inputs` use a resolve/pin/execute handshake. Before
+  SQL assets with `runtime_inputs` use a resolve/pin/execute handshake. Before
   SQL work starts, the selected parameters are atomically stored under
   `{run_id, planned_node_key}`; retries and safe orchestrator recovery reuse that
   exact pin. Sensitive pins require protected storage and fail closed when no
@@ -173,7 +173,7 @@ defmodule Favn do
 
   Use this when introspection code needs to distinguish plain Elixir modules
   from modules authored with `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`,
-  `Favn.Assets`, or `Favn.Source`.
+  or `Favn.Source`.
   """
   @spec asset_module?(module()) :: boolean()
   defdelegate asset_module?(module), to: FavnAuthoring

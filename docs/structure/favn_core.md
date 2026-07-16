@@ -1,7 +1,7 @@
 # favn_core
 
 Purpose: shared compiler, manifest, planning, graph, execution policy,
-freshness, window, runtime config refs/bundles/field-level merge contracts, backfill range, and cross-runtime contract
+freshness, window, static settings, runtime config refs/bundles/field-level merge contracts, backfill range, and cross-runtime contract
 types.
 
 Code:
@@ -41,7 +41,12 @@ Integration boundaries opt in explicitly; DuckDB session-script parameters are
 the first consumer. Providers return bounded errors, refs have redacted Inspect
 output, and secret refs are tracked by connection redaction.
 
-Manifest schema 5 and runner contract 5 are the only accepted versions. SQL
+Manifest schema 6 and runner contract 6 are the only accepted versions. Static
+asset and pipeline settings use `Favn.Settings`; top-level atom keys are retained
+for runtime access while nested maps normalize to JSON-safe string keys.
+`Favn.Run.Context`, `Favn.Run.AssetContext`, and `Favn.Run.PipelineContext`
+separate asset settings, pipeline settings, submitted params, runtime config,
+relation identity, and deadline data. SQL
 execution payloads carry an optional typed `%Favn.SQL.Contract{}` plus typed
 `%Favn.SQL.Check{}` declarations. Contract-generated checks and authored checks
 share the same policy/result types and are distinguished by origin and stable

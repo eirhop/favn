@@ -37,11 +37,14 @@ defmodule Favn.SQLAsset do
         use Favn.SQLAsset
 
         @doc "Build the order fact mart."
-        @meta owner: "analytics", category: :sales, tags: [:mart]
-        @window Favn.Window.daily(lookback: 1)
-        @freshness [window_success: true]
-        @depends MyApp.Lakehouse.Raw.Sales.Orders
-        @materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
+        settings minimum_order_value: 10
+        meta owner: "analytics"
+        meta category: :sales
+        meta tags: [:mart]
+        window Favn.Window.daily(lookback: 1)
+        freshness [window_success: true]
+        depends MyApp.Lakehouse.Raw.Sales.Orders
+        materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
 
         query do
           ~SQL\"""
@@ -49,6 +52,7 @@ defmodule Favn.SQLAsset do
           from raw.sales.orders
           where order_date >= @window_start
             and order_date < @window_end
+            and order_value >= @minimum_order_value
           \"""
         end
       end
@@ -56,37 +60,53 @@ defmodule Favn.SQLAsset do
   ## Contract
 
   - define exactly one `query/1` declaration
-  - declare exactly one `@materialized`
-  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, `@retry`, `@materialized`, optional `@relation`, optional `@resources`, and optional `@runtime_inputs` before `query`
+  - declare exactly one `materialized`
+  - attach `@doc` to `query`; Favn transfers it to the generated `asset/1`
+  - declare `settings`, `meta`, `depends`, `window`, `freshness`, `retry`,
+    `materialized`, optional `relation`, optional `resources`, and optional
+    `runtime_inputs` before `query`
   - use `~SQL` for inline SQL bodies
   - use `query file: "..."` for asset-local file-backed SQL loaded at compile
     time
 
-  ## Attributes
+  ## Declarations
 
   - `@doc`: asset documentation
-  - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
-  - `@depends`: repeatable dependency declaration
-  - `@window`: one `Favn.Window.*` spec
-  - `@freshness`: optional asset freshness policy
-  - `@retry`: optional node-attempt retry policy overriding the pipeline default
-  - `@relation`: optional owned relation declaration
-  - `@materialized`: required SQL materialization strategy
-  - `@resources`: optional list of named physical-session resources
-  - `@runtime_inputs`: optional module implementing `Favn.SQLAsset.RuntimeInputs`
+  - `settings`: non-secret, JSON-like static values compiled into the manifest
+  - `meta`: keyword or map metadata such as `owner`, `category`, and `tags`
+  - `depends`: repeatable dependency declaration
+  - `window`: one `Favn.Window.*` spec
+  - `freshness`: optional asset freshness policy
+  - `retry`: optional node-attempt retry policy overriding the pipeline default
+  - `relation`: optional owned relation declaration
+  - `materialized`: required SQL materialization strategy
+  - `resources`: optional list of named physical-session resources
+  - `runtime_inputs`: optional module implementing `Favn.SQLAsset.RuntimeInputs`
+
+  Repeated `settings` and `meta` declarations shallow-merge from left to right.
+  SQL settings are also reusable scalar query inputs: a referenced setting such
+  as `@minimum_order_value` becomes a bound parameter automatically. Only
+  referenced scalar settings are bound. A name present in both `settings` and
+  runtime `params` is rejected instead of applying hidden precedence.
+
+  Settings cannot provide SQL identifiers or relations. For example,
+  `from @source` is rejected even when `settings source: "orders"` exists; use
+  a Favn-aware relation reference for identifiers. Secrets and deployment
+  configuration belong in `runtime_config` and are available only to an
+  explicit `runtime_inputs` module, never as automatic SQL placeholders.
 
   ## Retry policy
 
-  SQL assets use the same `@retry` declaration as `Favn.Asset`:
+  SQL assets use the same `retry` declaration as `Favn.Asset`:
 
-      @retry max_attempts: 4,
+      retry max_attempts: 4,
              backoff: {:exponential, initial: 5_000, max: 120_000, jitter: 0.2}
-      @materialized :table
+      materialized :table
       query do
         ~SQL"select * from staged_orders"
       end
 
-  The effective precedence is explicit operator override, asset `@retry`,
+  The effective precedence is explicit operator override, asset `retry`,
   pipeline `retry`, then one attempt. Policy controls count and timing only.
   Favn never blindly retries a write, materialization, transaction, check, or
   unknown outcome merely because `max_attempts` is greater than one. SQL
@@ -98,8 +118,8 @@ defmodule Favn.SQLAsset do
 
   ## Freshness
 
-  SQL assets use the same `@freshness` contract as `Favn.Asset`. Attach at most
-  one `@freshness` before `query`.
+  SQL assets use the same `freshness` contract as `Favn.Asset`. Attach at most
+  one `freshness` before `query`.
 
   Supported V1 values are `:daily`, `{:daily, timezone: "Europe/Oslo"}`,
   `[max_age: {:hours, 6}]`, `[window_success: true]`, and `:always`. Windowed SQL
@@ -109,12 +129,12 @@ defmodule Favn.SQLAsset do
   Read `Favn.Freshness.Policy` for policy input details and
   `Favn.Freshness.Key` for stored freshness keys.
 
-  `@depends` supports:
+  `depends` supports:
 
   - `Other.SingleAssetModule`
   - `{Other.MultiAssetModule, :asset_name}`
 
-  `@materialized` currently supports:
+  `materialized` currently supports:
 
   - `:table`
   - `:view`
@@ -123,7 +143,7 @@ defmodule Favn.SQLAsset do
 
   Incremental rules:
 
-  - incremental materialization requires `@window`
+  - incremental materialization requires `window`
   - `:append` does not accept `:window_column`
   - `:delete_insert` requires `:window_column`
   - `:merge`, `:replace`, and `unique_key` are not currently supported
@@ -245,7 +265,7 @@ defmodule Favn.SQLAsset do
   inputs when the SQL name unambiguously matches the owned relation convention.
 
   When a relation reference resolves to an owned asset relation in the same
-  connection, Favn infers the dependency automatically. Use `@depends` when the
+  connection, Favn infers the dependency automatically. Use `depends` when the
   dependency is not visible in the SQL body, when you need a non-SQL upstream,
   when the relation cannot be resolved from owned asset metadata. New lakehouse
   projects should use catalog for the database/phase and schema for the
@@ -289,15 +309,15 @@ defmodule Favn.SQLAsset do
       defmodule MyApp.Orders do
         use Favn.SQLAsset
 
-        @runtime_inputs MyApp.Orders.Inputs
-        @materialized :table
+        runtime_inputs MyApp.Orders.Inputs
+        materialized :table
 
         query do
           ~SQL"select * from read_ndjson(from_json(@files_json, '[\"VARCHAR\"]'))"
         end
       end
 
-  `@runtime_inputs MyApp.Orders.Inputs` before `query` is the only supported
+  `runtime_inputs MyApp.Orders.Inputs` before `query` is the only supported
   declaration. Anonymous functions, captures, MFA tuples, and inline resolver
   blocks are not accepted. Remove those forms instead of wrapping or migrating
   them at runtime; the manifest must contain one stable typed module reference.
@@ -331,8 +351,8 @@ defmodule Favn.SQLAsset do
 
   Declare trusted physical-session capabilities by stable name before `query`:
 
-      @resources [:azure_extension, :landing_storage]
-      @materialized :table
+      resources [:azure_extension, :landing_storage]
+      materialized :table
       query do
         ~SQL"select * from read_parquet('abfss://landing/orders/*.parquet')"
       end
@@ -347,7 +367,7 @@ defmodule Favn.SQLAsset do
   rendered target relation and rendered Favn asset references. Catalog metadata
   may select an additional resource. Ad-hoc SQL references to undeclared
   catalogs are intentionally not used for session preparation; declare
-  dependencies, relation ownership, or `@resources` explicitly.
+  dependencies, relation ownership, or `resources` explicitly.
 
   Session scripts and asset queries both reference values as `@name`, but they
   have separate parameter sources. Session-script values come from connection
@@ -358,12 +378,12 @@ defmodule Favn.SQLAsset do
   ## Common Mistakes
 
   - defining more than one query
-  - forgetting `@materialized`
+  - forgetting `materialized`
   - using interpolation inside `~SQL`
-  - using invalid `@depends`, `@window`, `@freshness`, or `@relation` values
+  - using invalid `depends`, `window`, `freshness`, or `relation` values
   - using an inline function, capture, MFA tuple, or block instead of
-    `@runtime_inputs ResolverModule`
-  - placing `@resources` after `query`, using unstable names, or expecting a
+    `runtime_inputs ResolverModule`
+  - placing `resources` after `query`, using unstable names, or expecting a
     resource dependency graph
   - expecting `asset/1` to be user-defined in a `Favn.SQLAsset` module
   - returning multiple rows or a non-Boolean `passed` value from a check
@@ -383,10 +403,12 @@ defmodule Favn.SQLAsset do
 
   alias Favn.Asset
   alias Favn.Asset.RelationResolver
+  alias Favn.DSL.AssetDeclarations
   alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Namespace
   alias Favn.Ref
   alias Favn.RelationRef
+  alias Favn.RuntimeConfig.Requirements
   alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL
   alias Favn.SQL.Check
@@ -403,22 +425,15 @@ defmodule Favn.SQLAsset do
   @doc false
   defmacro __using__(_opts) do
     quote do
-      Module.register_attribute(__MODULE__, :depends, accumulate: true)
-      Module.register_attribute(__MODULE__, :freshness, accumulate: true)
-      Module.register_attribute(__MODULE__, :retry, accumulate: true)
-      Module.register_attribute(__MODULE__, :meta, persist: false)
-      Module.register_attribute(__MODULE__, :relation, accumulate: true)
-      Module.register_attribute(__MODULE__, :window, accumulate: true)
-      Module.register_attribute(__MODULE__, :materialized, accumulate: true)
-      Module.register_attribute(__MODULE__, :runtime_inputs, accumulate: true)
-      Module.register_attribute(__MODULE__, :resources, accumulate: true)
+      Favn.DSL.AssetDeclarations.register!(__MODULE__)
+
+      Favn.DSL.AssetDeclarations.register!(__MODULE__, [
+        :materialized,
+        :runtime_inputs,
+        :resources
+      ])
+
       Module.register_attribute(__MODULE__, :favn_sql_asset_raw, persist: false)
-
-      Module.register_attribute(__MODULE__, :favn_sql_asset_runtime_inputs_at_query,
-        persist: false
-      )
-
-      Module.register_attribute(__MODULE__, :favn_sql_asset_resources_at_query, persist: false)
 
       Module.register_attribute(__MODULE__, :favn_sql_checks, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_contracts, accumulate: true)
@@ -427,8 +442,49 @@ defmodule Favn.SQLAsset do
       @on_definition Favn.SQLAsset
       @before_compile Favn.SQLAsset
 
-      import Favn.SQLAsset, only: [check: 3, contract: 1, query: 1]
+      import Favn.DSL.AssetDeclarations,
+        only: [
+          settings: 1,
+          meta: 1,
+          depends: 1,
+          window: 1,
+          freshness: 1,
+          retry: 1,
+          execution_pool: 1,
+          relation: 1,
+          runtime_config: 1,
+          runtime_config: 2,
+          env!: 1,
+          env!: 2,
+          secret_env!: 1,
+          secret_env!: 2
+        ]
+
+      import Favn.SQLAsset,
+        only: [check: 3, contract: 1, materialized: 1, query: 1, resources: 1, runtime_inputs: 1]
+
       import Favn.SQL, only: [sigil_SQL: 2]
+    end
+  end
+
+  @doc "Declares the SQL materialization strategy."
+  defmacro materialized(value) do
+    quote do
+      Favn.DSL.AssetDeclarations.put(__MODULE__, :materialized, unquote(value))
+    end
+  end
+
+  @doc "Declares the runtime-input resolver used by this SQL asset."
+  defmacro runtime_inputs(module) do
+    quote do
+      Favn.DSL.AssetDeclarations.put(__MODULE__, :runtime_inputs, unquote(module))
+    end
+  end
+
+  @doc "Declares named SQL session resources required by this asset."
+  defmacro resources(values) do
+    quote do
+      Favn.DSL.AssetDeclarations.put(__MODULE__, :resources, unquote(values))
     end
   end
 
@@ -570,6 +626,7 @@ defmodule Favn.SQLAsset do
 
   @doc false
   def __on_definition__(env, kind, name, args, _guards, _body) do
+    AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
     arity = length(args || [])
 
     generated_definition? =
@@ -587,6 +644,9 @@ defmodule Favn.SQLAsset do
       :ok
     else
       case {kind, name, arity} do
+        {:defp, :__favn_sql_query_marker__, 0} ->
+          capture_query_declarations!(env)
+
         {kind, :asset, _arity} when kind in [:def, :defp] ->
           DSLCompiler.compile_error!(
             env.file,
@@ -638,28 +698,19 @@ defmodule Favn.SQLAsset do
 
     sql = extract_sql!(body, __CALLER__)
 
-    Module.put_attribute(__CALLER__.module, :favn_sql_asset_raw, %{
+    raw = %{
       module: __CALLER__.module,
       file: DSLCompiler.normalize_file(__CALLER__.file),
       line: __CALLER__.line,
       sql_file: DSLCompiler.normalize_file(__CALLER__.file),
       sql_line: __CALLER__.line,
       sql: sql
-    })
+    }
+
+    Module.put_attribute(__CALLER__.module, :favn_sql_asset_raw, raw)
 
     quote do
-      Module.put_attribute(
-        __MODULE__,
-        :favn_sql_asset_runtime_inputs_at_query,
-        Module.get_attribute(__MODULE__, :runtime_inputs)
-      )
-
-      Module.put_attribute(
-        __MODULE__,
-        :favn_sql_asset_resources_at_query,
-        Module.get_attribute(__MODULE__, :resources)
-      )
-
+      defp __favn_sql_query_marker__(), do: :ok
       :ok
     end
   end
@@ -677,28 +728,19 @@ defmodule Favn.SQLAsset do
 
     source = Source.load_file!(__CALLER__, path, owner: "query")
 
-    Module.put_attribute(__CALLER__.module, :favn_sql_asset_raw, %{
+    raw = %{
       module: __CALLER__.module,
       file: DSLCompiler.normalize_file(__CALLER__.file),
       line: __CALLER__.line,
       sql_file: source.sql_file,
       sql_line: source.sql_line,
       sql: source.sql
-    })
+    }
+
+    Module.put_attribute(__CALLER__.module, :favn_sql_asset_raw, raw)
 
     quote do
-      Module.put_attribute(
-        __MODULE__,
-        :favn_sql_asset_runtime_inputs_at_query,
-        Module.get_attribute(__MODULE__, :runtime_inputs)
-      )
-
-      Module.put_attribute(
-        __MODULE__,
-        :favn_sql_asset_resources_at_query,
-        Module.get_attribute(__MODULE__, :resources)
-      )
-
+      defp __favn_sql_query_marker__(), do: :ok
       :ok
     end
   end
@@ -713,6 +755,7 @@ defmodule Favn.SQLAsset do
 
   @doc false
   defmacro __before_compile__(env) do
+    AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
     base_definition = Module.get_attribute(env.module, :favn_sql_asset_raw)
 
     if is_nil(base_definition) do
@@ -723,70 +766,35 @@ defmodule Favn.SQLAsset do
       )
     end
 
-    all_runtime_inputs = DSLCompiler.fetch_accum_attribute(env.module, :runtime_inputs)
-    all_resources = DSLCompiler.fetch_accum_attribute(env.module, :resources)
+    late_declarations =
+      Enum.flat_map(
+        [
+          :settings,
+          :meta,
+          :depends,
+          :window,
+          :freshness,
+          :retry,
+          :execution_pool,
+          :relation,
+          :runtime_config,
+          :materialized,
+          :runtime_inputs,
+          :resources
+        ],
+        &AssetDeclarations.values(env.module, &1)
+      )
 
-    captured_runtime_inputs =
-      Module.get_attribute(env.module, :favn_sql_asset_runtime_inputs_at_query) || []
-
-    captured_resources =
-      Module.get_attribute(env.module, :favn_sql_asset_resources_at_query) || []
-
-    case all_runtime_inputs do
-      ^captured_runtime_inputs ->
-        :ok
-
-      _late_runtime_inputs ->
-        DSLCompiler.compile_error!(
-          env.file,
-          env.line,
-          "@runtime_inputs must be declared before query"
-        )
+    if late_declarations != [] do
+      DSLCompiler.compile_error!(
+        env.file,
+        env.line,
+        "SQL asset declarations must appear before query"
+      )
     end
-
-    case all_resources do
-      ^captured_resources ->
-        :ok
-
-      _late_resources ->
-        DSLCompiler.compile_error!(env.file, env.line, "@resources must be declared before query")
-    end
-
-    validate_resource_declarations!(captured_resources, env)
-
-    base_definition =
-      base_definition
-      |> Map.put(:runtime_inputs, Enum.reverse(captured_runtime_inputs))
-      |> Map.put(:resources, Enum.reverse(captured_resources))
 
     raw_definition =
       base_definition
-      |> Map.put(:doc, DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc)))
-      |> Map.put(
-        :depends,
-        env.module |> DSLCompiler.fetch_accum_attribute(:depends) |> Enum.reverse()
-      )
-      |> Map.put(
-        :freshness,
-        env.module |> DSLCompiler.fetch_accum_attribute(:freshness) |> Enum.reverse()
-      )
-      |> Map.put(
-        :retry,
-        env.module |> DSLCompiler.fetch_accum_attribute(:retry) |> Enum.reverse()
-      )
-      |> Map.put(:meta, Module.get_attribute(env.module, :meta))
-      |> Map.put(
-        :window,
-        env.module |> DSLCompiler.fetch_accum_attribute(:window) |> Enum.reverse()
-      )
-      |> Map.put(
-        :relation,
-        env.module |> DSLCompiler.fetch_accum_attribute(:relation) |> Enum.reverse()
-      )
-      |> Map.put(
-        :materialized,
-        env.module |> DSLCompiler.fetch_accum_attribute(:materialized) |> Enum.reverse()
-      )
       |> Map.put(
         :sql_imports,
         env.module |> DSLCompiler.fetch_accum_attribute(:favn_sql_imports) |> Enum.reverse()
@@ -822,10 +830,37 @@ defmodule Favn.SQLAsset do
       @doc false
       def __favn_single_asset__, do: true
 
-      @doc false
+      @doc unquote(raw_definition.doc || false)
       @spec asset(map()) :: Favn.Asset.return_value()
       def asset(ctx), do: Favn.SQLAsset.runtime_asset(__MODULE__, ctx)
     end
+  end
+
+  defp capture_query_declarations!(env) do
+    AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
+    resources = AssetDeclarations.take(env.module, :resources)
+    validate_resource_declarations!(resources, env)
+
+    declarations = %{
+      doc: DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc)),
+      settings: AssetDeclarations.take(env.module, :settings),
+      meta: AssetDeclarations.take(env.module, :meta),
+      depends: AssetDeclarations.take(env.module, :depends),
+      window: AssetDeclarations.take(env.module, :window),
+      freshness: AssetDeclarations.take(env.module, :freshness),
+      retry: AssetDeclarations.take(env.module, :retry),
+      execution_pool: AssetDeclarations.take(env.module, :execution_pool),
+      relation: AssetDeclarations.take(env.module, :relation),
+      runtime_config: AssetDeclarations.take(env.module, :runtime_config),
+      materialized: AssetDeclarations.take(env.module, :materialized),
+      runtime_inputs: AssetDeclarations.take(env.module, :runtime_inputs),
+      resources: resources
+    }
+
+    raw = Module.get_attribute(env.module, :favn_sql_asset_raw)
+    Module.put_attribute(env.module, :favn_sql_asset_raw, Map.merge(raw, declarations))
+    Module.put_attribute(env.module, :doc, {env.line, false})
+    :ok
   end
 
   @doc false
@@ -842,7 +877,7 @@ defmodule Favn.SQLAsset do
         DSLCompiler.compile_error!(
           env.file,
           env.line,
-          "@resources must be a list of atom or string names, got: #{inspect(other)}"
+          "resources must be a list of atom or string names, got: #{inspect(other)}"
         )
     end)
   end
@@ -869,6 +904,7 @@ defmodule Favn.SQLAsset do
   defp build_definition!(raw_definition) do
     depends_on = normalize_depends!(raw_definition.depends, raw_definition)
     meta = normalize_meta!(raw_definition.meta, raw_definition)
+    settings = normalize_settings!(raw_definition.settings, raw_definition)
     window_spec = normalize_window!(raw_definition.window, raw_definition)
     freshness = normalize_freshness!(raw_definition.freshness, window_spec, raw_definition)
     retry_policy = normalize_retry!(raw_definition.retry, raw_definition)
@@ -878,6 +914,9 @@ defmodule Favn.SQLAsset do
 
     runtime_inputs =
       normalize_runtime_inputs!(Map.get(raw_definition, :runtime_inputs, []), raw_definition)
+
+    runtime_config = normalize_runtime_config!(raw_definition, runtime_inputs)
+    execution_pool = normalize_execution_pool!(raw_definition.execution_pool, raw_definition)
 
     session_requirements = normalize_session_requirements!(raw_definition)
     contract = normalize_contract!(Map.get(raw_definition, :contracts, []), raw_definition)
@@ -926,20 +965,21 @@ defmodule Favn.SQLAsset do
       ref: Ref.new(raw_definition.module, :asset),
       arity: 1,
       type: :sql,
-      title: nil,
       doc: raw_definition.doc,
       file: raw_definition.file,
       line: raw_definition.line,
       meta: meta,
       depends_on: depends_on,
-      config: %{},
+      settings: settings,
       relation_inputs: relation_inputs,
       session_requirements: session_requirements,
       window_spec: window_spec,
       freshness: freshness,
       retry_policy: retry_policy,
+      execution_pool: execution_pool,
       relation: relation,
-      materialization: materialization
+      materialization: materialization,
+      runtime_config: runtime_config
     }
 
     definition = %Definition{
@@ -1119,7 +1159,7 @@ defmodule Favn.SQLAsset do
           DSLCompiler.compile_error!(
             raw_definition.file,
             raw_definition.line,
-            "invalid @depends entry #{inspect({module, name})}; expected Module or {Module, :asset_name}"
+            "invalid depends entry #{inspect({module, name})}; expected Module or {Module, :asset_name}"
           )
         end
 
@@ -1127,16 +1167,66 @@ defmodule Favn.SQLAsset do
         DSLCompiler.compile_error!(
           raw_definition.file,
           raw_definition.line,
-          "invalid @depends entry #{inspect(dependency)}; expected Module or {Module, :asset_name}"
+          "invalid depends entry #{inspect(dependency)}; expected Module or {Module, :asset_name}"
         )
     end)
   end
 
   defp normalize_meta!(meta, raw_definition) do
-    Asset.normalize_meta!(meta)
+    Enum.reduce(meta, %{}, fn declaration, acc ->
+      Map.merge(acc, Asset.normalize_meta!(declaration))
+    end)
   rescue
     error in ArgumentError ->
       DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
+  end
+
+  defp normalize_settings!(settings, raw_definition) do
+    Favn.Settings.merge_all!(settings)
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
+  end
+
+  defp normalize_runtime_config!(raw_definition, runtime_inputs) do
+    requirements =
+      raw_definition.runtime_config
+      |> Requirements.merge_all!(consumer: raw_definition.module)
+
+    if map_size(requirements) > 0 and is_nil(runtime_inputs) do
+      DSLCompiler.compile_error!(
+        raw_definition.file,
+        raw_definition.line,
+        "SQLAsset runtime_config requires runtime_inputs so the resolved values have an explicit consumer"
+      )
+    end
+
+    requirements
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
+  end
+
+  defp normalize_execution_pool!([], _raw_definition), do: nil
+
+  defp normalize_execution_pool!([value], _raw_definition)
+       when is_atom(value) and not is_nil(value),
+       do: value
+
+  defp normalize_execution_pool!([_first, _second | _rest], raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "multiple execution_pool declarations are not allowed"
+    )
+  end
+
+  defp normalize_execution_pool!(value, raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "invalid execution_pool value #{inspect(value)}; expected a non-nil atom"
+    )
   end
 
   defp normalize_window!([], _raw_definition), do: nil
@@ -1146,7 +1236,7 @@ defmodule Favn.SQLAsset do
     DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "multiple @window attributes are not allowed; use at most one @window before query"
+      "multiple window attributes are not allowed; use at most one window before query"
     )
   end
 
@@ -1154,7 +1244,7 @@ defmodule Favn.SQLAsset do
     DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "invalid @window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
+      "invalid window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
     )
   end
 
@@ -1172,7 +1262,7 @@ defmodule Favn.SQLAsset do
     DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "multiple @retry attributes are not allowed; use at most one @retry before query"
+      "multiple retry attributes are not allowed; use at most one retry before query"
     )
   end
 
@@ -1180,7 +1270,7 @@ defmodule Favn.SQLAsset do
     DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "invalid @retry value #{inspect(value)}; expected a retry keyword list"
+      "invalid retry value #{inspect(value)}; expected a retry keyword list"
     )
   rescue
     error in ArgumentError ->
@@ -1200,7 +1290,7 @@ defmodule Favn.SQLAsset do
     DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "Favn.SQLAsset requires one @materialized attribute"
+      "Favn.SQLAsset requires one materialized attribute"
     )
   end
 
@@ -1208,7 +1298,7 @@ defmodule Favn.SQLAsset do
     DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "multiple @materialized attributes are not allowed; use exactly one @materialized before query"
+      "multiple materialized attributes are not allowed; use exactly one materialized before query"
     )
   end
 
@@ -1223,7 +1313,7 @@ defmodule Favn.SQLAsset do
       DSLCompiler.compile_error!(
         raw_definition.file,
         raw_definition.line,
-        "incremental SQL materialization requires @window"
+        "incremental SQL materialization requires window"
       )
     end
 
@@ -1283,13 +1373,13 @@ defmodule Favn.SQLAsset do
   defp normalize_runtime_inputs!([], _raw_definition), do: nil
 
   defp normalize_runtime_inputs!([module], raw_definition) when is_atom(module) do
-    expected = "@runtime_inputs MyApp.Inputs"
+    expected = "runtime_inputs MyApp.Inputs"
 
     unless DSLCompiler.module_atom?(module) do
       DSLCompiler.compile_error!(
         raw_definition.file,
         raw_definition.line,
-        "invalid @runtime_inputs value #{inspect(module)}; expected #{expected}"
+        "invalid runtime_inputs value #{inspect(module)}; expected #{expected}"
       )
     end
 
@@ -1334,7 +1424,7 @@ defmodule Favn.SQLAsset do
     DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "invalid @runtime_inputs value #{inspect(value)}; expected @runtime_inputs MyApp.Inputs"
+      "invalid runtime_inputs value #{inspect(value)}; expected runtime_inputs MyApp.Inputs"
     )
   end
 
@@ -1342,7 +1432,7 @@ defmodule Favn.SQLAsset do
     DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "multiple @runtime_inputs attributes are not allowed; use at most one @runtime_inputs MyApp.Inputs before query"
+      "multiple runtime_inputs declarations are not allowed; use at most one runtime_inputs MyApp.Inputs before query"
     )
   end
 
@@ -1358,7 +1448,7 @@ defmodule Favn.SQLAsset do
           DSLCompiler.compile_error!(
             raw_definition.file,
             raw_definition.line,
-            "@resources expects a list of atom or string names, got: #{inspect(other)}"
+            "resources expects a list of atom or string names, got: #{inspect(other)}"
           )
       end)
 
@@ -1387,7 +1477,7 @@ defmodule Favn.SQLAsset do
             DSLCompiler.compile_error!(
               raw_definition.file,
               raw_definition.line,
-              "invalid @relation value #{inspect(attrs)}; expected true, a keyword list, or a map"
+              "invalid relation value #{inspect(attrs)}; expected true, a keyword list, or a map"
             )
           end
 
@@ -1398,14 +1488,14 @@ defmodule Favn.SQLAsset do
           DSLCompiler.compile_error!(
             raw_definition.file,
             raw_definition.line,
-            "multiple @relation attributes are not allowed; use at most one @relation before query do ... end"
+            "multiple relation attributes are not allowed; use at most one relation before query do ... end"
           )
 
         [other] ->
           DSLCompiler.compile_error!(
             raw_definition.file,
             raw_definition.line,
-            "invalid @relation value #{inspect(other)}; expected true, a keyword list, or a map"
+            "invalid relation value #{inspect(other)}; expected true, a keyword list, or a map"
           )
       end
 
@@ -1421,7 +1511,7 @@ defmodule Favn.SQLAsset do
     DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "SQL assets require a connection through Favn.Namespace or @relation"
+      "SQL assets require a connection through Favn.Namespace or relation"
     )
   end
 
@@ -1429,44 +1519,30 @@ defmodule Favn.SQLAsset do
     do: relation_ref
 
   defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
-    depends = DSLCompiler.fetch_accum_attribute(env.module, :depends)
-    freshness = DSLCompiler.fetch_accum_attribute(env.module, :freshness)
-    retry = DSLCompiler.fetch_accum_attribute(env.module, :retry)
-    meta = Module.get_attribute(env.module, :meta)
-    window = DSLCompiler.fetch_accum_attribute(env.module, :window)
-    relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
-    materialized = DSLCompiler.fetch_accum_attribute(env.module, :materialized)
-    runtime_inputs = DSLCompiler.fetch_accum_attribute(env.module, :runtime_inputs)
-    resources = DSLCompiler.fetch_accum_attribute(env.module, :resources)
+    declarations =
+      Enum.flat_map(
+        [
+          :settings,
+          :meta,
+          :depends,
+          :window,
+          :freshness,
+          :retry,
+          :execution_pool,
+          :relation,
+          :runtime_config,
+          :materialized,
+          :runtime_inputs,
+          :resources
+        ],
+        &AssetDeclarations.values(env.module, &1)
+      )
 
-    runtime_inputs_stray? =
-      case Module.get_attribute(env.module, :favn_sql_asset_runtime_inputs_at_query) do
-        nil -> runtime_inputs != []
-        captured -> runtime_inputs != captured
-      end
-
-    resources_stray? =
-      case Module.get_attribute(env.module, :favn_sql_asset_resources_at_query) do
-        nil -> resources != []
-        captured -> resources != captured
-      end
-
-    if depends != [] or freshness != [] or retry != [] or not is_nil(meta) or window != [] or
-         relation != [] or
-         materialized != [] or runtime_inputs_stray? or resources_stray? do
-      Module.delete_attribute(env.module, :depends)
-      Module.delete_attribute(env.module, :freshness)
-      Module.delete_attribute(env.module, :retry)
-      Module.delete_attribute(env.module, :meta)
-      Module.delete_attribute(env.module, :window)
-      Module.delete_attribute(env.module, :relation)
-      Module.delete_attribute(env.module, :materialized)
-      Module.delete_attribute(env.module, :resources)
-
+    if declarations != [] do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "@depends/@freshness/@retry/@meta/@window/@relation/@materialized/@runtime_inputs/@resources on #{kind} #{name}/#{arity} requires query immediately below those attributes"
+        "SQL asset declarations before #{kind} #{name}/#{arity} require query immediately below them"
       )
     else
       :ok

@@ -10,8 +10,8 @@ defmodule Favn.DSLCompilerTest do
       token: secret_env!("SOURCE_SYSTEM_TOKEN")
     )
 
-    @meta owner: "data", category: :sales, tags: [:raw]
-    @relation true
+    meta(owner: "data", category: :sales, tags: [:raw])
+    relation(true)
     def asset(_ctx), do: :ok
   end
 
@@ -43,8 +43,8 @@ defmodule Favn.DSLCompilerTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
     use Favn.SQLAsset
 
-    @materialized :view
-    @depends RawCustomers
+    materialized(:view)
+    depends(RawCustomers)
 
     query do
       ~SQL[

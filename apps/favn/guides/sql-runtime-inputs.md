@@ -15,7 +15,8 @@ run window.
 | Need | Use | Do not use runtime SQL inputs because |
 | --- | --- | --- |
 | Select an external snapshot or watermark for the final window and bind it into SQL | `Favn.SQLAsset.RuntimeInputs` | This is the intended contract. |
-| Read credentials, endpoints, tenant IDs, or deployment configuration | `Favn.RuntimeConfig.Ref` and `ctx.config` | Configuration is resolved separately and credentials should not become SQL parameters. |
+| Bind a non-secret scalar known when the manifest is compiled | SQLAsset `settings` and an `@name` placeholder | Referenced scalar settings are already bound automatically. |
+| Read credentials, endpoints, tenant IDs, or deployment configuration | `Favn.RuntimeConfig.Ref` and `ctx.runtime_config` | Configuration is resolved separately and credentials should not become SQL parameters. |
 | Accept normal run parameters already supplied by an operator or caller | Normal submitted `params` | A resolver would duplicate an existing input path. |
 | Generate SQL source, table names, relation names, or lifecycle callbacks dynamically | Predeclare SQL/relation structure or redesign the asset | Resolver output is data only and never becomes SQL structure. |
 | Perform multi-step API work or external writes | `Favn.Asset` | Elixir assets are the escape hatch for imperative side effects. |
@@ -30,17 +31,17 @@ configuration whenever possible.
 Declare exactly one resolver module before `query`:
 
 ```elixir
-@runtime_inputs MyApp.Source.Orders.Inputs
+runtime_inputs MyApp.Source.Orders.Inputs
 ```
 
-This module attribute is the only supported public form. Anonymous functions,
+This declaration macro is the only supported public form. Anonymous functions,
 captures, MFA tuples, and inline resolver blocks are not accepted. Remove any
 experimental declarations such as these:
 
 ```elixir
-@runtime_inputs fn ctx -> resolve_inputs(ctx) end
-@runtime_inputs &MyApp.Source.Orders.Inputs.resolve/1
-@runtime_inputs {MyApp.Source.Orders.Inputs, :resolve, []}
+runtime_inputs fn ctx -> resolve_inputs(ctx) end
+runtime_inputs &MyApp.Source.Orders.Inputs.resolve/1
+runtime_inputs {MyApp.Source.Orders.Inputs, :resolve, []}
 
 runtime_inputs do
   # unsupported
@@ -90,8 +91,9 @@ and cancellation controls. Do not log or return the whole context.
 defmodule MyApp.Lakehouse.Raw.Sales.Orders do
   use Favn.SQLAsset
 
-  @runtime_inputs MyApp.Source.Orders.Inputs
-  @materialized {:incremental,
+  settings source: "orders"
+  runtime_inputs MyApp.Source.Orders.Inputs
+  materialized {:incremental,
     strategy: :delete_insert,
     window_column: :occurred_at
   }
@@ -111,6 +113,21 @@ Resolved values use the normal `@name` placeholder and adapter binding path,
 including through nested `defsql`. They cannot add SQL source, identifiers,
 relations, or lifecycle callbacks. The same merged parameters are used by the
 main query and transactional SQL checks without invoking the resolver again.
+
+The resolver receives the same typed context as an Elixir asset. This makes
+static settings useful for reusable resolver modules:
+
+```elixir
+def resolve(ctx) do
+  source = ctx.asset.settings.source
+  snapshot = MyApp.SourceManifests.completed_for!(source, ctx.window)
+  {:ok, %Result{params: %{snapshot_id: snapshot.id}, identity: snapshot.id}}
+end
+```
+
+Only top-level settings use atom access; nested maps use string keys. Keep
+credentials in `ctx.runtime_config`. Runtime config is not automatically bound
+into SQL.
 
 ## Practical Patterns
 
@@ -148,8 +165,8 @@ defmodule MyApp.Lakehouse.Raw.Sales.Orders do
   use MyApp.SQL.Snapshots
   use Favn.SQLAsset
 
-  @runtime_inputs MyApp.Source.Orders.Inputs
-  @materialized :table
+  runtime_inputs MyApp.Source.Orders.Inputs
+  materialized :table
 
   check :snapshot_matches, at: :before_materialize, on_violation: :fail do
     ~SQL"select count(*) > 0 as passed from query() where snapshot_id = @snapshot_id"
@@ -180,9 +197,9 @@ Supported parameter values are `nil`, booleans, numbers, strings, `Date`,
 `Time`, `NaiveDateTime`, `DateTime`, and `Decimal`. Encode collections into an
 adapter-supported scalar representation such as JSON before returning them.
 
-Submitted parameters and resolved parameters may not use the same normalized
-name. `window_start` and `window_end` are reserved. A resolver cannot override
-the final window.
+Submitted parameters, resolved parameters, and referenced settings may not use
+the same normalized name. `window_start` and `window_end` are reserved. A
+resolver cannot override the final window.
 
 If a bind value is sensitive, name it explicitly:
 
@@ -260,7 +277,7 @@ alias Favn.SQLAsset.RuntimeInputs.Error
 `retryable?` is only one half of retry authorization. The resolver failure must
 also normalize to a known safe failure, and the effective node policy must have
 an attempt remaining. A policy is selected with operator override, asset
-`@retry`, pipeline `retry`, then one-attempt default precedence. Error messages
+`retry`, pipeline `retry`, then one-attempt default precedence. Error messages
 and metadata must not contain resolved parameters, credentials, the complete
 context, or inspected exception terms. Read
 [Retries, Replay, And Runtime-Input Pins](retries-and-replay.html) for the full

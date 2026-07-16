@@ -42,6 +42,42 @@ defmodule Favn.Window.Anchor do
     end
   end
 
+  @doc """
+  Rehydrates and validates an anchor from a struct or JSON-shaped map.
+  """
+  @spec from_value(term()) :: {:ok, t() | nil} | {:error, term()}
+  def from_value(nil), do: {:ok, nil}
+
+  def from_value(%__MODULE__{} = anchor) do
+    case validate(anchor) do
+      :ok -> {:ok, anchor}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def from_value(value) when is_map(value) do
+    timezone = field(value, :timezone, "Etc/UTC")
+
+    with {:ok, kind} <- decode_kind(field(value, :kind)),
+         {:ok, start_at} <- decode_datetime(field(value, :start_at), timezone),
+         {:ok, end_at} <- decode_datetime(field(value, :end_at), timezone) do
+      new(kind, start_at, end_at, timezone: timezone)
+    end
+  end
+
+  def from_value(value), do: {:error, {:invalid_anchor_window, value}}
+
+  @doc """
+  Rehydrates an anchor, raising `ArgumentError` when it is invalid.
+  """
+  @spec from_value!(term()) :: t() | nil
+  def from_value!(value) do
+    case from_value(value) do
+      {:ok, anchor} -> anchor
+      {:error, reason} -> raise ArgumentError, "invalid anchor window: #{inspect(reason)}"
+    end
+  end
+
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = anchor) do
     with :ok <- Validate.kind(anchor.kind),
@@ -65,6 +101,30 @@ defmodule Favn.Window.Anchor do
       _ -> {:error, :invalid_window_bounds}
     end
   end
+
+  defp decode_kind(kind) when kind in [:hour, "hour"], do: {:ok, :hour}
+  defp decode_kind(kind) when kind in [:day, "day"], do: {:ok, :day}
+  defp decode_kind(kind) when kind in [:month, "month"], do: {:ok, :month}
+  defp decode_kind(kind) when kind in [:year, "year"], do: {:ok, :year}
+  defp decode_kind(kind), do: {:error, {:invalid_window_kind, kind}}
+
+  defp decode_datetime(%DateTime{} = datetime, timezone),
+    do: DateTime.shift_zone(datetime, timezone, Favn.Timezone.database!())
+
+  defp decode_datetime(value, timezone) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} ->
+        DateTime.shift_zone(datetime, timezone, Favn.Timezone.database!())
+
+      {:error, reason} ->
+        {:error, {:invalid_window_datetime, value, reason}}
+    end
+  end
+
+  defp decode_datetime(value, _timezone), do: {:error, {:invalid_window_datetime, value}}
+
+  defp field(value, key, default \\ nil),
+    do: Map.get(value, key, Map.get(value, Atom.to_string(key), default))
 
   @doc """
   Expand a time range into contiguous anchor windows of the given kind.

@@ -8,7 +8,7 @@ defmodule FavnReferenceWorkload.Pipelines.ReferenceWorkloadDaily do
 
   - `asset(...)` points to the top target asset.
   - `deps(:all)` means include all upstream dependencies automatically.
-  - `config(...)` and `meta(...)` add run intent and operator context.
+  - `settings(...)` and `meta(...)` add run intent and operator context.
 
   Alternative patterns:
 
@@ -22,7 +22,7 @@ defmodule FavnReferenceWorkload.Pipelines.ReferenceWorkloadDaily do
   pipeline :reference_workload_daily do
     asset(FavnReferenceWorkload.Warehouse.Ops.ReferenceWorkloadComplete)
     deps(:all)
-    config(requested_by: "manual")
+    settings(requested_by: "manual")
     meta(owner: "reference-workload", purpose: :canonical_demo)
     schedule(cron: "*/15 * * * * *", timezone: "Etc/UTC", overlap: :forbid)
   end

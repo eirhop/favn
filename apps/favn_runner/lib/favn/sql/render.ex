@@ -8,7 +8,7 @@ defmodule Favn.SQL.ParamBinding do
   @enforce_keys [:ordinal, :name, :source, :value]
   defstruct [:ordinal, :name, :source, :value, :span]
 
-  @type source :: :runtime | :query_param
+  @type source :: :runtime | :query_param | :setting
 
   @type t :: %__MODULE__{
           ordinal: pos_integer(),

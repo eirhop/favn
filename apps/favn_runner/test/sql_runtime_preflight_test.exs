@@ -205,8 +205,8 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     refs = Enum.map(assets, & &1.ref)
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: assets,
       pipelines: [],
       schedules: [],

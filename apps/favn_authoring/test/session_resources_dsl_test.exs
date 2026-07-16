@@ -17,8 +17,9 @@ defmodule FavnAuthoring.SessionResourcesDSLTest do
   defmodule Lakehouse.Raw.Orders do
     use Favn.SQLAsset
 
-    @resources [:orders_api, :landing_storage]
-    @materialized :table
+    resources([:orders_api, :landing_storage])
+    materialized(:table)
+
     query do
       ~SQL"select 1 as order_id"
     end
@@ -43,12 +44,12 @@ defmodule FavnAuthoring.SessionResourcesDSLTest do
   test "resource declarations must be lists placed before query" do
     module = Module.concat(__MODULE__, "Invalid#{System.unique_integer([:positive])}")
 
-    assert_raise CompileError, ~r/@resources must be a list/, fn ->
+    assert_raise CompileError, ~r/resources must be a list/, fn ->
       Code.compile_string("""
       defmodule #{inspect(module)} do
         use Favn.SQLAsset
-        @resources :landing_storage
-        @materialized :table
+        resources :landing_storage
+        materialized :table
         query do
           ~SQL"select 1"
         end
@@ -58,15 +59,15 @@ defmodule FavnAuthoring.SessionResourcesDSLTest do
 
     late_module = Module.concat(__MODULE__, "Late#{System.unique_integer([:positive])}")
 
-    assert_raise CompileError, ~r/@resources.*before query/, fn ->
+    assert_raise CompileError, ~r/SQL asset declarations must appear before query/, fn ->
       Code.compile_string("""
       defmodule #{inspect(late_module)} do
         use Favn.SQLAsset
-        @materialized :table
+        materialized :table
         query do
           ~SQL"select 1"
         end
-        @resources [:landing_storage]
+        resources [:landing_storage]
       end
       """)
     end

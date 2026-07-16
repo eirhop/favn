@@ -14,27 +14,30 @@ defmodule Favn.Source do
 
       # lib/my_app/lakehouse/raw/payments/stripe_charges.ex
       defmodule MyApp.Lakehouse.Raw.Payments.StripeCharges do
+        @moduledoc "External raw Stripe charges table."
+
         use Favn.Namespace, relation: [connection: :important_lakehouse, catalog: "raw", schema: "payments"]
         use Favn.Source
 
-        @doc "External raw Stripe charges table"
-        @meta owner: "data-platform", category: :payments, tags: [:raw]
-        @relation [name: "stripe_charges"]
+        meta owner: "data-platform"
+        meta category: :payments
+        meta tags: [:raw]
+        relation [name: "stripe_charges"]
       end
 
   ## Authoring contract
 
   - define no user functions
-  - declare exactly one `@relation`
-  - optionally add `@doc` and `@meta`
+  - declare exactly one `relation`
+  - use `@moduledoc` for the source description and optionally add `meta`
 
-  ## Supported attributes
+  ## Supported declarations
 
-  - `@doc`: source documentation
-  - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
-  - `@relation`: required relation declaration
+  - `@moduledoc`: real Elixir module documentation and the manifest description
+  - `meta`: keyword or map metadata such as `owner`, `category`, and `tags`
+  - `relation`: required relation declaration
 
-  `@relation` supports:
+  `relation` supports:
 
   - `true` to infer from module name plus namespace defaults
   - keyword or map relation overrides such as `connection`, `catalog`, and `schema`
@@ -51,13 +54,14 @@ defmodule Favn.Source do
   """
 
   alias Favn.Asset
+  alias Favn.DSL.AssetDeclarations
   alias Favn.Ref
 
   @doc false
   defmacro __using__(_opts) do
     quote do
-      Module.register_attribute(__MODULE__, :meta, persist: false)
-      Module.register_attribute(__MODULE__, :relation, accumulate: true)
+      Favn.DSL.AssetDeclarations.register!(__MODULE__, [:meta, :relation])
+      import Favn.DSL.AssetDeclarations, only: [meta: 1, relation: 1]
 
       @before_compile Favn.Source
     end
@@ -65,15 +69,23 @@ defmodule Favn.Source do
 
   @doc false
   defmacro __before_compile__(env) do
-    relation = Module.get_attribute(env.module, :relation) |> Enum.reverse()
-    meta = Module.get_attribute(env.module, :meta)
-    doc = normalize_doc(Module.get_attribute(env.module, :doc))
+    AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
+    relation = AssetDeclarations.values(env.module, :relation)
+
+    meta =
+      env.module
+      |> AssetDeclarations.values(:meta)
+      |> Enum.reduce(%{}, fn declaration, acc ->
+        Map.merge(acc, Asset.normalize_meta!(declaration))
+      end)
+
+    doc = normalize_doc(Module.get_attribute(env.module, :moduledoc))
 
     if relation == [] do
       compile_error!(
         env.file,
         env.line,
-        "Favn.Source modules require @relation attribute"
+        "Favn.Source modules require a relation declaration"
       )
     end
 
@@ -100,14 +112,13 @@ defmodule Favn.Source do
       ref: Ref.new(env.module, :asset),
       arity: 0,
       type: :source,
-      title: nil,
       doc: doc,
       file: normalize_file(env.file),
       line: env.line,
-      meta: meta || %{},
+      meta: meta,
       depends_on: [],
       dependencies: [],
-      config: %{},
+      settings: %{},
       window_spec: nil,
       relation: nil,
       materialization: nil,
@@ -141,7 +152,7 @@ defmodule Favn.Source do
       compile_error!(
         env.file,
         env.line,
-        "invalid @relation value #{inspect(relation)}; expected true, a keyword list, or a map"
+        "invalid relation value #{inspect(relation)}; expected true, a keyword list, or a map"
       )
     end
 
@@ -152,7 +163,7 @@ defmodule Favn.Source do
     compile_error!(
       env.file,
       env.line,
-      "multiple @relation attributes are not allowed; use at most one @relation"
+      "multiple relation declarations are not allowed; use at most one relation"
     )
   end
 

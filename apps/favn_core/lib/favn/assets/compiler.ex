@@ -128,12 +128,12 @@ defmodule Favn.Assets.Compiler do
           :ok
         else
           raise ArgumentError,
-                "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a single-asset module, use {Module, :asset_name} for multi-asset modules"
+                "invalid depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a single-asset module, use {Module, :asset_name} for multi-asset modules"
         end
 
       _ ->
         raise ArgumentError,
-              "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a loadable single-asset module"
+              "invalid depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a loadable single-asset module"
     end
   end
 
@@ -178,8 +178,10 @@ defmodule Favn.Assets.Compiler do
          entries when is_list(entries) <- module.__favn_assets_raw__(),
          %{relation: relation} <- Enum.find(entries, &(Map.get(&1, :name) == name)) do
       case relation do
+        nil -> nil
         [] -> nil
         [value] -> value
+        value -> value
       end
     else
       _ -> nil

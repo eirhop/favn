@@ -22,6 +22,40 @@ defmodule FavnRunner.SQLRendererTest do
     assert [%{name: "country", value: "NO"}] = rendered.params.bindings
   end
 
+  test "binds referenced asset settings without copying unused settings" do
+    definition = put_in(definition().asset.settings, %{country: "NO", unused: %{nested: true}})
+
+    assert {:ok, rendered} = Renderer.render(definition)
+    assert [%{name: "country", source: :setting, value: "NO"}] = rendered.params.bindings
+  end
+
+  test "rejects collisions between settings and runtime params" do
+    definition = put_in(definition().asset.settings, %{country: "NO"})
+
+    assert {:error, error} = Renderer.render(definition, params: %{country: "SE"})
+    assert error.type == :binding_failure
+    assert error.message =~ "declared in both asset settings and runtime params"
+  end
+
+  test "rejects non-scalar settings only when SQL references them" do
+    definition = put_in(definition().asset.settings, %{country: ["NO"]})
+
+    assert {:error, error} = Renderer.render(definition)
+    assert error.message =~ "must be a scalar bind value"
+  end
+
+  test "rejects value placeholders in relation position" do
+    assert_raise CompileError,
+                 ~r/placeholders are values, not relation or identifier names/,
+                 fn ->
+                   Template.compile!("SELECT * FROM @source",
+                     file: "test/fixtures/renderer_test.sql",
+                     line: 1,
+                     enforce_query_root: true
+                   )
+                 end
+  end
+
   test "renders schema-only and catalog-schema asset refs distinctly" do
     schema_source = Module.concat(__MODULE__, SchemaSource)
     catalog_schema_source = Module.concat(__MODULE__, CatalogSchemaSource)
@@ -149,7 +183,8 @@ defmodule FavnRunner.SQLRendererTest do
         ref: {__MODULE__, :asset},
         relation: RelationRef.new!(relation_attrs),
         file: "test/fixtures/renderer_test.sql",
-        window_spec: nil
+        window_spec: nil,
+        settings: %{}
       },
       sql: template.source,
       template: template,
@@ -204,7 +239,8 @@ defmodule FavnRunner.SQLRendererTest do
         ref: {__MODULE__, :asset},
         relation: RelationRef.new!(%{connection: :warehouse, schema: "gold", name: "target"}),
         file: "test/fixtures/renderer_asset_ref_test.sql",
-        window_spec: nil
+        window_spec: nil,
+        settings: %{}
       },
       sql: template.source,
       template: template,

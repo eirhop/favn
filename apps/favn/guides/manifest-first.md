@@ -49,7 +49,8 @@ authoring modules
 ```
 
 The manifest is the handoff point. It says what assets exist, how they depend on
-each other, what pipelines select, and what runtime config is required.
+each other, what pipelines select, their non-secret static settings, and what
+runtime config is required.
 
 ## Common Manifest Calls
 
@@ -100,8 +101,9 @@ A manifest can include:
 - typed SQL output contracts, generated/custom check definitions, and explicit
   column lineage
 - freshness and window metadata
+- JSON-safe asset and pipeline settings
 - runtime config requirements
-- version data used by the runtime
+- schema and runner contract version 6 data used by the runtime
 
 The exact struct is managed by Favn. Application code should normally build
 manifests with `Favn.generate_manifest/1`, not by constructing manifest structs

@@ -23,8 +23,10 @@ defmodule MyApp.Assets.SourceRecords do
   use Favn.Asset
 
   @doc "Load source records."
-  @meta owner: "data_platform", tags: [:source]
-  def asset(_ctx) do
+  settings endpoint: "/records"
+  meta owner: "data_platform", tags: [:source]
+  def asset(ctx) do
+    _endpoint = ctx.asset.settings.endpoint
     {:ok, %{rows_written: 0}}
   end
 end
@@ -36,9 +38,10 @@ Define one SQL asset:
 defmodule MyApp.Assets.NormalizedRecords do
   use Favn.SQLAsset
 
-  @depends MyApp.Assets.SourceRecords
-  @resources [:landing_storage]
-  @materialized :table
+  settings minimum_id: 1
+  depends MyApp.Assets.SourceRecords
+  resources [:landing_storage]
+  materialized :table
 
   contract do
     grain by: [:record_id], description: "one normalized record"
@@ -57,6 +60,7 @@ defmodule MyApp.Assets.NormalizedRecords do
     ~SQL"""
     select source_id as record_id, payload
     from source_records
+    where source_id >= @minimum_id
     """
   end
 end
@@ -77,7 +81,7 @@ For runtime-only SQL bind values, declare exactly one resolver module before
 `query`:
 
 ```elixir
-@runtime_inputs MyApp.Source.Orders.Inputs
+runtime_inputs MyApp.Source.Orders.Inputs
 ```
 
 This is the only supported form. Read `Favn.SQLAsset.RuntimeInputs` and
@@ -112,9 +116,15 @@ defmodule MyApp.Pipelines.DailySales do
   pipeline :daily_sales do
     asset MyApp.Assets.OrderSummary
     deps :all
+    settings mode: "scheduled"
   end
 end
 ```
+
+Runtime access is deliberately separate: asset settings are
+`ctx.asset.settings`, pipeline settings are `ctx.pipeline.settings`, submitted
+inputs are `ctx.params`, and resolved environment values/secrets are
+`ctx.runtime_config`.
 
 Common modules:
 
@@ -126,6 +136,7 @@ Common modules:
 | `Favn.Namespace` | Shared relation defaults and additive SQL session resources. |
 | `Favn.Connection` | Named SQL connection definitions. |
 | `Favn.SQLClient` | SQL calls from Elixir code through configured Favn connections. |
+| `Favn.Settings` | Validation and runtime shape for static settings. |
 
 ## Manifest Calls For Debugging And Tooling
 

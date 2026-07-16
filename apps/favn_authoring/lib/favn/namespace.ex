@@ -4,7 +4,7 @@ defmodule Favn.Namespace do
   runtime-config selection.
 
   Use `Favn.Namespace` to declare relation defaults once on parent modules, then
-  let `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, `Favn.Assets`, and
+  let `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, and
   `Favn.Source` inherit them. Runtime-config bundle selection applies only to
   descendant `Favn.Asset` and `Favn.MultiAsset` executable Elixir assets.
 
@@ -71,7 +71,7 @@ defmodule Favn.Namespace do
       defmodule MyApp.Lakehouse.Raw.Sales.Orders do
         use Favn.Asset
 
-        @relation true
+        relation true
         def asset(_ctx), do: :ok
       end
 
@@ -107,7 +107,7 @@ defmodule Favn.Namespace do
   which override by key. Names normalize to lowercase snake_case strings in the
   manifest. A namespace resource applies only to descendant SQL assets. Put a
   resource on a broad namespace only when every descendant SQL asset needs that
-  physical-session capability; otherwise use local `@resources [...]` on the
+  physical-session capability; otherwise use local `resources [...]` on the
   leaf asset. Resources are configured as trusted native DuckDB SQL files; read
   the HexDocs guide
   [DuckDB Session Scripts And Resources](duckdb-session-scripts.html).

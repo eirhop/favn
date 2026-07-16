@@ -20,7 +20,7 @@ defmodule Favn.Manifest.Pipeline do
           execution_pool: atom() | nil,
           source: atom() | nil,
           outputs: [atom()],
-          config: map(),
+          settings: Favn.Settings.t(),
           metadata: map()
         }
 
@@ -35,7 +35,7 @@ defmodule Favn.Manifest.Pipeline do
             execution_pool: nil,
             source: nil,
             outputs: [],
-            config: %{},
+            settings: %{},
             metadata: %{}
 
   @spec from_definition(map()) :: t()
@@ -52,7 +52,7 @@ defmodule Favn.Manifest.Pipeline do
       execution_pool: normalize_execution_pool(Map.get(definition, :execution_pool)),
       source: Map.get(definition, :source),
       outputs: normalize_atom_list(Map.get(definition, :outputs, [])),
-      config: normalize_map(Map.get(definition, :config, %{})),
+      settings: Favn.Settings.normalize!(Map.get(definition, :settings, %{})),
       metadata: normalize_map(Map.get(definition, :meta, %{}))
     }
   end

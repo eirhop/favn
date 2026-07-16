@@ -26,7 +26,7 @@ Do not use a transactional SQL check for:
 - transformation logic that belongs in the asset's main `query`;
 - external API calls, file checks, or other imperative work—use an upstream
   `Favn.Asset` or source client instead;
-- dependency ordering or upstream readiness—declare `@depends` and use
+- dependency ordering or upstream readiness—declare `depends` and use
   freshness policy instead;
 - mutating repair SQL or side effects—checks are read-only validation;
 - returning invalid rows or large samples—return aggregate counts and inspect
@@ -51,7 +51,7 @@ defmodule MyApp.Assets.NormalizedRecords do
 
   use Favn.SQLAsset
 
-  @materialized :table
+  materialized :table
 
   check :candidate_has_valid_keys,
     at: :before_materialize,
@@ -207,7 +207,7 @@ defmodule MyApp.Assets.NormalizedRecords do
   use MyApp.SQL.Quality
   use Favn.SQLAsset
 
-  @materialized :table
+  materialized :table
 
   check :candidate_has_rows, at: :before_materialize, on_violation: :fail do
     ~SQL"select * from has_rows(query())"

@@ -10,28 +10,28 @@ defmodule FavnReferenceWorkload.Warehouse.Gold.Customer360 do
 
   DSL walkthrough in simple terms:
 
-  - `@relation [name: ...]` overrides only the table name while connection and
+  - `relation [name: ...]` overrides only the table name while connection and
     schema are inherited from parent namespaces.
   - `use Favn.SQLAsset` means this asset is implemented by SQL.
-  - `@materialized :table` stores the result as a table.
-  - `@relation [name: "customer_360"]` explicitly sets output table name.
+  - `materialized :table` stores the result as a table.
+  - `relation [name: "customer_360"]` explicitly sets output table name.
 
   Alternative naming behavior:
 
-  - If you remove `@relation [name: "customer_360"]`, Favn uses the default
+  - If you remove `relation [name: "customer_360"]`, Favn uses the default
     relation name from the module and the table name becomes `customer360`.
 
   Alternative layering behavior:
 
-  - If you do not need a custom table name, set `@relation true`.
+  - If you do not need a custom table name, set `relation true`.
   """
 
   use Favn.Namespace
   use Favn.SQLAsset
 
-  @meta owner: "reference-workload", category: :customers, tags: [:gold]
-  @relation [name: "customer_360"]
-  @materialized :table
+  meta owner: "reference-workload", category: :customers, tags: [:gold]
+  relation [name: "customer_360"]
+  materialized :table
 
   query do
     ~SQL"""

@@ -47,7 +47,8 @@ defmodule Favn.RuntimeConfigDSLTest do
   defmodule Landing.GitHub.SQLSummary do
     use Favn.SQLAsset
 
-    @materialized :view
+    materialized(:view)
+
     query do
       ~SQL"select 1 as value"
     end
@@ -66,15 +67,11 @@ defmodule Favn.RuntimeConfigDSLTest do
     runtime_config(Bundles.github())
 
     asset :repositories do
-      rest do
-        path("/repositories")
-      end
+      settings(path: "/repositories")
     end
 
     asset :pull_requests do
-      rest do
-        path("/pull_requests")
-      end
+      settings(path: "/pull_requests")
     end
 
     def asset(_ctx), do: :ok
@@ -84,9 +81,7 @@ defmodule Favn.RuntimeConfigDSLTest do
     use Favn.MultiAsset
 
     asset :issues do
-      rest do
-        path("/issues")
-      end
+      settings(path: "/issues")
     end
 
     def asset(_ctx), do: :ok
@@ -113,8 +108,8 @@ defmodule Favn.RuntimeConfigDSLTest do
 
     assert {:ok, encoded} =
              Serializer.encode_manifest(%{
-               schema_version: 5,
-               runner_contract_version: 5,
+               schema_version: 6,
+               runner_contract_version: 6,
                assets: [manifest_asset]
              })
 

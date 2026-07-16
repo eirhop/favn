@@ -17,7 +17,7 @@ A table or incremental SQL asset may declare one contract:
 defmodule MyApp.Assets.NormalizedRecords do
   use Favn.SQLAsset
 
-  @materialized :table
+  materialized :table
 
   contract do
     grain by: [:record_id], description: "one normalized record"

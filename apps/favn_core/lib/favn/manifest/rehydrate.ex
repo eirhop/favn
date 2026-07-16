@@ -92,7 +92,8 @@ defmodule Favn.Manifest.Rehydrate do
       type: value |> field_value(:type, :elixir) |> decode_known_atom([:elixir, :sql, :source]),
       depends_on: value |> field_value(:depends_on, []) |> build_refs(),
       execution: value |> field_value(:execution, %{}) |> build_execution(),
-      config: value |> field_value(:config, %{}) |> plain_map(),
+      settings: value |> field_value(:settings, %{}) |> build_settings(),
+      description: field_value(value, :description),
       relation: value |> field_value(:relation) |> build_relation(),
       window: value |> field_value(:window) |> build_window_spec(),
       freshness: value |> field_value(:freshness) |> build_freshness(),
@@ -778,12 +779,33 @@ defmodule Favn.Manifest.Rehydrate do
       execution_pool: value |> field_value(:execution_pool) |> decode_atom_optional(),
       source: value |> field_value(:source) |> decode_atom_optional(),
       outputs: value |> field_value(:outputs, []) |> build_atom_list(),
-      config: value |> field_value(:config, %{}) |> plain_map(),
+      settings: value |> field_value(:settings, %{}) |> build_settings(),
       metadata: value |> field_value(:metadata, %{}) |> build_metadata()
     }
   end
 
   defp build_pipeline(other), do: other
+
+  defp build_settings(value) when is_map(value) do
+    value
+    |> Map.new(fn
+      {key, setting} when is_atom(key) ->
+        {key, setting}
+
+      {key, setting} when is_binary(key) ->
+        unless Favn.Settings.valid_key_string?(key) do
+          raise ArgumentError, "invalid settings key #{inspect(key)}"
+        end
+
+        {decode_manifest_atom!(key), setting}
+
+      {key, _setting} ->
+        raise ArgumentError, "invalid settings key #{inspect(key)}"
+    end)
+    |> Favn.Settings.normalize!()
+  end
+
+  defp build_settings(value), do: Favn.Settings.normalize!(value)
 
   defp build_window_policy(nil), do: nil
   defp build_window_policy(%Policy{} = policy), do: policy
@@ -1126,6 +1148,9 @@ defmodule Favn.Manifest.Rehydrate do
         key_name == "selectors" ->
           collect_manifest_selectors(value, acc, [key | path])
 
+        key_name == "settings" ->
+          collect_settings_atom_refs(value, acc)
+
         metadata_label_path?(path, key_name) ->
           acc
 
@@ -1152,6 +1177,21 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp collect_manifest_selectors(value, refs, path),
     do: collect_manifest_atom_refs(value, refs, path)
+
+  defp collect_settings_atom_refs(settings, refs) when is_map(settings) do
+    Enum.reduce(Map.keys(settings), refs, fn
+      key, acc when is_atom(key) ->
+        MapSet.put(acc, Atom.to_string(key))
+
+      key, acc when is_binary(key) ->
+        if(Favn.Settings.valid_key_string?(key), do: MapSet.put(acc, key), else: acc)
+
+      _key, acc ->
+        acc
+    end)
+  end
+
+  defp collect_settings_atom_refs(_settings, refs), do: refs
 
   defp collect_manifest_selector([kind, _label], refs, path) when kind in [:tag, "tag"] do
     collect_manifest_atom_refs(kind, refs, path)

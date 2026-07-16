@@ -1,212 +1,90 @@
 defmodule Favn.MultiAsset do
   @moduledoc """
-  Advanced Elixir DSL for compiling one module into many generated assets.
+  Defines multiple generated assets that share one Elixir `asset/1` runtime.
 
-  Use this module when many assets share the same runtime implementation but
-  differ by declarative config. Each declared `asset :name do ... end` compiles
-  to its own canonical `%Favn.Asset{}` while the module keeps one shared public
-  `asset/1` runtime function.
+  Module-level declarations are defaults for every generated asset. Declarations
+  inside an `asset` block add to or override those defaults. Settings and meta
+  are shallow-merged, dependencies are combined, and scalar declarations are
+  replaced by the child value.
 
-  ## When to use it
-
-  Use `Favn.MultiAsset` when:
-
-  - you are generating many similar extraction assets
-  - the runtime implementation is shared
-  - per-asset differences are mostly config, metadata, relation ownership, or dependencies
-
-  Keep source/API transport mechanics in integration modules when useful, but
-  keep asset-specific extraction, normalization, and business rules visible in
-  this module.
-
-  ## Minimal example
-
-      # lib/my_app/lakehouse/raw/sales/shopify.ex
-      defmodule MyApp.Lakehouse.Raw.Sales.Shopify do
-        @moduledoc \"\"\"
-        Raw Shopify resources used as source-shaped commerce inputs.
-
-        Each generated asset writes one source resource. Resource-specific
-        normalization remains visible in this module so the asset behavior can
-        be reviewed without opening the integration client.
-        \"\"\"
-
+      defmodule MyApp.Mercatus do
         use Favn.MultiAsset
 
-        defaults do
-          meta owner: "data-platform", category: :shopify, tags: [:raw]
+        settings method: "GET"
+        meta owner: "data-platform"
+        meta category: "mercatus"
+        window Favn.Window.monthly()
+        freshness :always
+        execution_pool :mercatus_api
+        relation true
 
-          rest do
-            primary_key "id"
-            paginator :cursor, cursor_path: "links.next"
-          end
-        end
-
-        @doc "Extract orders"
-        @relation true
-        @freshness :daily
         asset :orders do
-          rest do
-            path "/orders.json"
-            data_path "orders"
-          end
+          description "Extract orders"
+          settings path: "/orders"
+          meta tags: ["orders"]
         end
 
-        def asset(ctx) do
-          MyApp.Shopify.Client.extract(ctx.asset.config, ctx)
+        asset :events do
+          settings path: "/events"
+          freshness :daily
         end
+
+        @doc "Execute one generated extraction."
+        def asset(ctx), do: MyApp.Client.extract(ctx.asset.settings, ctx)
       end
 
-  ## Authoring contract
-
-  - define exactly one public `asset/1` runtime function
-  - define at least one `asset :name do ... end` declaration
-  - use at most one `defaults do ... end` block
-  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, `@execution_pool`, and `@relation` directly above each declared asset
-
-  ## Supported attributes and blocks
-
-  Per generated asset you can use:
-
-  - `@doc`
-  - `@meta`
-  - `@depends`
-  - `@window`
-  - `@freshness`
-  - `@execution_pool`
-  - `@relation`
-  - `asset :name do ... end`
-
-  Per module you can use `runtime_config/1,2` for runtime config shared by every
-  generated asset.
-
-  `defaults do ... end` currently supports:
-
-  - `meta ...`
-  - `window Favn.Window.*(...)`
-  - `rest do ... end`
-
-  ## Freshness
-
-  Generated assets use the same `@freshness` input contract as `Favn.Asset`.
-  Attach at most one `@freshness` directly above the `asset :name do` declaration
-  it belongs to.
-
-  Supported V1 values are `:daily`, `{:daily, timezone: "Europe/Oslo"}`,
-  `[max_age: {:hours, 6}]`, `[window_success: true]`, and `:always`. Windowed
-  generated assets default to exact window-success freshness; non-windowed assets
-  have no implicit freshness.
-
-  Read `Favn.Freshness.Policy` for policy input details and
-  `Favn.Freshness.Key` for stored freshness keys.
-
-  ## Execution Pool
-
-  Generated assets can declare `@execution_pool` directly above the generated
-  asset declaration. This is manifest-level orchestrator admission policy and is
-  used before the shared runtime `asset/1` implementation starts.
-
-      @execution_pool :shopify_api
-      asset :orders do
-        rest do
-          path "/orders.json"
-        end
-      end
-
-  Asset-level pools override a pipeline-level default `execution_pool`.
-
-  `asset :name do ... end` currently supports:
-
-  - `rest do ... end`
-
-  `rest` currently supports these entries:
-
-  - `path "/path"`: request path or endpoint path
-  - `data_path "items"`: field path containing extracted records
-  - `params %{...}` or keyword list: static request params
-  - `primary_key "id"`: identifier field for downstream extraction logic
-  - `paginator kind, opts`: paginator config map with added `:kind`
-  - `incremental opts`: incremental extraction config, defaults `kind: :cursor`
-  - `method :get` or `"GET"`: request method
-  - `extra %{...}` or keyword list: adapter-specific extra config
-
-  `@depends` supports:
-
-  - `:same_module_asset_name`
-  - `{OtherModule, :asset_name}`
-
-  ## What gets compiled
-
-  Each declaration becomes one canonical `%Favn.Asset{}` with:
-
-  - `ref: {Module, :name}`
-  - `entrypoint: :asset`
-  - merged defaults plus per-asset config in `ctx.asset.config`
-
-  ## Runtime context notes
-
-  The shared runtime usually reads `ctx.asset.config` to decide what to extract.
-  Module-level `runtime_config/1,2` declarations are compiled into every generated
-  asset and resolved into `ctx.config` by the runner. Relation ownership,
-  metadata, and window specs remain per generated asset.
-
-  At runtime, Favn rehydrates `ctx.asset.config.rest` structural keys and known
-  Favn enum fields so code can use idiomatic access such as
-  `ctx.asset.config.rest.path` and `ctx.asset.config.rest.extra.refresh_type`.
-  Arbitrary adapter-specific `rest.extra` payload keys and static `rest.params`
-  entries remain manifest/JSON-shaped unless Favn explicitly supports that key.
-
-  ## Common mistakes
-
-  - forgetting the shared `asset/1` runtime function
-  - declaring multiple `defaults` blocks
-  - using duplicate asset names
-  - expecting asset blocks to support arbitrary clauses beyond the current DSL
-
-  ## See also
-
-  - `Favn.Asset`
-  - `Favn.Freshness.Policy`
-  - `Favn.Namespace`
+  Shared declarations must appear before the first `asset` block. Child
+  descriptions use `description/1` because generated children are manifest
+  entries, not Elixir functions; `@doc` remains attached to the real `asset/1`
+  function.
   """
 
   alias Favn.Asset
   alias Favn.Asset.RelationResolver
+  alias Favn.DSL.AssetDeclarations
   alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Namespace
   alias Favn.Ref
+  alias Favn.RuntimeConfig.Bundle
   alias Favn.RuntimeConfig.Requirements
   alias Favn.Window.Spec
+
+  @shared_declarations [
+    :settings,
+    :meta,
+    :depends,
+    :window,
+    :freshness,
+    :retry,
+    :execution_pool,
+    :relation,
+    :runtime_config
+  ]
 
   @doc false
   defmacro __using__(_opts) do
     quote do
-      Module.register_attribute(__MODULE__, :depends, accumulate: true)
-      Module.register_attribute(__MODULE__, :freshness, accumulate: true)
-      Module.register_attribute(__MODULE__, :execution_pool, persist: false)
-      Module.register_attribute(__MODULE__, :meta, persist: false)
-      Module.register_attribute(__MODULE__, :relation, accumulate: true)
-      Module.register_attribute(__MODULE__, :runtime_config, accumulate: true)
-      Module.register_attribute(__MODULE__, :window, accumulate: true)
-      Module.register_attribute(__MODULE__, :favn_multi_asset_defaults_raw, persist: true)
-
-      Module.register_attribute(__MODULE__, :favn_multi_assets_raw, persist: true)
-      Module.register_attribute(__MODULE__, :favn_multi_asset_decls, persist: true)
-
+      Favn.DSL.AssetDeclarations.register!(__MODULE__)
+      Module.register_attribute(__MODULE__, :favn_multi_assets_raw, accumulate: true)
+      Module.register_attribute(__MODULE__, :favn_multi_asset_current_decl, persist: false)
+      Module.register_attribute(__MODULE__, :favn_multi_assets_started, persist: false)
       Module.register_attribute(__MODULE__, :favn_multi_asset_runtime_count, persist: false)
       Module.register_attribute(__MODULE__, :favn_multi_asset_generating, persist: false)
 
+      @favn_multi_assets_started false
       @favn_multi_asset_runtime_count 0
-      @favn_multi_assets_raw []
-      @favn_multi_asset_decls []
-
-      @on_definition Favn.MultiAsset
-      @before_compile Favn.MultiAsset
 
       import Favn.MultiAsset,
         only: [
-          defaults: 1,
           asset: 2,
+          settings: 1,
+          meta: 1,
+          depends: 1,
+          window: 1,
+          freshness: 1,
+          retry: 1,
+          execution_pool: 1,
+          relation: 1,
           runtime_config: 1,
           runtime_config: 2,
           env!: 1,
@@ -214,66 +92,68 @@ defmodule Favn.MultiAsset do
           secret_env!: 1,
           secret_env!: 2
         ]
+
+      @on_definition Favn.MultiAsset
+      @before_compile Favn.MultiAsset
     end
   end
 
-  @doc """
-  Declares runtime configuration required by every generated asset.
+  for declaration <- [
+        :settings,
+        :meta,
+        :depends,
+        :window,
+        :freshness,
+        :retry,
+        :execution_pool,
+        :relation
+      ] do
+    @doc false
+    defmacro unquote(declaration)(value) do
+      declaration = unquote(declaration)
 
-  Values are resolved by the runner at execution time and exposed through
-  `ctx.config`. Runtime values are not embedded in the manifest.
-  """
+      quote do
+        Favn.MultiAsset.put_shared_declaration!(__MODULE__, unquote(declaration), unquote(value))
+      end
+    end
+  end
+
+  @doc false
   defmacro runtime_config(bundle) do
-    quote bind_quoted: [bundle: bundle] do
-      Module.put_attribute(
+    quote do
+      Favn.MultiAsset.put_shared_declaration!(
         __MODULE__,
         :runtime_config,
-        Favn.RuntimeConfig.Bundle.validate!(bundle)
+        Favn.RuntimeConfig.Bundle.validate!(unquote(bundle))
       )
     end
   end
 
-  @doc """
-  Declares inline runtime configuration fields required by every generated asset.
-  """
+  @doc false
   defmacro runtime_config(scope, fields) do
     caller = __CALLER__
 
-    quote bind_quoted: [
-            scope: scope,
-            fields: fields,
-            module: caller.module,
-            file: caller.file,
-            line: caller.line
-          ] do
-      Module.put_attribute(
+    quote do
+      Favn.MultiAsset.put_shared_declaration!(
         __MODULE__,
         :runtime_config,
-        Favn.RuntimeConfig.Bundle.inline!(scope, fields,
-          module: module,
-          file: file,
-          line: line
+        Favn.RuntimeConfig.Bundle.inline!(unquote(scope), unquote(fields),
+          module: unquote(caller.module),
+          file: unquote(caller.file),
+          line: unquote(caller.line)
         )
       )
     end
   end
 
-  @doc """
-  Declares an environment variable runtime config value.
-
-  Use `required?: false` for an optional value.
-  """
+  @doc false
   defmacro env!(key, opts \\ []) do
     quote do
       Favn.RuntimeConfig.Ref.env!(unquote(key), unquote(opts))
     end
   end
 
-  @doc """
-  Declares a secret environment variable runtime config value.
-
-  Use `required?: false` for an optional secret.
-  """
+  @doc false
   defmacro secret_env!(key, opts \\ []) do
     quote do
       Favn.RuntimeConfig.Ref.secret_env!(unquote(key), unquote(opts))
@@ -281,30 +161,76 @@ defmodule Favn.MultiAsset do
   end
 
   @doc false
+  @spec put_shared_declaration!(module(), atom(), term()) :: :ok
+  def put_shared_declaration!(module, declaration, value) do
+    if Module.get_attribute(module, :favn_multi_assets_started) do
+      raise CompileError,
+        description:
+          "shared #{declaration} must be declared before the first Favn.MultiAsset asset block"
+    end
+
+    AssetDeclarations.put(module, declaration, value)
+  end
+
+  @doc "Declares one generated child asset."
+  defmacro asset(name, do: block) do
+    env = __CALLER__
+
+    unless is_atom(name) do
+      DSLCompiler.compile_error!(
+        env.file,
+        env.line,
+        "asset name must be an atom, got: #{Macro.to_string(name)}"
+      )
+    end
+
+    child = parse_child_block!(block, env, name)
+
+    declaration = %{
+      module: env.module,
+      name: name,
+      entrypoint: :asset,
+      arity: 1,
+      file: DSLCompiler.normalize_file(env.file),
+      line: env.line,
+      child: child
+    }
+
+    marker = marker_name(name)
+
+    quote do
+      Module.put_attribute(
+        __MODULE__,
+        :favn_multi_asset_current_decl,
+        unquote(Macro.escape(declaration))
+      )
+
+      defp unquote(marker)(), do: :ok
+      :ok
+    end
+  end
+
+  @doc false
   def __on_definition__(env, kind, name, args, _guards, _body) do
-    arity = length(args || [])
-
-    generated_definition? =
-      Module.get_attribute(env.module, :favn_multi_asset_generating) == true and
-        kind == :def and
-        name in [:__favn_assets__, :__favn_assets_raw__]
-
-    if generated_definition? do
+    if Module.get_attribute(env.module, :favn_multi_asset_generating) do
       :ok
     else
-      case {kind, name, arity} do
-        {:def, :asset, 1} ->
-          validate_no_stray_asset_attributes!(env, kind, name, arity)
-          increment_runtime_count!(env)
+      AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
+      arity = length(args || [])
 
-        {:defp, name, 1} when name != :asset ->
-          if is_generated_decl_name?(name) do
-            capture_generated_asset_definition!(env, name)
+      case {kind, name, arity} do
+        {:defp, marker, 0} ->
+          if marker_name?(marker) do
+            capture_child_declaration!(env, marker)
           else
-            validate_no_stray_asset_attributes!(env, kind, name, arity)
+            :ok
           end
 
-        {:def, :asset, _other_arity} ->
+        {:def, :asset, 1} ->
+          count = Module.get_attribute(env.module, :favn_multi_asset_runtime_count) || 0
+          Module.put_attribute(env.module, :favn_multi_asset_runtime_count, count + 1)
+
+        {:def, :asset, _arity} ->
           DSLCompiler.compile_error!(
             env.file,
             env.line,
@@ -318,117 +244,25 @@ defmodule Favn.MultiAsset do
             "Favn.MultiAsset requires a public def asset(ctx)"
           )
 
-        {kind, _name, _arity} when kind in [:def, :defp] ->
-          validate_no_stray_asset_attributes!(env, kind, name, arity)
-
-        _ ->
+        _other ->
           :ok
       end
     end
   end
 
-  @doc """
-  Declares defaults shared by every generated asset in the module.
-
-  Defaults are merged with per-asset declarations. This block supports
-  `meta`, `window`, and `rest`.
-
-  Supported entries:
-
-  - `meta owner: ..., category: ..., tags: ...`
-  - `window Favn.Window.daily(...)`
-  - `rest do ... end`
-
-  ## Example
-
-      defaults do
-        meta owner: "data-platform", category: :shopify, tags: [:raw]
-
-        rest do
-          primary_key "id"
-          paginator :cursor, cursor_path: "links.next"
-        end
-      end
-  """
-  defmacro defaults(do: block) do
-    ensure_no_pending_attributes!(__CALLER__)
-
-    current = Module.get_attribute(__CALLER__.module, :favn_multi_asset_defaults_raw)
-
-    if current do
-      DSLCompiler.compile_error!(
-        __CALLER__.file,
-        __CALLER__.line,
-        "multiple defaults blocks are not allowed; use at most one defaults do ... end"
-      )
-    end
-
-    defaults = normalize_defaults_block!(block, __CALLER__)
-    Module.put_attribute(__CALLER__.module, :favn_multi_asset_defaults_raw, defaults)
-
-    marker_fun = defaults_marker_fun_name(__CALLER__.line)
-
-    quote do
-      defp unquote(marker_fun)(), do: :ok
-      :ok
-    end
-  end
-
-  @doc """
-  Declares one generated asset inside a `Favn.MultiAsset` module.
-
-  Attach standard asset attributes such as `@doc`, `@meta`, `@depends`,
-  `@window`, and `@relation` immediately above the declaration.
-
-  The asset block currently supports only `rest do ... end`.
-
-      ## Example
-
-      @doc "Extract orders"
-      @depends {MyApp.Raw.Shopify, :customers}
-      @relation true
-      asset :orders do
-        rest do
-          path "/orders.json"
-          data_path "orders"
-        end
-      end
-  """
-  defmacro asset(name, do: block) do
-    if not is_atom(name) do
-      DSLCompiler.compile_error!(
-        __CALLER__.file,
-        __CALLER__.line,
-        "asset name must be an atom, got: #{Macro.to_string(name)}"
-      )
-    end
-
-    asset_rest = normalize_asset_block!(block, __CALLER__, name)
-
-    raw_decl = %{
-      name: name,
-      file: DSLCompiler.normalize_file(__CALLER__.file),
-      line: __CALLER__.line,
-      rest: asset_rest
-    }
-
-    decl_fun = decl_fun_name(name)
-
-    quote do
-      @favn_multi_asset_decls [
-        {unquote(decl_fun), unquote(Macro.escape(raw_decl))} | @favn_multi_asset_decls
-      ]
-
-      defp unquote(decl_fun)(_ctx), do: :ok
-      :ok
-    end
-  end
-
   @doc false
   defmacro __before_compile__(env) do
-    runtime_count = Module.get_attribute(env.module, :favn_multi_asset_runtime_count) || 0
+    AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
 
-    if runtime_count != 1 do
+    if pending_doc?(env.module) do
+      DSLCompiler.compile_error!(
+        env.file,
+        env.line,
+        "@doc must document the public asset/1 function"
+      )
+    end
+
+    if Module.get_attribute(env.module, :favn_multi_asset_runtime_count) != 1 do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
@@ -436,16 +270,13 @@ defmodule Favn.MultiAsset do
       )
     end
 
-    ensure_no_pending_attributes!(env)
-
-    runtime_config = normalize_runtime_config!(env.module, env)
-
-    raw_assets =
+    raw_declarations =
       env.module
       |> Module.get_attribute(:favn_multi_assets_raw)
+      |> List.wrap()
       |> Enum.reverse()
 
-    if raw_assets == [] do
+    if raw_declarations == [] do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
@@ -453,15 +284,17 @@ defmodule Favn.MultiAsset do
       )
     end
 
-    _ = validate_unique_names!(raw_assets)
+    validate_unique_names!(raw_declarations)
+    shared = shared_declarations(env.module)
 
-    assets =
-      raw_assets
-      |> Enum.map(&build_asset!(&1, runtime_config))
-      |> resolve_relations!(env.module, env)
+    {assets, raw_assets} =
+      Enum.map_reduce(raw_declarations, [], fn declaration, raw_assets ->
+        raw_asset = merge_declarations!(declaration, shared, env)
+        {build_asset!(raw_asset, env), [raw_asset | raw_assets]}
+      end)
 
-    _ = ensure_unique_relation_owners!(assets, env)
-
+    :ok = ensure_unique_relation_owners!(assets, env)
+    raw_assets = Enum.reverse(raw_assets)
     Module.put_attribute(env.module, :favn_multi_asset_generating, true)
 
     quote do
@@ -474,328 +307,273 @@ defmodule Favn.MultiAsset do
     end
   end
 
-  defp increment_runtime_count!(env) do
-    count = Module.get_attribute(env.module, :favn_multi_asset_runtime_count) || 0
-    Module.put_attribute(env.module, :favn_multi_asset_runtime_count, count + 1)
+  defp shared_declarations(module) do
+    Map.new(@shared_declarations, &{&1, AssetDeclarations.values(module, &1)})
   end
 
-  defp is_generated_decl_name?(name) when is_atom(name) do
+  defp capture_child_declaration!(env, marker) do
+    AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
+    reject_pending_doc!(env)
+
+    declaration = Module.get_attribute(env.module, :favn_multi_asset_current_decl)
+
+    if is_nil(declaration) do
+      DSLCompiler.compile_error!(
+        env.file,
+        env.line,
+        "internal error: missing declaration for #{marker}"
+      )
+    end
+
+    Module.put_attribute(env.module, :favn_multi_assets_started, true)
+    Module.put_attribute(env.module, :favn_multi_assets_raw, declaration)
+    Module.delete_attribute(env.module, :favn_multi_asset_current_decl)
+  end
+
+  defp marker_name(name), do: String.to_atom("__favn_multi_asset_marker_#{name}")
+
+  defp marker_name?(name) do
     name
     |> Atom.to_string()
-    |> String.starts_with?("__favn_multi_asset_decl__")
+    |> String.starts_with?("__favn_multi_asset_marker_")
   end
 
-  defp decl_fun_name(name) when is_atom(name),
-    do: String.to_atom("__favn_multi_asset_decl__#{name}")
-
-  defp defaults_marker_fun_name(line),
-    do: String.to_atom("__favn_multi_asset_defaults_marker__#{line}")
-
-  defp capture_generated_asset_definition!(env, decl_fun) do
-    decl = fetch_decl!(env.module, decl_fun, env)
-
-    depends = env.module |> DSLCompiler.fetch_accum_attribute(:depends) |> Enum.reverse()
-    freshness = env.module |> DSLCompiler.fetch_accum_attribute(:freshness) |> Enum.reverse()
-    execution_pool = Module.get_attribute(env.module, :execution_pool)
-    meta = Module.get_attribute(env.module, :meta)
-    window = env.module |> DSLCompiler.fetch_accum_attribute(:window) |> Enum.reverse()
-    relation = env.module |> DSLCompiler.fetch_accum_attribute(:relation) |> Enum.reverse()
-    doc = DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc))
-
-    validate_relation_attr!(relation, env)
-
-    Module.delete_attribute(env.module, :depends)
-    Module.delete_attribute(env.module, :freshness)
-    Module.delete_attribute(env.module, :execution_pool)
-    Module.delete_attribute(env.module, :meta)
-    Module.delete_attribute(env.module, :window)
-    Module.delete_attribute(env.module, :relation)
-    clear_doc!(env.module, env.line)
-
-    defaults =
-      Module.get_attribute(env.module, :favn_multi_asset_defaults_raw) ||
-        %{meta: %{}, window_spec: nil, rest: nil}
-
-    merged_meta =
-      defaults.meta
-      |> Map.merge(normalize_meta!(meta, env))
-
-    merged_window = normalize_window!(window, env) || defaults.window_spec
-    merged_freshness = normalize_freshness!(freshness, merged_window, env)
-    merged_rest = merge_rest(defaults.rest, decl.rest)
-    merged_config = if is_nil(merged_rest), do: %{}, else: %{rest: merged_rest}
-
-    raw_asset = %{
-      module: env.module,
-      name: decl.name,
-      entrypoint: :asset,
-      arity: 1,
-      doc: doc,
-      file: decl.file,
-      line: decl.line,
-      depends: depends,
-      freshness: merged_freshness,
-      execution_pool: normalize_execution_pool!(execution_pool, env),
-      meta: merged_meta,
-      window_spec: merged_window,
-      relation: relation,
-      config: merged_config
-    }
-
-    raw_assets = Module.get_attribute(env.module, :favn_multi_assets_raw) || []
-    Module.put_attribute(env.module, :favn_multi_assets_raw, [raw_asset | raw_assets])
-  end
-
-  defp fetch_decl!(module, decl_fun, env) do
-    decls = Module.get_attribute(module, :favn_multi_asset_decls) || []
-
-    case Enum.find(decls, fn {name, _decl} -> name == decl_fun end) do
-      {_name, decl} ->
-        decl
-
-      nil ->
-        DSLCompiler.compile_error!(
-          env.file,
-          env.line,
-          "internal error: missing declaration for #{decl_fun}"
-        )
-    end
-  end
-
-  defp validate_unique_names!(raw_assets) do
-    raw_assets
-    |> Enum.group_by(& &1.name)
-    |> Enum.each(fn {name, assets} ->
-      case assets do
-        [_single] ->
-          :ok
-
-        [first | _rest] ->
-          DSLCompiler.compile_error!(
-            first.file,
-            first.line,
-            "duplicate asset name #{inspect(name)}; asset names must be unique within a module"
-          )
-      end
-    end)
-
-    raw_assets
-  end
-
-  defp build_asset!(raw_asset, runtime_config) do
-    depends_on = normalize_depends!(raw_asset.depends, raw_asset)
-
-    asset = %Asset{
-      module: raw_asset.module,
-      name: raw_asset.name,
-      entrypoint: raw_asset.entrypoint,
-      ref: Ref.new(raw_asset.module, raw_asset.name),
-      arity: raw_asset.arity,
-      type: :elixir,
-      title: nil,
-      doc: raw_asset.doc,
-      file: raw_asset.file,
-      line: raw_asset.line,
-      meta: raw_asset.meta,
-      depends_on: depends_on,
-      config: raw_asset.config,
-      runtime_config: runtime_config,
-      window_spec: raw_asset.window_spec,
-      freshness: raw_asset.freshness,
-      execution_pool: raw_asset.execution_pool
-    }
-
-    try do
-      Asset.validate!(asset)
-    rescue
-      error in ArgumentError ->
-        DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
-    end
-  end
-
-  defp normalize_runtime_config!(module, env) do
-    inherited = Namespace.resolve_runtime_config(module)
-    entries = module |> Module.get_attribute(:runtime_config) |> Enum.reverse()
-    Requirements.merge_all!(inherited ++ entries, consumer: module)
-  rescue
-    error in ArgumentError ->
-      DSLCompiler.compile_error!(env.file, env.line, error.message)
-  end
-
-  defp normalize_defaults_block!(block, env) do
-    {meta, window_spec, rest, rest_count} =
-      block_expressions(block)
-      |> Enum.reduce({%{}, nil, nil, 0}, fn expression, {meta, window_spec, rest, rest_count} ->
-        case expression do
-          {:meta, _meta, [meta_ast]} ->
-            {normalize_meta!(eval_quoted!(meta_ast, env), env), window_spec, rest, rest_count}
-
-          {:window, _meta, [window_ast]} ->
-            {meta, normalize_window_value!(eval_quoted!(window_ast, env), env), rest, rest_count}
-
-          {:rest, _meta, [[do: rest_block]]} ->
-            if rest_count > 0 do
-              DSLCompiler.compile_error!(
-                env.file,
-                env.line,
-                "multiple rest blocks are not allowed inside defaults"
-              )
-            end
-
-            {meta, window_spec, normalize_rest_block!(rest_block, env), rest_count + 1}
-
-          other ->
-            DSLCompiler.compile_error!(
-              env.file,
-              env.line,
-              "defaults only supports meta, window, and rest blocks; got: #{Macro.to_string(other)}"
-            )
-        end
-      end)
-
-    _ = rest_count
-    %{meta: meta, window_spec: window_spec, rest: rest}
-  end
-
-  defp normalize_asset_block!(block, env, name) do
-    {rest, rest_count} =
-      block_expressions(block)
-      |> Enum.reduce({nil, 0}, fn expression, {_rest, rest_count} ->
-        case expression do
-          {:rest, _meta, [[do: rest_block]]} ->
-            if rest_count > 0 do
-              DSLCompiler.compile_error!(
-                env.file,
-                env.line,
-                "multiple rest blocks are not allowed inside asset #{inspect(name)}"
-              )
-            end
-
-            {normalize_rest_block!(rest_block, env), rest_count + 1}
-
-          other ->
-            DSLCompiler.compile_error!(
-              env.file,
-              env.line,
-              "asset blocks only support rest do ... end, got: #{Macro.to_string(other)}"
-            )
-        end
-      end)
-
-    _ = rest_count
-    rest
-  end
-
-  defp normalize_rest_block!(block, env) do
-    block_expressions(block)
-    |> Enum.reduce(%{}, fn expression, acc ->
+  defp parse_child_block!(block, env, name) do
+    block
+    |> block_expressions()
+    |> Enum.reduce(empty_child(), fn expression, child ->
       case expression do
-        {:path, _meta, [value_ast]} ->
-          put_unique_rest_slot!(
-            acc,
-            :path,
-            normalize_binary!(eval_quoted!(value_ast, env), :path, env),
-            env
+        {:description, _meta, [value]} ->
+          put_single_child!(child, :description, eval_quoted!(value, env), env, name)
+
+        {declaration, _meta, [value]}
+        when declaration in [
+               :settings,
+               :meta,
+               :depends,
+               :window,
+               :freshness,
+               :retry,
+               :execution_pool,
+               :relation
+             ] ->
+          Map.update!(child, declaration, &(&1 ++ [eval_quoted!(value, env)]))
+
+        {:runtime_config, _meta, [bundle]} ->
+          Map.update!(
+            child,
+            :runtime_config,
+            &(&1 ++ [Bundle.validate!(eval_quoted!(bundle, env))])
           )
 
-        {:data_path, _meta, [value_ast]} ->
-          put_unique_rest_slot!(
-            acc,
-            :data_path,
-            normalize_binary!(eval_quoted!(value_ast, env), :data_path, env),
-            env
-          )
-
-        {:params, _meta, [value_ast]} ->
-          put_unique_rest_slot!(
-            acc,
-            :params,
-            normalize_map_like!(eval_quoted!(value_ast, env), "rest.params", env),
-            env
-          )
-
-        {:primary_key, _meta, [value_ast]} ->
-          put_unique_rest_slot!(
-            acc,
-            :primary_key,
-            normalize_binary!(eval_quoted!(value_ast, env), :primary_key, env),
-            env
-          )
-
-        {:paginator, _meta, [kind_ast, opts_ast]} ->
-          kind = eval_quoted!(kind_ast, env)
-
-          if not is_atom(kind) do
-            DSLCompiler.compile_error!(
-              env.file,
-              env.line,
-              "rest.paginator kind must be an atom, got: #{inspect(kind)}"
+        {:runtime_config, _meta, [scope, fields]} ->
+          declaration =
+            Bundle.inline!(eval_quoted!(scope, env), eval_quoted!(fields, env),
+              module: env.module,
+              file: env.file,
+              line: env.line
             )
-          end
 
-          opts = normalize_map_like!(eval_quoted!(opts_ast, env), "rest.paginator options", env)
+          Map.update!(child, :runtime_config, &(&1 ++ [declaration]))
 
-          put_unique_rest_slot!(acc, :paginator, Map.put(opts, :kind, kind), env)
-
-        {:incremental, _meta, [opts_ast]} ->
-          opts = normalize_map_like!(eval_quoted!(opts_ast, env), "rest.incremental options", env)
-          put_unique_rest_slot!(acc, :incremental, Map.put_new(opts, :kind, :cursor), env)
-
-        {:method, _meta, [value_ast]} ->
-          value = eval_quoted!(value_ast, env)
-
-          if not (is_atom(value) or is_binary(value)) do
-            DSLCompiler.compile_error!(
-              env.file,
-              env.line,
-              "rest.method must be an atom or string, got: #{inspect(value)}"
-            )
-          end
-
-          put_unique_rest_slot!(acc, :method, value, env)
-
-        {:extra, _meta, [value_ast]} ->
-          put_unique_rest_slot!(
-            acc,
-            :extra,
-            normalize_map_like!(eval_quoted!(value_ast, env), "rest.extra", env),
-            env
+        {:@, _meta, _args} ->
+          DSLCompiler.compile_error!(
+            env.file,
+            env.line,
+            "asset #{inspect(name)} uses an @ attribute; use child DSL macros without @"
           )
 
         other ->
           DSLCompiler.compile_error!(
             env.file,
             env.line,
-            "rest only supports path, data_path, params, primary_key, paginator, incremental, method, and extra; got: #{Macro.to_string(other)}"
+            "unsupported declaration in asset #{inspect(name)}: #{Macro.to_string(other)}"
           )
       end
     end)
+  rescue
+    error in ArgumentError -> DSLCompiler.compile_error!(env.file, env.line, error.message)
   end
 
-  defp put_unique_rest_slot!(acc, key, value, env) do
-    if Map.has_key?(acc, key) do
+  defp empty_child do
+    %{
+      description: [],
+      settings: [],
+      meta: [],
+      depends: [],
+      window: [],
+      freshness: [],
+      retry: [],
+      execution_pool: [],
+      relation: [],
+      runtime_config: []
+    }
+  end
+
+  defp put_single_child!(child, declaration, value, env, name) do
+    if Map.fetch!(child, declaration) != [] do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "multiple rest.#{key} entries are not allowed"
+        "multiple #{declaration} declarations are not allowed in asset #{inspect(name)}"
       )
     end
 
-    Map.put(acc, key, value)
+    Map.put(child, declaration, [value])
+  end
+
+  defp merge_declarations!(declaration, shared, env) do
+    child = declaration.child
+    settings = Favn.Settings.merge_all!(shared.settings ++ child.settings)
+    meta = merge_meta!(shared.meta ++ child.meta)
+    depends = Enum.uniq(shared.depends ++ child.depends)
+    window = scalar_value!(:window, shared.window, child.window, env, nil)
+
+    freshness_values =
+      if child.freshness == [], do: shared.freshness, else: child.freshness
+
+    freshness = normalize_freshness!(freshness_values, window, env)
+    retry = scalar_value!(:retry, shared.retry, child.retry, env, nil)
+
+    execution_pool =
+      scalar_value!(:execution_pool, shared.execution_pool, child.execution_pool, env, nil)
+
+    relation = scalar_value!(:relation, shared.relation, child.relation, env, nil)
+    description = scalar_value!(:description, [], child.description, env, nil)
+
+    runtime_config =
+      Namespace.resolve_runtime_config(declaration.module)
+      |> Kernel.++(shared.runtime_config)
+      |> Kernel.++(child.runtime_config)
+      |> Requirements.merge_all!(consumer: declaration.module)
+
+    validate_description!(description)
+    validate_window!(window)
+    validate_execution_pool!(execution_pool)
+    validate_relation!(relation)
+
+    Map.merge(declaration, %{
+      doc: description,
+      settings: settings,
+      meta: meta,
+      depends: depends,
+      window_spec: window,
+      freshness: freshness,
+      retry_policy: normalize_retry!(retry),
+      execution_pool: execution_pool,
+      relation: relation,
+      runtime_config: runtime_config
+    })
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(declaration.file, declaration.line, error.message)
+  end
+
+  defp scalar_value!(name, shared, child, env, default) do
+    selected = if child == [], do: shared, else: child
+
+    case selected do
+      [] ->
+        default
+
+      [value] ->
+        value
+
+      _ ->
+        DSLCompiler.compile_error!(
+          env.file,
+          env.line,
+          "multiple #{name} declarations are not allowed"
+        )
+    end
+  end
+
+  defp merge_meta!(declarations) do
+    Enum.reduce(declarations, %{}, fn declaration, acc ->
+      Map.merge(acc, Asset.normalize_meta!(declaration))
+    end)
+  end
+
+  defp normalize_freshness!([nil], _window, _env), do: nil
+
+  defp normalize_freshness!(values, window, env) do
+    Asset.normalize_freshness!(values, window, "per generated asset")
+  rescue
+    error in ArgumentError -> DSLCompiler.compile_error!(env.file, env.line, error.message)
+  end
+
+  defp normalize_retry!(nil), do: nil
+  defp normalize_retry!(value), do: Favn.Retry.Policy.new!(value)
+
+  defp validate_description!(nil), do: :ok
+  defp validate_description!(value) when is_binary(value), do: :ok
+
+  defp validate_description!(value),
+    do: raise(ArgumentError, "description must be a string or nil, got: #{inspect(value)}")
+
+  defp validate_window!(nil), do: :ok
+  defp validate_window!(%Spec{}), do: :ok
+
+  defp validate_window!(value),
+    do: raise(ArgumentError, "window must be a Favn.Window.Spec or nil, got: #{inspect(value)}")
+
+  defp validate_execution_pool!(nil), do: :ok
+  defp validate_execution_pool!(value) when is_atom(value), do: :ok
+
+  defp validate_execution_pool!(value),
+    do: raise(ArgumentError, "execution_pool must be an atom or nil, got: #{inspect(value)}")
+
+  defp validate_relation!(nil), do: :ok
+
+  defp validate_relation!(value) do
+    unless DSLCompiler.valid_relation_attr_value?(value) do
+      raise ArgumentError, "relation must be true, a keyword list, a map, or nil"
+    end
+  end
+
+  defp build_asset!(raw_asset, env) do
+    relation = resolve_relation!(raw_asset, env)
+
+    asset = %Asset{
+      module: raw_asset.module,
+      name: raw_asset.name,
+      entrypoint: :asset,
+      ref: Ref.new(raw_asset.module, raw_asset.name),
+      arity: 1,
+      type: :elixir,
+      doc: raw_asset.doc,
+      file: raw_asset.file,
+      line: raw_asset.line,
+      meta: raw_asset.meta,
+      depends_on: normalize_depends!(raw_asset.depends, raw_asset),
+      settings: raw_asset.settings,
+      runtime_config: raw_asset.runtime_config,
+      window_spec: raw_asset.window_spec,
+      freshness: raw_asset.freshness,
+      retry_policy: raw_asset.retry_policy,
+      execution_pool: raw_asset.execution_pool,
+      relation: relation
+    }
+
+    Asset.validate!(asset)
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
   end
 
   defp normalize_depends!(depends, raw_asset) do
-    Enum.map(depends, fn
+    depends
+    |> Enum.map(fn
       name when is_atom(name) ->
         if DSLCompiler.module_atom?(name) do
           DSLCompiler.compile_error!(
             raw_asset.file,
             raw_asset.line,
-            "invalid @depends entry #{inspect(name)}; expected :asset_name or {Module, :asset_name}; module shorthand is not supported in Favn.MultiAsset"
+            "invalid depends entry #{inspect(name)}; use :asset_name or {Module, :asset_name}"
           )
-        else
-          Ref.new(raw_asset.module, name)
         end
+
+        Ref.new(raw_asset.module, name)
 
       {module, name} when is_atom(module) and is_atom(name) ->
         Ref.new(module, name)
@@ -804,189 +582,51 @@ defmodule Favn.MultiAsset do
         DSLCompiler.compile_error!(
           raw_asset.file,
           raw_asset.line,
-          "invalid @depends entry #{inspect(dependency)}; expected :asset_name or {Module, :asset_name}"
+          "invalid depends entry #{inspect(dependency)}; use :asset_name or {Module, :asset_name}"
+        )
+    end)
+    |> Enum.uniq()
+    |> Enum.sort_by(fn {module, name} -> {Atom.to_string(module), Atom.to_string(name)} end)
+  end
+
+  defp resolve_relation!(%{relation: nil}, _env), do: nil
+
+  defp resolve_relation!(raw_asset, env) do
+    defaults = Namespace.resolve_relation(raw_asset.module)
+    RelationResolver.resolve_explicit_relation!(raw_asset.relation, defaults, raw_asset.name)
+  rescue
+    error in ArgumentError -> DSLCompiler.compile_error!(env.file, env.line, error.message)
+  end
+
+  defp ensure_unique_relation_owners!(assets, env) do
+    RelationResolver.ensure_unique_relation_owners!(assets)
+  rescue
+    error in ArgumentError -> DSLCompiler.compile_error!(env.file, env.line, error.message)
+  end
+
+  defp validate_unique_names!(declarations) do
+    declarations
+    |> Enum.group_by(& &1.name)
+    |> Enum.each(fn
+      {_name, [_single]} ->
+        :ok
+
+      {name, [first | _]} ->
+        DSLCompiler.compile_error!(
+          first.file,
+          first.line,
+          "duplicate asset name #{inspect(name)}; names must be unique within a module"
         )
     end)
   end
 
-  defp resolve_relations!(assets, module, env) do
-    defaults = Namespace.resolve_relation(module)
-
-    Enum.map(assets, fn %Asset{} = asset ->
-      inferred_name = asset.name
-
-      relation =
-        case fetch_raw_relation(module, asset.name) do
-          nil ->
-            asset.relation
-
-          authored_value ->
-            RelationResolver.resolve_explicit_relation!(authored_value, defaults, inferred_name)
-        end
-
-      %{asset | relation: relation}
-    end)
-  rescue
-    error in ArgumentError ->
-      DSLCompiler.compile_error!(env.file, env.line, error.message)
-  end
-
-  defp fetch_raw_relation(module, name) do
-    with entries when is_list(entries) <- Module.get_attribute(module, :favn_multi_assets_raw),
-         %{relation: relation} <- Enum.find(entries, &(&1.name == name)) do
-      case relation do
-        [] -> nil
-        [value] -> value
-      end
-    else
-      _ -> nil
-    end
-  end
-
-  defp ensure_unique_relation_owners!(assets, env) do
-    :ok = RelationResolver.ensure_unique_relation_owners!(assets)
-
-    assets
-  rescue
-    error in ArgumentError ->
-      DSLCompiler.compile_error!(env.file, env.line, error.message)
-  end
-
-  defp normalize_meta!(meta, _env) when is_nil(meta), do: %{}
-
-  defp normalize_meta!(meta, env) do
-    Asset.normalize_meta!(meta)
-  rescue
-    error in ArgumentError ->
-      DSLCompiler.compile_error!(env.file, env.line, error.message)
-  end
-
-  defp normalize_window!([], _env), do: nil
-  defp normalize_window!([%Spec{} = spec], _env), do: spec
-
-  defp normalize_window!([_a, _b | _rest], env) do
-    DSLCompiler.compile_error!(
-      env.file,
-      env.line,
-      "multiple @window attributes are not allowed; use at most one @window per asset declaration"
-    )
-  end
-
-  defp normalize_window!(value, env) do
-    DSLCompiler.compile_error!(
-      env.file,
-      env.line,
-      "invalid @window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
-    )
-  end
-
-  defp normalize_window_value!(%Spec{} = spec, _env), do: spec
-
-  defp normalize_window_value!(value, env) do
-    DSLCompiler.compile_error!(
-      env.file,
-      env.line,
-      "invalid defaults window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
-    )
-  end
-
-  defp normalize_freshness!(freshness, window_spec, env) do
-    Asset.normalize_freshness!(freshness, window_spec, "per asset declaration")
-  rescue
-    error in ArgumentError ->
-      DSLCompiler.compile_error!(env.file, env.line, error.message)
-  end
-
-  defp validate_relation_attr!([], _env), do: :ok
-
-  defp validate_relation_attr!([relation], env) do
-    valid? = DSLCompiler.valid_relation_attr_value?(relation)
-
-    if valid? do
-      :ok
-    else
+  defp reject_pending_doc!(env) do
+    if pending_doc?(env.module) do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "invalid @relation value #{inspect(relation)}; expected true, a keyword list, or a map"
+        "@doc cannot document a generated child; use description inside the asset block"
       )
-    end
-  end
-
-  defp validate_relation_attr!([_a, _b | _rest], env) do
-    DSLCompiler.compile_error!(
-      env.file,
-      env.line,
-      "multiple @relation attributes are not allowed; use at most one @relation per asset declaration"
-    )
-  end
-
-  defp normalize_execution_pool!(nil, _env), do: nil
-  defp normalize_execution_pool!(value, _env) when is_atom(value), do: value
-
-  defp normalize_execution_pool!(value, env) do
-    DSLCompiler.compile_error!(
-      env.file,
-      env.line,
-      "invalid @execution_pool value #{inspect(value)}; expected a non-nil atom"
-    )
-  end
-
-  defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
-    depends = DSLCompiler.fetch_accum_attribute(env.module, :depends)
-    freshness = DSLCompiler.fetch_accum_attribute(env.module, :freshness)
-    execution_pool = Module.get_attribute(env.module, :execution_pool)
-    meta = Module.get_attribute(env.module, :meta)
-    window = DSLCompiler.fetch_accum_attribute(env.module, :window)
-    relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
-    doc = DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc))
-
-    if depends != [] or freshness != [] or not is_nil(execution_pool) or not is_nil(meta) or
-         window != [] or relation != [] or not is_nil(doc) do
-      Module.delete_attribute(env.module, :depends)
-      Module.delete_attribute(env.module, :freshness)
-      Module.delete_attribute(env.module, :execution_pool)
-      Module.delete_attribute(env.module, :meta)
-      Module.delete_attribute(env.module, :window)
-      Module.delete_attribute(env.module, :relation)
-      clear_doc!(env.module, env.line)
-
-      DSLCompiler.compile_error!(
-        env.file,
-        env.line,
-        "@doc/@depends/@freshness/@execution_pool/@meta/@window/@relation on #{kind} #{name}/#{arity} requires asset :name do immediately below those attributes"
-      )
-    else
-      :ok
-    end
-  end
-
-  defp ensure_no_pending_attributes!(env) do
-    depends = DSLCompiler.fetch_accum_attribute(env.module, :depends)
-    freshness = DSLCompiler.fetch_accum_attribute(env.module, :freshness)
-    execution_pool = Module.get_attribute(env.module, :execution_pool)
-    meta = Module.get_attribute(env.module, :meta)
-    window = DSLCompiler.fetch_accum_attribute(env.module, :window)
-    relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
-    pending_doc? = pending_doc?(env.module)
-
-    if depends != [] or freshness != [] or not is_nil(execution_pool) or not is_nil(meta) or
-         window != [] or relation != [] or pending_doc? do
-      Module.delete_attribute(env.module, :depends)
-      Module.delete_attribute(env.module, :freshness)
-      Module.delete_attribute(env.module, :execution_pool)
-      Module.delete_attribute(env.module, :meta)
-      Module.delete_attribute(env.module, :window)
-      Module.delete_attribute(env.module, :relation)
-      clear_doc!(env.module, env.line)
-
-      DSLCompiler.compile_error!(
-        env.file,
-        env.line,
-        "@doc/@meta/@depends/@freshness/@execution_pool/@window/@relation must be attached to an immediately following asset :name do"
-      )
-    else
-      :ok
     end
   end
 
@@ -997,73 +637,6 @@ defmodule Favn.MultiAsset do
       {_line, false} -> false
       _ -> true
     end
-  end
-
-  defp merge_rest(nil, nil), do: nil
-  defp merge_rest(nil, asset_rest) when is_map(asset_rest), do: asset_rest
-  defp merge_rest(default_rest, nil) when is_map(default_rest), do: default_rest
-
-  defp merge_rest(default_rest, asset_rest) do
-    merged = Map.merge(default_rest, asset_rest)
-    merged = merge_nested_map(merged, default_rest, asset_rest, :params)
-    merged = merge_nested_map(merged, default_rest, asset_rest, :extra)
-
-    if map_size(merged) == 0 do
-      nil
-    else
-      merged
-    end
-  end
-
-  defp merge_nested_map(merged, defaults, overrides, key) do
-    default_map = Map.get(defaults, key)
-    override_map = Map.get(overrides, key)
-
-    map =
-      case {default_map, override_map} do
-        {nil, nil} -> nil
-        {nil, override_map} -> override_map
-        {default_map, nil} -> default_map
-        {default_map, override_map} -> Map.merge(default_map, override_map)
-      end
-
-    if is_nil(map) do
-      Map.delete(merged, key)
-    else
-      Map.put(merged, key, map)
-    end
-  end
-
-  defp normalize_map_like!(value, label, env) when is_list(value) do
-    if Keyword.keyword?(value) do
-      Map.new(value)
-    else
-      DSLCompiler.compile_error!(
-        env.file,
-        env.line,
-        "#{label} must be a keyword list or map, got: #{inspect(value)}"
-      )
-    end
-  end
-
-  defp normalize_map_like!(value, _label, _env) when is_map(value), do: value
-
-  defp normalize_map_like!(value, label, env) do
-    DSLCompiler.compile_error!(
-      env.file,
-      env.line,
-      "#{label} must be a keyword list or map, got: #{inspect(value)}"
-    )
-  end
-
-  defp normalize_binary!(value, _field, _env) when is_binary(value), do: value
-
-  defp normalize_binary!(value, field, env) do
-    DSLCompiler.compile_error!(
-      env.file,
-      env.line,
-      "rest.#{field} must be a string, got: #{inspect(value)}"
-    )
   end
 
   defp eval_quoted!(ast, env) do
@@ -1077,8 +650,4 @@ defmodule Favn.MultiAsset do
   defp block_expressions({:__block__, _meta, expressions}), do: expressions
   defp block_expressions(nil), do: []
   defp block_expressions(expression), do: [expression]
-
-  defp clear_doc!(module, line) do
-    Module.put_attribute(module, :doc, {line, false})
-  end
 end

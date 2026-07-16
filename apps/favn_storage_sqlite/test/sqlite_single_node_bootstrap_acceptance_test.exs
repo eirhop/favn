@@ -112,12 +112,12 @@ defmodule FavnStorageSqlite.SingleNodeBootstrapAcceptanceTest do
       type: :elixir,
       execution: %{entrypoint: :orders_daily, arity: 1},
       depends_on: [],
-      config: %{acceptance: :single_node_bootstrap}
+      settings: %{acceptance: :single_node_bootstrap}
     }
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: [asset],
       pipelines: [],
       schedules: [],

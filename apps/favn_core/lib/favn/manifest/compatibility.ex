@@ -3,8 +3,8 @@ defmodule Favn.Manifest.Compatibility do
   Manifest schema and runner contract compatibility checks.
   """
 
-  @current_schema_version 5
-  @current_runner_contract_version 5
+  @current_schema_version 6
+  @current_runner_contract_version 6
 
   @type error ::
           {:invalid_manifest_input, term()}

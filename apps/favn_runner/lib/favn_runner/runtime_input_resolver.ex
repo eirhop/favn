@@ -80,7 +80,7 @@ defmodule FavnRunner.RuntimeInputResolver do
 
     duration_ms = max(System.monotonic_time(:millisecond) - started_at, 0)
     result = put_duration(result, duration_ms)
-    emit_telemetry(module, context.current_ref, result, duration_ms)
+    emit_telemetry(module, context.asset.ref, result, duration_ms)
     result
   end
 
@@ -229,7 +229,7 @@ defmodule FavnRunner.RuntimeInputResolver do
           %{duration_ms: max(System.monotonic_time(:millisecond) - started_at, 0)},
           %{
             resolver: module,
-            asset_ref: context.current_ref,
+            asset_ref: context.asset.ref,
             outcome: :runtime_inputs_cancelled
           }
         )

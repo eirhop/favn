@@ -203,7 +203,7 @@ defmodule Favn.SQLAsset.Runtime do
            phase: :runtime_inputs,
            asset_ref: definition.asset.ref,
            message:
-             "materializing an asset with @runtime_inputs requires context: %Favn.Run.Context{}"
+             "materializing an asset with runtime_inputs requires context: %Favn.Run.Context{}"
          }}
     end
   end
@@ -300,7 +300,7 @@ defmodule Favn.SQLAsset.Runtime do
         {:ok, resolution, Keyword.put(opts, :params, resolution.params)}
 
       {:error, %Error{} = error} ->
-        {:error, %Error{error | asset_ref: context.current_ref}}
+        {:error, %Error{error | asset_ref: context.asset.ref}}
     end
   end
 
@@ -339,8 +339,8 @@ defmodule Favn.SQLAsset.Runtime do
        %Error{
          type: :runtime_inputs_invalid_result,
          phase: :runtime_inputs,
-         asset_ref: context.current_ref,
-         message: "manifest work with @runtime_inputs requires a persisted runtime-input pin"
+         asset_ref: context.asset.ref,
+         message: "manifest work with runtime_inputs requires a persisted runtime-input pin"
        }}
     else
       RuntimeInputResolver.resolve(resolver, context, context.params || %{}, opts)
@@ -1444,7 +1444,7 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp runner_runtime_opts(%RunnerWork{metadata: metadata} = work) when is_map(metadata) do
-    deadline_at = Map.get(metadata, :deadline_at) || Map.get(metadata, "deadline_at")
+    deadline_at = work.deadline_at
 
     []
     |> Keyword.put(:require_runtime_input_pin, true)
@@ -1612,7 +1612,7 @@ defmodule Favn.SQLAsset.Runtime do
       type: :sql,
       file: "manifest",
       line: 1,
-      config: asset.config || %{},
+      settings: asset.settings || %{},
       window_spec: asset.window,
       relation: asset.relation,
       materialization: asset.materialization,

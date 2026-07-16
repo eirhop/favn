@@ -20,9 +20,9 @@ defmodule FavnReferenceWorkload.Warehouse.Gold.ExecutiveOverview do
   use Favn.Namespace
   use Favn.SQLAsset
 
-  @meta owner: "reference-workload", category: :executive, tags: [:gold, :summary]
-  @materialized :table
-  @relation true
+  meta owner: "reference-workload", category: :executive, tags: [:gold, :summary]
+  materialized :table
+  relation true
 
   query do
     ~SQL"""

@@ -363,12 +363,14 @@ defmodule FavnOrchestrator.Projector do
   end
 
   defp public_pipeline(pipeline_context) when is_map(pipeline_context) do
+    name = Map.get(pipeline_context, :name)
+
     %{
-      id: Map.get(pipeline_context, :id),
-      name: Map.get(pipeline_context, :name),
-      run_kind: Map.get(pipeline_context, :run_kind),
+      id: name,
+      name: name,
+      run_kind: :pipeline,
       resolved_refs: Map.get(pipeline_context, :resolved_refs, []),
-      deps: Map.get(pipeline_context, :deps),
+      deps: Map.get(pipeline_context, :dependencies),
       trigger: Map.get(pipeline_context, :trigger),
       schedule: Map.get(pipeline_context, :schedule),
       window: Map.get(pipeline_context, :window),

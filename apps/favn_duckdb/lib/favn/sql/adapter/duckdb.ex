@@ -80,7 +80,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
   the failing step id, and redacted diagnostics.
 
   `startup` runs on every new physical session. Named resource files run only
-  when selected by asset `@resources` or catalog metadata. The files own native
+  when selected by asset `resources` or catalog metadata. The files own native
   DuckDB `INSTALL`, `LOAD`, `SET`, `CREATE SECRET`, `ATTACH`, `USE`, and
   extension-specific syntax. The adapter intentionally does not model those
   statements as Elixir data.

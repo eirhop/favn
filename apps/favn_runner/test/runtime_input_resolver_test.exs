@@ -14,7 +14,7 @@ defmodule FavnRunner.RuntimeInputResolverTest do
 
     @impl true
     def resolve(context) do
-      send(context.config.test_pid, {:resolver_context, context})
+      send(context.runtime_config.test_pid, {:resolver_context, context})
 
       {:ok,
        %Result{
@@ -37,6 +37,19 @@ defmodule FavnRunner.RuntimeInputResolverTest do
          message: "source manifest is unavailable",
          retryable?: true,
          metadata: %{source: "orders"}
+       }}
+    end
+  end
+
+  defmodule SettingsResolver do
+    @behaviour Favn.SQLAsset.RuntimeInputs
+
+    @impl true
+    def resolve(context) do
+      {:ok,
+       %Result{
+         params: %{source: context.asset.settings.source},
+         identity: "source:#{context.asset.settings.source}"
        }}
     end
   end
@@ -77,7 +90,7 @@ defmodule FavnRunner.RuntimeInputResolverTest do
 
     @impl true
     def resolve(context) do
-      send(context.config.test_pid, {:blocking_resolver_started, self()})
+      send(context.runtime_config.test_pid, {:blocking_resolver_started, self()})
 
       receive do
         :stop -> {:ok, %Result{params: %{}, identity: "stopped"}}
@@ -133,6 +146,14 @@ defmodule FavnRunner.RuntimeInputResolverTest do
     assert metadata.resolver == SuccessResolver
     assert metadata.outcome == :ok
     refute inspect(metadata) =~ "secret-snapshot"
+  end
+
+  test "resolver code can reuse static asset settings" do
+    context = put_in(context().asset.settings, %{source: "orders"})
+
+    assert {:ok, %Resolution{} = resolution} = resolve(SettingsResolver, context)
+    assert resolution.params == %{source: "orders"}
+    assert resolution.identity == "source:orders"
   end
 
   test "rejects submitted collisions, reserved names, invalid types, and unknown sensitive names" do
@@ -301,9 +322,8 @@ defmodule FavnRunner.RuntimeInputResolverTest do
     %Context{
       run_id: "run-runtime-inputs",
       target_refs: [{__MODULE__, :asset}],
-      current_ref: {__MODULE__, :asset},
-      asset: %{ref: {__MODULE__, :asset}, relation: nil, config: %{}},
-      config: %{test_pid: self()},
+      asset: %Favn.Run.AssetContext{ref: {__MODULE__, :asset}, relation: nil, settings: %{}},
+      runtime_config: %{test_pid: self()},
       params: %{},
       window: nil,
       pipeline: nil,

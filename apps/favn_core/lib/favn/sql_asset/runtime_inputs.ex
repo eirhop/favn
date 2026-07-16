@@ -26,7 +26,7 @@ defmodule Favn.SQLAsset.RuntimeInputs do
   execution semantics. Declare the resolver in the asset with the sole public
   form:
 
-      @runtime_inputs MyApp.Orders.Inputs
+      runtime_inputs MyApp.Orders.Inputs
 
   The attribute must appear at most once before `query`. Anonymous functions,
   captures, MFA tuples, and inline resolver blocks are unsupported. Implement

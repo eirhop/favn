@@ -132,12 +132,12 @@ defmodule Favn.Local.CanonicalSampleProject do
 
       use Favn.Asset
 
-      @meta owner: "acceptance", category: :source, tags: [:issue262]
+      meta owner: "acceptance", category: :source, tags: [:issue262]
       runtime_config FavnIssue262Sample.RuntimeConfigs.source_system()
 
       def asset(ctx) do
-        true = ctx.config.source_system.name != ""
-        true = ctx.config.source_system.token != ""
+        true = ctx.runtime_config.source_system.name != ""
+        true = ctx.runtime_config.source_system.token != ""
         :ok
       end
     end
@@ -151,7 +151,7 @@ defmodule Favn.Local.CanonicalSampleProject do
 
       use Favn.Asset
 
-      @meta owner: "acceptance", category: :failure_path, tags: [:issue262]
+      meta owner: "acceptance", category: :failure_path, tags: [:issue262]
       runtime_config FavnIssue262Sample.RuntimeConfigs.missing_source()
 
       def asset(_ctx), do: :ok
@@ -216,9 +216,9 @@ defmodule Favn.Local.CanonicalSampleProject do
 
       alias Favn.SQLClient
 
-      @meta owner: "acceptance", category: :orders, tags: [:issue262, :raw]
-      @depends FavnIssue262Sample.Assets.SourceCheck
-      @relation true
+      meta owner: "acceptance", category: :orders, tags: [:issue262, :raw]
+      depends FavnIssue262Sample.Assets.SourceCheck
+      relation true
 
       def asset(ctx) do
         relation = ctx.asset.relation
@@ -287,10 +287,10 @@ defmodule Favn.Local.CanonicalSampleProject do
       use Favn.Namespace
       use Favn.SQLAsset
 
-      @meta owner: "acceptance", category: :orders, tags: [:issue262, :mart]
-      @depends FavnIssue262Sample.Lakehouse.Raw.Sales.Orders
-      @materialized :table
-      @relation true
+      meta owner: "acceptance", category: :orders, tags: [:issue262, :mart]
+      depends FavnIssue262Sample.Lakehouse.Raw.Sales.Orders
+      materialized :table
+      relation true
 
       query do
         ~SQL\"\"\"
@@ -326,7 +326,7 @@ defmodule Favn.Local.CanonicalSampleProject do
       pipeline :production_smoke do
         asset FavnIssue262Sample.Lakehouse.Mart.Sales.OrderSummary
         deps :all
-        config requested_by: "issue-262-acceptance"
+        settings requested_by: "issue-262-acceptance"
         meta owner: "acceptance", purpose: :single_node_production_readiness
         schedule cron: "0 2 * * *", timezone: "Etc/UTC", active: true, missed: :skip
       end

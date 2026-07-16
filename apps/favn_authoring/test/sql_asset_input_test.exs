@@ -7,7 +7,8 @@ defmodule Favn.SQLAssetInputTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "test", schema: "public"]
     use Favn.SQLAsset
 
-    @materialized :table
+    materialized(:table)
+
     query do
       ~SQL"select 1 as id"
     end
