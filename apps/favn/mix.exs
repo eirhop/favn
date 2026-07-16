@@ -46,7 +46,9 @@ defmodule Favn.MixProject do
         "guides/getting-started.md",
         "guides/authoring-assets.md",
         "guides/duckdb-session-scripts.md",
+        "guides/runner-plugins.md",
         "guides/sql-runtime-inputs.md",
+        "guides/retries-and-replay.md",
         "guides/sql-output-contracts.md",
         "guides/sql-asset-checks.md",
         "guides/local-development.md",
@@ -60,6 +62,14 @@ defmodule Favn.MixProject do
       ],
       groups_for_modules: [
         "Public Facades": [Favn, Favn.AI, Favn.SQLClient],
+        "Runner Extensions": [
+          Favn.Runner.Plugin,
+          Favn.Runner.SupervisedChildren,
+          Favn.RuntimeValue,
+          Favn.RuntimeValue.Provider,
+          Favn.RuntimeValue.Ref,
+          Favn.RuntimeValue.Error
+        ],
         "Mix Tasks": ~r/^Mix\.Tasks\.Favn(?:\.|$)/
       ],
       groups_for_extras: [

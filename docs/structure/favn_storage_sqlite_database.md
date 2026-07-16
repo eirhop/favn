@@ -18,6 +18,7 @@ The database stores:
 - Scheduler cursors and runtime settings needed after restart.
 - Operational read models for backfills, freshness, execution groups, logs, and target status.
 - Runtime coordination state for leases, admission waiters, and materialization claims.
+- Run/node runtime-input pins, with sensitive payloads protected by the dedicated codec.
 - Operator auth actors, credentials, sessions, audit entries, and command idempotency records.
 - Ecto migration versions in `schema_migrations`.
 
@@ -291,6 +292,15 @@ erDiagram
         string status
     }
 
+    favn_runtime_input_pins {
+        string run_id
+        string node_key_hash
+        string payload_fingerprint
+        text record_payload
+        text inserted_at
+        text updated_at
+    }
+
     favn_auth_credentials {
         string actor_id PK
         binary credential_blob
@@ -353,6 +363,7 @@ erDiagram
     favn_runs ||--o{ favn_execution_leases : "logical run_id"
     favn_runs ||--o{ favn_execution_admission_waiters : "logical run_id"
     favn_runs ||--o{ favn_materialization_claims : "logical run_id"
+    favn_runs ||--o{ favn_runtime_input_pins : "logical run_id"
     favn_runs ||--o{ favn_backfill_windows : "backfill/child/latest run ids"
     favn_runs ||--o{ favn_execution_group_summaries : "logical root_run_id/group_id"
     favn_runs ||--o{ favn_target_statuses : "latest/in-flight run ids"
@@ -385,6 +396,7 @@ erDiagram
 | `favn_execution_lease_scopes` | Scope rows for execution leases. | Unique `(lease_id, scope_kind, scope_key)`. | None. |
 | `favn_execution_admission_waiters` | Runs waiting for admission capacity or scope availability. | `waiter_id`. | `waiter_payload`. |
 | `favn_materialization_claims` | Asset freshness/materialization claim coordination. | `claim_key`. | `record_payload`. |
+| `favn_runtime_input_pins` | Exact normalized runtime inputs selected before SQL execution. | Unique `(run_id, node_key_hash)`. | `record_payload` is plaintext only for non-sensitive pins and AES-GCM protected for sensitive pins. |
 | `favn_auth_actors` | Operator/user actors. | `actor_id`; unique `username`. | `roles_blob`. |
 | `favn_auth_credentials` | Actor credential records. | `actor_id`. | `credential_blob`. |
 | `favn_auth_sessions` | Opaque-session token hashes and revocation state. | `session_id`; unique `token_hash`. | None. |
@@ -404,6 +416,7 @@ indexes support the adapter's bounded reads and repair paths:
 | `favn_runs` | `(root_execution_group_id, updated_seq)` | Execution-group child run aggregation ordered by write sequence. |
 | `favn_runs` | `(root_execution_group_id, run_id)` | Execution-group membership lookup and deterministic ordering. |
 | `favn_runs` | `(manifest_version_id, pipeline_submit_ref_text, updated_seq)` | Target-scoped pipeline history for active manifest detail pages. |
+| `favn_runtime_input_pins` | `(run_id)` | Load all safe pin lineage for run details and replay. |
 | `favn_scheduler_cursors` | `(pipeline_module, schedule_id)` unique | Exact scheduler cursor lookup and optimistic update. |
 | `favn_pipeline_coverage_baselines` | `(pipeline_module, status)` | Pipeline/status-filtered coverage listing. |
 | `favn_pipeline_coverage_baselines` | `(source_key, segment_key_hash)` | Segment coverage lookup. |

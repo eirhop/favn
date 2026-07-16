@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
   """
 
   alias Favn.Manifest.Asset
+  alias Favn.Retry.Policy
   alias Favn.Window.Anchor
   alias Favn.Window.Request, as: WindowRequest
   alias Favn.Window.Runtime, as: RuntimeWindow
@@ -42,6 +43,7 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
         opts
         |> Keyword.put(:dependencies, request.dependency_mode)
         |> Keyword.put(:refresh, refresh)
+        |> maybe_put(:retry_policy, request.retry_policy)
         |> maybe_put(:timeout_ms, request.timeout_ms)
 
       apply_selection(opts, asset, request.selection)
@@ -75,15 +77,20 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
 
     with {:ok, dependencies} <- dependency_option(dependencies_value),
          {:ok, refresh} <- refresh_option(refresh_value, asset.ref, dependencies),
+         {:ok, retry_policy} <- optional_retry_policy(field(config, :retry_policy)),
          {:ok, opts} <- put_metadata([], field(config, :metadata, :missing)) do
       {:ok,
        opts
        |> Keyword.put(:dependencies, dependencies)
-       |> Keyword.put(:refresh, refresh)}
+       |> Keyword.put(:refresh, refresh)
+       |> maybe_put(:retry_policy, retry_policy)}
     end
   end
 
   defp config_options(_asset, _config), do: {:error, :invalid_asset_run_config}
+
+  defp optional_retry_policy(nil), do: {:ok, nil}
+  defp optional_retry_policy(value), do: Policy.new(value)
 
   defp apply_data_coverage_selection(opts, asset, id, selection) when is_binary(id) do
     with {:ok, window_request} <- WindowSelection.data_coverage_request(id),

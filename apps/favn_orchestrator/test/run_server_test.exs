@@ -273,11 +273,13 @@ defmodule FavnOrchestrator.RunServerTest do
 
       receive do
         {:release_runner_result, ^execution_id, status} ->
+          error = if(status == :ok, do: nil, else: retryable_error())
+
           {:ok,
            %RunnerResult{
              status: status,
-             error: if(status == :ok, do: nil, else: :runner_failed),
-             asset_results: [asset_result(execution_id, status)],
+             error: error,
+             asset_results: [asset_result(execution_id, status, error)],
              metadata: %{}
            }}
       end
@@ -323,7 +325,7 @@ defmodule FavnOrchestrator.RunServerTest do
       |> :erlang.binary_to_term()
     end
 
-    defp asset_result(execution_id, status) do
+    defp asset_result(execution_id, status, error) do
       ref = execution_ref(execution_id)
       node_key = execution_node_key(execution_id)
 
@@ -335,11 +337,20 @@ defmodule FavnOrchestrator.RunServerTest do
         finished_at: DateTime.utc_now(),
         duration_ms: 0,
         meta: %{node_key: node_key},
-        error: if(status == :ok, do: nil, else: :runner_failed),
+        error: error,
         attempt_count: 1,
         max_attempts: 1,
         attempts: []
       }
+    end
+
+    defp retryable_error do
+      Favn.Contracts.RunnerError.new(
+        type: :transient_failure,
+        message: "Known-safe transient test failure",
+        retryable?: true,
+        outcome: :safe_failure
+      )
     end
   end
 
@@ -479,11 +490,13 @@ defmodule FavnOrchestrator.RunServerTest do
           {:error, :timeout}
 
         status ->
+          error = if(status == :ok, do: nil, else: retryable_error())
+
           {:ok,
            %RunnerResult{
              status: status,
-             error: if(status == :ok, do: nil, else: :runner_failed),
-             asset_results: [asset_result({MyApp.Assets.Gold, :asset}, status)],
+             error: error,
+             asset_results: [asset_result({MyApp.Assets.Gold, :asset}, status, error)],
              metadata: %{}
            }}
       end
@@ -498,7 +511,7 @@ defmodule FavnOrchestrator.RunServerTest do
     @impl true
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
 
-    defp asset_result(ref, status) do
+    defp asset_result(ref, status, error) do
       %Favn.Run.AssetResult{
         ref: ref,
         stage: 0,
@@ -507,11 +520,20 @@ defmodule FavnOrchestrator.RunServerTest do
         finished_at: DateTime.utc_now(),
         duration_ms: 0,
         meta: %{},
-        error: if(status == :ok, do: nil, else: :runner_failed),
+        error: error,
         attempt_count: 1,
         max_attempts: 2,
         attempts: []
       }
+    end
+
+    defp retryable_error do
+      Favn.Contracts.RunnerError.new(
+        type: :transient_failure,
+        message: "Known-safe transient test failure",
+        retryable?: true,
+        outcome: :safe_failure
+      )
     end
   end
 
@@ -771,11 +793,12 @@ defmodule FavnOrchestrator.RunServerTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
 
     assert {:ok, stored} = Storage.get_run(run_state.id)
-    assert stored.status == :ok
+    assert stored.status == :timed_out
     assert MapSet.size(Agent.get(failures, & &1)) == 0
 
     assert {:ok, events} = Storage.list_run_events(run_state.id)
     assert Enum.count(events, &(&1.event_type == :step_timed_out)) == 1
+    refute Enum.any?(events, &(&1.event_type == :step_retry_scheduled))
   end
 
   test "sequential submit failure terminalizes pre-submit ownership" do

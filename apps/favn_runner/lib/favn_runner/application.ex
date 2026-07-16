@@ -6,7 +6,7 @@ defmodule FavnRunner.Application do
   alias Favn.Connection.ConfigError
   alias Favn.Connection.Loader
   alias Favn.Connection.Registry, as: ConnectionRegistry
-  alias FavnRunner.Plugin
+  alias FavnRunner.{ExtensionSupervisor, PluginLoader}
   alias FavnRunner.ProductionRuntimeConfig
 
   @impl true
@@ -16,19 +16,19 @@ defmodule FavnRunner.Application do
     plugin_children = load_plugin_children_or_raise()
 
     children =
-      plugin_children ++
-        [
-          {ConnectionRegistry, name: FavnRunner.ConnectionRegistry, connections: connections},
-          {Registry, keys: :unique, name: FavnRunner.ExecutionRegistry},
-          {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.WorkerSupervisor},
-          {FavnRunner.ManifestStore, name: FavnRunner.ManifestStore},
-          {FavnRunner.Server,
-           name: FavnRunner.Server,
-           admission: Application.get_env(:favn_runner, :admission, []),
-           retention: Application.get_env(:favn_runner, :execution_retention, [])}
-        ]
+      [
+        {ExtensionSupervisor, children: plugin_children},
+        {ConnectionRegistry, name: FavnRunner.ConnectionRegistry, connections: connections},
+        {Registry, keys: :unique, name: FavnRunner.ExecutionRegistry},
+        {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.WorkerSupervisor},
+        {FavnRunner.ManifestStore, name: FavnRunner.ManifestStore},
+        {FavnRunner.Server,
+         name: FavnRunner.Server,
+         admission: Application.get_env(:favn_runner, :admission, []),
+         retention: Application.get_env(:favn_runner, :execution_retention, [])}
+      ]
 
-    opts = [strategy: :one_for_one, name: FavnRunner.Supervisor]
+    opts = [strategy: :rest_for_one, name: FavnRunner.Supervisor]
     Supervisor.start_link(children, opts)
   end
 
@@ -52,21 +52,9 @@ defmodule FavnRunner.Application do
   defp load_plugin_children_or_raise do
     entries = Application.get_env(:favn, :runner_plugins, [])
 
-    case Plugin.normalize_config(entries) do
-      {:ok, plugins} ->
-        Enum.flat_map(plugins, fn {plugin, opts} ->
-          case plugin.child_specs(opts) do
-            specs when is_list(specs) ->
-              specs
-
-            other ->
-              raise ArgumentError,
-                    "invalid plugin child_specs from #{inspect(plugin)}: #{inspect(other)}"
-          end
-        end)
-
-      {:error, reason} ->
-        raise ArgumentError, "invalid runner plugin config: #{inspect(reason)}"
+    case PluginLoader.load(entries) do
+      {:ok, children} -> children
+      {:error, reason} -> raise ArgumentError, PluginLoader.format_error(reason)
     end
   end
 end

@@ -9,6 +9,12 @@ Code:
 - `apps/favn_runner/lib/favn_runner/`
 - `apps/favn_runner/lib/favn_runner/production_runtime_config.ex` owns
   runner-side production env validation for the first local single-node setup
+- `apps/favn_runner/lib/favn_runner/plugin_loader.ex` consumes the public
+  `Favn.Runner.Plugin` contract with explicit packaged-application startup,
+  bounded callback and child-spec expansion, plugin/child counts, duplicate-id
+  rejection, and redacted errors
+- `apps/favn_runner/lib/favn_runner/extension_supervisor.ex` owns the dedicated
+  plugin child subtree that starts before connection and execution services
 - `apps/favn_runner/lib/favn_runner/sql_runtime_preflight.ex` validates planned SQL
   connection runtime config from explicit runner work planned scope before worker
   execution begins
@@ -50,6 +56,16 @@ SQL asset materialization planning, runner production config validation,
 runner-owned inspection, or runner-side normalization into shared work/result,
 error, and cancellation contracts.
 
+Consumer and integration packages implement `Favn.Runner.Plugin` from
+`favn_core`; they never depend on this internal app merely to extend the runner
+lifecycle. The root uses `:rest_for_one` ordering with the extension supervisor
+first. A plugin subtree failure therefore cannot leave later runner services
+operating without their required lifecycle dependencies.
+
+Plugin state is runner-local and disposable. It may cache credentials, sessions,
+pools, rate limits, or other rebuildable operational state, but cannot be a
+durable or cross-run correctness channel.
+
 Checked SQL assets are coordinated by `Favn.SQLAsset.Runtime`: target existence,
 optional candidate staging, ordered before checks, the write plan, ordered after
 checks, and stage cleanup all run inside one admitted adapter transaction.
@@ -61,14 +77,19 @@ checks. Warnings and no-op writes remain successful; a no-op also records
 the worker persists failed-attempt diagnostics.
 
 `FavnRunner.RuntimeInputResolver` owns behaviour-based SQL runtime input
-execution. The worker first builds the normal final `Favn.Run.Context`; the SQL
-runtime finalizes any incremental window, resolves inputs in an owned child
-process, validates budgets/types/collisions, and merges parameters before the
-first render or SQL session. Resolver timeout is 30 seconds and additionally
-bounded by the node deadline. Cancellation kills resolver code, failures never
-open or mutate a connection, and only module, identity, JSON-safe metadata, and
-duration enter attempt metadata. Parameter payloads remain runner-local and
+resolution. The public runner boundary can perform a bounded selection-only
+phase, returning a typed resolution to the orchestrator without opening a SQL
+session. Normal execution requires the orchestrator-persisted pin and validates
+that it matches the manifest resolver before rendering. Resolver timeout is 30
+seconds and additionally bounded by the node deadline. Cancellation kills
+resolver code; failures never open or mutate a connection. The runner does not
+write orchestrator storage. Parameters stay out of generic metadata and
 sensitive names drive result/error redaction.
+
+Runner failures use `%Favn.Contracts.RunnerError{}`. `retryable?: true` plus
+`outcome: :safe_failure` may permit an orchestrator node retry when policy has
+an attempt left. Boundary timeouts and unknown write/materialization outcomes
+remain terminal; runner code never decides attempt count.
 
 DuckDB/ADBC session pooling is default-on for poolable adapters unless disabled
 with `pool: [enabled: false]`. It is runner-local and per BEAM. A pooled SQL

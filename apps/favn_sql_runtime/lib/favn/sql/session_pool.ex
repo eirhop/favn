@@ -15,8 +15,10 @@ defmodule Favn.SQL.SessionPool do
 
   Idle sessions retain any catalog admission leases they acquired during session
   creation. This keeps pooled physical sessions inside configured catalog
-  capacity, but also means an idle session for one pool key may block a different
-  pool key for the same catalog until the idle session is reused or evicted.
+  capacity. When an adapter runtime fingerprint changes for the same connection
+  and session requirements, idle sessions from the previous fingerprint are
+  evicted and active sessions are discarded on checkin. This releases admission
+  leases before a replacement physical session is created.
   """
 
   use GenServer
@@ -40,7 +42,8 @@ defmodule Favn.SQL.SessionPool do
             creator_monitors: %{},
             waiters: %{},
             waiter_monitors: %{},
-            discard_reasons: %{}
+            discard_reasons: %{},
+            latest_by_scope: %{}
 
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -177,6 +180,7 @@ defmodule Favn.SQL.SessionPool do
 
   @impl true
   def handle_call({:checkout, %PoolKey{} = key, owner}, _from, %__MODULE__{} = state) do
+    state = select_pool_generation(state, key)
     {entry, idle} = pop_idle(state.idle, key)
 
     case entry do
@@ -287,13 +291,18 @@ defmodule Favn.SQL.SessionPool do
             {:reply, :ok, drain_waiters(state, checkout.key.hash)}
 
           owner == caller ->
-            {:reply, :ok,
-             return_to_idle(
-               state,
-               session,
-               checkout
-             )
-             |> drain_waiters(checkout.key.hash)}
+            if current_pool_generation?(state, checkout.key) do
+              {:reply, :ok,
+               return_to_idle(
+                 state,
+                 session,
+                 checkout
+               )
+               |> drain_waiters(checkout.key.hash)}
+            else
+              close_session(session, :superseded_pool_fingerprint)
+              {:reply, :ok, drain_waiters(state, checkout.key.hash)}
+            end
 
           true ->
             close_session(session)
@@ -450,6 +459,7 @@ defmodule Favn.SQL.SessionPool do
          max_creating_per_key,
          checkout_timeout_ms
        ) do
+    state = select_pool_generation(state, key)
     {entry, idle} = pop_idle(state.idle, key)
     state = %__MODULE__{state | idle: idle}
 
@@ -664,6 +674,64 @@ defmodule Favn.SQL.SessionPool do
   defp release_active_monitor(monitors, entry, %Session{} = session) do
     Process.demonitor(entry.monitor, [:flush])
     {Map.delete(monitors, entry.monitor), %Session{session | pool_checkout: nil}}
+  end
+
+  defp select_pool_generation(%__MODULE__{} = state, %PoolKey{} = key) do
+    state = evict_superseded_idle(state, key)
+
+    latest_by_scope =
+      state.latest_by_scope
+      |> Map.take(live_pool_scopes(state))
+      |> Map.put(key.scope_hash, key.hash)
+
+    %__MODULE__{
+      state
+      | latest_by_scope: latest_by_scope
+    }
+  end
+
+  defp live_pool_scopes(%__MODULE__{} = state) do
+    idle_scopes =
+      state.idle
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.map(& &1.key.scope_hash)
+
+    active_scopes = state.active |> Map.values() |> Enum.map(& &1.key.scope_hash)
+
+    creating_scopes =
+      state.creating
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.map(& &1.key.scope_hash)
+
+    waiter_scopes =
+      state.waiters
+      |> Map.values()
+      |> Enum.flat_map(&:queue.to_list/1)
+      |> Enum.map(& &1.key.scope_hash)
+
+    Enum.uniq(idle_scopes ++ active_scopes ++ creating_scopes ++ waiter_scopes)
+  end
+
+  defp evict_superseded_idle(%__MODULE__{} = state, %PoolKey{} = key) do
+    {superseded, retained} =
+      Enum.reduce(state.idle, {[], %{}}, fn {hash, entries}, {superseded, retained} ->
+        {evicted, kept} =
+          Enum.split_with(entries, fn entry ->
+            entry.key.scope_hash == key.scope_hash and entry.key.hash != key.hash
+          end)
+
+        retained = if kept == [], do: retained, else: Map.put(retained, hash, kept)
+        {evicted ++ superseded, retained}
+      end)
+
+    Enum.each(superseded, &close_session(&1.session, :superseded_pool_fingerprint))
+    %__MODULE__{state | idle: retained}
+  end
+
+  defp current_pool_generation?(%__MODULE__{} = state, %PoolKey{} = key) do
+    Map.get(state.latest_by_scope, key.scope_hash, key.hash) == key.hash
   end
 
   defp pop_idle(idle, %PoolKey{hash: hash}) do

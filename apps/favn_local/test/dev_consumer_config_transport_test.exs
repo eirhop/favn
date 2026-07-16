@@ -60,6 +60,32 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     assert {:ok, ^config} = ConsumerConfigTransport.decode(encoded)
   end
 
+  test "roundtrips deferred runtime value refs in nested connection config" do
+    token_ref =
+      Favn.RuntimeValue.new(
+        MyApp.AzureProvider,
+        %{
+          resource: "https://storage.azure.com/",
+          provider: :managed_identity,
+          client_id: nil,
+          endpoint: :auto
+        },
+        secret?: true
+      )
+
+    config = [
+      connections: [
+        warehouse: [
+          duckdb: [resources: [storage: [params: [token: token_ref]]]]
+        ]
+      ]
+    ]
+
+    encoded = ConsumerConfigTransport.encode(config)
+
+    assert {:ok, ^config} = ConsumerConfigTransport.decode(encoded)
+  end
+
   test "encoded atoms carry bounded transport kinds" do
     payload =
       ConsumerConfigTransport.encode(
@@ -288,9 +314,15 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
   end
 
   test "bootstrap snippet executes and applies supported config" do
+    runtime_value_ref =
+      Favn.RuntimeValue.new(MyApp.AzureProvider, %{resource: "https://storage.azure.com/"},
+        secret?: true
+      )
+
     encoded =
       ConsumerConfigTransport.encode(
         connection_modules: [MyApp.Connections.Warehouse],
+        connections: [warehouse: [token: runtime_value_ref]],
         execution_pools: [global: [max_concurrency: 5], partner_api: [max_concurrency: 2]],
         runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}],
         duckdb_adbc: [driver: "/opt/duckdb/1.5.2/libduckdb.so", entrypoint: "duckdb_adbc_init"]
@@ -301,6 +333,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     purge_bootstrap_module()
     assert {:ok, _bindings} = Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
     assert Application.get_env(:favn, :connection_modules) == [MyApp.Connections.Warehouse]
+    assert Application.get_env(:favn, :connections) == [warehouse: [token: runtime_value_ref]]
 
     assert Application.get_env(:favn, :execution_pools) == [
              global: [max_concurrency: 5],

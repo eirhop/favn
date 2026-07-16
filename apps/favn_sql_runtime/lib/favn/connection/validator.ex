@@ -143,6 +143,8 @@ defmodule Favn.Connection.Validator do
 
   defp nested_secret_ref?(%Favn.RuntimeConfig.Ref{secret?: true}), do: true
   defp nested_secret_ref?(%Favn.RuntimeConfig.Ref{}), do: false
+  defp nested_secret_ref?(%Favn.RuntimeValue.Ref{secret?: true}), do: true
+  defp nested_secret_ref?(%Favn.RuntimeValue.Ref{}), do: false
 
   defp nested_secret_ref?(value) when is_map(value) do
     Enum.any?(value, fn {_key, child} -> nested_secret_ref?(child) end)
@@ -164,6 +166,10 @@ defmodule Favn.Connection.Validator do
     do: [Enum.reverse(path)]
 
   defp collect_secret_paths(%Favn.RuntimeConfig.Ref{}, _path), do: []
+  defp collect_secret_paths(%Favn.RuntimeValue.Ref{secret?: true}, path),
+    do: [Enum.reverse(path)]
+
+  defp collect_secret_paths(%Favn.RuntimeValue.Ref{}, _path), do: []
   defp collect_secret_paths(%_{} = _value, _path), do: []
 
   defp collect_secret_paths(value, path) when is_map(value) do

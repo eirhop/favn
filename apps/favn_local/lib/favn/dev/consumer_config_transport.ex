@@ -254,6 +254,30 @@ defmodule Favn.Dev.ConsumerConfigTransport do
         end
       end
 
+      defp decode_value(
+             %{
+               "$type" => "runtime_value_ref",
+               "provider" => provider,
+               "request" => request,
+               "secret" => secret?
+             },
+             depth
+           )
+           when is_boolean(secret?) do
+        with {:ok, decoded_provider} <- decode_value(provider, depth - 1),
+             true <- is_atom(decoded_provider),
+             {:ok, decoded_request} <- decode_value(request, depth - 1) do
+          {:ok,
+           %Favn.RuntimeValue.Ref{
+             provider: decoded_provider,
+             request: decoded_request,
+             secret?: secret?
+           }}
+        else
+          _other -> {:error, :invalid_payload}
+        end
+      end
+
       defp decode_value(%{"$type" => "map", "entries" => entries}, depth) when is_list(entries) do
         with :ok <- validate_collection_size(entries) do
           entries
@@ -367,6 +391,15 @@ defmodule Favn.Dev.ConsumerConfigTransport do
       "key" => value.key,
       "secret" => value.secret?,
       "required" => value.required?
+    }
+  end
+
+  defp encode_value(%Favn.RuntimeValue.Ref{} = value) do
+    %{
+      "$type" => "runtime_value_ref",
+      "provider" => encode_value(value.provider),
+      "request" => encode_value(value.request),
+      "secret" => value.secret?
     }
   end
 
@@ -492,6 +525,30 @@ defmodule Favn.Dev.ConsumerConfigTransport do
          secret?: secret?,
          required?: required?
        }}
+    end
+  end
+
+  defp decode_value(
+         %{
+           "$type" => "runtime_value_ref",
+           "provider" => provider,
+           "request" => request,
+           "secret" => secret?
+         },
+         depth
+       )
+       when is_boolean(secret?) do
+    with {:ok, decoded_provider} <- decode_value(provider, depth - 1),
+         true <- is_atom(decoded_provider),
+         {:ok, decoded_request} <- decode_value(request, depth - 1) do
+      {:ok,
+       %Favn.RuntimeValue.Ref{
+         provider: decoded_provider,
+         request: decoded_request,
+         secret?: secret?
+       }}
+    else
+      _other -> {:error, :invalid_payload}
     end
   end
 

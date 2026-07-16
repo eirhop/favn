@@ -6,12 +6,16 @@ defmodule Favn.SQL.Adapter do
   not the end-user SQL asset DSL and should not be treated as an ordinary stable
   authoring API.
 
-  Adapters that implement `poolable?/2`, `pool_fingerprint/2`,
+  Adapters that implement `poolable?/2`, `prepare_pool/2`,
   `validate_session/2`, and `reset_session/3` opt into Favn's runner-local SQL
   session pool. Pooling is default-on for poolable adapters unless the connection
   sets `pool: [enabled: false]`. Adapter lifecycle callbacks must make warm reuse
   safe for read-only paths; write/materialization/raw execution paths are
   discarded by the shared client unless explicitly proven pool-safe internally.
+  `prepare_pool/2` returns a redacted pool-identity term plus an opaque transient
+  value used only for that session creation. Resolve volatile credentials or
+  other deferred values there so bootstrap consumes the exact prepared value
+  instead of acquiring it a second time.
   `classify_error/2` may return `details.classification: :capacity` through
   normalized errors so shared retry logic uses capacity backoff. Unknown outcome
   or commit-state errors must remain non-retryable.
@@ -38,7 +42,8 @@ defmodule Favn.SQL.Adapter do
   @callback disconnect(conn(), opts()) :: :ok | {:error, Error.t()}
 
   @callback poolable?(Resolved.t(), opts()) :: boolean()
-  @callback pool_fingerprint(Resolved.t(), opts()) :: term()
+  @callback prepare_pool(Resolved.t(), opts()) ::
+              {:ok, term(), term()} | {:error, Error.t()}
   @callback validate_session(conn(), opts()) :: :ok | {:error, Error.t()}
   @callback reset_session(conn(), Resolved.t(), opts()) :: :ok | {:error, Error.t()}
   @callback classify_error(term(), opts()) :: error_classification()
@@ -90,7 +95,7 @@ defmodule Favn.SQL.Adapter do
   @optional_callbacks [
     ping: 2,
     poolable?: 2,
-    pool_fingerprint: 2,
+    prepare_pool: 2,
     validate_session: 2,
     reset_session: 3,
     classify_error: 2,

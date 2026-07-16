@@ -16,7 +16,7 @@ Tests:
   is an authoring macro layered on core schedule values.
 
 Use when changing asset, SQL asset, freshness DSL capture, execution pool DSL
-capture, SQL `@resources`, reusable runtime-config bundle authoring, pipeline concurrency clauses,
+capture, retry DSL capture, SQL `@resources`, reusable runtime-config bundle authoring, pipeline concurrency clauses,
 namespace, source, connection, or
 authoring documentation behavior.
 
@@ -42,3 +42,8 @@ loaded to execute a check.
 resolved values never cross into the manifest.
 The module attribute is the only public DSL form; anonymous functions, captures,
 MFA tuples, and inline resolver blocks are rejected rather than normalized.
+
+Pipeline `retry` and asset/SQL `@retry` compile directly to the same core
+`%Favn.Retry.Policy{}`. Asset policy is optional so the orchestrator can apply
+operator → asset → pipeline → one-attempt precedence without losing source
+attribution.

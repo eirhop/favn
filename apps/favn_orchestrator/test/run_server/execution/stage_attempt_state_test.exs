@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptStateTest do
         run,
         Enum.reverse([:third, :fourth], state.results),
         [:retry_two, :retry_one],
+        %{},
         nil,
         MapSet.new()
       )

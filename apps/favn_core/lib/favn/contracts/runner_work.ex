@@ -23,6 +23,7 @@ defmodule Favn.Contracts.RunnerWork do
           asset_step_id: String.t() | nil,
           stage: non_neg_integer(),
           params: map(),
+          runtime_input_pin: Favn.RuntimeInput.Pin.t() | nil,
           trigger: map(),
           metadata: map()
         }
@@ -39,6 +40,7 @@ defmodule Favn.Contracts.RunnerWork do
             asset_step_id: nil,
             stage: 0,
             params: %{},
+            runtime_input_pin: nil,
             trigger: %{},
             metadata: %{}
 

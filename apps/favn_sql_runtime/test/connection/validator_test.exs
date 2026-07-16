@@ -117,4 +117,36 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
 
     refute inspect(error) =~ "do-not-expose-this-secret"
   end
+
+  test "preserves deferred runtime values and records their secret paths" do
+    definition = %Definition{
+      name: :warehouse,
+      adapter: Favn.SQL.Adapter.DuckDB,
+      module: __MODULE__,
+      config_schema: [
+        %{key: :database, required: true, type: :path},
+        %{key: :duckdb, type: {:custom, &Config.validate/1}}
+      ]
+    }
+
+    token_ref = Favn.RuntimeValue.new(__MODULE__, :request, secret?: true)
+
+    assert {:ok, %Resolved{} = resolved} =
+             Validator.resolve(definition, %{
+               database: ":memory:",
+               duckdb: [
+                 resources: [
+                   storage: [file: "/tmp/storage.sql", params: [token: token_ref]]
+                 ]
+               ]
+             })
+
+    assert resolved.config.duckdb[:resources][:storage][:params][:token] == token_ref
+
+    assert resolved.secret_fields == [:duckdb]
+
+    assert resolved.secret_paths == [
+             [:duckdb, :resources, :storage, :params, :token]
+           ]
+  end
 end

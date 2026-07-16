@@ -22,7 +22,20 @@ defmodule FavnAzure.MixProject do
 
   defp deps do
     [
+      internal_dep(:favn_core, "../favn_core"),
+      internal_dep(:favn_test_support, "../favn_test_support", only: :test),
       {:jason, "~> 1.4"}
     ]
+  end
+
+  defp internal_dep(app, relative_path, opts \\ []) do
+    source =
+      if Mix.Project.umbrella?() do
+        [in_umbrella: true]
+      else
+        [path: relative_path]
+      end
+
+    {app, Keyword.merge(source, opts)}
   end
 end

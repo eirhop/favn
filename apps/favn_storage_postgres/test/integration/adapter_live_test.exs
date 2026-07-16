@@ -5,6 +5,8 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
   alias Favn.Manifest
   alias Favn.Manifest.Identity
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Pin
+  alias Favn.RuntimeInput.Resolution
   alias Favn.Storage.Adapter.Postgres, as: Adapter
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -113,6 +115,45 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert stored_scheduler.pipeline_module == MyApp.Pipeline
         assert stored_scheduler.version == 1
         assert stored_scheduler.last_due_at == last_due_at
+    end
+  end
+
+  test "atomically round-trips protected runtime-input pins", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        opts = Keyword.put(opts, :runtime_input_pin_key, :crypto.strong_rand_bytes(32))
+        run_id = "pin_pg_live_#{System.unique_integer([:positive])}"
+        node_key = {{MyApp.Asset, :asset}, nil}
+
+        {:ok, resolution} =
+          Resolution.new(%{
+            resolver: MyApp.Inputs,
+            params: %{signed_url: "secret"},
+            input_identity: "snapshot-one",
+            metadata: %{source: "test"},
+            sensitive_params: [:signed_url]
+          })
+
+        pin = Pin.new(run_id, node_key, resolution)
+
+        assert {:ok, stored} = Adapter.create_runtime_input_pin(pin, opts)
+        assert {:ok, ^stored} = Adapter.create_runtime_input_pin(pin, opts)
+        assert {:ok, ^stored} = Adapter.get_runtime_input_pin(run_id, node_key, opts)
+        assert {:ok, [^stored]} = Adapter.list_runtime_input_pins(run_id, opts)
+
+        conflict_resolution = %{
+          resolution
+          | params: %{signed_url: "other"},
+            payload_fingerprint: "different"
+        }
+
+        conflict = Pin.new(run_id, node_key, conflict_resolution)
+
+        assert {:error, :runtime_input_pin_conflict} =
+                 Adapter.create_runtime_input_pin(conflict, opts)
     end
   end
 

@@ -172,7 +172,7 @@ defmodule Favn.FreshnessDSLTest do
     module = unique_module("StrayFreshness")
 
     assert_raise CompileError,
-                 ~r/@depends\/@freshness\/@execution_pool\/@meta\/@window\/@relation on def helper\/1 requires def asset\(ctx\)/,
+                 ~r/@depends\/@freshness\/@retry\/@execution_pool\/@meta\/@window\/@relation on def helper\/1 requires def asset\(ctx\)/,
                  fn ->
                    compile_module!(module, """
                    defmodule #{inspect(module)} do

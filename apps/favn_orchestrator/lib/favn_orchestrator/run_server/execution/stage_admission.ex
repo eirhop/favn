@@ -8,12 +8,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   and failure-drain behavior.
   """
 
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerWork
   alias Favn.Freshness.Key
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunExecutionOwnership
+  alias FavnOrchestrator.RuntimeInputPins
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
@@ -26,6 +28,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @type entry :: map()
   @type result ::
           {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()]}
+          | {:retry, RunState.t(), [node_key()], [node_key()]}
+          | {:partial_retry, RunState.t(), [entry()], [node_key()], node_key(), term(),
+             MapSet.t(term()), [map()]}
           | {:error, RunState.t(), [term()], [node_key()]}
 
   @spec submit(map()) :: result()
@@ -48,7 +53,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          queued_steps: %MapSet{} = queued_steps
        })
        when is_list(node_keys) and is_map(decisions) and is_map(freshness_context) do
-    do_submit(node_keys, %{
+    ctx = %{
       current_run: run_state,
       version: version,
       stage: stage,
@@ -60,7 +65,15 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       entries_rev: [],
       queued_steps: queued_steps,
       waiters: []
-    })
+    }
+
+    case prepare_stage_works(node_keys, ctx) do
+      {:ok, prepared_works} ->
+        do_submit(node_keys, Map.put(ctx, :prepared_works, prepared_works))
+
+      {:error, node_key, work, reason} ->
+        persist_prepare_failure(ctx, node_keys, node_key, work, reason)
+    end
   end
 
   defp do_submit([], ctx) do
@@ -71,7 +84,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     if Persistence.externally_cancelled?(ctx.current_run.id) do
       {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
     else
-      work = stage_work(ctx.current_run, ctx.version, node_key, ctx.stage, ctx.attempt)
+      work = Map.fetch!(ctx.prepared_works, node_key)
 
       entry_context =
         Map.merge(ctx, %{
@@ -227,6 +240,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp execution_ids(ctx), do: Enum.map(entries(ctx), & &1.execution_id)
 
   defp submit_admitted_entry(ctx) do
+    do_submit_admitted_entry(ctx)
+  end
+
+  defp do_submit_admitted_entry(ctx) do
     asset_ref = ctx.work.asset_ref
     asset_step_id = ctx.work.asset_step_id
 
@@ -238,7 +255,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         stage: ctx.stage,
         attempt: ctx.attempt,
         execution_pool: RunnerWork.execution_pool(ctx.work),
-        deadline_at: run_deadline_at(ctx.current_run)
+        deadline_at: StepAttemptLifecycle.deadline_at(ctx.work)
       )
 
     work = attach_ownership_metadata(ctx.work, ownership)
@@ -284,6 +301,32 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp fail_unsubmitted_entry(ctx, asset_ref, reason) do
     :ok = release_entry_lease(%{lease: ctx.lease})
     :ok = fail_claim(ctx, reason)
+
+    if safe_retryable?(reason) and
+         StepAttemptLifecycle.retry_allowed?(ctx.current_run, ctx.node_key, ctx.attempt) do
+      persist_retryable_submit_failure(ctx, asset_ref, reason)
+    else
+      terminalize_unsubmitted_entry(ctx, asset_ref, reason)
+    end
+  end
+
+  defp persist_retryable_submit_failure(ctx, asset_ref, reason) do
+    failed = RunState.transition(ctx.current_run, status: :error, error: reason)
+
+    case persist_stage_submit_failure_event(ctx, failed, asset_ref, reason, true) do
+      :ok ->
+        {:partial_retry, failed, entries(ctx), ctx.rest, ctx.node_key, reason, ctx.queued_steps,
+         ctx.waiters}
+
+      {:error, :external_cancel} ->
+        terminalize_unsubmitted_entry(ctx, asset_ref, :external_cancel)
+
+      {:error, _persist_reason} ->
+        terminalize_unsubmitted_entry(ctx, asset_ref, reason)
+    end
+  end
+
+  defp terminalize_unsubmitted_entry(ctx, asset_ref, reason) do
     :ok = cleanup_entries(ctx.current_run, entries(ctx), reason)
 
     cancelled =
@@ -298,7 +341,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     failed =
       RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
 
-    persist_stage_submit_failure(ctx, failed, asset_ref, reason)
+    persist_stage_submit_failure(ctx, failed, asset_ref, reason, safe_retryable?(reason))
   end
 
   defp fail_submitted_entry(ctx, asset_ref, execution_id, :external_cancel) do
@@ -340,21 +383,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     failed =
       RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
 
-    persist_stage_submit_failure(ctx, failed, asset_ref, reason)
+    persist_stage_submit_failure(ctx, failed, asset_ref, reason, false)
   end
 
-  defp persist_stage_submit_failure(ctx, failed, asset_ref, reason) do
-    case Persistence.persist_run_step(failed, :step_failed, %{
-           asset_ref: asset_ref,
-           error: reason,
-           node_key: RunnerWork.node_key(ctx.work),
-           asset_step_id: ctx.work.asset_step_id,
-           window: RunnerWork.window(ctx.work),
-           stage: ctx.stage,
-           attempt: ctx.attempt,
-           max_attempts: ctx.current_run.max_attempts,
-           execution_pool: RunnerWork.execution_pool(ctx.work)
-         }) do
+  defp persist_stage_submit_failure(ctx, failed, asset_ref, reason, retryable?) do
+    case persist_stage_submit_failure_event(ctx, failed, asset_ref, reason, retryable?) do
       :ok ->
         {:error, failed, [], attempted_node_keys(ctx)}
 
@@ -366,6 +399,22 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     end
   end
 
+  defp persist_stage_submit_failure_event(ctx, failed, asset_ref, reason, retryable?) do
+    Persistence.persist_run_step(failed, :step_failed, %{
+      asset_ref: asset_ref,
+      error: reason,
+      node_key: RunnerWork.node_key(ctx.work),
+      asset_step_id: ctx.work.asset_step_id,
+      window: RunnerWork.window(ctx.work),
+      stage: ctx.stage,
+      attempt: ctx.attempt,
+      max_attempts: ctx.work.max_attempts,
+      retryable?: retryable?,
+      retry_exhausted?: retryable? and ctx.attempt >= ctx.work.max_attempts,
+      execution_pool: RunnerWork.execution_pool(ctx.work)
+    })
+  end
+
   defp attach_ownership_metadata(%RunnerWork{} = work, %RunExecutionOwnership{} = ownership) do
     metadata =
       work.metadata
@@ -375,13 +424,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
     %{work | metadata: metadata}
   end
-
-  defp run_deadline_at(%RunState{timeout_ms: timeout_ms})
-       when is_integer(timeout_ms) and timeout_ms > 0 do
-    DateTime.add(DateTime.utc_now(), timeout_ms, :millisecond)
-  end
-
-  defp run_deadline_at(%RunState{}), do: nil
 
   defp submit_started_entry(ctx, ownership, execution_id) do
     asset_ref = ctx.work.asset_ref
@@ -421,16 +463,18 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         RunnerWork.lifecycle_metadata(ctx.work)
       )
 
-    case Persistence.persist_run_step(updated_run, :step_started, %{
+    case Persistence.persist_run_step(updated_run, attempt_start_event(ctx.attempt), %{
            asset_ref: asset_ref,
            runner_execution_id: execution_id,
            asset_step_id: asset_step_id,
            window: RunnerWork.window(ctx.work),
            stage: ctx.stage,
            attempt: ctx.attempt,
-           max_attempts: ctx.current_run.max_attempts,
+           max_attempts: ctx.work.max_attempts,
            execution_pool: RunnerWork.execution_pool(ctx.work),
-           freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
+           freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key),
+           runtime_input_event: Map.get(ctx.work.metadata, :runtime_input_event),
+           runtime_input_lineage: Map.get(ctx.work.metadata, :runtime_input_lineage)
          }) do
       :ok ->
         entry = %{
@@ -520,7 +564,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       stage: ctx.stage,
       attempt: ctx.attempt,
       execution_pool: RunnerWork.execution_pool(ctx.work),
-      deadline_at: run_deadline_at(ctx.current_run)
+      deadline_at: StepAttemptLifecycle.deadline_at(ctx.work)
     )
     |> RunExecutionOwnership.submitted(execution_id)
     |> RunExecutionOwnership.mark_submit_persist_failed(result, reason)
@@ -538,7 +582,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
            window: RunnerWork.window(work),
            stage: stage,
            attempt: attempt,
-           max_attempts: run_state.max_attempts,
+           max_attempts: work.max_attempts,
            execution_pool: RunnerWork.execution_pool(work),
            queue_reason: queue_reason,
            admission_scope: scope
@@ -585,8 +629,49 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       |> StepAttemptLifecycle.new(version, node_key, stage, attempt)
       |> StepAttemptLifecycle.build_work()
 
-    work
+    StepAttemptLifecycle.attach_deadline(work, run_state)
   end
+
+  defp prepare_stage_works(node_keys, ctx) do
+    Enum.reduce_while(node_keys, {:ok, %{}}, fn node_key, {:ok, works} ->
+      work = stage_work(ctx.current_run, ctx.version, node_key, ctx.stage, ctx.attempt)
+
+      case RuntimeInputPins.prepare(work, ctx.version, ctx.runner_client, ctx.runner_opts) do
+        {:ok, prepared} -> {:cont, {:ok, Map.put(works, node_key, prepared)}}
+        {:error, reason} -> {:halt, {:error, node_key, work, reason}}
+      end
+    end)
+  end
+
+  defp persist_prepare_failure(ctx, node_keys, node_key, work, reason) do
+    failed = RunState.transition(ctx.current_run, status: :error, error: reason)
+    retryable? = safe_retryable?(reason)
+
+    case Persistence.persist_run_step(failed, :step_failed, %{
+           asset_ref: work.asset_ref,
+           node_key: node_key,
+           asset_step_id: work.asset_step_id,
+           stage: ctx.stage,
+           attempt: ctx.attempt,
+           max_attempts: work.max_attempts,
+           retryable?: retryable?,
+           retry_exhausted?:
+             retryable? and
+               not StepAttemptLifecycle.retry_allowed?(failed, node_key, ctx.attempt),
+           error: reason
+         }) do
+      :ok ->
+        if retryable? and StepAttemptLifecycle.retry_allowed?(failed, node_key, ctx.attempt),
+          do: {:retry, failed, node_keys, [node_key]},
+          else: {:error, failed, [], [node_key]}
+
+      {:error, _persist_reason} ->
+        {:error, failed, [], [node_key]}
+    end
+  end
+
+  defp safe_retryable?(%RunnerError{retryable?: true, outcome: :safe_failure}), do: true
+  defp safe_retryable?(_reason), do: false
 
   defp with_inflight_execution(%RunState{} = run_state, execution_id, metadata) do
     ids =
@@ -621,6 +706,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp release_entry_lease(entry), do: RunWorkSet.release_entry(entry)
+
+  defp attempt_start_event(attempt) when attempt > 1, do: :step_retry_started
+  defp attempt_start_event(_attempt), do: :step_started
 
   defp cancel_execution_ids(
          %RunState{} = run_state,

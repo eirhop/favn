@@ -36,6 +36,7 @@ defmodule Favn.Pipeline do
   - `schedule {Module, :name}`: reference a named schedule
   - `schedule cron: ..., ...`: declare an inline schedule
   - `window atom`: attach a pipeline window policy
+  - `retry keyword`: default node-attempt retry policy for selected assets
   - `max_concurrency positive_integer`: limit asset steps admitted from one run
   - `execution_pool atom`: default shared execution pool for selected assets
   - `source atom`: attach a named pipeline source
@@ -66,6 +67,32 @@ defmodule Favn.Pipeline do
   Execution concurrency applies before the asset body starts. SQL
   `write_concurrency` remains separate and protects only SQL/backend writer
   admission after asset execution has begun.
+
+  ## Retry policy
+
+  `retry` defines the default node-attempt policy for assets selected by this
+  pipeline. `max_attempts` includes the initial attempt and defaults to one when
+  no policy is declared:
+
+      pipeline :raw_api_ingestion do
+        assets MyApp.Lakehouse.Raw.ExternalApi
+
+        retry max_attempts: 3,
+              backoff: {:exponential, initial: 5_000, max: 300_000, jitter: 0.2}
+      end
+
+  The effective precedence is explicit operator override, asset `@retry`, this
+  pipeline default, then one attempt. It is frozen into each planned node.
+  Retry policy controls count and timing; it never makes an unsafe or
+  unknown-outcome write retryable. A safely failed node can repeat while its
+  successful siblings remain complete.
+
+  Schedules remain separate: overlap and missed-occurrence settings decide
+  whether another run is admitted. They do not retry this run or share its
+  attempt count/runtime-input pins. Read
+  [Retries, Replay, And Runtime-Input Pins](retries-and-replay.html) for the
+  schedule timeline, input-mode matrix, recovery behavior, and side-effect
+  warnings.
 
   ## Schedule Options
 
@@ -212,6 +239,7 @@ defmodule Favn.Pipeline do
       Module.register_attribute(__MODULE__, :favn_pipeline_meta, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_schedule, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_window, persist: false)
+      Module.register_attribute(__MODULE__, :favn_pipeline_retry, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_max_concurrency, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_execution_pool, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_source, persist: false)
@@ -396,6 +424,24 @@ defmodule Favn.Pipeline do
 
       Favn.Pipeline.validate_max_concurrency!(value)
       @favn_pipeline_max_concurrency value
+    end
+  end
+
+  @doc """
+  Declares the default automatic node-attempt retry policy.
+
+  `max_attempts` includes the initial attempt. An asset-level `@retry` overrides
+  this default, and an explicit operator policy overrides both. A retry policy
+  never makes an unsafe or unknown-outcome failure retryable.
+
+      retry max_attempts: 3,
+            backoff: {:exponential, initial: 5_000, max: 300_000}
+  """
+  defmacro retry(opts) do
+    quote bind_quoted: [opts: opts] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "retry")
+      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_retry, "retry")
+      @favn_pipeline_retry Favn.Retry.Policy.new!(opts)
     end
   end
 
@@ -594,6 +640,7 @@ defmodule Favn.Pipeline do
         meta: Module.get_attribute(env.module, :favn_pipeline_meta) || %{},
         schedule: Module.get_attribute(env.module, :favn_pipeline_schedule),
         window: Module.get_attribute(env.module, :favn_pipeline_window),
+        retry_policy: Module.get_attribute(env.module, :favn_pipeline_retry),
         max_concurrency: Module.get_attribute(env.module, :favn_pipeline_max_concurrency),
         execution_pool: Module.get_attribute(env.module, :favn_pipeline_execution_pool),
         source: Module.get_attribute(env.module, :favn_pipeline_source),

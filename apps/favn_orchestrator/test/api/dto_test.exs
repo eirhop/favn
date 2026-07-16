@@ -217,7 +217,7 @@ defmodule FavnOrchestrator.API.DTOTest do
       started_at: @now,
       finished_at: @later,
       timeout_ms: 5_000,
-      retry_backoff_ms: 100,
+      retry_policy: %{nodes: []},
       rerun_of_run_id: nil,
       parent_run_id: nil,
       root_run_id: "run_1",
@@ -240,6 +240,7 @@ defmodule FavnOrchestrator.API.DTOTest do
     assert summary.error["kind"] == "error"
     assert detail.params == %{"api_token" => "[REDACTED]", "limit" => 5}
     assert detail.asset_results == [DTO.asset_result(asset_result)]
+    refute Map.has_key?(detail, :retry_backoff_ms)
 
     assert [%{node_key: ["asset", %{"module" => "Elixir.SampleAsset", "name" => "orders"}]}] =
              detail.node_results

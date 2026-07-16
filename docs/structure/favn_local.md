@@ -29,6 +29,11 @@ Code:
 - `apps/favn_local/lib/favn/dev/env_file.ex` for local `.env` parsing/loading
   and `env_bootstrap.ex` for the bounded key-only handoff into the configured
   dev/reload process before compile, manifest, and service launch work
+- `apps/favn_local/lib/favn/dev/consumer_config_transport.ex` for the bounded,
+  tagged local-runner handoff. It has explicit forms for
+  `Favn.RuntimeConfig.Ref` and secret `Favn.RuntimeValue.Ref` values; provider
+  requests remain inert bounded data and resolved credentials never enter the
+  transport payload
 - single-node bootstrap implementation under `apps/favn_local/lib/favn/dev/bootstrap/`
 - `apps/favn_local/lib/favn_local.ex`
 - single-node artifact integration test harness under `apps/favn_local/test_support/`

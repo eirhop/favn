@@ -90,8 +90,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                  timezone: "Etc/UTC"
                },
                timeout_ms: 1_000,
-               max_attempts: 2,
-               retry_backoff_ms: 10,
+               retry_policy: %{max_attempts: 2, backoff: 10},
                coverage_baseline_id: "baseline_1",
                refresh: :force
              )
@@ -389,8 +388,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
   end
 
   for {option, invalid_value, reason} <- [
-        {:max_attempts, 0, :invalid_max_attempts},
-        {:retry_backoff_ms, -1, :invalid_retry_backoff_ms},
+        {:retry_policy, %{max_attempts: 0}, {:invalid_retry_max_attempts, 0}},
         {:timeout_ms, 0, :invalid_timeout_ms}
       ] do
     @option option
@@ -416,6 +414,26 @@ defmodule FavnOrchestrator.BackfillManagerTest do
 
       assert {:error, :not_found} = Storage.get_run(run_id)
       assert [] = list_backfill_windows(backfill_run_id: run_id)
+    end
+  end
+
+  for option <- [:max_attempts, :retry_backoff_ms] do
+    @option option
+
+    test "rejects removed #{@option} in favor of retry_policy" do
+      version = manifest_version("mv_backfill_removed_#{@option}")
+      assert :ok = FavnOrchestrator.register_manifest(version)
+      assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+      opts =
+        Keyword.put(
+          [range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"}],
+          @option,
+          2
+        )
+
+      assert {:error, {:unsupported_retry_option, @option, :use_retry_policy}} =
+               FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily, opts)
     end
   end
 

@@ -38,13 +38,20 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptionsTest do
       {[parent_run_id: 1], :invalid_parent_run_id},
       {[root_run_id: ""], :invalid_root_run_id},
       {[lineage_depth: -1], :invalid_lineage_depth},
-      {[max_attempts: 0], :invalid_max_attempts},
-      {[retry_backoff_ms: -1], :invalid_retry_backoff_ms},
+      {[retry_policy: %{max_attempts: 0}], {:invalid_retry_max_attempts, 0}},
       {[timeout_ms: 0], :invalid_timeout_ms}
     ]
 
     Enum.each(invalid, fn {opts, reason} ->
       assert {:error, ^reason} = SubmissionOptions.new(opts)
     end)
+  end
+
+  test "normalizes a typed retry override and ignores no competing legacy form" do
+    assert {:ok, options} =
+             SubmissionOptions.new(retry_policy: %{max_attempts: 3, backoff: 25})
+
+    assert options.retry_policy_override.max_attempts == 3
+    assert options.retry_policy_override.backoff.initial_ms == 25
   end
 end

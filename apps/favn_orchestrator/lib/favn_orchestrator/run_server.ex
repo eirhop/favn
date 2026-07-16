@@ -23,7 +23,8 @@ defmodule FavnOrchestrator.RunServer do
 
   @type init_arg :: %{
           required(:run_state) => RunState.t(),
-          required(:version) => Version.t()
+          required(:version) => Version.t(),
+          optional(:recovering?) => boolean()
         }
 
   @terminal_persist_retry_ms 1_000
@@ -44,9 +45,17 @@ defmodule FavnOrchestrator.RunServer do
       :ok = RunExecutionCleanup.release_admission(run_state.id)
       {:stop, :normal, state |> Map.put(:run_state, run_state) |> Map.put(:execution_state, nil)}
     else
-      running = RunState.transition(run_state, status: :running)
-      persist_run_start(state, running, version)
+      continue_start(state, run_state, version)
     end
+  end
+
+  defp continue_start(%{recovering?: true} = state, %RunState{} = run_state, %Version{} = version) do
+    start_execution(state, run_state, version)
+  end
+
+  defp continue_start(state, %RunState{} = run_state, %Version{} = version) do
+    running = RunState.transition(run_state, status: :running)
+    persist_run_start(state, running, version)
   end
 
   @impl true

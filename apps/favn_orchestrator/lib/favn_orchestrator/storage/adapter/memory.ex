@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   @behaviour Favn.Storage.Adapter
 
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Pin
   alias Favn.Scheduler.State, as: SchedulerState
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
@@ -141,6 +142,22 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     with {:ok, normalized} <- RunStateCodec.normalize(run) do
       call(opts, {:put_run, normalized})
     end
+  end
+
+  @impl true
+  def create_runtime_input_pin(%Pin{} = pin, opts) when is_list(opts) do
+    call(opts, {:create_runtime_input_pin, pin})
+  end
+
+  @impl true
+  def get_runtime_input_pin(run_id, node_key, opts)
+      when is_binary(run_id) and is_tuple(node_key) and is_list(opts) do
+    call(opts, {:get_runtime_input_pin, run_id, node_key})
+  end
+
+  @impl true
+  def list_runtime_input_pins(run_id, opts) when is_binary(run_id) and is_list(opts) do
+    call(opts, {:list_runtime_input_pins, run_id})
   end
 
   @impl true
@@ -744,6 +761,43 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     next_state = ExecutionGroups.refresh(next_state, incoming)
 
     {:reply, normalized_reply, next_state}
+  end
+
+  def handle_call({:create_runtime_input_pin, %Pin{} = pin}, _from, state) do
+    key = {pin.run_id, pin.node_key}
+
+    case Map.get(state.runtime_input_pins, key) do
+      nil ->
+        {:reply, {:ok, pin},
+         %{state | runtime_input_pins: Map.put(state.runtime_input_pins, key, pin)}}
+
+      %Pin{} = existing ->
+        if Pin.equivalent?(existing, pin),
+          do: {:reply, {:ok, existing}, state},
+          else: {:reply, {:error, :runtime_input_pin_conflict}, state}
+    end
+  end
+
+  def handle_call({:get_runtime_input_pin, run_id, node_key}, _from, state) do
+    reply =
+      case Map.fetch(state.runtime_input_pins, {run_id, node_key}) do
+        {:ok, pin} -> {:ok, pin}
+        :error -> {:error, :runtime_input_pin_not_found}
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:list_runtime_input_pins, run_id}, _from, state) do
+    pins =
+      state.runtime_input_pins
+      |> Enum.flat_map(fn
+        {{^run_id, _node_key}, pin} -> [pin]
+        _other -> []
+      end)
+      |> Enum.sort_by(& &1.inserted_at, DateTime)
+
+    {:reply, {:ok, pins}, state}
   end
 
   def handle_call({:persist_run_transition, %RunState{} = run, event}, _from, state) do

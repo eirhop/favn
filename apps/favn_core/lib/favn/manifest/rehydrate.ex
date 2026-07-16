@@ -15,6 +15,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.Manifest.SQLExecution
   alias Favn.RelationRef
   alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
+  alias Favn.Retry.Policy, as: RetryPolicy
   alias Favn.RuntimeConfig.Ref, as: RuntimeConfigRef
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.Check
@@ -95,6 +96,7 @@ defmodule Favn.Manifest.Rehydrate do
       relation: value |> field_value(:relation) |> build_relation(),
       window: value |> field_value(:window) |> build_window_spec(),
       freshness: value |> field_value(:freshness) |> build_freshness(),
+      retry_policy: value |> field_value(:retry_policy) |> build_retry_policy(),
       materialization: value |> field_value(:materialization) |> decode_materialization(),
       relation_inputs: value |> field_value(:relation_inputs, []) |> build_relation_inputs(),
       runtime_config: value |> field_value(:runtime_config, %{}) |> build_runtime_config(),
@@ -169,6 +171,10 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_freshness(value), do: FreshnessPolicy.from_value!(value)
+
+  defp build_retry_policy(nil), do: nil
+  defp build_retry_policy(%RetryPolicy{} = value), do: RetryPolicy.new!(value)
+  defp build_retry_policy(value), do: RetryPolicy.new!(plain_map(value))
 
   defp normalize_freshness_map(value) do
     mode =
@@ -767,6 +773,7 @@ defmodule Favn.Manifest.Rehydrate do
       deps: value |> field_value(:deps, :all) |> decode_known_atom([:all, :none]),
       schedule: value |> field_value(:schedule) |> decode_pipeline_schedule(),
       window: value |> field_value(:window) |> build_window_policy(),
+      retry_policy: value |> field_value(:retry_policy) |> build_retry_policy(),
       max_concurrency: value |> field_value(:max_concurrency) |> decode_max_concurrency(),
       execution_pool: value |> field_value(:execution_pool) |> decode_atom_optional(),
       source: value |> field_value(:source) |> decode_atom_optional(),

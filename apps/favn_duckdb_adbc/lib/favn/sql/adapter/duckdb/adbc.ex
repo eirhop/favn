@@ -100,9 +100,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB.ADBC.{Bootstrap, Client, ErrorMapper}
+  alias Favn.SQL.{Capabilities, Column, ConcurrencyPolicy, Error, Relation, Result, WritePlan}
   alias Favn.SQL.SessionScript
   alias Favn.SQL.SessionScript.Config.Catalog
-  alias Favn.SQL.{Capabilities, Column, ConcurrencyPolicy, Error, Relation, Result, WritePlan}
 
   defmodule Conn do
     @moduledoc false
@@ -209,8 +209,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   def poolable?(%Resolved{}, _opts), do: true
 
   @impl true
-  @spec pool_fingerprint(Resolved.t(), opts()) :: map()
-  def pool_fingerprint(%Resolved{} = resolved, opts) do
+  @spec prepare_pool(Resolved.t(), opts()) ::
+          {:ok, map(), SessionScript.Plan.t()} | {:error, Error.t()}
+  def prepare_pool(%Resolved{} = resolved, opts) do
     driver_opts = Keyword.merge(FavnDuckdbADBC.Runtime.driver_opts(), duckdb_adbc_opts(opts))
 
     fingerprint = %{
@@ -221,9 +222,12 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
       entrypoint: Keyword.get(driver_opts, :entrypoint)
     }
 
-    case SessionScript.fingerprint(resolved, opts) do
-      {:ok, session_scripts} -> Map.put(fingerprint, :session_scripts, session_scripts)
-      {:error, %Error{} = error} -> Map.put(fingerprint, :session_scripts, {:error, error.details})
+    case SessionScript.plan(resolved, opts) do
+      {:ok, plan} ->
+        {:ok, Map.put(fingerprint, :session_scripts, plan.fingerprint), plan}
+
+      {:error, %Error{} = error} ->
+        {:error, Error.redact(error)}
     end
   end
 

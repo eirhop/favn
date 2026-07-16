@@ -30,6 +30,23 @@ defmodule Favn.Contracts.RunnerResultTest do
     assert is_binary(error.reason)
   end
 
+  test "retryability never implies a known-safe outcome" do
+    assert %RunnerError{retryable?: true, outcome: :unknown} =
+             RunnerError.new(retryable?: true)
+
+    assert %RunnerError{retryable?: true, outcome: :unknown} =
+             RunnerError.normalize(%{retryable?: true})
+
+    assert %RunnerError{retryable?: true, outcome: :unknown} =
+             RunnerError.normalize(%{details: %{asset_retryable?: true}})
+
+    assert %RunnerError{retryable?: true, outcome: :unknown} =
+             RunnerError.new(retryable?: true, outcome: :invalid)
+
+    assert %RunnerError{retryable?: true, outcome: :safe_failure} =
+             RunnerError.new(retryable?: true, outcome: :safe_failure)
+  end
+
   test "runner errors redact nested operational detail text" do
     error =
       RunnerError.normalize(%{

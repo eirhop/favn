@@ -219,7 +219,8 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     def concurrency_policies(resolved), do: CatalogConnectAdapter.concurrency_policies(resolved)
 
     def poolable?(%Resolved{}, _opts), do: true
-    def pool_fingerprint(%Resolved{}, opts), do: {__MODULE__, Keyword.get(opts, :pool_marker)}
+    def prepare_pool(%Resolved{}, opts),
+      do: {:ok, {__MODULE__, Keyword.get(opts, :pool_marker)}, nil}
     def validate_session(_conn, _opts), do: :ok
     def reset_session(_conn, _resolved, _opts), do: :ok
   end

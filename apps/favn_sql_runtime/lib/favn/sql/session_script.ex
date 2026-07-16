@@ -9,13 +9,17 @@ defmodule Favn.SQL.SessionScript do
 
   Scripts are trusted deployment code. They must be self-contained,
   idempotent/retry-safe, and limited to session preparation. Favn cannot inspect
-  arbitrary SQL to prove those properties. Runtime references resolve at runner
-  startup, not on each pool checkout; deployments must use refresh-capable
-  native credential providers or restart the runner after rotating resolved
-  credentials.
+  arbitrary SQL to prove those properties. `Favn.RuntimeConfig.Ref` values
+  resolve at runner startup. Deferred `Favn.RuntimeValue` parameters resolve
+  while building the physical-session plan; refreshed values change the
+  parameter fingerprint and therefore cannot reuse a session initialized with
+  an older value.
   """
 
   alias Favn.Connection.Resolved
+  alias Favn.RuntimeValue
+  alias Favn.RuntimeValue.Error, as: RuntimeValueError
+  alias Favn.RuntimeValue.Ref
   alias Favn.SQL.Error
   alias Favn.SQL.SessionRequirements
   alias Favn.SQL.SessionScript.Config
@@ -219,7 +223,9 @@ defmodule Favn.SQL.SessionScript do
   defp build_step(%Script{} = script, resolved) do
     with {:ok, path} <- resolve_file(script.file, resolved),
          {:ok, sql} <- read_file(path, script.name, resolved),
-         {:ok, rendered} <- render_script(sql, script, resolved) do
+         {:ok, params} <- resolve_params(script, resolved),
+         resolved_script = %Script{script | params: params},
+         {:ok, rendered} <- render_script(sql, resolved_script, resolved) do
       kind = if script.name == "startup", do: :startup, else: :resource
       resource = if kind == :resource, do: script.name, else: nil
 
@@ -231,11 +237,29 @@ defmodule Favn.SQL.SessionScript do
          statement: rendered.statement,
          safe_statement: rendered.safe_statement,
          content_hash: sha256(sql),
-         parameter_hash: sha256(:erlang.term_to_binary(script.params)),
+         parameter_hash: sha256(:erlang.term_to_binary(params)),
          secret_values: rendered.secret_values
        }}
     end
   end
+
+  defp resolve_params(%Script{} = script, resolved) do
+    Enum.reduce_while(script.params, {:ok, %{}}, fn {name, value}, {:ok, acc} ->
+      case resolve_param(value) do
+        {:ok, resolved_value} ->
+          {:cont, {:ok, Map.put(acc, name, resolved_value)}}
+
+        {:error, %RuntimeValueError{} = error} ->
+          reason =
+            {:runtime_value_failed, script.name, error.provider, error.reason, error.retryable?}
+
+          {:halt, {:error, invalid_config_error(resolved, reason)}}
+      end
+    end)
+  end
+
+  defp resolve_param(%Ref{} = ref), do: RuntimeValue.resolve(ref)
+  defp resolve_param(value), do: {:ok, value}
 
   defp resolve_file({:priv, app, relative}, resolved) do
     case :code.priv_dir(app) do
@@ -375,5 +399,22 @@ defmodule Favn.SQL.SessionScript do
     :sha256
     |> :crypto.hash(value)
     |> Base.encode16(case: :lower)
+  end
+end
+
+defimpl Inspect, for: Favn.SQL.SessionScript.Step do
+  import Inspect.Algebra
+
+  def inspect(step, opts) do
+    fields = [
+      id: step.id,
+      kind: step.kind,
+      resource: step.resource,
+      statement: step.safe_statement,
+      content_hash: step.content_hash,
+      parameter_hash: step.parameter_hash
+    ]
+
+    concat(["#Favn.SQL.SessionScript.Step<", to_doc(fields, opts), ">"])
   end
 end

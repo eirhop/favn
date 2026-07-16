@@ -52,7 +52,6 @@ defmodule FavnOrchestrator.Projector do
       submit_ref: Map.get(run_state.metadata, :pipeline_submit_ref, run_state.asset_ref),
       max_concurrency: project_max_concurrency(run_state),
       timeout_ms: run_state.timeout_ms,
-      retry_backoff_ms: run_state.retry_backoff_ms,
       status: run_state.status,
       event_seq: run_state.event_seq,
       started_at: run_state.inserted_at,
@@ -62,10 +61,7 @@ defmodule FavnOrchestrator.Projector do
       metadata: run_state.metadata,
       result: run_state.result,
       runner_execution_id: run_state.runner_execution_id,
-      retry_policy: %{
-        max_attempts: run_state.max_attempts,
-        retry_backoff_ms: run_state.retry_backoff_ms
-      },
+      retry_policy: projected_retry_policy(run_state),
       replay_mode: project_replay_mode(run_state),
       backfill: nil,
       rerun_of_run_id: run_state.rerun_of_run_id,
@@ -82,6 +78,24 @@ defmodule FavnOrchestrator.Projector do
 
   @spec project_runs([RunState.t()]) :: [Run.t()]
   def project_runs(runs) when is_list(runs), do: Enum.map(runs, &project_run/1)
+
+  defp projected_retry_policy(%RunState{plan: %Favn.Plan{nodes: nodes}}) do
+    %{
+      nodes:
+        nodes
+        |> Map.values()
+        |> Enum.map(fn node ->
+          %{
+            asset_ref: node.ref,
+            policy: node.retry_policy,
+            source: node.retry_policy_source
+          }
+        end)
+        |> Enum.sort_by(& &1.asset_ref)
+    }
+  end
+
+  defp projected_retry_policy(%RunState{}), do: %{nodes: []}
 
   defp normalize_data(data) when is_map(data), do: data
   defp normalize_data(_data), do: %{}
@@ -231,6 +245,7 @@ defmodule FavnOrchestrator.Projector do
        when is_map(metadata) do
     case Map.get(metadata, :replay_mode) do
       :resume_from_failure -> :resume_from_failure
+      :fresh_rerun -> :fresh_rerun
       :exact_replay -> :exact_replay
       _other -> :exact_replay
     end

@@ -14,12 +14,16 @@ defmodule Favn.Contracts.RunnerClient do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Resolution
 
   @type execution_id :: String.t()
 
   @callback register_manifest(Version.t(), keyword()) :: :ok | {:error, term()}
 
   @callback submit_work(RunnerWork.t(), keyword()) :: {:ok, execution_id()} | {:error, term()}
+
+  @callback resolve_runtime_inputs(RunnerWork.t(), keyword()) ::
+              {:ok, Resolution.t() | nil} | {:error, term()}
 
   @callback await_result(execution_id(), timeout(), keyword()) ::
               {:ok, RunnerResult.t()} | {:error, term()}
@@ -37,6 +41,7 @@ defmodule Favn.Contracts.RunnerClient do
   @callback diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
 
   @optional_callbacks diagnostics: 1,
+                      resolve_runtime_inputs: 2,
                       subscribe_execution_logs: 3,
                       unsubscribe_execution_logs: 3
 end

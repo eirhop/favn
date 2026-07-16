@@ -7,10 +7,12 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   coordinator and are requested through an `:await` directive.
   """
 
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunExecutionOwnership
+  alias FavnOrchestrator.RuntimeInputPins
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.ResultSanitizer
@@ -75,7 +77,11 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       asset_step_id: entry.asset_step_id,
       stage: entry.stage,
       attempt: entry.attempt,
-      max_attempts: state.run.max_attempts,
+      max_attempts: StepAttemptLifecycle.retry_policy(state.run, entry.node_key).max_attempts,
+      retryable?: retryable?,
+      retry_exhausted?:
+        retryable? and
+          not StepAttemptLifecycle.retry_allowed?(state.run, entry.node_key, entry.attempt),
       asset_results: asset_results
     }
 
@@ -85,6 +91,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       entry: entry,
       status: step_status,
       retryable?: retryable?,
+      failure: result,
       asset_results: asset_results
     }
 
@@ -114,7 +121,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       asset_step_id: entry.asset_step_id,
       stage: entry.stage,
       attempt: entry.attempt,
-      max_attempts: state.run.max_attempts,
+      max_attempts: StepAttemptLifecycle.retry_policy(state.run, entry.node_key).max_attempts,
       asset_results: []
     }
 
@@ -123,7 +130,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       run: timeout_state,
       entry: entry,
       status: :timed_out,
-      retryable?: true,
+      retryable?: false,
+      failure: :timeout,
       asset_results: []
     }
 
@@ -154,7 +162,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       asset_step_id: entry.asset_step_id,
       stage: entry.stage,
       attempt: entry.attempt,
-      max_attempts: state.run.max_attempts,
+      max_attempts: StepAttemptLifecycle.retry_policy(state.run, entry.node_key).max_attempts,
       asset_results: []
     }
 
@@ -163,7 +171,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       run: failed,
       entry: entry,
       status: :error,
-      retryable?: true,
+      retryable?: false,
+      failure: reason,
       asset_results: []
     }
 
@@ -188,9 +197,11 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
         maybe_schedule_retry(
           state,
           resume.entry.asset_ref,
+          resume.entry.node_key,
           resume.entry.stage,
           resume.entry.attempt,
-          resume.asset_results
+          resume.asset_results,
+          Map.get(resume, :failure)
         )
 
       true ->
@@ -205,7 +216,18 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   @doc "Resubmits a sequential attempt after its retry timer fires."
   @spec resume_retry(RunExecutionState.t(), map()) :: directive()
   def resume_retry(%RunExecutionState{} = state, retry) do
-    submit_attempt(state, retry.asset_ref, retry.node_key, retry.stage, retry.next_attempt)
+    run =
+      state.run
+      |> Map.put(:metadata, clear_retry_state(state.run.metadata))
+      |> RunState.with_snapshot_hash()
+
+    submit_attempt(
+      %{state | run: run},
+      retry.asset_ref,
+      retry.node_key,
+      retry.stage,
+      retry.next_attempt
+    )
   end
 
   @doc "Returns sequential work refs with their plan stage."
@@ -233,6 +255,9 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
            state.run
            |> StepAttemptLifecycle.new(state.version, node_key, stage, attempt)
            |> StepAttemptLifecycle.build_work(),
+         work <- StepAttemptLifecycle.attach_deadline(work, state.run),
+         {:ok, work} <-
+           RuntimeInputPins.prepare(work, state.version, state.runner_client, state.runner_opts),
          ownership <-
            RunExecutionOwnership.new(state.run,
              asset_step_id: work.asset_step_id,
@@ -241,7 +266,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
              stage: stage,
              attempt: attempt,
              execution_pool: RunnerWork.execution_pool(work),
-             deadline_at: run_deadline_at(state.run)
+             deadline_at: StepAttemptLifecycle.deadline_at(work)
            ),
          work <- attach_ownership_metadata(work, ownership),
          :ok <- RunExecutionOwnership.persist(ownership) do
@@ -325,11 +350,28 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
              asset_step_id || AssetStepIdentity.asset_step_id(state.run.id, node_key, asset_ref),
            stage: stage,
            attempt: attempt,
-           max_attempts: state.run.max_attempts
+           max_attempts: StepAttemptLifecycle.retry_policy(state.run, node_key).max_attempts
          }) do
-      :ok -> maybe_schedule_retry(%{state | run: failed}, asset_ref, stage, attempt, [])
-      {:error, :external_cancel} -> {:terminal, Snapshots.cancelled_snapshot(failed)}
-      {:error, _persist_reason} -> {:terminal, failed}
+      :ok ->
+        if safe_retryable?(reason) do
+          maybe_schedule_retry(
+            %{state | run: failed},
+            asset_ref,
+            node_key,
+            stage,
+            attempt,
+            [],
+            reason
+          )
+        else
+          terminalize_error(%{state | run: failed}, [])
+        end
+
+      {:error, :external_cancel} ->
+        {:terminal, Snapshots.cancelled_snapshot(failed)}
+
+      {:error, _persist_reason} ->
+        {:terminal, failed}
     end
   end
 
@@ -347,14 +389,16 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
         state = %{state | run: running} |> RunExecutionState.add_work(entry)
 
-        case Persistence.persist_run_step(state.run, :step_started, %{
+        case Persistence.persist_run_step(state.run, attempt_start_event(lifecycle.attempt), %{
                asset_ref: lifecycle.asset_ref,
                runner_execution_id: execution_id,
                node_key: lifecycle.node_key,
                asset_step_id: work.asset_step_id,
                stage: lifecycle.stage,
                attempt: lifecycle.attempt,
-               max_attempts: state.run.max_attempts
+               max_attempts: lifecycle.max_attempts,
+               runtime_input_event: Map.get(work.metadata, :runtime_input_event),
+               runtime_input_lineage: Map.get(work.metadata, :runtime_input_lineage)
              }) do
           :ok ->
             {:await, state, entry}
@@ -411,12 +455,11 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     }
   end
 
-  defp maybe_schedule_retry(state, asset_ref, stage, attempt, step_results) do
-    if attempt < state.run.max_attempts do
-      node_key = Map.get(state.run.metadata, :node_key) || {asset_ref, nil}
+  defp maybe_schedule_retry(state, _asset_ref, node_key, stage, attempt, step_results, failure) do
+    if StepAttemptLifecycle.retry_allowed?(state.run, node_key, attempt) do
       lifecycle = StepAttemptLifecycle.new(state.run, state.version, node_key, stage, attempt)
 
-      case StepAttemptLifecycle.schedule_retry(lifecycle) do
+      case StepAttemptLifecycle.schedule_retry(lifecycle, failure) do
         {:ok, retry} -> schedule_retry(state, retry)
         :terminal -> terminalize_error(state, step_results)
       end
@@ -426,20 +469,35 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   end
 
   defp schedule_retry(state, retry) do
+    next_retry_at = System.system_time(:millisecond) + retry.retry_after_ms
+
+    retry_state = %{
+      kind: :sequential,
+      retry: Map.drop(retry, [:retry_policy]),
+      sequential_index: state.sequential_index,
+      next_retry_at: next_retry_at
+    }
+
     retrying =
       RunState.transition(state.run,
         status: :running,
         error: nil,
         runner_execution_id: nil,
         metadata:
-          Map.merge(state.run.metadata, %{retrying: true, next_attempt: retry.next_attempt})
+          Map.merge(state.run.metadata, %{
+            retrying: true,
+            next_attempt: retry.next_attempt,
+            retry_state: retry_state,
+            next_retry_at: next_retry_at
+          })
       )
 
     persist_or_retry(
       state,
       retrying,
       :step_retry_scheduled,
-      StepAttemptLifecycle.retry_event_payload(retry),
+      StepAttemptLifecycle.retry_event_payload(retry)
+      |> Map.put(:next_retry_at, next_retry_at),
       %{kind: :schedule_retry, run: retrying, retry: retry}
     )
   end
@@ -456,6 +514,18 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
        retry
      )}
   end
+
+  defp clear_retry_state(metadata) do
+    metadata
+    |> Map.drop([:retry_state, "retry_state", :next_retry_at, "next_retry_at"])
+    |> Map.put(:retrying, false)
+  end
+
+  defp safe_retryable?(%RunnerError{retryable?: true, outcome: :safe_failure}), do: true
+  defp safe_retryable?(_reason), do: false
+
+  defp attempt_start_event(attempt) when attempt > 1, do: :step_retry_started
+  defp attempt_start_event(_attempt), do: :step_started
 
   defp persist_or_retry(state, run, event_type, data, resume) do
     retry = PersistenceRetry.new(run, event_type, data, {:sequential, resume})
@@ -537,12 +607,6 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   end
 
   defp cancel_outcome_for(%RunState{}, _execution_id), do: nil
-
-  defp run_deadline_at(%RunState{timeout_ms: timeout_ms})
-       when is_integer(timeout_ms) and timeout_ms > 0,
-       do: DateTime.add(DateTime.utc_now(), timeout_ms, :millisecond)
-
-  defp run_deadline_at(%RunState{}), do: nil
 
   defp node_asset_ref(%Favn.Plan{nodes: nodes}, node_key) do
     case Map.fetch(nodes, node_key) do

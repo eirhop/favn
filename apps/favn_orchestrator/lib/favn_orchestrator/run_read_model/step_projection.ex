@@ -620,7 +620,9 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
 
   defp started_step_ids_by_runner_execution_id(events) do
     events
-    |> Enum.filter(&event_type?(&1, :step_started))
+    |> Enum.filter(fn event ->
+      event_type?(event, :step_started) or event_type?(event, :step_retry_started)
+    end)
     |> Map.new(fn event ->
       {value(event.data || %{}, :runner_execution_id), event_step_id(event.run_id, event)}
     end)
@@ -671,6 +673,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
   defp event_step_status(event_type, status) do
     case event_type_name(event_type) do
       "step_started" -> :running
+      "step_retry_started" -> :running
       "step_queued" -> :queued
       "step_finished" -> :ok
       "step_failed" -> :error
@@ -686,6 +689,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
   defp event_step_explanation(event_type) do
     case event_type_name(event_type) do
       "step_started" -> "Execution has started; waiting for runner result."
+      "step_retry_started" -> "A scheduled retry attempt has started."
       "step_queued" -> "Execution is queued by orchestrator admission."
       "step_retry_scheduled" -> "Retry has been scheduled for this asset."
       "step_finished" -> "Execution finished successfully."

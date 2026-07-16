@@ -19,6 +19,7 @@ Code:
 - Execution-group summaries and log cursor indexes: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_execution_group_summaries.ex`
 - Target status projection migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_target_statuses.ex`
 - Pipeline target run-history query metadata migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_run_pipeline_query_column.ex`
+- Runtime-input pin migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_runtime_input_pins.ex`
 - `apps/favn_storage_sqlite/lib/favn_storage_sqlite/diagnostics.ex`
 
 Tests:
@@ -30,4 +31,6 @@ Tests:
 
 Use when changing SQLite persistence, migrations, adapter lifecycle, readiness
 diagnostics, local SQLite storage semantics, materialization claim acquisition,
-or single-node bootstrap persistence acceptance coverage.
+runtime-input pin atomicity/protection, or single-node bootstrap persistence
+acceptance coverage. Pins are unique by `(run_id, node_key_hash)`; sensitive
+payloads require `runtime_input_pin_key` and never fall back to plaintext.

@@ -45,9 +45,17 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
 
   @spec run(DuckDB.Conn.t(), Resolved.t(), keyword()) :: :ok | {:error, Error.t()}
   def run(%DuckDB.Conn{} = conn, %Resolved{} = resolved, opts) do
-    with {:ok, %Plan{} = plan} <- SessionScript.plan(resolved, opts),
+    with {:ok, %Plan{} = plan} <- session_script_plan(resolved, opts),
          :ok <- validate_expected_fingerprint(plan, resolved, opts) do
       execute_steps(conn, plan.steps)
+    end
+  end
+
+  defp session_script_plan(resolved, opts) do
+    case Keyword.get(opts, :favn_pool_preparation) do
+      nil -> SessionScript.plan(resolved, opts)
+      %Plan{} = plan -> {:ok, plan}
+      _other -> {:error, invalid_prepared_plan_error(resolved)}
     end
   end
 
@@ -100,6 +108,18 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
            details: %{reason: :session_script_fingerprint_changed}
          }}
     end
+  end
+
+  defp invalid_prepared_plan_error(resolved) do
+    %Error{
+      type: :invalid_config,
+      message: "DuckDB session script preparation is invalid",
+      adapter: resolved.adapter,
+      connection: resolved.name,
+      operation: :bootstrap,
+      retryable?: false,
+      details: %{reason: :invalid_prepared_session_script_plan}
+    }
   end
 
   defp normalize_open(open) do

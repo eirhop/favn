@@ -23,6 +23,14 @@ Code:
   cancellation outcome fields; runner work metadata includes the ownership and
   dispatch identifiers before dispatch.
 - Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
+- `FavnOrchestrator.RetryPolicyResolver` freezes operator → asset → pipeline →
+  default retry policy on planned nodes. Run-server execution schedules only
+  typed known-safe failures, preserves successful siblings, persists absolute
+  retry wake times, and restores safe retry waits after restart.
+- `FavnOrchestrator.RuntimeInputPins` owns resolve/pin/execute, fresh/pinned/
+  inherit replay modes, atomic conflicts, and safe lineage. The dedicated
+  storage codec protects sensitive payloads; generic run metadata contains no
+  raw resolved parameters.
 - Runner cancellation envelope and best-effort dispatch under
   `apps/favn_orchestrator/lib/favn_orchestrator/run_server/cancellation.ex` and
   normalized cancellation DTOs in
@@ -92,7 +100,7 @@ Tests:
 - optional adapter contract smoke coverage under `apps/favn_orchestrator/test/integration/`; adapter-specific suites own full adapter coverage
 
 Use when changing run lifecycle, durable runner ownership, run cancellation
-semantics, freshness
+semantics, retry policy/recovery, runtime-input pinning/replay, freshness
 decisions/queries, scheduling, private API behavior, SSE/events, auth, command
 idempotency, bootstrap service-token/runner-registration endpoints, same-BEAM
 readiness facade behavior, backfill orchestration, execution leases,

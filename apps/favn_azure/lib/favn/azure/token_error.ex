@@ -15,3 +15,23 @@ defmodule Favn.Azure.TokenError do
           details: map()
         }
 end
+
+defimpl Inspect, for: Favn.Azure.TokenError do
+  import Inspect.Algebra
+
+  def inspect(error, opts) do
+    concat([
+      "#Favn.Azure.TokenError<",
+      to_doc(
+        [
+          type: error.type,
+          message: :redacted,
+          retryable?: error.retryable?,
+          details: :redacted
+        ],
+        opts
+      ),
+      ">"
+    ])
+  end
+end

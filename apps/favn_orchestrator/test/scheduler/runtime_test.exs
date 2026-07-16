@@ -751,7 +751,11 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     start_runtime(name, auto_tick?: false)
     [entry] = Runtime.scheduled(name)
 
-    running = running_run_state("run_inflight_allow", version, %{kind: :schedule})
+    running =
+      "run_inflight_allow"
+      |> running_run_state(version, %{kind: :schedule})
+      |> retry_wait_run_state()
+
     assert :ok = Storage.put_run(running)
 
     state = %State{
@@ -781,7 +785,11 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     start_runtime(name)
     [entry] = Runtime.scheduled(name)
 
-    running = running_run_state("run_inflight_forbid", version, %{kind: :schedule})
+    running =
+      "run_inflight_forbid"
+      |> running_run_state(version, %{kind: :schedule})
+      |> retry_wait_run_state()
+
     assert :ok = Storage.put_run(running)
 
     state = %State{
@@ -853,7 +861,11 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     start_runtime(name)
     [entry] = Runtime.scheduled(name)
 
-    running = running_run_state("run_inflight_queue", version, %{kind: :schedule})
+    running =
+      "run_inflight_queue"
+      |> running_run_state(version, %{kind: :schedule})
+      |> retry_wait_run_state()
+
     assert :ok = Storage.put_run(running)
 
     state = %State{
@@ -1183,6 +1195,23 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       trigger: trigger
     )
     |> RunState.transition(status: :running)
+  end
+
+  defp retry_wait_run_state(%RunState{} = run) do
+    next_retry_at = System.system_time(:millisecond) + 60_000
+
+    RunState.transition(run,
+      metadata:
+        Map.merge(run.metadata, %{
+          retrying: true,
+          next_retry_at: next_retry_at,
+          retry_state: %{
+            kind: :pipeline,
+            retry: %{node_keys: [{{MyApp.Assets.Gold, :asset}, nil}], next_attempt: 2},
+            next_retry_at: next_retry_at
+          }
+        })
+    )
   end
 
   defp scheduler_manifest_version(manifest_version_id, opts \\ []) do

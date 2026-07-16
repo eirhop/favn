@@ -9,13 +9,15 @@ defmodule FavnOrchestrator.API.OperatorCommands do
 
   alias FavnOrchestrator
   alias FavnOrchestrator.ManifestTarget
+  alias Favn.Retry.Policy
 
   @type actor_context :: %{required(:actor) => map(), required(:session) => map()}
 
   @doc "Submits an asset or pipeline run described by HTTP request parameters."
   @spec submit_run(map(), actor_context()) :: {:ok, String.t()} | {:error, term()}
   def submit_run(params, actor_context) when is_map(params) and is_map(actor_context) do
-    with {:ok, manifest_version_id} <- manifest_version(params),
+    with :ok <- reject_legacy_retry_fields(params),
+         {:ok, manifest_version_id} <- manifest_version(params),
          {:ok, target} <- target(params, manifest_version_id),
          {:ok, command_input} <- run_input(params, target) do
       FavnOrchestrator.submit_operator_run(
@@ -30,7 +32,8 @@ defmodule FavnOrchestrator.API.OperatorCommands do
   @doc "Submits a pipeline backfill described by HTTP request parameters."
   @spec submit_backfill(map()) :: {:ok, String.t()} | {:error, term()}
   def submit_backfill(params) when is_map(params) do
-    with :ok <- reject_removed_lookback(params),
+    with :ok <- reject_legacy_retry_fields(params),
+         :ok <- reject_removed_lookback(params),
          {:ok, manifest_version_id} <- manifest_version(params),
          {:ok, %{type: "pipeline", id: target_id}} <- target(params, manifest_version_id),
          {:ok, range_request} <- range_request(params),
@@ -49,7 +52,8 @@ defmodule FavnOrchestrator.API.OperatorCommands do
   @doc "Plans a pipeline backfill without submitting it."
   @spec plan_backfill(map()) :: {:ok, map()} | {:error, term()}
   def plan_backfill(params) when is_map(params) do
-    with :ok <- reject_removed_lookback(params),
+    with :ok <- reject_legacy_retry_fields(params),
+         :ok <- reject_removed_lookback(params),
          {:ok, manifest_version_id} <- manifest_version(params),
          {:ok, %{type: "pipeline", id: target_id}} <- target(params, manifest_version_id),
          {:ok, range_request} <- range_request(params),
@@ -69,6 +73,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
        |> put_present(:dependency_mode, params, "dependencies")
        |> put_present(:refresh_mode, params, "refresh")
        |> put_optional(:metadata, Map.get(params, "metadata"))
+       |> put_optional(:retry_policy, Map.get(params, "retry_policy"))
        |> put_optional(:timeout_ms, Map.get(params, "timeout_ms"))}
     end
   end
@@ -82,6 +87,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
        |> put_optional(:window, Map.get(params, "window"))
        |> put_present(:refresh_mode, params, "refresh")
        |> put_optional(:metadata, Map.get(params, "metadata"))
+       |> put_optional(:retry_policy, Map.get(params, "retry_policy"))
        |> put_optional(:timeout_ms, Map.get(params, "timeout_ms"))}
     end
   end
@@ -121,6 +127,16 @@ defmodule FavnOrchestrator.API.OperatorCommands do
     end
   end
 
+  defp reject_legacy_retry_fields(params) do
+    case Enum.find(["max_attempts", "retry_backoff_ms"], &Map.has_key?(params, &1)) do
+      nil ->
+        :ok
+
+      field ->
+        {:error, {:unsupported_retry_option, String.to_existing_atom(field), :use_retry_policy}}
+    end
+  end
+
   defp backfill_options(params, range_request) do
     with {:ok, metadata} <- optional_metadata(Map.get(params, "metadata")),
          {:ok, coverage_baseline_id} <-
@@ -128,8 +144,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
              Map.get(params, "coverage_baseline_id"),
              :coverage_baseline_id
            ),
-         {:ok, max_attempts} <- optional_positive_integer(params, "max_attempts"),
-         {:ok, retry_backoff_ms} <- optional_non_negative_integer(params, "retry_backoff_ms"),
+         {:ok, retry_policy} <- optional_retry_policy(Map.get(params, "retry_policy")),
          {:ok, timeout_ms} <- optional_positive_integer(params, "timeout_ms") do
       {:ok,
        []
@@ -138,8 +153,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
        |> put_optional(:metadata, metadata)
        |> put_optional(:refresh, Map.get(params, "refresh"))
        |> put_optional(:refresh_policy, Map.get(params, "refresh_policy"))
-       |> put_optional(:max_attempts, max_attempts)
-       |> put_optional(:retry_backoff_ms, retry_backoff_ms)
+       |> put_optional(:retry_policy, retry_policy)
        |> put_optional(:timeout_ms, timeout_ms)}
     end
   end
@@ -148,8 +162,13 @@ defmodule FavnOrchestrator.API.OperatorCommands do
     optional_integer(Map.get(params, field), field, &(&1 > 0))
   end
 
-  defp optional_non_negative_integer(params, field) do
-    optional_integer(Map.get(params, field), field, &(&1 >= 0))
+  defp optional_retry_policy(nil), do: {:ok, nil}
+
+  defp optional_retry_policy(value) do
+    case Policy.new(value) do
+      {:ok, policy} -> {:ok, policy}
+      {:error, reason} -> {:error, {:invalid_operator_retry_policy, reason}}
+    end
   end
 
   defp optional_integer(nil, _field, _valid?), do: {:ok, nil}
@@ -163,8 +182,6 @@ defmodule FavnOrchestrator.API.OperatorCommands do
   defp invalid_integer(value, field) do
     reason =
       case field do
-        "max_attempts" -> :invalid_operator_max_attempts
-        "retry_backoff_ms" -> :invalid_operator_retry_backoff_ms
         "timeout_ms" -> :invalid_operator_timeout_ms
       end
 

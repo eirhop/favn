@@ -5,7 +5,7 @@ Runner-side DuckDB execution plugin for Phase 7.
 ## Purpose
 
 - own DuckDB adapter/runtime code outside `favn_runner`
-- provide one plugin boundary through `FavnRunner.Plugin`
+- provide one plugin boundary through public `Favn.Runner.Plugin`
 - support exactly two runtime placements:
   - `:in_process`
   - `:separate_process`
@@ -14,7 +14,9 @@ Runner-side DuckDB execution plugin for Phase 7.
 
 Allowed umbrella dependency direction:
 
-- `favn_duckdb -> favn_runner`
+- `favn_duckdb -> favn_core` for the public plugin contract
+- `favn_duckdb -> favn_runner` to provide the packaged execution runtime without
+  making consumers add it directly
 - `favn_duckdb -> favn_sql_runtime`
 
 External dependency:
@@ -71,6 +73,10 @@ config :favn, :runner_plugins, [
 - environment-backed credentials resolve at runner startup; use a native
   refresh-capable provider or restart the runner after rotation because idle
   timeout does not impose a maximum physical-session age
+- supported deferred `Favn.RuntimeValue` params resolve during session planning;
+  `Favn.Azure.Credentials.token_ref/2` is the first optional provider and changes
+  pool identity when its cached token refreshes; a superseded idle session is
+  closed before replacement bootstrap
 - placement is runtime/plugin config only (not manifest or DSL)
 - separate-process mode uses one long-lived worker (no pooling/autoscaling in Phase 7)
 - separate-process worker unavailability and worker-call timeouts are normalized

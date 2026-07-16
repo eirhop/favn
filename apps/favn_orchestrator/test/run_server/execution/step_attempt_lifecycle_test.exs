@@ -18,7 +18,15 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
   end
 
   test "runner retryability respects structured non-retryable errors" do
-    retryable = %RunnerResult{status: :error, error: :temporary, asset_results: []}
+    retryable = %RunnerResult{
+      status: :error,
+      error:
+        RunnerError.normalize(:temporary,
+          retryable?: true,
+          outcome: :safe_failure
+        ),
+      asset_results: []
+    }
 
     non_retryable = %RunnerResult{
       status: :error,
@@ -28,6 +36,25 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
 
     assert StepAttemptLifecycle.runner_result_retryable?(retryable)
     refute StepAttemptLifecycle.runner_result_retryable?(non_retryable)
+
+    refute StepAttemptLifecycle.runner_result_retryable?(%RunnerResult{
+             status: :error,
+             error: %{details: %{asset_retryable?: true}},
+             asset_results: []
+           })
+
+    refute StepAttemptLifecycle.runner_result_retryable?(%RunnerResult{
+             status: :error,
+             error: RunnerError.normalize(%{details: %{asset_retryable?: true}}),
+             asset_results: []
+           })
+
+    assert StepAttemptLifecycle.runner_result_retryable?(%RunnerResult{
+             status: :error,
+             error: %{details: %{asset_retryable?: true}, outcome: :safe_failure},
+             asset_results: []
+           })
+
     refute StepAttemptLifecycle.runner_result_retryable?(:malformed_result)
 
     refute StepAttemptLifecycle.runner_result_retryable?(%RunnerResult{
@@ -55,6 +82,25 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     assert StepAttemptLifecycle.retry_event_payload(retry).asset_step_id == "step_lifecycle"
   end
 
+  test "retry-after raises the policy delay without adding attempts" do
+    lifecycle = %StepAttemptLifecycle{
+      run: run_state(max_attempts: 2, retry_backoff_ms: 25),
+      node_key: {{MyApp.Assets.Lifecycle, :asset}, nil},
+      asset_ref: {MyApp.Assets.Lifecycle, :asset},
+      asset_step_id: "step_lifecycle",
+      stage: 1,
+      attempt: 1,
+      max_attempts: 2,
+      execution_pool: "default"
+    }
+
+    failure = RunnerError.new(retryable?: true, outcome: :safe_failure, retry_after_ms: 250)
+
+    assert {:ok, retry} = StepAttemptLifecycle.schedule_retry(lifecycle, failure)
+    assert retry.next_attempt == 2
+    assert retry.retry_after_ms == 250
+  end
+
   test "schedule_retry is terminal at max attempts" do
     lifecycle = %StepAttemptLifecycle{
       run: run_state(max_attempts: 1),
@@ -66,6 +112,19 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     }
 
     assert StepAttemptLifecycle.schedule_retry(lifecycle) == :terminal
+  end
+
+  test "attaches one absolute deadline to work before runner preparation" do
+    run = run_state(max_attempts: 1) |> Map.put(:timeout_ms, 100)
+    work = %Favn.Contracts.RunnerWork{run_id: run.id, metadata: %{}}
+    before_attach = DateTime.utc_now()
+
+    prepared = StepAttemptLifecycle.attach_deadline(work, run)
+    deadline_at = StepAttemptLifecycle.deadline_at(prepared)
+
+    assert DateTime.compare(deadline_at, before_attach) == :gt
+    assert DateTime.diff(deadline_at, before_attach, :millisecond) <= 100
+    assert StepAttemptLifecycle.deadline_at(prepared) == deadline_at
   end
 
   defp run_state(opts) do

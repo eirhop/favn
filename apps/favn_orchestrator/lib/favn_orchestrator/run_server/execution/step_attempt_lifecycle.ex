@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
   alias Favn.Plan.NodeIdentity
+  alias Favn.Retry.Policy
   alias Favn.Run.AssetResult
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunServer.Execution.ExecutionPool
@@ -40,6 +41,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
           stage: non_neg_integer(),
           attempt: pos_integer(),
           max_attempts: pos_integer(),
+          retry_policy: Policy.t() | nil,
+          retry_policy_source: Favn.Plan.retry_policy_source() | nil,
           execution_pool: atom() | String.t() | nil,
           work: RunnerWork.t() | nil
         }
@@ -53,6 +56,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
             stage: 0,
             attempt: 1,
             max_attempts: 1,
+            retry_policy: nil,
+            retry_policy_source: nil,
             execution_pool: nil,
             work: nil
 
@@ -71,7 +76,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
       window: node_window(run_state, node_key),
       stage: stage,
       attempt: attempt,
-      max_attempts: run_state.max_attempts,
+      max_attempts: retry_policy(run_state, node_key).max_attempts,
+      retry_policy: retry_policy(run_state, node_key),
+      retry_policy_source: retry_policy_source(run_state, node_key),
       execution_pool: ExecutionPool.for_node(run_state, node_key)
     }
   end
@@ -110,6 +117,26 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
     end
   end
 
+  @doc "Attaches one absolute attempt deadline before any runner phase begins."
+  @spec attach_deadline(RunnerWork.t(), RunState.t()) :: RunnerWork.t()
+  def attach_deadline(%RunnerWork{} = work, %RunState{} = run) do
+    deadline_at =
+      case run.timeout_ms do
+        timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 ->
+          DateTime.add(DateTime.utc_now(), timeout_ms, :millisecond)
+
+        _timeout_ms ->
+          nil
+      end
+
+    %{work | metadata: Map.put(work.metadata, :deadline_at, deadline_at)}
+  end
+
+  @doc "Returns the absolute deadline already attached to runner work."
+  @spec deadline_at(RunnerWork.t()) :: DateTime.t() | nil
+  def deadline_at(%RunnerWork{metadata: metadata}) when is_map(metadata),
+    do: Map.get(metadata, :deadline_at, Map.get(metadata, "deadline_at"))
+
   @doc "Returns the persisted event type and base retryability for a run status."
   @spec step_outcome(RunState.status()) :: {atom(), boolean()}
   def step_outcome(:ok), do: {:step_finished, false}
@@ -134,9 +161,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   def runner_result_retryable?(_result), do: false
 
   @doc "Builds retry scheduling data, or says the attempt is terminal."
-  @spec schedule_retry(t()) :: {:ok, retry()} | :terminal
-  def schedule_retry(%__MODULE__{} = lifecycle) do
+  @spec schedule_retry(t(), RunnerResult.t() | RunnerError.t() | term()) ::
+          {:ok, retry()} | :terminal
+  def schedule_retry(%__MODULE__{} = lifecycle, failure \\ nil) do
     if lifecycle.attempt < lifecycle.max_attempts do
+      policy = lifecycle.retry_policy || legacy_retry_policy(lifecycle.run)
+
       {:ok,
        %{
          node_key: lifecycle.node_key,
@@ -147,12 +177,42 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
          attempt: lifecycle.attempt,
          max_attempts: lifecycle.max_attempts,
          next_attempt: lifecycle.attempt + 1,
-         retry_after_ms: max(lifecycle.run.retry_backoff_ms, 0),
+         retry_after_ms:
+           Policy.delay_ms(policy, lifecycle.attempt, retry_after_ms(failure), :rand.uniform()),
+         retry_policy: policy,
+         retry_policy_source: lifecycle.retry_policy_source || :operator,
          execution_pool: lifecycle.execution_pool
        }}
     else
       :terminal
     end
+  end
+
+  @doc "Returns the policy frozen into one planned node."
+  @spec retry_policy(RunState.t(), node_key()) :: Policy.t()
+  def retry_policy(%RunState{plan: %Favn.Plan{nodes: nodes}} = run, node_key) do
+    case get_in(nodes, [node_key, :retry_policy]) do
+      %Policy{} = policy -> policy
+      _missing -> legacy_retry_policy(run)
+    end
+  end
+
+  def retry_policy(%RunState{} = run, _node_key), do: legacy_retry_policy(run)
+
+  @doc "Returns whether another attempt remains for one planned node."
+  @spec retry_allowed?(RunState.t(), node_key(), pos_integer()) :: boolean()
+  def retry_allowed?(%RunState{} = run, node_key, attempt),
+    do: attempt < retry_policy(run, node_key).max_attempts
+
+  @doc "Calculates a node retry delay from the frozen policy."
+  @spec retry_delay_ms(RunState.t(), node_key(), pos_integer(), term()) :: non_neg_integer()
+  def retry_delay_ms(%RunState{} = run, node_key, attempt, failure \\ nil) do
+    Policy.delay_ms(
+      retry_policy(run, node_key),
+      attempt,
+      retry_after_ms(failure),
+      :rand.uniform()
+    )
   end
 
   @doc "Builds the event payload for a scheduled retry."
@@ -168,32 +228,60 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
       max_attempts: retry.max_attempts,
       execution_pool: Map.get(retry, :execution_pool),
       next_attempt: retry.next_attempt,
-      retry_backoff_ms: retry.retry_after_ms
+      retry_backoff_ms: retry.retry_after_ms,
+      retry_policy: retry.retry_policy,
+      retry_policy_source: retry.retry_policy_source
     }
   end
 
   defp asset_result_retryable?(%RunnerAssetResult{error: error}),
     do: runner_error_retryable?(error)
 
-  defp asset_result_retryable?(%AssetResult{error: error}), do: structured_retryable?(error)
-  defp asset_result_retryable?(%{error: error}), do: structured_retryable?(error)
-  defp asset_result_retryable?(%{"error" => error}), do: structured_retryable?(error)
+  defp asset_result_retryable?(%AssetResult{error: error}), do: runner_error_retryable?(error)
+  defp asset_result_retryable?(%{error: error}), do: runner_error_retryable?(error)
+  defp asset_result_retryable?(%{"error" => error}), do: runner_error_retryable?(error)
   defp asset_result_retryable?(_result), do: false
 
-  defp runner_error_retryable?(%RunnerError{retryable?: retryable?}), do: retryable?
+  defp runner_error_retryable?(%RunnerError{retryable?: true, outcome: :safe_failure}), do: true
+  defp runner_error_retryable?(%RunnerError{}), do: false
   defp runner_error_retryable?(error), do: structured_retryable?(error)
 
-  defp structured_retryable?(%{details: details}) when is_map(details),
-    do: retryable_detail?(Map.get(details, :asset_retryable?))
+  defp structured_retryable?(%{details: details} = error) when is_map(details),
+    do:
+      retryable_detail?(Map.get(details, :asset_retryable?)) and
+        safe_outcome?(Map.get(error, :outcome))
 
-  defp structured_retryable?(%{"details" => details}) when is_map(details),
-    do: retryable_detail?(Map.get(details, "asset_retryable?"))
+  defp structured_retryable?(%{"details" => details} = error) when is_map(details),
+    do:
+      retryable_detail?(Map.get(details, "asset_retryable?")) and
+        safe_outcome?(Map.get(error, "outcome"))
 
-  defp structured_retryable?(_error), do: true
+  defp structured_retryable?(_error), do: false
 
   defp retryable_detail?(false), do: false
   defp retryable_detail?("false"), do: false
-  defp retryable_detail?(_other), do: true
+  defp retryable_detail?(true), do: true
+  defp retryable_detail?("true"), do: true
+  defp retryable_detail?(_other), do: false
+
+  defp safe_outcome?(:safe_failure), do: true
+  defp safe_outcome?("safe_failure"), do: true
+  defp safe_outcome?(_outcome), do: false
+
+  defp retry_after_ms(%RunnerResult{error: error}), do: retry_after_ms(error)
+  defp retry_after_ms(%RunnerError{retry_after_ms: value}), do: value
+  defp retry_after_ms(%{retry_after_ms: value}), do: value
+  defp retry_after_ms(%{"retry_after_ms" => value}), do: value
+  defp retry_after_ms(_failure), do: nil
+
+  defp legacy_retry_policy(%RunState{} = run) do
+    Policy.new!(max_attempts: run.max_attempts, backoff: run.retry_backoff_ms)
+  end
+
+  defp retry_policy_source(%RunState{plan: %Favn.Plan{nodes: nodes}}, node_key),
+    do: get_in(nodes, [node_key, :retry_policy_source])
+
+  defp retry_policy_source(%RunState{}, _node_key), do: :operator
 
   defp node_identity(%__MODULE__{
          run: %{plan: %Favn.Plan{} = plan},

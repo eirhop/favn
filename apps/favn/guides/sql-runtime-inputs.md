@@ -19,7 +19,7 @@ run window.
 | Accept normal run parameters already supplied by an operator or caller | Normal submitted `params` | A resolver would duplicate an existing input path. |
 | Generate SQL source, table names, relation names, or lifecycle callbacks dynamically | Predeclare SQL/relation structure or redesign the asset | Resolver output is data only and never becomes SQL structure. |
 | Perform multi-step API work or external writes | `Favn.Asset` | Elixir assets are the escape hatch for imperative side effects. |
-| Guarantee the exact same selected input after retry, restart, rerun, or replay | Persist the selection in an upstream system or asset first | Runtime input payloads are not pinned in the current contract. |
+| Reuse the exact selected input for retries, safe restart recovery, or exact replay | Runtime-input pins plus the appropriate replay input mode | Pins provide stable input, but do not make an external write exactly once. |
 
 Runtime input resolvers may perform I/O, but they are not sandboxes. Configure
 client timeouts below Favn's resolver deadline and keep credentials in runtime
@@ -80,8 +80,9 @@ end
 ```
 
 `ctx` is the final `Favn.Run.Context`, including the effective window, attempt,
-run identity, current asset ref, deadline, and resolved runtime configuration.
-Do not log or return the whole context.
+run identity, current asset ref, and resolved runtime configuration. The runner
+enforces the remaining node deadline outside the context through its own timeout
+and cancellation controls. Do not log or return the whole context.
 
 ## Attach It To The SQL Asset
 
@@ -200,9 +201,10 @@ telemetry, inspection, and runtime result details. Keep `identity` and
 
 ## Timing And Limits
 
-Favn resolves runtime inputs once per asset attempt after the effective window
-is final and before SQL rendering, session acquisition, admission, or a
-transaction.
+Favn resolves runtime inputs after the effective window is final and before SQL
+rendering, session acquisition, admission, or a transaction. Resolution is a
+separate phase: the orchestrator validates and atomically pins the normalized
+selection under `{run_id, planned_node_key}` before it can dispatch SQL work.
 
 | Boundary | Limit |
 | --- | --- |
@@ -215,9 +217,29 @@ transaction.
 Timeout and cancellation terminate resolver work through runner-owned process
 cleanup. Resolver failures happen before a SQL connection is opened.
 
-Resolved payloads are not persisted or pinned. A retry attempt, runner restart,
-rerun, or replay resolves again. Do not use a replay-sensitive resolver when
-correctness requires exactly the same external selection across attempts.
+After the pin is stored, every attempt of that node loads the stored winner;
+the resolver is not invoked again. Safe orchestrator recovery also reuses the
+pin. Concurrent equivalent resolutions reuse the winner, while a different
+identity or payload fingerprint is a conflict and stops execution.
+
+New runs use an explicit input mode:
+
+| Operation | Default | Runtime-input behavior |
+| --- | --- | --- |
+| normal manual run, schedule occurrence, or backfill child | `:fresh` | Resolve and pin independently for the new run. |
+| exact replay | `:pinned` | Copy required source-run pins; fail rather than silently resolve a missing pin. |
+| resume or retry remaining | `:inherit` | Copy existing source pins and resolve nodes the source run never reached. |
+
+An operator may deliberately request fresh input for a rerun, but that is not
+an exact replay. Copied pins retain safe source-run, source-node, and fingerprint
+lineage.
+
+Sensitive parameter values are stored only in the dedicated protected pin
+payload, never in generic run metadata, events, logs, telemetry, or errors.
+SQLite and PostgreSQL storage require a valid 32-byte
+`runtime_input_pin_key` (raw or base64-encoded) when a pin contains sensitive
+parameters. Missing or invalid protection fails before materialization rather
+than storing plaintext.
 
 ## Typed Failures
 
@@ -235,9 +257,14 @@ alias Favn.SQLAsset.RuntimeInputs.Error
  }}
 ```
 
-`retryable?` is preserved as classification only; this contract does not add an
-automatic retry policy. Error messages and metadata must not contain resolved
-parameters, credentials, the complete context, or inspected exception terms.
+`retryable?` is only one half of retry authorization. The resolver failure must
+also normalize to a known safe failure, and the effective node policy must have
+an attempt remaining. A policy is selected with operator override, asset
+`@retry`, pipeline `retry`, then one-attempt default precedence. Error messages
+and metadata must not contain resolved parameters, credentials, the complete
+context, or inspected exception terms. Read
+[Retries, Replay, And Runtime-Input Pins](retries-and-replay.html) for the full
+safety and precedence contract.
 
 ## Test Resolver Modules Directly
 

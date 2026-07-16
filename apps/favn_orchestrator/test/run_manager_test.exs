@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
   @moduletag capture_log: true
 
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Manifest
   alias Favn.Manifest.Graph
@@ -181,11 +182,13 @@ defmodule FavnOrchestrator.RunManagerTest do
       attempt = Agent.get_and_update(counter, fn value -> {value + 1, value + 1} end)
 
       if attempt == 1 do
+        error = retryable_error(opts)
+
         {:ok,
          %RunnerResult{
            status: :error,
-           error: :transient_failure,
-           asset_results: [asset_result(execution_id, :error, :transient_failure)],
+           error: error,
+           asset_results: [asset_result(execution_id, :error, error)],
            metadata: %{attempt: attempt}
          }}
       else
@@ -203,6 +206,16 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     @impl true
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp retryable_error(opts) do
+      RunnerError.new(
+        type: :transient_failure,
+        message: "Known-safe transient test failure",
+        retryable?: true,
+        retry_after_ms: Keyword.get(opts, :retry_after_ms),
+        outcome: :safe_failure
+      )
+    end
 
     defp asset_result(execution_id, status, error) do
       ref = execution_ref(execution_id)
@@ -249,6 +262,77 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     @impl true
     def await_result(_execution_id, _timeout, _opts), do: {:error, :unexpected_await}
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+  end
+
+  defmodule RunnerClientRetryableUnknownOutcomeStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}_#{work.attempt}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, opts) do
+      counter = Keyword.fetch!(opts, :attempt_counter)
+      Agent.update(counter, &(&1 + 1))
+
+      error =
+        RunnerError.normalize(%{
+          type: :legacy_retryable_failure,
+          retryable?: true,
+          message: "Retryable without an explicit outcome"
+        })
+
+      {:ok, %RunnerResult{status: :error, error: error, asset_results: [], metadata: %{}}}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+  end
+
+  defmodule RunnerClientSafeSubmitRetryStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, opts) do
+      counter = Keyword.fetch!(opts, :submit_counter)
+      submit_count = Agent.get_and_update(counter, fn value -> {value + 1, value + 1} end)
+
+      if submit_log = Keyword.get(opts, :submit_log) do
+        Agent.update(submit_log, &[{work.asset_ref, work.attempt} | &1])
+      end
+
+      if submit_count == Keyword.get(opts, :fail_on_submit, 1) do
+        {:error,
+         RunnerError.new(
+           type: :runner_overloaded,
+           phase: :submission,
+           retryable?: true,
+           outcome: :safe_failure
+         )}
+      else
+        {:ok, "exec_#{work.run_id}_#{work.asset_step_id}_#{work.attempt}"}
+      end
+    end
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts) do
+      {:ok, %RunnerResult{status: :ok, asset_results: [], metadata: %{}}}
+    end
 
     @impl true
     def cancel_work(_execution_id, _reason, _opts), do: :ok
@@ -582,11 +666,13 @@ defmodule FavnOrchestrator.RunManagerTest do
         end)
 
       if attempt == 1 do
+        error = retryable_error()
+
         {:ok,
          %RunnerResult{
            status: :error,
-           error: :transient_failure,
-           asset_results: [asset_result(execution_id, :error, :transient_failure)],
+           error: error,
+           asset_results: [asset_result(execution_id, :error, error)],
            metadata: %{attempt: attempt}
          }}
       else
@@ -604,6 +690,15 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     @impl true
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp retryable_error do
+      RunnerError.new(
+        type: :transient_failure,
+        message: "Known-safe transient test failure",
+        retryable?: true,
+        outcome: :safe_failure
+      )
+    end
 
     defp asset_result(execution_id, status, error) do
       ref = execution_ref(execution_id)
@@ -960,11 +1055,13 @@ defmodule FavnOrchestrator.RunManagerTest do
       attempt = Agent.get_and_update(attempt_counter, fn value -> {value + 1, value + 1} end)
 
       if attempt == 1 do
+        error = retryable_error()
+
         {:ok,
          %RunnerResult{
            status: :error,
-           error: :transient_failure,
-           asset_results: [asset_result(execution_id, :error, :transient_failure)],
+           error: error,
+           asset_results: [asset_result(execution_id, :error, error)],
            metadata: %{runner_key: :attempt_one}
          }}
       else
@@ -982,6 +1079,15 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     @impl true
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp retryable_error do
+      RunnerError.new(
+        type: :transient_failure,
+        message: "Known-safe transient test failure",
+        retryable?: true,
+        outcome: :safe_failure
+      )
+    end
 
     defp asset_result(execution_id, status, error) do
       ref = execution_ref(execution_id)
@@ -1446,6 +1552,40 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert run.target_refs == [{MyApp.Assets.Gold, :asset}]
   end
 
+  test "pipeline reruns retain authored policy unless the operator overrides it" do
+    pipeline_policy = Favn.Retry.Policy.new!(max_attempts: 3, backoff: 10)
+
+    version =
+      manifest_version("mv_pipeline_retry_rerun", pipeline_retry_policy: pipeline_policy)
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_pipeline_retry_rerun")
+
+    assert {:ok, source_run_id} =
+             FavnOrchestrator.submit_pipeline_run(MyApp.Pipelines.Daily)
+
+    assert {:ok, source_run} = await_terminal_run(source_run_id)
+    source_nodes = Map.values(source_run.plan.nodes)
+    assert Enum.all?(source_nodes, &(&1.retry_policy.max_attempts == 3))
+    assert Enum.all?(source_nodes, &(&1.retry_policy_source == :pipeline))
+
+    assert {:ok, inherited_run_id} = FavnOrchestrator.rerun(source_run_id)
+    assert {:ok, inherited_run} = await_terminal_run(inherited_run_id)
+    inherited_nodes = Map.values(inherited_run.plan.nodes)
+    assert Enum.all?(inherited_nodes, &(&1.retry_policy.max_attempts == 3))
+    assert Enum.all?(inherited_nodes, &(&1.retry_policy_source == :pipeline))
+
+    assert {:ok, overridden_run_id} =
+             FavnOrchestrator.rerun(source_run_id,
+               retry_policy: %{max_attempts: 4, backoff: 20}
+             )
+
+    assert {:ok, overridden_run} = await_terminal_run(overridden_run_id)
+    overridden_nodes = Map.values(overridden_run.plan.nodes)
+    assert Enum.all?(overridden_nodes, &(&1.retry_policy.max_attempts == 4))
+    assert Enum.all?(overridden_nodes, &(&1.retry_policy_source == :operator))
+  end
+
   test "submits manual pipeline run from persisted descriptor with single-asset module shorthand" do
     version = manifest_version("mv_pipeline_single_asset_shorthand")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -1528,8 +1668,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert {:ok, run_id} =
              FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
-               max_attempts: 2,
-               retry_backoff_ms: 0
+               retry_policy: %{max_attempts: 2, backoff: 0}
              )
 
     assert {:ok, run} = await_terminal_run(run_id)
@@ -1734,8 +1873,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert {:ok, run_id} =
              FavnOrchestrator.submit_pipeline_run(
                [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}],
-               max_attempts: 2,
-               retry_backoff_ms: 0
+               retry_policy: %{max_attempts: 2, backoff: 0}
              )
 
     assert {:ok, run} = await_terminal_run(run_id)
@@ -1745,7 +1883,8 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert {:ok, events} = Storage.list_run_events(run_id)
     assert Enum.count(events, &(&1.event_type == :step_retry_scheduled)) >= 2
-    assert Enum.count(events, &(&1.event_type == :step_started)) >= 4
+    assert Enum.count(events, &(&1.event_type == :step_started)) >= 2
+    assert Enum.count(events, &(&1.event_type == :step_retry_started)) >= 2
     assert Enum.count(events, &(&1.event_type == :step_finished)) >= 2
 
     retry_events = Enum.filter(events, &(&1.event_type == :step_retry_scheduled))
@@ -2202,8 +2341,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert {:ok, run_id} =
              FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
-               max_attempts: 2,
-               retry_backoff_ms: 0
+               retry_policy: %{max_attempts: 2, backoff: 0}
              )
 
     assert {:ok, run} = await_terminal_run(run_id)
@@ -2213,7 +2351,8 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert {:ok, events} = Storage.list_run_events(run_id)
 
     assert Enum.member?(Enum.map(events, & &1.event_type), :step_retry_scheduled)
-    assert Enum.count(events, &(&1.event_type == :step_started)) == 2
+    assert Enum.count(events, &(&1.event_type == :step_started)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_retry_started)) == 1
     assert Enum.map(events, & &1.sequence) == Enum.sort(Enum.map(events, & &1.sequence))
 
     retry_event = Enum.find(events, &(&1.event_type == :step_retry_scheduled))
@@ -2225,6 +2364,253 @@ defmodule FavnOrchestrator.RunManagerTest do
            ]
 
     assert_step_identity(run_id, retry_event, node_key, {MyApp.Assets.Gold, :asset})
+  end
+
+  test "does not retry a retryable runner error with an unknown outcome" do
+    version = manifest_version("mv_retryable_unknown_outcome")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      stop_agent(counter)
+    end)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :runner_client,
+      RunnerClientRetryableUnknownOutcomeStub
+    )
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts, attempt_counter: counter)
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               retry_policy: %{max_attempts: 3, backoff: 0}
+             )
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :error
+    assert Agent.get(counter, & &1) == 1
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    refute Enum.any?(events, &(&1.event_type == :step_retry_scheduled))
+  end
+
+  test "pipeline retries an explicitly safe runner submission failure" do
+    version = manifest_version("mv_pipeline_safe_submit_retry")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      stop_agent(counter)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSafeSubmitRetryStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, submit_counter: counter)
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run(MyApp.Pipelines.Daily,
+               retry_policy: %{max_attempts: 2, backoff: 0}
+             )
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :ok
+    assert Agent.get(counter, & &1) == 3
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.count(events, &(&1.event_type == :step_retry_scheduled)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_retry_started)) == 1
+  end
+
+  test "pipeline preserves an admitted sibling when a later submission fails safely" do
+    version = manifest_version("mv_pipeline_partial_safe_submit_retry")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      stop_agent(counter)
+      stop_agent(submit_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSafeSubmitRetryStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      submit_counter: counter,
+      submit_log: submit_log,
+      fail_on_submit: 2
+    )
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run(
+               [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}],
+               retry_policy: %{max_attempts: 2, backoff: 0}
+             )
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :ok
+
+    [{first_ref, 1}, {failed_ref, 1}, {retried_ref, 2}] =
+      submit_log |> Agent.get(&Enum.reverse/1)
+
+    refute first_ref == failed_ref
+    assert retried_ref == failed_ref
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.count(events, &(&1.event_type == :step_finished)) == 2
+    assert Enum.count(events, &(&1.event_type == :step_failed)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_retry_scheduled)) == 1
+  end
+
+  test "pipeline retry waits honor a runner retry-after hint" do
+    version = manifest_version("mv_pipeline_retry_after")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      stop_agent(counter)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientFlakyStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      attempt_counter: counter,
+      retry_after_ms: 150
+    )
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run(MyApp.Pipelines.Daily,
+               retry_policy: %{max_attempts: 2, backoff: 0}
+             )
+
+    assert {:ok, %{status: :ok}} = await_terminal_run(run_id)
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    retry_event = Enum.find(events, &(&1.event_type == :step_retry_scheduled))
+
+    assert event_data(retry_event, :retry_backoff_ms) == 150
+
+    scheduled_delay =
+      event_data(retry_event, :next_retry_at) -
+        DateTime.to_unix(retry_event.occurred_at, :millisecond)
+
+    assert scheduled_delay in 100..200
+  end
+
+  test "recovers a durable retry wait without restarting the run lifecycle" do
+    version = manifest_version("mv_retry_wait_recovery")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      stop_agent(counter)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientFlakyStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, attempt_counter: counter)
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               retry_policy: %{max_attempts: 2, backoff: 500}
+             )
+
+    assert {:ok, waiting} = await_retry_wait_run(run_id)
+    next_retry_at = waiting.metadata.next_retry_at
+    first_pid = :sys.get_state(FavnOrchestrator.RunManager).run_pids[run_id]
+    first_ref = Process.monitor(first_pid)
+    Process.exit(first_pid, :kill)
+
+    assert_receive {:DOWN, ^first_ref, :process, ^first_pid, :killed}, 1_000
+    assert {:ok, recovered_pid} = await_manager_run_pid(run_id)
+    refute recovered_pid == first_pid
+
+    assert {:ok, recovered_wait} = Storage.get_run(run_id)
+    assert recovered_wait.metadata.next_retry_at == next_retry_at
+
+    assert {:ok, run} = await_terminal_run(run_id, 100)
+    assert run.status == :ok
+    assert Agent.get(counter, & &1) == 2
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.count(events, &(&1.event_type == :run_started)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_retry_scheduled)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_started)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_retry_started)) == 1
+  end
+
+  test "recovers a durable pipeline retry wait with completed stage state" do
+    version = manifest_version("mv_pipeline_retry_wait_recovery")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      stop_agent(counter)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientFlakyStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, attempt_counter: counter)
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run(MyApp.Pipelines.Daily,
+               retry_policy: %{max_attempts: 2, backoff: 500}
+             )
+
+    assert {:ok, waiting} = await_retry_wait_run(run_id)
+    next_retry_at = waiting.metadata.next_retry_at
+    first_pid = :sys.get_state(FavnOrchestrator.RunManager).run_pids[run_id]
+    first_ref = Process.monitor(first_pid)
+    Process.exit(first_pid, :kill)
+
+    assert_receive {:DOWN, ^first_ref, :process, ^first_pid, :killed}, 1_000
+    assert {:ok, recovered_pid} = await_manager_run_pid(run_id)
+    refute recovered_pid == first_pid
+
+    assert {:ok, recovered_wait} = Storage.get_run(run_id)
+    assert recovered_wait.metadata.next_retry_at == next_retry_at
+
+    assert {:ok, run} = await_terminal_run(run_id, 100)
+    assert run.status == :ok
+    assert Agent.get(counter, & &1) == 3
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.count(events, &(&1.event_type == :run_started)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_retry_scheduled)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_retry_started)) == 1
   end
 
   test "sequential submit failure records canonical step identity" do
@@ -2245,8 +2631,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert {:ok, run_id} =
              FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
-               max_attempts: 1,
-               retry_backoff_ms: 0
+               retry_policy: %{max_attempts: 1, backoff: 0}
              )
 
     assert {:ok, run} = await_terminal_run(run_id)
@@ -2292,8 +2677,7 @@ defmodule FavnOrchestrator.RunManagerTest do
              FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
                run_id: run_id,
                manifest_version_id: version.manifest_version_id,
-               max_attempts: 2,
-               retry_backoff_ms: 0
+               retry_policy: %{max_attempts: 2, backoff: 0}
              )
 
     assert {:ok, _run} = await_terminal_run(run_id)
@@ -2329,7 +2713,9 @@ defmodule FavnOrchestrator.RunManagerTest do
     Application.put_env(:favn_orchestrator, :runner_client_opts, cancel_log: cancel_log)
 
     assert {:ok, run_id} =
-             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, max_attempts: 1)
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               retry_policy: %{max_attempts: 1}
+             )
 
     assert {:ok, run} = await_terminal_run(run_id)
     assert run.status == :timed_out
@@ -2693,6 +3079,28 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert rerun.pipeline_context == source_run.pipeline_context
     assert rerun.pipeline != nil
     assert rerun.pipeline[:submit_ref] == MyApp.Pipelines.Daily
+  end
+
+  test "fresh input creates a fresh rerun instead of being labeled exact replay" do
+    version = manifest_version("mv_fresh_rerun_projection")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, source_run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
+
+    assert {:ok, _source_run} = await_terminal_run(source_run_id)
+
+    assert {:ok, rerun_id} = FavnOrchestrator.rerun(source_run_id, input_mode: :fresh)
+    assert {:ok, rerun} = await_terminal_run(rerun_id)
+    assert rerun.replay_mode == :fresh_rerun
+    assert rerun.metadata.runtime_input_mode == :fresh
+
+    assert {:error, {:incompatible_replay_input_mode, :exact_replay, :fresh}} =
+             FavnOrchestrator.rerun(source_run_id,
+               replay_mode: :exact_replay,
+               input_mode: :fresh
+             )
   end
 
   test "external cancel does not crash run server on stale write after await_result" do
@@ -3181,12 +3589,36 @@ defmodule FavnOrchestrator.RunManagerTest do
 
   defp await_inflight_run(_run_id, 0), do: {:error, :timeout_waiting_for_inflight_state}
 
+  defp await_retry_wait_run(run_id, attempts \\ 40)
+
+  defp await_retry_wait_run(run_id, attempts) when attempts > 0 do
+    case Storage.get_run(run_id) do
+      {:ok, %RunState{metadata: %{retry_state: retry_state}} = run}
+      when is_map(retry_state) ->
+        {:ok, run}
+
+      {:ok, _run} ->
+        Process.sleep(15)
+        await_retry_wait_run(run_id, attempts - 1)
+
+      error ->
+        error
+    end
+  end
+
+  defp await_retry_wait_run(_run_id, 0), do: {:error, :timeout_waiting_for_retry_wait}
+
   defp await_manager_run_pid(run_id, attempts \\ 40)
 
   defp await_manager_run_pid(run_id, attempts) when attempts > 0 do
     case :sys.get_state(FavnOrchestrator.RunManager).run_pids[run_id] do
       pid when is_pid(pid) ->
-        {:ok, pid}
+        if Process.alive?(pid) do
+          {:ok, pid}
+        else
+          Process.sleep(15)
+          await_manager_run_pid(run_id, attempts - 1)
+        end
 
       _other ->
         Process.sleep(15)
@@ -3422,6 +3854,7 @@ defmodule FavnOrchestrator.RunManagerTest do
             selectors: [{:asset, {MyApp.Assets.Gold, :asset}}],
             deps: :all,
             schedule: nil,
+            retry_policy: Keyword.get(opts, :pipeline_retry_policy),
             metadata: Keyword.get(opts, :pipeline_metadata, %{})
           },
           %Favn.Manifest.Pipeline{
