@@ -24,7 +24,9 @@ defmodule Favn.Manifest.PipelineResolverTest do
     assert resolution.pipeline_ctx.max_concurrency == 2
     assert resolution.pipeline_ctx.execution_pool == :warehouse_api
     assert resolution.pipeline_ctx.trigger == %{kind: :schedule}
-    assert resolution.pipeline_ctx.params == %{full_refresh: false}
+    refute Map.has_key?(resolution.pipeline_ctx, :params)
+    assert resolution.pipeline_ctx.module == MyApp.Pipelines.Daily
+    assert resolution.pipeline_ctx.dependencies == :all
   end
 
   test "returns clear errors for missing schedule refs" do

@@ -1,93 +1,105 @@
 defmodule Favn.Test.Fixtures.Assets.Graph.SourceAssets do
   @moduledoc false
-  use Favn.Assets
+  use Favn.MultiAsset
 
-  @doc "Raw orders"
-  @asset true
-  def raw_orders(_ctx), do: :ok
+  asset :raw_orders do
+    description("Raw orders")
+  end
 
-  @doc "Raw customers"
-  @asset true
-  def raw_customers(_ctx), do: :ok
+  asset :raw_customers do
+    description("Raw customers")
+  end
+
+  def asset(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.WarehouseAssets do
   @moduledoc false
-  use Favn.Assets
+  use Favn.MultiAsset
 
   alias Favn.Test.Fixtures.Assets.Graph.SourceAssets
 
-  @doc "Normalize orders"
-  @asset true
-  @depends {SourceAssets, :raw_orders}
-  @meta tags: [:warehouse]
-  def normalize_orders(_ctx), do: :ok
+  asset :normalize_orders do
+    description("Normalize orders")
+    depends({SourceAssets, :raw_orders})
+    meta(tags: [:warehouse])
+  end
 
-  @doc "Normalize customers"
-  @asset true
-  @depends {SourceAssets, :raw_customers}
-  @meta tags: [:warehouse]
-  def normalize_customers(_ctx), do: :ok
+  asset :normalize_customers do
+    description("Normalize customers")
+    depends({SourceAssets, :raw_customers})
+    meta(tags: [:warehouse])
+  end
 
-  @doc "Build sales fact"
-  @asset true
-  @depends :normalize_orders
-  @depends :normalize_customers
-  @meta tags: [:finance]
-  def fact_sales(_ctx), do: :ok
+  asset :fact_sales do
+    description("Build sales fact")
+    depends(:normalize_orders)
+    depends(:normalize_customers)
+    meta(tags: [:finance])
+  end
+
+  def asset(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.ReportingAssets do
   @moduledoc false
-  use Favn.Assets
+  use Favn.MultiAsset
 
   alias Favn.Test.Fixtures.Assets.Graph.WarehouseAssets
 
-  @doc "Build dashboard"
-  @asset true
-  @depends {WarehouseAssets, :fact_sales}
-  @depends {WarehouseAssets, :normalize_orders}
-  def dashboard(_ctx), do: :ok
+  asset :dashboard do
+    description("Build dashboard")
+    depends({WarehouseAssets, :fact_sales})
+    depends({WarehouseAssets, :normalize_orders})
+  end
+
+  def asset(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.BronzeAssets do
   @moduledoc false
-  use Favn.Assets
+  use Favn.MultiAsset
 
-  @asset true
-  def raw_orders(_ctx), do: :ok
+  asset :raw_orders do
+  end
 
-  @asset true
-  def raw_customers(_ctx), do: :ok
+  asset :raw_customers do
+  end
+
+  def asset(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.SilverAssets do
   @moduledoc false
-  use Favn.Assets
+  use Favn.MultiAsset
 
   alias Favn.Test.Fixtures.Assets.Graph.BronzeAssets
 
-  @asset true
-  @depends {BronzeAssets, :raw_orders}
-  def nightly_orders(_ctx), do: :ok
+  asset :nightly_orders do
+    depends({BronzeAssets, :raw_orders})
+  end
 
-  @asset true
-  @depends {BronzeAssets, :raw_customers}
-  def monthly_customers(_ctx), do: :ok
+  asset :monthly_customers do
+    depends({BronzeAssets, :raw_customers})
+  end
+
+  def asset(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.GoldAssets do
   @moduledoc false
-  use Favn.Assets
+  use Favn.MultiAsset
 
   alias Favn.Test.Fixtures.Assets.Graph.SilverAssets
 
-  @asset true
-  @depends {SilverAssets, :nightly_orders}
-  @depends {SilverAssets, :monthly_customers}
-  def gold_sales(_ctx), do: :ok
+  asset :gold_sales do
+    depends({SilverAssets, :nightly_orders})
+    depends({SilverAssets, :monthly_customers})
+  end
 
-  @asset true
-  @depends {SilverAssets, :nightly_orders}
-  def gold_finance(_ctx), do: :ok
+  asset :gold_finance do
+    depends({SilverAssets, :nightly_orders})
+  end
+
+  def asset(_ctx), do: :ok
 end

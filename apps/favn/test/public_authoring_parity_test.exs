@@ -11,7 +11,7 @@ defmodule Favn.PublicAuthoringParityTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
     use Favn.Asset
 
-    @relation [name: "orders"]
+    relation(name: "orders")
     def asset(_ctx), do: :ok
   end
 
@@ -19,7 +19,7 @@ defmodule Favn.PublicAuthoringParityTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
     use Favn.Asset
 
-    @relation [name: "customers"]
+    relation(name: "customers")
     def asset(_ctx), do: :ok
   end
 
@@ -27,7 +27,8 @@ defmodule Favn.PublicAuthoringParityTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "commerce"]
     use Favn.SQLAsset
 
-    @materialized :view
+    materialized(:view)
+
     query do
       ~SQL"""
       select o.id, c.id as customer_id

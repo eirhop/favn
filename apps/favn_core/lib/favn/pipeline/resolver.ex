@@ -44,8 +44,7 @@ defmodule Favn.Pipeline.Resolver do
            resolve_schedule(definition.schedule, default_timezone, schedule_lookup),
          {:ok, assets} <- resolve_assets(assets_input),
          {:ok, target_refs} <- resolve_selectors(selectors, assets) do
-      pipeline_ctx =
-        build_pipeline_ctx(definition, target_refs, trigger, params, anchor_window, schedule)
+      pipeline_ctx = build_pipeline_ctx(definition, target_refs, trigger, anchor_window, schedule)
 
       {:ok,
        %Resolution{
@@ -226,17 +225,15 @@ defmodule Favn.Pipeline.Resolver do
     end
   end
 
-  defp build_pipeline_ctx(definition, target_refs, trigger, params, anchor_window, schedule) do
+  defp build_pipeline_ctx(definition, target_refs, trigger, anchor_window, schedule) do
     %{
-      id: definition.name,
+      module: definition.module,
       name: definition.name,
-      run_kind: :pipeline,
       resolved_refs: target_refs,
-      deps: definition.deps,
-      config: definition.config,
-      meta: definition.meta,
+      dependencies: definition.deps,
+      settings: definition.settings,
+      metadata: definition.meta,
       trigger: trigger,
-      params: params,
       anchor_window: anchor_window,
       window: definition.window,
       max_concurrency: definition.max_concurrency,

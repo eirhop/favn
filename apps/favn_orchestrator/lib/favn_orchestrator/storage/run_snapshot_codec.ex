@@ -182,7 +182,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "snapshot_hash" => run.snapshot_hash,
       "params" => JsonSafe.data(run.params),
       "trigger" => JsonSafe.data(run.trigger),
-      "metadata" => JsonSafe.data(run.metadata),
+      "metadata" => run_metadata_to_dto(run.metadata),
       "submit_kind" => Atom.to_string(run.submit_kind),
       "rerun_of_run_id" => run.rerun_of_run_id,
       "parent_run_id" => run.parent_run_id,
@@ -197,6 +197,36 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "inserted_at" => datetime_to_dto(run.inserted_at),
       "updated_at" => datetime_to_dto(run.updated_at)
     }
+  end
+
+  defp run_metadata_to_dto(metadata) when is_map(metadata) do
+    encoded = JsonSafe.data(metadata)
+
+    case field(metadata, :pipeline_context) do
+      context when is_map(context) ->
+        encoded_context =
+          context
+          |> JsonSafe.data()
+          |> Map.put("settings", settings_to_dto(field(context, :settings, %{})))
+          |> Map.put("metadata", pipeline_metadata_to_dto(field(context, :metadata, %{})))
+
+        Map.put(encoded, "pipeline_context", encoded_context)
+
+      _other ->
+        encoded
+    end
+  end
+
+  defp run_metadata_to_dto(metadata), do: JsonSafe.data(metadata)
+
+  defp settings_to_dto(settings) do
+    settings
+    |> Favn.Settings.normalize!()
+    |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+  end
+
+  defp pipeline_metadata_to_dto(metadata) when is_map(metadata) do
+    Favn.Settings.normalize!(metadata: metadata).metadata
   end
 
   defp decode_dto(payload) do
@@ -946,8 +976,14 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       context
       |> atomize_known_context_keys()
       |> normalize_context_module(:module, allowed_atom_strings)
-      |> normalize_context_module(:pipeline_module, allowed_atom_strings)
+      |> normalize_context_atom(:name, allowed_atom_strings)
+      |> normalize_context_atom(:dependencies, allowed_atom_strings)
+      |> normalize_context_atom(:execution_pool, allowed_atom_strings)
+      |> normalize_context_atom(:source, allowed_atom_strings)
+      |> normalize_context_atoms(:outputs, allowed_atom_strings)
+      |> normalize_context_settings(allowed_atom_strings)
       |> normalize_context_refs(:resolved_refs, allowed_atom_strings)
+      |> normalize_context_schedule(allowed_atom_strings)
 
     Map.put(metadata, :pipeline_context, context)
   end
@@ -956,21 +992,22 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp atomize_known_context_keys(context) do
     known_context_keys = %{
-      "id" => :id,
+      "module" => :module,
       "name" => :name,
-      "run_kind" => :run_kind,
       "resolved_refs" => :resolved_refs,
-      "deps" => :deps,
+      "dependencies" => :dependencies,
+      "settings" => :settings,
+      "metadata" => :metadata,
       "trigger" => :trigger,
       "schedule" => :schedule,
       "window" => :window,
+      "max_concurrency" => :max_concurrency,
+      "execution_pool" => :execution_pool,
       "anchor_window" => :anchor_window,
       "backfill_range" => :backfill_range,
       "anchor_ranges" => :anchor_ranges,
       "source" => :source,
-      "outputs" => :outputs,
-      "module" => :module,
-      "pipeline_module" => :pipeline_module
+      "outputs" => :outputs
     }
 
     Enum.reduce(known_context_keys, context, fn {string_key, atom_key}, acc ->
@@ -982,6 +1019,65 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     case Map.fetch(context, key) do
       {:ok, value} -> Map.put(context, key, atom_from_dto_value(value, allowed_atom_strings))
       :error -> context
+    end
+  end
+
+  defp normalize_context_atom(context, key, allowed_atom_strings) when is_map(context) do
+    case Map.fetch(context, key) do
+      {:ok, nil} -> context
+      {:ok, value} -> Map.put(context, key, atom_from_dto_value(value, allowed_atom_strings))
+      :error -> context
+    end
+  end
+
+  defp normalize_context_atoms(context, key, allowed_atom_strings) when is_map(context) do
+    case Map.fetch(context, key) do
+      {:ok, values} when is_list(values) ->
+        Map.put(context, key, Enum.map(values, &atom_from_dto_value(&1, allowed_atom_strings)))
+
+      _other ->
+        context
+    end
+  end
+
+  defp normalize_context_settings(context, allowed_atom_strings) when is_map(context) do
+    case Map.fetch(context, :settings) do
+      {:ok, settings} when is_map(settings) ->
+        normalized =
+          Map.new(settings, fn {key, value} ->
+            {atom_from_dto_value(key, allowed_atom_strings), value}
+          end)
+
+        Map.put(context, :settings, normalized)
+
+      _other ->
+        context
+    end
+  end
+
+  defp normalize_context_schedule(context, allowed_atom_strings) when is_map(context) do
+    case Map.fetch(context, :schedule) do
+      {:ok, nil} ->
+        context
+
+      {:ok, schedule} when is_map(schedule) ->
+        normalized = %Favn.Manifest.Schedule{
+          module: schedule |> field(:module) |> atom_from_dto_value(allowed_atom_strings),
+          name: schedule |> field(:name) |> atom_from_dto_value(allowed_atom_strings),
+          ref: schedule |> field(:ref) |> ref_from_dto_value(allowed_atom_strings),
+          kind: schedule |> field(:kind, "cron") |> schedule_kind_from_dto(),
+          cron: field(schedule, :cron),
+          timezone: field(schedule, :timezone),
+          missed: schedule |> field(:missed, "skip") |> schedule_missed_from_dto(),
+          overlap: schedule |> field(:overlap, "forbid") |> schedule_overlap_from_dto(),
+          active: field(schedule, :active, true),
+          origin: schedule |> field(:origin, "named") |> schedule_origin_from_dto()
+        }
+
+        Map.put(context, :schedule, normalized)
+
+      _other ->
+        context
     end
   end
 
@@ -1063,6 +1159,26 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp replay_mode_from_dto("resume_from_failure"), do: :resume_from_failure
   defp replay_mode_from_dto("fresh_rerun"), do: :fresh_rerun
   defp replay_mode_from_dto(value), do: value
+
+  defp schedule_kind_from_dto(value) when value in [:cron, "cron"], do: :cron
+  defp schedule_kind_from_dto(value), do: value
+
+  defp schedule_missed_from_dto(value) when value in [:skip, "skip"], do: :skip
+  defp schedule_missed_from_dto(value) when value in [:one, "one"], do: :one
+  defp schedule_missed_from_dto(value) when value in [:all, "all"], do: :all
+  defp schedule_missed_from_dto(value), do: value
+
+  defp schedule_overlap_from_dto(value) when value in [:forbid, "forbid"], do: :forbid
+  defp schedule_overlap_from_dto(value) when value in [:allow, "allow"], do: :allow
+
+  defp schedule_overlap_from_dto(value) when value in [:queue_one, "queue_one"],
+    do: :queue_one
+
+  defp schedule_overlap_from_dto(value), do: value
+
+  defp schedule_origin_from_dto(value) when value in [:inline, "inline"], do: :inline
+  defp schedule_origin_from_dto(value) when value in [:named, "named"], do: :named
+  defp schedule_origin_from_dto(value), do: value
 
   defp ref_from_dto_value(value, allowed_atom_strings) do
     case ref_from_dto(value, allowed_atom_strings) do

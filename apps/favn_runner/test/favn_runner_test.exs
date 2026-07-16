@@ -22,7 +22,7 @@ defmodule FavnRunnerTest do
           name: :asset,
           type: :elixir,
           execution: %{entrypoint: :asset, arity: 1},
-          config: %{hello: "world"}
+          settings: %{hello: "world"}
         },
         %Asset{
           ref: {FavnRunnerTest.SourceAsset, :asset},
@@ -322,8 +322,8 @@ defmodule FavnRunnerTest do
     refs = Enum.map(assets, & &1.ref)
 
     %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: assets,
       pipelines: [],
       schedules: [],
@@ -345,7 +345,7 @@ defmodule FavnRunnerTest.ElixirAsset do
 
   @spec asset(Context.t()) :: :ok | {:ok, map()}
   def asset(%Context{} = ctx) do
-    {:ok, %{current_ref: ctx.current_ref, params: ctx.params}}
+    {:ok, %{asset_ref: ctx.asset.ref, params: ctx.params}}
   end
 end
 

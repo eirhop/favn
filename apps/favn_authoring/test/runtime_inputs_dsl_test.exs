@@ -26,8 +26,8 @@ defmodule Favn.RuntimeInputsDSLTest do
     use SQLHelpers
     use Favn.SQLAsset
 
-    @runtime_inputs Resolver
-    @materialized :table
+    runtime_inputs(Resolver)
+    materialized(:table)
 
     query do
       ~SQL"select selected(@external_id) as id"
@@ -66,7 +66,7 @@ defmodule Favn.RuntimeInputsDSLTest do
     assert_raise CompileError,
                  ~r/must explicitly declare @behaviour Favn.SQLAsset.RuntimeInputs/,
                  fn ->
-                   compile_asset!("@runtime_inputs #{inspect(resolver)}")
+                   compile_asset!("runtime_inputs #{inspect(resolver)}")
                  end
   end
 
@@ -80,37 +80,37 @@ defmodule Favn.RuntimeInputsDSLTest do
     """)
 
     assert_raise CompileError, ~r/must export public resolve\/1/, fn ->
-      compile_asset!("@runtime_inputs #{inspect(resolver)}")
+      compile_asset!("runtime_inputs #{inspect(resolver)}")
     end
   end
 
   test "rejects unsupported, duplicate, and late resolver declarations" do
-    assert_raise CompileError, ~r/expected @runtime_inputs MyApp.Inputs/, fn ->
-      compile_asset!("@runtime_inputs {Resolver, :resolve}")
+    assert_raise CompileError, ~r/expected runtime_inputs MyApp.Inputs/, fn ->
+      compile_asset!("runtime_inputs {Resolver, :resolve}")
     end
 
-    assert_raise CompileError, ~r/multiple @runtime_inputs attributes are not allowed/, fn ->
+    assert_raise CompileError, ~r/multiple runtime_inputs declarations are not allowed/, fn ->
       compile_asset!("""
-      @runtime_inputs #{inspect(Resolver)}
-      @runtime_inputs #{inspect(Resolver)}
+      runtime_inputs #{inspect(Resolver)}
+      runtime_inputs #{inspect(Resolver)}
       """)
     end
 
     module = dynamic_module("Late")
 
-    assert_raise CompileError, ~r/@runtime_inputs must be declared before query/, fn ->
+    assert_raise CompileError, ~r/SQL asset declarations must appear before query/, fn ->
       Code.compile_string(
         """
         defmodule #{inspect(module)} do
           use Favn.Namespace, relation: [connection: :warehouse, schema: "test"]
           use Favn.SQLAsset
 
-          @materialized :table
+          materialized :table
           query do
             ~SQL"select 1"
           end
 
-          @runtime_inputs #{inspect(Resolver)}
+          runtime_inputs #{inspect(Resolver)}
         end
         """,
         "test/runtime_inputs_dsl_test.exs"
@@ -128,7 +128,7 @@ defmodule Favn.RuntimeInputsDSLTest do
         use Favn.SQLAsset
 
         #{runtime_inputs_declaration}
-        @materialized :table
+        materialized :table
 
         query do
           ~SQL"select 1"

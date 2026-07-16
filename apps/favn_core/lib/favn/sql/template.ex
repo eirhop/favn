@@ -546,8 +546,24 @@ defmodule Favn.SQL.Template do
       [valid | _] when valid >= ?a and valid <= ?z ->
         {name_string, tail} = read_identifier(rest)
         name = placeholder_name(name_string, state)
+        source = classify_placeholder_source(name, state)
+
+        if state.relation_entry? and source in [:query_param, :runtime] do
+          compile_error!(
+            state.file,
+            state.position.line,
+            "SQL placeholders are values, not relation or identifier names; use an asset reference or defsql relation instead"
+          )
+        end
+
         next_state = advance_state(state, ~c"@" ++ String.to_charlist(name_string))
-        placeholder = build_placeholder(name, state, next_state)
+
+        placeholder = %Placeholder{
+          name: name,
+          source: source,
+          span: span(state.position, next_state.position)
+        }
+
         parse_nodes(tail, next_state, [placeholder | acc])
 
       _other ->
@@ -953,11 +969,6 @@ defmodule Favn.SQL.Template do
       )
 
     %Fragment{nodes: template.nodes, span: span(start_pos, end_pos)}
-  end
-
-  defp build_placeholder(name, state, next_state) do
-    source = classify_placeholder_source(name, state)
-    %Placeholder{name: name, source: source, span: span(state.position, next_state.position)}
   end
 
   defp build_call(definition, args, context, start_pos, end_pos) do

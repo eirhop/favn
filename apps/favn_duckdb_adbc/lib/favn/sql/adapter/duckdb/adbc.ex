@@ -91,7 +91,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   Read the HexDocs guide
   [DuckDB Session Scripts And Resources](https://hexdocs.pm/favn/duckdb-session-scripts.html)
-  for file locators, `@resources`, physical-session lifecycle, pooling, and
+  for file locators, asset `resources`, physical-session lifecycle, pooling, and
   safety rules.
   """
 

@@ -67,7 +67,7 @@ Supported namespace relation keys:
 | `:catalog` | string or atom |
 | `:schema` | string or atom |
 
-Leaf asset modules can then use `@relation true` to infer the relation name from
+Leaf asset modules can then use `relation true` to infer the relation name from
 the module name.
 
 Relation fields override by key; resources accumulate from every ancestor and
@@ -83,8 +83,10 @@ defmodule MyApp.Lakehouse.Raw.Sales.Orders do
   use Favn.Asset
 
   @doc "Load raw sales orders."
-  @meta owner: "data-platform", category: :sales, tags: [:raw, :daily]
-  @relation true
+  settings endpoint: "/orders"
+  meta owner: "data-platform"
+  meta category: :sales, tags: [:raw, :daily]
+  relation true
   def asset(ctx) do
     relation = ctx.asset.relation
 
@@ -100,36 +102,71 @@ end
 Rules:
 
 - Define exactly one public `asset(ctx)` function.
-- Put DSL attributes directly above `def asset(ctx)`.
+- Put DSL declarations before `def asset(ctx)`.
 - Return `:ok`, `{:ok, metadata}`, or `{:error, reason}`.
 - Do not return secrets in metadata.
 
-Common attributes:
+Common declarations:
 
-| Attribute | Use it for |
+| Declaration | Use it for |
 | --- | --- |
 | `@doc` | Human description of the asset. |
-| `@meta` | Search/filter metadata such as `owner`, `category`, and `tags`. |
-| `@depends` | Upstream asset dependencies. May be repeated. |
-| `@window` | Time window shape for windowed work. |
-| `@freshness` | When Favn may skip work because output is fresh. |
-| `@execution_pool` | Shared execution pool name for runtime admission. |
-| `@relation` | Relation owned by the asset. Use `true` to infer it from namespace. |
+| `settings` | Non-secret static values compiled into the manifest. |
+| `meta` | Search/filter metadata such as `owner`, `category`, and `tags`. |
+| `depends` | Upstream asset dependencies. May be repeated. |
+| `window` | Time window shape for windowed work. |
+| `freshness` | When Favn may skip work because output is fresh. |
+| `execution_pool` | Shared execution pool name for runtime admission. |
+| `relation` | Relation owned by the asset. Use `true` to infer it from namespace. |
 
-`@depends` accepts a single-asset module or a multi-asset ref:
-
-```elixir
-@depends MyApp.Lakehouse.Raw.Sales.Customers
-@depends {MyApp.Lakehouse.Raw.Sales.Shopify, :orders}
-```
-
-`@relation` accepts:
+`depends` accepts a single-asset module or a multi-asset ref:
 
 ```elixir
-@relation true
-@relation [name: "orders"]
-@relation [connection: :warehouse, catalog: "raw", schema: "sales", name: "orders"]
+depends MyApp.Lakehouse.Raw.Sales.Customers
+depends {MyApp.Lakehouse.Raw.Sales.Shopify, :orders}
 ```
+
+`relation` accepts:
+
+```elixir
+relation true
+relation [name: "orders"]
+relation [connection: :warehouse, catalog: "raw", schema: "sales", name: "orders"]
+```
+
+## Settings And Runtime Context
+
+Use `settings` for non-secret static values that belong to the asset. Repeated
+declarations shallow-merge from left to right, so a later top-level key replaces
+the earlier value:
+
+```elixir
+settings source: "orders"
+settings request: %{path: "/v1/orders", timeout_ms: 5_000}
+
+def asset(ctx) do
+  source = ctx.asset.settings.source
+  path = ctx.asset.settings.request["path"]
+  MyApp.SourceClient.fetch(source, path)
+end
+```
+
+Top-level keys are atoms. Nested maps use string keys because settings retain a
+stable JSON-safe manifest shape. Settings are bounded to 128 top-level entries
+and 64 KiB of canonical JSON, and top-level keys must be identifier-shaped
+atoms no longer than 128 bytes. Keep the runtime namespaces distinct:
+
+| Value | Runtime path |
+| --- | --- |
+| Asset settings | `ctx.asset.settings` |
+| Pipeline settings | `ctx.pipeline.settings` |
+| Per-run parameters | `ctx.params` |
+| Resolved environment values and secrets | `ctx.runtime_config` |
+| Descriptive metadata | not a runtime configuration bag |
+
+Use settings to create reusable runtime patterns with your own JSON-like shape.
+Favn does not impose framework-owned substructures such as `config`, `custom`,
+`extra`, or `rest`; those legacy bags do not exist.
 
 ## Runtime Config In Assets
 
@@ -156,8 +193,8 @@ defmodule MyApp.Lakehouse.Raw.Sales.Orders do
   runtime_config MyApp.RuntimeConfigs.source_system()
 
   def asset(ctx) do
-    segment_id = ctx.config.source_system.segment_id
-    token = ctx.config.source_system.token
+    segment_id = ctx.runtime_config.source_system.segment_id
+    token = ctx.runtime_config.source_system.token
 
     MyApp.SourceClient.fetch_orders(segment_id, token)
     :ok
@@ -170,7 +207,7 @@ Select bundles for a namespace with
 Only descendant Elixir assets inherit them; unrelated assets select the bundle
 explicitly. Favn records unresolved references, never values. Missing required
 values fail before asset code runs. Resolved asset values are public only through
-`ctx.config`; pass the needed scope explicitly to helper modules and never log
+`ctx.runtime_config`; pass the needed scope explicitly to helper modules and never log
 resolved secrets.
 
 ## SQL Assets
@@ -182,11 +219,14 @@ defmodule MyApp.Lakehouse.Mart.Sales.OrderSummary do
   use Favn.SQLAsset
 
   @doc "Build a daily order summary."
-  @meta owner: "analytics", category: :sales, tags: [:mart, :daily]
-  @depends MyApp.Lakehouse.Raw.Sales.Orders
-  @resources [:landing_storage]
-  @materialized :view
-  @relation true
+  settings minimum_order_count: 1
+  meta owner: "analytics"
+  meta category: :sales
+  meta tags: [:mart, :daily]
+  depends MyApp.Lakehouse.Raw.Sales.Orders
+  resources [:landing_storage]
+  materialized :view
+  relation true
   query do
     ~SQL"""
     select
@@ -194,6 +234,7 @@ defmodule MyApp.Lakehouse.Mart.Sales.OrderSummary do
       count(*) as order_count
     from raw.sales.orders
     group by order_date
+    having count(*) >= @minimum_order_count
     """
   end
 end
@@ -202,8 +243,8 @@ end
 Rules:
 
 - Use exactly one `query` declaration.
-- Add exactly one `@materialized` attribute.
-- Put optional `@resources [...]` before `query`; names select trusted native
+- Add exactly one `materialized` declaration.
+- Put optional `resources [...]` before `query`; names select trusted native
   physical-session SQL files and are stored in the manifest.
 - Do not define `asset/1`; `Favn.SQLAsset` generates runtime work.
 - Inline SQL must use `~SQL`.
@@ -219,14 +260,21 @@ end
 query file: "order_summary.sql"
 ```
 
+Referenced scalar SQL settings automatically become bound parameters. A name
+cannot exist in both `settings` and `ctx.params`; Favn reports the collision
+instead of choosing hidden precedence. Settings cannot supply relation or
+identifier placeholders such as `from @source`. Secrets are never automatic
+SQL variables; expose a narrowly derived scalar through `runtime_inputs` when a
+query genuinely needs one.
+
 Materialization values:
 
 | Value | Meaning |
 | --- | --- |
 | `:table` | Write a table. |
 | `:view` | Create a view. |
-| `{:incremental, strategy: :append}` | Append new rows. Requires `@window`. |
-| `{:incremental, strategy: :delete_insert, window_column: :order_date}` | Replace one window by deleting and inserting. Requires `@window`. |
+| `{:incremental, strategy: :append}` | Append new rows. Requires `window`. |
+| `{:incremental, strategy: :delete_insert, window_column: :order_date}` | Replace one window by deleting and inserting. Requires `window`. |
 
 Unsupported incremental options include `:merge`, `:replace`, and `unique_key`.
 
@@ -330,10 +378,10 @@ end
 Attach it exactly once before `query`:
 
 ```elixir
-@runtime_inputs MyApp.Source.Orders.Inputs
+runtime_inputs MyApp.Source.Orders.Inputs
 ```
 
-This module attribute is the only supported DSL form. Do not use an anonymous
+This declaration macro is the only supported DSL form. Do not use an anonymous
 function, capture, MFA tuple, or inline resolver block. Returned values remain
 ordinary bound parameters; they cannot add SQL source or identifiers. Keep
 credentials in runtime configuration, mark sensitive bind names with
@@ -363,7 +411,7 @@ defmodule MyApp.SQL.Calendar do
 end
 ```
 
-Keep runnable asset settings such as `@materialized`, `@window`, and `@relation`
+Keep runnable asset settings such as `materialized`, `window`, and `relation`
 on `Favn.SQLAsset` modules.
 
 Read [DuckDB Session Scripts And Resources](duckdb-session-scripts.md) for
@@ -379,27 +427,27 @@ Use `Favn.MultiAsset` when many similar assets share one runtime function.
 defmodule MyApp.Lakehouse.Raw.Sales.Shopify do
   use Favn.MultiAsset
 
-  defaults do
-    meta owner: "data-platform", category: :shopify, tags: [:raw]
+  settings method: "GET"
+  settings request: %{primary_key: "id"}
+  meta owner: "data-platform"
+  meta category: :shopify, tags: [:raw]
+  relation true
+  freshness :daily
 
-    rest do
-      primary_key "id"
-      paginator :cursor, cursor_path: "links.next"
-    end
-  end
-
-  @doc "Extract Shopify orders."
-  @relation true
-  @freshness :daily
   asset :orders do
-    rest do
-      path "/orders.json"
-      data_path "orders"
-    end
+    description "Extract Shopify orders."
+    settings path: "/orders.json", data_path: "orders"
   end
 
+  asset :customers do
+    description "Extract Shopify customers."
+    settings path: "/customers.json", data_path: "customers"
+    freshness :always
+  end
+
+  @doc "Execute one Shopify extraction."
   def asset(ctx) do
-    MyApp.Shopify.Client.extract(ctx.asset.config, ctx)
+    MyApp.Shopify.Client.extract(ctx.asset.settings, ctx)
   end
 end
 ```
@@ -409,28 +457,17 @@ Rules:
 - Define exactly one public `asset(ctx)` function.
 - Define at least one `asset :name do ... end` block.
 - Each generated asset is referenced as `{Module, :name}`.
+- Put all shared declarations before the first child.
+- Shared `settings` and `meta` are shallow-merged with child declarations.
+- Shared dependencies are combined with child dependencies.
+- A child scalar such as `freshness`, `window`, `retry`, `execution_pool`, or
+  `relation` overrides the shared value; explicit `nil` clears it.
+- Nested settings maps replace as one top-level value rather than deep-merging.
 - Module-level runtime config applies to every generated asset.
+- Use `description` inside children and reserve `@doc` for the shared real
+  `asset/1` function.
 
-Supported `defaults` clauses:
-
-- `meta owner: ..., category: ..., tags: ...`
-- `window Favn.Window.daily(...)`
-- `rest do ... end`
-
-Supported `rest` entries:
-
-| Entry | Meaning |
-| --- | --- |
-| `path "/path"` | Source path or endpoint. |
-| `data_path "items"` | Path to data inside a response. |
-| `params %{...}` | Static request/query params. |
-| `primary_key "id"` | Source primary key. |
-| `paginator kind, opts` | Pagination config. |
-| `incremental opts` | Incremental extraction config. Defaults to cursor style. |
-| `method :get` | Request method. |
-| `extra %{...}` | Adapter/project-specific extra data. |
-
-Inside `Favn.MultiAsset`, `@depends :other_asset` references another generated
+Inside `Favn.MultiAsset`, `depends :other_asset` references another generated
 asset in the same module. Use `{OtherModule, :asset_name}` for another module.
 
 ## Pipelines
@@ -467,8 +504,8 @@ Pipeline clauses:
 | `select do ... end` | Select by asset, module prefix, tag, or category. |
 | `deps :all` | Include upstream dependencies. |
 | `deps :none` | Run only selected targets. |
-| `config %{...}` | Static pipeline config. |
-| `meta %{...}` | Metadata for operators and tooling. |
+| `settings %{...}` | Non-secret static values at `ctx.pipeline.settings`. |
+| `meta %{...}` | Descriptive metadata for operators and tooling; keys normalize to strings. |
 | `schedule ...` | Inline or named schedule. |
 | `window ...` | Runtime window policy. |
 | `max_concurrency N` | Limit parallel asset steps in one run. |
@@ -485,6 +522,10 @@ select do
   category :sales
 end
 ```
+
+Pipeline metadata is JSON-like descriptive data, not runtime configuration.
+Repeated `meta` declarations shallow-merge, and their keys normalize to strings
+so the values remain identical after manifest and run-snapshot persistence.
 
 ## Schedules
 
@@ -515,7 +556,7 @@ schedule {MyApp.Schedules, :daily}
 Use asset windows when work should run for a time range.
 
 ```elixir
-@window Favn.Window.daily(lookback: 1, timezone: "Europe/Oslo")
+window Favn.Window.daily(lookback: 1, timezone: "Europe/Oslo")
 ```
 
 Asset window constructors:
@@ -555,11 +596,11 @@ Pipeline window options:
 Freshness tells Favn when work may be skipped because output is already current.
 
 ```elixir
-@freshness :daily
-@freshness {:daily, timezone: "Europe/Oslo"}
-@freshness [max_age: {:hours, 6}]
-@freshness [window_success: true]
-@freshness :always
+freshness :daily
+freshness {:daily, timezone: "Europe/Oslo"}
+freshness [max_age: {:hours, 6}]
+freshness [window_success: true]
+freshness :always
 ```
 
 Notes:
@@ -576,44 +617,25 @@ should not execute.
 
 ```elixir
 defmodule MyApp.Lakehouse.Raw.Payments.StripeCharges do
+  @moduledoc "External raw Stripe charges table."
+
   use Favn.Namespace,
     relation: [connection: :important_lakehouse, catalog: "raw", schema: "payments"]
 
   use Favn.Source
 
-  @doc "External raw Stripe charges table."
-  @meta owner: "data-platform", category: :payments, tags: [:raw]
-  @relation [name: "stripe_charges"]
+  meta owner: "data-platform"
+  meta category: :payments
+  meta tags: [:raw]
+  relation [name: "stripe_charges"]
 end
 ```
 
 Rules:
 
 - Define no functions.
-- Declare exactly one `@relation`.
-- Use optional `@doc` and `@meta` for operator context.
-
-## Compact Asset Modules
-
-`Favn.Assets` is still supported, but new projects should usually prefer one
-module per asset with `Favn.Asset` or `Favn.SQLAsset`.
-
-```elixir
-defmodule MyApp.SalesETL do
-  use Favn.Assets
-
-  @asset true
-  @doc "Extract raw orders."
-  def extract_orders(_ctx), do: :ok
-
-  @asset true
-  @doc "Build daily sales."
-  @depends :extract_orders
-  def daily_sales(_ctx), do: :ok
-end
-```
-
-Each `@asset` function compiles to `{Module, :function_name}`.
+- Declare exactly one `relation`.
+- Use `@moduledoc` for the source description and `meta` for operator context.
 
 ## Next Steps
 

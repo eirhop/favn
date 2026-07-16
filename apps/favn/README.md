@@ -61,8 +61,11 @@ defmodule MyApp.Assets.CustomerSnapshot do
   use Favn.Asset
 
   @doc "Build the customer snapshot."
-  @meta owner: "analytics", tags: [:daily]
-  def asset(_ctx) do
+  settings source: "customers"
+  meta owner: "analytics"
+  meta tags: [:daily]
+  def asset(ctx) do
+    _source = ctx.asset.settings.source
     {:ok, %{rows_written: 0}}
   end
 end
@@ -77,9 +80,16 @@ defmodule MyApp.Pipelines.DailyCustomers do
   pipeline :daily_customers do
     asset MyApp.Assets.CustomerSnapshot
     deps :all
+    settings requested_by: "scheduler"
   end
 end
 ```
+
+Static non-secret values use `settings`: assets read
+`ctx.asset.settings`, pipelines read `ctx.pipeline.settings`, and referenced
+scalar SQLAsset settings become bound `@name` parameters. Submitted values stay
+in `ctx.params`; environment-dependent values and secrets use `runtime_config`
+and are resolved into `ctx.runtime_config`.
 
 Most users should let `mix favn.dev` and `mix favn.run` handle the runtime flow.
 Manifest functions are available for tooling and debugging, but they are not the

@@ -3128,7 +3128,7 @@ defmodule FavnOrchestrator.API.RouterTest do
           window: Policy.new!(:day),
           source: :dsl,
           outputs: [:asset],
-          config: %{},
+          settings: %{},
           metadata: %{}
         }
       ]

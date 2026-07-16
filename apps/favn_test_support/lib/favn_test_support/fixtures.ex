@@ -79,8 +79,7 @@ defmodule FavnTestSupport.Fixtures do
         :ok
 
       :unloaded ->
-        _ = Code.compile_file(fixture_path!(name))
-        :ok
+        compile_fixture_file!(name)
 
       :partial ->
         raise "fixture #{inspect(name)} is partially loaded; expected all modules loaded or none"
@@ -115,6 +114,26 @@ defmodule FavnTestSupport.Fixtures do
 
   defp module_loaded?(module) do
     match?({:file, _path}, :code.is_loaded(module))
+  end
+
+  defp compile_fixture_file!(name) do
+    case Kernel.ParallelCompiler.compile([fixture_path!(name)], return_diagnostics: true) do
+      {:ok, _modules, warnings} ->
+        print_diagnostics(warnings)
+        :ok
+
+      {:error, errors, warnings} ->
+        print_diagnostics(warnings)
+        Enum.each(errors, &Code.print_diagnostic/1)
+        raise "fixture #{inspect(name)} failed to compile"
+    end
+  end
+
+  defp print_diagnostics(%{
+         runtime_warnings: runtime_warnings,
+         compile_warnings: compile_warnings
+       }) do
+    Enum.each(compile_warnings ++ runtime_warnings, &Code.print_diagnostic/1)
   end
 
   defp fetch_fixture!(name) do

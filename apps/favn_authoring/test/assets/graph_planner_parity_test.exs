@@ -14,7 +14,7 @@ defmodule FavnAuthoring.Assets.GraphPlannerParityTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
     use Favn.Asset
 
-    @relation [name: "orders"]
+    relation(name: "orders")
     def asset(_ctx), do: :ok
   end
 
@@ -22,7 +22,7 @@ defmodule FavnAuthoring.Assets.GraphPlannerParityTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
     use Favn.Asset
 
-    @relation [name: "customers"]
+    relation(name: "customers")
     def asset(_ctx), do: :ok
   end
 
@@ -30,7 +30,8 @@ defmodule FavnAuthoring.Assets.GraphPlannerParityTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "commerce"]
     use Favn.SQLAsset
 
-    @materialized :view
+    materialized(:view)
+
     query do
       ~SQL"""
       select o.id, c.id as customer_id
@@ -131,16 +132,18 @@ defmodule FavnAuthoring.Assets.GraphPlannerParityTest do
     Code.compile_string(
       """
       defmodule #{inspect(module_name)} do
-        use Favn.Assets
+        use Favn.MultiAsset
 
-        @asset true
-        @window Favn.Window.daily()
-        def source(_ctx), do: :ok
+        asset :source do
+          window Favn.Window.daily()
+        end
 
-        @asset true
-        @window Favn.Window.daily()
-        @depends :source
-        def target(_ctx), do: :ok
+        asset :target do
+          window Favn.Window.daily()
+          depends :source
+        end
+
+        def asset(_ctx), do: :ok
       end
       """,
       "test/assets/graph_planner_parity_test.exs"
@@ -176,11 +179,13 @@ defmodule FavnAuthoring.Assets.GraphPlannerParityTest do
     Code.compile_string(
       """
       defmodule #{inspect(module_name)} do
-        use Favn.Assets
+        use Favn.MultiAsset
 
-        @asset true
-        @window Favn.Window.daily(timezone: "Europe/Oslo")
-        def target(_ctx), do: :ok
+        asset :target do
+          window Favn.Window.daily(timezone: "Europe/Oslo")
+        end
+
+        def asset(_ctx), do: :ok
       end
       """,
       "test/assets/graph_planner_parity_test.exs"

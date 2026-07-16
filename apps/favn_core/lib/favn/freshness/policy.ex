@@ -4,8 +4,8 @@ defmodule Favn.Freshness.Policy do
 
   Freshness policies describe how runtime layers decide whether a previous asset
   success is fresh enough to satisfy a run. Authors normally provide these values
-  through `@freshness` in `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, or
-  `Favn.Assets`. The compiler stores the normalized policy in the manifest.
+  through `freshness` in `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, or
+  `Favn.MultiAsset`. The compiler stores the normalized policy in the manifest.
 
   Supported policy modes are:
 

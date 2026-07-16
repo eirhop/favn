@@ -8,7 +8,7 @@ defmodule Favn.ExecutionPoolDSLTest do
     defmodule #{inspect(module)} do
       use Favn.Asset
 
-      @execution_pool :github_api
+      execution_pool :github_api
       def asset(_ctx), do: :ok
     end
     """)
@@ -23,11 +23,9 @@ defmodule Favn.ExecutionPoolDSLTest do
     defmodule #{inspect(module)} do
       use Favn.MultiAsset
 
-      @execution_pool :shopify_api
+      execution_pool :shopify_api
       asset :orders do
-        rest do
-          path "/orders.json"
-        end
+        settings path: "/orders.json"
       end
 
       def asset(_ctx), do: :ok
@@ -40,12 +38,12 @@ defmodule Favn.ExecutionPoolDSLTest do
   test "invalid asset execution pool raises a compile error" do
     module = unique_module("Invalid")
 
-    assert_raise CompileError, ~r/invalid @execution_pool value/, fn ->
+    assert_raise CompileError, ~r/invalid execution_pool value/, fn ->
       compile_module!(module, """
       defmodule #{inspect(module)} do
         use Favn.Asset
 
-        @execution_pool "github_api"
+        execution_pool "github_api"
         def asset(_ctx), do: :ok
       end
       """)

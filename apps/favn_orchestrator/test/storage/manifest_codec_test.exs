@@ -79,8 +79,8 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
       )
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: [
         %Asset{
           ref: ref,

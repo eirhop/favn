@@ -50,6 +50,24 @@ Typical run states are:
 Inspect runs through public commands such as `mix favn.runs`, `mix favn.logs`,
 and `mix favn.diagnostics`.
 
+## Asset Runtime Context
+
+Asset code and SQL runtime-input resolvers receive a typed `Favn.Run.Context`.
+Each kind of value has one path:
+
+| Value | Path |
+| --- | --- |
+| Current manifest asset ref, relation, and static settings | `ctx.asset` |
+| Non-secret asset settings | `ctx.asset.settings` |
+| Non-secret pipeline settings | `ctx.pipeline.settings` |
+| Submitted per-run values | `ctx.params` |
+| Resolved environment-dependent values and secrets | `ctx.runtime_config` |
+| Runtime window and absolute deadline | `ctx.window`, `ctx.deadline_at` |
+
+There is no generic `ctx.config` or `ctx.current_ref`. Use `ctx.asset.ref` for
+the current ref. Metadata is descriptive manifest/operator data and does not
+act as an arbitrary runtime settings channel.
+
 ## Runner-Local Services
 
 The consumer application's normal supervision tree may not be running in an

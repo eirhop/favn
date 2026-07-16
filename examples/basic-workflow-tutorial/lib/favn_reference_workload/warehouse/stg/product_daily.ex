@@ -16,9 +16,9 @@ defmodule FavnReferenceWorkload.Warehouse.Stg.ProductDaily do
   use Favn.Namespace
   use Favn.SQLAsset
 
-  @meta owner: "reference-workload", category: :products, tags: [:stg, :daily]
-  @materialized :table
-  @relation true
+  meta owner: "reference-workload", category: :products, tags: [:stg, :daily]
+  materialized :table
+  relation true
 
   query do
     ~SQL"""

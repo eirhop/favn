@@ -85,12 +85,12 @@ entrypoints, but their production artifact behavior is still being hardened and
 should follow `docs/production/single_node_contract.md` before being described as
 fully production-stable.
 
-## Compatibility-Only Authoring APIs
+## Authoring APIs
 
-`Favn.Assets` remains supported for existing compact multi-asset modules, but it
-is not the preferred new-project authoring path. New code should prefer
-`Favn.Asset` for single assets and `Favn.MultiAsset` when generated or repetitive
-multi-asset structure is clearer.
+Use `Favn.Asset`, `Favn.MultiAsset`, `Favn.SQLAsset`, or `Favn.Source`.
+Non-secret static values use the common `settings` declaration and custom DSL
+declarations do not use `@`. The former `Favn.Assets` compatibility DSL is
+removed before v1.
 
 ## Runtime-Dependent Helpers
 

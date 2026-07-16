@@ -66,7 +66,7 @@ config :favn, :runner_plugins, [
 
 - physical-session setup uses trusted native SQL files configured as
   `duckdb.startup` and named `duckdb.resources`; SQL assets select stable names
-  with `@resources`, while `duckdb.catalogs` contains only Favn resource and
+  with `resources [...]`, while `duckdb.catalogs` contains only Favn resource and
   write-admission metadata
 - the structured `load`, `settings`, `secrets`, `attach`, and `use` config forms
   are removed; see `apps/favn/guides/duckdb-session-scripts.md`

@@ -155,7 +155,7 @@ Expected result: the orchestrator creates new persisted run records linked to th
 source run or backfill group.
 
 `max_attempts` includes the first attempt and defaults to one. Operator
-`retry_policy` overrides asset `@retry`, which overrides pipeline `retry`.
+`retry_policy` overrides asset `retry`, which overrides pipeline `retry`.
 Policy changes timing/count only; an unknown write, transaction,
 materialization, or external side effect remains terminal. `mix favn.run`
 accepts `--retry-max-attempts` and fixed `--retry-backoff-ms`; the HTTP/operator

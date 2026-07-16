@@ -56,6 +56,12 @@ SQL asset materialization planning, runner production config validation,
 runner-owned inspection, or runner-side normalization into shared work/result,
 error, and cancellation contracts.
 
+`FavnRunner.ContextBuilder` constructs the typed `Favn.Run.Context`. Static
+values are exposed only as `ctx.asset.settings` and `ctx.pipeline.settings`,
+submitted values as `ctx.params`, and resolved environment values/secrets as
+`ctx.runtime_config`. `RunnerWork` carries the typed pipeline context and
+absolute deadline explicitly rather than duplicating them inside metadata.
+
 Consumer and integration packages implement `Favn.Runner.Plugin` from
 `favn_core`; they never depend on this internal app merely to extend the runner
 lifecycle. The root uses `:rest_for_one` ordering with the extension supervisor

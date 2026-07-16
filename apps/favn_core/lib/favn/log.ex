@@ -41,7 +41,7 @@ defmodule Favn.Log do
   defp build(level, %Context{} = context, message, metadata) do
     Entry.normalize(%{
       run_id: context.run_id,
-      asset_ref: context.current_ref,
+      asset_ref: context.asset.ref,
       attempt: context.attempt,
       occurred_at: DateTime.utc_now(),
       level: level,

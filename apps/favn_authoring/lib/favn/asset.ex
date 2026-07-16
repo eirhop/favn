@@ -37,11 +37,13 @@ defmodule Favn.Asset do
         use Favn.Asset
 
         @doc "Fetch, normalize, and write raw commerce orders."
-        @meta owner: "data-platform", category: :sales, tags: [:raw]
-        @depends MyApp.Lakehouse.Raw.Sales.Customers
-        @window Favn.Window.daily()
-        @freshness :daily
-        @relation true
+        meta owner: "data-platform"
+        meta category: :sales
+        meta tags: [:raw]
+        depends MyApp.Lakehouse.Raw.Sales.Customers
+        window Favn.Window.daily()
+        freshness :daily
+        relation true
         def asset(ctx) do
           _asset = ctx.asset
           _window = ctx.window
@@ -52,35 +54,56 @@ defmodule Favn.Asset do
   ## Contract
 
   - define exactly one public `asset/1`
-  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, `@retry`, `@execution_pool`, and `@relation` directly above `def asset(ctx)`
-  - repeat `@depends` for multiple upstream dependencies
-  - use module shorthand in `@depends` for another single-asset module
+  - use `@doc` for the real `asset/1` function
+  - declare `settings`, `meta`, `depends`, `window`, `freshness`, `retry`,
+    `execution_pool`, `relation`, and `runtime_config` before `asset/1`
+  - repeat `depends` for multiple upstream dependencies
+  - repeat `settings` or `meta` to shallow-merge declarations from left to right
+  - use module shorthand in `depends` for another single-asset module
 
-  ## Attributes
+  ## Declarations
 
   - `@doc`: asset documentation shown in compiled docs and metadata
-  - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`;
+  - `settings`: non-secret, JSON-like static values compiled into the manifest
+  - `meta`: keyword or map metadata such as `owner`, `category`, and `tags`;
     category and tag labels may be atoms or strings and normalize to manifest
     strings
-  - `@depends`: repeatable dependency declaration
-  - `@window`: one `Favn.Window.*` spec
-  - `@freshness`: optional asset freshness policy
-  - `@retry`: optional node-attempt retry policy overriding the pipeline default
-  - `@execution_pool`: optional orchestrator admission pool
-  - `@relation`: optional owned relation declaration
+  - `depends`: repeatable dependency declaration
+  - `window`: one `Favn.Window.*` spec
+  - `freshness`: optional asset freshness policy
+  - `retry`: optional node-attempt retry policy overriding the pipeline default
+  - `execution_pool`: optional orchestrator admission pool
+  - `relation`: optional owned relation declaration
+
+  Top-level settings keys remain atoms for ergonomic runtime access. Nested maps
+  are JSON-shaped and therefore use string keys. Later declarations replace an
+  earlier value at the same top-level key, including with `nil`:
+
+      settings source: "orders"
+      settings request: %{path: "/v1/orders", timeout_ms: 5_000}
+
+      def asset(ctx) do
+        source = ctx.asset.settings.source
+        path = ctx.asset.settings.request["path"]
+        MyApp.Client.fetch(source, path)
+      end
+
+  Put secrets, environment-dependent values, and deployment configuration in
+  `runtime_config`, not `settings`. They are resolved separately into
+  `ctx.runtime_config` and are never persisted as resolved manifest values.
 
   ## Retry policy
 
-  Attach at most one `@retry` directly above `asset/1`. `max_attempts` includes
+  Attach at most one `retry` directly above `asset/1`. `max_attempts` includes
   the initial attempt and defaults to one. Fixed and bounded exponential
   backoff use the same `%Favn.Retry.Policy{}` contract as pipelines and SQL
   assets:
 
-      @retry max_attempts: 4,
+      retry max_attempts: 4,
              backoff: {:exponential, initial: 5_000, max: 120_000, jitter: 0.2}
       def asset(ctx), do: fetch_orders(ctx)
 
-  An explicit operator override takes precedence over `@retry`; `@retry` takes
+  An explicit operator override takes precedence over `retry`; `retry` takes
   precedence over the pipeline `retry` default. Policy controls attempt count
   and timing only. Favn repeats a node only for an explicitly retryable,
   known-safe failure. Custom Elixir side effects are not rolled back, and an
@@ -92,11 +115,11 @@ defmodule Favn.Asset do
 
   ## Execution Pool
 
-  Use `@execution_pool` when the asset body talks to a rate-limited API, source
+  Use `execution_pool` when the asset body talks to a rate-limited API, source
   database, SFTP server, memory-heavy transform, or another shared resource that
   should be admitted by the orchestrator before code starts running.
 
-      @execution_pool :github_api
+      execution_pool :github_api
       def asset(ctx), do: fetch_from_github(ctx)
 
   Asset-level pools override any pipeline-level default `execution_pool`. The
@@ -106,8 +129,8 @@ defmodule Favn.Asset do
 
   ## Freshness
 
-  Use `@freshness` when a previous successful asset result can satisfy future
-  runs without executing the asset again. Attach at most one `@freshness` directly
+  Use `freshness` when a previous successful asset result can satisfy future
+  runs without executing the asset again. Attach at most one `freshness` directly
   above `def asset(ctx)`.
 
   Supported V1 values are:
@@ -122,8 +145,8 @@ defmodule Favn.Asset do
   is declared. Non-windowed assets have no implicit freshness. `:always` is the
   explicit opt-out from that window default.
 
-      @window Favn.Window.daily()
-      @freshness {:daily, timezone: "Europe/Oslo"}
+      window Favn.Window.daily()
+      freshness {:daily, timezone: "Europe/Oslo"}
       def asset(ctx), do: build_daily(ctx)
 
   At runtime, the orchestrator records successful freshness state and can skip
@@ -153,8 +176,8 @@ defmodule Favn.Asset do
         token: secret_env!("SOURCE_SYSTEM_TOKEN")
 
       def asset(ctx) do
-        segment_id = ctx.config.source_system.segment_id
-        token = ctx.config.source_system.token
+        segment_id = ctx.runtime_config.source_system.segment_id
+        token = ctx.runtime_config.source_system.token
 
         MyApp.Client.fetch_orders(segment_id, token)
         :ok
@@ -183,10 +206,10 @@ defmodule Favn.Asset do
           segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
           token: secret_env!("SOURCE_SYSTEM_TOKEN")
 
-        @relation true
+        relation true
         def asset(ctx) do
           relation = ctx.asset.relation
-          runtime_config = ctx.config.source_system
+          runtime_config = ctx.runtime_config.source_system
 
           with {:ok, rows} <- SourceClient.fetch_all(runtime_config),
                :ok <- RawLanding.replace_rows(relation, rows) do
@@ -207,7 +230,7 @@ defmodule Favn.Asset do
 
   Important rules for this pattern:
 
-  - read source IDs and tokens from `ctx.config`, not `System.get_env/1`
+  - read source IDs and tokens from `ctx.runtime_config`, not `System.get_env/1`
   - pass only the narrow source config to source clients, not the full `ctx`
   - write raw rows through `Favn.SQLClient` in your landing helper
   - return structured metadata that run inspection can display
@@ -215,12 +238,12 @@ defmodule Favn.Asset do
 
   See `examples/basic-workflow-tutorial` for the canonical working example.
 
-  `@depends` supports:
+  `depends` supports:
 
   - `Other.SingleAssetModule`
   - `{Other.MultiAssetModule, :asset_name}`
 
-  `@relation` supports:
+  `relation` supports:
 
   - `true` to infer from module name plus namespace defaults
   - keyword or map relation overrides such as `connection`, `catalog`, and `schema`
@@ -241,18 +264,18 @@ defmodule Favn.Asset do
   `ctx` is a `Favn.Run.Context`. In practice, authors most often read:
 
   - `ctx.asset` for canonical asset metadata
-  - `ctx.asset.config` for compiled config when present
-  - `ctx.config` for resolved runtime config declared with `runtime_config/1,2`
+  - `ctx.asset.settings` for compiled non-secret settings
+  - `ctx.runtime_config` for resolved runtime config declared with `runtime_config/1,2`
   - `ctx.asset.relation` for owned relation identity
   - `ctx.window` for resolved runtime windows on windowed assets
 
   ## Common Mistakes
 
   - defining more than one `asset/1`
-  - attaching DSL attributes to another function
-  - using an invalid `@depends` shape
-  - declaring multiple `@window` or `@relation` attributes
-  - declaring multiple `@freshness` attributes
+  - placing declarations after `asset/1`
+  - using an invalid `depends` shape
+  - declaring multiple `window` or `relation` attributes
+  - declaring multiple `freshness` attributes
 
   ## See also
 
@@ -266,6 +289,7 @@ defmodule Favn.Asset do
   alias Favn.Asset.Dependency
   alias Favn.Asset.RelationInput
   alias Favn.Diagnostic
+  alias Favn.DSL.AssetDeclarations
   alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Freshness.Policy, as: FreshnessPolicy
   alias Favn.Manifest.Labels
@@ -280,18 +304,19 @@ defmodule Favn.Asset do
   @doc false
   defmacro __using__(_opts) do
     quote do
-      Module.register_attribute(__MODULE__, :depends, accumulate: true)
-      Module.register_attribute(__MODULE__, :freshness, accumulate: true)
-      Module.register_attribute(__MODULE__, :retry, accumulate: true)
-      Module.register_attribute(__MODULE__, :execution_pool, persist: false)
-      Module.register_attribute(__MODULE__, :meta, persist: false)
-      Module.register_attribute(__MODULE__, :relation, accumulate: true)
-      Module.register_attribute(__MODULE__, :runtime_config, accumulate: true)
-      Module.register_attribute(__MODULE__, :window, accumulate: true)
+      Favn.DSL.AssetDeclarations.register!(__MODULE__)
       Module.register_attribute(__MODULE__, :favn_single_asset_raw, persist: false)
 
-      import Favn.Asset,
+      import Favn.DSL.AssetDeclarations,
         only: [
+          settings: 1,
+          meta: 1,
+          depends: 1,
+          window: 1,
+          freshness: 1,
+          retry: 1,
+          execution_pool: 1,
+          relation: 1,
           runtime_config: 1,
           runtime_config: 2,
           env!: 1,
@@ -305,71 +330,9 @@ defmodule Favn.Asset do
     end
   end
 
-  @doc """
-  Declares runtime configuration required by this asset.
-
-  Values are resolved by the runner at execution time and exposed through
-  `ctx.config`. Runtime values are not embedded in the manifest.
-  """
-  defmacro runtime_config(bundle) do
-    quote bind_quoted: [bundle: bundle] do
-      Module.put_attribute(
-        __MODULE__,
-        :runtime_config,
-        Favn.RuntimeConfig.Bundle.validate!(bundle)
-      )
-    end
-  end
-
-  @doc """
-  Declares inline runtime configuration fields under one `ctx.config` scope.
-  """
-  defmacro runtime_config(scope, fields) do
-    caller = __CALLER__
-
-    quote bind_quoted: [
-            scope: scope,
-            fields: fields,
-            module: caller.module,
-            file: caller.file,
-            line: caller.line
-          ] do
-      Module.put_attribute(
-        __MODULE__,
-        :runtime_config,
-        Favn.RuntimeConfig.Bundle.inline!(scope, fields,
-          module: module,
-          file: file,
-          line: line
-        )
-      )
-    end
-  end
-
-  @doc """
-  Declares an environment variable runtime config value.
-
-  Use `required?: false` for an optional value.
-  """
-  defmacro env!(key, opts \\ []) do
-    quote do
-      Favn.RuntimeConfig.Ref.env!(unquote(key), unquote(opts))
-    end
-  end
-
-  @doc """
-  Declares a secret environment variable runtime config value.
-
-  Use `required?: false` for an optional secret.
-  """
-  defmacro secret_env!(key, opts \\ []) do
-    quote do
-      Favn.RuntimeConfig.Ref.secret_env!(unquote(key), unquote(opts))
-    end
-  end
-
   @doc false
   def __on_definition__(env, kind, name, args, _guards, _body) do
+    AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
     arity = length(args || [])
 
     case {kind, name, arity} do
@@ -410,24 +373,30 @@ defmodule Favn.Asset do
       )
     end
 
-    case {
-      Module.get_attribute(env.module, :depends) || [],
-      Module.get_attribute(env.module, :meta),
-      Module.get_attribute(env.module, :freshness) || [],
-      Module.get_attribute(env.module, :retry) || [],
-      Module.get_attribute(env.module, :execution_pool),
-      Module.get_attribute(env.module, :runtime_config) || [],
-      Module.get_attribute(env.module, :window) || [],
-      Module.get_attribute(env.module, :relation) || []
-    } do
-      {[], nil, [], [], nil, [], [], []} ->
+    AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
+
+    case Enum.flat_map(
+           [
+             :settings,
+             :meta,
+             :depends,
+             :freshness,
+             :retry,
+             :execution_pool,
+             :runtime_config,
+             :window,
+             :relation
+           ],
+           &AssetDeclarations.values(env.module, &1)
+         ) do
+      [] ->
         :ok
 
       _ ->
         DSLCompiler.compile_error!(
           env.file,
           env.line,
-          "@depends/@freshness/@retry/@execution_pool/@meta/@window/@relation and runtime_config/1,2 must be attached to def asset(ctx)"
+          "asset declarations must appear before def asset(ctx)"
         )
     end
 
@@ -453,14 +422,13 @@ defmodule Favn.Asset do
           ref: Ref.t(),
           arity: non_neg_integer(),
           type: :elixir | :sql | :source,
-          title: String.t() | nil,
           doc: String.t() | nil,
           file: String.t(),
           line: pos_integer(),
           meta: map(),
           depends_on: [Ref.t()],
           dependencies: [Dependency.t()],
-          config: map(),
+          settings: Favn.Settings.t(),
           window_spec: Spec.t() | nil,
           freshness: FreshnessPolicy.t() | nil,
           retry_policy: Favn.Retry.Policy.t() | nil,
@@ -484,7 +452,6 @@ defmodule Favn.Asset do
     :entrypoint,
     :ref,
     :arity,
-    :title,
     :doc,
     :file,
     :line,
@@ -492,7 +459,7 @@ defmodule Favn.Asset do
     meta: %{},
     depends_on: [],
     dependencies: [],
-    config: %{},
+    settings: %{},
     window_spec: nil,
     freshness: nil,
     retry_policy: nil,
@@ -521,7 +488,7 @@ defmodule Favn.Asset do
     meta = normalize_meta!(asset.meta)
     validate_depends_on!(asset.depends_on)
     validate_entrypoint!(asset.entrypoint)
-    validate_config!(asset.config)
+    settings = Favn.Settings.normalize!(asset.settings)
     validate_window_spec!(asset.window_spec)
     validate_freshness!(asset.freshness)
     validate_retry_policy!(asset.retry_policy)
@@ -532,11 +499,11 @@ defmodule Favn.Asset do
     validate_type!(asset.type)
     validate_materialization!(asset.materialization)
 
-    %{asset | meta: meta}
+    %{asset | meta: meta, settings: settings}
   end
 
   @doc """
-  Normalize and validate authored asset metadata (`@meta`).
+  Normalize and validate authored asset metadata (`meta`).
 
   This is for DSL/catalog metadata only and is separate from runtime success
   return metadata, which must be a map.
@@ -615,12 +582,6 @@ defmodule Favn.Asset do
   defp validate_entrypoint!(entrypoint) do
     raise ArgumentError,
           "asset entrypoint must be an atom or nil, got: #{inspect(entrypoint)}"
-  end
-
-  defp validate_config!(config) when is_map(config), do: :ok
-
-  defp validate_config!(config) do
-    raise ArgumentError, "asset config must be a map, got: #{inspect(config)}"
   end
 
   defp validate_runtime_config!(runtime_config) when is_map(runtime_config) do
@@ -709,12 +670,12 @@ defmodule Favn.Asset do
 
   def normalize_freshness!([_a, _b | _rest], _window_spec, attachment) do
     raise ArgumentError,
-          "multiple @freshness attributes are not allowed; use at most one @freshness #{attachment}"
+          "multiple freshness declarations are not allowed; use at most one freshness #{attachment}"
   end
 
   def normalize_freshness!(value, _window_spec, _attachment) do
     raise ArgumentError,
-          "invalid @freshness value #{inspect(value)}; expected a Favn.Freshness.Policy V1 value"
+          "invalid freshness value #{inspect(value)}; expected a Favn.Freshness.Policy V1 value"
   end
 
   defp validate_relation!(nil), do: :ok
@@ -749,24 +710,16 @@ defmodule Favn.Asset do
       )
     end
 
-    depends = env.module |> Module.get_attribute(:depends) |> Enum.reverse()
-    freshness = env.module |> Module.get_attribute(:freshness) |> Enum.reverse()
-    retry = env.module |> Module.get_attribute(:retry) |> Enum.reverse()
-    execution_pool = Module.get_attribute(env.module, :execution_pool)
-    meta = Module.get_attribute(env.module, :meta)
-    runtime_config = env.module |> Module.get_attribute(:runtime_config) |> Enum.reverse()
-    window = env.module |> Module.get_attribute(:window) |> Enum.reverse()
-    relation = env.module |> Module.get_attribute(:relation) |> Enum.reverse()
+    settings = AssetDeclarations.take(env.module, :settings)
+    depends = AssetDeclarations.take(env.module, :depends)
+    freshness = AssetDeclarations.take(env.module, :freshness)
+    retry = AssetDeclarations.take(env.module, :retry)
+    execution_pool = AssetDeclarations.take(env.module, :execution_pool)
+    meta = AssetDeclarations.take(env.module, :meta)
+    runtime_config = AssetDeclarations.take(env.module, :runtime_config)
+    window = AssetDeclarations.take(env.module, :window)
+    relation = AssetDeclarations.take(env.module, :relation)
     validate_relation_attr!(relation, env)
-
-    Module.delete_attribute(env.module, :depends)
-    Module.delete_attribute(env.module, :freshness)
-    Module.delete_attribute(env.module, :retry)
-    Module.delete_attribute(env.module, :execution_pool)
-    Module.delete_attribute(env.module, :meta)
-    Module.delete_attribute(env.module, :runtime_config)
-    Module.delete_attribute(env.module, :window)
-    Module.delete_attribute(env.module, :relation)
 
     Module.put_attribute(env.module, :favn_single_asset_raw, %{
       module: env.module,
@@ -775,6 +728,7 @@ defmodule Favn.Asset do
       doc: DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc)),
       file: DSLCompiler.normalize_file(env.file),
       line: env.line,
+      settings: settings,
       depends: depends,
       freshness: freshness,
       retry: retry,
@@ -788,6 +742,7 @@ defmodule Favn.Asset do
 
   defp build_single_asset!(raw_asset) do
     depends_on = normalize_single_asset_depends!(raw_asset.depends, raw_asset)
+    settings = normalize_single_asset_settings!(raw_asset.settings, raw_asset)
     meta = normalize_single_asset_meta!(raw_asset.meta, raw_asset)
     runtime_config = normalize_single_asset_runtime_config!(raw_asset.runtime_config, raw_asset)
     window_spec = normalize_single_asset_window!(raw_asset.window, raw_asset)
@@ -802,13 +757,12 @@ defmodule Favn.Asset do
       ref: Ref.new(raw_asset.module, :asset),
       arity: 1,
       type: :elixir,
-      title: nil,
       doc: raw_asset.doc,
       file: raw_asset.file,
       line: raw_asset.line,
       meta: meta,
       depends_on: depends_on,
-      config: %{},
+      settings: settings,
       runtime_config: runtime_config,
       window_spec: window_spec,
       freshness: freshness,
@@ -833,7 +787,7 @@ defmodule Favn.Asset do
           DSLCompiler.compile_error!(
             raw_asset.file,
             raw_asset.line,
-            "invalid @depends entry #{inspect(module)}; expected Module or {Module, :asset_name}"
+            "invalid depends entry #{inspect(module)}; expected Module or {Module, :asset_name}"
           )
         end
 
@@ -844,7 +798,7 @@ defmodule Favn.Asset do
           DSLCompiler.compile_error!(
             raw_asset.file,
             raw_asset.line,
-            "invalid @depends entry #{inspect({module, name})}; expected Module or {Module, :asset_name}"
+            "invalid depends entry #{inspect({module, name})}; expected Module or {Module, :asset_name}"
           )
         end
 
@@ -852,13 +806,20 @@ defmodule Favn.Asset do
         DSLCompiler.compile_error!(
           raw_asset.file,
           raw_asset.line,
-          "invalid @depends entry #{inspect(dependency)}; expected Module or {Module, :asset_name}"
+          "invalid depends entry #{inspect(dependency)}; expected Module or {Module, :asset_name}"
         )
     end)
   end
 
   defp normalize_single_asset_meta!(meta, raw_asset) do
-    normalize_meta!(meta)
+    Enum.reduce(meta, %{}, fn declaration, acc -> Map.merge(acc, normalize_meta!(declaration)) end)
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
+  end
+
+  defp normalize_single_asset_settings!(settings, raw_asset) do
+    Favn.Settings.merge_all!(settings)
   rescue
     error in ArgumentError ->
       DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
@@ -879,7 +840,7 @@ defmodule Favn.Asset do
     DSLCompiler.compile_error!(
       raw_asset.file,
       raw_asset.line,
-      "multiple @window attributes are not allowed; use at most one @window for def asset(ctx)"
+      "multiple window attributes are not allowed; use at most one window for def asset(ctx)"
     )
   end
 
@@ -887,7 +848,7 @@ defmodule Favn.Asset do
     DSLCompiler.compile_error!(
       raw_asset.file,
       raw_asset.line,
-      "invalid @window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
+      "invalid window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
     )
   end
 
@@ -905,7 +866,7 @@ defmodule Favn.Asset do
     DSLCompiler.compile_error!(
       raw_asset.file,
       raw_asset.line,
-      "multiple @retry attributes are not allowed; use at most one @retry for def asset(ctx)"
+      "multiple retry attributes are not allowed; use at most one retry for def asset(ctx)"
     )
   end
 
@@ -913,21 +874,31 @@ defmodule Favn.Asset do
     DSLCompiler.compile_error!(
       raw_asset.file,
       raw_asset.line,
-      "invalid @retry value #{inspect(value)}; expected a retry keyword list"
+      "invalid retry value #{inspect(value)}; expected a retry keyword list"
     )
   rescue
     error in ArgumentError ->
       DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
   end
 
-  defp normalize_execution_pool!(nil, _raw_asset), do: nil
-  defp normalize_execution_pool!(value, _raw_asset) when is_atom(value), do: value
+  defp normalize_execution_pool!([], _raw_asset), do: nil
+
+  defp normalize_execution_pool!([value], _raw_asset) when is_atom(value) and not is_nil(value),
+    do: value
+
+  defp normalize_execution_pool!([_first, _second | _rest], raw_asset) do
+    DSLCompiler.compile_error!(
+      raw_asset.file,
+      raw_asset.line,
+      "multiple execution_pool declarations are not allowed"
+    )
+  end
 
   defp normalize_execution_pool!(value, raw_asset) do
     DSLCompiler.compile_error!(
       raw_asset.file,
       raw_asset.line,
-      "invalid @execution_pool value #{inspect(value)}; expected a non-nil atom"
+      "invalid execution_pool value #{inspect(value)}; expected a non-nil atom"
     )
   end
 
@@ -942,7 +913,7 @@ defmodule Favn.Asset do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "invalid @relation value #{inspect(relation)}; expected true, a keyword list, or a map"
+        "invalid relation value #{inspect(relation)}; expected true, a keyword list, or a map"
       )
     end
   end
@@ -951,34 +922,32 @@ defmodule Favn.Asset do
     DSLCompiler.compile_error!(
       env.file,
       env.line,
-      "multiple @relation attributes are not allowed; use at most one @relation for def asset(ctx)"
+      "multiple relation attributes are not allowed; use at most one relation for def asset(ctx)"
     )
   end
 
   defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
-    depends = Module.get_attribute(env.module, :depends)
-    freshness = Module.get_attribute(env.module, :freshness) || []
-    retry = Module.get_attribute(env.module, :retry) || []
-    execution_pool = Module.get_attribute(env.module, :execution_pool)
-    meta = Module.get_attribute(env.module, :meta)
-    window = Module.get_attribute(env.module, :window)
-    relation = Module.get_attribute(env.module, :relation)
+    declarations =
+      Enum.flat_map(
+        [
+          :settings,
+          :meta,
+          :depends,
+          :freshness,
+          :retry,
+          :execution_pool,
+          :runtime_config,
+          :window,
+          :relation
+        ],
+        &AssetDeclarations.values(env.module, &1)
+      )
 
-    if depends != [] or freshness != [] or retry != [] or not is_nil(execution_pool) or
-         not is_nil(meta) or
-         window != [] or relation != [] do
-      Module.delete_attribute(env.module, :depends)
-      Module.delete_attribute(env.module, :freshness)
-      Module.delete_attribute(env.module, :retry)
-      Module.delete_attribute(env.module, :execution_pool)
-      Module.delete_attribute(env.module, :meta)
-      Module.delete_attribute(env.module, :window)
-      Module.delete_attribute(env.module, :relation)
-
+    if declarations != [] do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "@depends/@freshness/@retry/@execution_pool/@meta/@window/@relation on #{kind} #{name}/#{arity} requires def asset(ctx) immediately below those attributes"
+        "asset declarations before #{kind} #{name}/#{arity} require def asset(ctx) immediately below them"
       )
     else
       :ok

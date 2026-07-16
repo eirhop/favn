@@ -11,7 +11,7 @@ defmodule Favn.SQLCheckDSLTest do
     use Favn.SQL
 
     defsql candidate_rows(relation) do
-      ~SQL"select * from @relation"
+      ~SQL"select * from relation"
     end
 
     defsql existing_target(value) do
@@ -27,7 +27,7 @@ defmodule Favn.SQLCheckDSLTest do
 
     use Favn.SQLAsset
 
-    @materialized :table
+    materialized(:table)
 
     check :candidate_has_rows,
       at: :before_materialize,
@@ -54,7 +54,7 @@ defmodule Favn.SQLCheckDSLTest do
     use CheckSQL
     use Favn.SQLAsset
 
-    @materialized :table
+    materialized(:table)
 
     check :nested_candidate_has_rows,
       at: :before_materialize,
@@ -73,7 +73,7 @@ defmodule Favn.SQLCheckDSLTest do
 
     use Favn.SQLAsset
 
-    @materialized :table
+    materialized(:table)
 
     contract do
       grain(by: [:record_id], description: "one normalized record")
@@ -355,7 +355,7 @@ defmodule Favn.SQLCheckDSLTest do
         use Favn.Namespace, relation: [connection: :warehouse, schema: "test"]
         use Favn.SQLAsset
 
-        @materialized #{inspect(materialization)}
+        materialized #{inspect(materialization)}
 
         #{checks}
 
@@ -380,7 +380,7 @@ defmodule Favn.SQLCheckDSLTest do
         #{preamble}
         use Favn.SQLAsset
 
-        @materialized :table
+        materialized :table
 
         query do
           ~SQL"#{query_sql}"

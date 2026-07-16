@@ -37,7 +37,7 @@ not be shared concurrently across child tasks; child tasks should open their own
 scoped session with `with_required_catalogs/2` or explicit `required_catalogs`.
 
 The public HexDocs guide `guides/duckdb-session-scripts.md` is canonical for
-native DuckDB startup/resources config, `@resources`, physical-session
+native DuckDB startup/resources config, `resources`, physical-session
 lifecycle, and script safety.
 
 The public HexDocs guide `guides/retries-and-replay.md` is canonical for node

@@ -70,7 +70,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
       defmodule #{inspect(module_name)} do
         use Favn.Asset
 
-        @depends #{inspect(SampleAssets)}
+        depends #{inspect(SampleAssets)}
         def asset(_ctx), do: :ok
       end
       """,
@@ -126,11 +126,13 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     Code.compile_string(
       """
       defmodule #{inspect(assets)} do
-        use Favn.Assets
+        use Favn.MultiAsset
 
-        @asset true
-        @relation true
-        def orders(_ctx), do: :ok
+        asset :orders do
+          relation true
+        end
+
+        def asset(_ctx), do: :ok
       end
       """,
       "test/assets/compiler_parity_test.exs"
@@ -155,11 +157,13 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     Code.compile_string(
       """
       defmodule #{inspect(assets)} do
-        use Favn.Assets
+        use Favn.MultiAsset
 
-        @asset true
-        @relation true
-        def orders(_ctx), do: :ok
+        asset :orders do
+          relation true
+        end
+
+        def asset(_ctx), do: :ok
       end
       """,
       "test/assets/compiler_parity_test.exs"
@@ -202,7 +206,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
          use Favn.Namespace
          use Favn.SQLAsset
 
-         @materialized :view
+         materialized :view
          query do
            ~SQL\"\"\"
            select *
@@ -259,7 +263,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
        defmodule #{inspect(asset)} do
          use Favn.SQLAsset
 
-         @materialized :view
+         materialized :view
          query do
            ~SQL\"\"\"
            select orders.id
@@ -299,7 +303,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
        defmodule #{inspect(asset)} do
          use Favn.SQLAsset
 
-         @materialized :view
+         materialized :view
          query do
            ~SQL\"\"\"
            select * from orders
@@ -336,7 +340,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     ])
 
     assert {:error, {:invalid_compiled_assets, message}} = Compiler.compile_module_assets(asset)
-    assert message =~ "Favn.SQLAsset requires one @materialized attribute"
+    assert message =~ "Favn.SQLAsset requires one materialized attribute"
   end
 
   test "sql asset finalization resolves same-batch reusable SQL imports" do
@@ -352,7 +356,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
          use #{inspect(helpers)}
          use Favn.SQLAsset
 
-         @materialized :view
+         materialized :view
          query do
            ~SQL\"\"\"
            select selected_id(id) as id
@@ -389,12 +393,9 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
          use Favn.Namespace
          use Favn.MultiAsset
 
-         @relation true
+         relation true
          asset :orders do
-           rest do
-             path "/orders"
-             data_path "orders"
-           end
+           settings path: "/orders", data_path: "orders"
          end
 
          def asset(_ctx), do: :ok
@@ -429,15 +430,11 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
           password: secret_env!("SOURCE_API_PASSWORD")
 
         asset :orders do
-          rest do
-            path "/orders"
-          end
+          settings path: "/orders"
         end
 
         asset :customers do
-          rest do
-            path "/customers"
-          end
+          settings path: "/customers"
         end
 
         def asset(_ctx), do: :ok
@@ -482,9 +479,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
          use Favn.MultiAsset
 
          asset :issues do
-           rest do
-             path "/issues"
-           end
+           settings path: "/issues"
          end
 
          def asset(_ctx), do: :ok
@@ -522,23 +517,22 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     module_name =
       Module.concat(__MODULE__, "DuplicateCatalog#{unique_suffix()}")
 
-    Code.compile_string(
-      """
-      defmodule #{inspect(module_name)} do
-        use Favn.Assets
+    assert_raise CompileError, ~r/duplicate values for canonical key :catalog/, fn ->
+      Code.compile_string(
+        """
+        defmodule #{inspect(module_name)} do
+          use Favn.MultiAsset
 
-        @asset true
-        @relation %{"database" => "raw", :catalog => "silver", "name" => "orders"}
-        def duplicate_catalog_keys(_ctx), do: :ok
-      end
-      """,
-      "test/assets/compiler_parity_test.exs"
-    )
+          asset :duplicate_catalog_keys do
+            relation %{"database" => "raw", :catalog => "silver", "name" => "orders"}
+          end
 
-    assert {:error, {:invalid_compiled_assets, message}} =
-             Compiler.compile_module_assets(module_name)
-
-    assert message =~ "duplicate values for canonical key :catalog"
+          def asset(_ctx), do: :ok
+        end
+        """,
+        "test/assets/compiler_parity_test.exs"
+      )
+    end
   end
 
   defp with_unloaded_module(module, fun) when is_atom(module) and is_function(fun, 0) do

@@ -22,7 +22,7 @@ defmodule Favn.Manifest.VersionTest do
   alias Favn.SQL.Template
 
   test "builds pinned manifest version with id and content hash" do
-    manifest = %{schema_version: 5, runner_contract_version: 5, assets: []}
+    manifest = %{schema_version: 6, runner_contract_version: 6, assets: []}
 
     assert {:ok, %Version{} = version} =
              Version.new(manifest,
@@ -40,27 +40,27 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "fails when schema version is unsupported" do
-    manifest = %{schema_version: 0, runner_contract_version: 5, assets: []}
+    manifest = %{schema_version: 0, runner_contract_version: 6, assets: []}
 
-    assert {:error, {:unsupported_schema_version, 0, 5}} =
+    assert {:error, {:unsupported_schema_version, 0, 6}} =
              Version.new(manifest)
   end
 
   test "pins canonical manifest payload when input is build" do
-    canonical_manifest = %{schema_version: 5, runner_contract_version: 5, assets: []}
+    canonical_manifest = %{schema_version: 6, runner_contract_version: 6, assets: []}
     build = Build.new(canonical_manifest, diagnostics: [%{message: "warn"}])
 
     assert {:ok, %Version{} = version} = Version.new(build, manifest_version_id: "mv_test_build")
 
     assert %Manifest{} = version.manifest
-    assert version.manifest.schema_version == 5
-    assert version.manifest.runner_contract_version == 5
+    assert version.manifest.schema_version == 6
+    assert version.manifest.runner_contract_version == 6
     assert version.manifest.assets == []
     refute Map.has_key?(version.manifest, :manifest)
   end
 
   test "build input uses canonical payload hash invariant" do
-    canonical_manifest = %{schema_version: 5, runner_contract_version: 5, assets: []}
+    canonical_manifest = %{schema_version: 6, runner_contract_version: 6, assets: []}
     build = Build.new(canonical_manifest, diagnostics: [%{message: "warn"}])
 
     assert {:ok, %Version{} = version} =
@@ -71,7 +71,7 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "verifies published manifest version envelopes without minting a new identity" do
-    manifest = %{schema_version: 5, runner_contract_version: 5, assets: []}
+    manifest = %{schema_version: 6, runner_contract_version: 6, assets: []}
 
     assert {:ok, original} =
              Version.new(manifest,
@@ -98,7 +98,7 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "rejects published manifest version envelopes with mismatched hashes" do
-    manifest = %{schema_version: 5, runner_contract_version: 5, assets: []}
+    manifest = %{schema_version: 6, runner_contract_version: 6, assets: []}
 
     assert {:error, {:manifest_content_hash_mismatch, expected, computed}} =
              Version.from_published(manifest,
@@ -111,7 +111,7 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "envelope versions are derived from manifest payload" do
-    manifest = %{schema_version: 5, runner_contract_version: 5, assets: []}
+    manifest = %{schema_version: 6, runner_contract_version: 6, assets: []}
 
     assert {:ok, %Version{} = version} =
              Version.new(manifest,
@@ -123,10 +123,10 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "rejects version override options" do
-    manifest = %{schema_version: 5, runner_contract_version: 5, assets: []}
+    manifest = %{schema_version: 6, runner_contract_version: 6, assets: []}
 
     assert {:error, {:unknown_opt, :schema_version}} =
-             Version.new(manifest, schema_version: 5)
+             Version.new(manifest, schema_version: 6)
   end
 
   test "rehydrates decoded manifests into canonical runtime structs" do
@@ -207,8 +207,8 @@ defmodule Favn.Manifest.VersionTest do
       end)
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: [
         %Asset{
           ref: ref,
@@ -452,8 +452,8 @@ defmodule Favn.Manifest.VersionTest do
     ref = {MyApp.Assets.Roundtrip, :asset}
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: [
         %Asset{
           ref: ref,
@@ -505,8 +505,8 @@ defmodule Favn.Manifest.VersionTest do
     gold = {MyApp.Assets.LegacyGold, :asset}
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: [
         %Asset{ref: raw, module: elem(raw, 0), name: :asset, depends_on: []},
         %Asset{ref: gold, module: elem(gold, 0), name: :asset, depends_on: [raw]}
@@ -524,8 +524,8 @@ defmodule Favn.Manifest.VersionTest do
 
   test "rehydrates known manifest module atoms without loading user modules" do
     manifest = %{
-      "schema_version" => 5,
-      "runner_contract_version" => 5,
+      "schema_version" => 6,
+      "runner_contract_version" => 6,
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"},
@@ -566,8 +566,8 @@ defmodule Favn.Manifest.VersionTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom(tag) end
 
     manifest = %{
-      "schema_version" => 5,
-      "runner_contract_version" => 5,
+      "schema_version" => 6,
+      "runner_contract_version" => 6,
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"},
@@ -638,8 +638,8 @@ defmodule Favn.Manifest.VersionTest do
     assert {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: assets,
       pipelines: [
         %Pipeline{
@@ -673,8 +673,8 @@ defmodule Favn.Manifest.VersionTest do
 
   test "rejects invalid unloaded module references during rehydration" do
     manifest = %{
-      "schema_version" => 5,
-      "runner_contract_version" => 5,
+      "schema_version" => 6,
+      "runner_contract_version" => 6,
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.not-a-module", "name" => "asset"},
@@ -697,8 +697,8 @@ defmodule Favn.Manifest.VersionTest do
     module = "Elixir." <> String.duplicate("A", 249)
 
     manifest = %{
-      "schema_version" => 5,
-      "runner_contract_version" => 5,
+      "schema_version" => 6,
+      "runner_contract_version" => 6,
       "assets" => [
         %{
           "ref" => %{"module" => module, "name" => "asset"},
@@ -728,8 +728,8 @@ defmodule Favn.Manifest.VersionTest do
     name = "generated_asset_#{unique}"
 
     manifest = %{
-      "schema_version" => 5,
-      "runner_contract_version" => 5,
+      "schema_version" => 6,
+      "runner_contract_version" => 6,
       "assets" => [
         %{
           "ref" => %{"module" => module, "name" => name},
@@ -773,8 +773,8 @@ defmodule Favn.Manifest.VersionTest do
       end)
 
     manifest = %{
-      "schema_version" => 5,
-      "runner_contract_version" => 5,
+      "schema_version" => 6,
+      "runner_contract_version" => 6,
       "assets" => assets,
       "pipelines" => [],
       "schedules" => [],

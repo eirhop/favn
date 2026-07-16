@@ -21,9 +21,9 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Payments do
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
   alias FavnReferenceWorkload.Client.FakeAPI
 
-  @meta owner: "reference-workload", category: :payments, tags: [:raw, :synthetic]
-  @depends FavnReferenceWorkload.Warehouse.Raw.Orders
-  @relation true
+  meta owner: "reference-workload", category: :payments, tags: [:raw, :synthetic]
+  depends FavnReferenceWorkload.Warehouse.Raw.Orders
+  relation true
   def asset(ctx) do
     with {:ok, rows} <- FakeAPI.fetch_rows(:payments) do
       DuckDBJSONLoader.replace_relation_from_rows(

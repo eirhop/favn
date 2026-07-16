@@ -20,8 +20,8 @@ defmodule FavnReferenceWorkload.Warehouse.Sources.ChannelCatalog do
 
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
 
-  @meta owner: "reference-workload", category: :reference_data, tags: [:seed]
-  @relation true
+  meta owner: "reference-workload", category: :reference_data, tags: [:seed]
+  relation true
   def asset(ctx) do
     DuckDBJSONLoader.replace_relation_from_sql(ctx.asset.relation, """
     select channel_code

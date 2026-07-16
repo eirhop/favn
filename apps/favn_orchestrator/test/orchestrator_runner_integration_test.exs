@@ -223,15 +223,15 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
         type: :elixir,
         execution: %{entrypoint: :asset, arity: 1},
         depends_on: [],
-        config: %{manifest_version_id: manifest_version_id}
+        settings: %{manifest_version_id: manifest_version_id}
       }
     ]
 
     {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: assets,
       pipelines: [
         %Pipeline{
@@ -276,8 +276,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: assets,
       pipelines: [
         %Pipeline{
@@ -312,8 +312,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     ]
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: assets,
       pipelines: [],
       schedules: [],
@@ -340,8 +340,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     }
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: [asset],
       pipelines: [],
       schedules: [],

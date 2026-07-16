@@ -7,7 +7,7 @@ defmodule Favn.RuntimeInputResolver.Ref do
 
   This is a manifest/compiler contract, not an authoring DSL. Authors should
   start at `Favn.AI`, read `Favn.SQLAsset`, and declare
-  `@runtime_inputs MyApp.Inputs`; they do not construct this struct directly.
+  `runtime_inputs MyApp.Inputs`; they do not construct this struct directly.
   """
 
   @enforce_keys [:module]

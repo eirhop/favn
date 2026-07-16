@@ -22,8 +22,8 @@ defmodule FavnRunner.WorkerTest do
 
     manifest =
       %Manifest{
-        schema_version: 5,
-        runner_contract_version: 5,
+        schema_version: 6,
+        runner_contract_version: 6,
         assets: [asset],
         pipelines: [],
         schedules: [],
@@ -195,11 +195,11 @@ defmodule FavnRunner.WorkerTest do
 
       assert result.status == :ok
       assert [%{meta: meta, attempts: [%{meta: attempt_meta}]}] = result.asset_results
-      assert meta.config.source_system.segment_id == "segment-456"
-      assert meta.config.source_system.token == :redacted
+      assert meta.runtime_config.source_system.segment_id == "segment-456"
+      assert meta.runtime_config.source_system.token == :redacted
       assert meta.nested.source_system.token == :redacted
-      assert meta.debug_ctx.config.source_system.token == :redacted
-      assert attempt_meta.config.source_system.token == :redacted
+      assert meta.debug_ctx.runtime_config.source_system.token == :redacted
+      assert attempt_meta.runtime_config.source_system.token == :redacted
       refute inspect(result) =~ "leaked-secret-token"
     after
       restore_env("FAVN_TEST_LEAK_SEGMENT_ID", previous_segment)
@@ -267,7 +267,7 @@ defmodule FavnRunner.WorkerTest do
     end
   end
 
-  test "worker exposes multi-asset config ergonomically after manifest JSON roundtrip" do
+  test "worker exposes settings ergonomically after manifest JSON roundtrip" do
     previous_username = System.get_env("FAVN_TEST_SOURCE_API_USERNAME")
     previous_password = System.get_env("FAVN_TEST_SOURCE_API_PASSWORD")
 
@@ -278,12 +278,10 @@ defmodule FavnRunner.WorkerTest do
       result =
         run_single_asset(FavnRunner.WorkerTest.MultiAssetConfigAsset,
           roundtrip_asset?: true,
-          config: %{
-            rest: %{
-              path: "/orders",
-              params: %{:status => "ok", "format" => "json"},
-              extra: %{refresh_type: :full_refresh}
-            }
+          settings: %{
+            path: "/orders",
+            params: %{:status => "ok", "format" => "json"},
+            extra: %{refresh_type: :full_refresh}
           },
           runtime_config: %{
             source_api: %{
@@ -296,7 +294,7 @@ defmodule FavnRunner.WorkerTest do
       assert result.status == :ok
 
       assert [asset_result] = result.asset_results
-      assert asset_result.meta.refresh_type == :full_refresh
+      assert asset_result.meta.refresh_type == "full_refresh"
       assert asset_result.meta.path == "/orders"
       assert asset_result.meta.param_status == "ok"
       assert asset_result.meta.param_status_atom == nil
@@ -314,11 +312,9 @@ defmodule FavnRunner.WorkerTest do
     result =
       run_single_asset(FavnRunner.WorkerTest.MultiAssetArbitraryConfigAsset,
         roundtrip_asset?: true,
-        config: %{
-          rest: %{
-            params: %{:status => "ok", "format" => "json"},
-            extra: %{status: "ok", format: "json"}
-          }
+        settings: %{
+          params: %{:status => "ok", "format" => "json"},
+          extra: %{status: "ok", format: "json"}
         }
       )
 
@@ -350,14 +346,14 @@ defmodule FavnRunner.WorkerTest do
         name: :asset,
         type: :elixir,
         execution: Keyword.get(opts, :execution, %{entrypoint: :asset, arity: 1}),
-        config: Keyword.get(opts, :config, %{}),
+        settings: Keyword.get(opts, :settings, %{}),
         runtime_config: Keyword.get(opts, :runtime_config, %{})
       }
 
     manifest =
       %Manifest{
-        schema_version: 5,
-        runner_contract_version: 5,
+        schema_version: 6,
+        runner_contract_version: 6,
         assets: [asset],
         pipelines: [],
         schedules: [],
@@ -439,8 +435,8 @@ defmodule FavnRunner.WorkerTest.ConfigAsset do
   def asset(ctx) do
     {:ok,
      %{
-       segment_id: ctx.config.source_system.segment_id,
-       token_seen?: Map.get(ctx.config.source_system, :token) == "secret-token"
+       segment_id: ctx.runtime_config.source_system.segment_id,
+       token_seen?: Map.get(ctx.runtime_config.source_system, :token) == "secret-token"
      }}
   end
 end
@@ -448,7 +444,7 @@ end
 defmodule FavnRunner.WorkerTest.OptionalConfigAsset do
   @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
   def asset(ctx) do
-    token = ctx.config.source_system.token
+    token = ctx.runtime_config.source_system.token
     {:ok, %{token: token, token_missing?: is_nil(token)}}
   end
 end
@@ -457,21 +453,25 @@ defmodule FavnRunner.WorkerTest.ConfigLeakAsset do
   @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
   def asset(ctx) do
     {:ok,
-     %{config: ctx.config, nested: %{source_system: ctx.config.source_system}, debug_ctx: ctx}}
+     %{
+       runtime_config: ctx.runtime_config,
+       nested: %{source_system: ctx.runtime_config.source_system},
+       debug_ctx: ctx
+     }}
   end
 end
 
 defmodule FavnRunner.WorkerTest.ErrorLeakAsset do
   @spec asset(Favn.Run.Context.t()) :: {:error, term()}
   def asset(ctx) do
-    {:error, {:auth_failed, ctx.config.source_system.token, ctx.config}}
+    {:error, {:auth_failed, ctx.runtime_config.source_system.token, ctx.runtime_config}}
   end
 end
 
 defmodule FavnRunner.WorkerTest.RaiseLeakAsset do
   @spec asset(Favn.Run.Context.t()) :: no_return()
   def asset(ctx) do
-    raise "request failed with token #{ctx.config.source_system.token}"
+    raise "request failed with token #{ctx.runtime_config.source_system.token}"
   end
 end
 
@@ -480,12 +480,12 @@ defmodule FavnRunner.WorkerTest.MultiAssetConfigAsset do
   def asset(ctx) do
     {:ok,
      %{
-       refresh_type: ctx.asset.config.rest.extra.refresh_type,
-       path: ctx.asset.config.rest.path,
-       param_status: ctx.asset.config.rest.params["status"],
-       param_status_atom: Map.get(ctx.asset.config.rest.params, :status),
-       username: ctx.config.source_api.username,
-       password_seen?: ctx.config.source_api.password == "source-secret"
+       refresh_type: ctx.asset.settings.extra["refresh_type"],
+       path: ctx.asset.settings.path,
+       param_status: ctx.asset.settings.params["status"],
+       param_status_atom: Map.get(ctx.asset.settings.params, :status),
+       username: ctx.runtime_config.source_api.username,
+       password_seen?: ctx.runtime_config.source_api.password == "source-secret"
      }}
   end
 end
@@ -495,13 +495,13 @@ defmodule FavnRunner.WorkerTest.MultiAssetArbitraryConfigAsset do
   def asset(ctx) do
     {:ok,
      %{
-       extra_status: ctx.asset.config.rest.extra["status"],
-       extra_format: ctx.asset.config.rest.extra["format"],
-       extra_status_atom: Map.get(ctx.asset.config.rest.extra, :status),
-       extra_format_atom: Map.get(ctx.asset.config.rest.extra, :format),
-       param_status: ctx.asset.config.rest.params["status"],
-       param_format: ctx.asset.config.rest.params["format"],
-       param_status_atom: Map.get(ctx.asset.config.rest.params, :status)
+       extra_status: ctx.asset.settings.extra["status"],
+       extra_format: ctx.asset.settings.extra["format"],
+       extra_status_atom: Map.get(ctx.asset.settings.extra, :status),
+       extra_format_atom: Map.get(ctx.asset.settings.extra, :format),
+       param_status: ctx.asset.settings.params["status"],
+       param_format: ctx.asset.settings.params["format"],
+       param_status_atom: Map.get(ctx.asset.settings.params, :status)
      }}
   end
 end

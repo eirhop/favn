@@ -20,9 +20,18 @@ defmodule Favn.SQLAsset.Renderer do
   @spec render(Definition.t(), opts()) :: {:ok, Render.t()} | {:error, Error.t()}
   def render(%Definition{} = definition, opts \\ []) when is_list(opts) do
     with {:ok, params} <- normalize_params(opts),
+         {:ok, query_values, setting_names} <- normalize_query_values(definition, params),
          {:ok, runtime_inputs} <- normalize_runtime_inputs(definition, opts),
          {:ok, definition_catalog} <- definition_catalog(definition),
-         env <- base_env(definition, params, runtime_inputs, definition_catalog, opts),
+         env <-
+           base_env(
+             definition,
+             query_values,
+             setting_names,
+             runtime_inputs,
+             definition_catalog,
+             opts
+           ),
          :ok <- validate_target_relation(definition, env),
          {:ok, %Fragment{} = fragment, _env} <- render_nodes(definition.template.nodes, env),
          {:ok, %Params{} = normalized_params} <- normalize_bindings(fragment.bindings) do
@@ -78,6 +87,55 @@ defmodule Favn.SQLAsset.Renderer do
     end
   end
 
+  defp normalize_query_values(%Definition{} = definition, params) do
+    settings = definition.asset.settings || %{}
+    referenced = Template.query_params(definition.template)
+
+    Enum.reduce_while(referenced, {:ok, params, MapSet.new()}, fn name,
+                                                                  {:ok, values, setting_names} ->
+      setting = fetch_setting(settings, name)
+      param = fetch_param(params, name)
+
+      case {setting, param} do
+        {{:ok, _setting}, {:ok, _param}} ->
+          {:halt,
+           {:error,
+            %Error{
+              type: :binding_failure,
+              phase: :render,
+              asset_ref: definition.asset.ref,
+              message: "SQL input @#{name} is declared in both asset settings and runtime params",
+              details: %{name: name, sources: [:settings, :params]}
+            }}}
+
+        {{:ok, value}, :error}
+        when is_nil(value) or is_boolean(value) or is_number(value) or is_binary(value) ->
+          {:cont, {:ok, Map.put(values, name, value), MapSet.put(setting_names, name)}}
+
+        {{:ok, value}, :error} ->
+          {:halt,
+           {:error,
+            %Error{
+              type: :binding_failure,
+              phase: :render,
+              asset_ref: definition.asset.ref,
+              message: "SQL setting @#{name} must be a scalar bind value",
+              details: %{name: name, value: value}
+            }}}
+
+        {:error, _param} ->
+          {:cont, {:ok, values, setting_names}}
+      end
+    end)
+  end
+
+  defp fetch_setting(settings, name) when is_map(settings) and is_binary(name) do
+    Enum.find_value(settings, :error, fn
+      {key, value} when is_atom(key) -> if Atom.to_string(key) == name, do: {:ok, value}
+      _entry -> nil
+    end)
+  end
+
   defp normalize_runtime_inputs(%Definition{} = definition, opts) do
     runtime = Keyword.get(opts, :runtime, %{})
 
@@ -131,7 +189,7 @@ defmodule Favn.SQLAsset.Renderer do
     {:ok, catalog}
   end
 
-  defp base_env(definition, params, runtime_inputs, definition_catalog, opts) do
+  defp base_env(definition, params, setting_names, runtime_inputs, definition_catalog, opts) do
     %{
       asset_ref: definition.asset.ref,
       root_connection: definition.asset.relation.connection,
@@ -140,6 +198,7 @@ defmodule Favn.SQLAsset.Renderer do
       current_catalog: definition.asset.relation.catalog,
       current_schema: definition.asset.relation.schema,
       params: params,
+      setting_names: setting_names,
       runtime_values: runtime_inputs.runtime_values,
       local_args: %{},
       definition_catalog: definition_catalog,
@@ -227,8 +286,12 @@ defmodule Favn.SQLAsset.Renderer do
 
   defp render_node(%Placeholder{source: :query_param, name: name, span: span}, env) do
     case fetch_param(env.params, name) do
-      {:ok, value} -> {:ok, value_fragment(name, :query_param, value, span), env}
-      :error -> missing_query_param_error(name, span, env)
+      {:ok, value} ->
+        source = if MapSet.member?(env.setting_names, name), do: :setting, else: :query_param
+        {:ok, value_fragment(name, source, value, span), env}
+
+      :error ->
+        missing_query_param_error(name, span, env)
     end
   end
 

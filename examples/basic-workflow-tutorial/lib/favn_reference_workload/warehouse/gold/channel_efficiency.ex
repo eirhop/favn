@@ -21,9 +21,9 @@ defmodule FavnReferenceWorkload.Warehouse.Gold.ChannelEfficiency do
   use Favn.Namespace
   use Favn.SQLAsset
 
-  @meta owner: "reference-workload", category: :marketing, tags: [:gold]
-  @materialized :table
-  @relation true
+  meta owner: "reference-workload", category: :marketing, tags: [:gold]
+  materialized :table
+  relation true
 
   query do
     ~SQL"""

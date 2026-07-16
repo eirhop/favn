@@ -632,7 +632,7 @@ defmodule FavnOrchestrator.DiagnosticsTest do
           window: Policy.new!(:day),
           source: :dsl,
           outputs: [:asset],
-          config: %{},
+          settings: %{},
           metadata: %{}
         }
       ]
@@ -682,7 +682,7 @@ defmodule FavnOrchestrator.DiagnosticsTest do
           window: Policy.new!(:day),
           source: :dsl,
           outputs: [:asset],
-          config: %{},
+          settings: %{},
           metadata: %{}
         },
         %Pipeline{
@@ -694,7 +694,7 @@ defmodule FavnOrchestrator.DiagnosticsTest do
           window: Policy.new!(:day),
           source: :dsl,
           outputs: [:asset],
-          config: %{},
+          settings: %{},
           metadata: %{}
         }
       ]
@@ -744,7 +744,7 @@ defmodule FavnOrchestrator.DiagnosticsTest do
           window: Policy.new!(:day),
           source: :dsl,
           outputs: [:asset],
-          config: %{},
+          settings: %{},
           metadata: %{}
         },
         %Pipeline{
@@ -756,7 +756,7 @@ defmodule FavnOrchestrator.DiagnosticsTest do
           window: Policy.new!(:day),
           source: :dsl,
           outputs: [:asset],
-          config: %{},
+          settings: %{},
           metadata: %{}
         }
       ]

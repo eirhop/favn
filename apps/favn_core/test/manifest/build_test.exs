@@ -4,7 +4,7 @@ defmodule Favn.Manifest.BuildTest do
   alias Favn.Manifest.Build
 
   test "build wrapper keeps canonical manifest and build metadata" do
-    manifest = %{schema_version: 5, runner_contract_version: 5, assets: []}
+    manifest = %{schema_version: 6, runner_contract_version: 6, assets: []}
     now = ~U[2026-01-01 00:00:00Z]
 
     build =

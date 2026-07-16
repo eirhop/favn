@@ -16,8 +16,8 @@ defmodule FavnCore.SQLSessionRequirementsTest do
 
   test "rehydrates the versioned contract without creating resource atoms" do
     payload = %{
-      "schema_version" => 5,
-      "runner_contract_version" => 5,
+      "schema_version" => 6,
+      "runner_contract_version" => 6,
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.Example.ResourceAsset", "name" => "asset"},

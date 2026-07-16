@@ -29,7 +29,7 @@ defmodule Favn.RuntimeConfig do
   @doc """
   Defines a named runtime configuration bundle function.
 
-  The bundle name is also the scope under `ctx.config`.
+  The bundle name is also the scope under `ctx.runtime_config`.
   """
   defmacro bundle(name, fields) do
     caller = __CALLER__

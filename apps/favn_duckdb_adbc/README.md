@@ -42,7 +42,7 @@ config :favn, :runner_plugins, [FavnDuckdbADBC]
 ```
 
 Session setup uses trusted native SQL files through `duckdb.startup` and named
-`duckdb.resources`; SQL assets select stable names with `@resources`.
+`duckdb.resources`; SQL assets select stable names with `resources [...]`.
 `duckdb.catalogs` contains only Favn resource and write-admission metadata. The
 old structured `load`, `settings`, `secrets`, `attach`, and `use` forms are not
 supported. See `apps/favn/guides/duckdb-session-scripts.md`.

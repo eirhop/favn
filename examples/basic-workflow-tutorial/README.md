@@ -86,7 +86,7 @@ be observed, not created, by the workload.
   - Loads product JSON rows into `raw.products` through `read_json(...)`.
 - `FavnReferenceWorkload.Warehouse.Raw.Orders`
   - "Deterministic source-system order ingest from a simulated API JSON payload"
-  - Resolves source runtime config from `ctx.config`, calls the fake source
+  - Resolves source runtime config from `ctx.runtime_config`, calls the fake source
     client with a narrow config map, loads order JSON rows through
     `Favn.SQLClient`, checks customer/channel lookups exist, and returns
     structured run metadata.
@@ -103,7 +103,7 @@ client returning JSON and then load those JSON payloads into concrete DuckDB
 
 `Raw.Orders` is the canonical source-system raw landing example. It declares
 the reusable `RuntimeConfigs.source_system()` bundle, reads the resolved source segment and token from
-`ctx.config.source_system`, keeps the fake source client outside the asset, lands
+`ctx.runtime_config.source_system`, keeps the fake source client outside the asset, lands
 rows into the owned raw relation, and returns metadata with `rows_written`,
 `mode`, `relation`, `loaded_at`, and a SHA-256 `segment_id_hash`. The raw segment
 ID and token are intentionally not returned in metadata.
@@ -160,7 +160,7 @@ Simple example from this project:
 - `inner join gold.customer_360` means "this asset also depends on
   `gold.customer_360`"
 
-That is why most SQL assets do not need explicit `@depends`; the SQL itself is
+That is why most SQL assets do not need explicit `depends`; the SQL itself is
 the dependency declaration.
 
 ## Step 0: Open this directory
@@ -270,7 +270,7 @@ FAVN_REFERENCE_SOURCE_SEGMENT_ID=northbeam-demo-segment
 FAVN_REFERENCE_SOURCE_TOKEN=local-demo-token
 ```
 
-These values are resolved by the runner into `ctx.config`; they are not embedded
+These values are resolved by the runner into `ctx.runtime_config`; they are not embedded
 in the manifest. The returned run metadata includes only a hash of the segment
 identity, never the raw segment ID or token.
 

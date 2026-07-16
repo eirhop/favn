@@ -3,7 +3,7 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Orders do
   Deterministic source-system order ingest from a simulated API JSON payload.
 
   This is the tutorial's canonical source-system raw landing pattern. It reads
-  resolved runtime source config from `ctx.config`, calls a narrow source client,
+  resolved runtime source config from `ctx.runtime_config`, calls a narrow source client,
   writes the raw payload to DuckDB through `Favn.SQLClient`, and returns structured
   run metadata for inspection.
 
@@ -18,7 +18,7 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Orders do
 
   Alternative:
 
-  - Add explicit `@depends` only when dependencies are not visible in SQL.
+  - Add explicit `depends` only when dependencies are not visible in SQL.
   """
 
   use Favn.Namespace
@@ -30,13 +30,13 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Orders do
 
   runtime_config(RuntimeConfigs.source_system())
 
-  @meta owner: "reference-workload", category: :orders, tags: [:raw, :synthetic]
-  @depends FavnReferenceWorkload.Warehouse.Raw.Customers
-  @depends FavnReferenceWorkload.Warehouse.Sources.ChannelCatalog
-  @relation true
+  meta owner: "reference-workload", category: :orders, tags: [:raw, :synthetic]
+  depends FavnReferenceWorkload.Warehouse.Raw.Customers
+  depends FavnReferenceWorkload.Warehouse.Sources.ChannelCatalog
+  relation true
   def asset(ctx) do
     relation = ctx.asset.relation
-    runtime_config = ctx.config.source_system
+    runtime_config = ctx.runtime_config.source_system
 
     with {:ok, rows} <- FakeAPI.fetch_rows(:orders, runtime_config),
          :ok <-

@@ -77,9 +77,9 @@ defmodule Favn.Dev.InitTest do
       )
 
     assert order_summary =~ "use Favn.SQLAsset"
-    assert order_summary =~ "@depends #{base_module(app)}.Lakehouse.Raw.Sales.Orders"
-    assert order_summary =~ "@materialized :table"
-    assert order_summary =~ "@relation true"
+    assert order_summary =~ "depends #{base_module(app)}.Lakehouse.Raw.Sales.Orders"
+    assert order_summary =~ "materialized :table"
+    assert order_summary =~ "relation true"
     assert order_summary =~ "from #{base_module(app)}.Lakehouse.Raw.Sales.Orders"
 
     pipeline =

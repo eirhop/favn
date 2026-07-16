@@ -5,7 +5,7 @@ defmodule Favn.Manifest.Asset do
   This struct contains only runtime-required metadata. It intentionally excludes
   source locations and compiler diagnostics.
 
-  Asset freshness policies declared with `@freshness` are stored in `:freshness`
+  Asset freshness policies declared with `freshness/1` are stored in `:freshness`
   as normalized `Favn.Freshness.Policy` values. Runtime code uses this manifest
   field, not authoring modules, when deciding whether a planned node should run,
   skip as fresh, or dirty downstream nodes.
@@ -31,7 +31,8 @@ defmodule Favn.Manifest.Asset do
             required(:entrypoint) => atom() | nil,
             required(:arity) => non_neg_integer() | nil
           },
-          config: map(),
+          settings: Favn.Settings.t(),
+          description: String.t() | nil,
           relation: map() | struct() | nil,
           window: map() | struct() | nil,
           freshness: FreshnessPolicy.t() | nil,
@@ -52,7 +53,8 @@ defmodule Favn.Manifest.Asset do
     type: :elixir,
     depends_on: [],
     execution: %{entrypoint: nil, arity: nil},
-    config: %{},
+    settings: %{},
+    description: nil,
     relation: nil,
     window: nil,
     freshness: nil,
@@ -75,7 +77,8 @@ defmodule Favn.Manifest.Asset do
       type: Map.get(asset, :type, :elixir),
       depends_on: normalize_depends_on(Map.get(asset, :depends_on, [])),
       execution: %{entrypoint: Map.get(asset, :entrypoint), arity: Map.get(asset, :arity)},
-      config: normalize_map(Map.get(asset, :config, %{})),
+      settings: Favn.Settings.normalize!(Map.get(asset, :settings, %{})),
+      description: Map.get(asset, :doc),
       relation: Map.get(asset, :relation),
       window: Map.get(asset, :window_spec),
       freshness: normalize_freshness(Map.get(asset, :freshness)),

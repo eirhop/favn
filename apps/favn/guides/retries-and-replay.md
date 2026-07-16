@@ -40,14 +40,14 @@ end
 An Elixir or SQL asset uses the same override:
 
 ```elixir
-@retry max_attempts: 6,
+retry max_attempts: 6,
        backoff: {:exponential, initial: 10_000, max: 600_000}
 def asset(ctx), do: fetch_orders(ctx)
 ```
 
 ```elixir
-@retry max_attempts: 4, backoff: 2_000
-@materialized :table
+retry max_attempts: 4, backoff: 2_000
+materialized :table
 query do
   ~SQL"select * from staged_orders"
 end
@@ -57,7 +57,7 @@ The effective policy is chosen once and stored on every planned node:
 
 ```text
 explicit operator submission override
-→ asset @retry
+→ asset retry
 → pipeline retry
 → max_attempts: 1
 ```
@@ -148,7 +148,7 @@ semantics.
 
 ## Runtime-Input Resolve, Pin, Execute
 
-For a SQL asset with `@runtime_inputs`, Favn completes this handshake before SQL
+For a SQL asset with `runtime_inputs`, Favn completes this handshake before SQL
 rendering, session acquisition, or materialization:
 
 1. The orchestrator loads `{run_id, planned_node_key}` from the pin store.

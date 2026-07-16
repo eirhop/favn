@@ -50,6 +50,9 @@ jobs:
       - name: Check test tag coverage
         run: elixir scripts/check_test_tag_tiers.exs
 
+      - name: Check removed asset DSL forms
+        run: elixir scripts/check_no_legacy_asset_dsl.exs
+
       - name: Install Hex and Rebar
         run: |
           mix local.hex --force

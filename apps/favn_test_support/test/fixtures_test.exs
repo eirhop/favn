@@ -8,29 +8,26 @@ defmodule FavnTestSupport.FixturesTest do
   setup_all do
     created_stubs =
       []
-      |> maybe_define_stub(Favn.Assets, """
-      defmodule Favn.Assets do
+      |> maybe_define_stub(Favn.MultiAsset, """
+      defmodule Favn.MultiAsset do
         defmacro __using__(_opts) do
           quote do
-            Module.register_attribute(__MODULE__, :asset, persist: false)
-            Module.register_attribute(__MODULE__, :depends, accumulate: true)
-            Module.register_attribute(__MODULE__, :freshness, accumulate: true)
-            Module.register_attribute(__MODULE__, :meta, persist: false)
-            Module.register_attribute(__MODULE__, :relation, accumulate: true)
-            Module.register_attribute(__MODULE__, :window, accumulate: true)
-
-            @on_definition Favn.Assets
+            import Favn.MultiAsset
           end
         end
 
-        def __on_definition__(env, _kind, _name, _args, _guards, _body) do
-          Module.delete_attribute(env.module, :asset)
-          Module.delete_attribute(env.module, :depends)
-          Module.delete_attribute(env.module, :freshness)
-          Module.delete_attribute(env.module, :meta)
-          Module.delete_attribute(env.module, :relation)
-          Module.delete_attribute(env.module, :window)
-        end
+        defmacro asset(_name, do: block), do: block
+        defmacro description(_value), do: :ok
+        defmacro settings(_value), do: :ok
+        defmacro meta(_value), do: :ok
+        defmacro depends(value), do: value
+        defmacro window(_value), do: :ok
+        defmacro freshness(_value), do: :ok
+        defmacro retry(_value), do: :ok
+        defmacro execution_pool(_value), do: :ok
+        defmacro relation(_value), do: :ok
+        defmacro runtime_config(_value), do: :ok
+        defmacro runtime_config(_scope, _fields), do: :ok
       end
       """)
       |> maybe_define_stub(Favn.Storage.Adapter, """
@@ -185,7 +182,7 @@ defmodule FavnTestSupport.FixturesTest do
     sample_assets = Module.concat(Favn.Test.Fixtures.Assets.Basic, SampleAssets)
     spoofed_assets = Module.concat(Favn.Test.Fixtures.Assets.Basic, SpoofedAssets)
 
-    assert :ok = sample_assets.extract_orders(%{})
+    assert :ok = sample_assets.asset(%{})
     assert :oops = spoofed_assets.__favn_assets__()
   end
 

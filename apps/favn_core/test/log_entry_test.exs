@@ -3,6 +3,7 @@ defmodule Favn.Log.EntryTest do
 
   alias Favn.Log
   alias Favn.Log.Entry
+  alias Favn.Run.AssetContext
   alias Favn.Run.Context
 
   test "normalizes entry attrs" do
@@ -33,7 +34,11 @@ defmodule Favn.Log.EntryTest do
   end
 
   test "user-code helpers infer run context fields" do
-    context = %Context{run_id: "run_1", current_ref: {MyApp.Asset, :daily}, attempt: 2}
+    context = %Context{
+      run_id: "run_1",
+      asset: %AssetContext{ref: {MyApp.Asset, :daily}},
+      attempt: 2
+    }
 
     entry = Log.info(context, "asset started", %{batch: 1})
 

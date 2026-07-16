@@ -13,8 +13,8 @@ defmodule Favn.Manifest.GeneratorTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
     use Favn.Asset
 
-    @meta category: :sales, tags: [:raw]
-    @relation true
+    meta(category: :sales, tags: [:raw])
+    relation(true)
     def asset(_ctx), do: :ok
   end
 
@@ -22,7 +22,8 @@ defmodule Favn.Manifest.GeneratorTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
     use Favn.SQLAsset
 
-    @materialized :table
+    materialized(:table)
+
     query do
       ~SQL"SELECT 1 AS id"
     end
@@ -42,7 +43,7 @@ defmodule Favn.Manifest.GeneratorTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
     use Favn.Asset
 
-    @relation [name: "orders"]
+    relation(name: "orders")
     def asset(_ctx), do: :ok
   end
 
@@ -50,7 +51,7 @@ defmodule Favn.Manifest.GeneratorTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
     use Favn.Asset
 
-    @relation [name: "customers"]
+    relation(name: "customers")
     def asset(_ctx), do: :ok
   end
 
@@ -58,7 +59,8 @@ defmodule Favn.Manifest.GeneratorTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "commerce"]
     use Favn.SQLAsset
 
-    @materialized :view
+    materialized(:view)
+
     query do
       ~SQL"""
       select o.id, c.id as customer_id
@@ -76,8 +78,8 @@ defmodule Favn.Manifest.GeneratorTest do
                schedule_modules: [TestSchedules]
              )
 
-    assert manifest.schema_version == 5
-    assert manifest.runner_contract_version == 5
+    assert manifest.schema_version == 6
+    assert manifest.runner_contract_version == 6
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1
     assert length(manifest.schedules) == 1
@@ -131,7 +133,7 @@ defmodule Favn.Manifest.GeneratorTest do
          use Favn.Namespace
          use Favn.SQLAsset
 
-         @materialized :view
+         materialized :view
          query do
            ~SQL\"\"\"
            select * from executive_overview
@@ -193,8 +195,8 @@ defmodule Favn.Manifest.GeneratorTest do
 
     assert :ok =
              Favn.validate_manifest_compatibility(%{
-               schema_version: 5,
-               runner_contract_version: 5
+               schema_version: 6,
+               runner_contract_version: 6
              })
 
     assert {:ok, version} =

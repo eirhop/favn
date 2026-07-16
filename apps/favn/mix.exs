@@ -62,6 +62,12 @@ defmodule Favn.MixProject do
       ],
       groups_for_modules: [
         "Public Facades": [Favn, Favn.AI, Favn.SQLClient],
+        "Settings And Runtime Context": [
+          Favn.Settings,
+          Favn.Run.Context,
+          Favn.Run.AssetContext,
+          Favn.Run.PipelineContext
+        ],
         "Runner Extensions": [
           Favn.Runner.Plugin,
           Favn.Runner.SupervisedChildren,

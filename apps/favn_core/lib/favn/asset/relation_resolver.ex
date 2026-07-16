@@ -103,7 +103,7 @@ defmodule Favn.Asset.RelationResolver do
 
   defp raise_invalid_relation_value!(value) do
     raise ArgumentError,
-          "invalid @relation value #{inspect(value)}; expected true, a keyword list, or a map"
+          "invalid relation value #{inspect(value)}; expected true, a keyword list, or a map"
   end
 
   defp drop_nil_values(attrs) when is_map(attrs) do

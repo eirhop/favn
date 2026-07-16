@@ -23,14 +23,14 @@ defmodule Favn.RetryDSLTest do
              module.__favn_pipeline__().retry_policy
   end
 
-  test "Elixir and SQL assets share @retry" do
+  test "Elixir and SQL assets share retry" do
     asset_module = unique_module("Asset")
     sql_module = unique_module("SQL")
 
     compile_module!(asset_module, """
     defmodule #{inspect(asset_module)} do
       use Favn.Asset
-      @retry max_attempts: 2, backoff: 10
+      retry max_attempts: 2, backoff: 10
       def asset(_ctx), do: :ok
     end
     """)
@@ -39,8 +39,8 @@ defmodule Favn.RetryDSLTest do
     defmodule #{inspect(sql_module)} do
       use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
-      @retry max_attempts: 4, backoff: 20
-      @materialized :table
+      retry max_attempts: 4, backoff: 20
+      materialized :table
       query do
         ~SQL"select 1 as id"
       end
@@ -61,7 +61,7 @@ defmodule Favn.RetryDSLTest do
       compile_module!(module, """
       defmodule #{inspect(module)} do
         use Favn.Asset
-        @retry max_attempts: 0
+        retry max_attempts: 0
         def asset(_ctx), do: :ok
       end
       """)

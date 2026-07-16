@@ -214,7 +214,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert_received {:runtime_inputs_context, context}
     assert context.run_id == work.run_id
-    assert context.current_ref == ref
+    assert context.asset.ref == ref
     assert context.node_identity == node_identity
     assert context.params == %{submitted: 7}
     refute_received {:connect_after_runtime_inputs, _resolved?}
@@ -385,7 +385,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     work =
       version
       |> work_for(ref, "run_sql_runtime_inputs_deadline")
-      |> Map.put(:metadata, %{deadline_at: DateTime.add(DateTime.utc_now(), 40, :millisecond)})
+      |> Map.put(:deadline_at, DateTime.add(DateTime.utc_now(), 40, :millisecond))
 
     started_at = System.monotonic_time(:millisecond)
 
@@ -999,8 +999,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_inspection_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: [
         %Asset{
           ref: ref,
@@ -1049,8 +1049,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 5,
-        runner_contract_version: 5,
+        schema_version: 6,
+        runner_contract_version: 6,
         assets: [
           %Asset{
             ref: ref,
@@ -1103,8 +1103,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: [
         %Asset{
           ref: ref,
@@ -1156,8 +1156,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     checks = generated_contract_checks(contract) ++ checks
 
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: [
         %Asset{
           ref: ref,
@@ -1307,8 +1307,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 5,
-        runner_contract_version: 5,
+        schema_version: 6,
+        runner_contract_version: 6,
         assets: [
           %Asset{
             ref: ref,
@@ -1347,8 +1347,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 5,
-        runner_contract_version: 5,
+        schema_version: 6,
+        runner_contract_version: 6,
         assets: [
           %Asset{
             ref: ref,
@@ -1379,8 +1379,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 5,
-      runner_contract_version: 5,
+      schema_version: 6,
+      runner_contract_version: 6,
       assets: [
         %Asset{
           ref: ref,
@@ -1525,8 +1525,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest.PlainRelationInputSQLAsset do
 
   use Favn.SQLAsset
 
-  @relation [name: "customers_normalized"]
-  @materialized :table
+  relation(name: "customers_normalized")
+  materialized(:table)
+
   query do
     ~SQL"""
     select customer_id

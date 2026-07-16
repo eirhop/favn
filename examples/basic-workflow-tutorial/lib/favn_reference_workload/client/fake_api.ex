@@ -6,7 +6,7 @@ defmodule FavnReferenceWorkload.Client.FakeAPI do
 
   Most datasets need only the dataset name. The source-system orders path also
   accepts a narrow source config map so the tutorial can show resolved runtime
-  config flowing from `ctx.config` without passing the full runtime context.
+  config flowing from `ctx.runtime_config` without passing the full runtime context.
 
   Best-practice point shown here:
 

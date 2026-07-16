@@ -367,8 +367,8 @@ defmodule Favn.Dev.Init do
 
       alias Favn.SQLClient
 
-      @meta owner: "local", category: :orders, tags: [:sample, :raw]
-      @relation true
+      meta owner: "local", category: :orders, tags: [:sample, :raw]
+      relation true
       def asset(ctx) do
         relation = ctx.asset.relation
 
@@ -429,10 +429,10 @@ defmodule Favn.Dev.Init do
       use Favn.Namespace
       use Favn.SQLAsset
 
-      @meta owner: "local", category: :orders, tags: [:sample, :mart]
-      @depends #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])}
-      @materialized :table
-      @relation true
+      meta owner: "local", category: :orders, tags: [:sample, :mart]
+      depends #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])}
+      materialized :table
+      relation true
 
       query do
         ~SQL"""
@@ -470,7 +470,7 @@ defmodule Favn.Dev.Init do
       pipeline :local_smoke do
         asset(#{module_name(project, ["Lakehouse", "Mart", "Sales", "OrderSummary"])})
         deps(:all)
-        config(requested_by: "local-smoke")
+        settings(requested_by: "local-smoke")
         meta(owner: "local", purpose: :bootstrap_smoke)
       end
     end

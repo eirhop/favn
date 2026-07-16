@@ -9,14 +9,14 @@ defmodule FavnReferenceWorkload.Warehouse.Sources.CountryRegions do
 
   - relation location is inherited from parent namespaces (`:warehouse`
     connection from `Warehouse`, `sources` schema from `Warehouse.Sources`).
-  - `@relation true` means use the default relation name based on module name
+  - `relation true` means use the default relation name based on module name
     (`country_regions`).
   - `asset/1` writes deterministic rows into the owned DuckDB relation.
-  - `@meta ...` adds searchable ownership/category/tags metadata.
+  - `meta ...` adds searchable ownership/category/tags metadata.
 
   Alternative:
 
-  - Use `@relation [name: "my_regions"]` to override the default relation name.
+  - Use `relation [name: "my_regions"]` to override the default relation name.
   - Use `Favn.Source` only when this table is managed outside Favn and should not
     be created by the workload.
   """
@@ -26,8 +26,8 @@ defmodule FavnReferenceWorkload.Warehouse.Sources.CountryRegions do
 
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
 
-  @meta owner: "reference-workload", category: :reference_data, tags: [:seed]
-  @relation true
+  meta owner: "reference-workload", category: :reference_data, tags: [:seed]
+  relation true
   def asset(ctx) do
     DuckDBJSONLoader.replace_relation_from_sql(ctx.asset.relation, """
     select region_code

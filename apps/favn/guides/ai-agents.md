@@ -52,14 +52,23 @@ an inline resolver DSL:
 4. Read [Runtime Inputs For SQL Assets](sql-runtime-inputs.md) for the full
    workflow, supported values, budgets, redaction, and retry boundary.
 
-The canonical declaration is `@runtime_inputs MyApp.Inputs`. Anonymous
+The canonical declaration is `runtime_inputs MyApp.Inputs`. Anonymous
 functions, captures, MFA tuples, and inline resolver blocks are unsupported.
+
+For configuration questions, preserve the canonical value model instead of
+inventing generic bags: `settings` → `ctx.asset.settings` or
+`ctx.pipeline.settings`, submitted inputs → `ctx.params`, and
+`runtime_config` → `ctx.runtime_config`. SQLAssets may reference scalar settings
+as bound `@name` values, but settings cannot supply identifiers or silently
+override params. MultiAsset shared declarations are defaults and child
+declarations shallowly override them. Keep real `@moduledoc` and function
+`@doc`; custom Favn declarations do not use `@`.
 
 For DuckDB session setup, do not invent structured extension, setting, secret,
 or attach options. Read
 [DuckDB Session Scripts And Resources](duckdb-session-scripts.md), then
 `Favn.SQLAsset` and `Favn.Namespace`. Native trusted SQL files own DuckDB syntax;
-SQL assets declare stable `@resources [...]` names. Both session scripts and
+SQL assets declare stable `resources [...]` names. Both session scripts and
 asset SQL use `@name` for values, but they have separate parameter sources.
 
 For consumer-owned services inside an isolated runner, read
@@ -105,6 +114,8 @@ Useful follow-up commands:
 ```bash
 mix favn.read_doc Favn
 mix favn.read_doc Favn.Asset
+mix favn.read_doc Favn.Settings
+mix favn.read_doc Favn.Run.Context
 mix favn.read_doc Favn.SQLAsset
 mix favn.read_doc Favn.SQLAsset.RuntimeInputs
 mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Result

@@ -11,7 +11,7 @@ defmodule Favn.FreshnessDSLTest do
     defmodule #{inspect(module)} do
       use Favn.Asset
 
-      @window Favn.Window.daily()
+      window Favn.Window.daily()
       def asset(_ctx), do: :ok
     end
     """)
@@ -40,8 +40,8 @@ defmodule Favn.FreshnessDSLTest do
     defmodule #{inspect(module)} do
       use Favn.Asset
 
-      @window Favn.Window.daily()
-      @freshness :always
+      window Favn.Window.daily()
+      freshness :always
       def asset(_ctx), do: :ok
     end
     """)
@@ -56,7 +56,7 @@ defmodule Favn.FreshnessDSLTest do
     defmodule #{inspect(module)} do
       use Favn.Asset
 
-      @freshness {:daily, timezone: "Europe/Oslo"}
+      freshness {:daily, timezone: "Europe/Oslo"}
       def asset(_ctx), do: :ok
     end
     """)
@@ -75,15 +75,17 @@ defmodule Favn.FreshnessDSLTest do
 
     compile_module!(module, """
     defmodule #{inspect(module)} do
-      use Favn.Assets
+      use Favn.MultiAsset
 
-      @asset true
-      @freshness max_age: {:hours, 24}
-      def max_age_asset(_ctx), do: :ok
+      asset :max_age_asset do
+        freshness max_age: {:hours, 24}
+      end
 
-      @asset true
-      @freshness window_success: true
-      def window_success_asset(_ctx), do: :ok
+      asset :window_success_asset do
+        freshness window_success: true
+      end
+
+      def asset(_ctx), do: :ok
     end
     """)
 
@@ -100,8 +102,8 @@ defmodule Favn.FreshnessDSLTest do
       use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
 
-      @materialized :table
-      @freshness {:daily, timezone: "Europe/Oslo"}
+      materialized :table
+      freshness {:daily, timezone: "Europe/Oslo"}
       query do
         ~SQL"select 1 as id"
       end
@@ -125,8 +127,8 @@ defmodule Favn.FreshnessDSLTest do
       use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
 
-      @materialized {:incremental, strategy: :delete_insert, window_column: :id}
-      @window Favn.Window.daily()
+      materialized {:incremental, strategy: :delete_insert, window_column: :id}
+      window Favn.Window.daily()
       query do
         ~SQL"select 1 as id"
       end
@@ -145,7 +147,7 @@ defmodule Favn.FreshnessDSLTest do
       defmodule #{inspect(module)} do
         use Favn.Asset
 
-        @freshness :hourly
+        freshness :hourly
         def asset(_ctx), do: :ok
       end
       """)
@@ -155,13 +157,13 @@ defmodule Favn.FreshnessDSLTest do
   test "multiple freshness attributes raise a compile error" do
     module = unique_module("MultipleFreshness")
 
-    assert_raise CompileError, ~r/multiple @freshness attributes are not allowed/, fn ->
+    assert_raise CompileError, ~r/multiple freshness declarations are not allowed/, fn ->
       compile_module!(module, """
       defmodule #{inspect(module)} do
         use Favn.Asset
 
-        @freshness :daily
-        @freshness :always
+        freshness :daily
+        freshness :always
         def asset(_ctx), do: :ok
       end
       """)
@@ -172,13 +174,13 @@ defmodule Favn.FreshnessDSLTest do
     module = unique_module("StrayFreshness")
 
     assert_raise CompileError,
-                 ~r/@depends\/@freshness\/@retry\/@execution_pool\/@meta\/@window\/@relation on def helper\/1 requires def asset\(ctx\)/,
+                 ~r/asset declarations before def helper\/1 require def asset\(ctx\)/,
                  fn ->
                    compile_module!(module, """
                    defmodule #{inspect(module)} do
                      use Favn.Asset
 
-                     @freshness :daily
+                     freshness :daily
                      def helper(_ctx), do: :ok
 
                      def asset(_ctx), do: :ok

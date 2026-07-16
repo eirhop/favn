@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Pipeline
+  alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
   alias Favn.Plan
   alias Favn.Run.AssetResult
@@ -78,7 +79,47 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   end
 
   test "pipeline replay metadata remains usable after DTO roundtrip" do
-    version = manifest_version("mv_run_snapshot_pipeline_metadata", __MODULE__.Asset)
+    deep_value = Enum.reduce(1..10, "leaf", &%{"level_#{&1}" => &2})
+
+    settings =
+      1..55
+      |> Map.new(&{String.to_atom("snapshot_setting_#{&1}"), &1})
+      |> Map.merge(%{
+        source: "orders",
+        api_url: "https://example.test/orders",
+        token_ttl: 3_600,
+        request: %{"path" => "/orders", "nested" => deep_value}
+      })
+      |> Favn.Settings.normalize!()
+
+    anchor_window =
+      Favn.Window.Anchor.new!(
+        :day,
+        DateTime.new!(
+          ~D[2026-07-14],
+          ~T[00:00:00],
+          "Europe/Oslo",
+          Favn.Timezone.database!()
+        ),
+        DateTime.new!(
+          ~D[2026-07-15],
+          ~T[00:00:00],
+          "Europe/Oslo",
+          Favn.Timezone.database!()
+        ),
+        timezone: "Europe/Oslo"
+      )
+
+    window = Favn.Window.Policy.new!(:day, timezone: "Europe/Oslo")
+    schedule = pipeline_schedule()
+
+    version =
+      pipeline_manifest_version(
+        "mv_run_snapshot_pipeline_metadata",
+        settings,
+        window,
+        schedule
+      )
 
     run =
       RunState.new(
@@ -89,14 +130,18 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         metadata: %{
           replay_submit_kind: :pipeline,
           replay_mode: :exact_replay,
-          pipeline_submit_ref: __MODULE__.Asset,
+          pipeline_submit_ref: __MODULE__.Pipeline,
           pipeline_target_refs: [{__MODULE__.Asset, :asset}],
           pipeline_context: %{
-            id: "pipeline_1",
-            name: "daily",
-            run_kind: :pipeline,
+            module: __MODULE__.Pipeline,
+            name: :daily,
             resolved_refs: [{__MODULE__.Asset, :asset}],
-            deps: :all
+            dependencies: :all,
+            settings: settings,
+            metadata: %{"owner" => "data-platform"},
+            anchor_window: anchor_window,
+            window: window,
+            schedule: schedule
           }
         },
         submit_kind: :rerun
@@ -113,14 +158,28 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
 
     assert restored.metadata.replay_submit_kind == :pipeline
     assert restored.metadata.replay_mode == :exact_replay
-    assert restored.metadata.pipeline_submit_ref == __MODULE__.Asset
+    assert restored.metadata.pipeline_submit_ref == __MODULE__.Pipeline
     assert restored.metadata.pipeline_target_refs == [{__MODULE__.Asset, :asset}]
     assert restored.metadata.pipeline_context.resolved_refs == [{__MODULE__.Asset, :asset}]
+
+    pipeline_context = Favn.Run.PipelineContext.from_map(restored.metadata.pipeline_context)
+    assert pipeline_context.ref == {__MODULE__.Pipeline, :daily}
+    assert pipeline_context.dependencies == :all
+    assert pipeline_context.settings == settings
+    assert pipeline_context.metadata == %{"owner" => "data-platform"}
+    assert pipeline_context.anchor_window == anchor_window
+    assert pipeline_context.window == window
+    assert pipeline_context.schedule == schedule
+
+    work = %Favn.Contracts.RunnerWork{pipeline: pipeline_context}
+    assert work.pipeline.anchor_window == anchor_window
+    assert work.pipeline.window == window
+    assert work.pipeline.schedule == schedule
 
     projected = Projector.project_run(restored)
     assert projected.replay_mode == :exact_replay
     assert projected.pipeline.resolved_refs == [{__MODULE__.Asset, :asset}]
-    assert projected.submit_ref == __MODULE__.Asset
+    assert projected.submit_ref == __MODULE__.Pipeline
   end
 
   test "allows asset refs named tag when manifest contains tag selectors" do
@@ -135,11 +194,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         target_refs: [{__MODULE__.TaggedAsset, :tag}],
         metadata: %{
           pipeline_context: %{
-            id: "pipeline_1",
+            module: __MODULE__.TaggedAsset,
             name: "source_raw_full_refresh",
-            run_kind: :pipeline,
             resolved_refs: [{__MODULE__.TaggedAsset, :tag}],
-            deps: :none
+            dependencies: :none
           }
         }
       )
@@ -770,6 +828,53 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
       )
 
     version
+  end
+
+  defp pipeline_manifest_version(manifest_version_id, settings, window, schedule) do
+    manifest = %Manifest{
+      assets: [
+        %Asset{
+          ref: {__MODULE__.Asset, :asset},
+          module: __MODULE__.Asset,
+          name: :asset,
+          execution_pool: :warehouse
+        }
+      ],
+      pipelines: [
+        %Pipeline{
+          module: __MODULE__.Pipeline,
+          name: :daily,
+          selectors: [{:asset, {__MODULE__.Asset, :asset}}],
+          deps: :all,
+          schedule: {:inline, schedule},
+          window: window,
+          settings: settings,
+          metadata: %{owner: "data-platform"}
+        }
+      ]
+    }
+
+    {:ok, version} =
+      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+        manifest_version_id: manifest_version_id
+      )
+
+    version
+  end
+
+  defp pipeline_schedule do
+    %Schedule{
+      module: __MODULE__.Pipeline,
+      name: :daily,
+      ref: {__MODULE__.Pipeline, :daily},
+      kind: :cron,
+      cron: "0 2 * * *",
+      timezone: "Etc/UTC",
+      missed: :one,
+      overlap: :queue_one,
+      active: true,
+      origin: :inline
+    }
   end
 
   defp multi_asset_manifest_version(manifest_version_id) do
