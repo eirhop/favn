@@ -217,8 +217,10 @@ overrides are used at runtime and are not copied into Favn state files.
 
 - validates Elixir runtime metadata
 - computes and stores an install fingerprint, using filtered Git tree metadata
-  for clean Git sources and deterministic content hashing otherwise, while
-  excluding generated dependency/build directories
+  for clean Git sources, hashing only changed files for dirty Git worktrees,
+  and falling back to full deterministic content hashing outside Git, while
+  excluding generated dependency/build/doc/temp directories and rejecting
+  source symlinks so materialization cannot escape the runtime root
 - captures toolchain metadata
 - resolves a runnable Favn runtime workspace under `.favn/install/runtime_root`
 - records runtime source/materialization metadata in `.favn/install/runtime.json`

@@ -79,7 +79,8 @@ defmodule Favn.Dev.RunnerControlTest do
                RunnerControl.register_manifest(ctx.version,
                  runner_node_name: ctx.runner_node_name,
                  rpc_cookie: ctx.cookie,
-                 runner_module: MissingRunner
+                 runner_module: MissingRunner,
+                 register_retry_timeout_ms: 0
                )
 
       assert runner_node == Node.self()

@@ -56,9 +56,9 @@ defmodule Favn.Dev.RuntimeSource do
              "runner_mix_exs_sha256" => file_sha256(Path.join(root, "apps/favn_runner/mix.exs")),
              "orchestrator_mix_exs_sha256" =>
                file_sha256(Path.join(root, "apps/favn_orchestrator/mix.exs")),
-              "view_mix_exs_sha256" => file_sha256(Path.join(root, "apps/favn_view/mix.exs")),
-              "runtime_source_tree" => source_tree
-            }}
+             "view_mix_exs_sha256" => file_sha256(Path.join(root, "apps/favn_view/mix.exs")),
+             "runtime_source_tree" => source_tree
+           }}
         end
 
       false ->
@@ -153,37 +153,69 @@ defmodule Favn.Dev.RuntimeSource do
   defp git_tree_fingerprint(root) do
     with git when is_binary(git) <- System.find_executable("git"),
          {git_root, 0} <-
-           System.cmd(git, ["-C", root, "rev-parse", "--show-toplevel"],
-             stderr_to_stdout: true
-           ),
+           System.cmd(git, ["-C", root, "rev-parse", "--show-toplevel"], stderr_to_stdout: true),
          git_root <- String.trim(git_root),
          {:ok, relative_root} <- relative_git_root(root, git_root),
          pathspecs <- git_pathspecs(relative_root),
-         {"", 0} <-
+         {status, 0} <-
            System.cmd(
              git,
-             ["-C", git_root, "status", "--porcelain=v1", "--untracked-files=all", "--" | pathspecs],
+             [
+               "-C",
+               git_root,
+               "status",
+               "--porcelain=v1",
+               "-z",
+               "--untracked-files=all",
+               "--ignored=matching",
+               "--no-renames",
+               "--"
+               | pathspecs
+             ],
              stderr_to_stdout: true
            ),
          {tree, 0} <-
            System.cmd(
              git,
-             ["-C", git_root, "ls-tree", "-r", "-z", "HEAD", "--" | git_included_pathspecs(relative_root)],
+             [
+               "-C",
+               git_root,
+               "ls-tree",
+               "-r",
+               "-z",
+               "HEAD",
+               "--" | git_included_pathspecs(relative_root)
+             ],
              stderr_to_stdout: true
            ),
-         {:ok, records} <- git_tree_records(tree, relative_root) do
-      {:ok,
-       %{
-         "strategy" => "git_tree",
-         "sha256" => hash_git_records(records),
-         "file_count" => length(records),
-         "entries" => RuntimeTreePolicy.entries(),
-         "ignored_entries" => RuntimeTreePolicy.ignored_entries() |> Enum.sort(),
-         "ignored_relative_entries" => RuntimeTreePolicy.ignored_relative_entries()
-       }}
+         {:ok, records} <- git_tree_records(tree, relative_root),
+         {:ok, changed_paths} <- git_status_paths(status, relative_root) do
+      git_worktree_fingerprint(root, records, changed_paths)
     else
       _reason -> :fallback
     end
+  end
+
+  defp git_worktree_fingerprint(_root, records, []) do
+    {:ok, git_fingerprint("git_tree", records, 0)}
+  end
+
+  defp git_worktree_fingerprint(root, records, changed_paths) do
+    with {:ok, records} <- overlay_worktree_records(root, records, changed_paths) do
+      {:ok, git_fingerprint("git_worktree", records, length(changed_paths))}
+    end
+  end
+
+  defp git_fingerprint(strategy, records, changed_path_count) do
+    %{
+      "strategy" => strategy,
+      "sha256" => hash_git_records(records),
+      "file_count" => length(records),
+      "changed_path_count" => changed_path_count,
+      "entries" => RuntimeTreePolicy.entries(),
+      "ignored_entries" => RuntimeTreePolicy.ignored_entries() |> Enum.sort(),
+      "ignored_relative_entries" => RuntimeTreePolicy.ignored_relative_entries()
+    }
   end
 
   defp relative_git_root(root, git_root) do
@@ -215,28 +247,122 @@ defmodule Favn.Dev.RuntimeSource do
   defp git_tree_records(tree, relative_root) do
     prefix = if relative_root == "", do: "", else: relative_root <> "/"
 
-    records =
-      tree
-      |> String.split(<<0>>, trim: true)
-      |> Enum.flat_map(fn record ->
-        case String.split(record, "\t", parts: 2) do
-          [identity, path] ->
-            relative = relative_git_path(path, prefix)
+    tree
+    |> String.split(<<0>>, trim: true)
+    |> Enum.reduce_while({:ok, []}, fn record, {:ok, records} ->
+      with [identity, path] <- String.split(record, "\t", parts: 2),
+           false <- String.starts_with?(identity, "120000 "),
+           {:ok, relative} <- relative_git_path(path, prefix) do
+        if RuntimeTreePolicy.included_relative_path?(relative) do
+          {:cont, {:ok, [{relative, identity} | records]}}
+        else
+          {:cont, {:ok, records}}
+        end
+      else
+        _reason -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, records} -> {:ok, Enum.sort(records)}
+      :error -> :error
+    end
+  end
 
+  defp git_status_paths("", _relative_root), do: {:ok, []}
+
+  defp git_status_paths(status, relative_root) do
+    prefix = if relative_root == "", do: "", else: relative_root <> "/"
+
+    status
+    |> String.split(<<0>>, trim: true)
+    |> Enum.reduce_while({:ok, []}, fn
+      <<_index_status, _worktree_status, " ", path::binary>>, {:ok, paths} ->
+        case relative_git_path(path, prefix) do
+          {:ok, relative} ->
             if RuntimeTreePolicy.included_relative_path?(relative) do
-              [{relative, identity}]
+              {:cont, {:ok, [relative | paths]}}
             else
-              []
+              {:cont, {:ok, paths}}
             end
 
-          _other ->
-            []
+          :error ->
+            {:halt, :error}
         end
-      end)
-      |> Enum.sort()
 
-    {:ok, records}
+      _record, _acc ->
+        {:halt, :error}
+    end)
+    |> case do
+      {:ok, paths} -> {:ok, paths |> Enum.uniq() |> Enum.sort()}
+      :error -> :error
+    end
   end
+
+  defp overlay_worktree_records(root, records, changed_paths) do
+    changed_paths
+    |> Enum.reduce_while({:ok, Map.new(records)}, fn relative, {:ok, record_map} ->
+      path = Path.join(root, relative)
+
+      case overlay_worktree_path(record_map, path, relative) do
+        {:ok, record_map} -> {:cont, {:ok, record_map}}
+        :deleted -> {:cont, {:ok, Map.delete(record_map, relative)}}
+        :fallback -> {:halt, :fallback}
+      end
+    end)
+    |> case do
+      {:ok, record_map} -> {:ok, record_map |> Map.to_list() |> Enum.sort()}
+      :fallback -> :fallback
+    end
+  end
+
+  defp overlay_worktree_path(record_map, path, relative) do
+    case File.lstat(path) do
+      {:ok, %{type: :regular, size: size}} ->
+        case file_sha256_result(path) do
+          {:ok, sha256} -> {:ok, Map.put(record_map, relative, worktree_identity(size, sha256))}
+          {:error, _reason} -> :fallback
+        end
+
+      {:ok, %{type: :directory}} ->
+        overlay_worktree_directory(record_map, path, relative)
+
+      {:ok, %{type: _other}} ->
+        :fallback
+
+      {:error, :enoent} ->
+        :deleted
+
+      {:error, _reason} ->
+        :fallback
+    end
+  end
+
+  defp overlay_worktree_directory(record_map, path, relative) do
+    with {:ok, records} <- collect_records(path, relative) do
+      record_map = remove_record_subtree(record_map, relative)
+
+      {:ok,
+       Enum.reduce(records, record_map, fn
+         {:file, file_relative, size, sha256}, acc ->
+           Map.put(acc, file_relative, worktree_identity(size, sha256))
+
+         {:directory, _directory_relative}, acc ->
+           acc
+       end)}
+    else
+      {:error, _reason} -> :fallback
+    end
+  end
+
+  defp remove_record_subtree(record_map, relative) do
+    prefix = String.trim_trailing(relative, "/") <> "/"
+
+    Map.reject(record_map, fn {path, _identity} ->
+      path == relative or String.starts_with?(path, prefix)
+    end)
+  end
+
+  defp worktree_identity(size, sha256), do: "worktree #{size} #{sha256}"
 
   defp hash_git_records(records) do
     records
@@ -247,8 +373,15 @@ defmodule Favn.Dev.RuntimeSource do
     |> Base.encode16(case: :lower)
   end
 
-  defp relative_git_path(path, ""), do: path
-  defp relative_git_path(path, prefix), do: String.replace_prefix(path, prefix, "")
+  defp relative_git_path(path, ""), do: {:ok, path}
+
+  defp relative_git_path(path, prefix) do
+    if String.starts_with?(path, prefix) do
+      {:ok, String.replace_prefix(path, prefix, "")}
+    else
+      :error
+    end
+  end
 
   defp fingerprint_records(root) do
     case RuntimeTreePolicy.reduce_required_entries(root, [], fn path, relative, acc ->
@@ -263,7 +396,7 @@ defmodule Favn.Dev.RuntimeSource do
   end
 
   defp collect_records(path, relative) do
-    case File.stat(path) do
+    case File.lstat(path) do
       {:ok, %{type: :directory}} ->
         collect_directory_records(path, relative)
 

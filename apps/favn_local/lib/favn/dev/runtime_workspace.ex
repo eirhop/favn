@@ -40,35 +40,39 @@ defmodule Favn.Dev.RuntimeWorkspace do
 
   defp copy_required_entries(source_root, runtime_root) do
     case RuntimeTreePolicy.reduce_required_entries(source_root, :ok, fn source, relative, :ok ->
-      destination = Path.join(runtime_root, relative)
+           destination = Path.join(runtime_root, relative)
 
-      case copy_entry(source, destination) do
-        :ok -> {:ok, :ok}
-        {:error, reason} -> {:error, reason}
-      end
-    end) do
+           case copy_entry(source, destination) do
+             :ok -> {:ok, :ok}
+             {:error, reason} -> {:error, reason}
+           end
+         end) do
       {:ok, :ok} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp copy_entry(source, destination) do
-    case File.stat(source) do
+    case File.lstat(source) do
       {:ok, %{type: :directory}} ->
         with :ok <- File.mkdir_p(Path.dirname(destination)),
              :ok <- copy_directory(source, destination) do
           :ok
         else
+          {:error, {:unsupported_runtime_entry, _path, _type}} = error -> error
           {:error, reason} -> {:error, {:copy_failed, source, destination, reason}}
         end
 
-      {:ok, _} ->
+      {:ok, %{type: :regular}} ->
         with :ok <- File.mkdir_p(Path.dirname(destination)),
              :ok <- File.cp(source, destination) do
           :ok
         else
           {:error, reason} -> {:error, {:copy_failed, source, destination, reason}}
         end
+
+      {:ok, %{type: other}} ->
+        {:error, {:unsupported_runtime_entry, source, other}}
 
       {:error, reason} ->
         {:error, {:copy_failed, source, destination, reason}}

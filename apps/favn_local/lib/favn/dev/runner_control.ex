@@ -17,6 +17,7 @@ defmodule Favn.Dev.RunnerControl do
           {:runner_node_name, String.t()}
           | {:rpc_cookie, String.t()}
           | {:runner_module, module()}
+          | {:register_retry_timeout_ms, non_neg_integer()}
           | {:root_dir, Path.t()}
 
   @spec register_manifest(Version.t(), [register_opt()]) :: :ok | {:error, term()}
@@ -25,13 +26,14 @@ defmodule Favn.Dev.RunnerControl do
          {:ok, cookie} <- fetch_rpc_cookie(opts),
          :ok <- NodeControl.ensure_local_node_started(cookie),
          {:ok, runner_module} <- fetch_runner_module(opts),
+         {:ok, retry_timeout_ms} <- fetch_register_retry_timeout(opts),
          :ok <- ensure_connected(runner_node),
          {:ok, result} <-
            register_with_fallback(
              runner_node,
              version,
              runner_module,
-             @register_wait_timeout_ms
+             retry_timeout_ms
            ) do
       case result do
         :ok -> :ok
@@ -48,6 +50,13 @@ defmodule Favn.Dev.RunnerControl do
     case Keyword.get(opts, :runner_module, FavnRunner) do
       module when is_atom(module) -> {:ok, module}
       _ -> {:error, :invalid_runner_module}
+    end
+  end
+
+  defp fetch_register_retry_timeout(opts) do
+    case Keyword.get(opts, :register_retry_timeout_ms, @register_wait_timeout_ms) do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms >= 0 -> {:ok, timeout_ms}
+      _other -> {:error, :invalid_register_retry_timeout}
     end
   end
 
