@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory.State do
   """
 
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -21,6 +22,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory.State do
           manifest_version_ids_by_content_hash: %{optional(String.t()) => String.t()},
           active_manifest_version_id: String.t() | nil,
           runs: %{optional(String.t()) => RunState.t()},
+          runtime_input_pins: %{optional({String.t(), Favn.Plan.node_key()}) => Pin.t()},
           execution_group_run_ids: %{optional(String.t()) => MapSet.t(String.t())},
           execution_group_summaries: %{optional(String.t()) => map()},
           run_events: %{optional(String.t()) => [map()]},
@@ -66,6 +68,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory.State do
             manifest_version_ids_by_content_hash: %{},
             active_manifest_version_id: nil,
             runs: %{},
+            runtime_input_pins: %{},
             execution_group_run_ids: %{},
             execution_group_summaries: %{},
             run_events: %{},

@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.OperatorCommands.AssetBackfillRequest do
   """
 
   alias Favn.Backfill.RangeRequest
+  alias Favn.Retry.Policy
   alias FavnOrchestrator.OperatorCommands.Input
 
   @type dependency_mode :: :all | :none
@@ -14,8 +15,7 @@ defmodule FavnOrchestrator.OperatorCommands.AssetBackfillRequest do
           refresh_mode: refresh_mode(),
           range: RangeRequest.t(),
           metadata: map() | nil,
-          max_attempts: pos_integer() | nil,
-          retry_backoff_ms: non_neg_integer() | nil,
+          retry_policy: Policy.t() | nil,
           timeout_ms: pos_integer() | nil
         }
 
@@ -23,8 +23,7 @@ defmodule FavnOrchestrator.OperatorCommands.AssetBackfillRequest do
             refresh_mode: :auto,
             range: nil,
             metadata: nil,
-            max_attempts: nil,
-            retry_backoff_ms: nil,
+            retry_policy: nil,
             timeout_ms: nil
 
   @doc """
@@ -54,14 +53,12 @@ defmodule FavnOrchestrator.OperatorCommands.AssetBackfillRequest do
     refresh_value = Input.field(input, :refresh_mode, Input.field(input, :refresh, :auto))
     range_value = Input.field(input, :range, Input.field(input, :range_request))
 
-    with {:ok, dependency_mode} <- Input.dependency_mode(dependency_value),
+    with :ok <- Input.reject_legacy_retry_fields(input),
+         {:ok, dependency_mode} <- Input.dependency_mode(dependency_value),
          {:ok, refresh_mode} <- Input.asset_refresh_mode(refresh_value),
          {:ok, range} <- Input.range(range_value),
          {:ok, metadata} <- Input.metadata(Input.field(input, :metadata)),
-         {:ok, max_attempts} <-
-           Input.positive_integer(Input.field(input, :max_attempts), :max_attempts),
-         {:ok, retry_backoff_ms} <-
-           Input.non_neg_integer(Input.field(input, :retry_backoff_ms), :retry_backoff_ms),
+         {:ok, retry_policy} <- Input.retry_policy(Input.field(input, :retry_policy)),
          {:ok, timeout_ms} <- Input.timeout_ms(Input.field(input, :timeout_ms)) do
       {:ok,
        %__MODULE__{
@@ -69,8 +66,7 @@ defmodule FavnOrchestrator.OperatorCommands.AssetBackfillRequest do
          refresh_mode: refresh_mode,
          range: range,
          metadata: metadata,
-         max_attempts: max_attempts,
-         retry_backoff_ms: retry_backoff_ms,
+         retry_policy: retry_policy,
          timeout_ms: timeout_ms
        }}
     end

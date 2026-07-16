@@ -57,7 +57,7 @@ defmodule Favn.SQLAsset do
 
   - define exactly one `query/1` declaration
   - declare exactly one `@materialized`
-  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, `@materialized`, optional `@relation`, optional `@resources`, and optional `@runtime_inputs` before `query`
+  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, `@retry`, `@materialized`, optional `@relation`, optional `@resources`, and optional `@runtime_inputs` before `query`
   - use `~SQL` for inline SQL bodies
   - use `query file: "..."` for asset-local file-backed SQL loaded at compile
     time
@@ -69,10 +69,32 @@ defmodule Favn.SQLAsset do
   - `@depends`: repeatable dependency declaration
   - `@window`: one `Favn.Window.*` spec
   - `@freshness`: optional asset freshness policy
+  - `@retry`: optional node-attempt retry policy overriding the pipeline default
   - `@relation`: optional owned relation declaration
   - `@materialized`: required SQL materialization strategy
   - `@resources`: optional list of named physical-session resources
   - `@runtime_inputs`: optional module implementing `Favn.SQLAsset.RuntimeInputs`
+
+  ## Retry policy
+
+  SQL assets use the same `@retry` declaration as `Favn.Asset`:
+
+      @retry max_attempts: 4,
+             backoff: {:exponential, initial: 5_000, max: 120_000, jitter: 0.2}
+      @materialized :table
+      query do
+        ~SQL"select * from staged_orders"
+      end
+
+  The effective precedence is explicit operator override, asset `@retry`,
+  pipeline `retry`, then one attempt. Policy controls count and timing only.
+  Favn never blindly retries a write, materialization, transaction, check, or
+  unknown outcome merely because `max_attempts` is greater than one. SQL
+  session/bootstrap/read safety retries are separate internal operations and do
+  not consume node attempts.
+
+  Read [Retries, Replay, And Runtime-Input Pins](retries-and-replay.html) for
+  the complete safety and replay contract.
 
   ## Freshness
 
@@ -280,24 +302,29 @@ defmodule Favn.SQLAsset do
   blocks are not accepted. Remove those forms instead of wrapping or migrating
   them at runtime; the manifest must contain one stable typed module reference.
 
-  The resolver runs once only when the asset will execute, after the effective
-  window is final and before SQL rendering or session admission. Its values use
-  the normal SQL binding path and can be referenced by nested `defsql` calls.
-  Resolver values never become SQL source. Submitted and resolved parameter
-  names may not collide, and `window_start`/`window_end` remain reserved.
+  The resolver runs only when the asset will execute, after the effective window
+  is final and before SQL rendering or session admission. The orchestrator
+  atomically pins the normalized result under the run and planned node before
+  SQL work can start. Every retry and safe restart recovery reuses that persisted
+  winner without calling the resolver again. Its values use the normal SQL
+  binding path and can be referenced by nested `defsql` calls. Resolver values
+  never become SQL source. Submitted and resolved parameter names may not
+  collide, and `window_start`/`window_end` remain reserved.
 
   Resolution has a 30-second upper bound, additionally limited by the remaining
   node deadline. The runner accepts at most 128 parameters, a 4 MiB parameter
   payload, a 1 KiB identity, and 64 KiB/128 entries of JSON-safe metadata.
-  Sensitive names declared in the result are redacted. Resolved payloads are not
-  persisted; retries and runner restarts resolve them again until an explicit
-  pinning contract is added.
+  Sensitive names declared in the result are redacted outside the dedicated pin
+  payload and require protected persistence. Missing protection fails before
+  materialization. Normal new runs resolve fresh, exact replay requires source
+  pins, and resume/retry-remaining inherit existing pins while resolving only
+  nodes the source run never reached.
 
   Read `Favn.SQLAsset.RuntimeInputs`, then
   `Favn.SQLAsset.RuntimeInputs.Result` and
   `Favn.SQLAsset.RuntimeInputs.Error`. The package guide
   [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) provides the complete
-  authoring workflow, supported values, limits, redaction rules, and retry
+  authoring workflow, supported values, limits, redaction rules, and pinning
   boundary.
 
   ## SQL Session Resources
@@ -378,6 +405,7 @@ defmodule Favn.SQLAsset do
     quote do
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
       Module.register_attribute(__MODULE__, :freshness, accumulate: true)
+      Module.register_attribute(__MODULE__, :retry, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
       Module.register_attribute(__MODULE__, :relation, accumulate: true)
       Module.register_attribute(__MODULE__, :window, accumulate: true)
@@ -742,6 +770,10 @@ defmodule Favn.SQLAsset do
         :freshness,
         env.module |> DSLCompiler.fetch_accum_attribute(:freshness) |> Enum.reverse()
       )
+      |> Map.put(
+        :retry,
+        env.module |> DSLCompiler.fetch_accum_attribute(:retry) |> Enum.reverse()
+      )
       |> Map.put(:meta, Module.get_attribute(env.module, :meta))
       |> Map.put(
         :window,
@@ -839,6 +871,7 @@ defmodule Favn.SQLAsset do
     meta = normalize_meta!(raw_definition.meta, raw_definition)
     window_spec = normalize_window!(raw_definition.window, raw_definition)
     freshness = normalize_freshness!(raw_definition.freshness, window_spec, raw_definition)
+    retry_policy = normalize_retry!(raw_definition.retry, raw_definition)
 
     materialization =
       normalize_materialized!(raw_definition.materialized, window_spec, raw_definition)
@@ -904,6 +937,7 @@ defmodule Favn.SQLAsset do
       session_requirements: session_requirements,
       window_spec: window_spec,
       freshness: freshness,
+      retry_policy: retry_policy,
       relation: relation,
       materialization: materialization
     }
@@ -1126,6 +1160,28 @@ defmodule Favn.SQLAsset do
 
   defp normalize_freshness!(freshness, window_spec, raw_definition) do
     Asset.normalize_freshness!(freshness, window_spec, "before query")
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
+  end
+
+  defp normalize_retry!([], _raw_definition), do: nil
+  defp normalize_retry!([value], _raw_definition), do: Favn.Retry.Policy.new!(value)
+
+  defp normalize_retry!([_first, _second | _rest], raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "multiple @retry attributes are not allowed; use at most one @retry before query"
+    )
+  end
+
+  defp normalize_retry!(value, raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "invalid @retry value #{inspect(value)}; expected a retry keyword list"
+    )
   rescue
     error in ArgumentError ->
       DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
@@ -1375,6 +1431,7 @@ defmodule Favn.SQLAsset do
   defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
     depends = DSLCompiler.fetch_accum_attribute(env.module, :depends)
     freshness = DSLCompiler.fetch_accum_attribute(env.module, :freshness)
+    retry = DSLCompiler.fetch_accum_attribute(env.module, :retry)
     meta = Module.get_attribute(env.module, :meta)
     window = DSLCompiler.fetch_accum_attribute(env.module, :window)
     relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
@@ -1394,10 +1451,12 @@ defmodule Favn.SQLAsset do
         captured -> resources != captured
       end
 
-    if depends != [] or freshness != [] or not is_nil(meta) or window != [] or relation != [] or
+    if depends != [] or freshness != [] or retry != [] or not is_nil(meta) or window != [] or
+         relation != [] or
          materialized != [] or runtime_inputs_stray? or resources_stray? do
       Module.delete_attribute(env.module, :depends)
       Module.delete_attribute(env.module, :freshness)
+      Module.delete_attribute(env.module, :retry)
       Module.delete_attribute(env.module, :meta)
       Module.delete_attribute(env.module, :window)
       Module.delete_attribute(env.module, :relation)
@@ -1407,7 +1466,7 @@ defmodule Favn.SQLAsset do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "@depends/@freshness/@meta/@window/@relation/@materialized/@runtime_inputs/@resources on #{kind} #{name}/#{arity} requires query immediately below those attributes"
+        "@depends/@freshness/@retry/@meta/@window/@relation/@materialized/@runtime_inputs/@resources on #{kind} #{name}/#{arity} requires query immediately below those attributes"
       )
     else
       :ok

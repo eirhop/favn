@@ -374,7 +374,8 @@ defmodule FavnRunner.Server do
          RunnerError.normalize(:runner_queue_timeout,
            kind: :boundary,
            type: :runner_queue_timeout,
-           retryable?: true
+           retryable?: true,
+           outcome: :safe_failure
          )}
       )
     end)

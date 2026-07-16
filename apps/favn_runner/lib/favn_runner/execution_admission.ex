@@ -61,7 +61,8 @@ defmodule FavnRunner.ExecutionAdmission do
            max_active_workers: admission.max_active_workers,
            max_queue_size: admission.max_queue_size
          },
-         retryable?: true
+         retryable?: true,
+         outcome: :safe_failure
        ), admission}
     end
   end

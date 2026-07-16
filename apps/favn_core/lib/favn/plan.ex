@@ -18,6 +18,7 @@ defmodule Favn.Plan do
   Execution action for one planned node.
   """
   @type action :: :run | :observe
+  @type retry_policy_source :: :operator | :asset | :pipeline | :default
 
   @typedoc """
   One planned node keyed by canonical ref.
@@ -32,7 +33,9 @@ defmodule Favn.Plan do
           downstream: [node_key()],
           stage: non_neg_integer(),
           execution_pool: atom() | nil,
-          action: action()
+          action: action(),
+          retry_policy: Favn.Retry.Policy.t(),
+          retry_policy_source: retry_policy_source()
         }
 
   @typedoc """

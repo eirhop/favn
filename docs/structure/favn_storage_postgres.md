@@ -16,6 +16,7 @@ Code:
 - Execution-group summaries and log cursor indexes: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_execution_group_summaries.ex`
 - Target status projection migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_target_statuses.ex`
 - Pipeline target run-history query metadata migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_run_pipeline_query_column.ex`
+- Runtime-input pin migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_runtime_input_pins.ex`
 
 Tests:
 - `apps/favn_storage_postgres/test/`
@@ -23,4 +24,6 @@ Tests:
 
 Use when changing Postgres persistence, migrations, readiness checks,
 transaction semantics, materialization claim acquisition, or production-oriented
-storage behavior.
+storage behavior. Runtime-input pins use a unique `(run_id, node_key_hash)` row,
+atomic winner reuse/conflict checks, and the same fail-closed protected codec as
+SQLite.

@@ -299,7 +299,8 @@ defmodule FavnRunner.RuntimeInputResolver do
            resolver: module,
            reason: error.reason,
            resolver_metadata: error.metadata,
-           asset_retryable?: error.retryable?
+           asset_retryable?: error.retryable?,
+           retry_after_ms: error.retry_after_ms
          }
        )}
     end
@@ -558,10 +559,21 @@ defmodule FavnRunner.RuntimeInputResolver do
            %{resolver: module}
          )}
 
+      not valid_retry_after?(error.retry_after_ms) ->
+        {:error,
+         runtime_error(
+           :runtime_inputs_invalid_result,
+           "runtime input error retry_after_ms must be nil or an integer from 0 through 86400000",
+           %{resolver: module}
+         )}
+
       true ->
         validate_metadata(error.metadata, module)
     end
   end
+
+  defp valid_retry_after?(nil), do: true
+  defp valid_retry_after?(value), do: is_integer(value) and value >= 0 and value <= 86_400_000
 
   defp merge_params(submitted, resolved, module) do
     submitted_names = submitted |> Map.keys() |> Enum.map(&normalize_param_name/1) |> MapSet.new()

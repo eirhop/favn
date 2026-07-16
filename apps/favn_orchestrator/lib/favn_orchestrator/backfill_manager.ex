@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.BackfillManager do
   alias Favn.Manifest.Index
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
+  alias Favn.Retry.Policy, as: RetryPolicy
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Runtime, as: RuntimeWindow
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -238,10 +239,7 @@ defmodule FavnOrchestrator.BackfillManager do
   end
 
   defp parent_execution_opts(opts) do
-    with {:ok, max_attempts} <-
-           positive_integer_option(opts, :max_attempts, 1, :invalid_max_attempts),
-         {:ok, retry_backoff_ms} <-
-           non_neg_integer_option(opts, :retry_backoff_ms, 0, :invalid_retry_backoff_ms),
+    with {:ok, _retry_policy} <- RetryPolicy.new(Keyword.get(opts, :retry_policy)),
          {:ok, timeout_ms} <-
            positive_integer_option(
              opts,
@@ -249,12 +247,7 @@ defmodule FavnOrchestrator.BackfillManager do
              RunState.default_timeout_ms(),
              :invalid_timeout_ms
            ) do
-      {:ok,
-       [
-         max_attempts: max_attempts,
-         retry_backoff_ms: retry_backoff_ms,
-         timeout_ms: timeout_ms
-       ]}
+      {:ok, [timeout_ms: timeout_ms]}
     end
   end
 
@@ -880,6 +873,9 @@ defmodule FavnOrchestrator.BackfillManager do
       Keyword.has_key?(opts, :lookback_policy) ->
         {:error, {:unsupported_backfill_option, :lookback_policy}}
 
+      key = Enum.find([:max_attempts, :retry_backoff_ms], &Keyword.has_key?(opts, &1)) ->
+        {:error, {:unsupported_retry_option, key, :use_retry_policy}}
+
       true ->
         :ok
     end
@@ -931,13 +927,6 @@ defmodule FavnOrchestrator.BackfillManager do
   defp positive_integer_option(opts, key, default, error_reason) do
     case Keyword.get(opts, key, default) do
       value when is_integer(value) and value > 0 -> {:ok, value}
-      _value -> {:error, error_reason}
-    end
-  end
-
-  defp non_neg_integer_option(opts, key, default, error_reason) do
-    case Keyword.get(opts, key, default) do
-      value when is_integer(value) and value >= 0 -> {:ok, value}
       _value -> {:error, error_reason}
     end
   end

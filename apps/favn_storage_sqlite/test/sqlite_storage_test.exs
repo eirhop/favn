@@ -10,6 +10,8 @@ defmodule Favn.SQLiteStorageTest do
   alias Favn.Manifest.Identity
   alias Favn.Manifest.Version
   alias Favn.Run
+  alias Favn.RuntimeInput.Pin
+  alias Favn.RuntimeInput.Resolution
   alias Favn.Scheduler.State, as: SchedulerState
   alias Favn.Storage
   alias Favn.Storage.Adapter.SQLite, as: Adapter
@@ -89,6 +91,37 @@ defmodule Favn.SQLiteStorageTest do
     assert {:ok, fetched} = Storage.get_run("sqlite-run-1")
     assert fetched.id == run.id
     assert fetched.status == :running
+  end
+
+  test "atomically persists runtime-input pins and protects sensitive payloads", %{
+    db_path: db_path
+  } do
+    node_key = {{MyApp.Asset, :asset}, nil}
+    pin = runtime_input_pin("pin-run", node_key, %{snapshot: "one"})
+
+    assert {:ok, ^pin} = OrchestratorStorage.create_runtime_input_pin(pin)
+    assert {:ok, ^pin} = OrchestratorStorage.create_runtime_input_pin(pin)
+    assert {:ok, ^pin} = OrchestratorStorage.get_runtime_input_pin("pin-run", node_key)
+
+    conflict = runtime_input_pin("pin-run", node_key, %{snapshot: "two"})
+
+    assert {:error, :runtime_input_pin_conflict} =
+             OrchestratorStorage.create_runtime_input_pin(conflict)
+
+    sensitive = runtime_input_pin("secret-run", node_key, %{signed_url: "secret"}, [:signed_url])
+
+    assert {:error, :runtime_input_pin_encryption_key_required} =
+             OrchestratorStorage.create_runtime_input_pin(sensitive)
+
+    protected_opts = [
+      database: db_path,
+      pool_size: 1,
+      runtime_input_pin_key: :crypto.strong_rand_bytes(32)
+    ]
+
+    assert {:ok, stored} = Adapter.create_runtime_input_pin(sensitive, protected_opts)
+    assert stored.payload_fingerprint == sensitive.payload_fingerprint
+    assert {:ok, ^stored} = Adapter.get_runtime_input_pin("secret-run", node_key, protected_opts)
   end
 
   test "lists runs newest first by latest persisted write, not by id" do
@@ -1810,5 +1843,18 @@ defmodule Favn.SQLiteStorageTest do
     :sha256
     |> :crypto.hash(token)
     |> Base.url_encode64(padding: false)
+  end
+
+  defp runtime_input_pin(run_id, node_key, params, sensitive_params \\ []) do
+    {:ok, resolution} =
+      Resolution.new(%{
+        resolver: MyApp.Inputs,
+        params: params,
+        input_identity: Map.values(params) |> List.first() |> to_string(),
+        metadata: %{source: "test"},
+        sensitive_params: sensitive_params
+      })
+
+    Pin.new(run_id, node_key, resolution)
   end
 end

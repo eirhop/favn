@@ -193,8 +193,7 @@ defmodule FavnOrchestrator.Operator.Commands do
        |> Keyword.put(:range_request, request.range)
        |> Keyword.put(:dependencies, request.dependency_mode)
        |> maybe_put(:refresh, refresh)
-       |> maybe_put(:max_attempts, request.max_attempts)
-       |> maybe_put(:retry_backoff_ms, request.retry_backoff_ms)
+       |> maybe_put(:retry_policy, request.retry_policy)
        |> maybe_put(:timeout_ms, request.timeout_ms)}
     end
   end
@@ -205,6 +204,7 @@ defmodule FavnOrchestrator.Operator.Commands do
        opts
        |> maybe_put(:window_request, request.window)
        |> maybe_put(:refresh, pipeline_refresh(request.refresh_mode))
+       |> maybe_put(:retry_policy, request.retry_policy)
        |> maybe_put(:timeout_ms, request.timeout_ms)}
     end
   end
@@ -216,8 +216,7 @@ defmodule FavnOrchestrator.Operator.Commands do
        |> Keyword.put(:range_request, request.range)
        |> maybe_put(:coverage_baseline_id, request.coverage_baseline_id)
        |> maybe_put(:refresh, pipeline_refresh(request.refresh_mode))
-       |> maybe_put(:max_attempts, request.max_attempts)
-       |> maybe_put(:retry_backoff_ms, request.retry_backoff_ms)
+       |> maybe_put(:retry_policy, request.retry_policy)
        |> maybe_put(:timeout_ms, request.timeout_ms)}
     end
   end

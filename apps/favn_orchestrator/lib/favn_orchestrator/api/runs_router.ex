@@ -15,6 +15,8 @@ defmodule FavnOrchestrator.API.RunsRouter do
   alias FavnOrchestrator.API.OperatorCommands
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
+  alias Favn.Replay.InputMode
+  alias Favn.Retry.Policy
 
   plug(:match)
   plug(:dispatch)
@@ -109,9 +111,16 @@ defmodule FavnOrchestrator.API.RunsRouter do
   post "/:run_id/rerun" do
     with :ok <- Authentication.ensure_service(conn),
          {:ok, session, actor} <- Authentication.actor_context(conn, :operator) do
-      IdempotentCommand.run(conn, "run.rerun", actor.id, session.id, %{run_id: run_id}, fn
-        idempotency -> rerun(conn, run_id, session, actor, idempotency)
-      end)
+      params = if is_map(conn.body_params), do: conn.body_params, else: %{}
+
+      IdempotentCommand.run(
+        conn,
+        "run.rerun",
+        actor.id,
+        session.id,
+        %{run_id: run_id, options: params},
+        fn idempotency -> rerun(conn, run_id, params, session, actor, idempotency) end
+      )
     else
       {:error, reason} -> authentication_error(conn, reason)
     end
@@ -192,11 +201,17 @@ defmodule FavnOrchestrator.API.RunsRouter do
     end
   end
 
-  defp rerun(conn, run_id, session, actor, idempotency) do
-    case FavnOrchestrator.rerun(run_id) do
-      {:ok, rerun_id} ->
-        audit(conn, "run.rerun", rerun_id, session, actor, idempotency)
-        {:ok, 201, %{run: run_summary(rerun_id)}, "run", rerun_id}
+  defp rerun(conn, run_id, params, session, actor, idempotency) do
+    with {:ok, opts} <- rerun_options(params),
+         {:ok, rerun_id} <- FavnOrchestrator.rerun(run_id, opts) do
+      audit(conn, "run.rerun", rerun_id, session, actor, idempotency)
+      {:ok, 201, %{run: run_summary(rerun_id)}, "run", rerun_id}
+    else
+      {:error, :invalid_input_mode} ->
+        validation_command_error("Invalid input_mode")
+
+      {:error, {:invalid_retry_policy, _reason}} ->
+        validation_command_error("Invalid retry_policy")
 
       {:error, :not_found} ->
         {:error, 404, "not_found", "Run was not found", %{}}
@@ -209,6 +224,31 @@ defmodule FavnOrchestrator.API.RunsRouter do
         {:error, 400, "bad_request", "Request failed", %{}}
     end
   end
+
+  defp rerun_options(params) when is_map(params) do
+    with {:ok, input_mode} <- optional_input_mode(Map.get(params, "input_mode")),
+         {:ok, retry_policy} <- optional_retry_policy(Map.get(params, "retry_policy")) do
+      {:ok,
+       []
+       |> put_optional(:input_mode, input_mode)
+       |> put_optional(:retry_policy, retry_policy)}
+    end
+  end
+
+  defp optional_input_mode(nil), do: {:ok, nil}
+  defp optional_input_mode(value), do: InputMode.normalize(value)
+
+  defp optional_retry_policy(nil), do: {:ok, nil}
+
+  defp optional_retry_policy(value) do
+    case Policy.new(value) do
+      {:ok, policy} -> {:ok, policy}
+      {:error, reason} -> {:error, {:invalid_retry_policy, reason}}
+    end
+  end
+
+  defp put_optional(opts, _key, nil), do: opts
+  defp put_optional(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp audit(conn, action, run_id, session, actor, idempotency) do
     %{

@@ -13,6 +13,11 @@ defmodule Mix.Tasks.Favn.Run do
   after submission. Use `--wait-timeout-ms` for local polling and
   `--run-timeout-ms` for per-asset execution timeout. `--timeout-ms` remains an
   alias for both when the more specific options are not provided.
+
+  `--retry-max-attempts N` applies a run-only operator override; the number
+  includes the initial attempt. `--retry-backoff-ms MS` selects fixed backoff.
+  These options do not make unsafe or unknown-outcome failures retryable. Use
+  the pipeline/asset DSL or API `retry_policy` map for exponential backoff.
   """
 
   alias Favn.Dev
@@ -26,6 +31,8 @@ defmodule Mix.Tasks.Favn.Run do
     timeout_ms: :integer,
     wait_timeout_ms: :integer,
     run_timeout_ms: :integer,
+    retry_max_attempts: :integer,
+    retry_backoff_ms: :integer,
     poll_interval_ms: :integer
   ]
 
@@ -88,6 +95,12 @@ defmodule Mix.Tasks.Favn.Run do
 
   defp error_message({:invalid_option, :poll_interval_ms}),
     do: "--poll-interval-ms must be greater than 0"
+
+  defp error_message({:invalid_option, :retry_max_attempts}),
+    do: "--retry-max-attempts must be greater than 0 and includes the initial attempt"
+
+  defp error_message({:invalid_option, :retry_backoff_ms}),
+    do: "--retry-backoff-ms must be 0 or greater"
 
   defp error_message({:invalid_option, :idempotency_key}),
     do: "--idempotency-key must be a non-empty string up to 512 bytes"

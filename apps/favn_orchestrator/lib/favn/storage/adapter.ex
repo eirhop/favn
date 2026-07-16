@@ -41,6 +41,7 @@ defmodule Favn.Storage.Adapter do
   """
 
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -105,6 +106,17 @@ defmodule Favn.Storage.Adapter do
               {:ok, non_neg_integer()} | {:error, error()}
   @callback persist_run_transition(RunState.t(), map(), adapter_opts()) ::
               :ok | :idempotent | {:error, error()}
+
+  @callback create_runtime_input_pin(Pin.t(), adapter_opts()) ::
+              {:ok, Pin.t()} | {:error, :runtime_input_pin_conflict | error()}
+  @callback get_runtime_input_pin(String.t(), Favn.Plan.node_key(), adapter_opts()) ::
+              {:ok, Pin.t()} | {:error, error()}
+  @callback list_runtime_input_pins(String.t(), adapter_opts()) ::
+              {:ok, [Pin.t()]} | {:error, error()}
+
+  @optional_callbacks create_runtime_input_pin: 2,
+                      get_runtime_input_pin: 3,
+                      list_runtime_input_pins: 2
 
   @callback append_run_event(String.t(), map(), adapter_opts()) :: :ok | {:error, error()}
   @callback list_run_events(String.t(), adapter_opts()) :: {:ok, [map()]} | {:error, error()}

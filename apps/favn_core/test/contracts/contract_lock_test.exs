@@ -21,6 +21,7 @@ defmodule Favn.Contracts.ContractLockTest do
         :params,
         :planned_asset_refs,
         :run_id,
+        :runtime_input_pin,
         :stage,
         :trigger
       ]

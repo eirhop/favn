@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @moduledoc false
 
   alias Favn.Plan
+  alias Favn.Retry.Policy, as: RetryPolicy
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
   alias FavnOrchestrator.RunState
@@ -25,6 +26,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "anchor_ranges",
     "anchor_window",
     "backfill_range",
+    "backoff",
     "cancelled",
     "blocked",
     "config",
@@ -33,13 +35,16 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "downstream",
     "duration_ms",
     "error",
+    "exponential",
     "event_seq",
     "execution_id",
     "execution_pool",
     "finished_at",
+    "fixed",
     "freshness_key",
     "id",
     "in_flight_execution_ids",
+    "initial_ms",
     "input_versions",
     "inserted_at",
     "kind",
@@ -48,6 +53,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "manifest_content_hash",
     "manifest_version_id",
     "max_attempts",
+    "max_ms",
     "meta",
     "metadata",
     "name",
@@ -76,12 +82,16 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "resolved_refs",
     "result",
     "retry_backoff_ms",
+    "retry_policy",
+    "retry_policy_source",
     "retrying",
+    "retry_state",
     "reason",
     "replay_mode",
     "replay_submit_kind",
     "exact_replay",
     "resume_from_failure",
+    "fresh_rerun",
     "root_run_id",
     "run",
     "run_finished",
@@ -93,7 +103,12 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "snapshot_hash",
     "source",
     "source_run_id",
+    "sequential",
+    "sequential_index",
+    "operator",
+    "default",
     "stage",
+    "stage_index",
     "stages",
     "skipped_fresh",
     "started_at",
@@ -108,7 +123,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "trigger",
     "updated_at",
     "upstream",
-    "window"
+    "window",
+    "jitter"
   ]
 
   @type run_record :: %{
@@ -262,7 +278,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "downstream" => Enum.map(List.wrap(Map.get(node, :downstream)), &node_key_to_dto/1),
       "stage" => Map.get(node, :stage),
       "execution_pool" => Map.get(node, :execution_pool) |> atom_to_string(),
-      "action" => Map.get(node, :action) |> atom_to_string()
+      "action" => Map.get(node, :action) |> atom_to_string(),
+      "retry_policy" => retry_policy_to_dto(Map.get(node, :retry_policy)),
+      "retry_policy_source" => Map.get(node, :retry_policy_source) |> atom_to_string()
     }
   end
 
@@ -378,7 +396,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
            node_keys_from_dto(Map.get(node, "downstream"), allowed_atom_strings),
          {:ok, execution_pool} <-
            optional_atom_from_dto(Map.get(node, "execution_pool"), allowed_atom_strings),
-         {:ok, action} <- action_from_dto(Map.get(node, "action")) do
+         {:ok, action} <- action_from_dto(Map.get(node, "action")),
+         {:ok, retry_policy} <- retry_policy_from_dto(Map.get(node, "retry_policy")),
+         {:ok, retry_policy_source} <-
+           retry_policy_source_from_dto(Map.get(node, "retry_policy_source")) do
       {:ok,
        %{
          ref: ref,
@@ -388,12 +409,41 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          downstream: downstream,
          stage: Map.get(node, "stage", 0),
          execution_pool: execution_pool,
-         action: action
+         action: action,
+         retry_policy: retry_policy,
+         retry_policy_source: retry_policy_source
        }}
     end
   end
 
   defp node_from_dto(node, _allowed_atom_strings), do: {:error, {:invalid_plan_node, node}}
+
+  defp retry_policy_to_dto(nil), do: nil
+
+  defp retry_policy_to_dto(%RetryPolicy{} = policy) do
+    %{
+      "max_attempts" => policy.max_attempts,
+      "backoff" => %{
+        "strategy" => Atom.to_string(policy.backoff.strategy),
+        "initial_ms" => policy.backoff.initial_ms,
+        "max_ms" => policy.backoff.max_ms,
+        "jitter" => policy.backoff.jitter
+      }
+    }
+  end
+
+  defp retry_policy_from_dto(nil), do: {:ok, RetryPolicy.default()}
+  defp retry_policy_from_dto(dto), do: RetryPolicy.new(dto)
+
+  defp retry_policy_source_from_dto(nil), do: {:ok, :default}
+
+  defp retry_policy_source_from_dto(source)
+       when source in ["operator", "asset", "pipeline", "default"] do
+    {:ok, String.to_existing_atom(source)}
+  end
+
+  defp retry_policy_source_from_dto(source),
+    do: {:error, {:invalid_retry_policy_source, source}}
 
   defp node_keys_from_dto(values, allowed_atom_strings) when is_list(values) do
     collect_values(values, &node_key_from_dto(&1, allowed_atom_strings))
@@ -796,6 +846,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> promote_key("in_flight_execution_ids", :in_flight_execution_ids)
     |> promote_key("replay_submit_kind", :replay_submit_kind)
     |> promote_key("replay_mode", :replay_mode)
+    |> promote_key("retry_state", :retry_state)
     |> normalize_metadata_module(:pipeline_submit_ref, allowed_atom_strings)
     |> normalize_metadata_refs(:pipeline_target_refs, allowed_atom_strings)
     |> normalize_metadata_refs(:asset_dependencies, allowed_atom_strings)
@@ -803,9 +854,61 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> normalize_pipeline_context(allowed_atom_strings)
     |> normalize_metadata_atom(:replay_submit_kind, &submit_kind_value_from_dto/1)
     |> normalize_metadata_atom(:replay_mode, &replay_mode_from_dto/1)
+    |> normalize_retry_state(allowed_atom_strings)
   end
 
   defp normalize_metadata(value, _allowed_atom_strings), do: value
+
+  defp normalize_retry_state(%{retry_state: state} = metadata, allowed_atom_strings)
+       when is_map(state) do
+    kind = field(state, :kind)
+    retry = field(state, :retry, %{})
+
+    normalized_retry =
+      retry
+      |> Map.new(fn {key, value} -> {known_key(to_string(key)), value} end)
+      |> normalize_retry_node_keys(allowed_atom_strings)
+      |> normalize_retry_node_key(allowed_atom_strings)
+      |> normalize_retry_ref(allowed_atom_strings)
+
+    normalized =
+      state
+      |> Map.new(fn {key, value} -> {known_key(to_string(key)), value} end)
+      |> Map.put(:kind, retry_kind(kind))
+      |> Map.put(:retry, normalized_retry)
+
+    Map.put(metadata, :retry_state, normalized)
+  end
+
+  defp normalize_retry_state(metadata, _allowed_atom_strings), do: metadata
+
+  defp normalize_retry_node_keys(%{node_keys: values} = retry, allowed_atom_strings)
+       when is_list(values) do
+    Map.put(retry, :node_keys, Enum.map(values, &metadata_node_key(&1, allowed_atom_strings)))
+  end
+
+  defp normalize_retry_node_keys(retry, _allowed_atom_strings), do: retry
+
+  defp normalize_retry_node_key(%{node_key: value} = retry, allowed_atom_strings),
+    do: Map.put(retry, :node_key, metadata_node_key(value, allowed_atom_strings))
+
+  defp normalize_retry_node_key(retry, _allowed_atom_strings), do: retry
+
+  defp normalize_retry_ref(%{asset_ref: value} = retry, allowed_atom_strings),
+    do: Map.put(retry, :asset_ref, ref_from_dto_value(value, allowed_atom_strings))
+
+  defp normalize_retry_ref(retry, _allowed_atom_strings), do: retry
+
+  defp metadata_node_key([ref, identity], allowed_atom_strings),
+    do:
+      {ref_from_dto_value(ref, allowed_atom_strings),
+       data_from_dto(identity, allowed_atom_strings)}
+
+  defp metadata_node_key(value, _allowed_atom_strings), do: value
+
+  defp retry_kind("sequential"), do: :sequential
+  defp retry_kind("pipeline"), do: :pipeline
+  defp retry_kind(kind), do: kind
 
   defp normalize_metadata_module(metadata, key, allowed_atom_strings) when is_map(metadata) do
     case Map.fetch(metadata, key) do
@@ -958,6 +1061,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp replay_mode_from_dto("exact_replay"), do: :exact_replay
   defp replay_mode_from_dto("resume_from_failure"), do: :resume_from_failure
+  defp replay_mode_from_dto("fresh_rerun"), do: :fresh_rerun
   defp replay_mode_from_dto(value), do: value
 
   defp ref_from_dto_value(value, allowed_atom_strings) do

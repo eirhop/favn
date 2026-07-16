@@ -21,6 +21,9 @@ defmodule Mix.Tasks.Favn.Backfill do
   By default `submit` waits for the parent backfill run to finish. Use
   `--no-wait` to return after submission. Use `--wait-timeout-ms` for local
   polling and `--run-timeout-ms` for child run execution timeout.
+  `--retry-max-attempts` and `--retry-backoff-ms` apply one fixed-backoff
+  operator policy to every child run; authored per-asset overrides are replaced
+  because operator policy has highest precedence.
 
   `submit --refresh force` intentionally recomputes selected windows even when
   stored freshness says they are already successful. `rerun-window` accepts
@@ -43,6 +46,8 @@ defmodule Mix.Tasks.Favn.Backfill do
     wait: :boolean,
     wait_timeout_ms: :integer,
     run_timeout_ms: :integer,
+    retry_max_attempts: :integer,
+    retry_backoff_ms: :integer,
     timeout_ms: :integer,
     poll_interval_ms: :integer
   ]
@@ -345,6 +350,12 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   defp error_message({:invalid_option, :poll_interval_ms}),
     do: "--poll-interval-ms must be greater than 0"
+
+  defp error_message({:invalid_option, :retry_max_attempts}),
+    do: "--retry-max-attempts must be greater than 0 and includes the initial attempt"
+
+  defp error_message({:invalid_option, :retry_backoff_ms}),
+    do: "--retry-backoff-ms must be 0 or greater"
 
   defp error_message({:invalid_window_range, _value}),
     do: "--window must use KIND:FROM..TO syntax, for example month:2025-05..2026-05"

@@ -9,6 +9,7 @@ defmodule Favn.Contracts.RunnerError do
   """
 
   @type kind :: :error | :exit | :throw | :cancelled | :preflight | :boundary
+  @type outcome :: :safe_failure | :unknown | :cancelled
 
   @operational_untrusted_keys [:reason, :message, :detail, :details, :error, :exception]
   @sensitive_fragments [
@@ -41,6 +42,8 @@ defmodule Favn.Contracts.RunnerError do
           reason: String.t() | nil,
           details: map(),
           retryable?: boolean(),
+          retry_after_ms: non_neg_integer() | nil,
+          outcome: outcome(),
           redacted?: boolean()
         }
 
@@ -50,7 +53,9 @@ defmodule Favn.Contracts.RunnerError do
             message: "Runner error",
             reason: nil,
             details: %{},
-            retryable?: true,
+            retryable?: false,
+            retry_after_ms: nil,
+            outcome: :unknown,
             redacted?: true
 
   @doc """
@@ -68,7 +73,9 @@ defmodule Favn.Contracts.RunnerError do
       message: message(Map.get(fields, :message), reason),
       reason: safe_reason(reason),
       details: details(Map.get(fields, :details, %{})),
-      retryable?: Map.get(fields, :retryable?, true),
+      retryable?: Map.get(fields, :retryable?, false),
+      retry_after_ms: normalize_retry_after(Map.get(fields, :retry_after_ms)),
+      outcome: normalize_outcome(Map.get(fields, :outcome), Map.get(fields, :retryable?, false)),
       redacted?: Map.get(fields, :redacted?, true)
     })
   end
@@ -88,7 +95,9 @@ defmodule Favn.Contracts.RunnerError do
       message: Keyword.get(opts, :message) || error_message(error) || "Runner error",
       reason: error,
       details: Keyword.get(opts, :details, details_from_error(error)),
-      retryable?: Keyword.get(opts, :retryable?, retryable_from_error(error))
+      retryable?: Keyword.get(opts, :retryable?, retryable_from_error(error)),
+      retry_after_ms: Keyword.get(opts, :retry_after_ms, retry_after_from_error(error)),
+      outcome: Keyword.get(opts, :outcome, outcome_from_error(error))
     )
   end
 
@@ -113,7 +122,8 @@ defmodule Favn.Contracts.RunnerError do
       kind: :cancelled,
       type: :cancelled,
       message: "Runner execution cancelled",
-      retryable?: false
+      retryable?: false,
+      outcome: :cancelled
     )
   end
 
@@ -154,14 +164,46 @@ defmodule Favn.Contracts.RunnerError do
   defp details_from_error(_error), do: %{}
 
   defp retryable_from_error(%{details: details}) when is_map(details) do
-    Map.get(details, :asset_retryable?, Map.get(details, "asset_retryable?", true)) != false
+    Map.get(details, :asset_retryable?, Map.get(details, "asset_retryable?", false)) == true
   end
 
   defp retryable_from_error(%{"details" => details}) when is_map(details) do
-    Map.get(details, "asset_retryable?", true) != false
+    Map.get(details, "asset_retryable?", false) == true
   end
 
-  defp retryable_from_error(_error), do: true
+  defp retryable_from_error(%{retryable?: value}) when is_boolean(value), do: value
+  defp retryable_from_error(%{"retryable?" => value}) when is_boolean(value), do: value
+  defp retryable_from_error(_error), do: false
+
+  defp retry_after_from_error(%{retry_after_ms: value}), do: value
+  defp retry_after_from_error(%{"retry_after_ms" => value}), do: value
+
+  defp retry_after_from_error(%{details: details}) when is_map(details),
+    do: Map.get(details, :retry_after_ms, Map.get(details, "retry_after_ms"))
+
+  defp retry_after_from_error(%{"details" => details}) when is_map(details),
+    do: Map.get(details, "retry_after_ms")
+
+  defp retry_after_from_error(_error), do: nil
+
+  defp outcome_from_error(%{outcome: outcome}), do: outcome
+  defp outcome_from_error(%{"outcome" => outcome}), do: outcome
+
+  defp outcome_from_error(_error), do: :unknown
+
+  defp normalize_retry_after(value)
+       when is_integer(value) and value >= 0 and value <= 86_400_000,
+       do: value
+
+  defp normalize_retry_after(_value), do: nil
+
+  defp normalize_outcome(value, _retryable?) when value in [:safe_failure, :unknown, :cancelled],
+    do: value
+
+  defp normalize_outcome("safe_failure", _retryable?), do: :safe_failure
+  defp normalize_outcome("unknown", _retryable?), do: :unknown
+  defp normalize_outcome("cancelled", _retryable?), do: :cancelled
+  defp normalize_outcome(_value, _retryable?), do: :unknown
 
   defp error_message(%{__exception__: true} = exception) do
     Exception.message(exception)

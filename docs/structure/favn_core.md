@@ -29,6 +29,13 @@ inference, effective execution-pool propagation, freshness keys/policies,
 windows, schedules, runtime config refs, backfill range resolution, or
 runner/orchestrator contract structs.
 
+`Favn.Retry.Policy` and `Favn.Retry.Backoff` own serializable node-attempt
+count/timing. `Favn.Contracts.RunnerError` independently owns explicit
+retryability, retry-after, and safe/unknown/cancelled outcome. Planned nodes
+carry the frozen effective policy and source. `Favn.RuntimeInput.Pin`,
+`Favn.RuntimeInput.Resolution`, and `Favn.Replay.InputMode` own the cross-app
+pin/replay contracts without storage dependencies.
+
 `Favn.RuntimeValue` is not a global configuration-resolution mechanism.
 Integration boundaries opt in explicitly; DuckDB session-script parameters are
 the first consumer. Providers return bounded errors, refs have redacted Inspect

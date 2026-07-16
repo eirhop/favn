@@ -108,17 +108,33 @@ internals directly.
 
 ## Retry Or Rerun Work
 
-1. Inspect the failed run, schedule occurrence, or backfill group.
-2. Use retry when you want to submit failed or not-started work while preserving
-   the original source configuration.
-3. Use rerun when you intentionally want a new run pinned to a manifest version
-   and derived from the source run.
-4. For backfills, retry failed windows first.
-5. Rerun successful windows only when you have an explicit force or refresh
+1. Inspect effective policy/source, current/max attempt, typed failure outcome,
+   retry exhaustion, `next_retry_at`, input mode, and safe pin lineage.
+2. An automatic node attempt stays in the same run and reuses the run/node pin.
+   It occurs only for an explicitly retryable known-safe failure.
+3. Use retry-remaining/resume when you want a new run containing failed or
+   not-started work with `:inherit` input behavior.
+4. Use exact replay when you need a new manifest-pinned run with `:pinned`
+   source inputs. Missing required pins fail; they are never silently replaced.
+5. Use a fresh rerun only when selecting current external input is intentional.
+   It is not exact replay.
+6. For backfills, retry failed windows first.
+7. Rerun successful windows only when you have an explicit force or refresh
    policy that makes that safe.
 
 Expected result: the orchestrator creates new persisted run records linked to the
 source run or backfill group.
+
+`max_attempts` includes the first attempt and defaults to one. Operator
+`retry_policy` overrides asset `@retry`, which overrides pipeline `retry`.
+Policy changes timing/count only; an unknown write, transaction,
+materialization, or external side effect remains terminal. `mix favn.run`
+accepts `--retry-max-attempts` and fixed `--retry-backoff-ms`; the HTTP/operator
+contract accepts the complete typed `retry_policy`, including exponential
+backoff. The rerun API accepts `input_mode: fresh|inherit|pinned`.
+
+Read `apps/favn/guides/retries-and-replay.md` for the canonical mechanism table,
+schedule timeline, restart recovery, and safe ingestion recipes.
 
 ## Operate Schedules
 
@@ -128,6 +144,13 @@ source run or backfill group.
 3. Preview upcoming occurrences before enabling a schedule.
 4. Enable schedules that should submit future work.
 5. Disable schedules that should stop future submissions.
+
+Schedule overlap is not execution retry. `:allow` admits an independent run
+with independent pins, `:forbid` admits none while the tracked run is active,
+and `:queue_one` remembers one occurrence until it can be admitted. A run
+waiting in node backoff is still active for these rules. `missed: :skip | :one |
+:all` controls catch-up occurrences after delayed evaluation, not attempts in
+the existing run.
 6. After changing a schedule, re-read the schedule entry and diagnostics.
 
 Expected result: enabled schedules submit due work through the same orchestrator

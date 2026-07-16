@@ -2064,8 +2064,8 @@ defmodule FavnOrchestrator.API.RouterTest do
     {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     for {field, value, message} <- [
-          {"max_attempts", 0, "Invalid max_attempts"},
-          {"retry_backoff_ms", -1, "Invalid retry_backoff_ms"},
+          {"max_attempts", 2, "Unsupported retry option; use retry_policy"},
+          {"retry_backoff_ms", 0, "Unsupported retry option; use retry_policy"},
           {"timeout_ms", 0, "Invalid timeout_ms"},
           {"coverage_baseline_id", "", "Invalid coverage_baseline_id"},
           {"metadata", "not-an-object", "Invalid metadata"}

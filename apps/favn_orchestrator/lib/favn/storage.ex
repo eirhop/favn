@@ -98,7 +98,7 @@ defmodule Favn.Storage do
           root_run_id: normalize_optional_string(run.root_run_id),
           lineage_depth: normalize_non_neg_int(run.lineage_depth, 0),
           max_attempts: normalize_max_attempts(run.retry_policy),
-          retry_backoff_ms: normalize_non_neg_int(run.retry_backoff_ms, 0),
+          retry_backoff_ms: 0,
           timeout_ms: normalize_positive_int(run.timeout_ms, RunState.default_timeout_ms()),
           runner_execution_id: normalize_optional_string(run.runner_execution_id),
           result: run.result,

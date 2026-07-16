@@ -15,8 +15,7 @@ defmodule FavnOrchestrator.API.CommandErrors do
   @type command_error :: {:error, pos_integer(), String.t(), String.t(), map()}
 
   @operator_fields %{
-    invalid_operator_max_attempts: {"max_attempts", "Invalid max_attempts"},
-    invalid_operator_retry_backoff_ms: {"retry_backoff_ms", "Invalid retry_backoff_ms"},
+    invalid_operator_retry_policy: {"retry_policy", "Invalid retry_policy"},
     invalid_operator_timeout_ms: {"timeout_ms", "Invalid timeout_ms"},
     invalid_operator_coverage_baseline_id:
       {"coverage_baseline_id", "Invalid coverage_baseline_id"},
@@ -25,6 +24,15 @@ defmodule FavnOrchestrator.API.CommandErrors do
 
   @doc "Maps an operator field validation failure, or returns `nil` when unknown."
   @spec operator(term()) :: command_error() | nil
+  def operator({:unsupported_retry_option, field, :use_retry_policy})
+      when field in [:max_attempts, :retry_backoff_ms] do
+    {:error, 422, "validation_failed", "Unsupported retry option; use retry_policy",
+     %{
+       field: Atom.to_string(field),
+       replacement: "retry_policy"
+     }}
+  end
+
   def operator({reason, _value}) do
     case Map.fetch(@operator_fields, reason) do
       {:ok, {field, message}} ->

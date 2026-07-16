@@ -48,6 +48,7 @@ defmodule Favn.MixProject do
         "guides/duckdb-session-scripts.md",
         "guides/runner-plugins.md",
         "guides/sql-runtime-inputs.md",
+        "guides/retries-and-replay.md",
         "guides/sql-output-contracts.md",
         "guides/sql-asset-checks.md",
         "guides/local-development.md",

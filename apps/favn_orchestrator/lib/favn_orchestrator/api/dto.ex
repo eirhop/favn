@@ -141,7 +141,10 @@ defmodule FavnOrchestrator.API.DTO do
       finished_at: datetime(run.finished_at),
       timeout_ms: run.timeout_ms,
       max_concurrency: Map.get(run, :max_concurrency),
-      retry_backoff_ms: run.retry_backoff_ms,
+      retry_policy: normalize(run.retry_policy),
+      input_mode: normalize(metadata_field(run.metadata, :runtime_input_mode)),
+      next_retry_at: retry_timestamp(metadata_field(run.metadata, :next_retry_at)),
+      runtime_input_lineage: normalize(metadata_field(run.metadata, :runtime_input_lineage)),
       rerun_of_run_id: run.rerun_of_run_id,
       parent_run_id: run.parent_run_id,
       root_run_id: run.root_run_id,
@@ -211,6 +214,16 @@ defmodule FavnOrchestrator.API.DTO do
       Map.get(result, :asset_ref) || Map.get(result, "asset_ref") || ""
     }
   end
+
+  defp metadata_field(metadata, key) when is_map(metadata),
+    do: Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
+
+  defp metadata_field(_metadata, _key), do: nil
+
+  defp retry_timestamp(value) when is_integer(value),
+    do: value |> DateTime.from_unix!(:millisecond) |> datetime()
+
+  defp retry_timestamp(value), do: datetime(value)
 
   defp map_output_metadata(result) when is_map(result) do
     result

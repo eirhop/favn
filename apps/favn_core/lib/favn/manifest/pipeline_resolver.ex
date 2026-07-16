@@ -60,6 +60,7 @@ defmodule Favn.Manifest.PipelineResolver do
            params: params,
            anchor_window: anchor_window,
            window: normalized_pipeline.window,
+           retry_policy: normalized_pipeline.retry_policy,
            max_concurrency: normalized_pipeline.max_concurrency,
            execution_pool: normalized_pipeline.execution_pool,
            schedule: schedule,
@@ -86,6 +87,7 @@ defmodule Favn.Manifest.PipelineResolver do
     with :ok <- validate_deps(deps),
          :ok <- validate_selectors(selectors),
          :ok <- validate_window(window),
+         :ok <- validate_retry_policy(pipeline.retry_policy),
          :ok <- validate_max_concurrency(pipeline.max_concurrency),
          :ok <- validate_execution_pool(pipeline.execution_pool) do
       validate_outputs(pipeline)
@@ -118,6 +120,15 @@ defmodule Favn.Manifest.PipelineResolver do
   defp validate_max_concurrency(nil), do: :ok
   defp validate_max_concurrency(value) when is_integer(value) and value > 0, do: :ok
   defp validate_max_concurrency(value), do: {:error, {:invalid_max_concurrency, value}}
+
+  defp validate_retry_policy(nil), do: :ok
+
+  defp validate_retry_policy(policy) do
+    case Favn.Retry.Policy.validate(policy) do
+      {:ok, _policy} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp validate_execution_pool(nil), do: :ok
   defp validate_execution_pool(value) when is_atom(value), do: :ok

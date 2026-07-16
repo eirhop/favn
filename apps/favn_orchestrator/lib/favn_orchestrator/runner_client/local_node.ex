@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Resolution
 
   @default_erpc_timeout_ms 15_000
   @await_result_erpc_buffer_ms 2_000
@@ -35,6 +36,13 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   @spec submit_work(RunnerWork.t(), [opt()]) :: {:ok, String.t()} | {:error, term()}
   def submit_work(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
     dispatch(opts, :submit_work, [work, opts])
+  end
+
+  @impl true
+  @spec resolve_runtime_inputs(RunnerWork.t(), [opt()]) ::
+          {:ok, Resolution.t() | nil} | {:error, term()}
+  def resolve_runtime_inputs(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
+    dispatch(opts, :resolve_runtime_inputs, [work, opts])
   end
 
   @impl true

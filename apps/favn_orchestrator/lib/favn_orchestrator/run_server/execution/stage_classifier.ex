@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
   alias Favn.Freshness.Key
   alias Favn.Manifest.Version
   alias Favn.Run.NodeResult
+  alias Favn.Retry.Policy, as: RetryPolicy
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.Freshness.Decider
   alias FavnOrchestrator.Freshness.StateWriter
@@ -53,10 +54,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
     |> restore_runnable_order()
   end
 
-  defp decisions(run_state, node_keys, freshness_context) do
+  @doc false
+  @spec decisions(RunState.t(), [Favn.Plan.node_key()], FreshnessContext.t(), keyword()) :: map()
+  def decisions(run_state, node_keys, freshness_context, opts \\ []) do
     Decider.decide_many(run_state.plan, node_keys,
       assets_by_ref: freshness_context.assets_by_ref,
       refresh_policy: freshness_context.refresh_policy,
+      forced_node_keys: Keyword.get(opts, :forced_node_keys, []),
       prior_states: freshness_context.prior_states,
       current_states: freshness_context.current_states,
       completed_node_keys: freshness_context.completed_node_keys,
@@ -167,7 +171,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
         freshness_key: freshness_key,
         input_versions: [],
         attempt_count: 0,
-        max_attempts: run_state.max_attempts,
+        max_attempts: (Map.get(node, :retry_policy) || RetryPolicy.default()).max_attempts,
         meta: decision_metadata(decision),
         error: if(status == :blocked, do: decision.reason, else: nil),
         asset_step_id: asset_step_id

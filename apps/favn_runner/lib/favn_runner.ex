@@ -15,6 +15,12 @@ defmodule FavnRunner do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Resolution
+  alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
+  alias FavnRunner.ContextBuilder
+  alias FavnRunner.ManifestResolver
+  alias FavnRunner.ManifestStore
+  alias FavnRunner.RuntimeInputResolver
   alias FavnRunner.Server
 
   @type execution_id :: String.t()
@@ -36,6 +42,7 @@ defmodule FavnRunner do
   @doc """
   Returns redacted runner availability diagnostics.
   """
+  @impl true
   @spec diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
   def diagnostics(opts \\ []) when is_list(opts) do
     Server.diagnostics(opts)
@@ -44,6 +51,7 @@ defmodule FavnRunner do
   @doc """
   Registers one pinned manifest version in the runner.
   """
+  @impl true
   @spec register_manifest(Version.t(), keyword()) :: :ok | {:error, term()}
   def register_manifest(version, opts \\ [])
 
@@ -53,14 +61,112 @@ defmodule FavnRunner do
   @doc """
   Submits one manifest-pinned work request for asynchronous execution.
   """
+  @impl true
   @spec submit_work(RunnerWork.t(), keyword()) :: {:ok, execution_id()} | {:error, term()}
   def submit_work(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
     Server.submit_work(work, opts)
   end
 
+  @doc "Resolves dynamic SQL inputs before work is submitted or SQL is rendered."
+  @impl true
+  @spec resolve_runtime_inputs(RunnerWork.t(), keyword()) ::
+          {:ok, Resolution.t() | nil} | {:error, term()}
+  def resolve_runtime_inputs(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
+    with {:ok, asset_ref} <- ManifestResolver.resolve_target_ref(work),
+         {:ok, version} <-
+           ManifestStore.fetch(work.manifest_version_id, work.manifest_content_hash,
+             server: FavnRunner.ManifestStore
+           ),
+         {:ok, asset} <- ManifestResolver.resolve_asset(version, asset_ref) do
+      resolve_asset_runtime_inputs(asset, version, work, opts)
+    end
+  end
+
+  defp resolve_asset_runtime_inputs(
+         %{sql_execution: %{runtime_inputs: nil}},
+         _version,
+         _work,
+         _opts
+       ),
+       do: {:ok, nil}
+
+  defp resolve_asset_runtime_inputs(
+         %{sql_execution: %{runtime_inputs: resolver}} = asset,
+         version,
+         work,
+         opts
+       ) do
+    execution_id = "resolve_" <> (work.asset_step_id || work.run_id)
+
+    with {:ok, context} <- ContextBuilder.build(work, asset, execution_id),
+         {:ok, _definition, final_context, final_opts} <-
+           SQLAssetRuntime.prepare_manifest_execution(asset, version, work, context),
+         {:ok, resolution} <-
+           RuntimeInputResolver.resolve(
+             resolver,
+             final_context,
+             final_context.params,
+             resolver_opts(opts, final_opts)
+           ) do
+      lineage = RuntimeInputResolver.lineage(resolution)
+
+      Resolution.new(%{
+        resolver: resolution.resolver,
+        params: resolution.params,
+        input_identity: lineage.input_identity,
+        metadata: lineage.input_metadata,
+        sensitive_params: resolution.sensitive_params,
+        duration_ms: resolution.duration_ms
+      })
+    else
+      {:error, error} ->
+        retryable? = resolver_retryable?(error)
+
+        {:error,
+         RunnerError.normalize(error,
+           phase: error_phase(error),
+           retryable?: retryable?,
+           retry_after_ms: resolver_retry_after(error),
+           outcome: if(retryable?, do: :safe_failure, else: :unknown)
+         )}
+    end
+  end
+
+  defp resolve_asset_runtime_inputs(_asset, _version, _work, _opts), do: {:ok, nil}
+
+  defp resolver_retryable?(%{details: details}) when is_map(details),
+    do: Map.get(details, :asset_retryable?, Map.get(details, "asset_retryable?", false)) == true
+
+  defp resolver_retryable?(_error), do: false
+
+  defp resolver_opts(caller_opts, final_opts) do
+    timeout_ms =
+      [Keyword.get(caller_opts, :timeout_ms), Keyword.get(final_opts, :timeout_ms)]
+      |> Enum.filter(&(is_integer(&1) and &1 > 0))
+      |> Enum.min(fn -> nil end)
+
+    caller_opts
+    |> Keyword.merge(Keyword.take(final_opts, [:deadline, :cancel_token]))
+    |> maybe_put_timeout(timeout_ms)
+  end
+
+  defp maybe_put_timeout(opts, timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0,
+    do: Keyword.put(opts, :timeout_ms, timeout_ms)
+
+  defp maybe_put_timeout(opts, _timeout_ms), do: opts
+
+  defp error_phase(error) when is_map(error), do: Map.get(error, :phase, :runtime_inputs)
+  defp error_phase(_error), do: :runtime_inputs
+
+  defp resolver_retry_after(%{details: details}) when is_map(details),
+    do: Map.get(details, :retry_after_ms, Map.get(details, "retry_after_ms"))
+
+  defp resolver_retry_after(_error), do: nil
+
   @doc """
   Waits for one execution result.
   """
+  @impl true
   @spec await_result(execution_id(), timeout(), keyword()) ::
           {:ok, RunnerResult.t()} | {:error, term()}
   def await_result(execution_id, timeout \\ 5_000, opts \\ [])
@@ -75,6 +181,7 @@ defmodule FavnRunner do
   @doc """
   Cancels one in-flight execution.
   """
+  @impl true
   @spec cancel_work(execution_id(), RunnerCancellation.t(), keyword()) ::
           {:ok, RunnerCancellation.outcome()} | {:error, RunnerError.t()}
   def cancel_work(execution_id, reason \\ %{}, opts \\ [])
@@ -96,6 +203,7 @@ defmodule FavnRunner do
   @doc """
   Subscribes a process to live logs for one runner execution.
   """
+  @impl true
   @spec subscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok | {:error, term()}
   def subscribe_execution_logs(execution_id, subscriber, opts \\ [])
 
@@ -110,6 +218,7 @@ defmodule FavnRunner do
   @doc """
   Unsubscribes a process from live logs for one runner execution.
   """
+  @impl true
   @spec unsubscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok
   def unsubscribe_execution_logs(execution_id, subscriber, opts \\ [])
 
@@ -123,6 +232,7 @@ defmodule FavnRunner do
   @doc """
   Runs one safe read-only relation inspection request through the runner boundary.
   """
+  @impl true
   @spec inspect_relation(RelationInspectionRequest.t(), keyword()) ::
           {:ok, RelationInspectionResult.t()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts) do

@@ -6,6 +6,7 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
   alias Favn.RelationRef
+  alias Favn.RuntimeInput.Pin
   alias Favn.Run.Context
   alias Favn.SQL.Client, as: SQLClient
   alias Favn.SQL.CancelToken
@@ -45,11 +46,10 @@ defmodule Favn.SQLAsset.Runtime do
         %RunnerWork{} = work,
         %Context{} = context
       ) do
-    opts = context |> run_opts() |> Keyword.merge(runner_runtime_opts(work))
-
-    with {:ok, %Definition{} = definition} <- manifest_definition(asset, version),
+    with {:ok, %Definition{} = definition, %Context{} = final_context, final_opts} <-
+           prepare_manifest_execution(asset, version, work, context),
          {:ok, %Render{} = rendered, %CheckedMaterialization{} = materialization, resolution} <-
-           execute_definition(definition, context, opts) do
+           execute_finalized_definition(definition, final_context, final_opts) do
       output =
         definition
         |> runtime_output(rendered, materialization, resolution)
@@ -60,6 +60,24 @@ defmodule Favn.SQLAsset.Runtime do
     else
       {:error, %Error{} = error, meta} -> {:error, error, meta}
       {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  @doc false
+  @spec prepare_manifest_execution(Asset.t(), Version.t(), RunnerWork.t(), Context.t()) ::
+          {:ok, Definition.t(), Context.t(), keyword()} | {:error, Error.t()}
+  def prepare_manifest_execution(
+        %Asset{} = asset,
+        %Version{} = version,
+        %RunnerWork{} = work,
+        %Context{} = context
+      ) do
+    opts = context |> run_opts() |> Keyword.merge(runner_runtime_opts(work))
+
+    with {:ok, %Definition{} = definition} <- manifest_definition(asset, version),
+         {:ok, final_context, final_opts} <-
+           finalize_execution_window(definition, context, opts) do
+      {:ok, definition, final_context, final_opts}
     end
   end
 
@@ -203,20 +221,28 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp execute_definition(%Definition{} = definition, %Context{} = context, opts) do
     with {:ok, final_context, final_opts} <- finalize_execution_window(definition, context, opts) do
-      case resolve_runtime_inputs(definition, final_context, final_opts) do
-        {:ok, resolution, resolved_opts} ->
-          result =
-            with {:ok, %Render{} = rendered} <- Renderer.render(definition, resolved_opts),
-                 {:ok, %CheckedMaterialization{} = output} <-
-                   materialize_render(definition, rendered, resolved_opts) do
-              {:ok, rendered, output, resolution}
-            end
+      execute_finalized_definition(definition, final_context, final_opts)
+    end
+  end
 
-          redact_resolution_result(result, resolution)
+  defp execute_finalized_definition(
+         %Definition{} = definition,
+         %Context{} = final_context,
+         final_opts
+       ) do
+    case resolve_runtime_inputs(definition, final_context, final_opts) do
+      {:ok, resolution, resolved_opts} ->
+        result =
+          with {:ok, %Render{} = rendered} <- Renderer.render(definition, resolved_opts),
+               {:ok, %CheckedMaterialization{} = output} <-
+                 materialize_render(definition, rendered, resolved_opts) do
+            {:ok, rendered, output, resolution}
+          end
 
-        {:error, %Error{} = error} ->
-          {:error, error}
-      end
+        redact_resolution_result(result, resolution)
+
+      {:error, %Error{} = error} ->
+        {:error, error}
     end
   end
 
@@ -269,15 +295,65 @@ defmodule Favn.SQLAsset.Runtime do
     do: {:ok, nil, opts}
 
   defp resolve_runtime_inputs(%Definition{runtime_inputs: resolver}, context, opts) do
-    submitted_params = context.params || %{}
-
-    case RuntimeInputResolver.resolve(resolver, context, submitted_params, opts) do
+    case pinned_or_resolved_runtime_inputs(resolver, context, opts) do
       {:ok, %RuntimeInputResolution{} = resolution} ->
         {:ok, resolution, Keyword.put(opts, :params, resolution.params)}
 
       {:error, %Error{} = error} ->
         {:error, %Error{error | asset_ref: context.current_ref}}
     end
+  end
+
+  defp pinned_or_resolved_runtime_inputs(resolver, _context, opts) do
+    case Keyword.get(opts, :runtime_input_pin) do
+      %Pin{resolver: resolver_module} = pin when resolver_module == resolver.module ->
+        {:ok,
+         %RuntimeInputResolution{
+           resolver: pin.resolver,
+           params: pin.params,
+           identity: pin.input_identity,
+           metadata: pin.metadata,
+           sensitive_params: pin.sensitive_params,
+           sensitive_values: sensitive_values(pin.params, pin.sensitive_params),
+           duration_ms: 0
+         }}
+
+      %Pin{} ->
+        {:error,
+         %Error{
+           type: :runtime_inputs_invalid_result,
+           phase: :runtime_inputs,
+           message: "runtime-input pin resolver does not match the manifest resolver"
+         }}
+
+      nil ->
+        resolve_unpinned_runtime_inputs(resolver, opts)
+    end
+  end
+
+  defp resolve_unpinned_runtime_inputs(resolver, opts) do
+    context = Keyword.fetch!(opts, :context)
+
+    if Keyword.get(opts, :require_runtime_input_pin, false) do
+      {:error,
+       %Error{
+         type: :runtime_inputs_invalid_result,
+         phase: :runtime_inputs,
+         asset_ref: context.current_ref,
+         message: "manifest work with @runtime_inputs requires a persisted runtime-input pin"
+       }}
+    else
+      RuntimeInputResolver.resolve(resolver, context, context.params || %{}, opts)
+    end
+  end
+
+  defp sensitive_values(params, names) do
+    Enum.flat_map(names, fn name ->
+      string_name = to_string(name)
+
+      [Map.get(params, name), Map.get(params, string_name)]
+      |> Enum.reject(&is_nil/1)
+    end)
   end
 
   defp redact_resolution_result(result, nil), do: result
@@ -1367,10 +1443,12 @@ defmodule Favn.SQLAsset.Runtime do
     Keyword.take(opts, [:timeout_ms, :deadline, :cancel_token])
   end
 
-  defp runner_runtime_opts(%RunnerWork{metadata: metadata}) when is_map(metadata) do
+  defp runner_runtime_opts(%RunnerWork{metadata: metadata} = work) when is_map(metadata) do
     deadline_at = Map.get(metadata, :deadline_at) || Map.get(metadata, "deadline_at")
 
     []
+    |> Keyword.put(:require_runtime_input_pin, true)
+    |> maybe_put_runtime_input_pin(work.runtime_input_pin)
     |> maybe_put_timeout(deadline_at)
     |> Keyword.put(
       :cancel_token,
@@ -1382,6 +1460,11 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp runner_runtime_opts(%RunnerWork{}), do: []
+
+  defp maybe_put_runtime_input_pin(opts, %Pin{} = pin),
+    do: Keyword.put(opts, :runtime_input_pin, pin)
+
+  defp maybe_put_runtime_input_pin(opts, _pin), do: opts
 
   defp maybe_put_timeout(opts, %DateTime{} = deadline_at) do
     remaining_ms = max(DateTime.diff(deadline_at, DateTime.utc_now(), :millisecond), 1)

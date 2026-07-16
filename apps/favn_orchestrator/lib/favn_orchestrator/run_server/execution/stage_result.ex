@@ -135,6 +135,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         run: next_run,
         results: Enum.reverse(step_results, state.results),
         retry_refs: state.retry_refs,
+        retry_delays: state.retry_delays,
         terminal_failure: state.terminal_failure,
         pending_ids: MapSet.delete(state.pending_ids, entry.execution_id)
       },
@@ -204,7 +205,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       asset_step_id: Map.get(entry, :asset_step_id),
       stage: stage,
       attempt: attempt,
-      max_attempts: run_state.max_attempts,
+      max_attempts:
+        StepAttemptLifecycle.retry_policy(run_state, Map.fetch!(entry, :node_key)).max_attempts,
+      retryable?: retryable?,
+      retry_exhausted?:
+        retryable? and
+          not StepAttemptLifecycle.retry_allowed?(run_state, entry.node_key, attempt),
       execution_pool: Map.get(entry, :execution_pool),
       node_result: node_result
     }
@@ -258,7 +264,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       asset_step_id: Map.get(entry, :asset_step_id),
       stage: stage,
       attempt: attempt,
-      max_attempts: run_state.max_attempts,
+      max_attempts:
+        StepAttemptLifecycle.retry_policy(run_state, Map.fetch!(entry, :node_key)).max_attempts,
       execution_pool: Map.get(entry, :execution_pool),
       node_result: node_result
     }
@@ -271,7 +278,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       stage: stage,
       attempt: attempt,
       status: :timed_out,
-      retryable?: true,
+      retryable?: false,
       asset_results: [],
       node_result: node_result,
       post_step_value: :timeout
@@ -317,7 +324,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       asset_step_id: Map.get(entry, :asset_step_id),
       stage: stage,
       attempt: attempt,
-      max_attempts: run_state.max_attempts,
+      max_attempts:
+        StepAttemptLifecycle.retry_policy(run_state, Map.fetch!(entry, :node_key)).max_attempts,
       execution_pool: Map.get(entry, :execution_pool),
       node_result: node_result
     }
@@ -330,7 +338,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       stage: stage,
       attempt: attempt,
       status: :error,
-      retryable?: true,
+      retryable?: false,
       asset_results: [],
       node_result: node_result,
       post_step_value: reason
@@ -376,9 +384,25 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       :ok ->
         outcome =
           cond do
-            resume.status == :ok -> :ok
-            resume.retryable? and resume.attempt < step_state.max_attempts -> :retry
-            true -> :error
+            resume.status == :ok ->
+              :ok
+
+            resume.retryable? and
+                StepAttemptLifecycle.retry_allowed?(
+                  step_state,
+                  resume.entry.node_key,
+                  resume.attempt
+                ) ->
+              {:retry,
+               StepAttemptLifecycle.retry_delay_ms(
+                 step_state,
+                 resume.entry.node_key,
+                 resume.attempt,
+                 resume.post_step_value
+               )}
+
+            true ->
+              :error
           end
 
         {step_state, outcome, resume.asset_results}
@@ -441,14 +465,29 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   end
 
   defp reduce_outcome(
-         :retry,
-         %{state: state, terminal_failure: terminal_failure, retry_refs: retry_refs} = settlement,
+         {:retry, retry_delay_ms},
+         %{
+           state: state,
+           terminal_failure: terminal_failure,
+           retry_refs: retry_refs,
+           retry_delays: retry_delays
+         } = settlement,
          %{entry: entry}
        ) do
     next_retry_refs =
       if is_nil(terminal_failure), do: [entry.node_key | retry_refs], else: retry_refs
 
-    {:cont, record_result(state, %{settlement | retry_refs: next_retry_refs})}
+    next_retry_delays =
+      if is_nil(terminal_failure),
+        do: Map.put(retry_delays, entry.node_key, retry_delay_ms),
+        else: retry_delays
+
+    {:cont,
+     record_result(state, %{
+       settlement
+       | retry_refs: next_retry_refs,
+         retry_delays: next_retry_delays
+     })}
   end
 
   defp reduce_outcome(
@@ -510,6 +549,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       settlement.run,
       settlement.results,
       settlement.retry_refs,
+      settlement.retry_delays,
       settlement.terminal_failure,
       settlement.pending_ids
     )

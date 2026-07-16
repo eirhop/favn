@@ -74,7 +74,8 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
       freshness_key: freshness_key,
       input_versions: [],
       attempt_count: asset_result_field(asset_result, :attempt_count) || attempt,
-      max_attempts: asset_result_field(asset_result, :max_attempts) || run_state.max_attempts,
+      max_attempts:
+        asset_result_field(asset_result, :max_attempts) || node.retry_policy.max_attempts,
       runner_execution_id: execution_id,
       meta: map_field(asset_result, :meta),
       error: asset_result_field(asset_result, :error),
