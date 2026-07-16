@@ -48,6 +48,20 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
              })
   end
 
+  test "asset run requests accept every canonical dependency and refresh mode" do
+    for dependency <- [:all, :none],
+        refresh <- [:auto, :missing, :force_selected, :force_selected_upstream, :force_all] do
+      assert {:ok, request} =
+               AssetRunRequest.from_input(%{
+                 dependency_mode: dependency,
+                 refresh_mode: refresh
+               })
+
+      assert request.dependency_mode == dependency
+      assert request.refresh_mode == refresh
+    end
+  end
+
   test "asset backfill requests normalize ranges and selected refresh modes" do
     assert {:ok, request} =
              AssetBackfillRequest.from_input(%{

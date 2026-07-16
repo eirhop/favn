@@ -65,6 +65,34 @@ Common failures:
 Expected result: the orchestrator records the run first, dispatches pinned work,
 and later records the final run state.
 
+### Choose Asset Dependency Scope And Refresh
+
+Direct asset submissions have two independent controls:
+
+| Control | Values | Meaning |
+| --- | --- | --- |
+| Dependency scope | `all`, `none` | Plan the selected asset with all transitive upstream assets, or plan only the selected asset. |
+| Refresh | `auto`, `missing`, `force_selected`, `force_selected_upstream`, `force_all` | Apply freshness or force behavior inside the planned graph. |
+
+The safe defaults are dependency scope `all` and refresh `auto`. For a targeted
+repair after upstream inputs have been independently verified, run:
+
+```bash
+mix favn.run MyApp.Source.Events:movement \
+  --window month:2026-07 \
+  --dependencies none \
+  --refresh force_selected
+```
+
+`force_selected_upstream` requires dependency scope `all`. Pipeline targets do
+not accept dependency scope and accept only `auto`, `missing`, and `force_all`
+refresh. The UI, private HTTP API, and CLI validate the same operator contract;
+invalid values and combinations return validation errors before execution.
+
+Do not bypass dependencies merely to make a run cheaper. Scope `none` means the
+operator accepts responsibility for the suitability of the target's current
+upstream inputs.
+
 Common failures:
 
 | Failure | Action |
@@ -75,6 +103,7 @@ Common failures:
 | Runner unavailable | Check diagnostics and runner readiness. Do not bypass the orchestrator. |
 | Missing runtime config | Add the environment variable or secret named by diagnostics, then retry. |
 | Duplicate command key | Re-read the existing command result instead of submitting the same side effect again. |
+| Invalid dependency/refresh combination | Use `dependencies=all` with `force_selected_upstream`, or choose a target-only refresh mode. |
 
 ## Inspect A Run
 

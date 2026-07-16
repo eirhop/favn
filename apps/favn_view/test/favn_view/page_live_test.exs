@@ -1032,6 +1032,31 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "Dependency choice is invalid."
   end
 
+  test "run asset form rejects upstream refresh without dependency traversal", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+    open_run_config(view)
+
+    params = %{
+      "run_config" => %{
+        "dependencies" => "none",
+        "refresh" => "force_selected_upstream"
+      }
+    }
+
+    html =
+      view
+      |> element(~s([data-testid="run-config-form"]))
+      |> render_change(params)
+
+    assert html =~ "force_selected_upstream requires dependencies=all."
+    assert has_element?(view, ~s([data-testid="submit-run-config"][disabled]))
+
+    html = render_submit(view, "run_selected_window", params)
+
+    assert html =~ "force_selected_upstream requires dependencies=all."
+    assert has_element?(view, ~s([data-testid="submit-run-config"][disabled]))
+  end
+
   test "viewer cannot submit an asset run with a forged LiveView event", %{conn: _conn} do
     conn = authenticate_conn(build_conn(), :viewer)
     {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))

@@ -648,6 +648,50 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     end
   end
 
+  test "mix favn.run parses dependency and refresh switches", %{root_dir: root_dir} do
+    assert_raise Mix.Error, ~r/stack not running; use mix favn.dev/, fn ->
+      RunTask.run([
+        "Example.Asset:asset",
+        "--root-dir",
+        root_dir,
+        "--dependencies",
+        "none",
+        "--refresh",
+        "force_selected"
+      ])
+    end
+  end
+
+  test "mix favn.run reports canonical dependency and refresh validation" do
+    assert_raise Mix.Error, ~r/--dependencies must be one of: all, none/, fn ->
+      RunTask.run(["Example.Asset:asset", "--dependencies", "upstream"])
+    end
+
+    assert_raise Mix.Error,
+                 ~r/--refresh must be one of: auto, missing, force_selected, force_selected_upstream, force_all/,
+                 fn ->
+                   RunTask.run(["Example.Asset:asset", "--refresh", "sometimes"])
+                 end
+
+    assert RunTask.error_message(:dependencies_only_supported_for_assets) ==
+             "--dependencies is only supported for asset targets"
+
+    assert RunTask.error_message({:invalid_pipeline_refresh_mode, "force_selected"}) ==
+             "pipeline --refresh must be one of: auto, missing, force_all"
+
+    assert RunTask.error_message({:refresh_include_upstream_requires_dependencies, :all}) ==
+             "--refresh force_selected_upstream requires --dependencies all"
+  end
+
+  test "mix favn.run documents targeted asset repair and safe defaults" do
+    assert {:docs_v1, _, :elixir, "text/markdown", %{"en" => moduledoc}, _, _} =
+             Code.fetch_docs(RunTask)
+
+    assert moduledoc =~ "--dependencies none --refresh force_selected"
+    assert moduledoc =~ "defaults remain dependency scope `all`"
+    assert moduledoc =~ "use it only after confirming"
+  end
+
   test "mix favn.run validates numeric options" do
     assert_raise Mix.Error, ~r/--timeout-ms must be greater than 0/, fn ->
       RunTask.run(["Example.Pipeline", "--timeout-ms", "0"])

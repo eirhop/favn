@@ -33,6 +33,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
+  attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
@@ -67,6 +68,7 @@ defmodule FavnView.Components.AssetDetailPage do
         selected_window={@selected_window}
         run_config_open?={@run_config_open?}
         run_config={@run_config}
+        run_config_valid?={@run_config_valid?}
         submitting_window_run?={@submitting_window_run?}
         selected_window_error={@selected_window_error}
         submitted_run_id={@submitted_run_id}
@@ -98,6 +100,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
+  attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
@@ -123,6 +126,7 @@ defmodule FavnView.Components.AssetDetailPage do
       selected_window={@selected_window}
       run_config_open?={@run_config_open?}
       run_config={@run_config}
+      run_config_valid?={@run_config_valid?}
       submitting_window_run?={@submitting_window_run?}
       selected_window_error={@selected_window_error}
       submitted_run_id={@submitted_run_id}
@@ -156,6 +160,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
+  attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
@@ -255,6 +260,7 @@ defmodule FavnView.Components.AssetDetailPage do
           active_timeline={@active_timeline}
           run_config_open?={@run_config_open?}
           run_config={@run_config}
+          run_config_valid?={@run_config_valid?}
           submitting_window_run?={@submitting_window_run?}
           selected_window_error={@selected_window_error}
           submitted_run_id={@submitted_run_id}

@@ -51,6 +51,8 @@ picked up together.
 mix favn.run MyApp.Pipelines.LocalSmoke
 mix favn.run MyApp.Pipelines.LocalSmoke --no-wait
 mix favn.run MyApp.Assets.MonthlyOrders --window month:2026-01
+mix favn.run MyApp.Source.Events:movement --window month:2026-07 \
+  --dependencies none --refresh force_selected
 ```
 
 Options:
@@ -59,12 +61,25 @@ Options:
 | --- | --- |
 | `--window VALUE` | Window request such as `month:2026-01`. |
 | `--timezone TZ` | Timezone for `--window`. |
+| `--dependencies all\|none` | Asset planning scope. Defaults to `all`. Asset-only. |
+| `--refresh MODE` | Refresh behavior. Defaults to `auto`. |
 | `--idempotency-key KEY` | Reuse key for safe command retry. |
 | `--wait` / `--no-wait` | Wait for completion or return after submission. Wait is default. |
 | `--timeout-ms N` | Alias for wait/run timeout when specific values are absent. |
 | `--wait-timeout-ms N` | Local polling timeout. Default is 60 seconds. |
 | `--run-timeout-ms N` | Runtime execution timeout. |
 | `--poll-interval-ms N` | Poll interval. Default is 1 second. |
+
+Asset refresh modes are `auto`, `missing`, `force_selected`,
+`force_selected_upstream`, and `force_all`. Pipeline targets do not accept
+`--dependencies` and support only `auto`, `missing`, and `force_all` refresh.
+`force_selected_upstream` requires dependency scope `all`.
+
+Use `--dependencies none --refresh force_selected` for a targeted repair only
+after confirming the selected asset's upstream inputs are suitable. Dependency
+scope chooses which nodes are planned; refresh chooses how freshness is applied
+inside that plan. Omitting both options keeps the safe `all` plus `auto`
+defaults.
 
 ### List, Show, And Cancel Runs
 

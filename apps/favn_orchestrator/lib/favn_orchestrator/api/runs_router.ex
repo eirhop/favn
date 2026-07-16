@@ -147,10 +147,9 @@ defmodule FavnOrchestrator.API.RunsRouter do
     do: validation_command_error("Invalid manifest selection")
 
   defp submit_error(:invalid_dependencies),
-    do: validation_command_error("Invalid dependency mode")
-
-  defp submit_error({:invalid_operator_dependency_mode, _value}),
-    do: validation_command_error("Invalid dependency mode")
+    do:
+      {:error, 422, "validation_failed", "dependencies is only supported for asset targets",
+       %{field: "dependencies"}}
 
   defp submit_error({:invalid_operator_timeout_ms, _value}),
     do: validation_command_error("Invalid timeout_ms")

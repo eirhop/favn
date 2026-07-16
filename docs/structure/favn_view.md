@@ -37,9 +37,11 @@ Ownership rules:
   storage, service-token internals, storage adapters, scheduler internals, or
   runner internals directly.
 - Operator mutation forms for pipeline runs, pipeline backfills, asset/window
-  runs, and asset range backfills must pass refresh intent through the public
-  orchestrator facade rather than reconstructing freshness, range expansion, or
-  backfill state in the UI.
+  runs, and asset range backfills must pass dependency and refresh intent through
+  the public orchestrator facade rather than reconstructing freshness, range
+  expansion, or backfill state in the UI. The asset form may reject incompatible
+  choices immediately, but the orchestrator remains authoritative for forged
+  events and non-browser callers.
 - Operator run cancellation controls must call the public `FavnOrchestrator`
   facade only. UI state may disable buttons, show confirmations, and map stable
   error atoms to labels, but cancellation lifecycle, audit, idempotency, runner

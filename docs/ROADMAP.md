@@ -32,9 +32,9 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Rebuild browser auth/session handling and browser-edge abuse controls in `apps/favn_view` when real operator screens return.
 - Decide whether to add session idle timeout and sudo/re-auth modes once concrete operator flows need them.
 
-### 3a. Rebuild The Phoenix/LiveView UI
+### 3a. Complete The Phoenix/LiveView UI
 
-- Recreate the operator UI behind the public orchestrator facade only. Start with auth/session boundaries, runs, assets, backfills, and live updates in separate focused PRs.
+- Complete and harden the existing operator UI behind the public orchestrator facade only, with remaining backfill and live-update work in separate focused PRs.
 - Extend run cancellation beyond the implemented CLI and run-detail action with
   explicit whole-backfill parent cancellation semantics when the product needs
   it. See `docs/archive/ai-planning/RUN_CANCELLATION_PLAN.md`.

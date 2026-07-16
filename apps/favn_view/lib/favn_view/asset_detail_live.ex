@@ -34,6 +34,7 @@ defmodule FavnView.AssetDetailLive do
         selected_window: nil,
         run_config_open?: false,
         run_config: default_run_config(),
+        run_config_valid?: true,
         submitting_window_run?: false,
         submitted_run_id: nil,
         selected_window_error: nil,
@@ -66,6 +67,7 @@ defmodule FavnView.AssetDetailLive do
            selected_window: nil,
            run_config_open?: false,
            run_config: default_run_config(),
+           run_config_valid?: true,
            selected_window_error: nil,
            submitted_run_id: nil
          )}
@@ -76,6 +78,7 @@ defmodule FavnView.AssetDetailLive do
            selected_window: selected_window,
            run_config_open?: false,
            run_config: default_run_config(),
+           run_config_valid?: true,
            selected_window_error: nil,
            submitted_run_id: nil
          )}
@@ -95,6 +98,7 @@ defmodule FavnView.AssetDetailLive do
        selected_window: nil,
        run_config_open?: false,
        run_config: default_run_config(),
+       run_config_valid?: true,
        selected_window_error: nil,
        submitted_run_id: nil
      )}
@@ -122,11 +126,15 @@ defmodule FavnView.AssetDetailLive do
          )}
 
       true ->
+        run_config = context_run_config(asset, socket.assigns.active_timeline, selected_window)
+        error = validate_run_config(run_config, selected_window)
+
         {:noreply,
          assign(socket,
            run_config_open?: true,
-           run_config: context_run_config(asset, socket.assigns.active_timeline, selected_window),
-           selected_window_error: nil,
+           run_config: run_config,
+           run_config_valid?: is_nil(error),
+           selected_window_error: error,
            submitted_run_id: nil
          )}
     end
@@ -140,7 +148,12 @@ defmodule FavnView.AssetDetailLive do
     run_config = run_config_from_params(params, socket.assigns.run_config)
     error = validate_run_config(run_config, socket.assigns.selected_window)
 
-    {:noreply, assign(socket, run_config: run_config, selected_window_error: error)}
+    {:noreply,
+     assign(socket,
+       run_config: run_config,
+       run_config_valid?: is_nil(error),
+       selected_window_error: error
+     )}
   end
 
   def handle_event("run_selected_window", params, socket) do
@@ -171,6 +184,7 @@ defmodule FavnView.AssetDetailLive do
         {:noreply,
          assign(socket,
            run_config: run_config,
+           run_config_valid?: false,
            submitting_window_run?: false,
            selected_window_error: error
          )}
@@ -184,6 +198,7 @@ defmodule FavnView.AssetDetailLive do
     socket =
       assign(socket,
         run_config: run_config,
+        run_config_valid?: true,
         submitting_window_run?: true,
         selected_window_error: nil,
         submitted_run_id: nil
@@ -277,6 +292,7 @@ defmodule FavnView.AssetDetailLive do
       selected_window={@selected_window}
       run_config_open?={@run_config_open?}
       run_config={@run_config}
+      run_config_valid?={@run_config_valid?}
       submitting_window_run?={@submitting_window_run?}
       selected_window_error={@selected_window_error}
       submitted_run_id={@submitted_run_id}
@@ -608,6 +624,9 @@ defmodule FavnView.AssetDetailLive do
 
       config.refresh not in @refresh_choices ->
         "Refresh choice is invalid."
+
+      config.dependencies == "none" and config.refresh == "force_selected_upstream" ->
+        "force_selected_upstream requires dependencies=all."
 
       is_nil(selected_window) and window_context_requested?(config) and
           config.source not in @source_choices ->

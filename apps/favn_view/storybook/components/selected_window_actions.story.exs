@@ -124,6 +124,24 @@ defmodule FavnView.Storybook.Components.SelectedWindowActions do
         }
       },
       %Variation{
+        id: :incompatible_dependency_refresh,
+        attributes: %{
+          selected_window: refresh_window(),
+          has_data_windows?: true,
+          run_config_open?: true,
+          run_config_valid?: false,
+          selected_window_error: "force_selected_upstream requires dependencies=all.",
+          run_config:
+            run_config(
+              :refresh_timeline,
+              :day,
+              "2026-06-12",
+              "none",
+              "force_selected_upstream"
+            )
+        }
+      },
+      %Variation{
         id: :not_runnable,
         attributes: %{
           selected_window:
