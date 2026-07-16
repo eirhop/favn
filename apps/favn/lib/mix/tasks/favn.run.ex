@@ -8,6 +8,19 @@ defmodule Mix.Tasks.Favn.Run do
 
       mix favn.run MyApp.Pipelines.Daily
       mix favn.run MyApp.Assets.RawEvents:events --window month:2026-01
+      mix favn.run MyApp.Source.Events:movement --window month:2026-07 \
+        --dependencies none --refresh force_selected
+
+  Asset runs accept dependency scope `all` or `none` and refresh mode `auto`,
+  `missing`, `force_selected`, `force_selected_upstream`, or `force_all`.
+  Pipeline runs do not accept `--dependencies` and accept only `auto`,
+  `missing`, or `force_all` refresh. The defaults remain dependency scope `all`
+  and refresh mode `auto` when the options are omitted.
+
+  `--dependencies none` is an operator override for targeted repair and local
+  validation. It plans only the selected asset, so use it only after confirming
+  that the asset's upstream inputs are suitable. `force_selected_upstream`
+  requires `--dependencies all`.
 
   By default the task waits for the run to finish. Use `--no-wait` to return
   after submission. Use `--wait-timeout-ms` for local polling and
@@ -22,6 +35,8 @@ defmodule Mix.Tasks.Favn.Run do
     wait: :boolean,
     window: :string,
     timezone: :string,
+    dependencies: :string,
+    refresh: :string,
     idempotency_key: :string,
     timeout_ms: :integer,
     wait_timeout_ms: :integer,
@@ -62,49 +77,67 @@ defmodule Mix.Tasks.Favn.Run do
     end
   end
 
-  defp error_message({:target_not_found, requested, available}),
+  @doc false
+  def error_message({:target_not_found, requested, available}),
     do: target_not_found_message(requested, available)
 
-  defp error_message({:pipeline_not_found, requested, available}),
+  def error_message({:pipeline_not_found, requested, available}),
     do: target_not_found_message(requested, available)
 
-  defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
+  def error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
 
-  defp error_message(:stack_not_healthy),
+  def error_message(:stack_not_healthy),
     do: "stack not healthy; use mix favn.stop then mix favn.dev"
 
-  defp error_message({:run_wait_timeout, run_id, timeout_ms}) do
+  def error_message({:run_wait_timeout, run_id, timeout_ms}) do
     "local wait timed out after #{timeout_ms}ms while run #{run_id} is still in flight; " <>
       "check status with mix favn.status or rerun with a larger --wait-timeout-ms"
   end
 
-  defp error_message({:invalid_option, :timeout_ms}), do: "--timeout-ms must be greater than 0"
+  def error_message({:invalid_option, :timeout_ms}), do: "--timeout-ms must be greater than 0"
 
-  defp error_message({:invalid_option, :wait_timeout_ms}),
+  def error_message({:invalid_option, :wait_timeout_ms}),
     do: "--wait-timeout-ms must be greater than 0"
 
-  defp error_message({:invalid_option, :run_timeout_ms}),
+  def error_message({:invalid_option, :run_timeout_ms}),
     do: "--run-timeout-ms must be greater than 0"
 
-  defp error_message({:invalid_option, :poll_interval_ms}),
+  def error_message({:invalid_option, :poll_interval_ms}),
     do: "--poll-interval-ms must be greater than 0"
 
-  defp error_message({:invalid_option, :idempotency_key}),
+  def error_message({:invalid_option, :idempotency_key}),
     do: "--idempotency-key must be a non-empty string up to 512 bytes"
 
-  defp error_message({:invalid_option, :timezone_without_window}),
+  def error_message({:invalid_option, :timezone_without_window}),
     do: "--timezone requires --window"
 
-  defp error_message({:invalid_window_request, reason}),
+  def error_message({:invalid_option, :dependencies, _value}),
+    do: "--dependencies must be one of: all, none"
+
+  def error_message({:invalid_option, :refresh, _value}),
+    do:
+      "--refresh must be one of: auto, missing, force_selected, " <>
+        "force_selected_upstream, force_all"
+
+  def error_message(:dependencies_only_supported_for_assets),
+    do: "--dependencies is only supported for asset targets"
+
+  def error_message({:invalid_pipeline_refresh_mode, _value}),
+    do: "pipeline --refresh must be one of: auto, missing, force_all"
+
+  def error_message({:refresh_include_upstream_requires_dependencies, :all}),
+    do: "--refresh force_selected_upstream requires --dependencies all"
+
+  def error_message({:invalid_window_request, reason}),
     do: "invalid --window value: #{inspect(reason)}"
 
-  defp error_message({:orchestrator_validation_failed, message}), do: message
+  def error_message({:orchestrator_validation_failed, message}), do: message
 
-  defp error_message(%{operation: operation, reason: reason}) do
+  def error_message(%{operation: operation, reason: reason}) do
     "orchestrator #{operation_label(operation)} failed: #{format_orchestrator_reason(reason)}"
   end
 
-  defp error_message(reason), do: "run failed: #{inspect(reason)}"
+  def error_message(reason), do: "run failed: #{inspect(reason)}"
 
   @doc false
   def terminal_run_error_message(run) do

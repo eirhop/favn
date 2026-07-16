@@ -76,6 +76,8 @@ as already present, and changed files are left untouched.
 mix favn.status
 mix favn.run MyApp.Pipelines.Daily
 mix favn.run MyApp.Pipelines.Monthly --window month:2026-03 --timezone Europe/Oslo
+mix favn.run MyApp.Source.Events:movement --window month:2026-07 \
+  --dependencies none --refresh force_selected
 mix favn.backfill submit MyApp.Pipelines.Daily --from 2026-04-01 --to 2026-04-07 --kind day
 mix favn.backfill submit MyApp.Pipelines.Monthly --window month:2025-05..2026-05 --dry-run
 mix favn.backfill windows RUN_ID
@@ -240,13 +242,24 @@ an explicit trusted local-dev context that is accepted only while the API is
 bound to `127.*`; they do not perform password login and do not create local
 operator users. Production/server auth is a separate runtime configuration path.
 
-`mix favn.run PipelineModule` submits a pipeline to the running local stack over
+`mix favn.run TARGET` submits an asset or pipeline to the running local stack over
 the private orchestrator HTTP boundary using the loopback-only local-dev context.
-It resolves the active manifest's pipeline target ID, submits the run, and waits
+It resolves the active manifest target ID, submits the run, and waits
 for terminal status by default.
 Windowed pipelines accept explicit local run windows with `--window
 hour:YYYY-MM-DDTHH`, `--window day:YYYY-MM-DD`, `--window month:YYYY-MM`, or
 `--window year:YYYY`, plus optional `--timezone`.
+Asset targets accept `--dependencies all|none` and `--refresh auto|missing|force_selected|force_selected_upstream|force_all`.
+Pipeline targets reject `--dependencies` and accept only `auto`, `missing`, and
+`force_all` refresh. Omitted options preserve orchestrator defaults of
+dependency scope `all` and refresh `auto`. `force_selected_upstream` requires
+dependency scope `all`.
+
+Dependency scope determines which assets are planned; refresh determines how
+freshness is applied within that plan. `--dependencies none --refresh
+force_selected` is intended for targeted repair after the operator has confirmed
+that upstream inputs are suitable. It must not be treated as the normal
+scheduling or pipeline path.
 The local tooling HTTP client is intentionally limited to plain HTTP loopback
 URLs for Favn-managed local services.
 

@@ -66,8 +66,8 @@ defmodule FavnOrchestrator.API.OperatorCommands do
       {:ok,
        []
        |> put_optional(:selection, selection)
-       |> put_optional(:dependency_mode, Map.get(params, "dependencies"))
-       |> put_optional(:refresh_mode, Map.get(params, "refresh"))
+       |> put_present(:dependency_mode, params, "dependencies")
+       |> put_present(:refresh_mode, params, "refresh")
        |> put_optional(:metadata, Map.get(params, "metadata"))
        |> put_optional(:timeout_ms, Map.get(params, "timeout_ms"))}
     end
@@ -80,7 +80,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
       {:ok,
        []
        |> put_optional(:window, Map.get(params, "window"))
-       |> put_optional(:refresh_mode, Map.get(params, "refresh"))
+       |> put_present(:refresh_mode, params, "refresh")
        |> put_optional(:metadata, Map.get(params, "metadata"))
        |> put_optional(:timeout_ms, Map.get(params, "timeout_ms"))}
     end
@@ -257,6 +257,12 @@ defmodule FavnOrchestrator.API.OperatorCommands do
   defp field(map, string_key, atom_key), do: Map.get(map, string_key) || Map.get(map, atom_key)
 
   defp non_empty_string?(value), do: is_binary(value) and value != ""
+
+  defp put_present(opts, key, params, field) do
+    if Map.has_key?(params, field),
+      do: Keyword.put(opts, key, Map.get(params, field)),
+      else: opts
+  end
 
   defp put_optional(opts, _key, nil), do: opts
   defp put_optional(opts, _key, ""), do: opts

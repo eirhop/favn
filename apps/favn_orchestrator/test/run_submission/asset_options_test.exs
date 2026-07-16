@@ -39,4 +39,25 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptionsTest do
     assert {:error, {:refresh_include_upstream_requires_dependencies, :all}} =
              AssetOptions.from_operator_request(@asset, request)
   end
+
+  test "translates every operator refresh mode at the runtime boundary" do
+    cases = [
+      {:auto, :all, :auto},
+      {:missing, :all, :missing},
+      {:force_all, :all, :force},
+      {:force_selected, :none, {:force_assets, [@asset.ref]}},
+      {:force_selected_upstream, :all, {:force_assets, [@asset.ref], [include_upstream: true]}}
+    ]
+
+    for {refresh_mode, dependency_mode, expected_refresh} <- cases do
+      request = %AssetRunRequest{
+        dependency_mode: dependency_mode,
+        refresh_mode: refresh_mode
+      }
+
+      assert {:ok, opts} = AssetOptions.from_operator_request(@asset, request)
+      assert opts[:dependencies] == dependency_mode
+      assert opts[:refresh] == expected_refresh
+    end
+  end
 end

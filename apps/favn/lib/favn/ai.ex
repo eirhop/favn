@@ -162,6 +162,12 @@ defmodule Favn.AI do
     `mix favn.build.single`, `mix favn.bootstrap.single`, and
     `mix favn.read_doc`. Dev and reload load the project `.env` before evaluating
     `config/runtime.exs`; existing shell values take precedence.
+    `mix favn.run` resolves asset and pipeline targets from the active manifest.
+    Direct asset repair can combine `--dependencies all|none` with
+    `--refresh auto|missing|force_selected|force_selected_upstream|force_all`;
+    pipeline runs have the narrower `auto|missing|force_all` refresh contract and
+    do not accept `--dependencies`. Read `Mix.Tasks.Favn.Run` and `Favn.Dev.Run`
+    before changing this boundary.
   - To inspect the public helper functions collected in one place, read `Favn`.
 
   ## Transactional SQL Check Breadcrumbs

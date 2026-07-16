@@ -220,6 +220,109 @@ defmodule Favn.Dev.RunTest do
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, window: "month:2026-99")
   end
 
+  test "run/2 validates dependency and refresh values before stack inspection", %{
+    root_dir: root_dir
+  } do
+    assert {:error, {:invalid_option, :dependencies, "upstream"}} =
+             Dev.run("Elixir.MyApp.Asset:asset",
+               root_dir: root_dir,
+               dependencies: "upstream"
+             )
+
+    assert {:error, {:invalid_option, :refresh, "sometimes"}} =
+             Dev.run("Elixir.MyApp.Asset:asset", root_dir: root_dir, refresh: "sometimes")
+  end
+
+  test "asset run options are omitted by default and forwarded unchanged when explicit", %{
+    root_dir: root_dir
+  } do
+    parent = self()
+
+    refresh_modes = ~w(auto missing force_selected force_selected_upstream force_all)
+
+    responses =
+      [asset_manifest_response(), run_response("run_default")] ++
+        Enum.flat_map(refresh_modes, fn refresh ->
+          [asset_manifest_response(), run_response("run_#{refresh}")]
+        end)
+
+    {:ok, base_url, _server} = start_server(responses, parent: parent)
+    write_running_runtime!(root_dir, base_url)
+
+    assert {:ok, %{"id" => "run_default"}} =
+             Dev.run("Elixir.MyApp.Asset:asset", root_dir: root_dir, wait: false)
+
+    default_body = submit_body()
+    refute Map.has_key?(default_body, "dependencies")
+    refute Map.has_key?(default_body, "refresh")
+
+    for refresh <- refresh_modes do
+      dependencies = if refresh == "force_selected_upstream", do: "all", else: "none"
+
+      assert {:ok, %{"id" => "run_" <> _}} =
+               Dev.run("Elixir.MyApp.Asset:asset",
+                 root_dir: root_dir,
+                 wait: false,
+                 dependencies: dependencies,
+                 refresh: refresh
+               )
+
+      assert %{"dependencies" => ^dependencies, "refresh" => ^refresh} = submit_body()
+    end
+  end
+
+  test "asset run rejects upstream refresh when dependency traversal is disabled", %{
+    root_dir: root_dir
+  } do
+    {:ok, base_url, _server} = start_server([asset_manifest_response()])
+    write_running_runtime!(root_dir, base_url)
+
+    assert {:error, {:refresh_include_upstream_requires_dependencies, :all}} =
+             Dev.run("Elixir.MyApp.Asset:asset",
+               root_dir: root_dir,
+               dependencies: "none",
+               refresh: "force_selected_upstream"
+             )
+  end
+
+  test "pipeline targets reject asset-only run options", %{root_dir: root_dir} do
+    {:ok, base_url, _server} =
+      start_server([active_manifest_response(), active_manifest_response()])
+
+    write_running_runtime!(root_dir, base_url)
+
+    assert {:error, :dependencies_only_supported_for_assets} =
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, dependencies: "none")
+
+    assert {:error, {:invalid_pipeline_refresh_mode, "force_selected"}} =
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, refresh: "force_selected")
+  end
+
+  test "pipeline targets forward their canonical refresh modes", %{root_dir: root_dir} do
+    parent = self()
+    refresh_modes = ~w(auto missing force_all)
+
+    responses =
+      Enum.flat_map(refresh_modes, fn refresh ->
+        [active_manifest_response(), run_response("run_#{refresh}")]
+      end)
+
+    {:ok, base_url, _server} = start_server(responses, parent: parent)
+    write_running_runtime!(root_dir, base_url)
+
+    for refresh <- refresh_modes do
+      assert {:ok, %{"id" => "run_" <> _}} =
+               Dev.run_pipeline(MyApp.Pipeline,
+                 root_dir: root_dir,
+                 wait: false,
+                 refresh: refresh
+               )
+
+      assert %{"refresh" => ^refresh} = body = submit_body()
+      refute Map.has_key?(body, "dependencies")
+    end
+  end
+
   test "run_pipeline/2 surfaces orchestrator validation messages", %{root_dir: root_dir} do
     {:ok, base_url, _server} =
       start_server([
@@ -338,6 +441,11 @@ defmodule Favn.Dev.RunTest do
   defp active_manifest_response do
     {200,
      ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})}
+  end
+
+  defp asset_manifest_response do
+    {200,
+     ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"assets":[{"target_id":"asset:Elixir.MyApp.Asset:asset","asset_ref":"Elixir.MyApp.Asset:asset","label":"Elixir.MyApp.Asset:asset"}],"pipelines":[]}}})}
   end
 
   defp run_response(run_id) do

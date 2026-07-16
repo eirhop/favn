@@ -46,6 +46,8 @@ In another terminal, run the generated sample pipeline:
 
 ```bash
 mix favn.run MyApp.Pipelines.LocalSmoke
+mix favn.run MyApp.Source.Events:movement --window month:2026-07 \
+  --dependencies none --refresh force_selected
 mix favn.runs list
 mix favn.stop
 ```
@@ -82,6 +84,12 @@ end
 Most users should let `mix favn.dev` and `mix favn.run` handle the runtime flow.
 Manifest functions are available for tooling and debugging, but they are not the
 first thing you need to learn.
+
+Direct asset runs default to planning all upstream dependencies with automatic
+freshness. Use `--dependencies none --refresh force_selected` only for targeted
+repair after independently confirming the target's upstream inputs. See the
+[local development guide](guides/local-development.md) for all asset and
+pipeline refresh modes.
 
 ## Use `:favn` For
 

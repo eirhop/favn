@@ -18,8 +18,9 @@ Code:
   API context used by local CLI commands
 - `apps/favn_local/lib/favn/dev/run.ex`, `apps/favn_local/lib/favn/dev/runs.ex`,
   and `apps/favn_local/lib/favn/dev/backfill.ex` for local operator run/backfill
-  payloads and run operations, including timeout, cancellation, refresh-policy,
-  successful-window rerun, and concurrency option forwarding
+  payloads and run operations, including target-aware dependency scope,
+  refresh-mode validation, timeout, cancellation, successful-window rerun, and
+  concurrency option forwarding
 - `apps/favn_local/lib/favn/dev/init.ex` for generated local sample files; keep
   its lakehouse sample aligned with the convention that connections are
   server/session/auth, catalogs are phases, schemas are segments/domains, and

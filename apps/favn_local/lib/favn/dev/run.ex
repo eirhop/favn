@@ -11,6 +11,9 @@ defmodule Favn.Dev.Run do
   alias Favn.Window.Request, as: WindowRequest
 
   @terminal_statuses ["ok", "error", "cancelled", "timed_out"]
+  @dependency_modes ~w(all none)
+  @asset_refresh_modes ~w(auto missing force_selected force_selected_upstream force_all)
+  @pipeline_refresh_modes ~w(auto missing force_all)
   @default_wait_timeout_ms 60_000
   @default_poll_interval_ms 1_000
 
@@ -19,6 +22,8 @@ defmodule Favn.Dev.Run do
           wait: boolean(),
           window: String.t(),
           timezone: String.t(),
+          dependencies: String.t(),
+          refresh: String.t(),
           idempotency_key: String.t(),
           timeout_ms: non_neg_integer(),
           wait_timeout_ms: pos_integer(),
@@ -43,16 +48,16 @@ defmodule Favn.Dev.Run do
              credentials.service_token,
              session_context
            ),
-          {:ok, target} <- resolve_run_target(active_manifest, target),
-          {:ok, run} <-
-            submit_run(
-              base_url(runtime, opts),
-              credentials.service_token,
-              session_context,
+         {:ok, target} <- resolve_run_target(active_manifest, target),
+         :ok <- validate_target_opts(target, opts),
+         {:ok, run} <-
+           submit_run(
+             base_url(runtime, opts),
+             credentials.service_token,
+             session_context,
              target,
              window_request,
-             run_idempotency_key(opts),
-             run_timeout_ms(opts)
+             opts
            ),
          {:ok, final_run} <-
            maybe_wait(run, runtime, credentials.service_token, session_context, opts),
@@ -64,19 +69,27 @@ defmodule Favn.Dev.Run do
   def submit(_target, _opts), do: {:error, :invalid_target}
 
   defp validate_opts(opts) do
-    case validate_timezone_without_window(opts) do
-      :ok ->
-        with :ok <- validate_positive_integer(opts, :timeout_ms),
-             :ok <- validate_positive_integer(opts, :wait_timeout_ms),
-             :ok <- validate_positive_integer(opts, :run_timeout_ms),
-             :ok <- validate_positive_integer(opts, :poll_interval_ms) do
-          validate_idempotency_key(opts)
-        else
-          {:error, _reason} = error -> error
-        end
+    with :ok <- validate_choice(opts, :dependencies, @dependency_modes),
+         :ok <- validate_choice(opts, :refresh, @asset_refresh_modes),
+         :ok <- validate_timezone_without_window(opts),
+         :ok <- validate_positive_integer(opts, :timeout_ms),
+         :ok <- validate_positive_integer(opts, :wait_timeout_ms),
+         :ok <- validate_positive_integer(opts, :run_timeout_ms),
+         :ok <- validate_positive_integer(opts, :poll_interval_ms) do
+      validate_idempotency_key(opts)
+    else
+      {:error, _reason} = error -> error
+    end
+  end
 
-      {:error, _reason} = error ->
-        error
+  defp validate_choice(opts, key, choices) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+
+      {:ok, value} ->
+        if value in choices,
+          do: :ok,
+          else: {:error, {:invalid_option, key, value}}
     end
   end
 
@@ -112,6 +125,30 @@ defmodule Favn.Dev.Run do
         {:error, {:invalid_option, :idempotency_key}}
     end
   end
+
+  defp validate_target_opts(%{"target_type" => "asset"}, opts) do
+    case {Keyword.get(opts, :dependencies), Keyword.get(opts, :refresh)} do
+      {"none", "force_selected_upstream"} ->
+        {:error, {:refresh_include_upstream_requires_dependencies, :all}}
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp validate_target_opts(%{"target_type" => "pipeline"}, opts) do
+    if Keyword.has_key?(opts, :dependencies) do
+      {:error, :dependencies_only_supported_for_assets}
+    else
+      case Keyword.get(opts, :refresh) do
+        nil -> :ok
+        refresh when refresh in @pipeline_refresh_modes -> :ok
+        refresh -> {:error, {:invalid_pipeline_refresh_mode, refresh}}
+      end
+    end
+  end
+
+  defp validate_target_opts(_target, _opts), do: {:error, :invalid_target}
 
   @doc false
   @spec resolve_pipeline_target(map(), module() | String.t()) :: {:ok, map()} | {:error, term()}
@@ -190,8 +227,7 @@ defmodule Favn.Dev.Run do
          session_context,
          target,
          window_request,
-         idempotency_key,
-         timeout_ms
+         opts
        ) do
     case target do
       %{"target_id" => target_id, "target_type" => target_type}
@@ -202,10 +238,12 @@ defmodule Favn.Dev.Run do
             manifest_selection: %{mode: "active"}
           }
           |> maybe_put_window(window_request)
-          |> maybe_put(:timeout_ms, timeout_ms)
+          |> maybe_put(:dependencies, Keyword.get(opts, :dependencies))
+          |> maybe_put(:refresh, Keyword.get(opts, :refresh))
+          |> maybe_put(:timeout_ms, run_timeout_ms(opts))
 
         case OrchestratorClient.submit_run(base_url, service_token, session_context, payload,
-               idempotency_key: idempotency_key
+               idempotency_key: run_idempotency_key(opts)
              ) do
           {:ok, _run} = ok -> ok
           {:error, reason} -> {:error, unwrap_submit_error(reason)}

@@ -4,6 +4,14 @@ defmodule FavnOrchestrator.OperatorCommands.AssetRunRequest do
 
   This DTO is accepted at the public orchestrator operator facade. It describes
   what the operator requested, not the runtime options used to execute the run.
+
+  Dependency mode `:all` plans the selected asset and its upstream graph;
+  `:none` plans only the selected asset. Refresh mode controls freshness within
+  that planned graph: `:auto` obeys freshness, `:missing` runs nodes without a
+  prior success, `:force_selected` forces only the target,
+  `:force_selected_upstream` forces the target and planned upstream nodes, and
+  `:force_all` forces the full planned graph. `:force_selected_upstream`
+  requires dependency mode `:all`.
   """
 
   alias FavnOrchestrator.OperatorCommands.Input

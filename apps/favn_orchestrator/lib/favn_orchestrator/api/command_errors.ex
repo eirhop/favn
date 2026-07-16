@@ -15,6 +15,8 @@ defmodule FavnOrchestrator.API.CommandErrors do
   @type command_error :: {:error, pos_integer(), String.t(), String.t(), map()}
 
   @operator_fields %{
+    invalid_operator_dependency_mode: {"dependencies", "Invalid dependency mode"},
+    invalid_operator_refresh_mode: {"refresh", "Invalid refresh mode"},
     invalid_operator_max_attempts: {"max_attempts", "Invalid max_attempts"},
     invalid_operator_retry_backoff_ms: {"retry_backoff_ms", "Invalid retry_backoff_ms"},
     invalid_operator_timeout_ms: {"timeout_ms", "Invalid timeout_ms"},
@@ -25,6 +27,11 @@ defmodule FavnOrchestrator.API.CommandErrors do
 
   @doc "Maps an operator field validation failure, or returns `nil` when unknown."
   @spec operator(term()) :: command_error() | nil
+  def operator({:refresh_include_upstream_requires_dependencies, :all}) do
+    {:error, 422, "validation_failed", "force_selected_upstream requires dependencies=all",
+     %{fields: ["dependencies", "refresh"]}}
+  end
+
   def operator({reason, _value}) do
     case Map.fetch(@operator_fields, reason) do
       {:ok, {field, message}} ->

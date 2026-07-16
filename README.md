@@ -735,6 +735,7 @@ mix favn.doctor
 mix favn.install
 mix favn.dev
 mix favn.run MyApp.Pipelines.DailySales --window day:2026-04-27 --timezone Europe/Oslo
+mix favn.run MyApp.Source.Events:movement --window month:2026-07 --dependencies none --refresh force_selected
 mix favn.backfill submit MyApp.Pipelines.DailySales --from 2026-04-01 --to 2026-04-07 --kind day
 mix favn.backfill submit MyApp.Pipelines.DailySales --window month:2025-05..2026-05 --refresh force
 mix favn.backfill windows RUN_ID --limit 100 --offset 0
@@ -890,6 +891,16 @@ timeout. Use `--wait-timeout-ms` to change only the local polling budget and
 `--run-timeout-ms` to change the per-asset execution timeout sent to the
 orchestrator. The older `--timeout-ms` flag remains an alias for both when the
 more specific flags are not provided.
+
+`mix favn.run` also resolves direct asset targets from the active manifest.
+Asset runs accept `--dependencies all|none` and refresh modes `auto`, `missing`,
+`force_selected`, `force_selected_upstream`, and `force_all`. Pipeline targets
+do not accept dependency scope and support only `auto`, `missing`, and
+`force_all`. Omitting the flags preserves the safe `all` plus `auto` defaults.
+Dependency scope chooses the planned graph; refresh controls freshness within
+that graph. Use `--dependencies none --refresh force_selected` only for targeted
+repair after verifying the target's upstream inputs. `force_selected_upstream`
+requires `--dependencies all`.
 
 `mix favn.backfill` exposes the local operational-backfill workflow for running
 local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges

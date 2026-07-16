@@ -1398,7 +1398,8 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:post, "/api/orchestrator/v1/runs", %{
         target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
         manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
-        dependencies: "none"
+        dependencies: "none",
+        refresh: "force_selected"
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
@@ -1411,6 +1412,13 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert {:ok, run} = FavnOrchestrator.get_run(run_id)
     assert run.manifest_version_id == "mv_dependency_scope"
     assert run.plan.topo_order == [{MyApp.Assets.Gold, :asset}]
+    assert run.metadata.asset_dependencies == :none
+
+    assert run.metadata.refresh_policy == %{
+             mode: :force_assets,
+             refs: [{MyApp.Assets.Gold, :asset}],
+             include_upstream?: false
+           }
 
     assert [%{action: "run.submit", actor_id: actor_id, session_id: session_id}] =
              Auth.list_audit(limit: 1)
@@ -1614,7 +1622,116 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> Router.call(@opts)
 
     assert response.status == 422
-    assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "Invalid dependency mode",
+               "details" => %{"field" => "dependencies"}
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
+  test "run submission rejects invalid asset refresh mode with stable field details" do
+    version = dependency_manifest_version("mv_invalid_refresh_mode")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        refresh: "sometimes"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-invalid-refresh")
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "Invalid refresh mode",
+               "details" => %{"field" => "refresh"}
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
+  test "run submission rejects explicitly empty or null asset run modes" do
+    version = dependency_manifest_version("mv_empty_asset_run_modes")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    cases = [
+      {"dependencies", "", "Invalid dependency mode"},
+      {"dependencies", nil, "Invalid dependency mode"},
+      {"refresh", "", "Invalid refresh mode"},
+      {"refresh", nil, "Invalid refresh mode"}
+    ]
+
+    for {{field, value, message}, index} <- Enum.with_index(cases) do
+      payload = %{
+        "target" => %{"type" => "asset", "id" => "asset:Elixir.MyApp.Assets.Gold:asset"},
+        "manifest_selection" => %{
+          "mode" => "version",
+          "manifest_version_id" => version.manifest_version_id
+        },
+        field => value
+      }
+
+      response =
+        conn(:post, "/api/orchestrator/v1/runs", payload)
+        |> put_req_header("authorization", "Bearer test-service-token")
+        |> put_req_header("x-favn-actor-id", actor.id)
+        |> put_req_header("x-favn-session-token", session.token)
+        |> put_idempotency_key("run-empty-mode-#{index}")
+        |> Router.call(@opts)
+
+      assert response.status == 422
+
+      assert %{
+               "error" => %{
+                 "code" => "validation_failed",
+                 "message" => ^message,
+                 "details" => %{"field" => ^field}
+               }
+             } = Jason.decode!(response.resp_body)
+    end
+  end
+
+  test "run submission rejects upstream refresh without dependency traversal" do
+    version = dependency_manifest_version("mv_invalid_upstream_refresh")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        dependencies: "none",
+        refresh: "force_selected_upstream"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-invalid-upstream-refresh")
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "force_selected_upstream requires dependencies=all",
+               "details" => %{"fields" => ["dependencies", "refresh"]}
+             }
+           } = Jason.decode!(response.resp_body)
   end
 
   test "run submission rejects malformed asset window payload" do
@@ -1722,7 +1839,49 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> Router.call(@opts)
 
     assert response.status == 422
-    assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "dependencies is only supported for asset targets",
+               "details" => %{"field" => "dependencies"}
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
+  test "run submission rejects invalid or empty refresh modes for pipeline targets" do
+    version = schedule_manifest_version("mv_pipeline_refresh_rejected")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    for {refresh, index} <- Enum.with_index(["force_selected", "", nil]) do
+      response =
+        conn(:post, "/api/orchestrator/v1/runs", %{
+          target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+          manifest_selection: %{
+            mode: "version",
+            manifest_version_id: version.manifest_version_id
+          },
+          window: %{mode: "single", kind: "day", value: "2026-03-01"},
+          refresh: refresh
+        })
+        |> put_req_header("authorization", "Bearer test-service-token")
+        |> put_req_header("x-favn-actor-id", actor.id)
+        |> put_req_header("x-favn-session-token", session.token)
+        |> put_idempotency_key("pipeline-refresh-invalid-#{index}")
+        |> Router.call(@opts)
+
+      assert response.status == 422
+
+      assert %{
+               "error" => %{
+                 "code" => "validation_failed",
+                 "message" => "Invalid refresh mode",
+                 "details" => %{"field" => "refresh"}
+               }
+             } = Jason.decode!(response.resp_body)
+    end
   end
 
   test "run submission reports missing pipeline window request clearly" do

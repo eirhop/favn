@@ -31,6 +31,7 @@ defmodule Favn.Dev do
   - `status/1`: inspect current stack state
   - `diagnostics/1`: fetch service-authenticated operator diagnostics
   - `reload/1`: rebuild and republish the manifest
+  - `run/2`: submit an asset or pipeline run with optional dependency and refresh intent
   - `list_runs/1`, `get_run/2`, `cancel_run/2`, `list_run_events/2`: inspect
     and control local runs through HTTP APIs
   - `build_runner/1`, `build_web/1`, `build_orchestrator/1`, `build_single/1`:
@@ -169,6 +170,12 @@ defmodule Favn.Dev do
 
   @doc """
   Submits an asset or pipeline run to the running local stack.
+
+  Asset targets accept `dependencies: "all" | "none"` and refresh modes
+  `"auto"`, `"missing"`, `"force_selected"`,
+  `"force_selected_upstream"`, and `"force_all"`. Pipeline targets do not
+  accept `:dependencies` and support only `"auto"`, `"missing"`, and
+  `"force_all"` refresh modes. Omitted values use orchestrator-owned defaults.
   """
   @spec run(module() | String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(target, opts \\ []) when is_list(opts), do: Run.submit(target, opts)
