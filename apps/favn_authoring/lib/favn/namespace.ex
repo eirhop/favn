@@ -124,6 +124,12 @@ defmodule Favn.Namespace do
 
   @supported_keys [:connection, :catalog, :schema]
 
+  @type resolution :: %{
+          relation: map(),
+          runtime_config: [Bundle.t()],
+          resources: [String.t()]
+        }
+
   @doc false
   defmacro __using__(opts) do
     quote bind_quoted: [opts: opts] do
@@ -143,13 +149,8 @@ defmodule Favn.Namespace do
   @spec resolve_relation(module()) :: map()
   def resolve_relation(module) when is_atom(module) do
     module
-    |> ancestors()
-    |> Enum.reduce(%{}, fn ancestor, acc ->
-      case namespace_config(ancestor) do
-        nil -> acc
-        config -> Map.merge(acc, config.relation)
-      end
-    end)
+    |> resolve()
+    |> Map.fetch!(:relation)
   end
 
   @doc """
@@ -160,13 +161,8 @@ defmodule Favn.Namespace do
   @spec resolve_runtime_config(module()) :: [Bundle.t()]
   def resolve_runtime_config(module) when is_atom(module) do
     module
-    |> ancestors()
-    |> Enum.flat_map(fn ancestor ->
-      case namespace_config(ancestor) do
-        nil -> []
-        config -> config.runtime_config
-      end
-    end)
+    |> resolve()
+    |> Map.fetch!(:runtime_config)
   end
 
   @doc """
@@ -179,15 +175,34 @@ defmodule Favn.Namespace do
   @spec resolve_resources(module()) :: [String.t()]
   def resolve_resources(module) when is_atom(module) do
     module
-    |> ancestors()
-    |> Enum.flat_map(fn ancestor ->
-      case namespace_config(ancestor) do
-        nil -> []
-        config -> config.resources
-      end
-    end)
-    |> SessionRequirements.normalize_resources!()
+    |> resolve()
+    |> Map.fetch!(:resources)
   end
+
+  @doc false
+  @spec resolve(module()) :: resolution()
+  def resolve(module) when is_atom(module) do
+    resolution =
+      module
+      |> ancestors()
+      |> Enum.reduce(empty_resolution(), fn ancestor, acc ->
+        case namespace_config(ancestor) do
+          nil ->
+            acc
+
+          config ->
+            %{
+              relation: Map.merge(acc.relation, config.relation),
+              runtime_config: acc.runtime_config ++ config.runtime_config,
+              resources: acc.resources ++ config.resources
+            }
+        end
+      end)
+
+    %{resolution | resources: SessionRequirements.normalize_resources!(resolution.resources)}
+  end
+
+  defp empty_resolution, do: %{relation: %{}, runtime_config: [], resources: []}
 
   @doc false
   @spec normalize_config!(keyword() | map()) :: map()

@@ -902,6 +902,7 @@ defmodule Favn.SQLAsset do
   end
 
   defp build_definition!(raw_definition) do
+    namespace = Namespace.resolve(raw_definition.module)
     depends_on = normalize_depends!(raw_definition.depends, raw_definition)
     meta = normalize_meta!(raw_definition.meta, raw_definition)
     settings = normalize_settings!(raw_definition.settings, raw_definition)
@@ -918,7 +919,7 @@ defmodule Favn.SQLAsset do
     runtime_config = normalize_runtime_config!(raw_definition, runtime_inputs)
     execution_pool = normalize_execution_pool!(raw_definition.execution_pool, raw_definition)
 
-    session_requirements = normalize_session_requirements!(raw_definition)
+    session_requirements = normalize_session_requirements!(raw_definition, namespace.resources)
     contract = normalize_contract!(Map.get(raw_definition, :contracts, []), raw_definition)
 
     validate_checked_materialization!(
@@ -931,7 +932,8 @@ defmodule Favn.SQLAsset do
     relation =
       normalize_relation!(
         raw_definition,
-        RelationResolver.inferred_relation_name_for_module(raw_definition.module)
+        RelationResolver.inferred_relation_name_for_module(raw_definition.module),
+        namespace.relation
       )
 
     known_definitions = fetch_sql_definitions!(raw_definition)
@@ -1436,7 +1438,7 @@ defmodule Favn.SQLAsset do
     )
   end
 
-  defp normalize_session_requirements!(raw_definition) do
+  defp normalize_session_requirements!(raw_definition, inherited) do
     declared =
       raw_definition
       |> Map.get(:resources, [])
@@ -1452,16 +1454,13 @@ defmodule Favn.SQLAsset do
           )
       end)
 
-    inherited = Namespace.resolve_resources(raw_definition.module)
     SessionRequirements.new!(inherited ++ declared)
   rescue
     error in ArgumentError ->
       DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
   end
 
-  defp normalize_relation!(raw_definition, inferred_name) do
-    defaults = Namespace.resolve_relation(raw_definition.module)
-
+  defp normalize_relation!(raw_definition, inferred_name, defaults) do
     relation_attrs =
       case raw_definition.relation do
         [] ->

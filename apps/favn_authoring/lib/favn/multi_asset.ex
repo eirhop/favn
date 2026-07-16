@@ -286,11 +286,12 @@ defmodule Favn.MultiAsset do
 
     validate_unique_names!(raw_declarations)
     shared = shared_declarations(env.module)
+    namespace = Namespace.resolve(env.module)
 
     {assets, raw_assets} =
       Enum.map_reduce(raw_declarations, [], fn declaration, raw_assets ->
-        raw_asset = merge_declarations!(declaration, shared, env)
-        {build_asset!(raw_asset, env), [raw_asset | raw_assets]}
+        raw_asset = merge_declarations!(declaration, shared, namespace.runtime_config, env)
+        {build_asset!(raw_asset, namespace.relation, env), [raw_asset | raw_assets]}
       end)
 
     :ok = ensure_unique_relation_owners!(assets, env)
@@ -422,7 +423,7 @@ defmodule Favn.MultiAsset do
     Map.put(child, declaration, [value])
   end
 
-  defp merge_declarations!(declaration, shared, env) do
+  defp merge_declarations!(declaration, shared, inherited_runtime_config, env) do
     child = declaration.child
     settings = Favn.Settings.merge_all!(shared.settings ++ child.settings)
     meta = merge_meta!(shared.meta ++ child.meta)
@@ -442,7 +443,7 @@ defmodule Favn.MultiAsset do
     description = scalar_value!(:description, [], child.description, env, nil)
 
     runtime_config =
-      Namespace.resolve_runtime_config(declaration.module)
+      inherited_runtime_config
       |> Kernel.++(shared.runtime_config)
       |> Kernel.++(child.runtime_config)
       |> Requirements.merge_all!(consumer: declaration.module)
@@ -531,8 +532,8 @@ defmodule Favn.MultiAsset do
     end
   end
 
-  defp build_asset!(raw_asset, env) do
-    relation = resolve_relation!(raw_asset, env)
+  defp build_asset!(raw_asset, relation_defaults, env) do
+    relation = resolve_relation!(raw_asset, relation_defaults, env)
 
     asset = %Asset{
       module: raw_asset.module,
@@ -589,11 +590,14 @@ defmodule Favn.MultiAsset do
     |> Enum.sort_by(fn {module, name} -> {Atom.to_string(module), Atom.to_string(name)} end)
   end
 
-  defp resolve_relation!(%{relation: nil}, _env), do: nil
+  defp resolve_relation!(%{relation: nil}, _relation_defaults, _env), do: nil
 
-  defp resolve_relation!(raw_asset, env) do
-    defaults = Namespace.resolve_relation(raw_asset.module)
-    RelationResolver.resolve_explicit_relation!(raw_asset.relation, defaults, raw_asset.name)
+  defp resolve_relation!(raw_asset, relation_defaults, env) do
+    RelationResolver.resolve_explicit_relation!(
+      raw_asset.relation,
+      relation_defaults,
+      raw_asset.name
+    )
   rescue
     error in ArgumentError -> DSLCompiler.compile_error!(env.file, env.line, error.message)
   end

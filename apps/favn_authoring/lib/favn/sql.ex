@@ -274,6 +274,7 @@ defmodule Favn.SQL do
 
   defp build_sql_definitions!(module, raw_definitions, imports) do
     imported_definitions = fetch_imported_definitions!(imports)
+    relation_defaults = Namespace.resolve_relation(module)
 
     provisional =
       Enum.map(raw_definitions, fn raw ->
@@ -292,7 +293,7 @@ defmodule Favn.SQL do
           line: raw.sql_line,
           declared_file: raw.file,
           declared_line: raw.line,
-          relation_defaults: Namespace.resolve_relation(module)
+          relation_defaults: relation_defaults
         }
       end)
 

@@ -78,6 +78,48 @@ defmodule Favn.SettingsDSLTest do
     assert events.execution_pool == nil
   end
 
+  test "MultiAsset resolves inherited namespace configuration once per module" do
+    receiver = unique_module("NamespaceReceiver")
+    root = unique_module("NamespaceRoot")
+    module = Module.concat(root, Assets)
+
+    Process.register(self(), receiver)
+
+    compile!(root, """
+    defmodule #{inspect(root)} do
+      @doc false
+      def __favn_namespace_config__ do
+        send(Process.whereis(#{inspect(receiver)}), :namespace_resolved)
+        %{relation: %{connection: :warehouse}, runtime_config: [], resources: []}
+      end
+    end
+    """)
+
+    compile!(module, """
+    defmodule #{inspect(module)} do
+      use Favn.MultiAsset
+
+      relation true
+
+      asset :orders do
+      end
+
+      asset :customers do
+      end
+
+      asset :products do
+      end
+
+      def asset(_ctx), do: :ok
+    end
+    """)
+
+    assert_receive :namespace_resolved
+    refute_receive :namespace_resolved, 10
+
+    assert Enum.all?(module.__favn_assets__(), &(&1.relation.connection == :warehouse))
+  end
+
   test "Source uses moduledoc as its manifest description" do
     module = unique_module("Source")
 
