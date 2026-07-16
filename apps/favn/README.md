@@ -41,6 +41,11 @@ mix favn.dev
 ```
 
 Open the printed local UI URL, usually `http://127.0.0.1:4173`.
+Subsequent unchanged starts validate the installed source from Git metadata when
+available and use incremental Mix compilation; `mix favn.install --force`
+remains the explicit clean rebuild path.
+The runner and operator then share the precompiled runtime without contending
+for Mix's build lock or compiling generated bootstrap code per process.
 
 In another terminal, run the generated sample pipeline:
 

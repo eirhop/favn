@@ -218,14 +218,14 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
       {"root.ex",
        """
        defmodule #{inspect(root)} do
-         Process.sleep(700)
+         Process.sleep(100)
          use Favn.Namespace, relation: [connection: :warehouse]
        end
        """},
       {"gold.ex",
        """
        defmodule #{inspect(gold)} do
-         Process.sleep(700)
+         Process.sleep(100)
          use Favn.Namespace, relation: [schema: :gold]
        end
        """}
@@ -368,7 +368,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
       {"sql_helpers.ex",
        """
        defmodule #{inspect(helpers)} do
-         Process.sleep(700)
+         Process.sleep(100)
          use Favn.SQL
 
          defsql selected_id(value) do
@@ -494,7 +494,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
       {"runtime_configs.ex",
        """
        defmodule #{inspect(configs)} do
-         Process.sleep(500)
+         Process.sleep(100)
          use Favn.RuntimeConfig
 
          bundle :github,

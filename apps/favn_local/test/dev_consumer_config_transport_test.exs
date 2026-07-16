@@ -20,8 +20,6 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
       else
         System.delete_env("FAVN_DEV_CONSUMER_FAVN_CONFIG")
       end
-
-      purge_bootstrap_module()
     end)
 
     :ok
@@ -310,18 +308,12 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     assert redacted =~ "MyApp.Connections.Warehouse"
   end
 
-  test "bootstrap snippet reports malformed config without raw payload values" do
-    code = ConsumerConfigTransport.bootstrap_eval_snippet()
-
-    assert code =~ "Base.decode64(encoded)"
-    assert code =~ ":erlang.binary_to_term(binary, [:safe])"
-    assert code =~ "String.to_existing_atom(value)"
-    assert code =~ "invalid FAVN_DEV_CONSUMER_FAVN_CONFIG"
-    refute code =~ "decode64!"
-    refute code =~ "binary_to_term()"
+  test "environment bootstrap is a no-op when no config is provided" do
+    System.delete_env("FAVN_DEV_CONSUMER_FAVN_CONFIG")
+    assert :ok = ConsumerConfigTransport.apply_from_env!()
   end
 
-  test "bootstrap snippet executes and applies supported config" do
+  test "environment bootstrap applies supported config" do
     runtime_value_ref =
       Favn.RuntimeValue.new(MyApp.AzureProvider, %{resource: "https://storage.azure.com/"},
         secret?: true
@@ -338,8 +330,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
 
     System.put_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", encoded)
 
-    purge_bootstrap_module()
-    assert {:ok, _bindings} = Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
+    assert :ok = ConsumerConfigTransport.apply_from_env!()
     assert Application.get_env(:favn, :connection_modules) == [MyApp.Connections.Warehouse]
     assert Application.get_env(:favn, :connections) == [warehouse: [token: runtime_value_ref]]
 
@@ -358,7 +349,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
            ]
   end
 
-  test "bootstrap snippet raises a redacted structured error for bad payloads" do
+  test "environment bootstrap raises a redacted structured error for bad payloads" do
     secret = "super-secret-password"
 
     payload = %{
@@ -371,19 +362,15 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
       Base.encode64(:erlang.term_to_binary(payload))
     )
 
-    purge_bootstrap_module()
-
     error =
       assert_raise RuntimeError,
                    ~r/invalid FAVN_DEV_CONSUMER_FAVN_CONFIG: :invalid_payload/,
-                   fn ->
-                     Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
-                   end
+                   &ConsumerConfigTransport.apply_from_env!/0
 
     refute Exception.message(error) =~ secret
   end
 
-  test "bootstrap snippet rejects unsafe atom transport payloads" do
+  test "environment bootstrap rejects unsafe atom transport payloads" do
     payload = %{
       "schema_version" => 1,
       "entries" => [
@@ -396,10 +383,8 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
 
     System.put_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", encode_payload(payload))
 
-    purge_bootstrap_module()
-
     assert_raise RuntimeError, ~r/invalid FAVN_DEV_CONSUMER_FAVN_CONFIG: :invalid_payload/, fn ->
-      Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
+      ConsumerConfigTransport.apply_from_env!()
     end
   end
 
@@ -420,10 +405,9 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
 
   defp assert_bootstrap_invalid_payload(encoded) do
     System.put_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", encoded)
-    purge_bootstrap_module()
 
     assert_raise RuntimeError, ~r/invalid FAVN_DEV_CONSUMER_FAVN_CONFIG: :invalid_payload/, fn ->
-      Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
+      ConsumerConfigTransport.apply_from_env!()
     end
   end
 
@@ -443,11 +427,5 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     Enum.reduce(1..depth, "leaf", fn _index, value ->
       %{"$type" => "list", "items" => [value]}
     end)
-  end
-
-  defp purge_bootstrap_module do
-    :code.purge(Favn.Dev.ConsumerConfigBootstrap)
-    :code.delete(Favn.Dev.ConsumerConfigBootstrap)
-    :ok
   end
 end

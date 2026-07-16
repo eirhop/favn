@@ -103,6 +103,12 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
   def start_artifact(dist_dir, env), do: run_script(Path.join(dist_dir, "bin/start"), env)
   def stop_artifact(dist_dir, env), do: run_script(Path.join(dist_dir, "bin/stop"), env)
 
+  def assert_artifact_started!(dist_dir, env, runtime_home) do
+    {output, status} = start_artifact(dist_dir, env)
+    assert status == 0, start_failure_message(output, runtime_home)
+    output
+  end
+
   def run_script(script, env) do
     env_exec = System.find_executable("env") || "env"
     env_args = ["-i" | isolated_env_args(env)] ++ [script]

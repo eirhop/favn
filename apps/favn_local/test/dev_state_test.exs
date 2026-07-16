@@ -1,11 +1,12 @@
 defmodule Favn.Dev.StateTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Dev.Paths
   alias Favn.Dev.State
 
   setup do
     root_dir =
-      Path.join(System.tmp_dir!(), "favn_dev_state_test_#{System.unique_integer([:positive])}")
+      Path.join(native_tmp_dir(), "favn_dev_state_test_#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(root_dir)
 
@@ -21,7 +22,6 @@ defmodule Favn.Dev.StateTest do
     assert File.dir?(Path.join(root_dir, ".favn"))
     assert File.dir?(Path.join(root_dir, ".favn/logs"))
     assert File.dir?(Path.join(root_dir, ".favn/install"))
-    assert File.dir?(Path.join(root_dir, ".favn/install/cache"))
     assert File.dir?(Path.join(root_dir, ".favn/install/cache"))
     assert File.dir?(Path.join(root_dir, ".favn/install/runtimes"))
     assert File.dir?(Path.join(root_dir, ".favn/install/runtime_root"))
@@ -54,6 +54,25 @@ defmodule Favn.Dev.StateTest do
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
   end
 
+  test "state writes replace files without leaving partial temporaries", %{root_dir: root_dir} do
+    assert :ok = State.write_runtime(%{"schema_version" => 1, "value" => "first"}, root_dir: root_dir)
+
+    assert :ok =
+             State.write_runtime(%{"schema_version" => 1, "value" => "second"},
+               root_dir: root_dir
+             )
+
+    assert {:ok, %{"value" => "second"}} = State.read_runtime(root_dir: root_dir)
+
+    runtime_path = Paths.runtime_path(root_dir)
+    assert Path.wildcard(runtime_path <> ".tmp.*") == []
+
+    if match?({:unix, _}, :os.type()) do
+      assert {:ok, %{mode: mode}} = File.stat(runtime_path)
+      assert Bitwise.band(mode, 0o077) == 0
+    end
+  end
+
   test "install and toolchain state roundtrip", %{root_dir: root_dir} do
     install = %{"schema_version" => 2, "fingerprint" => %{"consumer_mix_lock_sha256" => "abc"}}
     runtime = %{"schema_version" => 1, "materialized_root" => "/tmp/runtime"}
@@ -68,4 +87,7 @@ defmodule Favn.Dev.StateTest do
     assert {:ok, ^toolchain} = State.read_toolchain(root_dir: root_dir)
   end
 
+  defp native_tmp_dir do
+    if match?({:unix, _}, :os.type()) and File.dir?("/tmp"), do: "/tmp", else: System.tmp_dir!()
+  end
 end

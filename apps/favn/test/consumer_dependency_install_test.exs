@@ -1,6 +1,8 @@
 defmodule Favn.ConsumerDependencyInstallTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Dev.RuntimeWorkspace
+
   setup do
     base_dir =
       Path.join(
@@ -42,15 +44,14 @@ defmodule Favn.ConsumerDependencyInstallTest do
   } do
     repo_root = Path.expand("../../..", __DIR__)
 
-    File.mkdir_p!(snapshot_dir)
+    snapshot_state_dir = Path.join(snapshot_dir, "state")
+    snapshot_dir = Path.join(snapshot_state_dir, ".favn/install/runtime_root")
 
-    assert {:ok, _files} =
-             File.cp_r(Path.join(repo_root, "apps"), Path.join(snapshot_dir, "apps"))
-
-    assert {:ok, _files} =
-             File.cp_r(Path.join(repo_root, "config"), Path.join(snapshot_dir, "config"))
-
-    assert :ok = File.cp(Path.join(repo_root, "mix.lock"), Path.join(snapshot_dir, "mix.lock"))
+    assert {:ok, %{"materialized_root" => ^snapshot_dir}} =
+             RuntimeWorkspace.materialize(
+               %{kind: :root_override, root: repo_root},
+               root_dir: snapshot_state_dir
+             )
 
     assert {_, 0} = System.cmd("git", ["init", "-q"], cd: snapshot_dir)
     assert {_, 0} = System.cmd("git", ["add", "."], cd: snapshot_dir)

@@ -38,7 +38,7 @@ defmodule Favn.Dev.RuntimeLaunch do
       |> String.split(delimiter, trim: true)
       |> Enum.each(&Code.prepend_path/1)
 
-      #{ConsumerConfigTransport.bootstrap_eval_snippet()}
+      Favn.Dev.ConsumerConfigTransport.apply_from_env!()
 
       {:ok, _} = Application.ensure_all_started(:favn_runner)
       Process.sleep(:infinity)
@@ -87,9 +87,9 @@ defmodule Favn.Dev.RuntimeLaunch do
     sqlite_path = Path.expand(config.sqlite_path, Paths.root_dir(opts))
     distribution = local_distribution!(opts)
 
-      code =
-        """
-      #{ConsumerConfigTransport.bootstrap_eval_snippet()}
+    code =
+      """
+      Favn.Dev.ConsumerConfigTransport.apply_from_env!()
 
       storage = System.fetch_env!("FAVN_DEV_STORAGE")
 
@@ -253,7 +253,11 @@ defmodule Favn.Dev.RuntimeLaunch do
   defp runtime_env(distribution, opts) do
     opts
     |> EnvFile.loaded_env()
-    |> Map.merge(%{"MIX_ENV" => "dev", "ERL_EPMD_ADDRESS" => distribution.bind_ip})
+    |> Map.merge(%{
+      "MIX_ENV" => "dev",
+      "MIX_OS_CONCURRENCY_LOCK" => "0",
+      "ERL_EPMD_ADDRESS" => distribution.bind_ip
+    })
   end
 
   defp distributed_erlang_args(service, opts, distribution) do

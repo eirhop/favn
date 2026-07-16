@@ -88,6 +88,29 @@ defmodule Favn.Dev.RuntimeSourceTest do
              Enum.sort(RuntimeTreePolicy.ignored_entries())
   end
 
+  test "clean Git sources use the index without reading every file", %{tmp_dir: tmp_dir} do
+    runtime_root = Path.join(tmp_dir, "favn")
+    create_runtime_root!(runtime_root)
+    commit_runtime_root!(runtime_root)
+
+    assert {:ok, clean} =
+             RuntimeSource.fingerprint(%{kind: :dependency_checkout, root: runtime_root})
+
+    assert get_in(clean, ["runtime_source_tree", "strategy"]) == "git_tree"
+
+    source_file = Path.join(runtime_root, "apps/favn_local/lib/favn/dev/runtime_launch.ex")
+    File.mkdir_p!(Path.dirname(source_file))
+    File.write!(source_file, "defmodule RuntimeLaunch do\nend\n")
+
+    assert {:ok, dirty} =
+             RuntimeSource.fingerprint(%{kind: :dependency_checkout, root: runtime_root})
+
+    assert get_in(dirty, ["runtime_source_tree", "strategy"]) == "content"
+
+    refute get_in(dirty, ["runtime_source_tree", "sha256"]) ==
+             get_in(clean, ["runtime_source_tree", "sha256"])
+  end
+
   defp create_runtime_root!(runtime_root) do
     File.mkdir_p!(Path.join(runtime_root, "apps/favn_runner"))
     File.mkdir_p!(Path.join(runtime_root, "apps/favn_orchestrator"))
@@ -108,5 +131,25 @@ defmodule Favn.Dev.RuntimeSourceTest do
     )
 
     File.write!(Path.join(runtime_root, "apps/favn_view/mix.exs"), "defmodule View.MixProject do end")
+  end
+
+  defp commit_runtime_root!(runtime_root) do
+    assert {_, 0} = System.cmd("git", ["init", "-q"], cd: runtime_root)
+    assert {_, 0} = System.cmd("git", ["add", "."], cd: runtime_root)
+
+    assert {_, 0} =
+             System.cmd(
+               "git",
+               [
+                 "-c",
+                 "user.name=Test",
+                 "-c",
+                 "user.email=test@example.com",
+                 "commit",
+                 "-qm",
+                 "fixture"
+               ],
+               cd: runtime_root
+             )
   end
 end

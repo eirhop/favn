@@ -98,6 +98,16 @@ defmodule Favn.Triggers.Schedules do
       |> Enum.reverse()
       |> Map.new()
 
+    schedule_clauses =
+      schedules
+      |> Enum.sort_by(fn {name, _schedule} -> name end)
+      |> Enum.map(fn {name, schedule} ->
+        quote do
+          def __favn_schedule__(unquote(name)),
+            do: {:ok, unquote(Macro.escape(schedule))}
+        end
+      end)
+
     quote do
       @doc false
       @spec __favn_schedules__() :: %{optional(atom()) => Favn.Triggers.Schedule.unresolved_t()}
@@ -106,12 +116,8 @@ defmodule Favn.Triggers.Schedules do
       @doc false
       @spec __favn_schedule__(atom()) ::
               {:ok, Favn.Triggers.Schedule.unresolved_t()} | {:error, :not_found}
-      def __favn_schedule__(name) when is_atom(name) do
-        case Map.fetch(unquote(Macro.escape(schedules)), name) do
-          {:ok, schedule} -> {:ok, schedule}
-          :error -> {:error, :not_found}
-        end
-      end
+      unquote_splicing(schedule_clauses)
+      def __favn_schedule__(name) when is_atom(name), do: {:error, :not_found}
     end
   end
 

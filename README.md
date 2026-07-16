@@ -842,7 +842,10 @@ mix favn.read_doc Favn generate_manifest
 ```
 
 These supported `mix favn.*` commands are the stable public entrypoints for
-local iteration.
+local iteration. After the first install and compile, unchanged `mix favn.dev`
+starts validate clean source through Git metadata when available and preserve
+Mix's incremental compiler state instead of rebuilding the installed runtime
+and consumer project.
 
 Security-sensitive Elixir changes should also run the repo-local audit tooling:
 `mix deps.audit` for known dependency vulnerabilities, `mix hex.audit` when Hex
@@ -1258,6 +1261,21 @@ available at `ctx.params`. Environment-dependent values and secrets use
 remains descriptive and is not a configuration bag; pipeline metadata keys
 normalize to strings. Top-level settings keys are atoms; nested maps retain a
 JSON-safe shape with string keys.
+
+## Test The Repository
+
+The default umbrella command is the fast tier. It forwards ExUnit arguments to
+every app and reports all failing app slices instead of stopping at the first:
+
+```bash
+mix test --no-compile --timeout 1200000
+mix test.acceptance
+mix test.slow
+```
+
+The latter two commands own release packaging, dependency installation, and
+external BEAM lifecycle coverage. On Unix the umbrella fast runner uses native
+`/tmp` storage to preserve POSIX filesystem semantics.
 
 ## Documentation
 

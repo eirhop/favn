@@ -38,7 +38,8 @@ defmodule Favn.Dev.Install do
     with {:ok, install} <- State.read_install(opts),
          {:ok, runtime} <- State.read_install_runtime(opts),
          true <- File.dir?(runtime["materialized_root"]),
-         {:ok, current_fingerprint} <- fingerprint(opts),
+         {:ok, source} <- RuntimeSource.resolve(opts),
+         {:ok, current_fingerprint} <- fingerprint(source, opts),
          {:ok, stored_fingerprint} <- fetch_fingerprint(install),
          true <- stored_fingerprint == current_fingerprint do
       :ok
@@ -62,7 +63,7 @@ defmodule Favn.Dev.Install do
 
     with :ok <- State.ensure_layout(opts),
          {:ok, source} <- RuntimeSource.resolve(opts),
-         {:ok, current_fingerprint} <- fingerprint(opts),
+         {:ok, current_fingerprint} <- fingerprint(source, opts),
          install_decision <- ensure_install_needed(current_fingerprint, force?, opts) do
       maybe_install(install_decision, current_fingerprint, source, opts)
     end
@@ -94,6 +95,7 @@ defmodule Favn.Dev.Install do
 
   defp maybe_install(:install, current_fingerprint, source, opts) do
     with {:ok, toolchain} <- build_toolchain(opts),
+          :ok <- State.clear_install(opts),
           {:ok, runtime} <- RuntimeWorkspace.materialize(source, opts),
           :ok <- install_runtime_dependencies(runtime, opts) do
       with :ok <- write_install_state(current_fingerprint, toolchain, source, runtime, opts),
@@ -122,8 +124,9 @@ defmodule Favn.Dev.Install do
 
       if File.exists?(runtime_mix_exs) do
         mix_exec = System.find_executable("mix") || "mix"
+        runner = Keyword.get(opts, :runtime_deps_command_runner, &System.cmd/3)
 
-        case System.cmd(mix_exec, ["deps.get"], cd: runtime_root, stderr_to_stdout: true) do
+        case runner.(mix_exec, ["deps.get"], cd: runtime_root, stderr_to_stdout: true) do
           {_output, 0} ->
             :ok
 
@@ -156,10 +159,8 @@ defmodule Favn.Dev.Install do
          do: State.write_install(install, opts)
   end
 
-  @spec fingerprint(root_opt()) :: {:ok, map()} | {:error, term()}
-  defp fingerprint(opts) do
-    with {:ok, source} <- RuntimeSource.resolve(opts),
-         {:ok, runtime_fingerprint} <- RuntimeSource.fingerprint(source) do
+  defp fingerprint(source, opts) do
+    with {:ok, runtime_fingerprint} <- RuntimeSource.fingerprint(source) do
       root_dir = Paths.root_dir(opts)
 
       {:ok,

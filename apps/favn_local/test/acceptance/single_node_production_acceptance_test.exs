@@ -44,7 +44,7 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     on_exit(fn -> stop_artifact(artifact.dist_dir, env) end)
     on_exit(fn -> cleanup_runtime!(runtime) end)
 
-    assert {start_output, 0} = start_artifact(artifact.dist_dir, env)
+    start_output = assert_artifact_started!(artifact.dist_dir, env, runtime.runtime_home)
     assert start_output =~ "Favn backend started with PID"
     assert_ready!(runtime.port)
     assert_runtime_paths!(runtime.runtime_home, runtime.sqlite_path)
@@ -96,7 +96,7 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     assert {stop_output, 0} = stop_artifact(artifact.dist_dir, env)
     assert stop_output =~ "Favn backend stopped"
 
-    assert {restart_output, 0} = start_artifact(artifact.dist_dir, env)
+    restart_output = assert_artifact_started!(artifact.dist_dir, env, runtime.runtime_home)
     assert restart_output =~ "Favn backend started with PID"
     assert_ready!(runtime.port)
 
@@ -136,7 +136,7 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     assert_no_dev_env!(artifact.dist_dir)
 
     assert_dist_dir_immutable!(artifact.dist_dir, fn ->
-      assert {start_output, 0} = start_artifact(artifact.dist_dir, env)
+      start_output = assert_artifact_started!(artifact.dist_dir, env, runtime.runtime_home)
       assert start_output =~ "Favn backend started with PID"
       assert_ready!(runtime.port)
 
@@ -164,7 +164,7 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     on_exit(fn -> stop_artifact(artifact.dist_dir, env) end)
     on_exit(fn -> cleanup_runtime!(runtime) end)
 
-    assert {start_output, 0} = start_artifact(artifact.dist_dir, env)
+    start_output = assert_artifact_started!(artifact.dist_dir, env, runtime.runtime_home)
     assert start_output =~ "Favn backend started with PID"
     assert_ready!(runtime.port)
 

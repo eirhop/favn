@@ -116,6 +116,9 @@ defmodule Favn.Dev.Paths do
   @spec toolchain_path(Path.t()) :: Path.t()
   def toolchain_path(root_dir), do: Path.join(install_dir(root_dir), "toolchain.json")
 
+  @spec secrets_path(Path.t()) :: Path.t()
+  def secrets_path(root_dir), do: Path.join(favn_dir(root_dir), "secrets.json")
+
   @spec web_log_path(Path.t()) :: Path.t()
   def web_log_path(root_dir), do: Path.join(logs_dir(root_dir), "web.log")
 

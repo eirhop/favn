@@ -125,29 +125,141 @@ defmodule Favn.Dev.RuntimeSource do
   end
 
   defp source_tree_fingerprint(root) do
+    case git_tree_fingerprint(root) do
+      {:ok, fingerprint} -> {:ok, fingerprint}
+      :fallback -> content_tree_fingerprint(root)
+    end
+  end
+
+  defp content_tree_fingerprint(root) do
     with {:ok, records} <- fingerprint_records(root) do
       sorted_records = Enum.sort_by(records, &record_sort_key/1)
 
       {:ok,
        %{
+         "strategy" => "content",
          "sha256" => hash_records(sorted_records),
          "file_count" =>
            Enum.count(sorted_records, &match?({:file, _relative, _size, _sha256}, &1)),
          "directory_count" => Enum.count(sorted_records, &match?({:directory, _relative}, &1)),
          "byte_count" => byte_count(sorted_records),
-          "entries" => RuntimeTreePolicy.entries(),
-          "ignored_entries" => RuntimeTreePolicy.ignored_entries() |> Enum.sort()
+         "entries" => RuntimeTreePolicy.entries(),
+         "ignored_entries" => RuntimeTreePolicy.ignored_entries() |> Enum.sort(),
+         "ignored_relative_entries" => RuntimeTreePolicy.ignored_relative_entries()
        }}
     end
   end
 
-  defp fingerprint_records(root) do
-    RuntimeTreePolicy.reduce_required_entries(root, [], fn path, relative, acc ->
-      case collect_records(path, relative) do
-        {:ok, records} -> {:ok, records ++ acc}
-        {:error, reason} -> {:error, reason}
-      end
+  defp git_tree_fingerprint(root) do
+    with git when is_binary(git) <- System.find_executable("git"),
+         {git_root, 0} <-
+           System.cmd(git, ["-C", root, "rev-parse", "--show-toplevel"],
+             stderr_to_stdout: true
+           ),
+         git_root <- String.trim(git_root),
+         {:ok, relative_root} <- relative_git_root(root, git_root),
+         pathspecs <- git_pathspecs(relative_root),
+         {"", 0} <-
+           System.cmd(
+             git,
+             ["-C", git_root, "status", "--porcelain=v1", "--untracked-files=all", "--" | pathspecs],
+             stderr_to_stdout: true
+           ),
+         {tree, 0} <-
+           System.cmd(
+             git,
+             ["-C", git_root, "ls-tree", "-r", "-z", "HEAD", "--" | git_included_pathspecs(relative_root)],
+             stderr_to_stdout: true
+           ),
+         {:ok, records} <- git_tree_records(tree, relative_root) do
+      {:ok,
+       %{
+         "strategy" => "git_tree",
+         "sha256" => hash_git_records(records),
+         "file_count" => length(records),
+         "entries" => RuntimeTreePolicy.entries(),
+         "ignored_entries" => RuntimeTreePolicy.ignored_entries() |> Enum.sort(),
+         "ignored_relative_entries" => RuntimeTreePolicy.ignored_relative_entries()
+       }}
+    else
+      _reason -> :fallback
+    end
+  end
+
+  defp relative_git_root(root, git_root) do
+    relative = root |> Path.expand() |> Path.relative_to(Path.expand(git_root))
+
+    if relative == ".." or String.starts_with?(relative, "../") do
+      :error
+    else
+      {:ok, if(relative == ".", do: "", else: relative)}
+    end
+  end
+
+  defp git_pathspecs(relative_root) do
+    excluded =
+      Enum.map(RuntimeTreePolicy.ignored_relative_entries(), fn segments ->
+        ":(exclude)" <> join_relative_root(relative_root, Path.join(segments))
+      end)
+
+    git_included_pathspecs(relative_root) ++ excluded
+  end
+
+  defp git_included_pathspecs(relative_root) do
+    Enum.map(RuntimeTreePolicy.entries(), &join_relative_root(relative_root, &1))
+  end
+
+  defp join_relative_root("", relative), do: relative
+  defp join_relative_root(root, relative), do: Path.join(root, relative)
+
+  defp git_tree_records(tree, relative_root) do
+    prefix = if relative_root == "", do: "", else: relative_root <> "/"
+
+    records =
+      tree
+      |> String.split(<<0>>, trim: true)
+      |> Enum.flat_map(fn record ->
+        case String.split(record, "\t", parts: 2) do
+          [identity, path] ->
+            relative = relative_git_path(path, prefix)
+
+            if RuntimeTreePolicy.included_relative_path?(relative) do
+              [{relative, identity}]
+            else
+              []
+            end
+
+          _other ->
+            []
+        end
+      end)
+      |> Enum.sort()
+
+    {:ok, records}
+  end
+
+  defp hash_git_records(records) do
+    records
+    |> Enum.reduce(:crypto.hash_init(:sha256), fn {relative, identity}, state ->
+      :crypto.hash_update(state, [relative, <<0>>, identity, <<0>>])
     end)
+    |> :crypto.hash_final()
+    |> Base.encode16(case: :lower)
+  end
+
+  defp relative_git_path(path, ""), do: path
+  defp relative_git_path(path, prefix), do: String.replace_prefix(path, prefix, "")
+
+  defp fingerprint_records(root) do
+    case RuntimeTreePolicy.reduce_required_entries(root, [], fn path, relative, acc ->
+           case collect_records(path, relative) do
+             {:ok, records} -> {:ok, [records | acc]}
+             {:error, reason} -> {:error, reason}
+           end
+         end) do
+      {:ok, records} -> {:ok, List.flatten(records)}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp collect_records(path, relative) do
@@ -172,17 +284,21 @@ defmodule Favn.Dev.RuntimeSource do
   defp collect_directory_records(path, relative) do
     RuntimeTreePolicy.reduce_child_entries(
       path,
-      [{:directory, normalize_relative(relative)}],
+      [[{:directory, normalize_relative(relative)}]],
       &{:list_failed, path, &1},
       fn child_path, entry, acc ->
         child_relative = Path.join(relative, entry)
 
         case collect_records(child_path, child_relative) do
-          {:ok, records} -> {:ok, records ++ acc}
+          {:ok, records} -> {:ok, [records | acc]}
           {:error, reason} -> {:error, reason}
         end
       end
     )
+    |> case do
+      {:ok, records} -> {:ok, List.flatten(records)}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp record_sort_key({:directory, relative}), do: relative

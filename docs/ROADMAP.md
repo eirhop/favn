@@ -62,6 +62,9 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Add broader production stress, failure-injection, and restore verification for DuckDB/plugin execution under the single-node contract.
 - Evaluate non-env runtime-config providers or provider-specific secret managers only when a production integration requires them; optional env refs and reusable scoped bundles are already supported.
 - Add broader production stress/failure-injection coverage for the service-authenticated diagnostics surface and keep end-to-end diagnostics coverage aligned with the PR #262 test plan.
+- Add a native Windows CI slice when Windows becomes a declared support target;
+  the current Unix/WSL test contract intentionally relies on native POSIX
+  temporary storage for permission-sensitive coverage.
 
 ## Later / Future Ideas
 

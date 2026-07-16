@@ -36,6 +36,12 @@ mix favn.stop
 
 `mix favn.dev` stays in the foreground. It prints service logs and URLs. Stop it
 with `mix favn.stop` from another terminal or by ending the foreground process.
+Startup compiles only stale runtime and project modules. A clean Git runtime
+source uses Git tree metadata for install validation; dirty or non-Git sources
+fall back to content hashing. Use `mix favn.install --force` when you explicitly
+need a clean runtime workspace rebuild.
+Runner and operator processes reuse that compiled runtime with `--no-compile`;
+they do not serialize startup on Mix's build lock.
 
 Before startup, `mix favn.dev` loads the project `.env` and starts a fresh Mix
 process that evaluates `config/runtime.exs`. This means runtime config can branch

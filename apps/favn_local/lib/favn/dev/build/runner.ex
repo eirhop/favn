@@ -21,7 +21,7 @@ defmodule Favn.Dev.Build.Runner do
     with :ok <- ensure_project_root(opts),
          :ok <- Install.ensure_ready(opts),
          :ok <- State.ensure_layout(opts),
-         :ok <- force_compile(opts),
+         :ok <- compile_project(opts),
          {:ok, build} <- FavnAuthoring.build_manifest(),
          {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
          {:ok, serialized_manifest} <- FavnAuthoring.serialize_manifest(version.manifest),
@@ -55,12 +55,12 @@ defmodule Favn.Dev.Build.Runner do
     end
   end
 
-  defp force_compile(opts) do
+  defp compile_project(opts) do
     if Keyword.get(opts, :skip_compile, false) do
       :ok
     else
       :ok = Mix.Task.reenable("compile")
-      _ = Mix.Task.run("compile", ["--force"])
+      _ = Mix.Task.run("compile", [])
       :ok
     end
   end

@@ -6,7 +6,7 @@ defmodule Favn.Local.CanonicalSampleProject do
   def create!(prefix \\ "favn_issue262_canonical") do
     project_dir =
       Path.join(
-        System.tmp_dir!(),
+        native_tmp_dir(),
         "#{prefix}_#{System.unique_integer([:positive])}"
       )
 
@@ -39,6 +39,10 @@ defmodule Favn.Local.CanonicalSampleProject do
     path = Path.join(project_dir, relative)
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, contents)
+  end
+
+  defp native_tmp_dir do
+    if match?({:unix, _}, :os.type()) and File.dir?("/tmp"), do: "/tmp", else: System.tmp_dir!()
   end
 
   defp mix_exs do

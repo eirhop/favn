@@ -2,6 +2,7 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
   use ExUnit.Case, async: false
 
   @moduletag :integration
+  @moduletag :slow
 
   @repo_root Path.expand("../../../..", __DIR__)
   @mode_env "FAVN_ENV_BOOTSTRAP_INTEGRATION_MODE"
