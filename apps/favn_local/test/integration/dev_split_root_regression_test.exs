@@ -29,12 +29,14 @@ defmodule Favn.DevSplitRootRegressionTest do
     end
 
     root_arg = ["--root-dir", repo_root]
+    inetrc_path = write_loopback_inetrc!()
+    on_exit(fn -> File.rm(inetrc_path) end)
 
-    {_deps_output, 0} = run_mix!(project_dir, ["deps.get", "--check-locked"])
-    _ = run_mix!(project_dir, ["favn.stop" | root_arg], allow_failure: true)
-    _ = run_mix!(project_dir, ["favn.reset" | root_arg], allow_failure: true)
+    {_deps_output, 0} = run_mix!(project_dir, ["deps.get", "--check-locked"], inetrc_path)
+    _ = run_mix!(project_dir, ["favn.stop" | root_arg], inetrc_path, allow_failure: true)
+    _ = run_mix!(project_dir, ["favn.reset" | root_arg], inetrc_path, allow_failure: true)
 
-    {install_output, 0} = run_mix!(project_dir, ["favn.install" | root_arg])
+    {install_output, 0} = run_mix!(project_dir, ["favn.install" | root_arg], inetrc_path)
     assert install_output =~ "Favn install"
 
     assert {:ok, %{"materialized_root" => runtime_root}} =
@@ -45,13 +47,13 @@ defmodule Favn.DevSplitRootRegressionTest do
 
     dev_task =
       Task.async(fn ->
-        run_mix!(project_dir, ["favn.dev", "--sqlite" | root_arg])
+        run_mix!(project_dir, ["favn.dev", "--sqlite" | root_arg], inetrc_path)
       end)
 
     try do
       assert :ok = wait_until_ready(repo_root)
 
-      {stop_output, 0} = run_mix!(project_dir, ["favn.stop" | root_arg])
+      {stop_output, 0} = run_mix!(project_dir, ["favn.stop" | root_arg], inetrc_path)
       assert stop_output =~ "Favn local stack stopped"
 
       {dev_output, 0} = Task.await(dev_task, 310_000)
@@ -59,7 +61,7 @@ defmodule Favn.DevSplitRootRegressionTest do
       assert dev_output =~ "storage: sqlite"
       assert dev_output =~ "scheduler: disabled"
     after
-      _ = run_mix!(project_dir, ["favn.stop" | root_arg], allow_failure: true)
+      _ = run_mix!(project_dir, ["favn.stop" | root_arg], inetrc_path, allow_failure: true)
     end
   end
 
@@ -79,11 +81,16 @@ defmodule Favn.DevSplitRootRegressionTest do
     end
   end
 
-  defp run_mix!(project_dir, args, opts \\ []) when is_binary(project_dir) and is_list(args) do
+  defp run_mix!(project_dir, args, inetrc_path, opts \\ [])
+       when is_binary(project_dir) and is_list(args) and is_binary(inetrc_path) do
     mix = System.find_executable("mix") || "mix"
     allow_failure = Keyword.get(opts, :allow_failure, false)
 
-    cmd_opts = [cd: project_dir, stderr_to_stdout: true, env: %{"MIX_ENV" => "dev"}]
+    cmd_opts = [
+      cd: project_dir,
+      stderr_to_stdout: true,
+      env: %{"MIX_ENV" => "dev", "ERL_INETRC" => inetrc_path}
+    ]
 
     case System.cmd(mix, args, cmd_opts) do
       {output, 0 = status} ->
@@ -95,5 +102,35 @@ defmodule Favn.DevSplitRootRegressionTest do
       {output, status} ->
         flunk("mix #{Enum.join(args, " ")} failed (status=#{status}):\n#{output}")
     end
+  end
+
+  defp write_loopback_inetrc! do
+    short_host =
+      :net_adm.localhost()
+      |> List.to_string()
+      |> String.split(".", parts: 2)
+      |> hd()
+
+    unless Regex.match?(~r/^[A-Za-z0-9_-]+$/, short_host) do
+      flunk("invalid local short hostname for split-root lifecycle: #{inspect(short_host)}")
+    end
+
+    tmp_dir =
+      if match?({:unix, _}, :os.type()) and File.dir?("/tmp"),
+        do: "/tmp",
+        else: System.tmp_dir!()
+
+    path =
+      Path.join(
+        tmp_dir,
+        "favn_split_root_#{System.unique_integer([:positive, :monotonic])}.inetrc"
+      )
+
+    File.write!(
+      path,
+      "{host, {127,0,0,1}, [#{inspect(short_host)}]}.\n{lookup, [file, native]}.\n"
+    )
+
+    path
   end
 end
