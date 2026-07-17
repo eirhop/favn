@@ -3,6 +3,7 @@ defmodule Favn.SQLAsset.Runtime do
 
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
   alias Favn.RelationRef
@@ -38,16 +39,23 @@ defmodule Favn.SQLAsset.Runtime do
           timeout_ms: pos_integer()
         ]
 
-  @spec run_manifest(Asset.t(), Version.t(), RunnerWork.t(), Context.t()) ::
+  @spec run_manifest(
+          Asset.t(),
+          ExecutionPackage.t(),
+          Version.t(),
+          RunnerWork.t(),
+          Context.t()
+        ) ::
           {:ok, map()} | {:error, Error.t()} | {:error, Error.t(), map()}
   def run_manifest(
         %Asset{} = asset,
+        %ExecutionPackage{} = package,
         %Version{} = version,
         %RunnerWork{} = work,
         %Context{} = context
       ) do
     with {:ok, %Definition{} = definition, %Context{} = final_context, final_opts} <-
-           prepare_manifest_execution(asset, version, work, context),
+           prepare_manifest_execution(asset, package, version, work, context),
          {:ok, %Render{} = rendered, %CheckedMaterialization{} = materialization, resolution} <-
            execute_finalized_definition(definition, final_context, final_opts) do
       output =
@@ -64,17 +72,24 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   @doc false
-  @spec prepare_manifest_execution(Asset.t(), Version.t(), RunnerWork.t(), Context.t()) ::
+  @spec prepare_manifest_execution(
+          Asset.t(),
+          ExecutionPackage.t(),
+          Version.t(),
+          RunnerWork.t(),
+          Context.t()
+        ) ::
           {:ok, Definition.t(), Context.t(), keyword()} | {:error, Error.t()}
   def prepare_manifest_execution(
         %Asset{} = asset,
+        %ExecutionPackage{} = package,
         %Version{} = version,
         %RunnerWork{} = work,
         %Context{} = context
       ) do
     opts = context |> run_opts() |> Keyword.merge(runner_runtime_opts(work))
 
-    with {:ok, %Definition{} = definition} <- manifest_definition(asset, version),
+    with {:ok, %Definition{} = definition} <- manifest_definition(asset, package, version),
          {:ok, final_context, final_opts} <-
            finalize_execution_window(definition, context, opts) do
       {:ok, definition, final_context, final_opts}
@@ -1608,7 +1623,8 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp manifest_definition(
-         %Asset{type: :sql, sql_execution: %SQLExecution{} = payload} = asset,
+         %Asset{type: :sql} = asset,
+         %ExecutionPackage{sql_execution: %SQLExecution{} = payload},
          %Version{} = version
        ) do
     asset_stub = %{
@@ -1648,7 +1664,7 @@ defmodule Favn.SQLAsset.Runtime do
      }}
   end
 
-  defp manifest_definition(%Asset{} = asset, _version) do
+  defp manifest_definition(%Asset{} = asset, _package, _version) do
     {:error,
      %Error{
        type: :invalid_sql_asset_definition,

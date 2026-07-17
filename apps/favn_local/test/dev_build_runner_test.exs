@@ -56,11 +56,13 @@ defmodule Favn.Dev.Build.RunnerTest do
 
     build_json_path = Path.join(result.build_dir, "build.json")
     metadata_json_path = Path.join(result.dist_dir, "metadata.json")
-    manifest_json_path = Path.join(result.dist_dir, "manifest.json")
+    manifest_index_path = Path.join(result.dist_dir, "manifest-index.json")
+    execution_packages_path = Path.join(result.dist_dir, "execution-packages")
 
     assert File.exists?(build_json_path)
     assert File.exists?(metadata_json_path)
-    assert File.exists?(manifest_json_path)
+    assert File.exists?(manifest_index_path)
+    assert File.dir?(execution_packages_path)
     assert File.exists?(Path.join(result.dist_dir, "OPERATOR_NOTES.md"))
 
     assert {:ok, build_json} = File.read(build_json_path)

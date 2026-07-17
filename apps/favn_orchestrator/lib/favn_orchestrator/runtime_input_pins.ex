@@ -2,18 +2,17 @@ defmodule FavnOrchestrator.RuntimeInputPins do
   @moduledoc false
 
   alias Favn.Contracts.RunnerWork
-  alias Favn.Manifest.Asset
-  alias Favn.Manifest.Version
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Replay.InputMode
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInput.Resolution
   alias FavnOrchestrator.Storage
 
-  @spec prepare(RunnerWork.t(), Version.t(), module(), keyword()) ::
+  @spec prepare(RunnerWork.t(), module(), keyword()) ::
           {:ok, RunnerWork.t()} | {:error, term()}
-  def prepare(%RunnerWork{} = work, %Version{} = version, runner_client, runner_opts)
+  def prepare(%RunnerWork{} = work, runner_client, runner_opts)
       when is_atom(runner_client) and is_list(runner_opts) do
-    if runtime_inputs?(version, work.asset_ref) do
+    if runtime_inputs?(work.execution_package) do
       do_prepare(work, runner_client, runner_opts)
     else
       {:ok, work}
@@ -103,12 +102,10 @@ defmodule FavnOrchestrator.RuntimeInputPins do
     %{work | runtime_input_pin: pin, metadata: metadata}
   end
 
-  defp runtime_inputs?(%Version{manifest: %{assets: assets}}, asset_ref) do
-    Enum.any?(assets, fn
-      %Asset{ref: ^asset_ref, sql_execution: %{runtime_inputs: resolver}} -> not is_nil(resolver)
-      _other -> false
-    end)
-  end
+  defp runtime_inputs?(%ExecutionPackage{sql_execution: %{runtime_inputs: resolver}}),
+    do: not is_nil(resolver)
+
+  defp runtime_inputs?(_package), do: false
 
   defp input_mode(metadata) do
     value =

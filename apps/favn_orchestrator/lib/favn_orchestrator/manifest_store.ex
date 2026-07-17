@@ -23,7 +23,7 @@ defmodule FavnOrchestrator.ManifestStore do
 
         {:error, reason} when reason in [:manifest_version_not_found, :not_found] ->
           case Storage.put_manifest_version(verified) do
-            :ok -> {:ok, :published, verified}
+            :ok -> resolve_persisted_publication(verified)
             {:error, :manifest_version_conflict} -> resolve_publish_conflict(verified)
             {:error, reason} -> {:error, reason}
           end
@@ -31,6 +31,20 @@ defmodule FavnOrchestrator.ManifestStore do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  defp resolve_persisted_publication(%Version{} = requested) do
+    case Storage.get_manifest_version_by_content_hash(requested.content_hash) do
+      {:ok, %Version{manifest_version_id: requested_id} = stored}
+      when requested_id == requested.manifest_version_id ->
+        {:ok, :published, stored}
+
+      {:ok, %Version{} = stored} ->
+        {:ok, :already_published, stored}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

@@ -111,6 +111,21 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def put_execution_packages(packages, opts \\ []) when is_list(packages) do
+    call(opts, {:put_execution_packages, packages})
+  end
+
+  @impl true
+  def missing_execution_package_hashes(hashes, opts \\ []) when is_list(hashes) do
+    call(opts, {:missing_execution_package_hashes, hashes})
+  end
+
+  @impl true
+  def get_execution_package(content_hash, opts \\ []) when is_binary(content_hash) do
+    call(opts, {:get_execution_package, content_hash})
+  end
+
+  @impl true
   def get_manifest_version(manifest_version_id, opts \\ []) when is_binary(manifest_version_id) do
     call(opts, {:get_manifest_version, manifest_version_id})
   end
@@ -725,6 +740,19 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def handle_call({:put_manifest_version, %Version{} = version}, _from, state) do
     {reply, next_state} = Manifests.put(state, version)
     {:reply, reply, next_state}
+  end
+
+  def handle_call({:put_execution_packages, packages}, _from, state) do
+    {:ok, next_state} = Manifests.put_packages(state, packages)
+    {:reply, :ok, next_state}
+  end
+
+  def handle_call({:missing_execution_package_hashes, hashes}, _from, state) do
+    {:reply, {:ok, Manifests.missing_package_hashes(state, hashes)}, state}
+  end
+
+  def handle_call({:get_execution_package, content_hash}, _from, state) do
+    {:reply, Manifests.get_package(state, content_hash), state}
   end
 
   def handle_call({:get_manifest_version, manifest_version_id}, _from, state) do

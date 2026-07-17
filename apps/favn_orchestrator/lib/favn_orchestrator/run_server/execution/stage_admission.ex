@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RuntimeInputPins
+  alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
@@ -67,13 +68,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       waiters: []
     }
 
-    case prepare_stage_works(node_keys, ctx) do
-      {:ok, prepared_works} ->
-        do_submit(node_keys, Map.put(ctx, :prepared_works, prepared_works))
-
-      {:error, node_key, work, reason} ->
-        persist_prepare_failure(ctx, node_keys, node_key, work, reason)
-    end
+    do_submit(node_keys, ctx)
   end
 
   defp do_submit([], ctx) do
@@ -84,7 +79,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     if Persistence.externally_cancelled?(ctx.current_run.id) do
       {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
     else
-      work = Map.fetch!(ctx.prepared_works, node_key)
+      work = stage_work(ctx.current_run, ctx.version, node_key, ctx.stage, ctx.attempt)
 
       entry_context =
         Map.merge(ctx, %{
@@ -240,7 +235,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp execution_ids(ctx), do: Enum.map(entries(ctx), & &1.execution_id)
 
   defp submit_admitted_entry(ctx) do
-    do_submit_admitted_entry(ctx)
+    with {:ok, work} <- ExecutionPackages.attach(ctx.work, ctx.version),
+         {:ok, work} <-
+           RuntimeInputPins.prepare(work, ctx.runner_client, ctx.runner_opts) do
+      do_submit_admitted_entry(%{ctx | work: work})
+    else
+      {:error, reason} -> fail_unsubmitted_entry(ctx, ctx.work.asset_ref, reason)
+    end
   end
 
   defp do_submit_admitted_entry(ctx) do
@@ -630,44 +631,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       |> StepAttemptLifecycle.build_work()
 
     StepAttemptLifecycle.attach_deadline(work, run_state)
-  end
-
-  defp prepare_stage_works(node_keys, ctx) do
-    Enum.reduce_while(node_keys, {:ok, %{}}, fn node_key, {:ok, works} ->
-      work = stage_work(ctx.current_run, ctx.version, node_key, ctx.stage, ctx.attempt)
-
-      case RuntimeInputPins.prepare(work, ctx.version, ctx.runner_client, ctx.runner_opts) do
-        {:ok, prepared} -> {:cont, {:ok, Map.put(works, node_key, prepared)}}
-        {:error, reason} -> {:halt, {:error, node_key, work, reason}}
-      end
-    end)
-  end
-
-  defp persist_prepare_failure(ctx, node_keys, node_key, work, reason) do
-    failed = RunState.transition(ctx.current_run, status: :error, error: reason)
-    retryable? = safe_retryable?(reason)
-
-    case Persistence.persist_run_step(failed, :step_failed, %{
-           asset_ref: work.asset_ref,
-           node_key: node_key,
-           asset_step_id: work.asset_step_id,
-           stage: ctx.stage,
-           attempt: ctx.attempt,
-           max_attempts: work.max_attempts,
-           retryable?: retryable?,
-           retry_exhausted?:
-             retryable? and
-               not StepAttemptLifecycle.retry_allowed?(failed, node_key, ctx.attempt),
-           error: reason
-         }) do
-      :ok ->
-        if retryable? and StepAttemptLifecycle.retry_allowed?(failed, node_key, ctx.attempt),
-          do: {:retry, failed, node_keys, [node_key]},
-          else: {:error, failed, [], [node_key]}
-
-      {:error, _persist_reason} ->
-        {:error, failed, [], [node_key]}
-    end
   end
 
   defp safe_retryable?(%RunnerError{retryable?: true, outcome: :safe_failure}), do: true

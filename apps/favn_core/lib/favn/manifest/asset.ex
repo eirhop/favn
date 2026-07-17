@@ -16,10 +16,9 @@ defmodule Favn.Manifest.Asset do
   """
 
   alias Favn.Freshness.Policy, as: FreshnessPolicy
-  alias Favn.Manifest.SQLExecution
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.RuntimeConfig.Requirements
   alias Favn.SQL.SessionRequirements
-  alias Favn.SQLAsset.Compiler
 
   @type t :: %__MODULE__{
           ref: {module(), atom()} | nil,
@@ -41,7 +40,8 @@ defmodule Favn.Manifest.Asset do
           relation_inputs: [map() | struct()],
           runtime_config: Requirements.declarations(),
           session_requirements: SessionRequirements.t(),
-          sql_execution: SQLExecution.t() | nil,
+          execution_package_hash: String.t() | nil,
+          assurance: map() | nil,
           execution_pool: atom() | nil,
           metadata: map()
         }
@@ -63,13 +63,16 @@ defmodule Favn.Manifest.Asset do
     relation_inputs: [],
     runtime_config: %{},
     session_requirements: %SessionRequirements{version: 1},
-    sql_execution: nil,
+    execution_package_hash: nil,
+    assurance: nil,
     execution_pool: nil,
     metadata: %{}
   ]
 
-  @spec from_asset(map()) :: t()
-  def from_asset(asset) when is_map(asset) do
+  @spec from_asset(map(), keyword()) :: t()
+  def from_asset(asset, opts \\ []) when is_map(asset) and is_list(opts) do
+    package = Keyword.get_lazy(opts, :execution_package, fn -> execution_package(asset) end)
+
     %__MODULE__{
       ref: Map.get(asset, :ref),
       module: Map.get(asset, :module),
@@ -87,7 +90,8 @@ defmodule Favn.Manifest.Asset do
       relation_inputs: normalize_list(Map.get(asset, :relation_inputs, [])),
       runtime_config: normalize_runtime_config(Map.get(asset, :runtime_config, %{})),
       session_requirements: normalize_session_requirements(Map.get(asset, :session_requirements)),
-      sql_execution: build_sql_execution(asset),
+      execution_package_hash: package_hash(package),
+      assurance: package_assurance(package),
       execution_pool: normalize_execution_pool(Map.get(asset, :execution_pool)),
       metadata: normalize_map(Map.get(asset, :meta, %{}))
     }
@@ -96,14 +100,42 @@ defmodule Favn.Manifest.Asset do
   defp normalize_execution_pool(value) when is_atom(value), do: value
   defp normalize_execution_pool(_other), do: nil
 
-  defp build_sql_execution(%{type: :sql, module: module}) when is_atom(module) do
-    case Compiler.fetch_definition(module) do
-      {:ok, definition} -> SQLExecution.from_definition(definition)
+  defp execution_package(%{type: :sql, ref: ref, module: module})
+       when is_tuple(ref) and is_atom(module) do
+    case ExecutionPackage.from_asset(%{type: :sql, ref: ref, module: module}) do
+      {:ok, package} -> package
       {:error, _reason} -> nil
     end
   end
 
-  defp build_sql_execution(_asset), do: nil
+  defp execution_package(_asset), do: nil
+
+  defp package_hash(%ExecutionPackage{content_hash: content_hash}), do: content_hash
+  defp package_hash(_package), do: nil
+
+  defp package_assurance(%ExecutionPackage{sql_execution: execution}) do
+    if is_nil(execution.contract) and execution.checks == [] do
+      nil
+    else
+      %{
+        contract: execution.contract,
+        checks:
+          Enum.map(execution.checks, fn check ->
+            Map.take(check, [
+              :name,
+              :origin,
+              :claim_id,
+              :at,
+              :when,
+              :on_violation,
+              :message
+            ])
+          end)
+      }
+    end
+  end
+
+  defp package_assurance(_package), do: nil
 
   defp normalize_depends_on(depends_on) when is_list(depends_on) do
     depends_on

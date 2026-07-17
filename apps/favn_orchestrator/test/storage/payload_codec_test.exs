@@ -9,12 +9,10 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Pipeline
-  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
   alias Favn.Pipeline.Definition, as: PipelineDefinition
   alias Favn.Plan.NodeIdentity
   alias Favn.RelationRef
-  alias Favn.SQL.Template
   alias Favn.Triggers.Schedule
   alias Favn.Window.Policy
   alias FavnOrchestrator.RunState
@@ -44,17 +42,8 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
     assert decoded == payload
   end
 
-  test "round-trips manifest versions with SQL asset templates" do
+  test "round-trips compact manifest versions with package hashes" do
     asset_ref = {MyApp.SQLAssets.DailyOrders, :asset}
-
-    template =
-      Template.compile!("SELECT 1 AS id",
-        file: "test/fixtures/payload_codec.sql",
-        line: 1,
-        module: __MODULE__,
-        scope: :query,
-        enforce_query_root: true
-      )
 
     manifest = %Manifest{
       assets: [
@@ -64,11 +53,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
           name: :asset,
           type: :sql,
           relation: RelationRef.new!(%{connection: :warehouse, schema: "gold", name: "orders"}),
-          sql_execution: %SQLExecution{
-            sql: "SELECT 1 AS id",
-            template: template,
-            sql_definitions: []
-          }
+          execution_package_hash: String.duplicate("b", 64)
         }
       ],
       pipelines: [
@@ -89,7 +74,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
     assert {:ok, decoded} = PayloadCodec.decode(encoded)
 
     assert %Version{} = decoded
-    assert %SQLExecution{template: %Template{}} = hd(decoded.manifest.assets).sql_execution
+    assert hd(decoded.manifest.assets).execution_package_hash == String.duplicate("b", 64)
     assert decoded == version
   end
 

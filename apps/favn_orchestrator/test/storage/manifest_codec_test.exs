@@ -8,10 +8,8 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Serializer
-  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
   alias Favn.RelationRef
-  alias Favn.SQL.Template
   alias FavnOrchestrator.Storage.ManifestCodec
 
   test "round-trips manifest version records" do
@@ -43,7 +41,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
     version = complex_manifest_version("mv_codec_complex")
 
     assert {:ok, record} = ManifestCodec.to_record(version)
-    assert {:ok, raw_manifest} = Serializer.decode_manifest(record.manifest_json)
+    assert {:ok, raw_manifest} = Serializer.decode_manifest(record.manifest_index_json)
     assert {:ok, raw_hash} = Identity.hash_manifest(raw_manifest)
     assert raw_hash == record.content_hash
 
@@ -69,18 +67,9 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
   defp complex_manifest_version(manifest_version_id) do
     ref = {MyApp.Assets.SalesSummary, :asset}
 
-    template =
-      Template.compile!("SELECT 1 AS id",
-        file: "test/fixtures/manifest_codec_test.sql",
-        line: 1,
-        module: __MODULE__,
-        scope: :query,
-        enforce_query_root: true
-      )
-
     manifest = %Manifest{
-      schema_version: 7,
-      runner_contract_version: 7,
+      schema_version: 8,
+      runner_contract_version: 8,
       assets: [
         %Asset{
           ref: ref,
@@ -91,11 +80,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
           relation:
             RelationRef.new!(%{connection: :warehouse, schema: "gold", name: "sales_summary"}),
           materialization: {:incremental, strategy: :delete_insert, unique_key: [:id]},
-          sql_execution: %SQLExecution{
-            sql: "SELECT 1 AS id",
-            template: template,
-            sql_definitions: []
-          },
+          execution_package_hash: String.duplicate("a", 64),
           metadata: %{category: :sales, tags: [:gold]}
         }
       ],

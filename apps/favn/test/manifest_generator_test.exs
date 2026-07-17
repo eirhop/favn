@@ -87,8 +87,8 @@ defmodule Favn.Manifest.GeneratorTest do
                schedule_modules: [TestSchedules]
              )
 
-    assert manifest.schema_version == 7
-    assert manifest.runner_contract_version == 7
+    assert manifest.schema_version == 8
+    assert manifest.runner_contract_version == 8
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1
     assert length(manifest.schedules) == 1
@@ -98,7 +98,19 @@ defmodule Favn.Manifest.GeneratorTest do
 
     sql_asset = Enum.find(manifest.assets, &(&1.ref == {TestSQLAsset, :asset}))
     assert sql_asset.type == :sql
-    assert %Favn.Manifest.SQLExecution{} = sql_asset.sql_execution
+    assert sql_asset.execution_package_hash =~ ~r/^[0-9a-f]{64}$/
+
+    assert {:ok, build} =
+             Favn.build_manifest(
+               asset_modules: [TestAsset, TestSQLAsset],
+               pipeline_modules: [TestPipeline],
+               schedule_modules: [TestSchedules]
+             )
+
+    assert {:ok, publication} = Favn.prepare_manifest_publication(build)
+    assert [package] = publication.execution_packages
+    assert package.content_hash == sql_asset.execution_package_hash
+    assert %Favn.Manifest.SQLExecution{} = package.sql_execution
 
     [pipeline] = manifest.pipelines
     assert pipeline.name == :daily_sales
@@ -213,8 +225,8 @@ defmodule Favn.Manifest.GeneratorTest do
 
     assert :ok =
              Favn.validate_manifest_compatibility(%{
-               schema_version: 7,
-               runner_contract_version: 7
+               schema_version: 8,
+               runner_contract_version: 8
              })
 
     assert {:ok, version} =
@@ -284,7 +296,7 @@ defmodule Favn.Manifest.GeneratorTest do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "favn_manifest_parallel_modules_#{System.unique_integer([:positive])}"
+        "favn_manifest_parallel_modules_#{Base.url_encode64(:crypto.strong_rand_bytes(8), padding: false)}"
       )
 
     File.mkdir_p!(dir)

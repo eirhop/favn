@@ -47,13 +47,15 @@ Integration boundaries opt in explicitly; DuckDB session-script parameters are
 the first consumer. Providers return bounded errors, refs have redacted Inspect
 output, and secret refs are tracked by connection redaction.
 
-Manifest schema 7 and runner contract 7 are the only accepted versions. Static
+Manifest schema 8 and runner contract 8 are the only accepted versions. Static
 asset and pipeline settings use `Favn.Settings`; top-level atom keys are retained
 for runtime access while nested maps normalize to JSON-safe string keys.
 `Favn.Run.Context`, `Favn.Run.AssetContext`, and `Favn.Run.PipelineContext`
 separate asset settings, pipeline settings, submitted params, runtime config,
-relation identity, and deadline data. SQL
-execution payloads carry an optional typed `%Favn.SQL.Contract{}` plus typed
+relation identity, and deadline data. The manifest is one compact index; SQL
+assets reference immutable `%Favn.Manifest.ExecutionPackage{}` values by
+content hash. Packages carry `%Favn.Manifest.SQLExecution{}` with an optional
+typed `%Favn.SQL.Contract{}` plus typed
 `%Favn.SQL.Check{}` declarations. Contract-generated checks and authored checks
 share the same policy/result types and are distinguished by origin and stable
 claim identity. `%Favn.SQL.ContractValidation{}` owns candidate schema
@@ -74,6 +76,6 @@ runtime connection config.
 Runtime SQL input contracts are core-owned:
 `Favn.SQLAsset.RuntimeInputs` defines the behaviour, its `Result` and `Error`
 modules define typed resolver outcomes, and `Favn.RuntimeInputResolver.Ref`
-defines the serializable manifest reference. `%Favn.Manifest.SQLExecution{}`
-stores that reference only. Rehydration rejects malformed references and any
+defines the serializable package reference. `%Favn.Manifest.SQLExecution{}`
+stores that reference only inside the execution package. Rehydration rejects malformed references and any
 attempt to smuggle a resolved payload into the reference.

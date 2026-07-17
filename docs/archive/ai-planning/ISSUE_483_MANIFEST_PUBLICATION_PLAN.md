@@ -1,6 +1,6 @@
 # Issue 483: Scalable Manifest Publication Plan
 
-Status: temporary implementation plan for issue #483.
+Status: Phase 1 implemented; Phase 2 core-manifest baseline measured.
 
 ## Problem
 
@@ -85,6 +85,14 @@ Use those measurements to define a new manifest schema and runner contract that
 stores each runtime fact once. Likely candidates include removing derivable
 asset identity fields, graph projections, duplicate raw/template SQL, duplicate
 template requirements, and compile-time-only position data.
+
+Core-manifest measurement results are recorded in
+`docs/report/manifest_scalability_baseline.md`. The calibrated fixture measures
+4.54 MB at 66 assets and 70.54 MB at 1,000 assets; 79.7% of the latter is main
+compiled-template nodes. A proportional 6,600-asset projection reaches 466 MB
+canonical JSON and 5.37 GB of version-worker process memory, so the full sample
+was not run on the 7.6 GiB development host. These results justify designing
+the Phase 3 package boundary rather than broadly raising monolithic limits.
 
 Required runtime semantics, checks, contracts, lineage, and executable SQL must
 remain available without loading consumer authoring modules.

@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Storage do
   """
 
   alias Favn.Log.Redactor
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias Favn.Storage.Adapter, as: StorageAdapter
@@ -90,6 +91,31 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.put_manifest_version(version, opts) end)
   end
 
+  @spec put_execution_packages([ExecutionPackage.t()]) :: :ok | {:error, term()}
+  def put_execution_packages(packages) when is_list(packages) do
+    with {:ok, canonical} <- verify_execution_packages(packages) do
+      adapter_call(fn adapter, opts -> adapter.put_execution_packages(canonical, opts) end)
+    end
+  end
+
+  @spec missing_execution_package_hashes([String.t()]) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def missing_execution_package_hashes(hashes) when is_list(hashes) do
+    with {:ok, canonical} <- normalize_package_hashes(hashes) do
+      adapter_call(fn adapter, opts ->
+        adapter.missing_execution_package_hashes(canonical, opts)
+      end)
+    end
+  end
+
+  @spec get_execution_package(String.t()) ::
+          {:ok, ExecutionPackage.t()} | {:error, term()}
+  def get_execution_package(content_hash) when is_binary(content_hash) do
+    with :ok <- validate_package_hash(content_hash) do
+      adapter_call(fn adapter, opts -> adapter.get_execution_package(content_hash, opts) end)
+    end
+  end
+
   @spec get_manifest_version(String.t()) :: {:ok, Version.t()} | {:error, term()}
   def get_manifest_version(manifest_version_id) when is_binary(manifest_version_id) do
     adapter_call(fn adapter, opts -> adapter.get_manifest_version(manifest_version_id, opts) end)
@@ -106,6 +132,50 @@ defmodule FavnOrchestrator.Storage do
   def list_manifest_versions do
     adapter_call(fn adapter, opts -> adapter.list_manifest_versions(opts) end)
   end
+
+  defp verify_execution_packages(packages) do
+    packages
+    |> Enum.reduce_while({:ok, []}, fn package, {:ok, acc} ->
+      case ExecutionPackage.from_published(package) do
+        {:ok, canonical} -> {:cont, {:ok, [canonical | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, values} ->
+        canonical = values |> Enum.reverse() |> Enum.uniq_by(& &1.content_hash)
+
+        if length(canonical) == length(packages),
+          do: {:ok, canonical},
+          else: {:error, :duplicate_execution_package}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp normalize_package_hashes(hashes) when length(hashes) <= 10_000 do
+    with :ok <- Enum.reduce_while(hashes, :ok, &validate_hash_item/2) do
+      {:ok, hashes |> Enum.uniq() |> Enum.sort()}
+    end
+  end
+
+  defp normalize_package_hashes(_hashes), do: {:error, :too_many_execution_package_hashes}
+
+  defp validate_hash_item(hash, :ok) do
+    case validate_package_hash(hash) do
+      :ok -> {:cont, :ok}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp validate_package_hash(hash) when is_binary(hash) do
+    if Regex.match?(~r/\A[0-9a-f]{64}\z/, hash),
+      do: :ok,
+      else: {:error, :invalid_execution_package_hash}
+  end
+
+  defp validate_package_hash(_hash), do: {:error, :invalid_execution_package_hash}
 
   @spec set_active_manifest_version(String.t()) :: :ok | {:error, term()}
   def set_active_manifest_version(manifest_version_id) when is_binary(manifest_version_id) do

@@ -35,9 +35,10 @@ defmodule Favn.Dev.Reload do
          :ok <- ensure_no_in_flight_runs(runtime, secrets, opts),
          :ok <- compile_project(),
          {:ok, build} <- FavnAuthoring.build_manifest(),
-         {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
+         {:ok, publication} <- FavnAuthoring.prepare_manifest_publication(build),
+         version <- publication.version,
          {:ok, runtime_after_restart} <- restart_runner(runtime, installed_runtime, secrets, opts),
-         {:ok, published} <- publish_manifest(version, runtime_after_restart, secrets, opts),
+         {:ok, published} <- publish_manifest(publication, runtime_after_restart, secrets, opts),
          canonical_manifest_version_id <- canonical_manifest_version_id(published, version),
          :ok <-
            register_manifest_in_runner(
@@ -311,21 +312,14 @@ defmodule Favn.Dev.Reload do
     )
   end
 
-  defp publish_manifest(version, runtime, secrets, opts) do
+  defp publish_manifest(publication, runtime, secrets, opts) do
     _ = secrets
     base_url = runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
 
     OrchestratorClient.publish_manifest(
       base_url,
       "",
-      %{
-        manifest_version_id: version.manifest_version_id,
-        content_hash: version.content_hash,
-        schema_version: version.schema_version,
-        runner_contract_version: version.runner_contract_version,
-        serialization_format: version.serialization_format,
-        manifest: version.manifest
-      },
+      publication,
       LocalContext.session_context()
     )
   end

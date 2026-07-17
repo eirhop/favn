@@ -473,11 +473,11 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Map.put(:can_run_asset?, true)
   end
 
-  defp assurance_detail(%{sql_execution: nil}, _latest_run), do: nil
+  defp assurance_detail(%{assurance: nil}, _latest_run), do: nil
 
-  defp assurance_detail(%{sql_execution: execution, ref: asset_ref}, latest_run) do
-    contract = Map.get(execution, :contract)
-    checks = List.wrap(Map.get(execution, :checks))
+  defp assurance_detail(%{assurance: assurance, ref: asset_ref}, latest_run) do
+    contract = Map.get(assurance, :contract)
+    checks = List.wrap(Map.get(assurance, :checks))
 
     if is_nil(contract) and checks == [] do
       nil
@@ -585,13 +585,13 @@ defmodule FavnOrchestrator.Operator.Catalogue do
 
   defp check_detail(check, latest_result) do
     %{
-      name: check.name,
-      origin: check.origin,
-      claim_id: check.claim_id,
-      phase: check.at,
-      when: check.when,
-      on_violation: check.on_violation,
-      message: check.message,
+      name: field(check, :name),
+      origin: field(check, :origin),
+      claim_id: field(check, :claim_id),
+      phase: field(check, :at),
+      when: field(check, :when),
+      on_violation: field(check, :on_violation),
+      message: field(check, :message),
       latest_result: check_result_detail(latest_result)
     }
   end

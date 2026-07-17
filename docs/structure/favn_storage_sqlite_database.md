@@ -14,7 +14,8 @@ directly.
 
 The database stores:
 
-- Authoritative manifests, active-manifest selection, run snapshots, and run events.
+- Authoritative compact manifest indexes, immutable SQL execution packages,
+  active-manifest selection, run snapshots, and run events.
 - Scheduler cursors and runtime settings needed after restart.
 - Operational read models for backfills, freshness, execution groups, logs, and target status.
 - Runtime coordination state for leases, admission waiters, and materialization claims.
@@ -62,13 +63,14 @@ The database intentionally combines relational query columns with canonical
 payload columns:
 
 - Relational columns support bounded operator queries, filtering, uniqueness, and pagination.
-- `manifest_json`, `record_payload`, `*_blob`, and `run_blob` preserve canonical DTO content.
+- `manifest_index_json`, `package_json`, `record_payload`, `*_blob`, and
+  `run_blob` preserve canonical DTO content.
 - Timestamps are mostly stored as `:text` ISO-like strings in newer DTO tables and as `:utc_datetime_usec` in older foundation tables.
 - Binary blobs are adapter/codecs-owned serialized DTOs, not public database contracts.
 - Most logical relationships are enforced by adapter write paths and repair jobs, not by SQLite foreign keys.
 
-Only `favn_execution_lease_scopes.lease_id` is declared as a physical foreign key
-with `ON DELETE CASCADE`. Other relationships in this document and diagram are
+Manifest-package references and `favn_execution_lease_scopes.lease_id` use
+physical foreign keys. Other relationships in this document and diagram are
 logical relationships.
 
 ## ER Diagram
@@ -81,8 +83,21 @@ erDiagram
         integer schema_version
         integer runner_contract_version
         string serialization_format
-        text manifest_json
+        text manifest_index_json
         datetime inserted_at
+    }
+
+    favn_execution_packages {
+        string content_hash PK
+        string asset_module
+        string asset_name
+        text package_json
+        datetime inserted_at
+    }
+
+    favn_manifest_execution_packages {
+        string manifest_version_id FK
+        string package_hash FK
     }
 
     favn_runtime_settings {
@@ -357,6 +372,8 @@ erDiagram
     favn_manifest_versions ||--o{ favn_backfill_windows : "logical manifest_version_id"
     favn_manifest_versions ||--o{ favn_asset_window_states : "logical manifest_version_id"
     favn_manifest_versions ||--o{ favn_asset_freshness_states : "logical manifest_version_id"
+    favn_manifest_versions ||--o{ favn_manifest_execution_packages : "physical manifest_version_id FK"
+    favn_execution_packages ||--o{ favn_manifest_execution_packages : "physical package_hash FK"
     favn_manifest_versions ||--o{ favn_target_statuses : "logical manifest_version_id"
     favn_runs ||--o{ favn_run_events : "logical run_id"
     favn_runs ||--o{ favn_log_entries : "logical run_id"
@@ -379,7 +396,9 @@ erDiagram
 
 | Table | Purpose | Primary or unique identity | Payload columns |
 | --- | --- | --- | --- |
-| `favn_manifest_versions` | Immutable manifest versions registered with the orchestrator. | `manifest_version_id`; unique `content_hash`. | `manifest_json`. |
+| `favn_manifest_versions` | Immutable compact manifest-index versions registered with the orchestrator. | `manifest_version_id`; unique `content_hash`. | `manifest_index_json`. |
+| `favn_execution_packages` | Immutable content-addressed SQL execution artifacts. | `content_hash`. | `package_json`. |
+| `favn_manifest_execution_packages` | Exact package references owned by each canonical manifest index. | Unique `(manifest_version_id, package_hash)`. | None. |
 | `favn_runtime_settings` | Small key/value settings such as active manifest version. | `key`. | `value_text`. |
 | `favn_runs` | Latest authoritative run snapshot and query metadata. | `run_id`. | `run_blob`. |
 | `favn_run_events` | Append-only run transition/event stream. | Unique `(run_id, sequence)` and unique `global_sequence`. | `event_blob`. |
@@ -463,7 +482,11 @@ indexes support the adapter's bounded reads and repair paths:
 
 ## How Favn Uses The Database
 
-Manifest registration writes immutable rows to `favn_manifest_versions`.
+Execution-package upload writes hash-verified immutable rows to
+`favn_execution_packages`. Manifest registration runs in one transaction: it
+refuses missing package hashes, writes the compact row to
+`favn_manifest_versions`, and writes exact foreign-key references to
+`favn_manifest_execution_packages`.
 Activation stores the active manifest version in `favn_runtime_settings` under
 the adapter-owned `active_manifest_version_id` key.
 

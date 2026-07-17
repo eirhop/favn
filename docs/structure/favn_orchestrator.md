@@ -75,11 +75,13 @@ Code:
 - Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - Private API router and DTO boundary under `apps/favn_orchestrator/lib/favn_orchestrator/api/`
-- Manifest publication has a dedicated authenticated request parser under
+- Manifest-index and execution-package publication has a dedicated authenticated request parser under
   `FavnOrchestrator.API.ManifestPublication`. It accepts plain or gzip JSON,
   bounds compressed and expanded bodies independently, and hands the decoded
-  payload to the existing canonical registration path. Other API routes retain
-  the shared 1 MiB parser budget.
+  payload to the canonical registration path. Package uploads are bounded to
+  100 entries and 4 MiB per package; missing-hash queries are bounded to 10,000
+  hashes. Storage rejects a compact index until every referenced package is
+  present. Other API routes retain the shared 1 MiB parser budget.
 - Stable private-API command validation maps invalid dependency scope, refresh
   mode, and incompatible cross-field asset intent to bounded 422 responses.
 - HTTP contract schemas for private API JSON-safe DTOs under `apps/favn_orchestrator/priv/http_contract/v1/`

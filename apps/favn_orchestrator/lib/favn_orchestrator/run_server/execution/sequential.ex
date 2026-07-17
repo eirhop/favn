@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RuntimeInputPins
+  alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.ResultSanitizer
@@ -256,8 +257,9 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
            |> StepAttemptLifecycle.new(state.version, node_key, stage, attempt)
            |> StepAttemptLifecycle.build_work(),
          work <- StepAttemptLifecycle.attach_deadline(work, state.run),
+         {:ok, work} <- ExecutionPackages.attach(work, state.version),
          {:ok, work} <-
-           RuntimeInputPins.prepare(work, state.version, state.runner_client, state.runner_opts),
+           RuntimeInputPins.prepare(work, state.runner_client, state.runner_opts),
          ownership <-
            RunExecutionOwnership.new(state.run,
              asset_step_id: work.asset_step_id,

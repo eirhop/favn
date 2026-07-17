@@ -13,6 +13,7 @@ defmodule FavnRunner.Server do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.SQL.SessionPool
   alias FavnRunner.ExecutionAdmission
   alias FavnRunner.ExecutionLifecycle
@@ -46,7 +47,10 @@ defmodule FavnRunner.Server do
   @spec submit_work(RunnerWork.t(), keyword()) :: {:ok, execution_id()} | {:error, term()}
   def submit_work(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
-    GenServer.call(server, {:submit_work, work}, submit_call_timeout_ms(opts))
+
+    with {:ok, submission} <- prepare_submission(work) do
+      GenServer.call(server, {:submit_work, submission}, submit_call_timeout_ms(opts))
+    end
   catch
     :exit, {:timeout, _call} ->
       {:error,
@@ -158,54 +162,56 @@ defmodule FavnRunner.Server do
     {:reply, reply, state}
   end
 
-  def handle_call({:submit_work, %RunnerWork{} = work}, from, state) do
+  def handle_call(
+        {:submit_work,
+         %{
+           work: %RunnerWork{} = work,
+           version: %Version{} = version,
+           asset: asset,
+           preflight: preflight
+         }},
+        from,
+        state
+      ) do
+    execution_id = new_execution_id()
+
     reply =
-      with {:ok, asset_ref} <- ManifestResolver.resolve_target_ref(work),
-           {:ok, version} <-
-             ManifestStore.fetch(work.manifest_version_id, work.manifest_content_hash,
-               server: FavnRunner.ManifestStore
-             ),
-           {:ok, asset} <- ManifestResolver.resolve_asset(version, asset_ref),
-           execution_id <- new_execution_id() do
-        case SQLRuntimePreflight.run(work, version) do
-          :ok ->
-            case admit_worker(state) do
-              {:ok, admission} ->
-                start_admitted_worker(execution_id, work, version, asset, %{
-                  state
-                  | admission: admission
-                })
+      case preflight do
+        :ok ->
+          case admit_worker(state) do
+            {:ok, admission} ->
+              start_admitted_worker(execution_id, work, version, asset, %{
+                state
+                | admission: admission
+              })
 
-              {{:error, %RunnerError{} = error}, next_state} ->
-                enqueue_or_reject_submit(
-                  next_state,
-                  from,
-                  execution_id,
-                  work,
-                  version,
-                  asset,
-                  error
-                )
-            end
-
-          {:error, diagnostic} ->
-            lifecycle =
-              ExecutionLifecycle.put_completed(
-                state.lifecycle,
+            {{:error, %RunnerError{} = error}, next_state} ->
+              enqueue_or_reject_submit(
+                next_state,
+                from,
                 execution_id,
                 work,
-                preflight_failed_result(work, version, diagnostic)
+                version,
+                asset,
+                error
               )
+          end
 
-            {{:ok, execution_id}, %{state | lifecycle: lifecycle}}
-        end
+        {:error, diagnostic} ->
+          lifecycle =
+            ExecutionLifecycle.put_completed(
+              state.lifecycle,
+              execution_id,
+              work,
+              preflight_failed_result(work, version, diagnostic)
+            )
+
+          {{:ok, execution_id}, %{state | lifecycle: lifecycle}}
       end
 
     case reply do
       {{:ok, execution_id}, next_state} -> {:reply, {:ok, execution_id}, next_state}
       {{:error, reason}, next_state} -> {:reply, {:error, reason}, next_state}
-      {:noreply, next_state} -> {:noreply, next_state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
@@ -389,6 +395,26 @@ defmodule FavnRunner.Server do
       {:noreply, state}
     else
       handle_lifecycle_down(monitor_ref, reason, state)
+    end
+  end
+
+  defp prepare_submission(%RunnerWork{} = work) do
+    with {:ok, asset_ref} <- ManifestResolver.resolve_target_ref(work),
+         {:ok, version} <-
+           ManifestStore.fetch(work.manifest_version_id, work.manifest_content_hash,
+             server: FavnRunner.ManifestStore
+           ),
+         {:ok, asset} <- ManifestResolver.resolve_asset(version, asset_ref),
+         {:ok, package} <- ExecutionPackage.verify_for_asset(work.execution_package, asset) do
+      work = %{work | execution_package: package}
+
+      {:ok,
+       %{
+         work: work,
+         version: version,
+         asset: asset,
+         preflight: SQLRuntimePreflight.run(work, version)
+       }}
     end
   end
 

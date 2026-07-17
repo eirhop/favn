@@ -28,6 +28,7 @@ defmodule FavnAuthoring do
   alias Favn.Manifest.Compatibility
   alias Favn.Manifest.Generator
   alias Favn.Manifest.Index
+  alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
   alias Favn.ModuleDiscovery
@@ -195,6 +196,15 @@ defmodule FavnAuthoring do
   @spec pin_manifest_version(map() | struct(), keyword()) :: {:ok, Version.t()} | {:error, term()}
   def pin_manifest_version(manifest, opts \\ []) when is_list(opts) do
     Version.new(manifest, opts)
+  end
+
+  @doc """
+  Pins a manifest build into its compact index version and exact package set.
+  """
+  @spec prepare_manifest_publication(Build.t(), keyword()) ::
+          {:ok, Publication.t()} | {:error, term()}
+  def prepare_manifest_publication(%Build{} = build, opts \\ []) when is_list(opts) do
+    Publication.new(build, opts)
   end
 
   defp with_default_manifest_modules(opts) when is_list(opts) do

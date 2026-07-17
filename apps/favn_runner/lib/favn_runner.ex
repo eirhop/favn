@@ -15,6 +15,7 @@ defmodule FavnRunner do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.RuntimeInput.Resolution
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
@@ -77,13 +78,15 @@ defmodule FavnRunner do
            ManifestStore.fetch(work.manifest_version_id, work.manifest_content_hash,
              server: FavnRunner.ManifestStore
            ),
-         {:ok, asset} <- ManifestResolver.resolve_asset(version, asset_ref) do
-      resolve_asset_runtime_inputs(asset, version, work, opts)
+         {:ok, asset} <- ManifestResolver.resolve_asset(version, asset_ref),
+         {:ok, package} <- ExecutionPackage.verify_for_asset(work.execution_package, asset) do
+      resolve_asset_runtime_inputs(asset, package, version, work, opts)
     end
   end
 
   defp resolve_asset_runtime_inputs(
-         %{sql_execution: %{runtime_inputs: nil}},
+         _asset,
+         %ExecutionPackage{sql_execution: %{runtime_inputs: nil}},
          _version,
          _work,
          _opts
@@ -91,7 +94,8 @@ defmodule FavnRunner do
        do: {:ok, nil}
 
   defp resolve_asset_runtime_inputs(
-         %{sql_execution: %{runtime_inputs: resolver}} = asset,
+         asset,
+         %ExecutionPackage{sql_execution: %{runtime_inputs: resolver}} = package,
          version,
          work,
          opts
@@ -100,7 +104,7 @@ defmodule FavnRunner do
 
     with {:ok, context} <- ContextBuilder.build(work, asset, execution_id),
          {:ok, _definition, final_context, final_opts} <-
-           SQLAssetRuntime.prepare_manifest_execution(asset, version, work, context),
+           SQLAssetRuntime.prepare_manifest_execution(asset, package, version, work, context),
          {:ok, resolution} <-
            RuntimeInputResolver.resolve(
              resolver,
@@ -132,7 +136,7 @@ defmodule FavnRunner do
     end
   end
 
-  defp resolve_asset_runtime_inputs(_asset, _version, _work, _opts), do: {:ok, nil}
+  defp resolve_asset_runtime_inputs(_asset, _package, _version, _work, _opts), do: {:ok, nil}
 
   defp resolver_retryable?(%{details: details}) when is_map(details),
     do: Map.get(details, :asset_retryable?, Map.get(details, "asset_retryable?", false)) == true

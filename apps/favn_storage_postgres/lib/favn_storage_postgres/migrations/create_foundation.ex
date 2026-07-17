@@ -12,11 +12,47 @@ defmodule FavnStoragePostgres.Migrations.CreateFoundation do
       add(:schema_version, :integer, null: false)
       add(:runner_contract_version, :integer, null: false)
       add(:serialization_format, :string, null: false)
-      add(:manifest_json, :text, null: false)
+      add(:manifest_index_json, :text, null: false)
       add(:inserted_at, :utc_datetime_usec)
     end
 
     create_if_not_exists(unique_index(:favn_manifest_versions, [:content_hash]))
+
+    create_if_not_exists table(:favn_execution_packages, primary_key: false) do
+      add(:content_hash, :string, primary_key: true)
+      add(:asset_module, :string, null: false)
+      add(:asset_name, :string, null: false)
+      add(:package_json, :text, null: false)
+      add(:inserted_at, :utc_datetime_usec, null: false)
+    end
+
+    create_if_not_exists table(:favn_manifest_execution_packages, primary_key: false) do
+      add(
+        :manifest_version_id,
+        references(:favn_manifest_versions,
+          column: :manifest_version_id,
+          type: :string,
+          on_delete: :delete_all
+        ),
+        null: false
+      )
+
+      add(
+        :package_hash,
+        references(:favn_execution_packages,
+          column: :content_hash,
+          type: :string,
+          on_delete: :restrict
+        ),
+        null: false
+      )
+    end
+
+    create_if_not_exists(
+      unique_index(:favn_manifest_execution_packages, [:manifest_version_id, :package_hash])
+    )
+
+    create_if_not_exists(index(:favn_manifest_execution_packages, [:package_hash]))
 
     create_if_not_exists table(:favn_runtime_settings, primary_key: false) do
       add(:key, :string, primary_key: true)
@@ -143,6 +179,8 @@ defmodule FavnStoragePostgres.Migrations.CreateFoundation do
     drop_if_exists(table(:favn_run_events))
     drop_if_exists(table(:favn_runs))
     drop_if_exists(table(:favn_runtime_settings))
+    drop_if_exists(table(:favn_manifest_execution_packages))
+    drop_if_exists(table(:favn_execution_packages))
     drop_if_exists(table(:favn_manifest_versions))
     execute("DROP SEQUENCE IF EXISTS favn_run_write_seq")
   end

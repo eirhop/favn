@@ -647,13 +647,16 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
     assert {:ok, manifest_record} = ManifestCodec.to_record(version)
 
-    stale_manifest_json =
-      manifest_record.manifest_json
+    stale_manifest_index_json =
+      manifest_record.manifest_index_json
       |> Jason.decode!()
       |> put_in(["metadata", "changed"], true)
       |> Jason.encode!()
 
-    stale_manifest_record = %{manifest_record | manifest_json: stale_manifest_json}
+    stale_manifest_record = %{
+      manifest_record
+      | manifest_index_json: stale_manifest_index_json
+    }
 
     assert {:error, {:manifest_content_hash_mismatch, _, _}} =
              RunSnapshotCodec.decode_run(

@@ -5,12 +5,15 @@ defmodule FavnView.PageLiveTest do
 
   alias Favn.Log.Entry
   alias Favn.Manifest
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
+  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
+  alias Favn.SQL.Template
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnView.Components.AssetDetailPage
@@ -3116,20 +3119,36 @@ defmodule FavnView.PageLiveTest do
   end
 
   defp manifest_version do
+    {customer_orders_daily, customer_orders_package} =
+      sql_asset(:customer_orders_daily, :snowflake, "sales",
+        window: WindowSpec.new!(:day),
+        freshness: Favn.Freshness.Policy.from_value!({:daily, timezone: "Europe/Oslo"}),
+        depends_on: [{__MODULE__.Assets, :raw_payments}]
+      )
+
+    {stg_payments, stg_payments_package} =
+      sql_asset(:stg_payments, :postgres, "finance")
+
+    {always_refresh, always_refresh_package} =
+      sql_asset(:always_refresh, :snowflake, "sales",
+        freshness: Favn.Freshness.Policy.from_value!(:always)
+      )
+
     assets = [
       asset(:raw_payments, :s3, "finance", :source,
         freshness: Favn.Freshness.Policy.from_value!(max_age: {:hours, 24})
       ),
-      asset(:customer_orders_daily, :snowflake, "sales", :sql,
-        window: WindowSpec.new!(:day),
-        freshness: Favn.Freshness.Policy.from_value!({:daily, timezone: "Europe/Oslo"}),
-        depends_on: [{__MODULE__.Assets, :raw_payments}]
-      ),
-      asset(:stg_payments, :postgres, "finance", :sql),
-      asset(:always_refresh, :snowflake, "sales", :sql,
-        freshness: Favn.Freshness.Policy.from_value!(:always)
-      )
+      customer_orders_daily,
+      stg_payments,
+      always_refresh
     ]
+
+    assert :ok =
+             FavnOrchestrator.register_execution_packages([
+               customer_orders_package,
+               stg_payments_package,
+               always_refresh_package
+             ])
 
     {:ok, graph} = Graph.build(assets)
 
@@ -3191,7 +3210,7 @@ defmodule FavnView.PageLiveTest do
     end
   end
 
-  defp asset(name, connection, catalog, type, opts \\ []) do
+  defp asset(name, connection, catalog, type, opts) do
     %Favn.Manifest.Asset{
       ref: {__MODULE__.Assets, name},
       module: __MODULE__.Assets,
@@ -3202,6 +3221,25 @@ defmodule FavnView.PageLiveTest do
       depends_on: Keyword.get(opts, :depends_on, []),
       relation: %{connection: connection, catalog: catalog, name: Atom.to_string(name)}
     }
+  end
+
+  defp sql_asset(name, connection, catalog, opts \\ []) do
+    asset = asset(name, connection, catalog, :sql, opts)
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/page_live_test.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    assert {:ok, package} =
+             ExecutionPackage.new(asset.ref, %SQLExecution{sql: sql, template: template})
+
+    {%{asset | execution_package_hash: package.content_hash}, package}
   end
 
   defp seed_backfill_overview_group! do

@@ -19,8 +19,8 @@ defmodule Favn.Manifest do
           metadata: map()
         }
 
-  defstruct schema_version: 7,
-            runner_contract_version: 7,
+  defstruct schema_version: 8,
+            runner_contract_version: 8,
             assets: [],
             pipelines: [],
             schedules: [],

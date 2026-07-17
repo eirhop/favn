@@ -4,9 +4,10 @@ Reader: Favn contributors and documentation agents.
 
 Documentation type: explanation.
 
-Favn is manifest-first. A manifest is the saved description of what the user
-authored: assets, pipelines, schedules, dependencies, schema version, runner
-contract version, and the metadata needed at runtime.
+Favn is manifest-first. Schema 8 has one compact manifest index containing the
+saved description of what the user authored: assets, pipelines, schedules,
+dependencies, schema version, runner contract version, and compact runtime
+metadata. SQL assets reference immutable execution packages by content hash.
 
 The manifest is the handoff between authoring and runtime. User code creates a
 manifest. Runtime systems use a persisted manifest version. Runtime systems do
@@ -32,10 +33,10 @@ would also make app ownership unclear.
 Favn uses this rule:
 
 ```text
-Authoring code produces a manifest.
-The orchestrator persists and activates manifest versions.
+Authoring code produces a compact manifest index and exact execution packages.
+The orchestrator persists packages, then persists and activates index versions.
 Runs use one pinned manifest version.
-The runner executes work derived from that pinned version.
+The runner executes work derived from that pinned version and one selected package.
 ```
 
 The manifest is data. It is not a scheduler, database, storage adapter, UI model,
@@ -74,8 +75,8 @@ The safe path is:
 ```text
 User module
   -> public Favn DSL declarations
-  -> manifest data
-  -> persisted manifest version in the orchestrator
+  -> compact manifest index + immutable execution packages
+  -> persisted packages and index version in the orchestrator
   -> active manifest selection or explicit manifest version selection
   -> orchestrator run planning and admission
   -> pinned runner work
@@ -98,9 +99,20 @@ version that was registered when the work entered the orchestrator.
 
 ## Manifest Versions
 
-A manifest version is an immutable wrapper around manifest data. It records the
+A manifest version is an immutable wrapper around compact index data. It records the
 manifest version id, content hash, schema version, runner contract version,
-serialization format, and manifest payload.
+serialization format, and index payload. It never contains executable SQL.
+
+Each SQL asset contains one 64-character package hash. The referenced package
+contains the complete compiled SQL execution tree and its asset ref. Package
+identity covers that canonical payload. The authoring publication verifies exact
+coverage, so missing, unexpected, duplicated, mismatched, or modified packages
+fail before upload. At registration, the orchestrator atomically verifies that
+every indexed hash is stored and that its package belongs to the indexed asset.
+
+Packages are not another manifest representation. There is one manifest index
+and a set of content-addressed execution artifacts. Schema 7 and inline
+`sql_execution` payloads are rejected rather than upgraded or maintained.
 
 The orchestrator persists manifest versions and chooses which one is active. A
 run should refer to the manifest version id and content hash, not to the latest
@@ -124,9 +136,9 @@ format.
 Pinning can fail when the version id, content hash, schema version, runner
 contract version, or serialization format does not match the manifest.
 
-Registration can fail when validation rejects the manifest, storage is
-unavailable, identity conflicts with existing content, or the orchestrator is not
-ready.
+Registration can fail when validation rejects the index, referenced packages
+have not been uploaded, storage is unavailable, identity conflicts with existing
+content, or the orchestrator is not ready.
 
 Execution can fail, time out, or be cancelled after the run is accepted. The
 runner reports what happened during execution. The orchestrator records the run
@@ -140,6 +152,8 @@ lifecycle.
 - Keep manifest registration, activation, runs, schedules, cancellation,
   backfills, and diagnostics behind orchestrator-owned boundaries.
 - Keep runner work pinned to a manifest version and content hash.
+- Load only the selected asset's execution package for one runner work item;
+  catalogue, planning, and preflight paths must remain index-only.
 - Add runtime-needed facts to the manifest deliberately. Do not hide behavior in
   unvalidated metadata or private helper calls.
 - Keep `favn_view` thin. If the UI needs more runtime state, add or extend an

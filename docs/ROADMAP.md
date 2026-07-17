@@ -16,7 +16,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 1. Lock The Supported `v1` Surface
 
-- Stabilize manifest schema/runner contract 7 and the unified `settings` runtime
+- Stabilize manifest schema/runner contract 8 and the unified `settings` runtime
   context as the v1 candidate after real-project validation; do not reintroduce
   the removed attribute DSL or generic config bags for compatibility.
 - Finalize any remaining edge cases in the documented stable `v1` API boundary.
@@ -26,10 +26,10 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Decide the code-level fate of runtime delegation helpers that are outside the documented stable boundary: keep internal, remove, or move behind clearer modules.
 - Align moduledocs, tests, and examples with the documented boundary in `docs/production/public_api_boundary.md`.
 - Define the actual Hex/private-Hex publishing mechanics for the documented package model.
-- Benchmark representative manifests at roughly 66, 300, 1,000, and 6,600
-  assets, then normalize repeated SQL/metadata structures and introduce a
-  content-addressed manifest index plus execution packages only when measured
-  memory, decode, or transfer costs justify splitting the monolith.
+- Measure production retention and runner-local cache needs for the implemented
+  content-addressed execution packages. Add a bounded cache only if workload
+  evidence shows repeated package reads matter; package lookup is currently
+  bounded to one selected asset per admitted work item.
 
 ### 2. Make Deployment Outputs Real
 

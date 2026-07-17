@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Asset, as: ManifestAsset
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
@@ -24,6 +25,20 @@ defmodule FavnOrchestrator.ManifestStoreTest do
   alias FavnOrchestrator.TargetStatus.Projector, as: TargetStatusProjector
   alias FavnOrchestrator.TransitionWriter
 
+  defmodule CanonicalizingManifestAdapter do
+    @moduledoc false
+
+    alias FavnOrchestrator.Storage.Adapter.Memory
+
+    def get_manifest_version_by_content_hash(content_hash, opts),
+      do: Memory.get_manifest_version_by_content_hash(content_hash, opts)
+
+    def put_manifest_version(version, opts) do
+      canonical = %{version | manifest_version_id: "mv_concurrent_canonical"}
+      Memory.put_manifest_version(canonical, opts)
+    end
+  end
+
   setup do
     Memory.reset()
     :ok
@@ -44,6 +59,75 @@ defmodule FavnOrchestrator.ManifestStoreTest do
 
     assert :ok = ManifestStore.set_active_manifest("mv_b")
     assert {:ok, "mv_b"} = ManifestStore.get_active_manifest()
+  end
+
+  test "publication returns the canonical row when another id wins persistence" do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :storage_adapter_opts, previous_opts)
+    end)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      CanonicalizingManifestAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+    {:ok, requested} =
+      Version.new(%Manifest{}, manifest_version_id: "mv_concurrent_loser")
+
+    assert {:ok, :already_published, canonical} = ManifestStore.publish_manifest(requested)
+    assert canonical.manifest_version_id == "mv_concurrent_canonical"
+    refute canonical.manifest_version_id == requested.manifest_version_id
+  end
+
+  test "package ownership mismatch uses the storage-safe ref shape" do
+    package_ref = {MyApp.StoredPackageOwner, :asset}
+    indexed_ref = {MyApp.IndexedPackageOwner, :asset}
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/manifest_store_package_owner.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    {:ok, package} =
+      ExecutionPackage.new(package_ref, %SQLExecution{sql: sql, template: template})
+
+    asset = %ManifestAsset{
+      ref: indexed_ref,
+      module: elem(indexed_ref, 0),
+      name: elem(indexed_ref, 1),
+      type: :sql,
+      execution_package_hash: package.content_hash
+    }
+
+    {:ok, version} =
+      Version.new(
+        FavnTestSupport.with_manifest_graph(%Manifest{assets: [asset]}),
+        manifest_version_id: "mv_wrong_package_owner"
+      )
+
+    assert :ok = Storage.put_execution_packages([package])
+
+    assert {:error, {:execution_package_asset_mismatch, package_hash, ^indexed_ref, actual_ref}} =
+             ManifestStore.register_manifest(version)
+
+    assert package_hash == package.content_hash
+
+    assert actual_ref == %{
+             module: Atom.to_string(elem(package_ref, 0)),
+             name: Atom.to_string(elem(package_ref, 1))
+           }
   end
 
   test "asset detail exposes contract, generated checks, custom checks, and latest evidence" do
@@ -118,6 +202,15 @@ defmodule FavnOrchestrator.ManifestStoreTest do
         uses_target?: false
       })
 
+    execution = %SQLExecution{
+      sql: query_sql,
+      template: query_template,
+      contract: contract,
+      checks: generated_checks ++ [custom]
+    }
+
+    assert {:ok, package} = ExecutionPackage.new(ref, execution)
+
     manifest = %Manifest{
       assets: [
         %ManifestAsset{
@@ -126,11 +219,21 @@ defmodule FavnOrchestrator.ManifestStoreTest do
           name: :asset,
           type: :sql,
           materialization: :table,
-          sql_execution: %SQLExecution{
-            sql: query_sql,
-            template: query_template,
+          execution_package_hash: package.content_hash,
+          assurance: %{
             contract: contract,
-            checks: generated_checks ++ [custom]
+            checks:
+              Enum.map(execution.checks, fn check ->
+                Map.take(check, [
+                  :name,
+                  :origin,
+                  :claim_id,
+                  :at,
+                  :when,
+                  :on_violation,
+                  :message
+                ])
+              end)
           }
         }
       ]
@@ -141,6 +244,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
              |> FavnTestSupport.with_manifest_graph()
              |> Version.new(manifest_version_id: "mv_generic_contract")
 
+    assert :ok = Storage.put_execution_packages([package])
     assert :ok = ManifestStore.register_manifest(version)
     assert :ok = ManifestStore.set_active_manifest(version.manifest_version_id)
 

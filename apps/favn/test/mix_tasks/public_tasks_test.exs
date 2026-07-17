@@ -1411,13 +1411,13 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   end
 
   defp write_bootstrap_manifest(root_dir) do
-    path = Path.join(root_dir, "bootstrap_manifest.json")
+    path = Path.join(root_dir, "manifest-index.json")
 
     File.write!(
       path,
       JSON.encode_to_iodata!(%{
-        schema_version: 7,
-        runner_contract_version: 7,
+        schema_version: 8,
+        runner_contract_version: 8,
         assets: [],
         pipelines: [],
         schedules: [],
@@ -1450,7 +1450,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     server =
       spawn_link(fn ->
-        serve_bootstrap_requests(socket, verification, 6)
+        serve_bootstrap_requests(socket, verification, 7)
       end)
 
     {:ok, "http://127.0.0.1:#{port}", server}
@@ -1504,6 +1504,18 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
       path == "/api/orchestrator/v1/manifests" ->
         send_manifest_publish_response(client, verification)
+
+      path == "/api/orchestrator/v1/execution-packages/missing" ->
+        send_json(client, 200, %{
+          data: %{
+            missing: [],
+            publication_limits: %{
+              max_packages: 100,
+              compressed_limit_bytes: 8 * 1024 * 1024,
+              decompressed_limit_bytes: 32 * 1024 * 1024
+            }
+          }
+        })
 
       path == "/api/orchestrator/v1/auth/password/sessions" ->
         send_json(client, 201, %{

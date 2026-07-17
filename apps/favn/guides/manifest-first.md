@@ -6,9 +6,11 @@ Use `mix favn.dev`, `mix favn.run`, and the UI for normal local development. Use
 the functions in this guide when building tools, debugging discovery, comparing
 versions, or preparing deployment artifacts.
 
-Favn still uses manifests internally. A manifest is the stable description Favn
-builds from your DSL modules: assets, pipelines, schedules, dependencies, and the
-runtime metadata needed to run work.
+Favn still uses manifests internally. Schema 8 publishes one compact manifest
+index plus immutable, content-addressed execution packages. The index describes
+assets, pipelines, schedules, dependencies, and compact runtime metadata. Each
+SQL asset points to exactly one package containing its complete executable SQL
+payload.
 
 Runtime systems then use a pinned manifest version instead of rediscovering your
 modules while runs are in progress.
@@ -20,7 +22,7 @@ Use manifest functions when you need to:
 - inspect what Favn discovered from your modules
 - debug why an asset or pipeline is missing
 - compare two versions of authored work
-- serialize a manifest for deployment tooling
+- prepare a manifest publication for deployment tooling
 - validate compatibility before sending a manifest to a runtime
 
 Do not start with these functions in the basic tutorial. They are advanced
@@ -40,17 +42,17 @@ Favn uses this flow:
 ```text
 authoring modules
   -> Favn DSL declarations
-  -> Favn.generate_manifest/1
-  -> manifest
-  -> Favn.pin_manifest_version/2
-  -> versioned manifest
+  -> Favn.build_manifest/1
+  -> Favn.prepare_manifest_publication/2
+  -> compact versioned index + immutable execution packages
   -> local/runtime registration
   -> runner-executed work
 ```
 
-The manifest is the handoff point. It says what assets exist, how they depend on
-each other, what pipelines select, their non-secret static settings, and what
-runtime config is required.
+The publication is the handoff point. Its index says what assets exist, how they
+depend on each other, what pipelines select, their non-secret static settings,
+and what runtime config is required. Generated SQL and compiled templates stay
+out of that index.
 
 ## Common Manifest Calls
 
@@ -79,6 +81,21 @@ Pin, serialize, hash, and validate:
 :ok = Favn.validate_manifest_compatibility(manifest)
 ```
 
+Prepare the complete deployment publication:
+
+```elixir
+{:ok, build} = Favn.build_manifest()
+{:ok, publication} = Favn.prepare_manifest_publication(build)
+
+publication.version             # compact pinned index
+publication.execution_packages  # immutable SQL artifacts
+```
+
+Publishers query the orchestrator for missing package hashes and its effective
+publication limits, upload only those packages in count- and byte-bounded
+batches, and then register the compact index. Package and index JSON requests
+support gzip.
+
 Inspect authored work:
 
 ```elixir
@@ -98,12 +115,16 @@ A manifest can include:
 - pipelines
 - schedules
 - relation metadata for SQL-backed assets
-- typed SQL output contracts, generated/custom check definitions, and explicit
-  column lineage
+- compact SQL assurance metadata, package hashes, and explicit column lineage
 - freshness and window metadata
 - JSON-safe asset and pipeline settings
 - runtime config requirements
-- schema and runner contract version 7 data used by the runtime
+- schema and runner contract version 8 data used by the runtime
+
+Execution packages contain the full SQL templates, runtime-input resolver refs,
+typed output contracts, and executable generated/custom checks. They are not a
+second manifest format: the compact index is the only manifest, and package
+hashes are its execution-artifact references.
 
 The exact struct is managed by Favn. Application code should normally build
 manifests with `Favn.generate_manifest/1`, not by constructing manifest structs
@@ -118,8 +139,9 @@ by hand.
 {:ok, version} = Favn.pin_manifest_version(manifest)
 ```
 
-The pinned version can be compared, transferred, registered, and selected by
-runtime tooling.
+The pinned version can be compared and selected by runtime tooling. Deployment
+code should use `Favn.prepare_manifest_publication/2` so the exact package set is
+validated before transfer.
 
 ## What A Manifest Does Not Do
 
@@ -137,7 +159,8 @@ provided by the runtime environment.
 | Validate | The manifest is missing required data or uses an unsupported version. |
 | Serialize or hash | The manifest cannot be encoded into the canonical payload. |
 | Pin | Version metadata is invalid or the manifest cannot be validated. |
-| Runtime registration | The runtime cannot accept or store the pinned version. |
+| Prepare publication | A SQL package is missing, duplicated, unexpected, or does not match its asset. |
+| Runtime registration | A referenced package was not uploaded or the runtime cannot store the compact index. |
 
 ## Why This Helps
 
@@ -145,6 +168,7 @@ provided by the runtime environment.
 - Operators can see which version a run used.
 - Deploying new code does not silently change already accepted work.
 - Planning can be deterministic because the graph is explicit.
+- Catalogue and planning memory does not grow with generated SQL text.
 
 ## Related Docs
 

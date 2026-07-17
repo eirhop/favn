@@ -40,6 +40,7 @@ defmodule Favn.Storage.Adapter do
   and return released scopes so wakeups stay targeted without global lease scans.
   """
 
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.AssetFreshnessState
@@ -75,6 +76,12 @@ defmodule Favn.Storage.Adapter do
   @callback diagnostics(adapter_opts()) :: {:ok, diagnostics()} | {:error, error()}
 
   @callback put_manifest_version(Version.t(), adapter_opts()) :: :ok | {:error, error()}
+  @callback put_execution_packages([ExecutionPackage.t()], adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback missing_execution_package_hashes([String.t()], adapter_opts()) ::
+              {:ok, [String.t()]} | {:error, error()}
+  @callback get_execution_package(String.t(), adapter_opts()) ::
+              {:ok, ExecutionPackage.t()} | {:error, error()}
   @callback get_manifest_version(String.t(), adapter_opts()) ::
               {:ok, Version.t()} | {:error, error()}
   @callback get_manifest_version_by_content_hash(String.t(), adapter_opts()) ::

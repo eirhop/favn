@@ -22,8 +22,8 @@ defmodule FavnRunner.WorkerTest do
 
     manifest =
       %Manifest{
-        schema_version: 7,
-        runner_contract_version: 7,
+        schema_version: 8,
+        runner_contract_version: 8,
         assets: [asset],
         pipelines: [],
         schedules: [],
@@ -352,8 +352,8 @@ defmodule FavnRunner.WorkerTest do
 
     manifest =
       %Manifest{
-        schema_version: 7,
-        runner_contract_version: 7,
+        schema_version: 8,
+        runner_contract_version: 8,
         assets: [asset],
         pipelines: [],
         schedules: [],

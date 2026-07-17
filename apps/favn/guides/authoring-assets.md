@@ -269,8 +269,9 @@ Rules:
 - Use exactly one `query` declaration.
 - Provide exactly one effective `materialized` declaration on the SQL asset or
   an ancestor namespace.
-- Put optional `resources [...]` before `query`; names select trusted native
-  physical-session SQL files and are stored in the manifest.
+- Put optional `resources [...]` before `query`; names stored in the compact
+  manifest index select trusted native physical-session SQL files. File paths
+  and file contents are not stored in the index.
 - Do not define `asset/1`; `Favn.SQLAsset` generates runtime work.
 - Inline SQL must use `~SQL`.
 - `~SQL` does not allow interpolation.

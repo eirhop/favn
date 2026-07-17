@@ -8,6 +8,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Build
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Labels
   alias Favn.Manifest.Pipeline
@@ -105,13 +106,49 @@ defmodule Favn.Manifest.Rehydrate do
         value
         |> field_value(:session_requirements, %{})
         |> build_session_requirements(),
-      sql_execution: value |> field_value(:sql_execution) |> build_sql_execution(),
+      execution_package_hash: field_value(value, :execution_package_hash),
+      assurance: value |> field_value(:assurance) |> build_assurance(),
       execution_pool: value |> field_value(:execution_pool) |> decode_atom_optional(),
       metadata: value |> field_value(:metadata, %{}) |> build_metadata()
     }
   end
 
   defp build_asset(other), do: other
+
+  defp build_assurance(nil), do: nil
+
+  defp build_assurance(value) when is_map(value) do
+    contract = value |> field_value(:contract) |> build_sql_contract()
+
+    checks =
+      value
+      |> field_value(:checks, [])
+      |> Enum.map(&build_assurance_check/1)
+
+    %{contract: contract, checks: checks}
+  end
+
+  defp build_assurance(other), do: other
+
+  defp build_assurance_check(value) when is_map(value) do
+    %{
+      name: value |> field_value(:name) |> decode_atom_optional(),
+      origin: value |> field_value(:origin) |> decode_known_atom([:authored, :contract]),
+      claim_id: field_value(value, :claim_id),
+      at:
+        value
+        |> field_value(:at)
+        |> decode_known_atom([:before_materialize, :after_materialize]),
+      when: value |> field_value(:when) |> decode_known_atom_optional([:target_exists]),
+      on_violation:
+        value
+        |> field_value(:on_violation)
+        |> decode_known_atom([:fail, :warn, :skip_materialization]),
+      message: field_value(value, :message)
+    }
+  end
+
+  defp build_assurance_check(other), do: other
 
   defp build_session_requirements(value) when value in [nil, %{}],
     do: SessionRequirements.empty()
@@ -300,6 +337,29 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_runtime_config_ref(other), do: other
+
+  @doc "Rehydrates one immutable SQL execution package."
+  @spec execution_package(map() | ExecutionPackage.t()) ::
+          {:ok, ExecutionPackage.t()} | {:error, error()}
+  def execution_package(%ExecutionPackage{} = package) do
+    execution_package(Map.from_struct(package))
+  end
+
+  def execution_package(value) when is_map(value) do
+    with :ok <- validate_manifest_atom_budget(value) do
+      {:ok,
+       %ExecutionPackage{
+         schema_version: field_value(value, :schema_version),
+         content_hash: field_value(value, :content_hash),
+         asset_ref: value |> field_value(:asset_ref) |> decode_ref(),
+         sql_execution: value |> field_value(:sql_execution) |> build_sql_execution()
+       }}
+    end
+  rescue
+    error -> {:error, {:invalid_manifest_payload, error}}
+  end
+
+  def execution_package(other), do: {:error, {:invalid_manifest_input, other}}
 
   defp build_sql_execution(nil), do: nil
 

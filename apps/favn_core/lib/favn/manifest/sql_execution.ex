@@ -1,11 +1,13 @@
 defmodule Favn.Manifest.SQLExecution do
   @moduledoc """
-  Canonical SQL execution payload carried by manifest SQL assets.
+  Canonical SQL execution payload carried by immutable execution packages.
 
   The optional typed `contract` preserves authored output shape, grain, keys,
   row-count policy, and lineage. Generated contract checks and custom checks are
   both carried in `checks`, distinguished by their origin and claim identity.
-  The runner therefore needs no authoring module to validate a candidate.
+  Compact manifest assets reference the package by content hash, so the runner
+  needs no authoring module to validate a candidate and catalogue operations do
+  not load executable SQL.
   """
 
   alias Favn.SQL.Definition, as: SQLDefinition

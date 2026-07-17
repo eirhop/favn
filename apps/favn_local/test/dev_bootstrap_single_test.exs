@@ -2,6 +2,7 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
   use ExUnit.Case, async: false
 
   alias Favn.Dev.Bootstrap.Single
+  alias Favn.Manifest.Publication
 
   defmodule FakeClient do
     def verify_service_token(url, token) do
@@ -104,15 +105,16 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
 
     assert_receive {:verify_service_token, "http://127.0.0.1:4000", "token-1"}
     assert_receive {:password_login, _url, _token, "admin", "admin-password-long"}
-    assert_receive {:publish_manifest, _url, _token, manifest_payload}
+    assert_receive {:publish_manifest, _url, _token, %Publication{} = publication}
     assert_receive {:activate_manifest, _url, _token, manifest_version_id, session_context}
     assert_receive {:register_runner, _url, _token, runner_payload}
     assert_receive {:bootstrap_active_manifest, _url, _token}
 
     assert session_context["actor_id"] == "act_1"
     assert session_context["session_token"] == "raw_1"
-    assert manifest_payload.manifest_version_id == summary.manifest_version_id
-    assert manifest_payload.content_hash == summary.content_hash
+    assert publication.version.manifest_version_id == summary.manifest_version_id
+    assert publication.version.content_hash == summary.content_hash
+    assert publication.execution_packages == []
     assert manifest_version_id == summary.manifest_version_id
     assert runner_payload.manifest_version_id == summary.manifest_version_id
   end
@@ -147,13 +149,13 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
   end
 
   defp write_manifest(root_dir) do
-    path = Path.join(root_dir, "manifest.json")
+    path = Path.join(root_dir, "manifest-index.json")
 
     File.write!(
       path,
       JSON.encode_to_iodata!(%{
-        schema_version: 7,
-        runner_contract_version: 7,
+        schema_version: 8,
+        runner_contract_version: 8,
         assets: [],
         pipelines: [],
         schedules: [],

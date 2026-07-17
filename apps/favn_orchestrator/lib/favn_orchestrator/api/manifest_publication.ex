@@ -1,6 +1,6 @@
 defmodule FavnOrchestrator.API.ManifestPublication do
   @moduledoc """
-  Parses the bounded manifest-publication request before the general API parser.
+  Parses bounded manifest-artifact publication requests before the general API parser.
 
   The publication endpoint accepts plain or gzip JSON. Service authentication
   happens before the body is read, compressed input and expanded JSON have
@@ -19,7 +19,11 @@ defmodule FavnOrchestrator.API.ManifestPublication do
   alias FavnOrchestrator.API.ManifestPublication.Config
   alias FavnOrchestrator.API.Response
 
-  @manifest_publication_path "/api/orchestrator/v1/manifests"
+  @publication_paths %{
+    "/api/orchestrator/v1/manifests" => true,
+    "/api/orchestrator/v1/execution-packages" => true,
+    "/api/orchestrator/v1/execution-packages/missing" => true
+  }
   @read_length_bytes 1 * 1024 * 1024
   @read_timeout_ms 15_000
   @gzip_window_bits 16 + 15
@@ -31,11 +35,12 @@ defmodule FavnOrchestrator.API.ManifestPublication do
   def call(
         %Plug.Conn{
           method: "POST",
-          request_path: @manifest_publication_path,
+          request_path: request_path,
           body_params: %Plug.Conn.Unfetched{}
         } = conn,
         _opts
-      ) do
+      )
+      when is_map_key(@publication_paths, request_path) do
     case Authentication.ensure_service(conn) do
       :ok -> parse_authenticated(conn)
       {:error, :service_unauthorized} -> service_unauthorized(conn)

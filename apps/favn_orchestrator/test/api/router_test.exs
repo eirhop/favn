@@ -7,11 +7,13 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   alias Favn.Contracts.RunnerResult
   alias Favn.Manifest
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
   alias Favn.RuntimeConfig.Ref
+  alias Favn.SQL.Template
   alias Favn.Window.Anchor
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Policy
@@ -1150,7 +1152,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     refute response.resp_body =~ "__struct__"
     refute response.resp_body =~ "%Favn.Manifest.SQLExecution"
     refute gold["label"] =~ "{"
-    assert gold["materialization"]["sql"] == "select 1"
+    assert gold["materialization"] == "view"
   end
 
   test "run detail exposes stored per-asset result metadata" do
@@ -3203,6 +3205,23 @@ defmodule FavnOrchestrator.API.RouterTest do
   end
 
   defp dependency_manifest_version(manifest_version_id) do
+    ref = {MyApp.Assets.Gold, :asset}
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/router_dependency_package.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    {:ok, package} =
+      ExecutionPackage.new(ref, %Favn.Manifest.SQLExecution{sql: sql, template: template})
+
+    :ok = FavnOrchestrator.register_execution_packages([package])
+
     manifest = %Manifest{
       assets: [
         %Favn.Manifest.Asset{
@@ -3213,14 +3232,15 @@ defmodule FavnOrchestrator.API.RouterTest do
           relation: %{connection: :warehouse, schema: "raw", name: "orders"}
         },
         %Favn.Manifest.Asset{
-          ref: {MyApp.Assets.Gold, :asset},
+          ref: ref,
           module: MyApp.Assets.Gold,
           name: :asset,
           type: :sql,
           depends_on: [{MyApp.Assets.Raw, :asset}],
           relation: %{connection: :warehouse, schema: "gold", name: "orders"},
           runtime_config: %{source_system: %{segment_id: Ref.env!("SOURCE_SYSTEM_SEGMENT_ID")}},
-          materialization: %Favn.Manifest.SQLExecution{sql: "select 1", template: nil},
+          materialization: :view,
+          execution_package_hash: package.content_hash,
           metadata: %{owner: "analytics", api_token: "manifest-target-secret"}
         }
       ]

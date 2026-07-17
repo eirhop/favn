@@ -379,7 +379,7 @@ defmodule FavnRunner.Worker do
     case ContextBuilder.build(work, asset, execution_id) do
       {:ok, context} ->
         asset
-        |> SQLAssetRuntime.run_manifest(version, work, context)
+        |> SQLAssetRuntime.run_manifest(work.execution_package, version, work, context)
         |> redact_execution_result(asset, context)
 
       {:error, error} ->

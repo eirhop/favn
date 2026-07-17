@@ -6,6 +6,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   @behaviour Favn.Storage.Adapter
 
   alias Ecto.Adapters.SQL
+  alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Publication
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.AssetFreshnessState
@@ -28,6 +30,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.ExecutionGroupSummary
   alias FavnOrchestrator.Storage.ExecutionLeaseCodec
   alias FavnOrchestrator.Storage.ExecutionOwnershipCodec
+  alias FavnOrchestrator.Storage.ExecutionPackageCodec
   alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
   alias FavnOrchestrator.Storage.IdempotencyResponseCodec
   alias FavnOrchestrator.Storage.LogEntryCodec
@@ -69,6 +72,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   ]
   @read_model_chunk_size 50
   @max_event_type_filters 32
+  @execution_package_insert_chunk_size 100
+  @manifest_package_ref_chunk_size 1_000
 
   @impl true
   def child_spec(opts) when is_list(opts) do
@@ -105,14 +110,52 @@ defmodule Favn.Storage.Adapter.SQLite do
   def put_manifest_version(%Version{} = version, opts) when is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
          {:ok, record} <- ManifestCodec.to_record(version),
-         {:ok, existing_id_hash} <- fetch_manifest_hash(repo, record.manifest_version_id),
-         {:ok, existing_content_hash} <-
-           fetch_manifest_record_by_content_hash(repo, record.content_hash) do
-      cond do
-        match?(%{}, existing_content_hash) -> :ok
-        is_nil(existing_id_hash) -> insert_manifest_record(repo, record)
-        existing_id_hash == record.content_hash -> :ok
-        true -> {:error, :manifest_version_conflict}
+         required_refs <- Publication.required_package_refs(version) do
+      repo.transact(fn ->
+        case put_manifest_version_in_transaction(repo, record, required_refs) do
+          :ok -> {:ok, :ok}
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def put_execution_packages(packages, opts) when is_list(packages) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, records} <- encode_execution_packages(packages) do
+      repo.transact(fn ->
+        case insert_execution_packages(repo, records) do
+          :ok -> {:ok, :ok}
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def missing_execution_package_hashes(hashes, opts) when is_list(hashes) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      missing_execution_package_hashes_in_repo(repo, hashes)
+    end
+  end
+
+  @impl true
+  def get_execution_package(content_hash, opts)
+      when is_binary(content_hash) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, record} <- fetch_execution_package_record(repo, content_hash) do
+      case record do
+        nil -> {:error, :execution_package_not_found}
+        value -> ExecutionPackageCodec.from_record(value)
       end
     end
   end
@@ -3277,14 +3320,15 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp fetch_manifest_record(repo, manifest_version_id) do
     sql =
       """
-      SELECT manifest_version_id, content_hash, schema_version, runner_contract_version, serialization_format, manifest_json, inserted_at
+      SELECT manifest_version_id, content_hash, schema_version, runner_contract_version, serialization_format, manifest_index_json, inserted_at
       FROM favn_manifest_versions
       WHERE manifest_version_id = ?1
       LIMIT 1
       """
 
     case SQL.query(repo, sql, [manifest_version_id]) do
-      {:ok, %{rows: [[id, hash, schema, runner_contract, format, manifest_json, inserted_at]]}} ->
+      {:ok,
+       %{rows: [[id, hash, schema, runner_contract, format, manifest_index_json, inserted_at]]}} ->
         {:ok,
          %{
            manifest_version_id: id,
@@ -3292,7 +3336,7 @@ defmodule Favn.Storage.Adapter.SQLite do
            schema_version: schema,
            runner_contract_version: runner_contract,
            serialization_format: format,
-           manifest_json: manifest_json,
+           manifest_index_json: manifest_index_json,
            inserted_at: inserted_at
          }}
 
@@ -3307,14 +3351,15 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp fetch_manifest_record_by_content_hash(repo, content_hash) do
     sql =
       """
-      SELECT manifest_version_id, content_hash, schema_version, runner_contract_version, serialization_format, manifest_json, inserted_at
+      SELECT manifest_version_id, content_hash, schema_version, runner_contract_version, serialization_format, manifest_index_json, inserted_at
       FROM favn_manifest_versions
       WHERE content_hash = ?1
       LIMIT 1
       """
 
     case SQL.query(repo, sql, [content_hash]) do
-      {:ok, %{rows: [[id, hash, schema, runner_contract, format, manifest_json, inserted_at]]}} ->
+      {:ok,
+       %{rows: [[id, hash, schema, runner_contract, format, manifest_index_json, inserted_at]]}} ->
         {:ok,
          %{
            manifest_version_id: id,
@@ -3322,7 +3367,7 @@ defmodule Favn.Storage.Adapter.SQLite do
            schema_version: schema,
            runner_contract_version: runner_contract,
            serialization_format: format,
-           manifest_json: manifest_json,
+           manifest_index_json: manifest_index_json,
            inserted_at: inserted_at
          }}
 
@@ -3337,7 +3382,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp fetch_manifest_records(repo) do
     sql =
       """
-      SELECT manifest_version_id, content_hash, schema_version, runner_contract_version, serialization_format, manifest_json, inserted_at
+      SELECT manifest_version_id, content_hash, schema_version, runner_contract_version, serialization_format, manifest_index_json, inserted_at
       FROM favn_manifest_versions
       ORDER BY manifest_version_id ASC
       """
@@ -3351,7 +3396,7 @@ defmodule Favn.Storage.Adapter.SQLite do
                               schema,
                               runner_contract,
                               format,
-                              manifest_json,
+                              manifest_index_json,
                               inserted_at
                             ] ->
             %{
@@ -3360,7 +3405,7 @@ defmodule Favn.Storage.Adapter.SQLite do
               schema_version: schema,
               runner_contract_version: runner_contract,
               serialization_format: format,
-              manifest_json: manifest_json,
+              manifest_index_json: manifest_index_json,
               inserted_at: inserted_at
             }
           end)
@@ -3835,7 +3880,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         schema_version,
         runner_contract_version,
         serialization_format,
-        manifest_json,
+        manifest_index_json,
         inserted_at
       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
       """
@@ -3846,12 +3891,259 @@ defmodule Favn.Storage.Adapter.SQLite do
       record.schema_version,
       record.runner_contract_version,
       record.serialization_format,
-      record.manifest_json,
+      record.manifest_index_json,
       record.inserted_at
     ]
 
     case SQL.query(repo, sql, params) do
       {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp put_manifest_version_in_transaction(repo, record, required_refs) do
+    required_hashes = Enum.map(required_refs, &elem(&1, 0))
+
+    with :ok <- validate_execution_package_refs_in_repo(repo, required_refs),
+         {:ok, existing_id_hash} <- fetch_manifest_hash(repo, record.manifest_version_id),
+         {:ok, existing_content} <-
+           fetch_manifest_record_by_content_hash(repo, record.content_hash) do
+      cond do
+        match?(%{}, existing_content) ->
+          :ok
+
+        is_nil(existing_id_hash) ->
+          with :ok <- insert_manifest_record(repo, record) do
+            insert_manifest_package_refs(repo, record.manifest_version_id, required_hashes)
+          end
+
+        existing_id_hash == record.content_hash ->
+          insert_manifest_package_refs(repo, record.manifest_version_id, required_hashes)
+
+        true ->
+          {:error, :manifest_version_conflict}
+      end
+    end
+  end
+
+  defp encode_execution_packages(packages) do
+    Enum.reduce_while(packages, {:ok, []}, fn
+      %ExecutionPackage{} = package, {:ok, acc} ->
+        case ExecutionPackageCodec.to_record(package) do
+          {:ok, record} -> {:cont, {:ok, [record | acc]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+
+      package, _acc ->
+        {:halt, {:error, {:invalid_execution_package, package}}}
+    end)
+    |> case do
+      {:ok, records} -> {:ok, Enum.reverse(records)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp insert_execution_packages(repo, records) do
+    records
+    |> Enum.chunk_every(@execution_package_insert_chunk_size)
+    |> Enum.reduce_while(:ok, fn chunk, :ok ->
+      case insert_execution_package_chunk(repo, chunk) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp insert_execution_package_chunk(_repo, []), do: :ok
+
+  defp insert_execution_package_chunk(repo, records) do
+    values =
+      records
+      |> Enum.with_index()
+      |> Enum.map_join(", ", fn {_record, index} ->
+        offset = index * 5
+        "(?#{offset + 1}, ?#{offset + 2}, ?#{offset + 3}, ?#{offset + 4}, ?#{offset + 5})"
+      end)
+
+    params =
+      Enum.flat_map(records, fn record ->
+        [
+          record.content_hash,
+          record.asset_module,
+          record.asset_name,
+          record.package_json,
+          record.inserted_at
+        ]
+      end)
+
+    sql = """
+    INSERT INTO favn_execution_packages (
+      content_hash, asset_module, asset_name, package_json, inserted_at
+    ) VALUES #{values}
+    ON CONFLICT(content_hash) DO NOTHING
+    """
+
+    with {:ok, _result} <- SQL.query(repo, sql, params) do
+      verify_execution_package_records(repo, records)
+    end
+  end
+
+  defp verify_execution_package_records(repo, records) do
+    hashes = Enum.map(records, & &1.content_hash)
+
+    with {:ok, stored} <- fetch_execution_package_jsons(repo, hashes) do
+      if Enum.all?(records, &(Map.get(stored, &1.content_hash) == &1.package_json)),
+        do: :ok,
+        else: {:error, :execution_package_conflict}
+    end
+  end
+
+  defp fetch_execution_package_jsons(_repo, []), do: {:ok, %{}}
+
+  defp fetch_execution_package_jsons(repo, hashes) do
+    placeholders =
+      hashes
+      |> Enum.with_index(1)
+      |> Enum.map_join(", ", fn {_hash, index} -> "?#{index}" end)
+
+    sql =
+      "SELECT content_hash, package_json FROM favn_execution_packages WHERE content_hash IN (#{placeholders})"
+
+    case SQL.query(repo, sql, hashes) do
+      {:ok, %{rows: rows}} -> {:ok, Map.new(rows, fn [hash, json] -> {hash, json} end)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_execution_package_record(repo, content_hash) do
+    sql = """
+    SELECT content_hash, asset_module, asset_name, package_json, inserted_at
+    FROM favn_execution_packages
+    WHERE content_hash = ?1
+    LIMIT 1
+    """
+
+    case SQL.query(repo, sql, [content_hash]) do
+      {:ok, %{rows: [[hash, module, name, package_json, inserted_at]]}} ->
+        {:ok,
+         %{
+           content_hash: hash,
+           asset_module: module,
+           asset_name: name,
+           package_json: package_json,
+           inserted_at: inserted_at
+         }}
+
+      {:ok, %{rows: []}} ->
+        {:ok, nil}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp missing_execution_package_hashes_in_repo(_repo, []), do: {:ok, []}
+
+  defp missing_execution_package_hashes_in_repo(repo, hashes) do
+    placeholders =
+      hashes
+      |> Enum.with_index(1)
+      |> Enum.map_join(", ", fn {_hash, index} -> "?#{index}" end)
+
+    sql =
+      "SELECT content_hash FROM favn_execution_packages WHERE content_hash IN (#{placeholders})"
+
+    case SQL.query(repo, sql, hashes) do
+      {:ok, %{rows: rows}} ->
+        present = MapSet.new(rows, fn [hash] -> hash end)
+        {:ok, Enum.reject(hashes, &MapSet.member?(present, &1))}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp validate_execution_package_refs_in_repo(repo, required_refs) do
+    hashes = Enum.map(required_refs, &elem(&1, 0))
+
+    with {:ok, stored_refs} <- fetch_execution_package_refs(repo, hashes) do
+      missing = Enum.reject(hashes, &Map.has_key?(stored_refs, &1))
+
+      case missing do
+        [] -> validate_stored_package_refs(required_refs, stored_refs)
+        values -> {:error, {:missing_execution_packages, values}}
+      end
+    end
+  end
+
+  defp fetch_execution_package_refs(_repo, []), do: {:ok, %{}}
+
+  defp fetch_execution_package_refs(repo, hashes) do
+    placeholders =
+      hashes
+      |> Enum.with_index(1)
+      |> Enum.map_join(", ", fn {_hash, index} -> "?#{index}" end)
+
+    sql =
+      "SELECT content_hash, asset_module, asset_name FROM favn_execution_packages WHERE content_hash IN (#{placeholders})"
+
+    case SQL.query(repo, sql, hashes) do
+      {:ok, %{rows: rows}} ->
+        {:ok,
+         Map.new(rows, fn [hash, module, name] ->
+           {hash, %{module: module, name: name}}
+         end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp validate_stored_package_refs(required_refs, stored_refs) do
+    Enum.reduce_while(required_refs, :ok, fn {hash, {module, name} = expected_ref}, :ok ->
+      actual_ref = Map.fetch!(stored_refs, hash)
+      expected_stored_ref = %{module: Atom.to_string(module), name: Atom.to_string(name)}
+
+      if actual_ref == expected_stored_ref do
+        {:cont, :ok}
+      else
+        {:halt, {:error, {:execution_package_asset_mismatch, hash, expected_ref, actual_ref}}}
+      end
+    end)
+  end
+
+  defp insert_manifest_package_refs(_repo, _manifest_version_id, []), do: :ok
+
+  defp insert_manifest_package_refs(repo, manifest_version_id, hashes) do
+    hashes
+    |> Enum.chunk_every(@manifest_package_ref_chunk_size)
+    |> Enum.reduce_while(:ok, fn chunk, :ok ->
+      case insert_manifest_package_ref_chunk(repo, manifest_version_id, chunk) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp insert_manifest_package_ref_chunk(repo, manifest_version_id, hashes) do
+    values =
+      hashes
+      |> Enum.with_index()
+      |> Enum.map_join(", ", fn {_hash, index} ->
+        offset = index * 2
+        "(?#{offset + 1}, ?#{offset + 2})"
+      end)
+
+    params = Enum.flat_map(hashes, &[manifest_version_id, &1])
+
+    sql = """
+    INSERT INTO favn_manifest_execution_packages (manifest_version_id, package_hash)
+    VALUES #{values}
+    ON CONFLICT(manifest_version_id, package_hash) DO NOTHING
+    """
+
+    case SQL.query(repo, sql, params) do
+      {:ok, _result} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
@@ -4371,7 +4663,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp run_snapshot_select do
     """
-    SELECT r.run_blob, r.manifest_version_id, m.manifest_version_id, m.content_hash, m.schema_version, m.runner_contract_version, m.serialization_format, m.manifest_json, m.inserted_at
+    SELECT r.run_blob, r.manifest_version_id, m.manifest_version_id, m.content_hash, m.schema_version, m.runner_contract_version, m.serialization_format, m.manifest_index_json, m.inserted_at
     FROM favn_runs AS r
     LEFT JOIN favn_manifest_versions AS m ON m.manifest_version_id = r.manifest_version_id
     """
@@ -4399,7 +4691,7 @@ defmodule Favn.Storage.Adapter.SQLite do
          schema_version,
          runner_contract_version,
          serialization_format,
-         manifest_json,
+         manifest_index_json,
          inserted_at
        ]) do
     run_record = %{run_blob: run_blob, manifest_version_id: run_manifest_version_id}
@@ -4411,7 +4703,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         schema_version,
         runner_contract_version,
         serialization_format,
-        manifest_json,
+        manifest_index_json,
         inserted_at
       )
 
@@ -4424,7 +4716,7 @@ defmodule Favn.Storage.Adapter.SQLite do
          _schema,
          _runner_contract,
          _format,
-         _manifest_json,
+         _manifest_index_json,
          _inserted_at
        ),
        do: nil
@@ -4435,7 +4727,7 @@ defmodule Favn.Storage.Adapter.SQLite do
          schema_version,
          runner_contract_version,
          serialization_format,
-         manifest_json,
+         manifest_index_json,
          inserted_at
        ) do
     %{
@@ -4444,7 +4736,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       schema_version: schema_version,
       runner_contract_version: runner_contract_version,
       serialization_format: serialization_format,
-      manifest_json: manifest_json,
+      manifest_index_json: manifest_index_json,
       inserted_at: inserted_at
     }
   end

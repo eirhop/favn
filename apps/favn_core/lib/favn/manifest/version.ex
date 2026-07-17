@@ -49,6 +49,7 @@ defmodule Favn.Manifest.Version do
           | {:manifest_content_hash_mismatch, String.t(), String.t()}
           | {:manifest_schema_version_mismatch, pos_integer(), pos_integer()}
           | {:manifest_runner_contract_version_mismatch, pos_integer(), pos_integer()}
+          | {:legacy_manifest_field, :sql_execution}
           | Rehydrate.error()
           | Serializer.error()
           | Compatibility.error()
@@ -60,6 +61,7 @@ defmodule Favn.Manifest.Version do
     serialization_format = Keyword.get(opts, :serialization_format, "json-v1")
 
     with :ok <- validate_opts(opts),
+         :ok <- reject_legacy_execution_payload(manifest),
          {:ok, canonical_manifest} <- Rehydrate.manifest(manifest),
          {:ok, stable_manifest} <- canonicalize_manifest(canonical_manifest),
          :ok <- Compatibility.validate_manifest(stable_manifest),
@@ -124,7 +126,8 @@ defmodule Favn.Manifest.Version do
   """
   @spec verify(t()) :: {:ok, t()} | {:error, error()}
   def verify(%__MODULE__{} = version) do
-    with :ok <- validate_manifest_version_id(version.manifest_version_id),
+    with :ok <- reject_legacy_execution_payload(version.manifest),
+         :ok <- validate_manifest_version_id(version.manifest_version_id),
          :ok <- validate_content_hash(version.content_hash),
          :ok <- validate_serialization_format(version.serialization_format),
          {:ok, canonical_manifest} <- Rehydrate.manifest(version.manifest),
@@ -151,6 +154,24 @@ defmodule Favn.Manifest.Version do
       Rehydrate.manifest(decoded)
     end
   end
+
+  defp reject_legacy_execution_payload(%{manifest: manifest}),
+    do: reject_legacy_execution_payload(manifest)
+
+  defp reject_legacy_execution_payload(manifest) when is_map(manifest) do
+    assets = Map.get(manifest, :assets, Map.get(manifest, "assets", []))
+
+    if Enum.any?(assets, fn asset ->
+         is_map(asset) and
+           (Map.has_key?(asset, :sql_execution) or Map.has_key?(asset, "sql_execution"))
+       end) do
+      {:error, {:legacy_manifest_field, :sql_execution}}
+    else
+      :ok
+    end
+  end
+
+  defp reject_legacy_execution_payload(_manifest), do: :ok
 
   defp read_field(value, field) do
     case Map.fetch(value, field) do
@@ -205,7 +226,12 @@ defmodule Favn.Manifest.Version do
   defp validate_manifest_version_id(value) when is_binary(value) and value != "", do: :ok
   defp validate_manifest_version_id(value), do: {:error, {:invalid_manifest_version_id, value}}
 
-  defp validate_content_hash(value) when is_binary(value) and byte_size(value) == 64, do: :ok
+  defp validate_content_hash(value) when is_binary(value) do
+    if Regex.match?(~r/\A[0-9a-f]{64}\z/, value),
+      do: :ok,
+      else: {:error, {:invalid_content_hash, value}}
+  end
+
   defp validate_content_hash(value), do: {:error, {:invalid_content_hash, value}}
 
   defp validate_serialization_format(value) when is_binary(value) and value != "", do: :ok
