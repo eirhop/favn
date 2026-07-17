@@ -127,7 +127,9 @@ defmodule Favn.SQLAsset do
   Supported V1 values are `:daily`, `{:daily, timezone: "Europe/Oslo"}`,
   `[max_age: {:hours, 6}]`, `[window_success: true]`, and `:always`. Windowed SQL
   assets default to exact window-success freshness; non-windowed SQL assets have
-  no implicit freshness.
+  no implicit freshness. `window Favn.Window.monthly(refresh_from: :day)` keeps
+  exact monthly identities while allowing each month to refresh once per local
+  day; explicit `freshness :daily` is asset-wide instead.
 
   Read `Favn.Freshness.Policy` for policy input details and
   `Favn.Freshness.Key` for stored freshness keys.

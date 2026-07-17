@@ -23,6 +23,7 @@ defmodule FavnOrchestrator.BackfillManager do
   alias Favn.Manifest.PipelineResolver
   alias Favn.Retry.Policy, as: RetryPolicy
   alias Favn.Window.Key, as: WindowKey
+  alias Favn.Window.Policy, as: WindowPolicy
   alias Favn.Window.Runtime, as: RuntimeWindow
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -58,6 +59,7 @@ defmodule FavnOrchestrator.BackfillManager do
          {:ok, range_request} <-
            maybe_validate_coverage_baseline(range_request, pipeline_module, opts),
          {:ok, range} <- RangeResolver.resolve(range_request),
+         :ok <- validate_pipeline_window_kind(pipeline, range.kind),
          :ok <- validate_window_count(range, opts),
          {:ok, resolution} <- resolve_parent_pipeline(index, pipeline, range),
          {:ok, parent} <- build_parent_run(run_id, version, pipeline, resolution, range, opts),
@@ -140,6 +142,7 @@ defmodule FavnOrchestrator.BackfillManager do
          {:ok, range_request} <-
            maybe_validate_coverage_baseline(range_request, pipeline_module, opts),
          {:ok, range} <- RangeResolver.resolve(range_request),
+         :ok <- validate_pipeline_window_kind(pipeline, range.kind),
          :ok <- validate_window_count(range, opts) do
       {:ok, plan_summary(version, pipeline, range)}
     end
@@ -920,6 +923,20 @@ defmodule FavnOrchestrator.BackfillManager do
       _many -> {:error, :ambiguous_pipeline_module}
     end
   end
+
+  defp validate_pipeline_window_kind(%Pipeline{window: nil}, _requested_kind), do: :ok
+
+  defp validate_pipeline_window_kind(
+         %Pipeline{window: %WindowPolicy{kind: kind}},
+         kind
+       ),
+       do: :ok
+
+  defp validate_pipeline_window_kind(
+         %Pipeline{window: %WindowPolicy{kind: expected}},
+         actual
+       ),
+       do: {:error, {:window_kind_mismatch, expected, actual}}
 
   defp validate_metadata(value) when is_map(value), do: :ok
   defp validate_metadata(_value), do: {:error, :invalid_run_metadata}

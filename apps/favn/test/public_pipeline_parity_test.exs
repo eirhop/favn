@@ -90,6 +90,30 @@ defmodule Favn.PublicPipelineParityTest do
     assert resolution.pipeline_ctx.execution_pool == :github_api
   end
 
+  test "resolve_pipeline/2 preserves the current-period window anchor" do
+    module = Module.concat(__MODULE__, "CurrentPeriodPipeline#{unique_suffix()}")
+
+    compile_loadable_module!(
+      module,
+      """
+      defmodule #{inspect(module)} do
+        use Favn.Pipeline
+
+        pipeline :current_period do
+          asset {#{inspect(SalesAssets)}, :sales_daily}
+          schedule cron: "0 2 * * *", timezone: "Europe/Oslo"
+          window :monthly, anchor: :current_period
+        end
+      end
+      """
+    )
+
+    assert {:ok, resolution} = Favn.resolve_pipeline(module)
+    assert resolution.pipeline.window.kind == :month
+    assert resolution.pipeline.window.anchor == :current_period
+    assert resolution.pipeline_ctx.window.anchor == :current_period
+  end
+
   test "resolve_pipeline/2 resolves single-asset module shorthand selector" do
     asset_module = Module.concat(__MODULE__, "SingleAsset#{unique_suffix()}")
 

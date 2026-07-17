@@ -601,7 +601,8 @@ Option notes:
 Pipeline window policy:
 
 ```elixir
-window :daily, timezone: "Europe/Oslo", anchor: :previous_complete_period
+schedule cron: "0 2 * * *", timezone: "Europe/Oslo"
+window :monthly, anchor: :current_period
 ```
 
 Supported kinds: `:hourly`, `:daily`, `:monthly`, `:yearly`, or `:hour`, `:day`,
@@ -611,9 +612,31 @@ Pipeline window options:
 
 | Option | Meaning |
 | --- | --- |
-| `:anchor` | Usually `:previous_complete_period`. |
+| `:anchor` | `:previous_complete_period` (default) or `:current_period`. |
 | `:timezone` | IANA timezone. |
 | `:allow_full_load` | Whether a full load without a window is allowed. |
+
+Schedule cadence and processing-window granularity are independent. The example
+runs daily while selecting the current monthly anchor. Manual runs and backfills
+must still request monthly windows.
+
+Asset `lookback` expands backward from the resolved pipeline anchor:
+
+```elixir
+window Favn.Window.monthly(
+  lookback: 1,
+  refresh_from: :day,
+  required: true,
+  timezone: "Europe/Oslo"
+)
+```
+
+During July this plans June and July. `refresh_from: :day` tracks today's
+window-success separately for each month. If June succeeded today but July did
+not, only July remains runnable; after both succeed, later same-day occurrences
+skip both. On the next local day both become eligible again. Do not replace this
+with explicit `freshness :daily`, which is one asset-wide daily success rather
+than one daily success per exact data window.
 
 ## Freshness
 

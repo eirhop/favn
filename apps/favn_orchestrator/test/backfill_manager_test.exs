@@ -454,6 +454,31 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert [] = list_backfill_windows(backfill_run_id: "run_backfill_too_large")
   end
 
+  test "pipeline backfills must use the pipeline window kind" do
+    version = manifest_version("mv_backfill_pipeline_kind", :month)
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, %{kind: :month}} =
+             FavnOrchestrator.plan_pipeline_backfill(MyApp.Pipelines.Daily,
+               range_request: %{kind: :month, from: "2026-06", to: "2026-07"}
+             )
+
+    assert {:error, {:window_kind_mismatch, :month, :day}} =
+             FavnOrchestrator.plan_pipeline_backfill(MyApp.Pipelines.Daily,
+               range_request: %{kind: :day, from: "2026-07-01", to: "2026-07-02"}
+             )
+
+    assert {:error, {:window_kind_mismatch, :month, :day}} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_wrong_pipeline_kind",
+               range_request: %{kind: :day, from: "2026-07-01", to: "2026-07-02"}
+             )
+
+    assert {:error, :not_found} = Storage.get_run("run_backfill_wrong_pipeline_kind")
+  end
+
   test "generic cancel and rerun reject backfill parent runs" do
     version = manifest_version("mv_backfill_parent_safety")
 
@@ -841,7 +866,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     page.items
   end
 
-  defp manifest_version(manifest_version_id) do
+  defp manifest_version(manifest_version_id, pipeline_window_kind \\ :day) do
     manifest = %Manifest{
       assets: [
         %Asset{
@@ -866,7 +891,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
           name: :daily,
           selectors: [{:asset, {MyApp.Assets.Gold, :asset}}],
           deps: :all,
-          window: Policy.new!(:day),
+          window: Policy.new!(pipeline_window_kind),
           metadata: %{}
         }
       ]

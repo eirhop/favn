@@ -9,12 +9,17 @@ defmodule Favn.Freshness.Key do
 
     * `"latest"`
     * `"window:<encoded-window-key>"`
+    * `"window:<encoded-window-key>|calendar:<kind>:<timezone>:<period-start>"`
     * `"calendar:<kind>:<timezone>:<period-start>"`
 
   Window keys delegate the nested key format to `Favn.Window.Key.encode/1`.
-  Calendar keys use local period starts for the supplied timezone: hourly values
-  are `YYYY-MM-DDTHH`, daily values are `YYYY-MM-DD`, monthly values are
-  `YYYY-MM`, and yearly values are `YYYY`.
+  Window-refresh keys combine that exact data window with a calendar refresh
+  period so, for example, June and July can each be refreshed once on the same
+  local day. Calendar keys use local period starts for the supplied timezone:
+  hourly values built from absolute datetimes are `YYYY-MM-DDTHH±HH:MM`, so
+  repeated daylight-saving hours remain distinct. Legacy unqualified
+  `YYYY-MM-DDTHH` values remain valid. Daily values are `YYYY-MM-DD`, monthly
+  values are `YYYY-MM`, and yearly values are `YYYY`.
 
   Authors usually do not build these keys directly. They are useful when reading
   internal orchestrator freshness state through `FavnOrchestrator` or when tests
@@ -61,6 +66,45 @@ defmodule Favn.Freshness.Key do
     case window(window_key) do
       {:ok, key} -> key
       {:error, reason} -> raise ArgumentError, "invalid freshness window key: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Combines an exact window key with a calendar refresh period.
+
+  This is the persisted identity used by windowed assets whose
+  `%Favn.Window.Spec{}` declares `refresh_from`. The exact window remains part of
+  the key, so a success for one lookback window never satisfies another.
+  """
+  @spec window_refresh(
+          Key.t(),
+          atom(),
+          String.t(),
+          Date.t() | NaiveDateTime.t() | DateTime.t() | String.t()
+        ) :: {:ok, t()} | {:error, term()}
+  def window_refresh(window_key, kind, timezone, period_start) do
+    with :ok <- Key.validate(window_key),
+         {:ok, calendar_key} <- calendar(kind, timezone, period_start) do
+      {:ok, "window:#{Key.encode(window_key)}|#{calendar_key}"}
+    end
+  end
+
+  @doc """
+  Builds a window-refresh key, raising on invalid input.
+  """
+  @spec window_refresh!(
+          Key.t(),
+          atom(),
+          String.t(),
+          Date.t() | NaiveDateTime.t() | DateTime.t() | String.t()
+        ) :: t()
+  def window_refresh!(window_key, kind, timezone, period_start) do
+    case window_refresh(window_key, kind, timezone, period_start) do
+      {:ok, key} ->
+        key
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid freshness window refresh key: #{inspect(reason)}"
     end
   end
 
@@ -115,8 +159,17 @@ defmodule Favn.Freshness.Key do
   def decode("latest"), do: {:ok, latest()}
 
   def decode("window:" <> encoded_window_key) do
-    with {:ok, window_key} <- Key.decode(encoded_window_key) do
-      window(window_key)
+    case String.split(encoded_window_key, "|calendar:", parts: 2) do
+      [encoded_window_key] ->
+        with {:ok, window_key} <- Key.decode(encoded_window_key) do
+          window(window_key)
+        end
+
+      [encoded_window_key, encoded_calendar_key] ->
+        with {:ok, window_key} <- Key.decode(encoded_window_key),
+             {:ok, calendar_key} <- decode("calendar:" <> encoded_calendar_key) do
+          {:ok, "window:#{Key.encode(window_key)}|#{calendar_key}"}
+        end
     end
   end
 
@@ -162,7 +215,10 @@ defmodule Favn.Freshness.Key do
   defp format_period_start(:hour, timezone, %DateTime{} = datetime) do
     datetime
     |> DateTime.shift_zone!(timezone, Favn.Timezone.database!())
-    |> then(&{:ok, format_hour(&1.year, &1.month, &1.day, &1.hour)})
+    |> then(fn local ->
+      offset = local.utc_offset + local.std_offset
+      {:ok, format_hour(local.year, local.month, local.day, local.hour) <> format_offset(offset)}
+    end)
   end
 
   defp format_period_start(:day, timezone, %DateTime{} = datetime) do
@@ -212,10 +268,9 @@ defmodule Favn.Freshness.Key do
     do: {:error, {:invalid_calendar_period_start, kind, value}}
 
   defp valid_period_string?(:hour, value) do
-    with [date, hour] <- String.split(value, "T", parts: 2),
-         {:ok, _date} <- Date.from_iso8601(date),
-         {hour, ""} <- Integer.parse(hour) do
-      hour in 0..23
+    with [date, hour_and_offset] <- String.split(value, "T", parts: 2),
+         {:ok, _date} <- Date.from_iso8601(date) do
+      valid_hour_and_offset?(hour_and_offset)
     else
       _other -> false
     end
@@ -232,6 +287,43 @@ defmodule Favn.Freshness.Key do
   end
 
   defp format_month(year, month), do: "#{pad4(year)}-#{pad2(month)}"
+
+  defp format_offset(offset_seconds) do
+    sign = if offset_seconds < 0, do: "-", else: "+"
+    absolute = abs(offset_seconds)
+    "#{sign}#{pad2(div(absolute, 3600))}:#{pad2(div(rem(absolute, 3600), 60))}"
+  end
+
+  defp valid_offset?(nil, nil), do: true
+
+  defp valid_offset?(hour, minute) do
+    with {hour, ""} <- Integer.parse(hour),
+         {minute, ""} <- Integer.parse(minute) do
+      hour in 0..23 and minute in 0..59
+    else
+      _other -> false
+    end
+  end
+
+  defp valid_hour_and_offset?(value) do
+    case Regex.run(~r/^(\d{2})(?:[+-](\d{2}):(\d{2}))?$/, value) do
+      [_, hour] ->
+        valid_hour?(hour)
+
+      [_, hour, offset_hour, offset_minute] ->
+        valid_hour?(hour) and valid_offset?(offset_hour, offset_minute)
+
+      _other ->
+        false
+    end
+  end
+
+  defp valid_hour?(hour) do
+    case Integer.parse(hour) do
+      {hour, ""} -> hour in 0..23
+      _other -> false
+    end
+  end
 
   defp pad2(value), do: value |> Integer.to_string() |> String.pad_leading(2, "0")
   defp pad4(value), do: value |> Integer.to_string() |> String.pad_leading(4, "0")

@@ -53,7 +53,9 @@ defmodule Favn.AI do
     `Favn.Freshness`, then `Favn.Freshness.Policy` for `freshness` input values
     and `Favn.Freshness.Key` for stored freshness keys. Asset DSL docs for
     `Favn.Asset`, `Favn.SQLAsset`, and `Favn.MultiAsset` show
-    where `freshness` must be attached.
+    where `freshness` must be attached. For one refresh cadence per exact data
+    window, use `Favn.Window.Spec.refresh_from`; explicit `freshness :daily` is
+    asset-wide.
   - To author a source-system raw landing asset, read `Favn.Asset`, then
     `Favn.SQLClient`, `Favn.Namespace`, and the standalone tutorial at
     `examples/basic-workflow-tutorial`. The canonical pattern is: declare
@@ -121,7 +123,9 @@ defmodule Favn.AI do
   - To work with windows or one-off run input, read `Favn.Window`, then
     `Favn.Window.Policy` for pipeline/scheduler policy, `Favn.Window.Request`
     for CLI/API run input, and `Favn plan_asset_run` if you need planning
-    details.
+    details. Scheduled anchors are explicit
+    `:previous_complete_period | :current_period`; schedule cadence does not
+    change pipeline window granularity.
   - To work with operational backfill ranges, dry-run planning, compact
     `--window kind:FROM..TO` input, forced refresh repair, or successful-window
     backfill reruns, read `Favn.Backfill.RangeRequest`,
@@ -355,7 +359,7 @@ defmodule Favn.AI do
     `:daily`, `{:daily, timezone: "Europe/Oslo"}`, `[max_age: {:hours, 6}]`,
     `[window_success: true]`, and `:always`
   - `Favn.Freshness.Key`: when you need exact freshness-state keys for latest,
-    calendar, or window-scoped successes
+    calendar, exact-window, or combined window/calendar refresh successes
   - `FavnOrchestrator.RefreshPolicy`: when orchestrator run submission needs
     `:auto`, `:force`, `:missing`, or selected forced assets
   - `FavnOrchestrator.Freshness.Query`: when internal control-plane code needs

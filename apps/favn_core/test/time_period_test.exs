@@ -148,6 +148,27 @@ defmodule Favn.TimePeriodTest do
     assert next_day == period.end_at
   end
 
+  test "hourly periods use the configured timezone database across repeated DST hours" do
+    assert {:ok, first} =
+             TimePeriod.current(:hour, ~U[2026-10-25 00:30:00Z], "Europe/Oslo")
+
+    assert first.start_at == oslo!(~U[2026-10-25 00:00:00Z])
+    assert first.end_at == oslo!(~U[2026-10-25 01:00:00Z])
+    assert first.start_at.hour == 2
+    assert first.end_at.hour == 2
+    assert first.start_at.utc_offset + first.start_at.std_offset == 7200
+    assert first.end_at.utc_offset + first.end_at.std_offset == 3600
+
+    assert {:ok, second} =
+             TimePeriod.current(:hour, ~U[2026-10-25 01:30:00Z], "Europe/Oslo")
+
+    assert second.start_at == first.end_at
+    assert second.end_at == oslo!(~U[2026-10-25 02:00:00Z])
+  end
+
   defp local!(naive, timezone),
     do: DateTime.from_naive!(naive, timezone, Favn.Timezone.database!())
+
+  defp oslo!(datetime),
+    do: DateTime.shift_zone!(datetime, "Europe/Oslo", Favn.Timezone.database!())
 end

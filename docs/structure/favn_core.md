@@ -29,6 +29,12 @@ inference, effective execution-pool propagation, freshness keys/policies,
 windows, schedules, runtime config refs, backfill range resolution, or
 runner/orchestrator contract structs.
 
+`Favn.Window.Policy` keeps schedule cadence separate from processing-window
+kind and resolves explicit previous-complete or current-period anchors.
+`Favn.Window.Spec.refresh_from` is not an anchor selector: under
+window-success freshness it combines each exact runtime window with a calendar
+refresh period through `Favn.Freshness.Key`.
+
 `Favn.Retry.Policy` and `Favn.Retry.Backoff` own serializable node-attempt
 count/timing. `Favn.Contracts.RunnerError` independently owns explicit
 retryability, retry-after, and safe/unknown/cancelled outcome. Planned nodes

@@ -484,6 +484,9 @@ truth for run execution.
 
 Freshness state is stored in `favn_asset_freshness_states`. Latest-key freshness
 updates also feed the target-status projection for active asset catalogue reads.
+The opaque validated `freshness_key` can identify latest, calendar, exact-window,
+or combined exact-window/calendar-refresh state; the combined form requires no
+schema change and keeps separate lookback windows in separate rows.
 
 Target catalogue and target detail status are served from
 `favn_target_statuses`. Run transitions and latest-key freshness writes update

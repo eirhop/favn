@@ -9,9 +9,10 @@ defmodule Favn.Window do
   assets, pipelines, backfills, and freshness checks.
 
   Windowed assets default to exact window-success freshness unless they declare
-  an explicit `freshness` policy. Read `Favn.Freshness.Policy` for the authoring
-  values and `Favn.Freshness.Key` for the keys used by orchestrator freshness
-  state.
+  an explicit `freshness` policy. `refresh_from` adds a calendar refresh cadence
+  while retaining the exact window identity. Read `Favn.Freshness.Policy` for
+  the authoring values and `Favn.Freshness.Key` for the keys used by
+  orchestrator freshness state.
 
   ## Window types
 
@@ -27,7 +28,8 @@ defmodule Favn.Window do
   `hourly/1`, `daily/1`, `monthly/1`, and `yearly/1` accept these keyword options:
 
   - `lookback`: non-negative integer, defaults to `0`
-  - `refresh_from`: lower or equal-granularity refresh boundary
+  - `refresh_from`: lower or equal-granularity calendar cadence, tracked
+    separately for every exact runtime window
   - `required`: boolean, defaults to `false`; when `true`, planning must supply a runtime window
   - `timezone`: IANA timezone string, defaults to `"Etc/UTC"`
 
@@ -37,6 +39,11 @@ defmodule Favn.Window do
   - daily: `nil | :hour | :day`
   - monthly: `nil | :day | :month`
   - yearly: `nil | :month | :year`
+
+  For example, `monthly(lookback: 1, refresh_from: :day)` can plan June and July
+  from a July anchor. Each month runs once per local day; if June succeeded today
+  but July did not, only July remains runnable. Use `refresh_from` for this
+  per-window cadence. An explicit `freshness :daily` is asset-wide instead.
 
   ## Anchor/runtime options
 

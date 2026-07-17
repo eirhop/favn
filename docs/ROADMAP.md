@@ -20,6 +20,9 @@ Based on the current feature audit, the main path to a stable production `v1` is
   context as the v1 candidate after real-project validation; do not reintroduce
   the removed attribute DSL or generic config bags for compatibility.
 - Finalize any remaining edge cases in the documented stable `v1` API boundary.
+- Validate the explicit scheduled-window anchor contract
+  (`:previous_complete_period | :current_period`) and per-window
+  `refresh_from` cadence in real projects before declaring the window DSL stable.
 - Decide the code-level fate of runtime delegation helpers that are outside the documented stable boundary: keep internal, remove, or move behind clearer modules.
 - Align moduledocs, tests, and examples with the documented boundary in `docs/production/public_api_boundary.md`.
 - Define the actual Hex/private-Hex publishing mechanics for the documented package model.

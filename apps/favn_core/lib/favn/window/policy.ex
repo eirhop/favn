@@ -9,9 +9,16 @@ defmodule Favn.Window.Policy do
   Supported policy kinds are `:hour`, `:day`, `:month`, and `:year`, with DSL
   aliases `:hourly`, `:daily`, `:monthly`, and `:yearly`.
 
-  The V1 policy anchor is `:previous_complete_period`. Scheduled runs resolve
-  that policy relative to the schedule occurrence and schedule timezone. Manual
-  runs resolve explicit `%Favn.Window.Request{}` input such as `month:2026-03`.
+  Scheduled policies support two explicit anchors:
+
+  - `:previous_complete_period` selects the period immediately before the
+    schedule occurrence and remains the default.
+  - `:current_period` selects the period containing the schedule occurrence,
+    even when that period is incomplete.
+
+  Both anchors resolve relative to the schedule occurrence and effective
+  timezone. Manual runs instead resolve explicit `%Favn.Window.Request{}` input
+  such as `month:2026-03`.
 
   Windowed pipelines do not allow full-load submissions by default. Set
   `allow_full_load: true` only when a windowed pipeline should explicitly accept
@@ -22,7 +29,7 @@ defmodule Favn.Window.Policy do
   alias Favn.Window.{Anchor, Request, Validate}
 
   @type kind :: Validate.kind()
-  @type anchor_policy :: :previous_complete_period
+  @type anchor_policy :: :previous_complete_period | :current_period
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -161,20 +168,21 @@ defmodule Favn.Window.Policy do
   @spec resolve_scheduled(t(), DateTime.t(), String.t() | nil) ::
           {:ok, Anchor.t()} | {:error, term()}
   @doc """
-  Resolves a scheduled occurrence into the previous complete anchor period.
+  Resolves a scheduled occurrence using the policy's explicit anchor.
 
   The policy timezone wins when present; otherwise the schedule timezone is used,
   falling back to `"Etc/UTC"`.
   """
   def resolve_scheduled(
-        %__MODULE__{anchor: :previous_complete_period} = policy,
+        %__MODULE__{anchor: anchor} = policy,
         %DateTime{} = due_at,
         schedule_timezone
-      ) do
+      )
+      when anchor in [:previous_complete_period, :current_period] do
     timezone = policy.timezone || schedule_timezone || "Etc/UTC"
 
     with :ok <- Validate.timezone(timezone),
-         {:ok, period} <- TimePeriod.previous_complete(policy.kind, due_at, timezone) do
+         {:ok, period} <- scheduled_period(anchor, policy.kind, due_at, timezone) do
       Anchor.new(period.kind, period.start_at, period.end_at, timezone: period.timezone)
     end
   end
@@ -196,7 +204,14 @@ defmodule Favn.Window.Policy do
   defp default_timezone(%__MODULE__{}), do: "Etc/UTC"
 
   defp validate_anchor(:previous_complete_period), do: :ok
+  defp validate_anchor(:current_period), do: :ok
   defp validate_anchor(anchor), do: {:error, {:invalid_anchor_policy, anchor}}
+
+  defp scheduled_period(:previous_complete_period, kind, due_at, timezone),
+    do: TimePeriod.previous_complete(kind, due_at, timezone)
+
+  defp scheduled_period(:current_period, kind, due_at, timezone),
+    do: TimePeriod.current(kind, due_at, timezone)
 
   defp validate_optional_timezone(nil), do: :ok
   defp validate_optional_timezone(timezone), do: Validate.timezone(timezone)
@@ -219,6 +234,9 @@ defmodule Favn.Window.Policy do
     Enum.reduce_while(opts, {:ok, []}, fn
       {:anchor, "previous_complete_period"}, {:ok, acc} ->
         {:cont, {:ok, Keyword.put(acc, :anchor, :previous_complete_period)}}
+
+      {:anchor, "current_period"}, {:ok, acc} ->
+        {:cont, {:ok, Keyword.put(acc, :anchor, :current_period)}}
 
       {key, value}, {:ok, acc} ->
         {:cont, {:ok, Keyword.put(acc, key, value)}}

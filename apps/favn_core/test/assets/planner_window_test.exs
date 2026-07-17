@@ -44,6 +44,54 @@ defmodule Favn.Assets.PlannerWindowTest do
     assert Enum.all?(windows, &(&1.anchor_key == anchor.key))
   end
 
+  test "monthly lookback expands from previous-complete and current-period anchors" do
+    ref = {MyApp.MonthlyRefresh, :asset}
+    spec = Spec.new!(:month, lookback: 1, timezone: "Europe/Oslo")
+
+    assert {:ok, index} =
+             GraphIndex.build_index([
+               %{
+                 ref: ref,
+                 module: MyApp.MonthlyRefresh,
+                 name: :asset,
+                 depends_on: [],
+                 window_spec: spec
+               }
+             ])
+
+    due_at = oslo_datetime!(~N[2026-07-17 02:00:00])
+
+    assert {:ok, previous_anchor} =
+             Policy.resolve_scheduled(
+               Policy.new!(:monthly, anchor: :previous_complete_period),
+               due_at,
+               "Europe/Oslo"
+             )
+
+    assert {:ok, current_anchor} =
+             Policy.resolve_scheduled(
+               Policy.new!(:monthly, anchor: :current_period),
+               due_at,
+               "Europe/Oslo"
+             )
+
+    assert {:ok, previous_plan} =
+             Planner.plan(ref, graph_index: index, anchor_window: previous_anchor)
+
+    assert {:ok, current_plan} =
+             Planner.plan(ref, graph_index: index, anchor_window: current_anchor)
+
+    assert window_starts(previous_plan) == [
+             oslo_datetime!(~N[2026-05-01 00:00:00]),
+             oslo_datetime!(~N[2026-06-01 00:00:00])
+           ]
+
+    assert window_starts(current_plan) == [
+             oslo_datetime!(~N[2026-06-01 00:00:00]),
+             oslo_datetime!(~N[2026-07-01 00:00:00])
+           ]
+  end
+
   test "copies asset execution pool onto planned nodes" do
     ref = {MyApp.ExternalApi, :asset}
 
@@ -126,5 +174,12 @@ defmodule Favn.Assets.PlannerWindowTest do
 
   defp oslo_datetime!(naive) do
     DateTime.from_naive!(naive, "Europe/Oslo", Favn.Timezone.database!())
+  end
+
+  defp window_starts(plan) do
+    plan.nodes
+    |> Map.values()
+    |> Enum.map(& &1.window.start_at)
+    |> Enum.sort_by(&DateTime.to_unix(&1, :microsecond))
   end
 end

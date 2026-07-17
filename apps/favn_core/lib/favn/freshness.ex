@@ -20,7 +20,10 @@ defmodule Favn.Freshness do
       freshness :always
 
   Windowed assets default to exact window-success freshness when no explicit
-  `freshness` is declared. Non-windowed assets have no implicit freshness policy.
+  `freshness` is declared. When their `Favn.Window.Spec` declares
+  `refresh_from`, the key combines the exact runtime window and the containing
+  calendar refresh period. Non-windowed assets have no implicit freshness
+  policy.
 
   ## Policy Input
 
@@ -35,7 +38,8 @@ defmodule Favn.Freshness do
   ## Keys And State
 
   Read `Favn.Freshness.Key` for stable freshness keys such as `"latest"`,
-  `"calendar:day:Etc/UTC:2026-05-09"`, and `"window:<encoded-window-key>"`.
+  `"calendar:day:Etc/UTC:2026-05-09"`, `"window:<encoded-window-key>"`, and
+  `"window:<encoded-window-key>|calendar:day:Etc/UTC:2026-05-09"`.
 
   Freshness state is maintained by the orchestrator as a control-plane read
   model. Internal operator code can inspect it through `FavnOrchestrator`, but it

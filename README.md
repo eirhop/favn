@@ -514,8 +514,18 @@ end
 ```
 
 Windowed pipelines support `:hourly`, `:daily`, `:monthly`, and `:yearly`
-policies. Manual local runs pass the concrete requested window, while scheduled
-windowed runs resolve the previous complete period in the schedule timezone.
+policies. Manual local runs pass the concrete requested window. Scheduled
+windowed runs default to the previous complete period, while
+`anchor: :current_period` explicitly selects the possibly incomplete period
+containing the occurrence. Schedule cadence remains independent from window
+granularity, so a daily schedule can plan monthly windows.
+
+Asset `lookback` expands backward from that resolved anchor. A windowed asset
+with `refresh_from` keeps exact-window freshness while adding a calendar refresh
+cadence. For example, `Favn.Window.monthly(lookback: 1, refresh_from: :day)`
+under a current July anchor plans June and July, tracks today's success for each
+month independently, and skips a later same-day occurrence only after both have
+succeeded. Explicit `freshness :daily` remains asset-wide.
 Invalid scheduled window policy data is isolated to that scheduler entry instead
 of crashing the scheduler runtime. Pipelines without a `window` clause run
 without an anchor window.

@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.Freshness.DeciderTest do
   alias Favn.Plan
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Runtime
+  alias Favn.Window.Spec
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Freshness.Decider
 
@@ -116,6 +117,106 @@ defmodule FavnOrchestrator.Freshness.DeciderTest do
                assets_by_ref: %{@raw_ref => %{freshness: elem(Policy.window_success(), 1)}},
                prior_states: %{freshness_key => state},
                now: @now
+             )
+  end
+
+  test "window refresh cadence tracks each lookback month independently per local day" do
+    june = monthly_runtime_window(~N[2026-06-01 00:00:00])
+    july = monthly_runtime_window(~N[2026-07-01 00:00:00])
+    june_node = {@raw_ref, june.key}
+    july_node = {@raw_ref, july.key}
+
+    plan =
+      plan(%{
+        june_node => %{plan_node(@raw_ref) | node_key: june_node, window: june},
+        july_node => %{plan_node(@raw_ref) | node_key: july_node, window: july}
+      })
+
+    spec =
+      Spec.new!(:month,
+        lookback: 1,
+        refresh_from: :day,
+        timezone: "Europe/Oslo"
+      )
+
+    asset = %{freshness: Policy.from_value!(window_success: true), window: spec}
+    now = ~U[2026-07-17 10:00:00Z]
+    june_key = Key.window_refresh!(june.key, :day, "Europe/Oslo", ~D[2026-07-17])
+    july_key = Key.window_refresh!(july.key, :day, "Europe/Oslo", ~D[2026-07-17])
+
+    june_state = freshness_state(@raw_ref, june_node, june_key, status: :ok)
+
+    decisions =
+      Decider.decide_many(plan, [june_node, july_node],
+        assets_by_ref: %{@raw_ref => asset},
+        prior_states: %{{@raw_ref, june_key} => june_state},
+        now: now
+      )
+
+    assert %{decision: :skipped_fresh, freshness_key: ^june_key} = decisions[june_node]
+    assert %{decision: :run, freshness_key: ^july_key} = decisions[july_node]
+
+    july_state = freshness_state(@raw_ref, july_node, july_key, status: :ok)
+
+    decisions =
+      Decider.decide_many(plan, [june_node, july_node],
+        assets_by_ref: %{@raw_ref => asset},
+        prior_states: %{
+          {@raw_ref, june_key} => june_state,
+          {@raw_ref, july_key} => july_state
+        },
+        now: now
+      )
+
+    assert Enum.all?(decisions, fn {_node_key, decision} ->
+             decision.decision == :skipped_fresh
+           end)
+
+    next_day_decisions =
+      Decider.decide_many(plan, [june_node, july_node],
+        assets_by_ref: %{@raw_ref => asset},
+        prior_states: %{
+          {@raw_ref, june_key} => june_state,
+          {@raw_ref, july_key} => july_state
+        },
+        now: ~U[2026-07-18 10:00:00Z]
+      )
+
+    assert Enum.all?(next_day_decisions, fn {_node_key, decision} ->
+             decision.decision == :run
+           end)
+  end
+
+  test "hourly window refresh cadence does not collapse repeated DST hours" do
+    runtime = runtime_window()
+    node_key = {@raw_ref, runtime.key}
+    plan = plan(%{node_key => %{plan_node(@raw_ref) | node_key: node_key, window: runtime}})
+
+    asset = %{
+      freshness: Policy.from_value!(window_success: true),
+      window: Spec.new!(:day, refresh_from: :hour, timezone: "Europe/Oslo")
+    }
+
+    first_now = ~U[2026-10-25 00:30:00Z]
+    second_now = ~U[2026-10-25 01:30:00Z]
+
+    [{_module, _name, first_key}] =
+      Decider.planned_lookup_keys(plan, assets_by_ref: %{@raw_ref => asset}, now: first_now)
+
+    [{_module, _name, second_key}] =
+      Decider.planned_lookup_keys(plan, assets_by_ref: %{@raw_ref => asset}, now: second_now)
+
+    assert first_key =~ "|calendar:hour:Europe/Oslo:2026-10-25T02+02:00"
+    assert second_key =~ "|calendar:hour:Europe/Oslo:2026-10-25T02+01:00"
+    refute first_key == second_key
+
+    first_state = freshness_state(@raw_ref, node_key, first_key, status: :ok)
+
+    assert %{decision: :run, freshness_key: ^second_key} =
+             Decider.decide(plan, node_key,
+               assets_by_ref: %{@raw_ref => asset},
+               prior_states: %{{@raw_ref, first_key} => first_state},
+               now: second_now
              )
   end
 
@@ -303,6 +404,16 @@ defmodule FavnOrchestrator.Freshness.DeciderTest do
     anchor_key = WindowKey.new!(:day, start_at, "Etc/UTC")
 
     Runtime.new!(:day, start_at, end_at, anchor_key)
+  end
+
+  defp monthly_runtime_window(naive_start) do
+    start_at =
+      DateTime.from_naive!(naive_start, "Europe/Oslo", Favn.Timezone.database!())
+
+    end_at = Favn.TimePeriod.shift!(start_at, :month, 1)
+    anchor_key = WindowKey.new!(:month, start_at, "Europe/Oslo")
+
+    Runtime.new!(:month, start_at, end_at, anchor_key, timezone: "Europe/Oslo")
   end
 
   defp freshness_state(ref, node_key, freshness_key, opts) do
