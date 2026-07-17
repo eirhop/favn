@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
   alias FavnOrchestrator.Auth.Credentials
   alias FavnOrchestrator.Auth.ServiceTokens
+  alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
 
   @max_session_ttl_seconds 30 * 24 * 60 * 60
   @max_sqlite_busy_timeout_ms 60 * 60 * 1_000
@@ -20,6 +21,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           storage: :sqlite,
           sqlite: keyword(),
           api_server: keyword(),
+          manifest_publication: keyword(),
           api_service_tokens: [ServiceTokens.token_config()],
           auth_bootstrap: keyword(),
           auth_session_ttl_seconds: pos_integer(),
@@ -56,6 +58,13 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       Application.put_env(:favn_orchestrator, :storage_adapter, @sqlite_adapter)
       Application.put_env(:favn_orchestrator, :storage_adapter_opts, config.sqlite)
       Application.put_env(:favn_orchestrator, :api_server, config.api_server)
+
+      Application.put_env(
+        :favn_orchestrator,
+        :manifest_publication,
+        config.manifest_publication
+      )
+
       Application.put_env(:favn_orchestrator, :api_service_tokens, config.api_service_tokens)
       Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
 
@@ -113,6 +122,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     with {:ok, storage} <- storage(env),
          {:ok, sqlite} <- sqlite(env),
          {:ok, api_server} <- api_server(env),
+         {:ok, manifest_publication} <- manifest_publication(env),
          {:ok, tokens} <- api_service_tokens(env),
          {:ok, auth_bootstrap} <- auth_bootstrap(env),
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
@@ -123,6 +133,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          storage: storage,
          sqlite: sqlite,
          api_server: api_server,
+         manifest_publication: ManifestPublicationConfig.to_keyword(manifest_publication),
          api_service_tokens: tokens,
          auth_bootstrap: auth_bootstrap,
          auth_session_ttl_seconds: auth_session_ttl_seconds,
@@ -154,6 +165,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         host: Keyword.fetch!(config.api_server, :host),
         port: Keyword.fetch!(config.api_server, :port)
       },
+      manifest_publication: Map.new(config.manifest_publication),
       api_service_tokens: %{count: length(config.api_service_tokens), redacted: true},
       auth_bootstrap: %{username_configured?: true, password_configured?: true, redacted: true},
       auth_session: %{ttl_seconds: config.auth_session_ttl_seconds},
@@ -204,6 +216,30 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          :ok <- ipv4_host("FAVN_ORCHESTRATOR_API_BIND_HOST", host),
          {:ok, port} <- int(env, "FAVN_ORCHESTRATOR_API_PORT", "4101", 1, 65_535) do
       {:ok, [enabled: true, host: host, port: port]}
+    end
+  end
+
+  defp manifest_publication(env) do
+    with {:ok, compressed_limit_bytes} <-
+           int(
+             env,
+             "FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES",
+             Integer.to_string(ManifestPublicationConfig.default_compressed_limit_bytes()),
+             1,
+             ManifestPublicationConfig.maximum_compressed_limit_bytes()
+           ),
+         {:ok, decompressed_limit_bytes} <-
+           int(
+             env,
+             "FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES",
+             Integer.to_string(ManifestPublicationConfig.default_decompressed_limit_bytes()),
+             1,
+             ManifestPublicationConfig.maximum_decompressed_limit_bytes()
+           ) do
+      ManifestPublicationConfig.new(
+        compressed_limit_bytes: compressed_limit_bytes,
+        decompressed_limit_bytes: decompressed_limit_bytes
+      )
     end
   end
 

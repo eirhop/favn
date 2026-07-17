@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.API.Config do
   @moduledoc false
 
   alias FavnOrchestrator.Auth.ServiceTokens
+  alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
 
   @default_bind_ip {127, 0, 0, 1}
   @default_port 4101
@@ -11,8 +12,12 @@ defmodule FavnOrchestrator.API.Config do
     api_opts = Application.get_env(:favn_orchestrator, :api_server, [])
 
     if Keyword.get(api_opts, :enabled, false) do
-      case server_options(api_opts) do
-        {:ok, _options} -> validate_access_config()
+      with {:ok, _options} <- server_options(api_opts),
+           {:ok, _manifest_publication} <- ManifestPublicationConfig.from_app_env(),
+           :ok <- validate_access_config() do
+        :ok
+      else
+        {:error, {:invalid_api_config, _reason}} = error -> error
         {:error, reason} -> {:error, {:invalid_api_config, reason}}
       end
     else

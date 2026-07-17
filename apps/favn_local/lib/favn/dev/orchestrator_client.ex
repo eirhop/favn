@@ -4,18 +4,30 @@ defmodule Favn.Dev.OrchestratorClient do
   alias Favn.Dev.LocalHttpClient
   alias Favn.Manifest.Serializer
 
+  @manifest_publication_timeout_ms 60_000
+
   @type session_context :: %{required(String.t()) => String.t()}
 
   @spec publish_manifest(String.t(), String.t(), map(), session_context() | nil) ::
           {:ok, map()} | {:error, term()}
   def publish_manifest(base_url, service_token, payload, session_context \\ nil)
       when is_binary(base_url) and is_binary(service_token) and is_map(payload) do
-    request_post(
+    body =
+      payload
+      |> normalize_publish_payload()
+      |> JSON.encode!()
+      |> :zlib.gzip()
+
+    request(
       :publish_manifest,
+      :post,
       base_url <> "/api/orchestrator/v1/manifests",
       service_token,
-      normalize_publish_payload(payload),
-      session_context
+      body,
+      session_context,
+      nil,
+      [{"content-encoding", "gzip"}],
+      timeout_ms: @manifest_publication_timeout_ms
     )
   end
 
@@ -279,7 +291,7 @@ defmodule Favn.Dev.OrchestratorClient do
         payload \\ %{}
       )
       when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
-              is_binary(backfill_run_id) and is_binary(window_key) and is_map(payload) do
+             is_binary(backfill_run_id) and is_binary(window_key) and is_map(payload) do
     url =
       base_url <>
         "/api/orchestrator/v1/backfills/#{URI.encode(backfill_run_id)}/windows/rerun"
@@ -288,14 +300,14 @@ defmodule Favn.Dev.OrchestratorClient do
            :rerun_backfill_window,
            url,
            service_token,
-            Map.put(payload, :window_key, window_key),
-            session_context,
-            idempotency_key(
-              :rerun_backfill_window,
-              session_context,
-              Map.merge(payload, %{backfill_run_id: backfill_run_id, window_key: window_key})
-            )
-          ) do
+           Map.put(payload, :window_key, window_key),
+           session_context,
+           idempotency_key(
+             :rerun_backfill_window,
+             session_context,
+             Map.merge(payload, %{backfill_run_id: backfill_run_id, window_key: window_key})
+           )
+         ) do
       {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
         {:ok, run}
 
@@ -510,7 +522,17 @@ defmodule Favn.Dev.OrchestratorClient do
   defp query_value(value) when is_atom(value), do: Atom.to_string(value)
   defp query_value(value), do: to_string(value)
 
-  defp request(operation, method, url, service_token, body, session_context, idempotency_key) do
+  defp request(
+         operation,
+         method,
+         url,
+         service_token,
+         body,
+         session_context,
+         idempotency_key,
+         extra_headers \\ [],
+         request_opts \\ []
+       ) do
     headers =
       [
         {"accept", "application/json"}
@@ -518,8 +540,9 @@ defmodule Favn.Dev.OrchestratorClient do
       |> add_authorization_header(service_token)
       |> add_session_headers(session_context)
       |> add_idempotency_header(idempotency_key)
+      |> Kernel.++(extra_headers)
 
-    case LocalHttpClient.request(method, url, headers, body) do
+    case LocalHttpClient.request(method, url, headers, body, request_opts) do
       {:ok, decoded} -> {:ok, decoded}
       {:error, reason} -> {:error, operation_error(operation, method, url, reason)}
     end

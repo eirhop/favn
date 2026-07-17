@@ -23,6 +23,10 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Decide the code-level fate of runtime delegation helpers that are outside the documented stable boundary: keep internal, remove, or move behind clearer modules.
 - Align moduledocs, tests, and examples with the documented boundary in `docs/production/public_api_boundary.md`.
 - Define the actual Hex/private-Hex publishing mechanics for the documented package model.
+- Benchmark representative manifests at roughly 66, 300, 1,000, and 6,600
+  assets, then normalize repeated SQL/metadata structures and introduce a
+  content-addressed manifest index plus execution packages only when measured
+  memory, decode, or transfer costs justify splitting the monolith.
 
 ### 2. Make Deployment Outputs Real
 

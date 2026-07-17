@@ -282,6 +282,10 @@ At minimum, the production single-node runtime needs:
 - `FAVN_ORCHESTRATOR_API_BIND_HOST`, defaulting to `127.0.0.1`, as an IPv4
   address.
 - `FAVN_ORCHESTRATOR_API_PORT`, defaulting to `4101`, in `1..65535`.
+- `FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES`, defaulting to `8388608`
+  (8 MiB), in `1..67108864`.
+- `FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES`, defaulting to
+  `33554432` (32 MiB), in `1..268435456`.
 - `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`, required as comma-separated
   `service_identity:token` entries. Each service identity must be nonblank and
   unique; each token must be at least 32 characters and not contain weak

@@ -60,10 +60,32 @@ defmodule Favn.Dev.OrchestratorClientTest do
                manifest: version.manifest
              })
 
-    assert_receive {:request_body, body}
+    assert_receive {:request_headers, headers}
+    assert headers["content-encoding"] == "gzip"
+
+    assert_receive {:request_body, compressed_body}
+    body = :zlib.gunzip(compressed_body)
     assert body =~ ~s("manifest_version_id":"mv_orchestrator_client_test")
     assert body =~ ~s("manifest":{"assets":[])
     refute body =~ ~s("__struct__")
+  end
+
+  test "publish_manifest/3 allows a response beyond the generic client timeout" do
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"ok":true}}), 200, response_delay_ms: 5_100)
+
+    assert {:ok, %{"data" => %{"ok" => true}}} =
+             OrchestratorClient.publish_manifest(base_url, "token", %{
+               manifest: %{
+                 schema_version: 7,
+                 runner_contract_version: 7,
+                 assets: [],
+                 pipelines: [],
+                 schedules: [],
+                 graph: %{},
+                 metadata: %{}
+               }
+             })
   end
 
   test "verify_service_token/2 checks bootstrap service-token endpoint" do
@@ -303,9 +325,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
     parent = self()
 
     {:ok, base_url, _server} =
-      start_server(~s({"data":{"items":[{"id":"run_1","status":"error"}]}}), 200,
-        parent: parent
-      )
+      start_server(~s({"data":{"items":[{"id":"run_1","status":"error"}]}}), 200, parent: parent)
 
     assert {:ok, [%{"id" => "run_1", "status" => "error"}]} =
              OrchestratorClient.list_runs(
@@ -341,6 +361,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
   defp start_server(body, status, opts \\ []) when is_binary(body) and is_integer(status) do
     parent = Keyword.get(opts, :parent)
+    response_delay_ms = Keyword.get(opts, :response_delay_ms, 0)
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
     {:ok, {_addr, port}} = :inet.sockname(listen_socket)
 
@@ -348,6 +369,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
       spawn_link(fn ->
         {:ok, socket} = :gen_tcp.accept(listen_socket)
         request = receive_request(socket, "")
+        Process.sleep(response_delay_ms)
         :ok = :gen_tcp.send(socket, response(status, body))
         :ok = :gen_tcp.close(socket)
         :ok = :gen_tcp.close(listen_socket)

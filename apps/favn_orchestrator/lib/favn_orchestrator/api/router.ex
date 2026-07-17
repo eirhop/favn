@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.API.BackfillsRouter
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.Filters
+  alias FavnOrchestrator.API.ManifestPublication
   alias FavnOrchestrator.API.ManifestsRouter
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.API.RunsRouter
@@ -27,6 +28,8 @@ defmodule FavnOrchestrator.API.Router do
   if Mix.env() == :dev and Code.ensure_loaded?(Tidewave) do
     plug(Tidewave)
   end
+
+  plug(ManifestPublication)
 
   plug(Plug.Parsers,
     parsers: [:json],

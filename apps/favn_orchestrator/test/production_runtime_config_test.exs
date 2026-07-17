@@ -14,6 +14,7 @@ end
 defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
   use ExUnit.Case, async: false
 
+  alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.ProductionRuntimeConfig
 
@@ -37,6 +38,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.sqlite[:pool_size] == 1
     assert config.api_server == [enabled: true, host: "127.0.0.1", port: 4101]
 
+    assert config.manifest_publication == [
+             compressed_limit_bytes: 8 * 1024 * 1024,
+             decompressed_limit_bytes: 32 * 1024 * 1024
+           ]
+
     assert config.api_service_tokens == [
              %{
                service_identity: "favn_web",
@@ -58,6 +64,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       "FAVN_SQLITE_POOL_SIZE" => "1",
       "FAVN_ORCHESTRATOR_API_BIND_HOST" => "0.0.0.0",
       "FAVN_ORCHESTRATOR_API_PORT" => "4444",
+      "FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES" => "1048576",
+      "FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES" => "4194304",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
         "favn_web:#{@token},bootstrap_cli:#{@token <> "-bravo"}",
       "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
@@ -72,6 +80,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.sqlite[:migration_mode] == :auto
     assert config.sqlite[:busy_timeout] == 7_500
     assert config.api_server == [enabled: true, host: "0.0.0.0", port: 4444]
+
+    assert config.manifest_publication == [
+             compressed_limit_bytes: 1_048_576,
+             decompressed_limit_bytes: 4_194_304
+           ]
+
     assert length(config.api_service_tokens) == 2
     assert config.scheduler == [enabled: false, tick_ms: 250, max_missed_all_occurrences: 2]
     assert config.runner == %{mode: :local, topology: :single_node}
@@ -154,6 +168,33 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> Map.put("FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "2592001")
              |> ProductionRuntimeConfig.validate()
 
+    compressed_range = "1..#{ManifestPublicationConfig.maximum_compressed_limit_bytes()}"
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES",
+                 ^compressed_range}
+            }} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES", "0")
+             |> ProductionRuntimeConfig.validate()
+
+    decompressed_range = "1..#{ManifestPublicationConfig.maximum_decompressed_limit_bytes()}"
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES",
+                 ^decompressed_range}
+            }} =
+             base
+             |> Map.put(
+               "FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES",
+               Integer.to_string(ManifestPublicationConfig.maximum_decompressed_limit_bytes() + 1)
+             )
+             |> ProductionRuntimeConfig.validate()
+
     assert {:error,
             %{
               error:
@@ -182,6 +223,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :storage_adapter,
       :storage_adapter_opts,
       :api_server,
+      :manifest_publication,
       :api_service_tokens,
       :api_service_tokens_env,
       :auth_session_ttl_seconds,
@@ -228,6 +270,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
     refute Application.get_env(:favn_orchestrator, :api_service_tokens_env)
 
+    assert Application.get_env(:favn_orchestrator, :manifest_publication) == [
+             compressed_limit_bytes: 8 * 1024 * 1024,
+             decompressed_limit_bytes: 32 * 1024 * 1024
+           ]
+
     assert Application.get_env(:favn_orchestrator, :scheduler)[:enabled] == false
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_username) == "admin"
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == [:admin]
@@ -240,6 +287,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
     diagnostics = Application.get_env(:favn_orchestrator, :production_runtime_diagnostics)
     refute inspect(diagnostics) =~ "/var/lib/favn/orchestrator.sqlite3"
+    assert diagnostics.manifest_publication.compressed_limit_bytes == 8 * 1024 * 1024
+    assert diagnostics.manifest_publication.decompressed_limit_bytes == 32 * 1024 * 1024
     assert diagnostics.runner == %{mode: :local, topology: :single_node}
   end
 
