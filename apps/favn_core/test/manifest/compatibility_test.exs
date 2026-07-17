@@ -4,35 +4,35 @@ defmodule Favn.Manifest.CompatibilityTest do
   alias Favn.Manifest.Compatibility
 
   test "accepts current schema and runner contract versions" do
-    manifest = %{schema_version: 6, runner_contract_version: 6, assets: []}
+    manifest = %{schema_version: 7, runner_contract_version: 7, assets: []}
     assert :ok = Compatibility.validate_manifest(manifest)
   end
 
   test "rejects the previous schema version" do
-    manifest = %{schema_version: 5, runner_contract_version: 6, assets: []}
+    manifest = %{schema_version: 6, runner_contract_version: 7, assets: []}
 
-    assert {:error, {:unsupported_schema_version, 5, 6}} =
+    assert {:error, {:unsupported_schema_version, 6, 7}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported schema version" do
-    manifest = %{schema_version: 9, runner_contract_version: 6, assets: []}
+    manifest = %{schema_version: 9, runner_contract_version: 7, assets: []}
 
-    assert {:error, {:unsupported_schema_version, 9, 6}} =
+    assert {:error, {:unsupported_schema_version, 9, 7}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported runner contract version" do
-    manifest = %{schema_version: 6, runner_contract_version: 7, assets: []}
+    manifest = %{schema_version: 7, runner_contract_version: 8, assets: []}
 
-    assert {:error, {:unsupported_runner_contract_version, 7, 6}} =
+    assert {:error, {:unsupported_runner_contract_version, 8, 7}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects namespaced SQL definitions with the previous runner contract" do
     manifest = %{
-      schema_version: 6,
-      runner_contract_version: 5,
+      schema_version: 7,
+      runner_contract_version: 6,
       assets: [
         %{
           type: :sql,
@@ -45,19 +45,19 @@ defmodule Favn.Manifest.CompatibilityTest do
       ]
     }
 
-    assert {:error, {:unsupported_runner_contract_version, 5, 6}} =
+    assert {:error, {:unsupported_runner_contract_version, 6, 7}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects missing schema version" do
-    manifest = %{runner_contract_version: 6, assets: []}
+    manifest = %{runner_contract_version: 7, assets: []}
 
     assert {:error, {:missing_manifest_field, :schema_version}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects missing runner contract version" do
-    manifest = %{schema_version: 6, assets: []}
+    manifest = %{schema_version: 7, assets: []}
 
     assert {:error, {:missing_manifest_field, :runner_contract_version}} =
              Compatibility.validate_manifest(manifest)

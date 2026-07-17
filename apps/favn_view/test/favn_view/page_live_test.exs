@@ -854,13 +854,26 @@ defmodule FavnView.PageLiveTest do
                 description: "stable record identity",
                 tags: ["identifier"],
                 via: :transformation,
+                origin: %{kind: :fragment, module: Generic.Contracts.AuditMetadata},
                 sources: [
                   %{kind: :asset, asset_ref: {Generic.Source, :asset}, column: :source_id}
                 ]
               }
             ],
+            compositions: [
+              %{
+                module: Generic.Contracts.AuditMetadata,
+                start_index: 0,
+                columns: [:record_id]
+              }
+            ],
             unique_keys: [[:record_id]],
-            row_count: %{min: 1, on_violation: :skip_materialization}
+            row_count: %{
+              equals: %{source: :param, name: :expected_rows},
+              min: nil,
+              max: nil,
+              on_violation: :skip_materialization
+            }
           },
           contract_validation: %{
             status: :failed,
@@ -909,6 +922,47 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "expected :integer"
     assert html =~ "on violation"
     assert html =~ "skip materialization"
+    assert html =~ "Exactly @expected_rows"
+    assert html =~ ~s(data-testid="contract-compositions")
+    assert html =~ ~s(data-testid="contract-column-origin")
+    assert html =~ ~s(data-origin="fragment")
+    assert html =~ "Generic.Contracts.AuditMetadata"
+  end
+
+  test "asset detail formats every supported row-count constraint" do
+    cases = [
+      {%{equals: %{source: :literal, value: 5}, on_violation: :fail}, "Exactly 5"},
+      {%{min: 1, max: 10, on_violation: :warn}, "Between 1 and 10"},
+      {%{min: 1, max: nil, on_violation: :fail}, "At least 1"},
+      {%{min: nil, max: 10, on_violation: :fail}, "At most 10"}
+    ]
+
+    Enum.each(cases, fn {row_count, expected} ->
+      html =
+        render_component(&AssetDetailPage.asset_detail_page/1, %{
+          title: "row_count_contract",
+          status: "Healthy",
+          status_tone: :success,
+          window_range: "No windows",
+          nav_items: AssetDetailPage.sample_nav_items(),
+          timeline: [],
+          active_mode: :details,
+          freshness: nil,
+          assurance: %{
+            contract: %{
+              grain: nil,
+              columns: [],
+              compositions: [],
+              unique_keys: [],
+              row_count: row_count
+            },
+            contract_validation: nil,
+            checks: []
+          }
+        })
+
+      assert html =~ expected
+    end)
   end
 
   test "asset detail timeline renders backend-provided window labels" do

@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
   alias Favn.SQL.{Check, Contract, Template}
+  alias Favn.SQL.Contract.Composition
   alias Favn.Window.Policy
   alias Favn.Window.Runtime, as: RuntimeWindow
   alias Favn.Window.Spec, as: WindowSpec
@@ -71,8 +72,13 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     contract =
       Contract.new!(%{
         grain: [by: [:record_id], description: "one generic record"],
-        columns: [%{name: :record_id, type: :integer, null: false}],
-        unique_keys: [[:record_id]]
+        columns: [
+          %{name: :record_id, type: :integer, null: false},
+          %{name: :payload, type: :string}
+        ],
+        compositions: [Composition.new!(MyApp.StandardMetadata, 0, [:record_id])],
+        unique_keys: [[:record_id]],
+        row_count: [min: 1, max: 100]
       })
 
     generated_checks =
@@ -202,11 +208,35 @@ defmodule FavnOrchestrator.ManifestStoreTest do
              FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.GenericContractAsset:asset")
 
     assert detail.assurance.contract.grain.by == [:record_id]
-    assert [%{name: :record_id, type: :integer}] = detail.assurance.contract.columns
+
+    assert [
+             %{
+               name: :record_id,
+               type: :integer,
+               origin: %{kind: :fragment, module: MyApp.StandardMetadata}
+             },
+             %{name: :payload, type: :string, origin: %{kind: :local}}
+           ] = detail.assurance.contract.columns
+
+    assert [
+             %{module: MyApp.StandardMetadata, start_index: 0, columns: [:record_id]}
+           ] = detail.assurance.contract.compositions
+
+    assert detail.assurance.contract.row_count == %{
+             equals: nil,
+             min: 1,
+             max: 100,
+             when: nil,
+             on_violation: :fail
+           }
+
     assert detail.assurance.quality_status == :warning
     assert detail.assurance.contract_validation.status == :passed
 
-    assert [required_detail, unique_detail, custom_detail] = detail.assurance.checks
+    assert [row_count_detail, required_detail, unique_detail, custom_detail] =
+             detail.assurance.checks
+
+    assert row_count_detail.claim_id == "row_count.range.1.100"
     assert required_detail.origin == :contract
     assert required_detail.claim_id == "columns.not_null"
     assert required_detail.latest_result.outcome == :passed

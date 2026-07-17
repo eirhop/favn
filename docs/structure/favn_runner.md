@@ -82,6 +82,12 @@ checks. Warnings and no-op writes remain successful; a no-op also records
 `quality_status: :warning`. Failures return bounded contract/check metadata so
 the worker persists failed-attempt diagnostics.
 
+The SQL renderer binds Favn-owned `@favn_run_id` and
+`@favn_run_started_at` from `%Favn.Run.Context{}`. Parameterized exact
+row-count claims reuse normal settings/runtime params and are type-checked before
+rendering or opening an adapter session; values never become SQL source or error
+details.
+
 `FavnRunner.RuntimeInputResolver` owns behaviour-based SQL runtime input
 resolution. The public runner boundary can perform a bounded selection-only
 phase, returning a typed resolution to the orchestrator without opening a SQL

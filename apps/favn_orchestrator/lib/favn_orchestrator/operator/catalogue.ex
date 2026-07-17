@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
 
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
+  alias Favn.SQL.Contract.Param
   alias FavnOrchestrator.Freshness.Query, as: FreshnessQuery
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Operator.Catalogue.AssetFreshness
@@ -514,7 +515,20 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           nil -> nil
           grain -> %{by: grain.by, description: grain.description}
         end,
-      columns: Enum.map(contract.columns, &contract_column_detail/1),
+      columns:
+        contract.columns
+        |> Enum.with_index()
+        |> Enum.map(fn {column, index} ->
+          contract_column_detail(column, composition_origin(contract.compositions, index))
+        end),
+      compositions:
+        Enum.map(contract.compositions, fn composition ->
+          %{
+            module: composition.module,
+            start_index: composition.start_index,
+            columns: composition.columns
+          }
+        end),
       unique_keys: Enum.map(contract.unique_keys, & &1.columns),
       row_count:
         case contract.row_count do
@@ -523,7 +537,9 @@ defmodule FavnOrchestrator.Operator.Catalogue do
 
           row_count ->
             %{
+              equals: row_count_equals_detail(row_count.equals),
               min: row_count.min,
+              max: row_count.max,
               when: row_count.when,
               on_violation: row_count.on_violation
             }
@@ -531,7 +547,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     }
   end
 
-  defp contract_column_detail(column) do
+  defp contract_column_detail(column, origin) do
     %{
       name: column.name,
       type: column.type,
@@ -540,9 +556,24 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       tags: column.tags,
       renamed_from: column.renamed_from,
       via: column.via,
-      sources: Enum.map(column.sources, &lineage_detail/1)
+      sources: Enum.map(column.sources, &lineage_detail/1),
+      origin: origin
     }
   end
+
+  defp composition_origin(compositions, index) do
+    case Enum.find(compositions, fn composition ->
+           index >= composition.start_index and
+             index < composition.start_index + length(composition.columns)
+         end) do
+      nil -> %{kind: :local}
+      composition -> %{kind: :fragment, module: composition.module}
+    end
+  end
+
+  defp row_count_equals_detail(nil), do: nil
+  defp row_count_equals_detail(%Param{name: name}), do: %{source: :param, name: name}
+  defp row_count_equals_detail(value), do: %{source: :literal, value: value}
 
   defp lineage_detail(%{kind: :asset} = lineage) do
     %{kind: :asset, asset_ref: lineage.asset_ref, column: lineage.column}

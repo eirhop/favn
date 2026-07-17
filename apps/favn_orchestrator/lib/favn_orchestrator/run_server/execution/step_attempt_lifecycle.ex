@@ -89,6 +89,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
     with {:ok, node_identity} <- node_identity(lifecycle) do
       work = %RunnerWork{
         run_id: lifecycle.run.id,
+        run_started_at: lifecycle.run.inserted_at,
         manifest_version_id: node_identity.manifest_version_id,
         manifest_content_hash: lifecycle.version.content_hash,
         node_identity: node_identity,

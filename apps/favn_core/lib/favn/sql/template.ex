@@ -8,7 +8,12 @@ defmodule Favn.SQL.Template do
   alias Favn.SQL.Definition
   alias MapSet
 
-  @reserved_runtime_inputs [:window_start, :window_end]
+  @reserved_runtime_inputs [
+    :window_start,
+    :window_end,
+    :favn_run_id,
+    :favn_run_started_at
+  ]
   @join_prefixes ["inner", "left", "right", "full", "cross"]
   @outer_join_prefixes ["left", "right", "full"]
   @join_entry_prefixes [

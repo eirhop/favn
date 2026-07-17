@@ -16,7 +16,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 1. Lock The Supported `v1` Surface
 
-- Stabilize manifest schema/runner contract 6 and the unified `settings` runtime
+- Stabilize manifest schema/runner contract 7 and the unified `settings` runtime
   context as the v1 candidate after real-project validation; do not reintroduce
   the removed attribute DSL or generic config bags for compatibility.
 - Finalize any remaining edge cases in the documented stable `v1` API boundary.

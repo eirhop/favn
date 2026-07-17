@@ -8,6 +8,7 @@ defmodule Favn.SQL.Contract.Diff do
   """
 
   alias Favn.SQL.Contract
+  alias Favn.SQL.Contract.Composition
 
   @type change :: %{
           required(:kind) =>
@@ -21,6 +22,17 @@ defmodule Favn.SQL.Contract.Diff do
             | :unique_keys_changed
             | :row_count_changed,
           optional(:column) => atom(),
+          optional(:from) => term(),
+          optional(:to) => term()
+        }
+
+  @type provenance_change :: %{
+          required(:kind) =>
+            :fragment_added
+            | :fragment_removed
+            | :fragment_moved
+            | :fragment_columns_changed,
+          required(:module) => module(),
           optional(:from) => term(),
           optional(:to) => term()
         }
@@ -80,6 +92,61 @@ defmodule Favn.SQL.Contract.Diff do
       column_changes ++
       column_order_changes(previous, current, renames) ++
       contract_changes(previous, current)
+  end
+
+  @doc "Returns fragment-composition provenance changes without classifying schema compatibility."
+  @spec provenance_between(Contract.t() | nil, Contract.t() | nil) :: [provenance_change()]
+  def provenance_between(nil, nil), do: []
+
+  def provenance_between(nil, %Contract{} = current) do
+    current
+    |> Contract.validate!()
+    |> Map.fetch!(:compositions)
+    |> Enum.map(&%{kind: :fragment_added, module: &1.module, to: composition_value(&1)})
+  end
+
+  def provenance_between(%Contract{} = previous, nil) do
+    previous
+    |> Contract.validate!()
+    |> Map.fetch!(:compositions)
+    |> Enum.map(&%{kind: :fragment_removed, module: &1.module, from: composition_value(&1)})
+  end
+
+  def provenance_between(%Contract{} = previous, %Contract{} = current) do
+    previous = Contract.validate!(previous)
+    current = Contract.validate!(current)
+    previous_by_module = Map.new(previous.compositions, &{&1.module, &1})
+    current_by_module = Map.new(current.compositions, &{&1.module, &1})
+
+    removals =
+      previous.compositions
+      |> Enum.reject(&Map.has_key?(current_by_module, &1.module))
+      |> Enum.map(
+        &%{
+          kind: :fragment_removed,
+          module: &1.module,
+          from: composition_value(&1)
+        }
+      )
+
+    additions_and_changes =
+      Enum.flat_map(current.compositions, fn composition ->
+        case Map.get(previous_by_module, composition.module) do
+          nil ->
+            [
+              %{
+                kind: :fragment_added,
+                module: composition.module,
+                to: composition_value(composition)
+              }
+            ]
+
+          previous_composition ->
+            composition_changes(previous_composition, composition)
+        end
+      end)
+
+    removals ++ additions_and_changes
   end
 
   defp column_order_changes(previous, current, renames) do
@@ -145,4 +212,39 @@ defmodule Favn.SQL.Contract.Diff do
 
   defp maybe_change(_kind, value, value), do: []
   defp maybe_change(kind, from, to), do: [%{kind: kind, from: from, to: to}]
+
+  defp composition_changes(%Composition{} = previous, %Composition{} = current) do
+    moved =
+      if previous.start_index == current.start_index do
+        []
+      else
+        [
+          %{
+            kind: :fragment_moved,
+            module: current.module,
+            from: previous.start_index,
+            to: current.start_index
+          }
+        ]
+      end
+
+    columns =
+      if previous.columns == current.columns do
+        []
+      else
+        [
+          %{
+            kind: :fragment_columns_changed,
+            module: current.module,
+            from: previous.columns,
+            to: current.columns
+          }
+        ]
+      end
+
+    moved ++ columns
+  end
+
+  defp composition_value(%Composition{} = composition),
+    do: %{start_index: composition.start_index, columns: composition.columns}
 end

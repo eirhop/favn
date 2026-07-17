@@ -5,6 +5,7 @@ defmodule Favn.SQLAsset.Renderer do
   alias Favn.RelationRef
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.{ParamBinding, Params, Render, Template}
+  alias Favn.SQL.Contract
   alias Favn.SQL.Template.{AssetRef, Call, Placeholder, Relation, RuntimeRelation, Text}
   alias Favn.SQL.Check
   alias Favn.SQLAsset.{Definition, Error}
@@ -20,6 +21,7 @@ defmodule Favn.SQLAsset.Renderer do
   @spec render(Definition.t(), opts()) :: {:ok, Render.t()} | {:error, Error.t()}
   def render(%Definition{} = definition, opts \\ []) when is_list(opts) do
     with {:ok, params} <- normalize_params(opts),
+         :ok <- validate_reserved_runtime_names(definition, params),
          {:ok, query_values, setting_names} <- normalize_query_values(definition, params),
          {:ok, runtime_inputs} <- normalize_runtime_inputs(definition, opts),
          {:ok, definition_catalog} <- definition_catalog(definition),
@@ -71,6 +73,29 @@ defmodule Favn.SQLAsset.Renderer do
     )
   end
 
+  @doc false
+  @spec validate_contract_params(Definition.t(), opts()) :: :ok | {:error, Error.t()}
+  def validate_contract_params(%Definition{} = definition, opts) when is_list(opts) do
+    requirements = Contract.runtime_param_requirements(definition.contract)
+
+    with {:ok, params} <- normalize_params(opts),
+         :ok <- validate_reserved_runtime_names(definition, params) do
+      Enum.reduce_while(requirements, :ok, fn {name, type}, :ok ->
+        case contract_param_value(definition, params, name) do
+          {:ok, value} ->
+            if contract_param_type?(value, type) do
+              {:cont, :ok}
+            else
+              {:halt, {:error, invalid_contract_param_error(definition, name, type)}}
+            end
+
+          {:error, %Error{} = error} ->
+            {:halt, {:error, error}}
+        end
+      end)
+    end
+  end
+
   defp normalize_params(opts) do
     case Keyword.get(opts, :params, %{}) do
       params when is_map(params) ->
@@ -85,6 +110,32 @@ defmodule Favn.SQLAsset.Renderer do
            details: %{params: other}
          }}
     end
+  end
+
+  defp validate_reserved_runtime_names(%Definition{} = definition, params) do
+    settings = definition.asset.settings || %{}
+
+    Enum.reduce_while([settings: settings, params: params], :ok, fn {source, values}, :ok ->
+      case Enum.find(
+             Template.reserved_runtime_inputs(),
+             &match?({:ok, _}, fetch_param(values, &1))
+           ) do
+        nil ->
+          {:cont, :ok}
+
+        name ->
+          {:halt,
+           {:error,
+            %Error{
+              type: :binding_failure,
+              phase: :render,
+              asset_ref: definition.asset.ref,
+              message:
+                "SQL input @#{name} is reserved for Favn runtime values and cannot be supplied through #{source}",
+              details: %{name: name, source: source}
+            }}}
+      end
+    end)
   end
 
   defp normalize_query_values(%Definition{} = definition, params) do
@@ -141,31 +192,38 @@ defmodule Favn.SQLAsset.Renderer do
 
     case runtime do
       runtime when is_map(runtime) ->
-        case Map.get(runtime, :window) || Map.get(runtime, "window") do
-          %Runtime{} = window ->
-            {:ok,
-             %{
-               runtime: window,
-               runtime_values: %{window_start: window.start_at, window_end: window.end_at}
-             }}
+        with {:ok, favn_values} <- normalize_favn_runtime_values(definition, runtime) do
+          case runtime_value(runtime, :window) do
+            %Runtime{} = window ->
+              {:ok,
+               %{
+                 runtime: window,
+                 runtime_values:
+                   Map.merge(favn_values, %{
+                     window_start: window.start_at,
+                     window_end: window.end_at
+                   })
+               }}
 
-          nil ->
-            runtime_values = %{
-              window_start: runtime[:window_start] || runtime["window_start"],
-              window_end: runtime[:window_end] || runtime["window_end"]
-            }
+            nil ->
+              runtime_values =
+                Map.merge(favn_values, %{
+                  window_start: runtime_value(runtime, :window_start),
+                  window_end: runtime_value(runtime, :window_end)
+                })
 
-            {:ok, %{runtime: runtime, runtime_values: runtime_values}}
+              {:ok, %{runtime: runtime, runtime_values: runtime_values}}
 
-          other ->
-            {:error,
-             %Error{
-               type: :binding_failure,
-               phase: :render,
-               asset_ref: definition.asset.ref,
-               message: "runtime.window must be a Favn.Window.Runtime struct",
-               details: %{window: other}
-             }}
+            other ->
+              {:error,
+               %Error{
+                 type: :binding_failure,
+                 phase: :render,
+                 asset_ref: definition.asset.ref,
+                 message: "runtime.window must be a Favn.Window.Runtime struct",
+                 details: %{window: other}
+               }}
+          end
         end
 
       _other ->
@@ -178,6 +236,87 @@ defmodule Favn.SQLAsset.Renderer do
            details: %{runtime: runtime}
          }}
     end
+  end
+
+  defp normalize_favn_runtime_values(definition, runtime) do
+    run_id = runtime_value(runtime, :favn_run_id)
+    run_started_at = runtime_value(runtime, :favn_run_started_at)
+
+    cond do
+      run_id != nil and (not is_binary(run_id) or run_id == "") ->
+        {:error, invalid_runtime_value_error(definition, :favn_run_id, "a non-empty string")}
+
+      run_started_at != nil and not match?(%DateTime{}, run_started_at) ->
+        {:error,
+         invalid_runtime_value_error(definition, :favn_run_started_at, "a DateTime struct")}
+
+      true ->
+        {:ok, %{favn_run_id: run_id, favn_run_started_at: run_started_at}}
+    end
+  end
+
+  defp invalid_runtime_value_error(definition, name, expected) do
+    %Error{
+      type: :binding_failure,
+      phase: :render,
+      asset_ref: definition.asset.ref,
+      message: "runtime SQL input :#{name} must be #{expected}",
+      details: %{name: name, expected: expected}
+    }
+  end
+
+  defp runtime_value(runtime, name) do
+    case Map.fetch(runtime, name) do
+      {:ok, value} -> value
+      :error -> Map.get(runtime, Atom.to_string(name))
+    end
+  end
+
+  defp contract_param_value(definition, params, name) do
+    name_string = Atom.to_string(name)
+    setting = fetch_setting(definition.asset.settings || %{}, name_string)
+    param = fetch_param(params, name_string)
+
+    case {setting, param} do
+      {{:ok, _setting}, {:ok, _param}} ->
+        {:error,
+         %Error{
+           type: :binding_failure,
+           phase: :render,
+           asset_ref: definition.asset.ref,
+           message: "SQL input @#{name} is declared in both asset settings and runtime params",
+           details: %{name: name, sources: [:settings, :params]}
+         }}
+
+      {{:ok, value}, :error} ->
+        {:ok, value}
+
+      {:error, {:ok, value}} ->
+        {:ok, value}
+
+      {:error, :error} ->
+        {:error,
+         %Error{
+           type: :missing_query_param,
+           phase: :render,
+           asset_ref: definition.asset.ref,
+           message: "missing SQL contract parameter @#{name}",
+           details: %{name: name}
+         }}
+    end
+  end
+
+  defp contract_param_type?(value, :non_neg_integer),
+    do: is_integer(value) and value >= 0
+
+  defp invalid_contract_param_error(definition, name, type) do
+    %Error{
+      type: :binding_failure,
+      phase: :render,
+      asset_ref: definition.asset.ref,
+      message: "SQL contract parameter @#{name} must be a non-negative integer",
+      details: %{name: name, expected: type}
+    }
   end
 
   defp definition_catalog(%Definition{} = definition) do

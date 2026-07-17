@@ -21,7 +21,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.SQL.Check
   alias Favn.SQL.SessionRequirements
   alias Favn.SQL.Contract
-  alias Favn.SQL.Contract.{Column, Grain, Lineage, RowCount, UniqueKey}
+  alias Favn.SQL.Contract.{Column, Composition, Grain, Lineage, Param, RowCount, UniqueKey}
   alias Favn.SQL.Template
   alias Favn.SQLAsset.RelationUsage
 
@@ -434,6 +434,10 @@ defmodule Favn.Manifest.Rehydrate do
     Contract.new!(%{
       grain: value |> field_value(:grain) |> build_contract_grain(),
       columns: value |> field_value(:columns, []) |> Enum.map(&build_contract_column/1),
+      compositions:
+        value
+        |> field_value(:compositions, [])
+        |> Enum.map(&build_contract_composition/1),
       unique_keys:
         value |> field_value(:unique_keys, []) |> Enum.map(&build_contract_unique_key/1),
       row_count: value |> field_value(:row_count) |> build_contract_row_count()
@@ -478,6 +482,26 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_contract_column(other),
     do: raise(ArgumentError, "invalid SQL contract column #{inspect(other)}")
 
+  defp build_contract_composition(%Composition{} = composition),
+    do: Composition.validate!(composition)
+
+  defp build_contract_composition(value) when is_map(value) do
+    allowed = MapSet.new([:module, "module", :start_index, "start_index", :columns, "columns"])
+
+    if Enum.any?(Map.keys(value), &(!MapSet.member?(allowed, &1))) do
+      raise ArgumentError, "invalid SQL contract composition fields"
+    end
+
+    Composition.new!(
+      value |> field_value(:module) |> decode_module(),
+      field_value(value, :start_index),
+      value |> field_value(:columns, []) |> build_atom_list()
+    )
+  end
+
+  defp build_contract_composition(other),
+    do: raise(ArgumentError, "invalid SQL contract composition #{inspect(other)}")
+
   defp build_contract_lineage(%Lineage{} = lineage), do: Lineage.validate!(lineage)
 
   defp build_contract_lineage(value) when is_map(value) do
@@ -512,8 +536,28 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_contract_row_count(%RowCount{} = row_count), do: RowCount.validate!(row_count)
 
   defp build_contract_row_count(value) when is_map(value) do
+    allowed =
+      MapSet.new([
+        :equals,
+        "equals",
+        :min,
+        "min",
+        :max,
+        "max",
+        :when,
+        "when",
+        :on_violation,
+        "on_violation"
+      ])
+
+    if Enum.any?(Map.keys(value), &(!MapSet.member?(allowed, &1))) do
+      raise ArgumentError, "invalid SQL contract row_count fields"
+    end
+
     RowCount.new!(%{
+      equals: value |> field_value(:equals) |> build_contract_row_count_equals(),
       min: field_value(value, :min),
+      max: field_value(value, :max),
       when:
         value
         |> field_value(:when)
@@ -527,6 +571,25 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp build_contract_row_count(other),
     do: raise(ArgumentError, "invalid SQL contract row_count #{inspect(other)}")
+
+  defp build_contract_row_count_equals(nil), do: nil
+
+  defp build_contract_row_count_equals(value) when is_integer(value), do: value
+
+  defp build_contract_row_count_equals(%Param{} = param), do: Param.validate!(param)
+
+  defp build_contract_row_count_equals(value) when is_map(value) do
+    allowed = MapSet.new([:name, "name"])
+
+    if map_size(value) != 1 or Enum.any?(Map.keys(value), &(!MapSet.member?(allowed, &1))) do
+      raise ArgumentError, "invalid SQL contract row_count param"
+    end
+
+    value |> field_value(:name) |> decode_atom_optional() |> Param.new!()
+  end
+
+  defp build_contract_row_count_equals(other),
+    do: raise(ArgumentError, "invalid SQL contract row_count equals #{inspect(other)}")
 
   defp build_sql_definitions(values) when is_list(values),
     do: Enum.map(values, &build_sql_definition/1)

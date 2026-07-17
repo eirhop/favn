@@ -420,6 +420,20 @@ defmodule FavnView.Components.AssetDetailPage do
           <.assurance_fact label="Row count" value={row_count_label(@contract[:row_count])} />
         </div>
 
+        <div
+          :if={List.wrap(@contract[:compositions]) != []}
+          class="flex flex-wrap items-center gap-2 text-xs"
+          data-testid="contract-compositions"
+        >
+          <span class="text-base-content/45">Composed fragments</span>
+          <span
+            :for={composition <- List.wrap(@contract[:compositions])}
+            class="badge badge-outline badge-sm font-mono"
+          >
+            {inspect(composition[:module])}
+          </span>
+        </div>
+
         <div class="overflow-x-auto rounded-box border border-base-content/10">
           <table class="table table-sm min-w-[52rem]">
             <thead>
@@ -434,6 +448,14 @@ defmodule FavnView.Components.AssetDetailPage do
               <tr :for={column <- @contract[:columns]} data-testid="contract-column">
                 <td>
                   <p class="font-mono text-xs font-semibold">{column[:name]}</p>
+                  <span
+                    :if={column[:origin]}
+                    class="mt-1 inline-flex max-w-xs break-all rounded border border-base-content/10 px-1.5 py-0.5 font-mono text-[0.65rem] text-base-content/50"
+                    data-testid="contract-column-origin"
+                    data-origin={column[:origin][:kind]}
+                  >
+                    {column_origin_label(column[:origin])}
+                  </span>
                   <p :if={column[:description]} class="mt-1 max-w-xs text-xs text-base-content/55">
                     {column[:description]}
                   </p>
@@ -787,11 +809,29 @@ defmodule FavnView.Components.AssetDetailPage do
   defp row_count_label(nil), do: "Not declared"
 
   defp row_count_label(row_count) do
-    "At least #{row_count[:min]} · #{humanize(row_count[:on_violation])} on violation"
+    "#{row_count_constraint_label(row_count)} · #{humanize(row_count[:on_violation])} on violation"
   end
+
+  defp row_count_constraint_label(%{equals: %{source: :param, name: name}}),
+    do: "Exactly @#{name}"
+
+  defp row_count_constraint_label(%{equals: %{source: :literal, value: value}}),
+    do: "Exactly #{value}"
+
+  defp row_count_constraint_label(%{min: min, max: max})
+       when is_integer(min) and is_integer(max),
+       do: "Between #{min} and #{max}"
+
+  defp row_count_constraint_label(%{min: min}) when is_integer(min), do: "At least #{min}"
+  defp row_count_constraint_label(%{max: max}) when is_integer(max), do: "At most #{max}"
+  defp row_count_constraint_label(_row_count), do: "Constraint unavailable"
 
   defp nullability_label(true), do: "nullable"
   defp nullability_label(false), do: "required"
+
+  defp column_origin_label(%{kind: :fragment, module: module}), do: inspect(module)
+  defp column_origin_label(%{kind: :local}), do: "Local"
+  defp column_origin_label(origin), do: inspect(origin)
 
   defp observed_type(column),
     do: value(column, :native_type) || value(column, :type) || "unknown"

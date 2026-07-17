@@ -198,8 +198,9 @@ Supported parameter values are `nil`, booleans, numbers, strings, `Date`,
 adapter-supported scalar representation such as JSON before returning them.
 
 Submitted parameters, resolved parameters, and referenced settings may not use
-the same normalized name. `window_start` and `window_end` are reserved. A
-resolver cannot override the final window.
+the same normalized name. `window_start`, `window_end`, `favn_run_id`, and
+`favn_run_started_at` are reserved. A resolver cannot override the final window
+or Favn-owned execution identity.
 
 If a bind value is sensitive, name it explicitly:
 

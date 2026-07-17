@@ -410,6 +410,13 @@ SQL table and incremental assets can publish a typed output contract alongside
 their query:
 
 ```elixir
+defmodule MyApp.Contracts.AuditMetadata do
+  use Favn.SQL.ContractFragment
+
+  column :processed_at, :datetime, null: false
+  column :favn_run_id, :string, null: false
+end
+
 contract do
   grain by: [:record_id], description: "one normalized record"
 
@@ -419,20 +426,26 @@ contract do
     via: :transformation
 
   column :payload, :json, from: [{"external.records", "payload"}]
+  include MyApp.Contracts.AuditMetadata
   unique [:record_id]
 
-  row_count min: 1,
-    when: :target_exists,
-    on_violation: :skip_materialization
+  row_count equals: param(:expected_rows), on_violation: :fail
 end
 ```
 
 Favn validates the staged candidate's ordered names and types before target
 mutation, generates checks for non-null columns, structured grain, unique keys,
-and minimum row count, and persists explicit column lineage. Contract-generated
+and exact or bounded row counts, and persists explicit column lineage. Included
+column-only fragments are flattened into the canonical contract while retaining
+separate composition provenance. `row_count` supports literal `equals`, `min`,
+`max`, or a runtime-bound exact `param/1`; typed contract parameters are checked
+before a SQL session opens. Contract-generated
 and custom checks use the same `on_violation: :fail | :warn |
 :skip_materialization` vocabulary and appear together in asset assurance. The
 contract describes output; it does not generate the query's `select` list.
+
+SQL queries may bind the Favn-owned `@favn_run_id` and
+`@favn_run_started_at` runtime inputs for deterministic execution metadata.
 
 Read [SQL Output Contracts](apps/favn/guides/sql-output-contracts.md) for the
 complete DSL, logical types, grain and lineage choices, automatic enforcement,

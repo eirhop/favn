@@ -166,11 +166,18 @@ defmodule Favn.SQLAsset.Runtime do
         window -> %{window: window}
       end
 
+    runtime =
+      Map.merge(runtime, %{
+        favn_run_id: ctx.run_id,
+        favn_run_started_at: ctx.run_started_at
+      })
+
     [params: ctx.params || %{}, runtime: runtime, context: ctx]
   end
 
   defp materialize_definition(%Definition{runtime_inputs: nil} = definition, opts) do
-    with {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
+    with :ok <- Renderer.validate_contract_params(definition, opts),
+         {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
          {:ok, %CheckedMaterialization{} = output} <-
            materialize_render(definition, rendered, opts) do
       {:ok, materialization_result(rendered, output)}
@@ -233,7 +240,8 @@ defmodule Favn.SQLAsset.Runtime do
     case resolve_runtime_inputs(definition, final_context, final_opts) do
       {:ok, resolution, resolved_opts} ->
         result =
-          with {:ok, %Render{} = rendered} <- Renderer.render(definition, resolved_opts),
+          with :ok <- Renderer.validate_contract_params(definition, resolved_opts),
+               {:ok, %Render{} = rendered} <- Renderer.render(definition, resolved_opts),
                {:ok, %CheckedMaterialization{} = output} <-
                  materialize_render(definition, rendered, resolved_opts) do
             {:ok, rendered, output, resolution}

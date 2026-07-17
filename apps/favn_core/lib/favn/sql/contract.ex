@@ -2,10 +2,10 @@ defmodule Favn.SQL.Contract do
   @moduledoc """
   Typed, manifest-visible output contract for one SQL asset.
 
-  Contracts preserve ordered logical columns, optional structured or
-  descriptive grain, explicit unique keys, an optional minimum row count, and
-  authored column lineage. They are assertions about output, not SQL query
-  generators.
+  Contracts preserve ordered logical columns, explicit fragment-composition
+  provenance, optional structured or descriptive grain, explicit unique keys,
+  an optional bounded row-count claim, and authored column lineage. They are
+  assertions about output, not SQL query generators.
 
   The contract compiler exposes at most three grouped generated check
   specifications for required columns, keys, and row count. The SQL asset
@@ -15,17 +15,19 @@ defmodule Favn.SQL.Contract do
   """
 
   alias Favn.SQL.{Check, Template}
-  alias Favn.SQL.Contract.{Column, Grain, RowCount, UniqueKey}
+  alias Favn.SQL.Contract.{Column, Composition, Grain, Param, RowCount, UniqueKey}
 
   @max_columns 1_000
+  @max_compositions 128
   @max_unique_keys 128
 
   @enforce_keys [:columns]
-  defstruct [:grain, :row_count, columns: [], unique_keys: []]
+  defstruct [:grain, :row_count, columns: [], compositions: [], unique_keys: []]
 
   @type t :: %__MODULE__{
           grain: Grain.t() | nil,
           columns: [Column.t()],
+          compositions: [Composition.t()],
           unique_keys: [UniqueKey.t()],
           row_count: RowCount.t() | nil
         }
@@ -48,6 +50,7 @@ defmodule Favn.SQL.Contract do
     %__MODULE__{
       grain: normalize_grain(Map.get(fields, :grain)),
       columns: Enum.map(Map.get(fields, :columns, []), &normalize_column/1),
+      compositions: Enum.map(Map.get(fields, :compositions, []), &normalize_composition/1),
       unique_keys: Enum.map(Map.get(fields, :unique_keys, []), &normalize_unique_key/1),
       row_count: normalize_row_count(Map.get(fields, :row_count))
     }
@@ -63,6 +66,16 @@ defmodule Favn.SQL.Contract do
     if length(contract.columns) > @max_columns,
       do: raise(ArgumentError, "SQL output contract supports at most #{@max_columns} columns")
 
+    unless is_list(contract.compositions),
+      do: raise(ArgumentError, "SQL output contract compositions must be a list")
+
+    if length(contract.compositions) > @max_compositions,
+      do:
+        raise(
+          ArgumentError,
+          "SQL output contract supports at most #{@max_compositions} fragment compositions"
+        )
+
     unless is_list(contract.unique_keys),
       do: raise(ArgumentError, "SQL output contract unique keys must be a list")
 
@@ -74,12 +87,14 @@ defmodule Favn.SQL.Contract do
         )
 
     Enum.each(contract.columns, &Column.validate!/1)
+    Enum.each(contract.compositions, &Composition.validate!/1)
     if contract.grain, do: Grain.validate!(contract.grain)
     Enum.each(contract.unique_keys, &UniqueKey.validate!/1)
     if contract.row_count, do: RowCount.validate!(contract.row_count)
 
     names = Enum.map(contract.columns, & &1.name)
     ensure_unique_columns!(names)
+    ensure_compositions!(contract.compositions, names)
     ensure_referenced_columns!(contract, MapSet.new(names))
     ensure_unique_keys!(contract.unique_keys)
     ensure_unique_renames!(contract.columns, MapSet.new(names))
@@ -121,9 +136,24 @@ defmodule Favn.SQL.Contract do
   @spec max_columns() :: pos_integer()
   def max_columns, do: @max_columns
 
+  @doc "Returns the maximum explicit fragment compositions accepted by one contract."
+  @spec max_compositions() :: pos_integer()
+  def max_compositions, do: @max_compositions
+
   @doc "Returns the maximum explicit unique keys accepted by one output contract."
   @spec max_unique_keys() :: pos_integer()
   def max_unique_keys, do: @max_unique_keys
+
+  @doc "Returns typed runtime parameter requirements introduced by contract claims."
+  @spec runtime_param_requirements(t() | nil) :: %{optional(atom()) => :non_neg_integer}
+  def runtime_param_requirements(nil), do: %{}
+
+  def runtime_param_requirements(%__MODULE__{
+        row_count: %RowCount{equals: %Param{name: name}}
+      }),
+      do: %{name => :non_neg_integer}
+
+  def runtime_param_requirements(%__MODULE__{}), do: %{}
 
   @doc "Returns whether an observed backend type satisfies a logical contract type."
   @spec compatible_type?(Column.logical_type(), String.t() | nil) :: boolean()
@@ -232,6 +262,15 @@ defmodule Favn.SQL.Contract do
   defp normalize_column(other),
     do: raise(ArgumentError, "invalid contract column #{inspect(other)}")
 
+  defp normalize_composition(%Composition{} = composition),
+    do: Composition.validate!(composition)
+
+  defp normalize_composition(%{module: module, start_index: start_index, columns: columns}),
+    do: Composition.new!(module, start_index, columns)
+
+  defp normalize_composition(other),
+    do: raise(ArgumentError, "invalid contract composition #{inspect(other)}")
+
   defp normalize_unique_key(%UniqueKey{} = key), do: UniqueKey.validate!(key)
   defp normalize_unique_key(columns) when is_list(columns), do: UniqueKey.new!(columns)
 
@@ -246,6 +285,48 @@ defmodule Favn.SQL.Contract do
     case names -- Enum.uniq(names) do
       [] -> :ok
       [name | _rest] -> raise ArgumentError, "duplicate contract column #{inspect(name)}"
+    end
+  end
+
+  defp ensure_compositions!(compositions, column_names) do
+    ensure_unique_composition_modules!(compositions)
+
+    Enum.reduce(compositions, -1, fn composition, previous_end ->
+      length = length(composition.columns)
+      start_index = composition.start_index
+      end_index = start_index + length - 1
+
+      if start_index <= previous_end,
+        do: raise(ArgumentError, "contract fragment compositions overlap or are out of order")
+
+      if end_index >= length(column_names),
+        do:
+          raise(
+            ArgumentError,
+            "contract fragment #{inspect(composition.module)} extends beyond contract columns"
+          )
+
+      actual = Enum.slice(column_names, start_index, length)
+
+      if actual != composition.columns,
+        do:
+          raise(
+            ArgumentError,
+            "contract fragment #{inspect(composition.module)} columns do not match the flattened contract at index #{start_index}"
+          )
+
+      end_index
+    end)
+
+    :ok
+  end
+
+  defp ensure_unique_composition_modules!(compositions) do
+    modules = Enum.map(compositions, & &1.module)
+
+    case modules -- Enum.uniq(modules) do
+      [] -> :ok
+      [module | _rest] -> raise ArgumentError, "duplicate contract fragment #{inspect(module)}"
     end
   end
 
@@ -305,7 +386,7 @@ defmodule Favn.SQL.Contract do
   defp row_count_specs(%__MODULE__{row_count: nil}), do: []
 
   defp row_count_specs(%__MODULE__{row_count: row_count}) do
-    claim_id = "row_count.min.#{row_count.min}"
+    {claim_id, predicate, metrics, message} = row_count_check(row_count)
 
     [
       %{
@@ -314,10 +395,60 @@ defmodule Favn.SQL.Contract do
         at: :before_materialize,
         on_violation: row_count.on_violation,
         when: row_count.when,
-        message: "Contract requires at least #{row_count.min} rows",
-        sql: "SELECT count(*) >= #{row_count.min} AS passed, count(*) AS row_count FROM query()"
+        message: message,
+        sql:
+          "SELECT #{predicate} AS passed, actual#{metrics} " <>
+            "FROM (SELECT count(*) AS actual FROM query()) AS favn_contract_row_count"
       }
     ]
+  end
+
+  defp row_count_check(%RowCount{equals: %Param{name: name}}) do
+    placeholder = "@#{name}"
+
+    {
+      "row_count.equals.param.#{name}",
+      "actual = #{placeholder}",
+      ", #{placeholder} AS expected",
+      "Contract row count must equal @#{name}"
+    }
+  end
+
+  defp row_count_check(%RowCount{equals: equals}) when is_integer(equals) do
+    {
+      "row_count.equals.literal.#{equals}",
+      "actual = #{equals}",
+      ", #{equals} AS expected",
+      "Contract requires exactly #{equals} rows"
+    }
+  end
+
+  defp row_count_check(%RowCount{min: min, max: max})
+       when is_integer(min) and is_integer(max) do
+    {
+      "row_count.range.#{min}.#{max}",
+      "actual >= #{min} AND actual <= #{max}",
+      ", #{min} AS min, #{max} AS max",
+      "Contract requires between #{min} and #{max} rows"
+    }
+  end
+
+  defp row_count_check(%RowCount{min: min}) when is_integer(min) do
+    {
+      "row_count.min.#{min}",
+      "actual >= #{min}",
+      ", #{min} AS min",
+      "Contract requires at least #{min} rows"
+    }
+  end
+
+  defp row_count_check(%RowCount{max: max}) when is_integer(max) do
+    {
+      "row_count.max.#{max}",
+      "actual <= #{max}",
+      ", #{max} AS max",
+      "Contract requires at most #{max} rows"
+    }
   end
 
   defp non_null_specs(%__MODULE__{} = contract) do

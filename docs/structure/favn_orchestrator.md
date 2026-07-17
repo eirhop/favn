@@ -115,6 +115,8 @@ quality results.
 
 Asset detail assurance is an orchestrator-owned read model. It joins the active
 manifest's typed SQL contract and check definitions with latest persisted run
-metadata, including candidate schema observations and structural differences.
+metadata, including candidate schema observations, structural differences,
+flattened fragment origins, and exact/bounded row-count policy. Fragment
+composition remains provenance rather than inferred compatibility policy.
 The public catalogue facade returns that complete read model; thin clients must
 not inspect manifests, runner state, or SQL adapters to reconstruct assurance.
