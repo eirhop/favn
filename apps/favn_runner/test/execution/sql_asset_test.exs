@@ -394,6 +394,86 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert work.trigger.window == requested_window
   end
 
+  test "monthly runtime-input lookback uses Favn's timezone database" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+    timezone = "Europe/Oslo"
+    database = Favn.Timezone.database!()
+    window_spec = Favn.Window.Spec.new!(:month, lookback: 1, timezone: timezone)
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver,
+        materialization: {:incremental, strategy: :delete_insert, unique_key: [:id]},
+        window: window_spec
+      )
+
+    requested_start = DateTime.from_naive!(~N[2026-04-01 00:00:00], timezone, database)
+    requested_end = DateTime.from_naive!(~N[2026-05-01 00:00:00], timezone, database)
+    expected_start = DateTime.from_naive!(~N[2026-03-01 00:00:00], timezone, database)
+    anchor_key = Favn.Window.Key.new!(:month, requested_start, timezone)
+
+    requested_window =
+      Favn.Window.Runtime.new!(
+        :month,
+        requested_start,
+        requested_end,
+        anchor_key,
+        timezone: timezone
+      )
+
+    work =
+      version
+      |> work_for(ref, "run_sql_runtime_inputs_monthly_lookback")
+      |> Map.put(:trigger, %{window: requested_window})
+
+    assert Calendar.get_time_zone_database() == Calendar.UTCOnlyTimeZoneDatabase
+    assert {:ok, _resolution} = FavnRunner.resolve_runtime_inputs(work)
+    assert_received {:runtime_inputs_context, context}
+    assert context.window.start_at == expected_start
+    assert context.window.end_at == requested_end
+    assert context.window.anchor_key == anchor_key
+    assert work.trigger.window == requested_window
+  end
+
+  test "UTC monthly runtime-input lookback remains on calendar boundaries" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+    window_spec = Favn.Window.Spec.new!(:month, lookback: 1, timezone: "Etc/UTC")
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver,
+        materialization: {:incremental, strategy: :delete_insert, unique_key: [:id]},
+        window: window_spec
+      )
+
+    requested_start = ~U[2026-06-01 00:00:00Z]
+    requested_end = ~U[2026-07-01 00:00:00Z]
+    anchor_key = Favn.Window.Key.new!(:month, requested_start, "Etc/UTC")
+
+    requested_window =
+      Favn.Window.Runtime.new!(
+        :month,
+        requested_start,
+        requested_end,
+        anchor_key,
+        timezone: "Etc/UTC"
+      )
+
+    work =
+      version
+      |> work_for(ref, "run_sql_runtime_inputs_utc_monthly_lookback")
+      |> Map.put(:trigger, %{window: requested_window})
+
+    assert {:ok, _resolution} = FavnRunner.resolve_runtime_inputs(work)
+    assert_received {:runtime_inputs_context, context}
+    assert context.window.start_at == ~U[2026-05-01 00:00:00Z]
+    assert context.window.end_at == requested_end
+    assert context.window.anchor_key == anchor_key
+    assert work.trigger.window == requested_window
+  end
+
   test "runtime-input resolution honors the remaining work deadline" do
     ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
 
