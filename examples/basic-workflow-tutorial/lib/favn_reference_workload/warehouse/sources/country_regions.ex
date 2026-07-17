@@ -21,12 +21,11 @@ defmodule FavnReferenceWorkload.Warehouse.Sources.CountryRegions do
     be created by the workload.
   """
 
-  use Favn.Namespace
   use Favn.Asset
 
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
 
-  meta owner: "reference-workload", category: :reference_data, tags: [:seed]
+  meta category: :reference_data, tags: [:seed]
   relation true
   def asset(ctx) do
     DuckDBJSONLoader.replace_relation_from_sql(ctx.asset.relation, """

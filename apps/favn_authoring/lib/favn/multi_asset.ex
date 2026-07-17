@@ -37,6 +37,14 @@ defmodule Favn.MultiAsset do
   descriptions use `description/1` because generated children are manifest
   entries, not Elixir functions; `@doc` remains attached to the real `asset/1`
   function.
+
+  Structural ancestor `Favn.Namespace` modules may provide `settings`, `meta`,
+  `runtime_config`, `window`, and `freshness` defaults. Resolution order is
+  namespace root-to-leaf, this module's shared declarations, then each child.
+  Settings and metadata shallow-merge, runtime configuration composes through
+  normal conflict validation, and child scalar declarations win. Use `nil` in a
+  child to clear an inherited optional scalar. The module uses only
+  `Favn.MultiAsset`; module ancestry selects namespace defaults automatically.
   """
 
   alias Favn.Asset
@@ -63,7 +71,10 @@ defmodule Favn.MultiAsset do
 
   @doc false
   defmacro __using__(_opts) do
-    quote do
+    env = __CALLER__
+
+    quote bind_quoted: [file: env.file, line: env.line] do
+      Favn.DSL.AssetDeclarations.claim_module!(__MODULE__, :multi_asset, file, line)
       Favn.DSL.AssetDeclarations.register!(__MODULE__)
       Module.register_attribute(__MODULE__, :favn_multi_assets_raw, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_multi_asset_current_decl, persist: false)
@@ -286,26 +297,43 @@ defmodule Favn.MultiAsset do
 
     validate_unique_names!(raw_declarations)
     shared = shared_declarations(env.module)
-    namespace = Namespace.resolve(env.module)
-
-    {assets, raw_assets} =
-      Enum.map_reduce(raw_declarations, [], fn declaration, raw_assets ->
-        raw_asset = merge_declarations!(declaration, shared, namespace.runtime_config, env)
-        {build_asset!(raw_asset, namespace.relation, env), [raw_asset | raw_assets]}
-      end)
-
-    :ok = ensure_unique_relation_owners!(assets, env)
-    raw_assets = Enum.reverse(raw_assets)
+    context = %{module: env.module, file: env.file, line: env.line}
+    {_assets, raw_assets} = finalize_raw_assets(raw_declarations, shared, context)
     Module.put_attribute(env.module, :favn_multi_asset_generating, true)
 
     quote do
       @doc false
       @spec __favn_assets__() :: [Favn.Asset.t()]
-      def __favn_assets__, do: unquote(Macro.escape(assets))
+      def __favn_assets__ do
+        {assets, _raw_assets} =
+          Favn.MultiAsset.finalize_raw_assets(
+            unquote(Macro.escape(raw_declarations)),
+            unquote(Macro.escape(shared)),
+            unquote(Macro.escape(context))
+          )
+
+        assets
+      end
 
       @doc false
       def __favn_assets_raw__, do: unquote(Macro.escape(raw_assets))
     end
+  end
+
+  @doc false
+  @spec finalize_raw_assets([map()], map(), map()) :: {[Asset.t()], [map()]}
+  def finalize_raw_assets(raw_declarations, shared, context)
+      when is_list(raw_declarations) and is_map(shared) and is_map(context) do
+    namespace = Namespace.resolve(context.module)
+
+    {assets, raw_assets} =
+      Enum.map_reduce(raw_declarations, [], fn declaration, raw_assets ->
+        raw_asset = merge_declarations!(declaration, shared, namespace, context)
+        {build_asset!(raw_asset, namespace.relation, context), [raw_asset | raw_assets]}
+      end)
+
+    :ok = ensure_unique_relation_owners!(assets, context)
+    {assets, Enum.reverse(raw_assets)}
   end
 
   defp shared_declarations(module) do
@@ -423,15 +451,24 @@ defmodule Favn.MultiAsset do
     Map.put(child, declaration, [value])
   end
 
-  defp merge_declarations!(declaration, shared, inherited_runtime_config, env) do
+  defp merge_declarations!(declaration, shared, namespace, env) do
     child = declaration.child
-    settings = Favn.Settings.merge_all!(shared.settings ++ child.settings)
-    meta = merge_meta!(shared.meta ++ child.meta)
-    depends = Enum.uniq(shared.depends ++ child.depends)
-    window = scalar_value!(:window, shared.window, child.window, env, nil)
 
-    freshness_values =
-      if child.freshness == [], do: shared.freshness, else: child.freshness
+    settings =
+      namespace
+      |> Namespace.effective_declarations(:settings, shared.settings ++ child.settings)
+      |> Favn.Settings.merge_all!()
+
+    meta =
+      namespace
+      |> Namespace.effective_declarations(:meta, shared.meta ++ child.meta)
+      |> merge_meta!()
+
+    depends = Enum.uniq(shared.depends ++ child.depends)
+    window_values = select_scalar(namespace, :window, shared.window, child.window)
+    window = scalar_value!(:window, [], window_values, env, nil)
+
+    freshness_values = select_scalar(namespace, :freshness, shared.freshness, child.freshness)
 
     freshness = normalize_freshness!(freshness_values, window, env)
     retry = scalar_value!(:retry, shared.retry, child.retry, env, nil)
@@ -443,9 +480,11 @@ defmodule Favn.MultiAsset do
     description = scalar_value!(:description, [], child.description, env, nil)
 
     runtime_config =
-      inherited_runtime_config
-      |> Kernel.++(shared.runtime_config)
-      |> Kernel.++(child.runtime_config)
+      namespace
+      |> Namespace.effective_declarations(
+        :runtime_config,
+        shared.runtime_config ++ child.runtime_config
+      )
       |> Requirements.merge_all!(consumer: declaration.module)
 
     validate_description!(description)
@@ -487,6 +526,11 @@ defmodule Favn.MultiAsset do
           "multiple #{name} declarations are not allowed"
         )
     end
+  end
+
+  defp select_scalar(namespace, field, shared, child) do
+    local = if child == [], do: shared, else: child
+    Namespace.effective_declarations(namespace, field, local)
   end
 
   defp merge_meta!(declarations) do

@@ -17,11 +17,9 @@ defmodule FavnReferenceWorkload.Warehouse.Gold.ExecutiveOverview do
   - Keep this single-row table for a simple operator or demo entrypoint.
   """
 
-  use Favn.Namespace
   use Favn.SQLAsset
 
-  meta owner: "reference-workload", category: :executive, tags: [:gold, :summary]
-  materialized :table
+  meta category: :executive, tags: [:gold, :summary]
   relation true
 
   query do

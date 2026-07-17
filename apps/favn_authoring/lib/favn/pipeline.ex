@@ -127,15 +127,18 @@ defmodule Favn.Pipeline do
   ## Expanded Example
 
       defmodule MyApp.Lakehouse do
-        use Favn.Namespace, relation: [connection: :important_lakehouse]
+        use Favn.Namespace
+        relation connection: :important_lakehouse
       end
 
       defmodule MyApp.Lakehouse.Raw do
-        use Favn.Namespace, relation: [catalog: "raw"]
+        use Favn.Namespace
+        relation catalog: "raw"
       end
 
       defmodule MyApp.Lakehouse.Raw.Sales do
-        use Favn.Namespace, relation: [schema: "sales"]
+        use Favn.Namespace
+        relation schema: "sales"
       end
 
       defmodule MyApp.Lakehouse.Raw.Sales.Orders do
@@ -159,11 +162,13 @@ defmodule Favn.Pipeline do
       end
 
       defmodule MyApp.Lakehouse.Mart do
-        use Favn.Namespace, relation: [catalog: "mart"]
+        use Favn.Namespace
+        relation catalog: "mart"
       end
 
       defmodule MyApp.Lakehouse.Mart.Sales do
-        use Favn.Namespace, relation: [schema: "sales"]
+        use Favn.Namespace
+        relation schema: "sales"
       end
 
       defmodule MyApp.Lakehouse.Mart.Sales.OrderSummary do
@@ -204,12 +209,10 @@ defmodule Favn.Pipeline do
         end
       end
 
-  Namespace defaults are inherited from parent modules, so leaf asset modules
-  only need `use Favn.Namespace` when they want to add or override shared
-  relation defaults. `relation true` is the normal path when the module leaf
-  should become the relation name, while `relation [name: "..."]` is the
-  normal way to override only the relation name. `meta` stays module-local and
-  is not inherited from namespace modules.
+  Namespace defaults are inherited from structural parent modules. Leaf asset
+  modules use only their asset DSL and add or override declarations there.
+  `relation true` is the normal path when the module leaf should become the
+  relation name, while `relation [name: "..."]` overrides only that name.
 
   ## Rules
 

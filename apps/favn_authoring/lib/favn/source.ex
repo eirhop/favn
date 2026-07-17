@@ -16,13 +16,15 @@ defmodule Favn.Source do
       defmodule MyApp.Lakehouse.Raw.Payments.StripeCharges do
         @moduledoc "External raw Stripe charges table."
 
-        use Favn.Namespace, relation: [connection: :important_lakehouse, catalog: "raw", schema: "payments"]
         use Favn.Source
 
         meta owner: "data-platform"
         meta category: :payments
         meta tags: [:raw]
-        relation [name: "stripe_charges"]
+        relation connection: :important_lakehouse,
+                 catalog: "raw",
+                 schema: "payments",
+                 name: "stripe_charges"
       end
 
   ## Authoring contract
@@ -36,6 +38,12 @@ defmodule Favn.Source do
   - `@moduledoc`: real Elixir module documentation and the manifest description
   - `meta`: keyword or map metadata such as `owner`, `category`, and `tags`
   - `relation`: required relation declaration
+
+  Structural ancestor `Favn.Namespace` modules provide relation defaults and
+  inherited metadata. Relation fields merge by key during asset compilation;
+  metadata shallow-merges root-to-leaf and then applies this source's metadata.
+  The source module uses only `Favn.Source`; module ancestry selects namespace
+  defaults automatically.
 
   `relation` supports:
 
@@ -55,11 +63,15 @@ defmodule Favn.Source do
 
   alias Favn.Asset
   alias Favn.DSL.AssetDeclarations
+  alias Favn.Namespace
   alias Favn.Ref
 
   @doc false
   defmacro __using__(_opts) do
-    quote do
+    env = __CALLER__
+
+    quote bind_quoted: [file: env.file, line: env.line] do
+      Favn.DSL.AssetDeclarations.claim_module!(__MODULE__, :source, file, line)
       Favn.DSL.AssetDeclarations.register!(__MODULE__, [:meta, :relation])
       import Favn.DSL.AssetDeclarations, only: [meta: 1, relation: 1]
 
@@ -71,14 +83,7 @@ defmodule Favn.Source do
   defmacro __before_compile__(env) do
     AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
     relation = AssetDeclarations.values(env.module, :relation)
-
-    meta =
-      env.module
-      |> AssetDeclarations.values(:meta)
-      |> Enum.reduce(%{}, fn declaration, acc ->
-        Map.merge(acc, Asset.normalize_meta!(declaration))
-      end)
-
+    meta = AssetDeclarations.values(env.module, :meta)
     doc = normalize_doc(Module.get_attribute(env.module, :moduledoc))
 
     if relation == [] do
@@ -105,16 +110,48 @@ defmodule Favn.Source do
       relation: relation
     }
 
+    _asset = finalize_raw_asset(raw_asset)
+
+    quote do
+      @doc false
+      @spec __favn_assets__() :: [Favn.Asset.t()]
+      def __favn_assets__ do
+        [Favn.Source.finalize_raw_asset(unquote(Macro.escape(raw_asset)))]
+      end
+
+      @doc false
+      def __favn_assets_raw__, do: [unquote(Macro.escape(raw_asset))]
+
+      @doc false
+      def __favn_single_asset__, do: true
+
+      @doc false
+      def __favn_source__, do: true
+    end
+  end
+
+  @doc false
+  @spec finalize_raw_asset(map()) :: Asset.t()
+  def finalize_raw_asset(raw_asset) when is_map(raw_asset) do
+    namespace = Namespace.resolve(raw_asset.module)
+
+    meta =
+      namespace
+      |> Namespace.effective_declarations(:meta, raw_asset.meta)
+      |> Enum.reduce(%{}, fn declaration, acc ->
+        Map.merge(acc, Asset.normalize_meta!(declaration))
+      end)
+
     asset = %Asset{
-      module: env.module,
+      module: raw_asset.module,
       name: :asset,
       entrypoint: nil,
-      ref: Ref.new(env.module, :asset),
+      ref: Ref.new(raw_asset.module, :asset),
       arity: 0,
       type: :source,
-      doc: doc,
-      file: normalize_file(env.file),
-      line: env.line,
+      doc: raw_asset.doc,
+      file: raw_asset.file,
+      line: raw_asset.line,
       meta: meta,
       depends_on: [],
       dependencies: [],
@@ -126,22 +163,9 @@ defmodule Favn.Source do
       diagnostics: []
     }
 
-    asset = ensure_valid_asset!(asset, env)
-
-    quote do
-      @doc false
-      @spec __favn_assets__() :: [Favn.Asset.t()]
-      def __favn_assets__, do: [unquote(Macro.escape(asset))]
-
-      @doc false
-      def __favn_assets_raw__, do: [unquote(Macro.escape(raw_asset))]
-
-      @doc false
-      def __favn_single_asset__, do: true
-
-      @doc false
-      def __favn_source__, do: true
-    end
+    ensure_valid_asset!(asset, raw_asset)
+  rescue
+    error in ArgumentError -> compile_error!(raw_asset.file, raw_asset.line, error.message)
   end
 
   defp validate_relation_attr!([relation], env) do
@@ -188,7 +212,6 @@ defmodule Favn.Source do
     end
   end
 
-  defp allowed_generated_definition?({:__favn_namespace_config__, 0}), do: true
   defp allowed_generated_definition?(_definition), do: false
 
   defp ensure_valid_asset!(%Asset{} = asset, env) do

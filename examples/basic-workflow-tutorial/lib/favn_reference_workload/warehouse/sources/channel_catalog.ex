@@ -15,12 +15,11 @@ defmodule FavnReferenceWorkload.Warehouse.Sources.ChannelCatalog do
   - Convert it to a SQL asset if you want to author the seed data as SQL.
   """
 
-  use Favn.Namespace
   use Favn.Asset
 
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
 
-  meta owner: "reference-workload", category: :reference_data, tags: [:seed]
+  meta category: :reference_data, tags: [:seed]
   relation true
   def asset(ctx) do
     DuckDBJSONLoader.replace_relation_from_sql(ctx.asset.relation, """

@@ -18,11 +18,9 @@ defmodule FavnReferenceWorkload.Warehouse.Gold.ChannelEfficiency do
     attribution model.
   """
 
-  use Favn.Namespace
   use Favn.SQLAsset
 
-  meta owner: "reference-workload", category: :marketing, tags: [:gold]
-  materialized :table
+  meta category: :marketing, tags: [:gold]
   relation true
 
   query do

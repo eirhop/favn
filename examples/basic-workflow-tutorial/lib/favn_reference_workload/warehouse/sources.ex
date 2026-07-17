@@ -11,5 +11,7 @@ defmodule FavnReferenceWorkload.Warehouse.Sources do
     asset module.
   """
 
-  use Favn.Namespace, relation: [connection: :warehouse, schema: "sources"]
+  use Favn.Namespace
+
+  relation schema: "sources"
 end

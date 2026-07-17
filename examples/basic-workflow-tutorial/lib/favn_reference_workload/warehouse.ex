@@ -11,5 +11,8 @@ defmodule FavnReferenceWorkload.Warehouse do
   - Keeping this module helps readers navigate the project structure.
   """
 
-  use Favn.Namespace, relation: [connection: :warehouse]
+  use Favn.Namespace
+
+  relation connection: :warehouse
+  meta owner: "reference-workload"
 end

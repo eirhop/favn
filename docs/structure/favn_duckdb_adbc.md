@@ -44,6 +44,9 @@ planning. Secret values are redacted and their hashes participate in pool
 identity; provider packages remain outside this adapter. The Azure PostgreSQL
 regression path proves a cached Entra token is reused with a warm physical
 session, then refreshes and bootstraps a replacement ADBC session after expiry.
+The adapter converts Favn `DateTime` SQL parameters into UTC microsecond Arrow
+timestamp columns before invoking the ADBC client, preserving the represented
+instant for query and execute paths.
 DuckLake catalogs backed by PostgreSQL metadata can use multiple PostgreSQL
 backend connections per concurrent DuckLake writer; observed deployments used
 about three. Size DuckLake `write_concurrency` with that multiplier and leave

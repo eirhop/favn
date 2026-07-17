@@ -4,8 +4,8 @@ defmodule Favn.SQL.Contract do
 
   Contracts preserve ordered logical columns, explicit fragment-composition
   provenance, optional structured or descriptive grain, explicit unique keys,
-  an optional bounded row-count claim, and authored column lineage. They are
-  assertions about output, not SQL query generators.
+  an optional bounded row-count claim, and authored column lineage. Asset
+  queries define SQL; contracts validate and document their output.
 
   The contract compiler exposes at most three grouped generated check
   specifications for required columns, keys, and row count. The SQL asset

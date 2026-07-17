@@ -109,17 +109,17 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     assets = Module.concat(sales, Assets)
 
     Code.compile_string(
-      "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse]\nend",
+      "defmodule #{inspect(root)} do\n  use Favn.Namespace\n  relation connection: :warehouse\nend",
       "test/assets/compiler_parity_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(raw)} do\n  use Favn.Namespace, relation: [catalog: :raw]\nend",
+      "defmodule #{inspect(raw)} do\n  use Favn.Namespace\n  relation catalog: :raw\nend",
       "test/assets/compiler_parity_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(sales)} do\n  use Favn.Namespace, relation: [schema: :sales]\nend",
+      "defmodule #{inspect(sales)} do\n  use Favn.Namespace\n  relation schema: :sales\nend",
       "test/assets/compiler_parity_test.exs"
     )
 
@@ -170,17 +170,17 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     )
 
     Code.compile_string(
-      "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse]\nend",
+      "defmodule #{inspect(root)} do\n  use Favn.Namespace\n  relation connection: :warehouse\nend",
       "test/assets/compiler_parity_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(raw)} do\n  use Favn.Namespace, relation: [catalog: :raw]\nend",
+      "defmodule #{inspect(raw)} do\n  use Favn.Namespace\n  relation catalog: :raw\nend",
       "test/assets/compiler_parity_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(sales)} do\n  use Favn.Namespace, relation: [schema: :sales]\nend",
+      "defmodule #{inspect(sales)} do\n  use Favn.Namespace\n  relation schema: :sales\nend",
       "test/assets/compiler_parity_test.exs"
     )
 
@@ -203,7 +203,6 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
       {"sql_asset.ex",
        """
        defmodule #{inspect(asset)} do
-         use Favn.Namespace
          use Favn.SQLAsset
 
          materialized :view
@@ -219,14 +218,16 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
        """
        defmodule #{inspect(root)} do
          Process.sleep(100)
-         use Favn.Namespace, relation: [connection: :warehouse]
+         use Favn.Namespace
+         relation connection: :warehouse
        end
        """},
       {"gold.ex",
        """
        defmodule #{inspect(gold)} do
          Process.sleep(100)
-         use Favn.Namespace, relation: [schema: :gold]
+         use Favn.Namespace
+         relation schema: :gold
        end
        """}
     ])
@@ -257,7 +258,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
 
     compile_modules_to_path!([
       {"root.ex",
-       "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse, catalog: :lakehouse]\nend"},
+       "defmodule #{inspect(root)} do\n  use Favn.Namespace\n  relation connection: :warehouse, catalog: :lakehouse\nend"},
       {"sql_asset.ex",
        """
        defmodule #{inspect(asset)} do
@@ -327,8 +328,9 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
       {"sql_asset_missing_materialized.ex",
        """
        defmodule #{inspect(asset)} do
-         use Favn.Namespace, relation: [connection: :warehouse]
          use Favn.SQLAsset
+
+         relation connection: :warehouse
 
          query do
            ~SQL\"\"\"
@@ -352,9 +354,10 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
       {"sql_asset.ex",
        """
        defmodule #{inspect(asset)} do
-         use Favn.Namespace, relation: [connection: :warehouse]
          use #{inspect(helpers)}
          use Favn.SQLAsset
+
+         relation connection: :warehouse
 
          materialized :view
          query do
@@ -390,7 +393,6 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
       {"multi_asset.ex",
        """
        defmodule #{inspect(assets)} do
-         use Favn.Namespace
          use Favn.MultiAsset
 
          relation true
@@ -402,9 +404,9 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
        end
        """},
       {"root.ex",
-       "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse]\nend"},
+       "defmodule #{inspect(root)} do\n  use Favn.Namespace\n  relation connection: :warehouse\nend"},
       {"raw.ex",
-       "defmodule #{inspect(raw)} do\n  use Favn.Namespace, relation: [catalog: :raw, schema: :sales]\nend"}
+       "defmodule #{inspect(raw)} do\n  use Favn.Namespace\n  relation catalog: :raw, schema: :sales\nend"}
     ])
 
     assert {:ok, [%Asset{relation: relation}]} = Compiler.compile_module_assets(assets)
@@ -464,6 +466,8 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     landing = Module.concat(root, Landing)
     asset = Module.concat(landing, Orders)
     multi_asset = Module.concat(landing, Resources)
+    sql_asset = Module.concat(landing, SQLOrders)
+    sql_inputs = Module.concat(root, SQLInputs)
 
     compile_modules_to_path!([
       {"asset.ex",
@@ -485,10 +489,41 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
          def asset(_ctx), do: :ok
        end
        """},
+      {"sql_asset.ex",
+       """
+       defmodule #{inspect(sql_asset)} do
+         use Favn.SQLAsset
+
+         runtime_inputs #{inspect(sql_inputs)}
+         materialized :view
+
+         query do
+           ~SQL"select 1 as value"
+         end
+       end
+       """},
+      {"sql_inputs.ex",
+       """
+       defmodule #{inspect(sql_inputs)} do
+         @behaviour Favn.SQLAsset.RuntimeInputs
+
+         @impl true
+         def resolve(_context) do
+           {:ok,
+            %Favn.SQLAsset.RuntimeInputs.Result{
+              params: %{},
+              identity: "parallel-runtime-config-test"
+            }}
+         end
+       end
+       """},
       {"landing.ex",
        """
        defmodule #{inspect(landing)} do
-         use Favn.Namespace, runtime_config: [#{inspect(configs)}.github()]
+         use Favn.Namespace
+
+         relation connection: :warehouse
+         runtime_config #{inspect(configs)}.github()
        end
        """},
       {"runtime_configs.ex",
@@ -511,6 +546,12 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
              Compiler.compile_module_assets(multi_asset)
 
     refute compiled_multi_asset.runtime_config.github.enterprise_url.required?
+
+    assert {:ok, [%Asset{type: :sql} = compiled_sql_asset]} =
+             Compiler.compile_module_assets(sql_asset)
+
+    assert compiled_sql_asset.runtime_config.github.api_key.secret?
+    refute compiled_sql_asset.runtime_config.github.enterprise_url.required?
   end
 
   test "relation normalization rejects duplicate canonical keys" do

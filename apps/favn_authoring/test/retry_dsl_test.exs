@@ -37,8 +37,8 @@ defmodule Favn.RetryDSLTest do
 
     compile_module!(sql_module, """
     defmodule #{inspect(sql_module)} do
-      use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
+      relation connection: :warehouse
       retry max_attempts: 4, backoff: 20
       materialized :table
       query do

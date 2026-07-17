@@ -29,11 +29,9 @@ defmodule Favn.SQLCheckDSLTest do
   end
 
   defmodule CheckedOrders do
-    use Favn.Namespace,
-      relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
-
     use Favn.SQLAsset
 
+    relation(connection: :warehouse, catalog: "gold", schema: "sales")
     materialized(:table)
 
     check :candidate_has_rows,
@@ -55,12 +53,10 @@ defmodule Favn.SQLCheckDSLTest do
   end
 
   defmodule NestedCheckedOrders do
-    use Favn.Namespace,
-      relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
-
     use CheckSQL
     use Favn.SQLAsset
 
+    relation(connection: :warehouse, catalog: "gold", schema: "sales")
     materialized(:table)
 
     check :nested_candidate_has_rows,
@@ -75,11 +71,9 @@ defmodule Favn.SQLCheckDSLTest do
   end
 
   defmodule ContractedRecords do
-    use Favn.Namespace,
-      relation: [connection: :warehouse, catalog: "generic", schema: "records"]
-
     use Favn.SQLAsset
 
+    relation(connection: :warehouse, catalog: "generic", schema: "records")
     materialized(:table)
 
     contract do
@@ -117,11 +111,9 @@ defmodule Favn.SQLCheckDSLTest do
   end
 
   defmodule ComposedContract do
-    use Favn.Namespace,
-      relation: [connection: :warehouse, catalog: "generic", schema: "records"]
-
     use Favn.SQLAsset
 
+    relation(connection: :warehouse, catalog: "generic", schema: "records")
     materialized(:table)
 
     contract do
@@ -490,9 +482,9 @@ defmodule Favn.SQLCheckDSLTest do
     Code.compile_string(
       """
       defmodule #{inspect(module)} do
-        use Favn.Namespace, relation: [connection: :warehouse, schema: "test"]
         use Favn.SQLAsset
 
+        relation connection: :warehouse, schema: "test"
         materialized #{inspect(materialization)}
 
         #{checks}
@@ -514,10 +506,10 @@ defmodule Favn.SQLCheckDSLTest do
     Code.compile_string(
       """
       defmodule #{inspect(module)} do
-        use Favn.Namespace, relation: [connection: :warehouse, schema: "test"]
         #{preamble}
         use Favn.SQLAsset
 
+        relation connection: :warehouse, schema: "test"
         materialized :table
 
         query do

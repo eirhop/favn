@@ -300,7 +300,8 @@ defmodule Favn.Dev.Init do
       Shared Favn namespace defaults for the generated local lakehouse session.
       """
 
-      use Favn.Namespace, relation: [connection: :important_lakehouse]
+      use Favn.Namespace
+      relation connection: :important_lakehouse
     end
     '''
   end
@@ -312,7 +313,8 @@ defmodule Favn.Dev.Init do
       Raw lakehouse phase.
       """
 
-      use Favn.Namespace, relation: [catalog: "raw"]
+      use Favn.Namespace
+      relation catalog: "raw"
     end
     '''
   end
@@ -324,7 +326,8 @@ defmodule Favn.Dev.Init do
       Sales-domain raw lakehouse relations.
       """
 
-      use Favn.Namespace, relation: [schema: "sales"]
+      use Favn.Namespace
+      relation schema: "sales"
     end
     '''
   end
@@ -336,7 +339,8 @@ defmodule Favn.Dev.Init do
       Business-facing mart lakehouse phase.
       """
 
-      use Favn.Namespace, relation: [catalog: "mart"]
+      use Favn.Namespace
+      relation catalog: "mart"
     end
     '''
   end
@@ -348,7 +352,8 @@ defmodule Favn.Dev.Init do
       Sales-domain mart lakehouse relations.
       """
 
-      use Favn.Namespace, relation: [schema: "sales"]
+      use Favn.Namespace
+      relation schema: "sales"
     end
     '''
   end
@@ -360,7 +365,6 @@ defmodule Favn.Dev.Init do
       Loads a tiny deterministic order dataset into DuckDB.
       """
 
-      use Favn.Namespace
       use Favn.Asset
 
       @compile {:no_warn_undefined, Favn.SQLClient}
@@ -426,7 +430,6 @@ defmodule Favn.Dev.Init do
       Materializes a small business output from raw local orders.
       """
 
-      use Favn.Namespace
       use Favn.SQLAsset
 
       meta owner: "local", category: :orders, tags: [:sample, :mart]

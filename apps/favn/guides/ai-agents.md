@@ -22,14 +22,15 @@ lineage DSL from runtime code:
 
 1. Read `mix favn.read_doc Favn.SQLAsset` and
    `mix favn.read_doc Favn.SQLAsset contract` for public authoring.
-2. Read `mix favn.read_doc Favn.SQL.Contract` for the compiled typed model.
+2. Read `mix favn.read_doc Favn.SQL.ContractFragment` for reusable columns and
+   `mix favn.read_doc Favn.SQL.Contract` for the compiled typed model.
 3. Read `mix favn.read_doc Favn.SQL.ContractValidation` for candidate schema
    enforcement and `mix favn.read_doc Favn.SQL.Contract.Diff` for evolution.
 4. Read [SQL Output Contracts](sql-output-contracts.md) for the complete DSL,
    automatic checks, policy outcomes, assurance, and limits.
 
-The canonical lineage declaration is a plain `from:` list. Contracts describe
-output and never generate the query's `select` list.
+The canonical lineage declaration is a plain `from:` list. Write the query's
+`select` list explicitly and use the contract to validate its output.
 
 For transactional SQL asset checks, follow this path instead of inferring the
 contract from runtime code:
@@ -52,8 +53,12 @@ an inline resolver DSL:
 4. Read [Runtime Inputs For SQL Assets](sql-runtime-inputs.md) for the full
    workflow, supported values, budgets, redaction, and retry boundary.
 
-The canonical declaration is `runtime_inputs MyApp.Inputs`. Anonymous
-functions, captures, MFA tuples, and inline resolver blocks are unsupported.
+The canonical declaration is `runtime_inputs MyApp.Inputs`, where
+`MyApp.Inputs` implements `Favn.SQLAsset.RuntimeInputs`.
+Namespace modules may share both `runtime_config` bundles and a resolver across
+compatible descendant SQLAssets. Any SQLAsset with non-empty effective
+requirements must also have an effective resolver, and configuration values do
+not become automatic SQL parameters.
 
 For configuration questions, preserve the canonical value model instead of
 inventing generic bags: `settings` → `ctx.asset.settings` or
@@ -122,6 +127,7 @@ mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Result
 mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Error
 mix favn.read_doc Favn.SQLAsset check
 mix favn.read_doc Favn.SQLAsset contract
+mix favn.read_doc Favn.SQL.ContractFragment
 mix favn.read_doc Favn.SQL.Contract
 mix favn.read_doc Favn.SQL.ContractValidation
 mix favn.read_doc Favn.SQL.Contract.Diff

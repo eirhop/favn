@@ -2,8 +2,9 @@ defmodule Favn.SQL.Contract.Param do
   @moduledoc """
   Typed reference to one runtime-bound SQL contract parameter.
 
-  Contract parameters reuse the normal SQL parameter binding path. They never
-  contain a resolved value and cannot reference Favn-owned runtime inputs.
+  Contract parameters reuse the normal SQL parameter binding path and retain
+  only the parameter name in the manifest. Asset settings or runtime params
+  provide the value before SQL execution.
   """
 
   alias Favn.SQL.Template

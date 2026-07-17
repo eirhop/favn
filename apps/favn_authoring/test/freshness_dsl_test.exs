@@ -99,9 +99,9 @@ defmodule Favn.FreshnessDSLTest do
 
     compile_module!(module, """
     defmodule #{inspect(module)} do
-      use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
 
+      relation connection: :warehouse
       materialized :table
       freshness {:daily, timezone: "Europe/Oslo"}
       query do
@@ -124,9 +124,9 @@ defmodule Favn.FreshnessDSLTest do
 
     compile_module!(module, """
     defmodule #{inspect(module)} do
-      use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
 
+      relation connection: :warehouse
       materialized {:incremental, strategy: :delete_insert, window_column: :id}
       window Favn.Window.daily()
       query do

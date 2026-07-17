@@ -15,11 +15,9 @@ defmodule FavnReferenceWorkload.Warehouse.Stg.Customers do
     to a gold model if your team prefers stricter layering.
   """
 
-  use Favn.Namespace
   use Favn.SQLAsset
 
-  meta owner: "reference-workload", category: :customers, tags: [:stg]
-  materialized :table
+  meta category: :customers, tags: [:stg]
   relation true
 
   query do

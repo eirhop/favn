@@ -38,6 +38,31 @@ defmodule Favn.DSL.AssetDeclarations do
     :runtime_config
   ]
 
+  @dsl_kind_attribute :favn_dsl_kind
+
+  @type dsl_kind :: :namespace | :asset | :multi_asset | :sql_asset | :source
+
+  @spec claim_module!(module(), dsl_kind(), Path.t(), pos_integer()) :: :ok
+  def claim_module!(module, kind, file, line)
+      when is_atom(module) and is_atom(kind) and is_integer(line) do
+    unless Module.has_attribute?(module, @dsl_kind_attribute) do
+      Module.register_attribute(module, @dsl_kind_attribute, persist: false)
+    end
+
+    case Module.get_attribute(module, @dsl_kind_attribute) do
+      nil ->
+        Module.put_attribute(module, @dsl_kind_attribute, kind)
+
+      existing ->
+        DSLCompiler.compile_error!(
+          file,
+          line,
+          "one module cannot combine #{dsl_name(existing)} with #{dsl_name(kind)}; " <>
+            "Favn.Namespace modules are structural and asset/source modules inherit from ancestor namespaces automatically"
+        )
+    end
+  end
+
   @spec register!(module(), [atom()]) :: :ok
   def register!(module, declarations \\ @declarations) when is_atom(module) do
     Enum.each(declarations, fn declaration ->
@@ -158,4 +183,10 @@ defmodule Favn.DSL.AssetDeclarations do
       Favn.DSL.AssetDeclarations.put(__MODULE__, unquote(name), unquote(value))
     end
   end
+
+  defp dsl_name(:namespace), do: "Favn.Namespace"
+  defp dsl_name(:asset), do: "Favn.Asset"
+  defp dsl_name(:multi_asset), do: "Favn.MultiAsset"
+  defp dsl_name(:sql_asset), do: "Favn.SQLAsset"
+  defp dsl_name(:source), do: "Favn.Source"
 end

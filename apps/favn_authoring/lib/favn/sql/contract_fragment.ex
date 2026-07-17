@@ -2,8 +2,8 @@ defmodule Favn.SQL.ContractFragment do
   @moduledoc """
   Public DSL for reusable, column-only SQL output-contract fragments.
 
-  A fragment removes repeated column declarations without hiding an asset's
-  data contract. Assets include it explicitly inside `Favn.SQLAsset.contract/1`;
+  A fragment removes repeated column declarations while keeping composition
+  explicit in the asset. Assets include it inside a `contract do` block;
   the compiler flattens its ordered columns into the canonical manifest and
   records separate composition provenance.
 
@@ -16,9 +16,8 @@ defmodule Favn.SQL.ContractFragment do
         column :_favn_run_id, :string, null: false
       end
 
-  Fragments intentionally support only `column/2` and `column/3`. Grain, keys,
-  row counts, checks, nested fragments, defaults, and overrides remain local to
-  the consuming asset contract.
+  Declare ordered columns in the fragment. Keep grain, keys, row counts, and
+  checks local to the consuming asset contract.
   """
 
   alias Favn.DSL.Compiler, as: DSLCompiler

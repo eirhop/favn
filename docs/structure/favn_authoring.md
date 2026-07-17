@@ -27,10 +27,24 @@ share declaration normalization through `Favn.DSL.AssetDeclarations`. The old
 public `Favn.Assets` module and specialized MultiAsset `defaults/rest/extra`
 grammar are removed.
 
-`Favn.SQLAsset` captures optional list-valued `resources` before `query`.
-`Favn.Namespace` resources inherit additively from root to leaf, while relation
-defaults still override by key. Authoring emits only the normalized versioned
-session-requirements contract.
+`Favn.Namespace` is a structural declaration module. Relation fields merge by
+key; resources and runtime config compose; settings and metadata shallow-merge;
+and runtime inputs, freshness, windows, and materialization use the closest
+declaration. Descendant Asset, MultiAsset, SQLAsset, and Source modules consume
+only the fields supported by their DSL. Authoring emits fully resolved canonical
+assets and the normalized versioned SQL session-requirements contract.
+
+`Favn.Namespace` runtime-config bundles also inherit root-to-leaf into
+descendant `Favn.SQLAsset` modules and merge before leaf declarations through
+`Favn.RuntimeConfig.Requirements`. Namespace and leaf `runtime_inputs`
+declarations use closest-wins selection. SQL asset finalization requires an
+effective resolver whenever runtime requirements are non-empty, and resolved
+configuration does not become SQL parameters.
+
+All asset kinds retain their local declarations and resolve namespace
+configuration during explicit asset compilation. Namespace edits therefore
+update affected descendant fingerprints without recompiling leaf modules, and
+clean, incremental, and parallel builds use the same finalization path.
 
 `Favn.SQLAsset` compiles one optional typed `contract` plus up to 50 ordered
 authored `check` declarations through the same `Favn.SQL.Template` and visible
@@ -38,9 +52,9 @@ authored `check` declarations through the same `Favn.SQL.Template` and visible
 column-only declarations; explicit `include Module` statements flatten those
 columns at the declaration position and retain composition provenance. Contract
 columns, structured/descriptive grain, explicit lineage, unique keys, and
-exact/bounded row-count policy normalize into core types. Only
-`row_count equals: param(:name)` may introduce a typed contract runtime
-parameter. Required columns and keys are grouped into bounded generated checks,
+exact/bounded row-count policy normalize into core types. A typed contract
+runtime parameter uses `row_count equals: param(:name)`.
+Required columns and keys are grouped into bounded generated checks,
 and the compiler validates that the generated claim set exactly matches the
 contract before emitting manifest runtime data. It validates
 phase/policy/condition combinations at compile time; no authoring module is

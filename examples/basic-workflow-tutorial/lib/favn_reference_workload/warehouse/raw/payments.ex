@@ -15,13 +15,12 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Payments do
   - Add refund or chargeback rows to simulate more realistic finance behavior.
   """
 
-  use Favn.Namespace
   use Favn.Asset
 
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
   alias FavnReferenceWorkload.Client.FakeAPI
 
-  meta owner: "reference-workload", category: :payments, tags: [:raw, :synthetic]
+  meta category: :payments, tags: [:raw, :synthetic]
   depends FavnReferenceWorkload.Warehouse.Raw.Orders
   relation true
   def asset(ctx) do

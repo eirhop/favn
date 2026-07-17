@@ -13,11 +13,9 @@ defmodule FavnReferenceWorkload.Warehouse.Stg.ProductDaily do
     public business KPI output.
   """
 
-  use Favn.Namespace
   use Favn.SQLAsset
 
-  meta owner: "reference-workload", category: :products, tags: [:stg, :daily]
-  materialized :table
+  meta category: :products, tags: [:stg, :daily]
   relation true
 
   query do

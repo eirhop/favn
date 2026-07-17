@@ -60,11 +60,12 @@ defmodule Favn.SQLAsset do
   ## Contract
 
   - define exactly one `query/1` declaration
-  - declare exactly one `materialized`
+  - provide one effective `materialized` declaration on the asset or an ancestor
+    namespace
   - attach `@doc` to `query`; Favn transfers it to the generated `asset/1`
   - declare `settings`, `meta`, `depends`, `window`, `freshness`, `retry`,
-    `materialized`, optional `relation`, optional `resources`, and optional
-    `runtime_inputs` before `query`
+    `materialized`, optional `relation`, optional `resources`, optional
+    `runtime_config`, and optional `runtime_inputs` before `query`
   - use `~SQL` for inline SQL bodies
   - use `query file: "..."` for asset-local file-backed SQL loaded at compile
     time
@@ -79,14 +80,16 @@ defmodule Favn.SQLAsset do
   - `freshness`: optional asset freshness policy
   - `retry`: optional node-attempt retry policy overriding the pipeline default
   - `relation`: optional owned relation declaration
-  - `materialized`: required SQL materialization strategy
+  - `materialized`: SQL materialization strategy, required either locally or by
+    namespace inheritance
   - `resources`: optional list of named physical-session resources
+  - `runtime_config`: optional runtime-configuration bundle or inline requirements
   - `runtime_inputs`: optional module implementing `Favn.SQLAsset.RuntimeInputs`
 
   Repeated `settings` and `meta` declarations shallow-merge from left to right.
   SQL settings are also reusable scalar query inputs: a referenced setting such
-  as `@minimum_order_value` becomes a bound parameter automatically. Only
-  referenced scalar settings are bound. A name present in both `settings` and
+  as `@minimum_order_value` becomes a bound parameter automatically. Binding is
+  limited to referenced scalar settings. A name present in both `settings` and
   runtime `params` is rejected instead of applying hidden precedence.
 
   Settings cannot provide SQL identifiers or relations. For example,
@@ -185,21 +188,23 @@ defmodule Favn.SQLAsset do
   can generate a mechanical uniqueness check. Column `from:` is always a plain
   list of `{Module, :column}`, `{{Module, :asset}, :column}`, or
   `{"external.dataset", "field"}` tuples. `via:` may be `:identity`,
-  `:transformation`, or `:aggregation`. Favn does not infer lineage from SQL.
+  `:transformation`, or `:aggregation`; use these declarations to record
+  lineage explicitly.
 
   Repeated column metadata may use an explicit `Favn.SQL.ContractFragment` and
   `include Module` at the required output position. Includes flatten into the
-  canonical ordered columns and retain separate composition provenance. Only
-  column declarations belong in a fragment; grain, keys, row counts, checks,
-  nesting, and overrides remain local to the asset.
+  canonical ordered columns and retain separate composition provenance. Declare
+  columns in the fragment and keep grain, keys, row counts, and checks local to
+  the asset.
 
   Row counts accept literal `equals:`, `min:`, `max:`, or a `min:`/`max:` range.
   Exact counts may use `equals: param(:name)` to bind a normal setting or runtime
   param that the runner validates as a non-negative integer before opening a SQL
   session.
 
-  The contract describes the result; it does not generate `select` expressions,
-  aliases, casts, or SQL. Read `Favn.SQLAsset.contract/1` and the HexDocs guide
+  Write `select` expressions, aliases, casts, and backend-specific SQL in
+  `query`; the contract validates and documents the result. Run
+  `mix favn.read_doc Favn.SQLAsset contract` or read the HexDocs guide
   `guides/sql-output-contracts.md` for all logical types, options, automatic
   checks, policy behavior, and semantic diffing.
 
@@ -295,6 +300,16 @@ defmodule Favn.SQLAsset do
   The generated `asset/1` calls into the SQL runtime automatically. Runtime
   inputs such as window bounds and explicit `params` are resolved during render
   and execution, not inside user-authored Elixir code.
+
+  Ancestor `Favn.Namespace` modules may select runtime-config bundles for all
+  descendant SQL assets. Bundles merge from root to leaf, followed by local
+  `runtime_config` declarations, using the same deduplication and conflict
+  semantics as Elixir assets. A SQL asset with non-empty effective runtime
+  configuration must also have an effective `runtime_inputs` declaration. The
+  closest namespace or leaf declaration selects that resolver, which receives
+  the resolved values through the `runtime_config` field of
+  `Favn.Run.Context`. Namespace configuration never becomes automatic SQL
+  parameters.
 
   A SQL asset may declare one behaviour-based resolver for runtime-only bind
   values that cannot be selected when the manifest is compiled:
@@ -397,6 +412,9 @@ defmodule Favn.SQLAsset do
   - using invalid `depends`, `window`, `freshness`, or `relation` values
   - using an inline function, capture, MFA tuple, or block instead of
     `runtime_inputs ResolverModule`
+  - inheriting or declaring `runtime_config` without an effective
+    `runtime_inputs ResolverModule`
+  - expecting runtime-config values to become automatic SQL parameters
   - placing `resources` after `query`, using unstable names, or expecting a
     resource dependency graph
   - expecting `asset/1` to be user-defined in a `Favn.SQLAsset` module
@@ -439,7 +457,10 @@ defmodule Favn.SQLAsset do
 
   @doc false
   defmacro __using__(_opts) do
-    quote do
+    env = __CALLER__
+
+    quote bind_quoted: [file: env.file, line: env.line] do
+      Favn.DSL.AssetDeclarations.claim_module!(__MODULE__, :sql_asset, file, line)
       Favn.DSL.AssetDeclarations.register!(__MODULE__)
 
       Favn.DSL.AssetDeclarations.register!(__MODULE__, [
@@ -610,9 +631,9 @@ defmodule Favn.SQLAsset do
   A SQL asset may declare at most one contract. Columns are ordered and use
   backend-neutral logical types. Grain may be structured with `by:` and/or
   descriptive when row identity cannot be expressed by output columns.
-  Column lineage is an explicit plain `from:` list; Favn does not infer it from
-  SQL text. `renamed_from:` records evolution intent for semantic diffing but
-  does not rename query output.
+  Record column lineage with an explicit plain `from:` list. `renamed_from:`
+  records evolution intent for semantic diffing; emit the new column name in
+  the query output.
 
       contract do
         grain by: [:record_id], description: "one normalized record"
@@ -634,10 +655,9 @@ defmodule Favn.SQLAsset do
   non-null columns generate non-null checks; and `row_count` generates the
   normal policy-controlled row-count check. Candidate column names, order,
   types, and observable nullability are hard contract requirements checked
-  before target mutation. The contract never generates the query or its select
-  list. See the HexDocs guide `guides/sql-output-contracts.md` for the complete
-  option, fragment, runtime parameter, type, enforcement, bounds, and result
-  reference.
+  before target mutation. Write the query and select list explicitly. See the
+  HexDocs guide `guides/sql-output-contracts.md` for the complete option,
+  fragment, runtime parameter, type, enforcement, bounds, and result reference.
   """
   defmacro contract(do: body) do
     raw = parse_contract!(body, __CALLER__)
@@ -661,8 +681,8 @@ defmodule Favn.SQLAsset do
   @doc """
   References one normal runtime-bound SQL parameter from a contract claim.
 
-  This marker is currently supported only by
-  `row_count equals: param(:parameter_name)` inside `contract/1`.
+  Use this marker as the `equals:` value in a row-count declaration:
+  `row_count equals: param(:parameter_name)`.
   """
   defmacro param(name) do
     quote do
@@ -950,19 +970,45 @@ defmodule Favn.SQLAsset do
   defp build_definition!(raw_definition) do
     namespace = Namespace.resolve(raw_definition.module)
     depends_on = normalize_depends!(raw_definition.depends, raw_definition)
-    meta = normalize_meta!(raw_definition.meta, raw_definition)
-    settings = normalize_settings!(raw_definition.settings, raw_definition)
-    window_spec = normalize_window!(raw_definition.window, raw_definition)
-    freshness = normalize_freshness!(raw_definition.freshness, window_spec, raw_definition)
+
+    meta =
+      namespace
+      |> Namespace.effective_declarations(:meta, raw_definition.meta)
+      |> normalize_meta!(raw_definition)
+
+    settings =
+      namespace
+      |> Namespace.effective_declarations(:settings, raw_definition.settings)
+      |> normalize_settings!(raw_definition)
+
+    window_spec =
+      namespace
+      |> Namespace.effective_declarations(:window, raw_definition.window)
+      |> normalize_window!(raw_definition)
+
+    freshness =
+      namespace
+      |> Namespace.effective_declarations(:freshness, raw_definition.freshness)
+      |> normalize_freshness!(window_spec, raw_definition)
+
     retry_policy = normalize_retry!(raw_definition.retry, raw_definition)
 
     materialization =
-      normalize_materialized!(raw_definition.materialized, window_spec, raw_definition)
+      namespace
+      |> Namespace.effective_declarations(:materialized, raw_definition.materialized)
+      |> normalize_materialized!(window_spec, raw_definition)
 
     runtime_inputs =
-      normalize_runtime_inputs!(Map.get(raw_definition, :runtime_inputs, []), raw_definition)
+      namespace
+      |> Namespace.effective_declarations(
+        :runtime_inputs,
+        Map.get(raw_definition, :runtime_inputs, [])
+      )
+      |> normalize_runtime_inputs!(raw_definition)
 
-    runtime_config = normalize_runtime_config!(raw_definition, runtime_inputs)
+    runtime_config =
+      normalize_runtime_config!(raw_definition, namespace.runtime_config, runtime_inputs)
+
     execution_pool = normalize_execution_pool!(raw_definition.execution_pool, raw_definition)
 
     session_requirements = normalize_session_requirements!(raw_definition, namespace.resources)
@@ -1236,9 +1282,10 @@ defmodule Favn.SQLAsset do
       DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
   end
 
-  defp normalize_runtime_config!(raw_definition, runtime_inputs) do
+  defp normalize_runtime_config!(raw_definition, inherited, runtime_inputs) do
     requirements =
-      raw_definition.runtime_config
+      inherited
+      |> Kernel.++(raw_definition.runtime_config)
       |> Requirements.merge_all!(consumer: raw_definition.module)
 
     if map_size(requirements) > 0 and is_nil(runtime_inputs) do
@@ -1278,6 +1325,7 @@ defmodule Favn.SQLAsset do
   end
 
   defp normalize_window!([], _raw_definition), do: nil
+  defp normalize_window!([nil], _raw_definition), do: nil
   defp normalize_window!([%Spec{} = spec], _raw_definition), do: spec
 
   defp normalize_window!([_a, _b | _rest], raw_definition) do
@@ -1419,6 +1467,7 @@ defmodule Favn.SQLAsset do
     do: materialization
 
   defp normalize_runtime_inputs!([], _raw_definition), do: nil
+  defp normalize_runtime_inputs!([nil], _raw_definition), do: nil
 
   defp normalize_runtime_inputs!([module], raw_definition) when is_atom(module) do
     expected = "runtime_inputs MyApp.Inputs"

@@ -16,13 +16,12 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Products do
     real systems.
   """
 
-  use Favn.Namespace
   use Favn.Asset
 
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
   alias FavnReferenceWorkload.Client.FakeAPI
 
-  meta owner: "reference-workload", category: :products, tags: [:raw, :synthetic]
+  meta category: :products, tags: [:raw, :synthetic]
   relation true
   def asset(ctx) do
     with {:ok, rows} <- FakeAPI.fetch_rows(:products) do

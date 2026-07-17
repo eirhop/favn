@@ -87,6 +87,17 @@ and cancellation controls. Do not log or return the whole context.
 
 ## Attach It To The SQL Asset
 
+When every SQL asset below a namespace uses the same runtime configuration,
+select the bundle once on that namespace. Requirements combine root-to-leaf and
+then with any leaf declarations:
+
+```elixir
+defmodule MyApp.Lakehouse.Raw do
+  use Favn.Namespace
+  runtime_config MyApp.RuntimeConfigs.source_system()
+end
+```
+
 ```elixir
 defmodule MyApp.Lakehouse.Raw.Sales.Orders do
   use Favn.SQLAsset
@@ -108,6 +119,11 @@ defmodule MyApp.Lakehouse.Raw.Sales.Orders do
   end
 end
 ```
+
+Place `runtime_inputs` on a SQL asset or on the narrowest structural namespace
+whose descendant SQL assets share the resolver. If effective runtime
+requirements are non-empty and no effective resolver exists, compilation
+fails. Resolved configuration never becomes an automatic SQL parameter source.
 
 Resolved values use the normal `@name` placeholder and adapter binding path,
 including through nested `defsql`. They cannot add SQL source, identifiers,

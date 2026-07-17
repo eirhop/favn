@@ -10,19 +10,18 @@ defmodule Favn.Manifest.GeneratorTest do
   end
 
   defmodule TestAsset do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
     use Favn.Asset
 
     meta(category: :sales, tags: [:raw])
-    relation(true)
+    relation(connection: :warehouse, catalog: "raw", schema: "sales")
     def asset(_ctx), do: :ok
   end
 
   defmodule TestSQLAsset do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
     use Favn.SQLAsset
 
     materialized(:table)
+    relation(connection: :warehouse, catalog: "gold", schema: "sales")
 
     query do
       ~SQL"SELECT 1 AS id"
@@ -39,27 +38,37 @@ defmodule Favn.Manifest.GeneratorTest do
     end
   end
 
-  defmodule RelationOrders do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
+  defmodule RelationRaw do
+    use Favn.Namespace
+
+    relation(connection: :warehouse, catalog: "raw", schema: "commerce")
+  end
+
+  defmodule RelationRaw.Orders do
     use Favn.Asset
 
-    relation(name: "orders")
+    relation(true)
     def asset(_ctx), do: :ok
   end
 
-  defmodule RelationCustomers do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
+  defmodule RelationRaw.Customers do
     use Favn.Asset
 
-    relation(name: "customers")
+    relation(true)
     def asset(_ctx), do: :ok
   end
 
-  defmodule RelationCustomer360 do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "commerce"]
+  defmodule RelationGold do
+    use Favn.Namespace
+
+    relation(connection: :warehouse, catalog: "gold", schema: "commerce")
+  end
+
+  defmodule RelationGold.Customer360 do
     use Favn.SQLAsset
 
     materialized(:view)
+    relation(true)
 
     query do
       ~SQL"""
@@ -110,14 +119,18 @@ defmodule Favn.Manifest.GeneratorTest do
   test "generates manifest dependencies from relation-style SQL references" do
     assert {:ok, %Manifest{} = manifest} =
              Favn.generate_manifest(
-               asset_modules: [RelationOrders, RelationCustomers, RelationCustomer360]
+               asset_modules: [
+                 RelationRaw.Orders,
+                 RelationRaw.Customers,
+                 RelationGold.Customer360
+               ]
              )
 
-    downstream = Enum.find(manifest.assets, &(&1.ref == {RelationCustomer360, :asset}))
+    downstream = Enum.find(manifest.assets, &(&1.ref == {RelationGold.Customer360, :asset}))
 
     assert downstream.depends_on == [
-             {RelationCustomers, :asset},
-             {RelationOrders, :asset}
+             {RelationRaw.Customers, :asset},
+             {RelationRaw.Orders, :asset}
            ]
   end
 
@@ -130,7 +143,6 @@ defmodule Favn.Manifest.GeneratorTest do
       {"sql_asset.ex",
        """
        defmodule #{inspect(asset)} do
-         use Favn.Namespace
          use Favn.SQLAsset
 
          materialized :view
@@ -145,14 +157,16 @@ defmodule Favn.Manifest.GeneratorTest do
        """
        defmodule #{inspect(root)} do
          Process.sleep(100)
-         use Favn.Namespace, relation: [connection: :warehouse]
+         use Favn.Namespace
+         relation connection: :warehouse
        end
        """},
       {"gold.ex",
        """
        defmodule #{inspect(gold)} do
          Process.sleep(100)
-         use Favn.Namespace, relation: [schema: :gold]
+         use Favn.Namespace
+         relation schema: :gold
        end
        """}
     ])
@@ -168,13 +182,17 @@ defmodule Favn.Manifest.GeneratorTest do
 
   test "lists assets with inferred dependencies when given a module list" do
     assert {:ok, assets} =
-             Favn.list_assets([RelationOrders, RelationCustomers, RelationCustomer360])
+             Favn.list_assets([
+               RelationRaw.Orders,
+               RelationRaw.Customers,
+               RelationGold.Customer360
+             ])
 
-    downstream = Enum.find(assets, &(&1.ref == {RelationCustomer360, :asset}))
+    downstream = Enum.find(assets, &(&1.ref == {RelationGold.Customer360, :asset}))
 
     assert downstream.depends_on == [
-             {RelationCustomers, :asset},
-             {RelationOrders, :asset}
+             {RelationRaw.Customers, :asset},
+             {RelationRaw.Orders, :asset}
            ]
   end
 
@@ -207,6 +225,59 @@ defmodule Favn.Manifest.GeneratorTest do
 
     assert version.manifest_version_id == "mv_test_facade_001"
     assert version.content_hash == hash
+  end
+
+  test "namespace changes affect descendant manifest identity but not unrelated assets" do
+    suffix = System.unique_integer([:positive])
+    root = Module.concat(__MODULE__, "FingerprintNamespace#{suffix}")
+    descendant = Module.concat(root, Orders)
+    unrelated = Module.concat(__MODULE__, "FingerprintUnrelated#{suffix}")
+
+    Code.compile_string("""
+    defmodule #{inspect(descendant)} do
+      use Favn.Asset
+      def asset(_ctx), do: :ok
+    end
+
+    defmodule #{inspect(unrelated)} do
+      use Favn.Asset
+      settings stable: true
+      def asset(_ctx), do: :ok
+    end
+    """)
+
+    compile_namespace = fn owner ->
+      :code.purge(root)
+      :code.delete(root)
+
+      Code.compile_string("""
+      defmodule #{inspect(root)} do
+        use Favn.Namespace
+        settings namespace_revision: #{inspect(owner)}
+        meta owner: #{inspect(owner)}
+      end
+      """)
+    end
+
+    compile_namespace.("platform-v1")
+    assert {:ok, first_descendant} = Favn.generate_manifest(asset_modules: [descendant])
+    assert {:ok, first_unrelated} = Favn.generate_manifest(asset_modules: [unrelated])
+
+    compile_namespace.("platform-v2")
+    assert {:ok, second_descendant} = Favn.generate_manifest(asset_modules: [descendant])
+    assert {:ok, second_unrelated} = Favn.generate_manifest(asset_modules: [unrelated])
+
+    assert {:ok, first_descendant_hash} = Favn.hash_manifest(first_descendant)
+    assert {:ok, second_descendant_hash} = Favn.hash_manifest(second_descendant)
+    assert {:ok, first_unrelated_hash} = Favn.hash_manifest(first_unrelated)
+    assert {:ok, second_unrelated_hash} = Favn.hash_manifest(second_unrelated)
+    assert first_descendant_hash != second_descendant_hash
+    assert first_unrelated_hash == second_unrelated_hash
+
+    assert [first_asset] = first_descendant.assets
+    assert [second_asset] = second_descendant.assets
+    assert first_asset.metadata.owner == "platform-v1"
+    assert second_asset.metadata.owner == "platform-v2"
   end
 
   defp compile_modules_to_path!(entries) when is_list(entries) do

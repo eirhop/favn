@@ -19,7 +19,7 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
 - [x] Phase 1 shared relation foundation
   - [x] `Favn.RelationRef`
   - [x] `%Favn.Asset{relation: ...}`
-  - [x] `Favn.Namespace` config inheritance for `connection` / `catalog` / `schema` via grouped `relation:` key
+  - [x] `Favn.Namespace` inheritance for `connection` / `catalog` / `schema` through `relation(...)`
   - [x] `Favn.Assets` support for `@relation`
   - [x] runtime exposure through `ctx.asset.relation`
   - [x] relation normalization and validation (`database`/`table` aliases included)
@@ -64,7 +64,7 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] `Favn.Source` DSL for external relations
   - [x] `@relation` in `Favn.Asset` (renamed from `@produces`)
   - [x] `@relation` in `Favn.SQLAsset` (with inference by default)
-  - [x] `Favn.Namespace` grouped relation defaults: `relation: [connection: ..., catalog: ..., schema: ...]`
+  - [x] `Favn.Namespace` relation defaults through the canonical `relation(...)` declaration
   - [x] Relation-based dependency inference with registered sources
   - [x] `%Favn.Asset{type: :source}` for non-materializing sources
   - [x] Removed `@produces` legacy naming

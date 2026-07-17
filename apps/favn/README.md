@@ -94,7 +94,10 @@ Static non-secret values use `settings`: assets read
 `ctx.asset.settings`, pipelines read `ctx.pipeline.settings`, and referenced
 scalar SQLAsset settings become bound `@name` parameters. Submitted values stay
 in `ctx.params`; environment-dependent values and secrets use `runtime_config`
-and are resolved into `ctx.runtime_config`.
+and are resolved into `ctx.runtime_config`. Namespace runtime-config bundles
+and runtime-input resolvers also apply to descendant SQLAssets; every SQLAsset
+with effective runtime requirements must have an effective resolver. Resolved
+configuration is never bound into SQL automatically.
 
 Most users should let `mix favn.dev` and `mix favn.run` handle the runtime flow.
 Manifest functions are available for tooling and debugging, but they are not the
@@ -139,5 +142,6 @@ not depend on Favn runtime, storage, or UI implementation apps directly.
 - `Favn.Asset`: Elixir asset DSL.
 - `Favn.SQLAsset`: SQL asset DSL.
 - `Favn.Pipeline`: pipeline DSL.
-- `Favn.Namespace`: shared relation defaults for asset modules.
+- `Favn.Namespace`: structural, inherited defaults for descendant asset and
+  source modules.
 - `Favn.SQLClient`: SQL client for configured Favn connections.

@@ -110,8 +110,8 @@ ID and token are intentionally not returned in metadata.
 
 Best-practice shape shown here:
 - reusable clients live under `examples/basic-workflow-tutorial/lib/favn_reference_workload/client/`
-- assets keep `use Favn.Namespace` minimal and inherit namespace defaults from
-  parent modules
+- structural parent namespaces define shared defaults while asset modules use
+  only their asset DSL and inherit through module ancestry
 - assets pass only `ctx.asset.relation` into the DuckDB client instead of the
   whole runtime context
 - source-system assets pass only the resolved source config to source clients,

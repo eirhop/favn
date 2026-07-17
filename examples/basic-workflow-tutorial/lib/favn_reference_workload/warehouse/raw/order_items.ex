@@ -18,13 +18,12 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.OrderItems do
   - Include discount/tax columns here if you want richer revenue modeling.
   """
 
-  use Favn.Namespace
   use Favn.Asset
 
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
   alias FavnReferenceWorkload.Client.FakeAPI
 
-  meta owner: "reference-workload", category: :orders, tags: [:raw, :synthetic]
+  meta category: :orders, tags: [:raw, :synthetic]
   depends FavnReferenceWorkload.Warehouse.Raw.Orders
   depends FavnReferenceWorkload.Warehouse.Raw.Products
   relation true

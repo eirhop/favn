@@ -13,7 +13,8 @@ defmodule FavnReferenceWorkload.Warehouse.Gold.Customer360 do
   - `relation [name: ...]` overrides only the table name while connection and
     schema are inherited from parent namespaces.
   - `use Favn.SQLAsset` means this asset is implemented by SQL.
-  - `materialized :table` stores the result as a table.
+  - The gold namespace's `materialized :table` default stores the result as a
+    table.
   - `relation [name: "customer_360"]` explicitly sets output table name.
 
   Alternative naming behavior:
@@ -26,12 +27,10 @@ defmodule FavnReferenceWorkload.Warehouse.Gold.Customer360 do
   - If you do not need a custom table name, set `relation true`.
   """
 
-  use Favn.Namespace
   use Favn.SQLAsset
 
-  meta owner: "reference-workload", category: :customers, tags: [:gold]
+  meta category: :customers, tags: [:gold]
   relation [name: "customer_360"]
-  materialized :table
 
   query do
     ~SQL"""

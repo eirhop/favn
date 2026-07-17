@@ -50,6 +50,9 @@ supported. See `apps/favn/guides/duckdb-session-scripts.md`.
 Environment-backed credentials resolve at runner startup. Use a native
 refresh-capable provider or restart the runner after rotation; idle timeout does
 not impose a maximum physical-session age.
+`DateTime` SQL parameters, including Favn-owned run/window values and
+resolver-provided values, bind as UTC Arrow timestamps at microsecond precision
+so their represented instant remains stable across DuckDB session timezones.
 Supported deferred `Favn.RuntimeValue` parameters resolve during session
 planning. The optional `Favn.Azure.Credentials.token_ref/2` provider is treated
 as secret and changes session-pool identity when its cached token refreshes. A

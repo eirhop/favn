@@ -1629,12 +1629,15 @@ defmodule FavnRunner.ExecutionSQLAssetTest.SensitiveLineageRuntimeInputsResolver
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.PlainRelationInputSQLAsset do
-  use Favn.Namespace,
-    relation: [connection: :runner_sql_runtime, catalog: "int", schema: "sales"]
-
   use Favn.SQLAsset
 
-  relation(name: "customers_normalized")
+  relation(
+    connection: :runner_sql_runtime,
+    catalog: "int",
+    schema: "sales",
+    name: "customers_normalized"
+  )
+
   materialized(:table)
 
   query do

@@ -4,9 +4,9 @@ defmodule Favn.SQLAssetInputTest do
   alias Favn.SQLAsset.Input
 
   defmodule SQLAsset do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "test", schema: "public"]
     use Favn.SQLAsset
 
+    relation(connection: :warehouse, catalog: "test", schema: "public")
     materialized(:table)
 
     query do

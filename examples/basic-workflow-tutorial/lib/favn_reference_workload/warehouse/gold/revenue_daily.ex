@@ -13,11 +13,9 @@ defmodule FavnReferenceWorkload.Warehouse.Gold.RevenueDaily do
     multiple KPI granularities.
   """
 
-  use Favn.Namespace
   use Favn.SQLAsset
 
-  meta owner: "reference-workload", category: :revenue, tags: [:gold, :daily]
-  materialized :table
+  meta category: :revenue, tags: [:gold, :daily]
   relation true
 
   query do

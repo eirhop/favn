@@ -2,7 +2,6 @@ defmodule Favn.DSLCompilerTest do
   use ExUnit.Case, async: false
 
   defmodule RawCustomers do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
     use Favn.Asset
 
     runtime_config(:source_system,
@@ -11,7 +10,7 @@ defmodule Favn.DSLCompilerTest do
     )
 
     meta(owner: "data", category: :sales, tags: [:raw])
-    relation(true)
+    relation(connection: :warehouse, catalog: "raw", schema: "sales")
     def asset(_ctx), do: :ok
   end
 
@@ -40,10 +39,10 @@ defmodule Favn.DSLCompilerTest do
   end
 
   defmodule SalesSnapshot do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
     use Favn.SQLAsset
 
     materialized(:view)
+    relation(connection: :warehouse, catalog: "gold", schema: "sales")
     depends(RawCustomers)
 
     query do

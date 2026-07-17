@@ -14,8 +14,8 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Customers do
 
   DSL walkthrough:
 
-  - `use Favn.Namespace` is enough here because connection and schema are
-    inherited from parent namespace modules.
+  - Connection, schema, and owner metadata are inherited from ancestor
+    namespaces.
   - `relation true` uses default relation name `customers`.
   - `depends` declares upstream requirements for this Elixir asset.
   - the asset passes only `ctx.asset.relation` into the DuckDB client, because
@@ -34,13 +34,12 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Customers do
   - You can switch back to `Favn.SQLAsset` if you want all logic inline as SQL.
   """
 
-  use Favn.Namespace
   use Favn.Asset
 
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
   alias FavnReferenceWorkload.Client.FakeAPI
 
-  meta owner: "reference-workload", category: :customers, tags: [:raw, :synthetic]
+  meta category: :customers, tags: [:raw, :synthetic]
   depends FavnReferenceWorkload.Warehouse.Sources.CountryRegions
   relation true
   def asset(ctx) do

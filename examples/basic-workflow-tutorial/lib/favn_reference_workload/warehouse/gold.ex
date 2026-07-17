@@ -8,5 +8,8 @@ defmodule FavnReferenceWorkload.Warehouse.Gold do
   analysts and stakeholders.
   """
 
-  use Favn.Namespace, relation: [connection: :warehouse, schema: "gold"]
+  use Favn.Namespace
+
+  relation schema: "gold"
+  materialized :table
 end
