@@ -90,7 +90,7 @@ defmodule Favn.SettingsDSLTest do
       @doc false
       def __favn_namespace_config__ do
         send(Process.whereis(#{inspect(receiver)}), :namespace_resolved)
-        %{relation: %{connection: :warehouse}, runtime_config: [], resources: []}
+        %Favn.Namespace.Config{relation: %{connection: :warehouse}}
       end
     end
     """)
@@ -147,9 +147,9 @@ defmodule Favn.SettingsDSLTest do
     binary =
       compile!(module, """
       defmodule #{inspect(module)} do
-        use Favn.Namespace, relation: [connection: :warehouse, schema: "mart"]
         use Favn.SQLAsset
 
+        relation connection: :warehouse, schema: "mart"
         settings source: "orders"
         materialized :table
 

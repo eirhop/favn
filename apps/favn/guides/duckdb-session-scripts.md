@@ -179,9 +179,9 @@ If every SQL asset below a namespace needs a resource, inherit it additively:
 
 ```elixir
 defmodule MyApp.Lakehouse.Raw do
-  use Favn.Namespace,
-    relation: [catalog: :raw],
-    resources: [:azure_extension]
+  use Favn.Namespace
+  relation catalog: :raw
+  resources [:azure_extension]
 end
 ```
 

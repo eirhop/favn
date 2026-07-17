@@ -21,10 +21,9 @@ defmodule FavnReferenceWorkload.Warehouse.Ops.ReferenceWorkloadComplete do
     export) once you move beyond tutorial mode.
   """
 
-  use Favn.Namespace
   use Favn.Asset
 
-  meta owner: "reference-workload", category: :ops, tags: [:terminal]
+  meta category: :ops, tags: [:terminal]
   depends FavnReferenceWorkload.Warehouse.Gold.ExecutiveOverview
   relation true
   def asset(_ctx), do: :ok

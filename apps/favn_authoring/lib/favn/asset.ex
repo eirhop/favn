@@ -61,6 +61,19 @@ defmodule Favn.Asset do
   - repeat `settings` or `meta` to shallow-merge declarations from left to right
   - use module shorthand in `depends` for another single-asset module
 
+  ## Namespace inheritance
+
+  Structural ancestor `Favn.Namespace` modules may provide `settings`, `meta`,
+  `runtime_config`, `window`, and `freshness` defaults. Favn resolves ancestors
+  root-to-leaf and applies this asset's declarations last. Settings and metadata
+  shallow-merge, runtime configuration composes through its normal conflict
+  validation, and the closest window or freshness declaration wins. Use `nil`
+  locally to clear an inherited optional scalar.
+
+  The asset module uses only `Favn.Asset`; module ancestry selects namespace
+  defaults automatically. Dependencies, retry policy, execution pool, relation
+  ownership, and executable code remain leaf-owned.
+
   ## Declarations
 
   - `@doc`: asset documentation shown in compiled docs and metadata
@@ -196,7 +209,6 @@ defmodule Favn.Asset do
   Favn. The asset should coordinate the boundary:
 
       defmodule MyApp.Lakehouse.Raw.Sales.SourceItems do
-        use Favn.Namespace
         use Favn.Asset
 
         alias MyApp.SourceClient
@@ -303,7 +315,10 @@ defmodule Favn.Asset do
 
   @doc false
   defmacro __using__(_opts) do
-    quote do
+    env = __CALLER__
+
+    quote bind_quoted: [file: env.file, line: env.line] do
+      Favn.DSL.AssetDeclarations.claim_module!(__MODULE__, :asset, file, line)
       Favn.DSL.AssetDeclarations.register!(__MODULE__)
       Module.register_attribute(__MODULE__, :favn_single_asset_raw, persist: false)
 
@@ -400,12 +415,14 @@ defmodule Favn.Asset do
         )
     end
 
-    asset = build_single_asset!(raw_asset)
+    _asset = build_single_asset!(raw_asset)
 
     quote do
       @doc false
       @spec __favn_assets__() :: [Favn.Asset.t()]
-      def __favn_assets__, do: [unquote(Macro.escape(asset))]
+      def __favn_assets__ do
+        [Favn.Asset.finalize_raw_asset(unquote(Macro.escape(raw_asset)))]
+      end
 
       @doc false
       def __favn_assets_raw__, do: [unquote(Macro.escape(raw_asset))]
@@ -740,13 +757,39 @@ defmodule Favn.Asset do
     })
   end
 
+  @doc false
+  @spec finalize_raw_asset(map()) :: t()
+  def finalize_raw_asset(raw_asset) when is_map(raw_asset), do: build_single_asset!(raw_asset)
+
   defp build_single_asset!(raw_asset) do
+    namespace = Namespace.resolve(raw_asset.module)
     depends_on = normalize_single_asset_depends!(raw_asset.depends, raw_asset)
-    settings = normalize_single_asset_settings!(raw_asset.settings, raw_asset)
-    meta = normalize_single_asset_meta!(raw_asset.meta, raw_asset)
-    runtime_config = normalize_single_asset_runtime_config!(raw_asset.runtime_config, raw_asset)
-    window_spec = normalize_single_asset_window!(raw_asset.window, raw_asset)
-    freshness = normalize_single_asset_freshness!(raw_asset.freshness, window_spec, raw_asset)
+
+    settings =
+      namespace
+      |> Namespace.effective_declarations(:settings, raw_asset.settings)
+      |> normalize_single_asset_settings!(raw_asset)
+
+    meta =
+      namespace
+      |> Namespace.effective_declarations(:meta, raw_asset.meta)
+      |> normalize_single_asset_meta!(raw_asset)
+
+    runtime_config =
+      namespace
+      |> Namespace.effective_declarations(:runtime_config, raw_asset.runtime_config)
+      |> normalize_single_asset_runtime_config!(raw_asset)
+
+    window_spec =
+      namespace
+      |> Namespace.effective_declarations(:window, raw_asset.window)
+      |> normalize_single_asset_window!(raw_asset)
+
+    freshness =
+      namespace
+      |> Namespace.effective_declarations(:freshness, raw_asset.freshness)
+      |> normalize_single_asset_freshness!(window_spec, raw_asset)
+
     retry_policy = normalize_single_asset_retry!(raw_asset.retry, raw_asset)
     execution_pool = normalize_execution_pool!(raw_asset.execution_pool, raw_asset)
 
@@ -826,14 +869,14 @@ defmodule Favn.Asset do
   end
 
   defp normalize_single_asset_runtime_config!(entries, raw_asset) do
-    inherited = Namespace.resolve_runtime_config(raw_asset.module)
-    Requirements.merge_all!(inherited ++ entries, consumer: raw_asset.module)
+    Requirements.merge_all!(entries, consumer: raw_asset.module)
   rescue
     error in ArgumentError ->
       DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
   end
 
   defp normalize_single_asset_window!([], _raw_asset), do: nil
+  defp normalize_single_asset_window!([nil], _raw_asset), do: nil
   defp normalize_single_asset_window!([%Spec{} = spec], _raw_asset), do: spec
 
   defp normalize_single_asset_window!([_a, _b | _rest], raw_asset) do

@@ -1,6 +1,7 @@
 defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
   use ExUnit.Case, async: false
 
+  alias Adbc.Column, as: ADBCColumn
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB.ADBC
@@ -214,6 +215,39 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
              {:release, ^result_ref} -> true
              _event -> false
            end)
+  end
+
+  test "normalizes DateTime query and execute parameters to UTC ADBC timestamps" do
+    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
+    datetime = datetime_with_offset()
+
+    assert {:ok, _result} =
+             ADBC.query(conn, "SELECT CAST(? AS TIMESTAMPTZ)", params: [datetime, "unchanged"])
+
+    assert {:ok, _result} =
+             ADBC.execute(conn, "CREATE TABLE events AS SELECT CAST(? AS TIMESTAMPTZ)",
+               params: [datetime]
+             )
+
+    assert [query_param, "unchanged"] =
+             Enum.find_value(events(), fn
+               {:query, _result_ref, _sql, params} -> params
+               _event -> nil
+             end)
+
+    assert [execute_param] =
+             Enum.find_value(events(), fn
+               {:execute, sql, params} ->
+                 if String.starts_with?(sql, "CREATE TABLE events"), do: params
+
+               _event ->
+                 nil
+             end)
+
+    for param <- [query_param, execute_param] do
+      assert %ADBCColumn{field: %{type: {:timestamp, :microseconds, "UTC"}}} = param
+      assert ADBCColumn.to_list(param) == [~N[2026-01-01 00:00:00.123456]]
+    end
   end
 
   test "row-limit query errors are normalized and release result" do
@@ -589,6 +623,23 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
   end
 
   defp events, do: TestSupport.events()
+
+  defp datetime_with_offset do
+    %DateTime{
+      calendar: Calendar.ISO,
+      year: 2026,
+      month: 1,
+      day: 1,
+      hour: 5,
+      minute: 30,
+      second: 0,
+      microsecond: {123_456, 6},
+      std_offset: 0,
+      utc_offset: 19_800,
+      zone_abbr: "IST",
+      time_zone: "Asia/Kolkata"
+    }
+  end
 
   defp transactional_write_plans do
     target = %Relation{schema: "main", name: "checked_orders", type: :table}

@@ -22,10 +22,10 @@ defmodule Favn.RuntimeInputsDSLTest do
   end
 
   defmodule ResolvedAsset do
-    use Favn.Namespace, relation: [connection: :warehouse, schema: "test"]
     use SQLHelpers
     use Favn.SQLAsset
 
+    relation(connection: :warehouse, schema: "test")
     runtime_inputs(Resolver)
     materialized(:table)
 
@@ -102,9 +102,9 @@ defmodule Favn.RuntimeInputsDSLTest do
       Code.compile_string(
         """
         defmodule #{inspect(module)} do
-          use Favn.Namespace, relation: [connection: :warehouse, schema: "test"]
           use Favn.SQLAsset
 
+          relation connection: :warehouse, schema: "test"
           materialized :table
           query do
             ~SQL"select 1"
@@ -124,9 +124,9 @@ defmodule Favn.RuntimeInputsDSLTest do
     Code.compile_string(
       """
       defmodule #{inspect(module)} do
-        use Favn.Namespace, relation: [connection: :warehouse, schema: "test"]
         use Favn.SQLAsset
 
+        relation connection: :warehouse, schema: "test"
         #{runtime_inputs_declaration}
         materialized :table
 

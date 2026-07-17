@@ -5,13 +5,16 @@ defmodule FavnAuthoring.SessionResourcesDSLTest do
   alias Favn.SQLAsset.Compiler
 
   defmodule Lakehouse do
-    use Favn.Namespace, resources: [:azure_extension, :common_session]
+    use Favn.Namespace
+
+    resources([:azure_extension, :common_session])
   end
 
   defmodule Lakehouse.Raw do
-    use Favn.Namespace,
-      relation: [connection: :warehouse, schema: :raw],
-      resources: [:landing_storage, :common_session]
+    use Favn.Namespace
+
+    relation(connection: :warehouse, schema: :raw)
+    resources([:landing_storage, :common_session])
   end
 
   defmodule Lakehouse.Raw.Orders do
@@ -74,8 +77,15 @@ defmodule FavnAuthoring.SessionResourcesDSLTest do
   end
 
   test "namespace resources reject unstable names" do
-    assert_raise ArgumentError, ~r/lowercase snake_case/, fn ->
-      Favn.Namespace.normalize_config!(resources: ["Landing-Storage"])
+    module = Module.concat(__MODULE__, "InvalidNamespace#{System.unique_integer([:positive])}")
+
+    assert_raise CompileError, ~r/lowercase snake_case/, fn ->
+      Code.compile_string("""
+      defmodule #{inspect(module)} do
+        use Favn.Namespace
+        resources ["Landing-Storage"]
+      end
+      """)
     end
   end
 end

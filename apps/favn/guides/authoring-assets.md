@@ -40,26 +40,37 @@ Do not use catalog and schema interchangeably in new projects.
 
 ## Namespaces
 
-Use `Favn.Namespace` to share relation defaults and additive SQL session
-resources across many assets.
+Use structural `Favn.Namespace` modules to share declarations across descendant
+assets. Namespace declarations use the same macro syntax as asset declarations.
 
 ```elixir
 defmodule MyApp.Lakehouse do
-  use Favn.Namespace, relation: [connection: :important_lakehouse]
+  use Favn.Namespace
+  relation connection: :important_lakehouse
+  meta owner: "data-platform"
+  settings environment: "production"
 end
 
 defmodule MyApp.Lakehouse.Raw do
-  use Favn.Namespace,
-    relation: [catalog: "raw"],
-    resources: [:azure_extension]
+  use Favn.Namespace
+  relation catalog: "raw"
+  resources [:azure_extension]
+  runtime_config MyApp.RuntimeConfigs.storage()
 end
 
 defmodule MyApp.Lakehouse.Raw.Sales do
-  use Favn.Namespace, relation: [schema: "sales"]
+  use Favn.Namespace
+  relation schema: "sales"
+  materialized :table
+  runtime_inputs MyApp.Lakehouse.Raw.Inputs
 end
 ```
 
-Supported namespace relation keys:
+Namespace modules are structural: descendants use only `Favn.Asset`,
+`Favn.MultiAsset`, `Favn.SQLAsset`, or `Favn.Source`. Module ancestry selects
+the namespace defaults automatically.
+
+Namespace relation keys:
 
 | Key | Value |
 | --- | --- |
@@ -70,9 +81,19 @@ Supported namespace relation keys:
 Leaf asset modules can then use `relation true` to infer the relation name from
 the module name.
 
-Relation fields override by key; resources accumulate from every ancestor and
-apply only to descendant `Favn.SQLAsset` modules. Keep resources local unless
-every SQL asset below the namespace needs them.
+Inheritance resolves root-to-leaf and then applies leaf declarations:
+
+- `relation` merges `connection`, `catalog`, and `schema` by key.
+- `resources` and `runtime_config` compose additively.
+- `settings` and `meta` shallow-merge; the closest value wins per top-level key.
+- `runtime_inputs`, `freshness`, `window`, and `materialized` use the closest
+  declaration; `nil` clears an optional scalar default.
+- Multi-asset child declarations apply after namespace and module defaults.
+
+Each descendant consumes declarations from its own DSL vocabulary. SQL session
+resources and materialization apply to SQL assets, while inherited metadata also
+applies to source relations. Keep a default on the narrowest namespace whose
+compatible descendants share it.
 
 ## Elixir Assets
 
@@ -203,12 +224,15 @@ end
 ```
 
 Select bundles for a namespace with
-`use Favn.Namespace, runtime_config: [MyApp.RuntimeConfigs.source_system()]`.
-Only descendant Elixir assets inherit them; unrelated assets select the bundle
-explicitly. Favn records unresolved references, never values. Missing required
-values fail before asset code runs. Resolved asset values are public only through
-`ctx.runtime_config`; pass the needed scope explicitly to helper modules and never log
-resolved secrets.
+`runtime_config MyApp.RuntimeConfigs.source_system()` after `use Favn.Namespace`.
+Descendant Elixir assets, generated multi-assets, and SQL assets inherit them;
+unrelated assets select the bundle explicitly. A namespace may also declare
+`runtime_inputs ResolverModule` when its descendant SQL assets share the same
+consumer. A SQL asset with non-empty effective runtime configuration must have
+an effective resolver. Runtime configuration is never bound into SQL
+automatically. Favn records unresolved references, never values. Missing
+required values fail before asset code runs. Pass only the needed scope to
+helper modules and never log resolved secrets.
 
 ## SQL Assets
 
@@ -243,7 +267,8 @@ end
 Rules:
 
 - Use exactly one `query` declaration.
-- Add exactly one `materialized` declaration.
+- Provide exactly one effective `materialized` declaration on the SQL asset or
+  an ancestor namespace.
 - Put optional `resources [...]` before `query`; names select trusted native
   physical-session SQL files and are stored in the manifest.
 - Do not define `asset/1`; `Favn.SQLAsset` generates runtime work.
@@ -276,8 +301,6 @@ Materialization values:
 | `{:incremental, strategy: :append}` | Append new rows. Requires `window`. |
 | `{:incremental, strategy: :delete_insert, window_column: :order_date}` | Replace one window by deleting and inserting. Requires `window`. |
 
-Unsupported incremental options include `:merge`, `:replace`, and `unique_key`.
-
 ### Declare The Output Contract
 
 Table and incremental assets may declare one typed output contract:
@@ -299,12 +322,13 @@ end
 
 Favn validates the staged candidate's ordered column names and types before
 target mutation. It generates ordinary transactional checks for non-null
-columns, structured grain, unique keys, and the row-count minimum. Use a grain
-description without `by:` when row identity cannot be represented by output
-columns; the description is visible to operators but cannot generate a check.
+columns, structured grain, unique keys, and exact or bounded row counts. Use a
+grain description for operator-facing row identity and add `by:` when Favn
+should enforce uniqueness over output columns.
 
-The contract describes output and explicit lineage. It does not infer lineage
-or generate the query's select list. Read
+Write the query's select list explicitly and use the contract to describe and
+validate its output and lineage. Reuse repeated column metadata with
+`Favn.SQL.ContractFragment` and `include Module`. Read
 [SQL Output Contracts](sql-output-contracts.md) for logical types, all options,
 policy behavior, enforcement order, durable assurance, and semantic diffing.
 
@@ -343,7 +367,7 @@ Use `on_violation: :fail` to roll back, `:warn` to commit with a quality warning
 or `:skip_materialization` before the write to keep an existing target and
 commit a successful warning/no-op. Skip checks and before checks that read
 `target()` require `when: :target_exists`, so first-target bootstrap can proceed
-normally. Views cannot use checks or contracts.
+normally. Use checks and contracts with table or incremental materializations.
 
 Read [Transactional SQL Asset Checks](sql-asset-checks.md) for the complete
 option table, transaction order, result contract, persisted outcomes, limits,
@@ -619,15 +643,15 @@ should not execute.
 defmodule MyApp.Lakehouse.Raw.Payments.StripeCharges do
   @moduledoc "External raw Stripe charges table."
 
-  use Favn.Namespace,
-    relation: [connection: :important_lakehouse, catalog: "raw", schema: "payments"]
-
   use Favn.Source
 
   meta owner: "data-platform"
   meta category: :payments
   meta tags: [:raw]
-  relation [name: "stripe_charges"]
+  relation connection: :important_lakehouse,
+           catalog: "raw",
+           schema: "payments",
+           name: "stripe_charges"
 end
 ```
 

@@ -66,14 +66,15 @@ defmodule MyApp.Assets.NormalizedRecords do
 end
 ```
 
-Contracts support `grain`, ordered `column` declarations, `unique`, and
-`row_count`. Read `Favn.SQLAsset.contract/1` or
-`guides/sql-output-contracts.md`; contracts validate output but do not generate
-SQL.
+Contracts support `grain`, ordered `column` declarations, reusable
+`Favn.SQL.ContractFragment` includes, `unique`, and exact or bounded `row_count`.
+Run `mix favn.read_doc Favn.SQLAsset contract` or read
+`guides/sql-output-contracts.md`. Write SQL in `query` and use the contract to
+validate its output.
 
 SQL checks support `at: :before_materialize | :after_materialize` and
 `on_violation: :fail | :warn | :skip_materialization`. Read
-`Favn.SQLAsset.check/3` or `guides/sql-asset-checks.md` before using
+`mix favn.read_doc Favn.SQLAsset check` or `guides/sql-asset-checks.md` before using
 `:skip_materialization` or `target()` because both have first-target bootstrap
 rules.
 
@@ -84,21 +85,22 @@ For runtime-only SQL bind values, declare exactly one resolver module before
 runtime_inputs MyApp.Source.Orders.Inputs
 ```
 
-This is the only supported form. Read `Favn.SQLAsset.RuntimeInputs` and
-`guides/sql-runtime-inputs.md`; do not use an anonymous function, capture, MFA
-tuple, or inline resolver block.
+Use a named module implementing `Favn.SQLAsset.RuntimeInputs`. Run
+`mix favn.read_doc Favn.SQLAsset.RuntimeInputs` or read
+`guides/sql-runtime-inputs.md` for the resolver contract.
 
 Share relation defaults:
 
 ```elixir
 defmodule MyApp.Lakehouse do
-  use Favn.Namespace, relation: [connection: :warehouse]
+  use Favn.Namespace
+  relation connection: :warehouse
 end
 
 defmodule MyApp.Lakehouse.Raw do
-  use Favn.Namespace,
-    relation: [catalog: "raw"],
-    resources: [:azure_extension]
+  use Favn.Namespace
+  relation catalog: "raw"
+  resources [:azure_extension]
 end
 ```
 
@@ -133,7 +135,7 @@ Common modules:
 | `Favn.Asset` | Elixir asset modules. |
 | `Favn.SQLAsset` | SQL asset modules. |
 | `Favn.Pipeline` | Named groups of assets to run together. |
-| `Favn.Namespace` | Shared relation defaults and additive SQL session resources. |
+| `Favn.Namespace` | Structural relation, settings, metadata, runtime, window, freshness, materialization, and SQL resource defaults. |
 | `Favn.Connection` | Named SQL connection definitions. |
 | `Favn.SQLClient` | SQL calls from Elixir code through configured Favn connections. |
 | `Favn.Settings` | Validation and runtime shape for static settings. |

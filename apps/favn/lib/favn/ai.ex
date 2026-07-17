@@ -46,7 +46,9 @@ defmodule Favn.AI do
     `ctx.runtime_config`; metadata remains descriptive. Read `Favn.Settings` and
     `Favn.Run.Context` for the exact shapes.
   - To declare required runtime configuration or secrets for assets, read
-    `Favn.Asset` and `Favn.RuntimeConfig.Ref`.
+    `Favn.Asset`, `Favn.Namespace`, and `Favn.RuntimeConfig.Ref`. SQL assets may
+    inherit namespace bundles and an explicit `Favn.SQLAsset.RuntimeInputs`
+    consumer; configuration never becomes automatic SQL parameters.
   - To declare asset freshness or understand skip/force behavior, read
     `Favn.Freshness`, then `Favn.Freshness.Policy` for `freshness` input values
     and `Favn.Freshness.Key` for stored freshness keys. Asset DSL docs for
@@ -61,15 +63,17 @@ defmodule Favn.AI do
     load mode, timestamp, and hashed source identity.
   - To author one SQL asset, including a typed output `contract`,
     behaviour-based runtime inputs, or transactional `check` declarations with
-    fail, warning, or successful warning/no-op outcomes, read `Favn.SQLAsset`,
-    then `Favn.SQL.Contract`, `Favn.SQL.ContractFragment`,
+    fail, warning, or successful warning/no-op outcomes, start with
+    `mix favn.read_doc Favn.SQLAsset`. For the contract DSL, run
+    `mix favn.read_doc Favn.SQLAsset contract`, then run
+    `mix favn.read_doc Favn.SQL.ContractFragment` and read `Favn.SQL.Contract`,
     `Favn.SQLAsset.RuntimeInputs`, `Favn.SQL`, `Favn.Connection`,
     `Favn.Namespace`, and `Favn.Window` as needed. A contract describes ordered
     output columns, grain, keys, exact or bounded row count, and explicit
-    lineage; it does not generate SQL. Use explicit column-only fragments to
+    lineage. Write SQL explicitly in `query`; use column-only fragments to
     remove repeated metadata declarations; includes flatten into canonical
-    columns and retain separate provenance. Only exact row count accepts
-    `param(:name)`, using the normal settings/runtime-param source with
+    columns and retain separate provenance. Use `param(:name)` as an exact
+    row-count value; it uses the normal settings/runtime-param source with
     pre-session integer validation. Runtime input values remain bound
     parameters, including Favn-owned `@favn_run_id` and
     `@favn_run_started_at` and through reusable `defsql`. Referenced scalar
@@ -78,9 +82,8 @@ defmodule Favn.AI do
     Contract-generated
     and authored checks use the normal check engine; `query()` is the exact
     staged candidate and `target()` is the transaction-visible owned relation.
-    The only runtime-input declaration is
-    `runtime_inputs MyApp.Inputs`; do not invent an inline block, anonymous
-    function, capture, or MFA form. The HexDocs guide
+    Declare runtime inputs as `runtime_inputs MyApp.Inputs`, where `MyApp.Inputs`
+    implements `Favn.SQLAsset.RuntimeInputs`. The HexDocs guide
     [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) is the complete
     author workflow.
   - To author many similar assets in one module, read `Favn.MultiAsset`.
@@ -89,7 +92,7 @@ defmodule Favn.AI do
     suggested.
   - To declare external source relations, read `Favn.Source`; use the real
     module `@moduledoc` for its description.
-  - To share relation defaults, read `Favn.Namespace`.
+  - To share declarations across descendant assets, read `Favn.Namespace`.
   - To define a pipeline, read `Favn.Pipeline`, then
     `Favn.Triggers.Schedules` if schedules are involved. If the pipeline is
     windowed, also read `Favn.Window`, `Favn.Window.Policy`, and
@@ -223,13 +226,14 @@ defmodule Favn.AI do
   `write_outcome`, or a successful materialization no-op, read these docs in
   order:
 
-  1. `Favn.SQLAsset` for the public authoring and transaction contract.
-  2. `Favn.SQLAsset.check/3` for the exact check options and result shape.
+  1. `mix favn.read_doc Favn.SQLAsset` for the public authoring and transaction
+     contract.
+  2. `mix favn.read_doc Favn.SQLAsset check` for the exact check options and
+     result shape.
   3. `Favn.SQL` when the check calls reusable or file-backed `defsql`.
   4. `Favn.SQL.CheckResult` when interpreting durable run metadata.
   5. `Favn.SQL.Check` only when inspecting the compiled manifest contract; user
-     code declares checks through `Favn.SQLAsset.check/3` and does not construct
-     this struct directly.
+     code declares checks through the `Favn.SQLAsset` DSL.
 
   The package guide `guides/sql-asset-checks.md` is the complete human-facing
   how-to and reference. It covers transaction order, first-target bootstrap,
@@ -244,17 +248,19 @@ defmodule Favn.AI do
   expected-versus-observed schema, or Contract versus Custom checks, read these
   docs in order:
 
-  1. `Favn.SQLAsset` and `Favn.SQLAsset.contract/1` for the public declaration.
-  2. `Favn.SQL.Contract`, `Favn.SQL.ContractFragment`, and the nested column,
-     grain, lineage, unique-key, row-count, fragment, composition, and parameter
-     modules for the typed compiled model.
+  1. `mix favn.read_doc Favn.SQLAsset` and
+     `mix favn.read_doc Favn.SQLAsset contract` for the public declaration.
+  2. `mix favn.read_doc Favn.SQL.ContractFragment` and
+     `mix favn.read_doc Favn.SQL.Contract`, followed by the nested column, grain,
+     lineage, unique-key, row-count, fragment, composition, and parameter modules
+     for the typed compiled model.
   3. `Favn.SQL.ContractValidation` for candidate schema enforcement.
   4. `Favn.SQL.Contract.Diff` for semantic manifest-to-manifest changes.
   5. `Favn.SQL.CheckResult` for durable generated and authored check outcomes.
 
   The canonical lineage form is a plain `from:` list containing internal asset
-  tuples or external dataset/field string tuples. Do not invent `input()` or
-  `external()` wrappers. A contract never generates a `select` list. Read
+  tuples or external dataset/field string tuples. Write the query's `select`
+  list explicitly and use the contract to validate its result. Read
   [SQL Output Contracts](sql-output-contracts.html) for the complete human
   workflow, policy behavior, automatic checks, evolution model, and limits.
 
@@ -264,16 +270,17 @@ defmodule Favn.AI do
   runtime-selected files, watermarks, resolver timeouts, parameter collisions,
   or sensitive SQL bind values, read these docs in order:
 
-  1. `Favn.SQLAsset` for declaration timing, budgets, binding, and retry limits.
-  2. `Favn.SQLAsset.RuntimeInputs` for the resolver callback contract.
-  3. `Favn.SQLAsset.RuntimeInputs.Result` and
-     `Favn.SQLAsset.RuntimeInputs.Error` for the only accepted return shapes.
-  4. `Favn.RuntimeInputResolver.Ref` only for manifest/compiler work; authors
-     declare the module and do not construct this reference directly.
+  1. `mix favn.read_doc Favn.SQLAsset` for declaration timing, budgets, binding,
+     and retry limits.
+  2. `mix favn.read_doc Favn.SQLAsset.RuntimeInputs` for the resolver callback
+     contract.
+  3. `mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Result` and
+     `mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Error` for return shapes.
+  4. `Favn.RuntimeInputResolver.Ref` for manifest/compiler work; authors declare
+     the resolver module through the public DSL.
 
   The canonical public declaration is `runtime_inputs MyApp.Inputs` before
-  `query`. Anonymous functions, captures, MFA tuples, and inline resolver blocks
-  are unsupported. Read
+  `query`, with `MyApp.Inputs` implementing `Favn.SQLAsset.RuntimeInputs`. Read
   [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) for the complete
   human workflow, limits, redaction rules, retry boundary, and examples.
 
@@ -382,8 +389,9 @@ defmodule Favn.AI do
     stronger convention.
   - Keep `@moduledoc` on assets business-oriented. It should explain what the
     data means, not only how the code runs.
-  - Read `Favn.Namespace` whenever relation naming, connection defaults, or SQL
-    relation references are involved.
+  - Read `Favn.Namespace` whenever descendant assets share relation fields,
+    settings, metadata, runtime configuration, runtime inputs, freshness,
+    windows, materialization, or SQL session resources.
   - For external-source ingestion, keep connector/client logic in your project,
     not in Favn. Favn owns the asset/runtime/config/SQL boundaries; your project
     owns API-specific pagination, auth, request, and response logic.
@@ -416,19 +424,19 @@ defmodule Favn.AI do
     services inside a runner, GenServer plugins, credential/session caches,
     runner-local state, or future cloud authentication plugins. Preserve the
     disposable-state boundary.
-  - Read `Favn.SQLAsset`, `Favn.SQLAsset.check/3`, and `Favn.SQL.CheckResult`
-    whenever a task mentions transactional SQL checks, data quality warnings,
-    keeping an existing target on an empty candidate, `query()`, `target()`,
-    `quality_status`, `write_outcome`, or check result metrics. Read
-    `Favn.SQL.Check` only for manifest/compiler work.
-  - Read `Favn.SQLAsset.contract/1`, `Favn.SQL.ContractFragment`,
-    `Favn.SQL.Contract`, and `Favn.SQL.ContractValidation` whenever a task
+  - Run `mix favn.read_doc Favn.SQLAsset check` and read
+    `Favn.SQL.CheckResult` whenever a task mentions transactional SQL checks,
+    data quality warnings, keeping an existing target on an empty candidate,
+    `query()`, `target()`, `quality_status`, `write_outcome`, or check result
+    metrics. Read `Favn.SQL.Check` for manifest/compiler work.
+  - Run `mix favn.read_doc Favn.SQLAsset contract`, then read
+    `Favn.SQL.ContractFragment`, `Favn.SQL.Contract`, and
+    `Favn.SQL.ContractValidation` whenever a task
     mentions SQL output shape, repeated contract metadata, fragments, grain,
     keys, exact/bounded row count, `param/1`, column lineage, logical types,
     contract-generated checks, or expected-versus-observed schema. Read
     `Favn.SQL.Contract.Diff` for semantic or separate provenance comparison.
-    User code declares the DSL and does not construct these core structs
-    directly.
+    User code declares the DSL; the compiler owns the core structs.
   - Read `FavnOrchestrator.MaterializationClaim` and
     `FavnOrchestrator.Repair.RuntimeState` when a task mentions duplicate asset
     materializations, stuck runs after a crash, orphaned `running`/`queued` steps,

@@ -60,6 +60,14 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   as `COPY TO`, `COPY FROM`, `read_json`, or `read_ndjson` against caller-owned
   paths.
 
+  ## Temporal parameters
+
+  `DateTime` query and execute parameters are encoded as UTC Arrow timestamps at
+  microsecond precision before ADBC binding. This preserves the represented
+  instant for Favn-owned run/window values and resolver-provided values across
+  DuckDB session timezones. Other supported scalar values use normal ADBC type
+  inference.
+
   ## Native session scripts
 
   This adapter supports the same `open: [database: ...]` and native
@@ -97,6 +105,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   @behaviour Favn.SQL.Adapter
 
+  alias Adbc.Column, as: ADBCColumn
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB.ADBC.{Bootstrap, Client, ErrorMapper}
@@ -456,7 +465,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   @impl true
   @spec execute(Conn.t(), iodata(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
   def execute(%Conn{} = conn, statement, opts) do
-    params = Keyword.get(opts, :params, [])
+    params = opts |> Keyword.get(:params, []) |> normalize_params()
     sql = IO.iodata_to_binary(statement)
 
     case conn.client.execute(conn.conn_ref, sql, params) do
@@ -479,7 +488,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   @impl true
   @spec query(Conn.t(), iodata(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
   def query(%Conn{} = conn, statement, opts) do
-    params = Keyword.get(opts, :params, [])
+    params = opts |> Keyword.get(:params, []) |> normalize_params()
     sql = IO.iodata_to_binary(statement)
 
     case conn.client.query(conn.conn_ref, bounded_query_sql(sql, conn.max_rows), params) do
@@ -490,6 +499,16 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
         {:error, normalize_error(:query, conn.connection, reason)}
     end
   end
+
+  defp normalize_params(params), do: Enum.map(params, &normalize_param/1)
+
+  defp normalize_param(%DateTime{} = value) do
+    value
+    |> DateTime.to_unix(:microsecond)
+    |> then(&ADBCColumn.timestamp([&1], :microseconds, "UTC"))
+  end
+
+  defp normalize_param(value), do: value
 
   defp build_query_result(%Conn{} = conn, result_ref, sql) do
     with {:ok, columns} <- fetch_columns(conn, result_ref),

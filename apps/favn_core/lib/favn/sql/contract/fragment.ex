@@ -3,8 +3,8 @@ defmodule Favn.SQL.Contract.Fragment do
   Compiled column-only SQL contract fragment.
 
   A fragment is consumed while compiling a SQL asset. Its normalized columns
-  are flattened into the asset contract; runtime manifests do not need to load
-  the fragment authoring module.
+  are flattened into the asset contract so the runtime manifest is
+  self-contained.
   """
 
   alias Favn.SQL.Contract

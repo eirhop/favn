@@ -7,8 +7,8 @@ Documentation type: how-to and reference guide.
 
 Start with `Favn.SQLAsset`. Use a contract for stable output shape, grain,
 keys, exact or bounded volume, reusable column metadata, and column lineage.
-Use custom `check` declarations for asset-specific quality rules that do not
-belong in the reusable contract DSL.
+Use custom `check` declarations for asset-specific quality rules expressed as
+arbitrary SQL.
 
 ## Define A Contract
 
@@ -55,10 +55,9 @@ defmodule MyApp.Assets.NormalizedRecords do
 end
 ```
 
-The contract describes the candidate produced by `query`; it does not generate
-the query or its `select` list. Keeping those responsibilities separate leaves
-SQL expressions, casts, aliases, joins, and backend-specific syntax explicit.
-There is deliberately no `select contract()` helper.
+Write SQL expressions, casts, aliases, joins, and backend-specific syntax in
+`query`. The contract validates and documents the staged candidate produced by
+that query.
 
 ## Contract Vocabulary
 
@@ -107,14 +106,13 @@ column :record_id, :uuid,
 | `via` | `nil` | `:identity`, `:transformation`, or `:aggregation`. |
 | `renamed_from` | `nil` | Previous column atom used by semantic contract diffing. It does not rename SQL. |
 
-Supported logical types are `:boolean`, `:integer`, `:float`, `:decimal`,
+Logical types are `:boolean`, `:integer`, `:float`, `:decimal`,
 `:string`, `:binary`, `:date`, `:time`, `:datetime`, `:json`, and `:uuid`.
 Favn maps common backend-native type names into these logical types before
-comparison. Arrays and other collection types do not satisfy scalar contracts;
-model them explicitly only after Favn adds a corresponding logical type.
+comparison.
 
-When `via:` is present, `from:` must contain at least one source;
-`:identity` requires exactly one. Omit both when lineage is not known.
+Pair `via:` with at least one `from:` source, and pair `:identity` with exactly
+one source. Omit both when lineage is not known.
 
 Lineage uses three unambiguous tuple shapes:
 
@@ -126,9 +124,8 @@ from: [
 ]
 ```
 
-The tuples compile into typed manifest values. An `external()` or `input()`
-wrapper would add vocabulary without adding information, so the canonical DSL
-uses `from:` directly. Favn does not infer column lineage from SQL text.
+The tuples compile into typed manifest values. Use `from:` to record lineage
+explicitly.
 
 ### Reusable Column Fragments
 
@@ -156,13 +153,13 @@ contract do
 end
 ```
 
-Fragments support only `column/2` and `column/3`. They cannot declare grain,
-keys, row counts, checks, nested includes, defaults, or per-asset overrides.
-Each fragment may be included once per contract, and every flattened column
-name must remain unique. Favn stores the flattened canonical columns used for
-validation and a separate bounded composition record containing the fragment
-module, start index, and column names. Runtime behavior never depends on loading
-the fragment module from a published manifest.
+A fragment contains ordered `column` declarations. Keep grain, keys, row counts,
+and custom checks in the consuming asset contract, where their meaning remains
+visible. Include a fragment once at its output position and keep every flattened
+column name unique. Favn stores the flattened canonical columns used for
+validation plus a bounded provenance record containing the fragment module,
+start index, and column names. Published manifests therefore carry the complete
+runtime contract.
 
 ### Unique Keys
 
@@ -186,8 +183,8 @@ row_count max: 10_000, on_violation: :warn
 row_count min: 1, max: 10_000, on_violation: :fail
 ```
 
-`equals:` cannot be combined with `min:` or `max:`, and `min:` cannot exceed
-`max:`. Every literal must be a non-negative integer.
+Choose either `equals:` or a `min:`/`max:` bound. Keep `min:` less than or equal
+to `max:` and use non-negative integer literals.
 
 An exact count may come from the asset's normal settings or runtime params:
 
@@ -195,7 +192,7 @@ An exact count may come from the asset's normal settings or runtime params:
 row_count equals: param(:expected_rows), on_violation: :fail
 ```
 
-`param/1` is accepted only in `equals:` and its name must be a literal atom.
+Use `param/1` as the value of `equals:` with a literal atom name.
 The compiled contract stores a typed parameter requirement, not a resolved
 value. The runner applies the normal settings/params collision rules and
 requires a non-negative integer before opening a SQL session. Values remain
@@ -293,9 +290,9 @@ orchestrator exposes the authored contract beside those observations so the UI
 can show expected versus observed shape, lineage, Contract checks, and Custom
 checks without querying the runner or adapter.
 
-Contracts require snapshot table or incremental materialization and a SQL
+Use contracts with snapshot table or incremental materialization and a SQL
 adapter that supports staged transactional write plans and candidate column
-inspection. Contracted views are rejected.
+inspection.
 
 ## Bounds
 
@@ -319,7 +316,7 @@ row-count changes are represented structurally.
 Fragment provenance is deliberately separate from semantic compatibility.
 `Favn.SQL.Contract.Diff.provenance_between/2` reports fragment additions,
 removals, moves, and changed flattened membership. Changing only provenance
-does not make identical canonical columns a schema change.
+keeps identical canonical columns semantically identical.
 
 Use `renamed_from:` only when a rename is intentional:
 
@@ -327,12 +324,9 @@ Use `renamed_from:` only when a rename is intentional:
 column :record_id, :integer, null: false, renamed_from: :id
 ```
 
-This records evolution intent for review and UI diffing. The query must still
-emit `record_id`; Favn does not rewrite SQL or upgrade stored data.
-
-Contract revision numbers are intentionally absent. The manifest version is the
-immutable revision of the complete authored definition, while semantic diffing
-explains what changed.
+This records evolution intent for review and UI diffing. Emit `record_id`
+explicitly in the query. The immutable manifest version captures the complete
+authored definition, while semantic diffing explains what changed.
 
 ## Keep Custom Rules In `check`
 
@@ -353,12 +347,11 @@ check :values_are_supported,
 end
 ```
 
-Do not add named parameterized check declarations to a contract merely to avoid
-writing SQL. A custom `check` is clearer until a claim is common enough to earn
-a typed contract primitive.
+Keep named parameterized and other arbitrary SQL rules in a custom `check`.
 
 For custom check phases, runtime relations, metrics, and result limits, read
 [Transactional SQL Asset Checks](sql-asset-checks.md). For compiled structures,
 read `Favn.SQL.Contract`, `Favn.SQL.Contract.Column`,
+`Favn.SQL.ContractFragment`,
 `Favn.SQL.Contract.Fragment`, `Favn.SQL.Contract.Composition`,
 `Favn.SQL.Contract.Param`, and `Favn.SQL.ContractValidation`.

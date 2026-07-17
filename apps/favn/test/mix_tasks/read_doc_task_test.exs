@@ -36,6 +36,19 @@ defmodule Mix.Tasks.Favn.ReadDocTaskTest do
     assert output =~ "Recommended Consumer Shape"
     assert output =~ "Favn.Namespace"
     assert output =~ "What To Read"
+    assert output =~ "mix favn.read_doc Favn.SQLAsset contract"
+    refute output =~ "Favn.SQLAsset.contract/1"
+  end
+
+  test "prints SQLAsset contract docs with function-name syntax" do
+    output =
+      capture_io(fn ->
+        ReadDocTask.run(["Favn.SQLAsset", "contract"])
+      end)
+
+    assert output =~ "Module: Favn.SQLAsset"
+    assert output =~ "Function: contract"
+    assert output =~ "Declares the asset's typed output contract"
   end
 
   test "prints public Favn function docs" do

@@ -10,26 +10,36 @@ defmodule FavnAuthoring.Assets.GraphPlannerParityTest do
   alias Favn.Window.Key
   alias FavnTestSupport.Fixtures
 
-  defmodule RelationOrders do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
+  defmodule RelationRaw do
+    use Favn.Namespace
+
+    relation(connection: :warehouse, catalog: "raw", schema: "commerce")
+  end
+
+  defmodule RelationRaw.Orders do
     use Favn.Asset
 
     relation(name: "orders")
     def asset(_ctx), do: :ok
   end
 
-  defmodule RelationCustomers do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
+  defmodule RelationRaw.Customers do
     use Favn.Asset
 
     relation(name: "customers")
     def asset(_ctx), do: :ok
   end
 
-  defmodule RelationCustomer360 do
-    use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "commerce"]
+  defmodule RelationGold do
+    use Favn.Namespace
+
+    relation(connection: :warehouse, catalog: "gold", schema: "commerce")
+  end
+
+  defmodule RelationGold.Customer360 do
     use Favn.SQLAsset
 
+    relation(true)
     materialized(:view)
 
     query do
@@ -217,21 +227,24 @@ defmodule FavnAuthoring.Assets.GraphPlannerParityTest do
   test "graph index and planner include relation-inferred SQL dependencies" do
     assert {:ok, index} =
              GraphIndex.index_for_modules([
-               RelationOrders,
-               RelationCustomers,
-               RelationCustomer360
+               RelationRaw.Orders,
+               RelationRaw.Customers,
+               RelationGold.Customer360
              ])
 
-    assert index.upstream[{RelationCustomer360, :asset}] ==
-             MapSet.new([{RelationCustomers, :asset}, {RelationOrders, :asset}])
+    assert index.upstream[{RelationGold.Customer360, :asset}] ==
+             MapSet.new([{RelationRaw.Customers, :asset}, {RelationRaw.Orders, :asset}])
 
     assert {:ok, plan} =
-             Planner.plan({RelationCustomer360, :asset}, graph_index: index, dependencies: :all)
+             Planner.plan({RelationGold.Customer360, :asset},
+               graph_index: index,
+               dependencies: :all
+             )
 
     assert plan.topo_order == [
-             {RelationCustomers, :asset},
-             {RelationOrders, :asset},
-             {RelationCustomer360, :asset}
+             {RelationRaw.Customers, :asset},
+             {RelationRaw.Orders, :asset},
+             {RelationGold.Customer360, :asset}
            ]
   end
 

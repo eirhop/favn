@@ -21,7 +21,6 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Orders do
   - Add explicit `depends` only when dependencies are not visible in SQL.
   """
 
-  use Favn.Namespace
   use Favn.Asset
 
   alias FavnReferenceWorkload.Client.DuckDBJSONLoader
@@ -30,7 +29,7 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Orders do
 
   runtime_config(RuntimeConfigs.source_system())
 
-  meta owner: "reference-workload", category: :orders, tags: [:raw, :synthetic]
+  meta category: :orders, tags: [:raw, :synthetic]
   depends FavnReferenceWorkload.Warehouse.Raw.Customers
   depends FavnReferenceWorkload.Warehouse.Sources.ChannelCatalog
   relation true

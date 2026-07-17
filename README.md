@@ -172,16 +172,23 @@ workaround only. It is not the intended consumer dependency model.
 
 ```elixir
 defmodule MyDataPlatform.Lakehouse do
-  use Favn.Namespace, relation: [connection: :important_lakehouse]
+  use Favn.Namespace
+  relation connection: :important_lakehouse
 end
 
 defmodule MyDataPlatform.Lakehouse.Raw do
-  use Favn.Namespace, relation: [catalog: "raw"]
+  use Favn.Namespace
+  relation catalog: "raw"
 end
 
 defmodule MyDataPlatform.Lakehouse.Raw.Sales do
-  use Favn.Namespace, relation: [schema: "sales"]
+  use Favn.Namespace
+  relation schema: "sales"
 end
+
+# Namespace modules may also share settings, metadata, runtime configuration,
+# runtime inputs, freshness, windows, SQL materialization, and session resources.
+# Descendant asset/source modules use only their own DSL.
 
 defmodule MyDataPlatform.Lakehouse.Raw.Sales.Orders do
   @moduledoc """
@@ -229,9 +236,9 @@ atoms or strings, but persisted manifests normalize them to strings so pipeline
 selectors behave the same before and after JSON persistence without creating
 atoms from stored label data.
 
-Assets and generated multi-assets declare runtime requirements with
-`runtime_config/1,2`, `env!/1,2`, and `secret_env!/1,2`. Reusable bundles live in
-ordinary authoring code:
+Elixir assets, generated multi-assets, and SQL assets declare runtime
+requirements with `runtime_config/1,2`, `env!/1,2`, and `secret_env!/1,2`.
+Reusable bundles live in ordinary authoring code:
 
 ```elixir
 defmodule MyDataPlatform.RuntimeConfigs do
@@ -247,12 +254,17 @@ end
 
 Select a bundle directly with
 `runtime_config MyDataPlatform.RuntimeConfigs.github()`, or select it for a
-namespace's descendant Elixir assets with
-`use Favn.Namespace, runtime_config: [MyDataPlatform.RuntimeConfigs.github()]`.
+namespace's descendant Elixir assets, generated multi-assets, and SQL assets
+with `runtime_config MyDataPlatform.RuntimeConfigs.github()` in a structural
+namespace module.
 Namespace selection follows module ancestry; it is not a global configuration
 registry. Unrelated assets can explicitly select the same bundle. A root
 namespace can select a bundle, but avoid placing secrets there unless every
-descendant executable Elixir asset genuinely requires them.
+descendant executable asset genuinely requires them. A descendant SQL asset
+with non-empty effective runtime configuration must also have an effective
+`runtime_inputs ResolverModule`, declared on the leaf or a shared namespace;
+the resolver is the only consumer, and the values do not become automatic SQL
+parameters.
 
 Manifests record environment keys and secret/required flags, but never resolved
 values. The runner resolves only the selected asset's manifest requirements and
@@ -297,11 +309,13 @@ orders asset followed by SQL transformations.
 
 ```elixir
 defmodule MyDataPlatform.Lakehouse.Mart do
-  use Favn.Namespace, relation: [catalog: "mart"]
+  use Favn.Namespace
+  relation catalog: "mart"
 end
 
 defmodule MyDataPlatform.Lakehouse.Mart.Sales do
-  use Favn.Namespace, relation: [schema: "sales"]
+  use Favn.Namespace
+  relation schema: "sales"
 end
 
 defmodule MyDataPlatform.Lakehouse.Mart.Sales.OrderSummary do
@@ -442,7 +456,8 @@ separate composition provenance. `row_count` supports literal `equals`, `min`,
 before a SQL session opens. Contract-generated
 and custom checks use the same `on_violation: :fail | :warn |
 :skip_materialization` vocabulary and appear together in asset assurance. The
-contract describes output; it does not generate the query's `select` list.
+query defines the `select` list; the contract validates and documents its
+output.
 
 SQL queries may bind the Favn-owned `@favn_run_id` and
 `@favn_run_started_at` runtime inputs for deterministic execution metadata.
@@ -471,8 +486,8 @@ end
 Checks return one row with a native Boolean `passed` column and optional bounded
 scalar metrics. Failures roll back, warnings commit with durable quality
 metadata, and `:skip_materialization` is a successful no-op with
-`quality_status: :warning` that preserves an existing target. Checked views are
-intentionally unsupported.
+`quality_status: :warning` that preserves an existing target. Use transactional
+checks with table or incremental materializations.
 
 Read [Transactional SQL Asset Checks](apps/favn/guides/sql-asset-checks.md) for
 the complete DSL reference, transaction order, bootstrap behavior, metric

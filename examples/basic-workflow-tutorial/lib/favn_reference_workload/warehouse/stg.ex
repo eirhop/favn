@@ -8,5 +8,8 @@ defmodule FavnReferenceWorkload.Warehouse.Stg do
   analytics-friendly tables.
   """
 
-  use Favn.Namespace, relation: [connection: :warehouse, schema: "stg"]
+  use Favn.Namespace
+
+  relation schema: "stg"
+  materialized :table
 end

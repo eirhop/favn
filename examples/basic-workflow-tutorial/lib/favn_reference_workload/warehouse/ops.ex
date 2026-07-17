@@ -8,5 +8,7 @@ defmodule FavnReferenceWorkload.Warehouse.Ops do
   control signals.
   """
 
-  use Favn.Namespace, relation: [connection: :warehouse, schema: "ops"]
+  use Favn.Namespace
+
+  relation schema: "ops"
 end

@@ -1,29 +1,74 @@
 defmodule Favn.Namespace do
   @moduledoc """
-  Public helper for inherited relation defaults, SQL session resources, and
-  runtime-config selection.
+  Declares inherited defaults for descendant asset and source modules.
 
-  Use `Favn.Namespace` to declare relation defaults once on parent modules, then
-  let `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, and
-  `Favn.Source` inherit them. Runtime-config bundle selection applies only to
-  descendant `Favn.Asset` and `Favn.MultiAsset` executable Elixir assets.
+  Namespace modules are structural. They use the same declaration syntax as
+  assets, while executable definitions remain in descendant `Favn.Asset`,
+  `Favn.MultiAsset`, `Favn.SQLAsset`, or `Favn.Source` modules.
 
-  ## When to use it
+      defmodule MyApp.Lakehouse do
+        use Favn.Namespace
 
-  Use this module when many assets share the same warehouse connection, catalog,
-  schema, or SQL session resources and you want those values inherited from
-  explicit namespace modules instead of repeated in every asset.
+        relation(connection: :important_lakehouse)
+        settings(environment: "production")
+        meta(owner: "data-platform")
+      end
 
-  The recommended lakehouse convention is one namespace module per level:
+      defmodule MyApp.Lakehouse.Raw do
+        use Favn.Namespace
 
-  - `lakehouse.ex` sets the connection only. The connection is the server/session/auth boundary.
-  - `lakehouse/raw.ex` and `lakehouse/mart.ex` set phase catalogs.
-  - `lakehouse/raw/sales.ex` and similar modules set segment/domain schemas.
-  - leaf modules under those folders define assets and infer table/view names.
+        relation(catalog: "raw")
+        resources([:azure_extension])
+      end
 
-  Use `catalog` for physical databases or lakehouse phases such as
-  raw/intermediate/mart. Use `schema` for domains or segments such as sales and
-  finance. Do not use catalog and schema interchangeably in new projects.
+      defmodule MyApp.Lakehouse.Raw.Sales do
+        use Favn.Namespace
+
+        relation(schema: "sales")
+        runtime_config(MyApp.RuntimeConfigs.storage())
+        runtime_inputs(MyApp.Lakehouse.Raw.Inputs)
+        freshness({:daily, timezone: "Etc/UTC"})
+      end
+
+      defmodule MyApp.Lakehouse.Raw.Sales.Orders do
+        use Favn.SQLAsset
+
+        settings(dataset: "orders")
+        materialized(:table)
+        relation(true)
+        query(file: "orders.sql")
+      end
+
+  Descendants are discovered from normal Elixir module ancestry. An asset does
+  not also `use Favn.Namespace`; combining namespace and asset/source DSLs in
+  one module is rejected so every declaration has one clear owner.
+
+  ## Resolution
+
+  Favn resolves namespace modules from root to leaf and then applies the leaf
+  asset declarations:
+
+  - `relation` merges by key.
+  - `resources` combines additively for SQL assets.
+  - `settings` and `meta` shallow-merge, with the closest value winning for the
+    same key.
+  - `runtime_config` bundles combine through the normal requirement conflict
+    validation.
+  - `runtime_inputs`, `freshness`, `window`, and `materialized` use the closest
+    declaration. `nil` clears the optional scalar declarations.
+
+  `Favn.MultiAsset` adds its module declarations after namespace defaults and
+  child declarations last. Each asset kind consumes the declarations already
+  supported by its public DSL. Metadata also applies to `Favn.Source`.
+
+  SQL runtime configuration still has an explicit consumer: a SQL asset with
+  effective runtime requirements must have an effective `runtime_inputs`
+  resolver. Resolved values remain runner-local and the resolver converts only
+  selected values into bounded SQL parameters.
+
+  Keep dependencies, contracts, checks, queries, and executable functions on
+  leaf modules. Put a default on the narrowest namespace whose compatible
+  descendants share it.
 
   ## Recommended project shape
 
@@ -33,252 +78,159 @@ defmodule Favn.Namespace do
         lakehouse/raw.ex
         lakehouse/raw/sales.ex
         lakehouse/raw/sales/orders.ex
+        lakehouse/raw/sales/orders.sql
         lakehouse/mart.ex
         lakehouse/mart/sales.ex
         lakehouse/mart/sales/order_summary.ex
-        lakehouse/mart/sales/order_summary.sql
-        integrations/shopify.ex
-        pipelines/daily_sales.ex
-        triggers/schedules.ex
-        sql/calendar.ex
 
-  The lakehouse tree should mirror namespaces and assets. Keep connection
-  providers, integration clients, pipelines, triggers, and reusable SQL outside `lakehouse/` unless the
-  project has a stronger documented convention. Keep asset-specific logic near
-  the asset; move code away from the asset only when it is transport-specific or
-  genuinely reused by multiple assets.
-
-  ## Example
-
-      # lib/my_app/lakehouse.ex
-      defmodule MyApp.Lakehouse do
-        use Favn.Namespace, relation: [connection: :important_lakehouse]
-      end
-
-      # lib/my_app/lakehouse/raw.ex
-      defmodule MyApp.Lakehouse.Raw do
-        use Favn.Namespace,
-          relation: [catalog: "raw"],
-          resources: [:azure_extension]
-      end
-
-      # lib/my_app/lakehouse/raw/sales.ex
-      defmodule MyApp.Lakehouse.Raw.Sales do
-        use Favn.Namespace, relation: [schema: "sales"]
-      end
-
-      # lib/my_app/lakehouse/raw/sales/orders.ex
-      defmodule MyApp.Lakehouse.Raw.Sales.Orders do
-        use Favn.Asset
-
-        relation true
-        def asset(_ctx), do: :ok
-      end
-
-  ## Supported options
-
-  `use Favn.Namespace` accepts:
-
-  - `relation: [connection: ...]` for a root lakehouse namespace
-  - `relation: [catalog: ...]` for database or phase namespaces such as raw or mart
-  - `relation: [schema: ...]` for segment/domain namespaces such as sales or finance
-  - `resources: [...]` for additive named SQL session resources inherited by
-    descendant `Favn.SQLAsset` modules
-  - `runtime_config: [bundle, ...]` for explicit descendant Elixir asset requirements
-
-  Supported relation keys:
-
-  - `connection`: atom
-  - `catalog`: string or atom
-  - `schema`: string or atom
-
-  Runtime config bundles may also be selected for descendant Elixir assets:
-
-      use Favn.Namespace,
-        relation: [schema: "sales"],
-        runtime_config: [MyApp.RuntimeConfigs.github()]
-
-  Namespaces select reusable bundles; they do not define or resolve values and
-  are not a global configuration registry. Avoid selecting secret bundles at a
-  broad root namespace unless every descendant executable Elixir asset needs
-  them.
-
-  Resource inheritance is additive from root to leaf, unlike relation defaults,
-  which override by key. Names normalize to lowercase snake_case strings in the
-  manifest. A namespace resource applies only to descendant SQL assets. Put a
-  resource on a broad namespace only when every descendant SQL asset needs that
-  physical-session capability; otherwise use local `resources [...]` on the
-  leaf asset. Resources are configured as trusted native DuckDB SQL files; read
-  the HexDocs guide
-  [DuckDB Session Scripts And Resources](duckdb-session-scripts.html).
+  Use `catalog` for databases or lakehouse phases such as raw and mart. Use
+  `schema` for domains such as sales and finance. Keep connection providers,
+  integration clients, pipelines, triggers, and reusable SQL outside the
+  lakehouse tree unless the project has a stronger documented convention.
 
   ## See also
 
   - `Favn.Asset`
+  - `Favn.MultiAsset`
   - `Favn.SQLAsset`
   - `Favn.Source`
   """
 
-  alias Favn.RuntimeConfig.Bundle
-  alias Favn.SQL.SessionRequirements
+  alias Favn.DSL.AssetDeclarations
+  alias Favn.DSL.Compiler, as: DSLCompiler
+  alias Favn.Namespace.Config
 
-  @supported_keys [:connection, :catalog, :schema]
-
-  @type resolution :: %{
-          relation: map(),
-          runtime_config: [Bundle.t()],
-          resources: [String.t()]
-        }
+  @declarations [
+    :settings,
+    :meta,
+    :runtime_config,
+    :runtime_inputs,
+    :freshness,
+    :window,
+    :materialized,
+    :relation,
+    :resources
+  ]
 
   @doc false
   defmacro __using__(opts) do
-    quote bind_quoted: [opts: opts] do
-      @favn_namespace_config Favn.Namespace.normalize_config!(opts)
+    env = __CALLER__
 
+    if opts != [] do
+      DSLCompiler.compile_error!(
+        env.file,
+        env.line,
+        "Favn.Namespace accepts declarations as macros after `use Favn.Namespace`; " <>
+          "replace namespace options with relation(...), resources(...), settings(...), " <>
+          "meta(...), runtime_config(...), runtime_inputs(...), freshness(...), " <>
+          "window(...), or materialized(...)"
+      )
+    end
+
+    quote bind_quoted: [file: env.file, line: env.line, declarations: @declarations] do
+      Favn.DSL.AssetDeclarations.claim_module!(__MODULE__, :namespace, file, line)
+      Favn.DSL.AssetDeclarations.register!(__MODULE__, declarations)
+      Module.register_attribute(__MODULE__, :favn_namespace_config, persist: false)
+
+      import Favn.DSL.AssetDeclarations,
+        only: [
+          settings: 1,
+          meta: 1,
+          freshness: 1,
+          window: 1,
+          relation: 1,
+          runtime_config: 1,
+          runtime_config: 2,
+          env!: 1,
+          env!: 2,
+          secret_env!: 1,
+          secret_env!: 2
+        ]
+
+      import Favn.Namespace, only: [materialized: 1, resources: 1, runtime_inputs: 1]
+
+      @before_compile Favn.Namespace
+    end
+  end
+
+  @doc "Declares the inherited SQL materialization strategy."
+  defmacro materialized(value) do
+    quote do
+      Favn.DSL.AssetDeclarations.put(__MODULE__, :materialized, unquote(value))
+    end
+  end
+
+  @doc "Declares inherited named SQL session resources."
+  defmacro resources(values) do
+    quote do
+      Favn.DSL.AssetDeclarations.put(__MODULE__, :resources, unquote(values))
+    end
+  end
+
+  @doc "Declares the inherited SQL runtime-input resolver."
+  defmacro runtime_inputs(module) do
+    quote do
+      Favn.DSL.AssetDeclarations.put(__MODULE__, :runtime_inputs, unquote(module))
+    end
+  end
+
+  @doc false
+  defmacro __before_compile__(env) do
+    declarations = Map.new(@declarations, &{&1, AssetDeclarations.values(env.module, &1)})
+
+    config =
+      try do
+        Config.new!(declarations)
+      rescue
+        error in ArgumentError ->
+          DSLCompiler.compile_error!(env.file, env.line, error.message)
+      end
+
+    Module.put_attribute(env.module, :favn_namespace_config, config)
+
+    quote do
       @doc false
-      @spec __favn_namespace_config__() :: map()
-      def __favn_namespace_config__, do: @favn_namespace_config
+      @spec __favn_namespace_config__() :: Favn.Namespace.Config.t()
+      def __favn_namespace_config__, do: unquote(Macro.escape(config))
     end
   end
 
-  @doc """
-  Resolve relation defaults for a module by merging ancestor namespaces.
-
-  Returns a map with `:connection`, `:catalog`, and `:schema` keys for relation construction.
-  """
+  @doc "Resolves relation defaults selected by ancestor namespaces."
   @spec resolve_relation(module()) :: map()
-  def resolve_relation(module) when is_atom(module) do
-    module
-    |> resolve()
-    |> Map.fetch!(:relation)
-  end
+  def resolve_relation(module) when is_atom(module), do: resolve(module).relation
 
-  @doc """
-  Resolves runtime configuration bundles selected by ancestor namespaces.
+  @doc "Resolves runtime-configuration bundles selected by ancestor namespaces."
+  @spec resolve_runtime_config(module()) :: [Favn.RuntimeConfig.Bundle.t()]
+  def resolve_runtime_config(module) when is_atom(module), do: resolve(module).runtime_config
 
-  Bundles are returned from root to leaf and remain unresolved.
-  """
-  @spec resolve_runtime_config(module()) :: [Bundle.t()]
-  def resolve_runtime_config(module) when is_atom(module) do
-    module
-    |> resolve()
-    |> Map.fetch!(:runtime_config)
-  end
-
-  @doc """
-  Resolves SQL session resources selected by ancestor namespaces.
-
-  Resources are inherited additively from root to leaf, normalized to stable
-  strings, deduplicated, and sorted. They apply only when a descendant
-  `Favn.SQLAsset` compiles its session requirements.
-  """
+  @doc "Resolves named SQL session resources selected by ancestor namespaces."
   @spec resolve_resources(module()) :: [String.t()]
-  def resolve_resources(module) when is_atom(module) do
-    module
-    |> resolve()
-    |> Map.fetch!(:resources)
-  end
+  def resolve_resources(module) when is_atom(module), do: resolve(module).resources
 
   @doc false
-  @spec resolve(module()) :: resolution()
+  @spec effective_declarations(Config.t(), atom(), [term()]) :: [term()]
+  defdelegate effective_declarations(config, field, local), to: Config
+
+  @doc false
+  @spec resolve(module()) :: Config.t()
   def resolve(module) when is_atom(module) do
-    resolution =
-      module
-      |> ancestors()
-      |> Enum.reduce(empty_resolution(), fn ancestor, acc ->
-        case namespace_config(ancestor) do
-          nil ->
-            acc
+    module
+    |> ancestors()
+    |> Enum.reduce(Config.new!(%{}), fn ancestor, acc ->
+      case namespace_config(ancestor, module) do
+        nil ->
+          acc
 
-          config ->
-            %{
-              relation: Map.merge(acc.relation, config.relation),
-              runtime_config: acc.runtime_config ++ config.runtime_config,
-              resources: acc.resources ++ config.resources
-            }
-        end
-      end)
-
-    %{resolution | resources: SessionRequirements.normalize_resources!(resolution.resources)}
-  end
-
-  defp empty_resolution, do: %{relation: %{}, runtime_config: [], resources: []}
-
-  @doc false
-  @spec normalize_config!(keyword() | map()) :: map()
-  def normalize_config!(opts) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      opts |> Map.new() |> normalize_config!()
-    else
-      raise ArgumentError,
-            "namespace config must be a keyword list or map, got: #{inspect(opts)}"
-    end
-  end
-
-  def normalize_config!(opts) when is_map(opts) do
-    relation_defaults = normalize_relation_defaults!(Map.get(opts, :relation, %{}))
-    runtime_config = normalize_runtime_config!(Map.get(opts, :runtime_config, []))
-    resources = normalize_resources!(Map.get(opts, :resources, []))
-    validate_no_legacy_keys!(Map.drop(opts, [:relation, :runtime_config, :resources]))
-    %{relation: relation_defaults, runtime_config: runtime_config, resources: resources}
-  end
-
-  def normalize_config!(opts) do
-    raise ArgumentError, "namespace config must be a keyword list or map, got: #{inspect(opts)}"
-  end
-
-  defp normalize_relation_defaults!(defaults) when defaults in [%{}, []], do: %{}
-
-  defp normalize_relation_defaults!(defaults) when is_map(defaults) do
-    Enum.reduce(defaults, %{}, fn {key, value}, acc ->
-      canonical_key = normalize_key!(key)
-      Map.put(acc, canonical_key, normalize_value!(canonical_key, value))
+        %Config{} = config ->
+          Config.merge(acc, config)
+      end
     end)
+    |> Config.finalize()
   end
 
-  defp normalize_relation_defaults!(defaults) when is_list(defaults) do
-    if Keyword.keyword?(defaults) do
-      defaults
-      |> Map.new()
-      |> normalize_relation_defaults!()
-    else
-      raise ArgumentError,
-            "namespace relation config must be a keyword list or map, got: #{inspect(defaults)}"
-    end
-  end
-
-  defp normalize_relation_defaults!(defaults) do
-    raise ArgumentError,
-          "namespace relation config must be a keyword list or map, got: #{inspect(defaults)}"
-  end
-
-  defp normalize_runtime_config!(bundles) when is_list(bundles) do
-    Enum.map(bundles, &Bundle.validate!/1)
-  end
-
-  defp normalize_runtime_config!(_other) do
-    raise ArgumentError,
-          "namespace runtime_config must be a list of Favn.RuntimeConfig.Bundle values"
-  end
-
-  defp normalize_resources!(resources) do
-    SessionRequirements.normalize_resources!(resources)
-  rescue
-    error in ArgumentError ->
-      raise ArgumentError, "namespace resources are invalid: #{error.message}"
-  end
-
-  defp validate_no_legacy_keys!(opts_without_relation) when map_size(opts_without_relation) == 0,
-    do: :ok
-
-  defp validate_no_legacy_keys!(opts_without_relation) do
-    raise ArgumentError,
-          "namespace config contains unsupported key(s) #{inspect(Map.keys(opts_without_relation))}; supported keys are :relation, :runtime_config, and :resources"
-  end
-
-  defp namespace_config(module) do
+  defp namespace_config(module, target) do
     cond do
-      module_open?(module) ->
+      module == target and module_open?(module) ->
         Module.get_attribute(module, :favn_namespace_config)
 
       match?({:module, _}, ensure_namespace_module(module)) and
@@ -296,8 +248,6 @@ defmodule Favn.Namespace do
     ArgumentError -> false
   end
 
-  # Parallel compiler workers can await same-batch ancestors. Runtime callers
-  # cannot, and must not poll for every nonexistent module-name prefix.
   defp ensure_namespace_module(module) when is_atom(module) do
     if Code.can_await_module_compilation?() do
       Code.ensure_compiled(module)
@@ -311,25 +261,5 @@ defmodule Favn.Namespace do
 
     1..length(parts)
     |> Enum.map(fn index -> Module.concat(Enum.take(parts, index)) end)
-  end
-
-  defp normalize_key!(key) when key in @supported_keys, do: key
-
-  defp normalize_key!(key) do
-    raise ArgumentError,
-          "namespace config contains unsupported key #{inspect(key)}; allowed keys: #{@supported_keys |> inspect()}"
-  end
-
-  defp normalize_value!(:connection, value) when is_atom(value), do: value
-
-  defp normalize_value!(field, value) when field in [:catalog, :schema] and is_binary(value),
-    do: value
-
-  defp normalize_value!(field, value) when field in [:catalog, :schema] and is_atom(value),
-    do: Atom.to_string(value)
-
-  defp normalize_value!(field, value) do
-    raise ArgumentError,
-          "namespace config #{field} has invalid value #{inspect(value)}"
   end
 end

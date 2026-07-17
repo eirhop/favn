@@ -185,7 +185,8 @@ defmodule Favn.Local.CanonicalSampleProject do
     defmodule FavnIssue262Sample.Lakehouse do
       @moduledoc false
 
-      use Favn.Namespace, relation: [connection: :issue262_warehouse]
+      use Favn.Namespace
+      relation connection: :issue262_warehouse
     end
     """
   end
@@ -205,7 +206,8 @@ defmodule Favn.Local.CanonicalSampleProject do
     defmodule FavnIssue262Sample.Lakehouse.Raw.Sales do
       @moduledoc false
 
-      use Favn.Namespace, relation: [schema: "raw"]
+      use Favn.Namespace
+      relation schema: "raw"
     end
     """
   end
@@ -215,7 +217,6 @@ defmodule Favn.Local.CanonicalSampleProject do
     defmodule FavnIssue262Sample.Lakehouse.Raw.Sales.Orders do
       @moduledoc false
 
-      use Favn.Namespace
       use Favn.Asset
 
       alias Favn.SQLClient
@@ -278,7 +279,8 @@ defmodule Favn.Local.CanonicalSampleProject do
     defmodule FavnIssue262Sample.Lakehouse.Mart.Sales do
       @moduledoc false
 
-      use Favn.Namespace, relation: [schema: "mart"]
+      use Favn.Namespace
+      relation schema: "mart"
     end
     """
   end
@@ -288,7 +290,6 @@ defmodule Favn.Local.CanonicalSampleProject do
     defmodule FavnIssue262Sample.Lakehouse.Mart.Sales.OrderSummary do
       @moduledoc false
 
-      use Favn.Namespace
       use Favn.SQLAsset
 
       meta owner: "acceptance", category: :orders, tags: [:issue262, :mart]

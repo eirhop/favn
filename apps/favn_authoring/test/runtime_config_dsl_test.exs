@@ -21,14 +21,26 @@ defmodule Favn.RuntimeConfigDSLTest do
     )
   end
 
+  defmodule SQLInputs do
+    @behaviour Favn.SQLAsset.RuntimeInputs
+
+    alias Favn.SQLAsset.RuntimeInputs.Result
+
+    @impl true
+    def resolve(_context), do: {:ok, %Result{params: %{}, identity: "runtime-config-test"}}
+  end
+
   defmodule Landing do
-    use Favn.Namespace,
-      relation: [connection: :warehouse],
-      runtime_config: [Bundles.platform()]
+    use Favn.Namespace
+
+    relation(connection: :warehouse)
+    runtime_config(Bundles.platform())
   end
 
   defmodule Landing.GitHub do
-    use Favn.Namespace, runtime_config: [Bundles.github()]
+    use Favn.Namespace
+
+    runtime_config(Bundles.github())
   end
 
   defmodule Landing.GitHub.Repositories do
@@ -47,6 +59,29 @@ defmodule Favn.RuntimeConfigDSLTest do
   defmodule Landing.GitHub.SQLSummary do
     use Favn.SQLAsset
 
+    runtime_config(:github, organization: env!("GITHUB_ORGANIZATION"))
+    runtime_inputs(Favn.RuntimeConfigDSLTest.SQLInputs)
+    materialized(:view)
+
+    query do
+      ~SQL"select 1 as value"
+    end
+  end
+
+  defmodule Landing.GitHub.SQLWithoutInputs do
+    use Favn.SQLAsset
+
+    materialized(:view)
+
+    query do
+      ~SQL"select 1 as value"
+    end
+  end
+
+  defmodule Landing.OtherSQL do
+    use Favn.SQLAsset
+
+    runtime_inputs(Favn.RuntimeConfigDSLTest.SQLInputs)
     materialized(:view)
 
     query do
@@ -135,9 +170,43 @@ defmodule Favn.RuntimeConfigDSLTest do
     assert asset.runtime_config.github.api_key == Ref.secret_env!("GITHUB_API_KEY")
   end
 
-  test "namespace runtime config is not injected into SQL assets" do
+  test "SQL assets merge root-to-leaf namespace bundles and direct declarations" do
     assert {:ok, [asset]} = Compiler.compile_module_assets(Landing.GitHub.SQLSummary)
-    assert asset.runtime_config == %{}
+
+    assert asset.runtime_config == %{
+             platform: %{
+               environment: Ref.env!("APP_ENVIRONMENT"),
+               landing_root: Ref.env!("LANDING_ROOT")
+             },
+             github: %{
+               url: Ref.env!("GITHUB_URL"),
+               username: Ref.env!("GITHUB_USERNAME"),
+               api_key: Ref.secret_env!("GITHUB_API_KEY"),
+               enterprise_url: Ref.env!("GITHUB_ENTERPRISE_URL", required?: false),
+               organization: Ref.env!("GITHUB_ORGANIZATION")
+             }
+           }
+
+    assert Favn.Manifest.Asset.from_asset(asset).runtime_config == asset.runtime_config
+  end
+
+  test "SQL assets outside a selected namespace do not inherit sibling bundles" do
+    assert {:ok, [asset]} = Compiler.compile_module_assets(Landing.OtherSQL)
+
+    assert asset.runtime_config == %{
+             platform: %{
+               environment: Ref.env!("APP_ENVIRONMENT"),
+               landing_root: Ref.env!("LANDING_ROOT")
+             }
+           }
+  end
+
+  test "SQL assets require runtime_inputs when inherited runtime config is non-empty" do
+    assert {:error, {:invalid_compiled_assets, message}} =
+             Compiler.compile_module_assets(Landing.GitHub.SQLWithoutInputs)
+
+    assert message =~
+             "SQLAsset runtime_config requires runtime_inputs so the resolved values have an explicit consumer"
   end
 
   test "multi-assets flatten a selected bundle into every generated asset" do
@@ -160,7 +229,8 @@ defmodule Favn.RuntimeConfigDSLTest do
 
     Code.compile_string("""
     defmodule #{inspect(root)} do
-      use Favn.Namespace, runtime_config: [Favn.RuntimeConfigDSLTest.Bundles.github()]
+      use Favn.Namespace
+      runtime_config Favn.RuntimeConfigDSLTest.Bundles.github()
     end
     """)
 
@@ -174,6 +244,37 @@ defmodule Favn.RuntimeConfigDSLTest do
       end
       """)
     end
+  end
+
+  test "conflicting inherited and direct SQL declarations use the shared conflict semantics" do
+    suffix = System.unique_integer([:positive])
+    root = Module.concat(__MODULE__, "SQLConflict#{suffix}")
+    asset = Module.concat(root, Asset)
+
+    Code.compile_string("""
+    defmodule #{inspect(root)} do
+      use Favn.Namespace
+      runtime_config Favn.RuntimeConfigDSLTest.Bundles.github()
+    end
+    """)
+
+    Code.compile_string("""
+    defmodule #{inspect(asset)} do
+      use Favn.SQLAsset
+
+      runtime_config :github, api_key: secret_env!("OTHER_GITHUB_API_KEY")
+      runtime_inputs Favn.RuntimeConfigDSLTest.SQLInputs
+      materialized :view
+
+      query do
+        ~SQL"select 1 as value"
+      end
+    end
+    """)
+
+    assert {:error, {:invalid_compiled_assets, message}} = Compiler.compile_module_assets(asset)
+    assert message =~ "conflicting runtime config :github.api_key"
+    assert message =~ inspect(asset)
   end
 
   test "conflicting duplicate fields in one inline declaration fail at compile time" do
@@ -194,15 +295,21 @@ defmodule Favn.RuntimeConfigDSLTest do
     end
   end
 
-  test "namespace invalid-input diagnostics do not inspect supplied values" do
+  test "legacy namespace options fail without inspecting supplied values" do
     resolved_secret = "resolved-super-secret"
+    module = Module.concat(__MODULE__, "LegacyNamespace#{System.unique_integer([:positive])}")
 
     error =
-      assert_raise ArgumentError, fn ->
-        Favn.Namespace.normalize_config!(runtime_config: resolved_secret)
+      assert_raise CompileError, fn ->
+        Code.compile_string("""
+        defmodule #{inspect(module)} do
+          use Favn.Namespace, runtime_config: #{inspect(resolved_secret)}
+        end
+        """)
       end
 
-    refute error.message =~ resolved_secret
+    assert error.description =~ "accepts declarations as macros"
+    refute Exception.message(error) =~ resolved_secret
   end
 
   test "legacy source_config macro is removed" do

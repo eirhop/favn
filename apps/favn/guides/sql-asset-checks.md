@@ -21,20 +21,20 @@ Use a transactional SQL check when all of these are true:
 Good examples include required keys, duplicate counts, accepted enum values,
 row-count thresholds, and candidate-versus-existing-target drift.
 
-Do not use a transactional SQL check for:
+Choose the owning tool for adjacent work:
 
-- transformation logic that belongs in the asset's main `query`;
-- external API calls, file checks, or other imperative work—use an upstream
-  `Favn.Asset` or source client instead;
-- dependency ordering or upstream readiness—declare `depends` and use
+- keep transformation logic in the asset's main `query`;
+- use an upstream `Favn.Asset` or source client for external API calls, file
+  checks, and other imperative work;
+- declare `depends` and use
   freshness policy instead;
-- mutating repair SQL or side effects—checks are read-only validation;
-- returning invalid rows or large samples—return aggregate counts and inspect
-  data separately; or
-- views or adapters that cannot run Favn's write plan inside an active
-  transaction.
+- keep mutating repair SQL and side effects at an explicit execution edge;
+- return aggregate counts and inspect invalid rows or large samples separately;
+  and
+- use table or incremental materialization with an adapter that runs Favn's
+  write plan inside an active transaction.
 
-Checks are publication gates and quality annotations, not a general test runner.
+Treat checks as publication gates and quality annotations.
 
 ## Define Checks
 
@@ -46,11 +46,9 @@ contracts have a separate budget of at most three grouped generated checks.
 defmodule MyApp.Assets.NormalizedRecords do
   @moduledoc "Normalized records with transactional quality checks."
 
-  use Favn.Namespace,
-    relation: [connection: :main, catalog: "normalized", schema: "default"]
-
   use Favn.SQLAsset
 
+  relation connection: :main, catalog: "normalized", schema: "default"
   materialized :table
 
   check :candidate_has_valid_keys,
@@ -116,8 +114,8 @@ warnings and no-ops remain successful asset executions, so normal freshness
 updates and downstream gating continue.
 
 Checked materialization requires an adapter that can execute Favn's write plan
-inside the active transaction. Views are unsupported because their future rows
-are not a fixed snapshot covered by that transaction.
+inside the active transaction and a table or incremental candidate whose rows
+are covered by that transaction.
 
 ### Choose The Phase
 
@@ -201,12 +199,10 @@ defmodule MyApp.SQL.Quality do
 end
 
 defmodule MyApp.Assets.NormalizedRecords do
-  use Favn.Namespace,
-    relation: [connection: :main, catalog: "normalized", schema: "default"]
-
   use MyApp.SQL.Quality
   use Favn.SQLAsset
 
+  relation connection: :main, catalog: "normalized", schema: "default"
   materialized :table
 
   check :candidate_has_rows, at: :before_materialize, on_violation: :fail do

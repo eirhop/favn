@@ -13,10 +13,13 @@ defmodule FavnAuthoringTest do
     def asset(_ctx), do: :ok
   end
 
-  defmodule DiscoveredSourceOrders do
-    use Favn.Namespace,
-      relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
+  defmodule DiscoveredRaw do
+    use Favn.Namespace
 
+    relation(connection: :warehouse, catalog: "raw", schema: "commerce")
+  end
+
+  defmodule DiscoveredRaw.Orders do
     use Favn.Asset
 
     relation(name: "orders")
@@ -24,10 +27,7 @@ defmodule FavnAuthoringTest do
     def asset(_ctx), do: :ok
   end
 
-  defmodule DiscoveredSourceCustomers do
-    use Favn.Namespace,
-      relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
-
+  defmodule DiscoveredRaw.Customers do
     use Favn.Asset
 
     relation(name: "customers")
@@ -35,12 +35,16 @@ defmodule FavnAuthoringTest do
     def asset(_ctx), do: :ok
   end
 
-  defmodule DiscoveredCustomer360 do
-    use Favn.Namespace,
-      relation: [connection: :warehouse, catalog: "gold", schema: "commerce"]
+  defmodule DiscoveredGold do
+    use Favn.Namespace
 
+    relation(connection: :warehouse, catalog: "gold", schema: "commerce")
+  end
+
+  defmodule DiscoveredGold.Customer360 do
     use Favn.SQLAsset
 
+    relation(true)
     materialized(:view)
 
     query do
@@ -77,9 +81,9 @@ defmodule FavnAuthoringTest do
   test "list_assets/1 uses discovered catalog dependency inference" do
     app =
       load_test_app!([
-        DiscoveredSourceOrders,
-        DiscoveredSourceCustomers,
-        DiscoveredCustomer360
+        DiscoveredRaw.Orders,
+        DiscoveredRaw.Customers,
+        DiscoveredGold.Customer360
       ])
 
     Application.put_env(:favn, :discovery, apps: [app], assets: :all)
@@ -89,14 +93,14 @@ defmodule FavnAuthoringTest do
              :ok,
              [
                %Favn.Asset{
-                 ref: {DiscoveredCustomer360, :asset},
+                 ref: {DiscoveredGold.Customer360, :asset},
                  depends_on: depends_on
                }
              ]
-           } = FavnAuthoring.list_assets(DiscoveredCustomer360)
+           } = FavnAuthoring.list_assets(DiscoveredGold.Customer360)
 
     assert Enum.sort(depends_on) ==
-             Enum.sort([{DiscoveredSourceOrders, :asset}, {DiscoveredSourceCustomers, :asset}])
+             Enum.sort([{DiscoveredRaw.Orders, :asset}, {DiscoveredRaw.Customers, :asset}])
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)
