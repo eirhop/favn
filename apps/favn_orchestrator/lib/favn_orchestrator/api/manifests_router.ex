@@ -85,6 +85,24 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           "Manifest version id already exists with different content"
         )
 
+      {:error, {:missing_execution_packages, missing}} ->
+        Response.error(
+          conn,
+          422,
+          "missing_execution_packages",
+          "Manifest index references execution packages that have not been uploaded",
+          %{hashes: missing}
+        )
+
+      {:error, {:execution_package_asset_mismatch, hash, _expected, _actual}} ->
+        Response.error(
+          conn,
+          422,
+          "execution_package_asset_mismatch",
+          "Manifest index assigns an execution package to the wrong asset",
+          %{hash: hash}
+        )
+
       {:error, :service_unauthorized} ->
         authentication_error(conn, :service_unauthorized)
 

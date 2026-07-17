@@ -62,6 +62,12 @@ submitted values as `ctx.params`, and resolved environment values/secrets as
 `ctx.runtime_config`. `RunnerWork` carries the typed pipeline context and
 absolute deadline explicitly rather than duplicating them inside metadata.
 
+Runner registration stores only the compact pinned manifest index. Before one
+selected SQL asset is admitted, the orchestrator loads that asset's immutable
+execution package and attaches it to `%Favn.Contracts.RunnerWork{}`. The runner
+verifies both package hash and asset ref before resolving runtime inputs or
+opening a SQL session. It has no inline-SQL or compiled-module fallback.
+
 Consumer and integration packages implement `Favn.Runner.Plugin` from
 `favn_core`; they never depend on this internal app merely to extend the runner
 lifecycle. The root uses `:rest_for_one` ordering with the extension supervisor
@@ -113,7 +119,7 @@ finite admission/catalog limit, but the pool does not coordinate across runner
 nodes, does not increase catalog/write concurrency, and does not replace finite
 DuckLake catalog `write_concurrency`, especially on low-tier Azure PostgreSQL
 metadata stores.
-SQL asset manifest payloads carry versioned stable session resource names. The
+SQL asset execution packages carry versioned stable session resource names. The
 runner combines those names with rendered catalog requirements and passes both
 sets to the SQL client before physical-session creation; it never embeds script
 files or resolved secret values in the manifest.

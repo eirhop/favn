@@ -8,6 +8,7 @@ defmodule Favn.Contracts.RunnerWork do
   """
 
   alias Favn.Plan.NodeIdentity
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Ref
   alias Favn.Run.PipelineContext
 
@@ -26,6 +27,7 @@ defmodule Favn.Contracts.RunnerWork do
           stage: non_neg_integer(),
           params: map(),
           runtime_input_pin: Favn.RuntimeInput.Pin.t() | nil,
+          execution_package: ExecutionPackage.t() | nil,
           pipeline: PipelineContext.t() | nil,
           deadline_at: DateTime.t() | nil,
           trigger: map(),
@@ -46,6 +48,7 @@ defmodule Favn.Contracts.RunnerWork do
             stage: 0,
             params: %{},
             runtime_input_pin: nil,
+            execution_package: nil,
             pipeline: nil,
             deadline_at: nil,
             trigger: %{},

@@ -16,8 +16,9 @@ defmodule Favn do
   - `generate_manifest/1`: build the canonical manifest
   - `build_manifest/1`: build the manifest plus diagnostics metadata
   - `serialize_manifest/1`, `hash_manifest/1`,
-    `validate_manifest_compatibility/1`, `pin_manifest_version/2`: work with
-    manifest payloads and versions
+    `validate_manifest_compatibility/1`, `pin_manifest_version/2`,
+    `prepare_manifest_publication/2`: work with manifest indexes, versions, and
+    immutable execution packages
   - `resolve_pipeline/2`: resolve one pipeline to concrete targets and context
   - `plan_asset_run/2`: build a deterministic execution plan
 
@@ -63,6 +64,14 @@ defmodule Favn do
       {:ok, resolution} = Favn.resolve_pipeline(MyApp.Pipelines.DailySales)
       {:ok, manifest} = Favn.generate_manifest()
       {:ok, version} = Favn.pin_manifest_version(manifest)
+
+  Deployment tooling should preserve the complete execution artifact set:
+
+      {:ok, build} = Favn.build_manifest()
+      {:ok, publication} = Favn.prepare_manifest_publication(build)
+
+  `publication.version` is the compact schema-8 manifest index. SQL assets point
+  to immutable entries in `publication.execution_packages` by content hash.
 
   ## Retries, replay, and runtime-input stability
 
@@ -302,6 +311,21 @@ defmodule Favn do
           {:ok, Favn.Manifest.Version.t()} | {:error, term()}
   def pin_manifest_version(manifest, opts \\ []) when is_list(opts) do
     FavnAuthoring.pin_manifest_version(manifest, opts)
+  end
+
+  @doc """
+  Prepares a manifest build for scalable publication.
+
+  The returned publication contains one compact pinned manifest index and the
+  exact immutable SQL execution packages referenced by it. Runtime publishers
+  upload only packages the orchestrator does not already have, then register the
+  compact index.
+  """
+  @spec prepare_manifest_publication(Favn.Manifest.Build.t(), keyword()) ::
+          {:ok, Favn.Manifest.Publication.t()} | {:error, term()}
+  def prepare_manifest_publication(%Favn.Manifest.Build{} = build, opts \\ [])
+      when is_list(opts) do
+    FavnAuthoring.prepare_manifest_publication(build, opts)
   end
 
   @doc """

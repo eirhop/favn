@@ -58,7 +58,9 @@ Important files:
 - `bin/start`: starts the backend runtime and waits for readiness.
 - `bin/stop`: stops the backend runtime by PID file.
 - `env/backend.env.example`: supported backend environment keys.
-- `runner/manifest.json`: packaged manifest used by the backend launcher.
+- `runner/manifest-index.json`: compact packaged manifest index.
+- `runner/execution-packages/<sha256>.json`: immutable SQL execution artifacts
+  referenced by the index.
 - `runner/metadata.json`: packaged manifest identity metadata.
 - `OPERATOR_NOTES.md`: artifact-local notes and unsupported modes.
 
@@ -181,15 +183,16 @@ set -a
 . "$artifact_dir/env/backend.env"
 set +a
 mix favn.bootstrap.single \
-  --manifest "$artifact_dir/runner/manifest.json" \
+  --manifest "$artifact_dir/runner/manifest-index.json" \
   --orchestrator-url http://127.0.0.1:4101 \
   --service-token "$FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN" \
   --operator-username "$FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" \
   --operator-password "$FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD"
 ```
 
-`mix favn.bootstrap.single` verifies service-token auth, validates the manifest,
-logs in the bootstrap operator, registers the manifest, activates it by default
+`mix favn.bootstrap.single` verifies service-token auth, validates the compact
+index and its exact sibling package set, uploads only missing packages with
+gzip, logs in the bootstrap operator, registers the index, activates it by default
 with operator actor context, asks the orchestrator to register the persisted
 manifest with the local runner, and verifies active manifest selection.
 After sourcing `env/backend.env`, operator credentials may also be omitted from

@@ -9,6 +9,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
@@ -79,7 +80,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       run_id: "run_sql_catalog_scope",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      asset_ref: ref
+      asset_ref: ref,
+      execution_package: execution_package_for(version)
     }
 
     assert {:ok, result} = FavnRunner.run(work)
@@ -103,7 +105,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       run_id: "run_sql_resource_scope",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      asset_ref: ref
+      asset_ref: ref,
+      execution_package: execution_package_for(version)
     }
 
     assert {:ok, %{status: :ok}} = FavnRunner.run(work)
@@ -144,7 +147,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       run_id: "run_sql_relation_input_catalog_scope",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      asset_ref: ref
+      asset_ref: ref,
+      execution_package: execution_package_for(version)
     }
 
     assert {:ok, result} = FavnRunner.run(work)
@@ -177,7 +181,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         run_id: "run_sql_in_process",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        asset_ref: ref
+        asset_ref: ref,
+        execution_package: execution_package_for(version)
       }
 
     assert {:ok, result} = FavnRunner.run(work)
@@ -198,7 +203,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       run_started_at: run_started_at,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      asset_ref: ref
+      asset_ref: ref,
+      execution_package: execution_package_for(version)
     }
 
     assert {:ok, %{status: :ok}} = FavnRunner.run(work)
@@ -227,6 +233,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
       asset_ref: ref,
+      execution_package: execution_package_for(version),
       node_identity: node_identity,
       params: %{submitted: 7}
     }
@@ -538,7 +545,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         run_id: "run_sql_manifest_only",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        asset_ref: ref
+        asset_ref: ref,
+        execution_package: execution_package_for(version)
       }
 
     assert {:ok, result} = FavnRunner.run(work)
@@ -549,9 +557,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert %{type: :unresolved_asset_ref} = asset_result.error
   end
 
-  test "manifest execution fails when sql payload is missing" do
+  test "manifest execution fails when the work package is missing" do
     ref = {FavnRunner.ExecutionSQLAssetTest.MissingPayloadSQLAsset, :asset}
-    version = register_manifest_without_sql_execution!(ref)
+    version = register_sql_manifest!(ref)
 
     work =
       %RunnerWork{
@@ -561,12 +569,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         asset_ref: ref
       }
 
-    assert {:ok, result} = FavnRunner.run(work)
-    assert result.status == :error
-
-    assert [asset_result] = result.asset_results
-    assert asset_result.status == :error
-    assert %{type: :invalid_sql_asset_definition, phase: :runtime} = asset_result.error
+    assert {:error, :execution_package_required} = FavnRunner.run(work)
   end
 
   test "manifest sql execution preflights missing runtime connection before execution" do
@@ -580,7 +583,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         run_id: "run_sql_missing_connection",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        asset_ref: ref
+        asset_ref: ref,
+        execution_package: execution_package_for(version)
       }
 
     assert {:ok, result} = FavnRunner.run(work)
@@ -604,7 +608,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       run_id: "run_sql_secret_failure",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      asset_ref: ref
+      asset_ref: ref,
+      execution_package: execution_package_for(version)
     }
 
     assert {:ok, result} = FavnRunner.run(work)
@@ -1082,7 +1087,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         registry_name: FavnRunner.ConnectionRegistry
       )
 
-    version = register_inspection_manifest!(ref, relation)
+    version = register_sql_manifest!(ref, relation)
 
     request = %RelationInspectionRequest{
       manifest_version_id: version.manifest_version_id,
@@ -1092,38 +1097,6 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert {:ok, result} = FavnRunner.Inspection.inspect_relation(request, version)
     assert [%{code: :row_count_failed, message: "safe row count failure"}] = result.warnings
-  end
-
-  defp register_inspection_manifest!(ref, relation) do
-    manifest = %Manifest{
-      schema_version: 7,
-      runner_contract_version: 7,
-      assets: [
-        %Asset{
-          ref: ref,
-          module: elem(ref, 0),
-          name: :asset,
-          type: :sql,
-          execution: %{entrypoint: :asset, arity: 1},
-          relation: relation,
-          materialization: :table,
-          sql_execution: nil
-        }
-      ],
-      pipelines: [],
-      schedules: [],
-      graph: %Graph{nodes: [ref], edges: [], topo_order: [ref]},
-      metadata: %{}
-    }
-
-    {:ok, version} =
-      Version.new(manifest,
-        manifest_version_id:
-          "mv_inspection_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
-      )
-
-    :ok = FavnRunner.register_manifest(version)
-    version
   end
 
   defp register_sql_manifest!(
@@ -1145,10 +1118,13 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         enforce_query_root: true
       )
 
+    execution = %SQLExecution{sql: sql, template: template, sql_definitions: []}
+    package = execution_package!(ref, execution)
+
     manifest =
       %Manifest{
-        schema_version: 7,
-        runner_contract_version: 7,
+        schema_version: 8,
+        runner_contract_version: 8,
         assets: [
           %Asset{
             ref: ref,
@@ -1160,11 +1136,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
             materialization: :table,
             relation_inputs: relation_inputs,
             session_requirements: session_requirements,
-            sql_execution: %SQLExecution{
-              sql: sql,
-              template: template,
-              sql_definitions: []
-            }
+            execution_package_hash: package.content_hash,
+            assurance: assurance(execution)
           }
         ],
         pipelines: [],
@@ -1180,7 +1153,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     :ok = FavnRunner.register_manifest(version)
-    version
+    remember_execution_package(version, package)
   end
 
   defp register_runtime_input_sql_manifest!(ref, resolver, opts \\ []) do
@@ -1200,9 +1173,18 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         enforce_query_root: true
       )
 
+    execution = %SQLExecution{
+      sql: sql,
+      template: template,
+      runtime_inputs: %RuntimeInputResolverRef{module: resolver},
+      sql_definitions: []
+    }
+
+    package = execution_package!(ref, execution)
+
     manifest = %Manifest{
-      schema_version: 7,
-      runner_contract_version: 7,
+      schema_version: 8,
+      runner_contract_version: 8,
       assets: [
         %Asset{
           ref: ref,
@@ -1213,12 +1195,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
           relation: relation,
           window: window,
           materialization: materialization,
-          sql_execution: %SQLExecution{
-            sql: sql,
-            template: template,
-            runtime_inputs: %RuntimeInputResolverRef{module: resolver},
-            sql_definitions: []
-          }
+          execution_package_hash: package.content_hash,
+          assurance: assurance(execution)
         }
       ],
       pipelines: [],
@@ -1235,7 +1213,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     :ok = FavnRunner.register_manifest(version)
-    version
+    remember_execution_package(version, package)
   end
 
   defp register_checked_sql_manifest!(ref, checks, runtime_inputs \\ nil, contract \\ nil) do
@@ -1253,9 +1231,20 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     checks = generated_contract_checks(contract) ++ checks
 
+    execution = %SQLExecution{
+      sql: "SELECT 1 AS id",
+      template: template,
+      runtime_inputs: runtime_inputs,
+      contract: contract,
+      sql_definitions: [],
+      checks: checks
+    }
+
+    package = execution_package!(ref, execution)
+
     manifest = %Manifest{
-      schema_version: 7,
-      runner_contract_version: 7,
+      schema_version: 8,
+      runner_contract_version: 8,
       assets: [
         %Asset{
           ref: ref,
@@ -1265,14 +1254,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
           execution: %{entrypoint: :asset, arity: 1},
           relation: relation,
           materialization: :table,
-          sql_execution: %SQLExecution{
-            sql: "SELECT 1 AS id",
-            template: template,
-            runtime_inputs: runtime_inputs,
-            contract: contract,
-            sql_definitions: [],
-            checks: checks
-          }
+          execution_package_hash: package.content_hash,
+          assurance: assurance(execution)
         }
       ],
       pipelines: [],
@@ -1288,7 +1271,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     :ok = FavnRunner.register_manifest(version)
-    version
+    remember_execution_package(version, package)
   end
 
   defp generated_contract_checks(nil), do: []
@@ -1352,7 +1335,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       run_id: run_id,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      asset_ref: ref
+      asset_ref: ref,
+      execution_package: execution_package_for(version)
     }
   end
 
@@ -1403,10 +1387,18 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       "test/dynamic_manifest_hidden_source_asset.exs"
     )
 
+    execution = %SQLExecution{
+      sql: "SELECT * FROM #{inspect(deferred_module)}",
+      template: template,
+      sql_definitions: []
+    }
+
+    package = execution_package!(ref, execution)
+
     manifest =
       %Manifest{
-        schema_version: 7,
-        runner_contract_version: 7,
+        schema_version: 8,
+        runner_contract_version: 8,
         assets: [
           %Asset{
             ref: ref,
@@ -1416,11 +1408,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
             execution: %{entrypoint: :asset, arity: 1},
             relation: relation,
             materialization: :view,
-            sql_execution: %SQLExecution{
-              sql: "SELECT * FROM #{inspect(deferred_module)}",
-              template: template,
-              sql_definitions: []
-            }
+            execution_package_hash: package.content_hash,
+            assurance: assurance(execution)
           }
         ],
         pipelines: [],
@@ -1436,49 +1425,13 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     :ok = FavnRunner.register_manifest(version)
-    version
-  end
-
-  defp register_manifest_without_sql_execution!(ref) do
-    relation =
-      RelationRef.new!(%{connection: :runner_sql_runtime, name: "manifest_sql_asset_missing"})
-
-    manifest =
-      %Manifest{
-        schema_version: 7,
-        runner_contract_version: 7,
-        assets: [
-          %Asset{
-            ref: ref,
-            module: elem(ref, 0),
-            name: :asset,
-            type: :sql,
-            execution: %{entrypoint: :asset, arity: 1},
-            relation: relation,
-            materialization: :view,
-            sql_execution: nil
-          }
-        ],
-        pipelines: [],
-        schedules: [],
-        graph: %Graph{nodes: [ref], edges: [], topo_order: [ref]},
-        metadata: %{}
-      }
-
-    {:ok, version} =
-      Version.new(manifest,
-        manifest_version_id:
-          "mv_sql_missing_payload_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
-      )
-
-    :ok = FavnRunner.register_manifest(version)
-    version
+    remember_execution_package(version, package)
   end
 
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 7,
-      runner_contract_version: 7,
+      schema_version: 8,
+      runner_contract_version: 8,
       assets: [
         %Asset{
           ref: ref,
@@ -1503,6 +1456,32 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     :ok = FavnRunner.register_manifest(version)
     version
+  end
+
+  defp execution_package!(ref, %SQLExecution{} = execution) do
+    {:ok, package} = ExecutionPackage.new(ref, execution)
+    package
+  end
+
+  defp assurance(%SQLExecution{contract: nil, checks: []}), do: nil
+
+  defp assurance(%SQLExecution{} = execution) do
+    %{
+      contract: execution.contract,
+      checks:
+        Enum.map(execution.checks, fn check ->
+          Map.take(check, [:name, :origin, :claim_id, :at, :when, :on_violation, :message])
+        end)
+    }
+  end
+
+  defp remember_execution_package(%Version{} = version, %ExecutionPackage{} = package) do
+    Process.put({:execution_package, version.manifest_version_id}, package)
+    version
+  end
+
+  defp execution_package_for(%Version{} = version) do
+    Process.get({:execution_package, version.manifest_version_id})
   end
 
   defp reload_fake_connection(name, adapter) when is_atom(name) and is_atom(adapter) do

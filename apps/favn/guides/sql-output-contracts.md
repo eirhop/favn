@@ -158,8 +158,9 @@ and custom checks in the consuming asset contract, where their meaning remains
 visible. Include a fragment once at its output position and keep every flattened
 column name unique. Favn stores the flattened canonical columns used for
 validation plus a bounded provenance record containing the fragment module,
-start index, and column names. Published manifests therefore carry the complete
-runtime contract.
+start index, and column names. The compact manifest index therefore carries the
+complete operator-facing contract while executable checks remain in the
+content-addressed execution package.
 
 ### Unique Keys
 
@@ -325,8 +326,9 @@ column :record_id, :integer, null: false, renamed_from: :id
 ```
 
 This records evolution intent for review and UI diffing. Emit `record_id`
-explicitly in the query. The immutable manifest version captures the complete
-authored definition, while semantic diffing explains what changed.
+explicitly in the query. The immutable manifest index and referenced execution
+package capture the complete authored definition, while semantic diffing
+explains what changed.
 
 ## Keep Custom Rules In `check`
 

@@ -3,11 +3,16 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
 
   alias Ecto.Adapters.SQL
   alias Favn.Manifest
+  alias Favn.Manifest.Asset
+  alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Graph
   alias Favn.Manifest.Identity
+  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInput.Resolution
   alias Favn.Storage.Adapter.Postgres, as: Adapter
+  alias Favn.SQL.Template
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -115,6 +120,65 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert stored_scheduler.pipeline_module == MyApp.Pipeline
         assert stored_scheduler.version == 1
         assert stored_scheduler.last_due_at == last_due_at
+    end
+  end
+
+  test "atomically requires execution packages before storing manifest indexes", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        ref = {MyApp.PostgresPackagedSQLAsset, :asset}
+        package = execution_package(ref)
+        version = packaged_manifest_version(ref, package)
+        package_hash = package.content_hash
+
+        assert {:error, {:missing_execution_packages, [^package_hash]}} =
+                 Adapter.put_manifest_version(version, opts)
+
+        assert {:ok, [^package_hash]} =
+                 Adapter.missing_execution_package_hashes([package.content_hash], opts)
+
+        assert :ok = Adapter.put_execution_packages([package], opts)
+        assert {:ok, []} = Adapter.missing_execution_package_hashes([package.content_hash], opts)
+        assert {:ok, ^package} = Adapter.get_execution_package(package.content_hash, opts)
+
+        wrong_ref = {MyApp.PostgresWrongPackagedSQLAsset, :asset}
+        wrong_version = packaged_manifest_version(wrong_ref, package)
+
+        assert {:error,
+                {:execution_package_asset_mismatch, ^package_hash, ^wrong_ref, actual_ref}} =
+                 Adapter.put_manifest_version(wrong_version, opts)
+
+        assert actual_ref == %{
+                 module: Atom.to_string(elem(ref, 0)),
+                 name: Atom.to_string(elem(ref, 1))
+               }
+
+        assert :ok = Adapter.put_manifest_version(version, opts)
+        assert {:ok, stored} = Adapter.get_manifest_version(version.manifest_version_id, opts)
+        assert stored.manifest == version.manifest
+    end
+  end
+
+  test "concurrent identical manifest publications are idempotent", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        ref = {MyApp.PostgresConcurrentPackagedSQLAsset, :asset}
+        package = execution_package(ref)
+        version = packaged_manifest_version(ref, package)
+
+        assert :ok = Adapter.put_execution_packages([package], opts)
+
+        assert [:ok, :ok] =
+                 concurrent_results(
+                   fn -> Adapter.put_manifest_version(version, opts) end,
+                   fn -> Adapter.put_manifest_version(version, opts) end
+                 )
     end
   end
 
@@ -1241,21 +1305,21 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
   end
 
   defp replace_manifest_value(manifest_version_id, from, to) do
-    assert {:ok, %{rows: [[manifest_json]]}} =
+    assert {:ok, %{rows: [[manifest_index_json]]}} =
              SQL.query(
                Repo,
-               "SELECT manifest_json FROM favn_manifest_versions WHERE manifest_version_id = $1",
+               "SELECT manifest_index_json FROM favn_manifest_versions WHERE manifest_version_id = $1",
                [manifest_version_id]
              )
 
-    manifest_json = replace_string_value(manifest_json, from, to)
-    content_hash = manifest_content_hash!(manifest_json)
+    manifest_index_json = replace_string_value(manifest_index_json, from, to)
+    content_hash = manifest_content_hash!(manifest_index_json)
 
     assert {:ok, _} =
              SQL.query(
                Repo,
-               "UPDATE favn_manifest_versions SET manifest_json = $1, content_hash = $2 WHERE manifest_version_id = $3",
-               [manifest_json, content_hash, manifest_version_id]
+               "UPDATE favn_manifest_versions SET manifest_index_json = $1, content_hash = $2 WHERE manifest_version_id = $3",
+               [manifest_index_json, content_hash, manifest_version_id]
              )
 
     content_hash
@@ -1314,13 +1378,47 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
 
   defp replace_string_value_in_term(value, _from, _to), do: value
 
-  defp manifest_content_hash!(manifest_json) do
-    manifest_json
+  defp manifest_content_hash!(manifest_index_json) do
+    manifest_index_json
     |> JSON.decode!()
     |> Identity.hash_manifest()
     |> case do
       {:ok, hash} -> hash
     end
+  end
+
+  defp execution_package(ref) do
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/postgres_execution_package.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    {:ok, package} = ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+    package
+  end
+
+  defp packaged_manifest_version(ref, package) do
+    asset = %Asset{
+      ref: ref,
+      module: elem(ref, 0),
+      name: elem(ref, 1),
+      type: :sql,
+      execution_package_hash: package.content_hash
+    }
+
+    {:ok, version} =
+      Version.new(
+        %Manifest{assets: [asset], graph: %Graph{nodes: [ref], topo_order: [ref]}},
+        manifest_version_id: "mv_pg_package_#{System.unique_integer([:positive])}"
+      )
+
+    version
   end
 
   defp concurrent_results(fun_a, fun_b) do

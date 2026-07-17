@@ -4,8 +4,8 @@ defmodule FavnTestSupport.ManifestScalabilityMeasurement do
 
   Each sample runs in its own process. The caller samples that process while it
   builds, versions, serializes, compresses, hashes, decodes, and attributes the
-  fixture. The result is evidence for a future manifest-contract decision; this
-  module is deliberately test-only and is not a production API.
+  compact schema-8 index. This module is deliberately test-only and is not a
+  production API.
   """
 
   alias Favn.Manifest.Serializer
@@ -91,7 +91,7 @@ defmodule FavnTestSupport.ManifestScalabilityMeasurement do
         :measurement_complete,
         self(),
         %{
-          fixture_version: 1,
+          fixture_version: 2,
           sample_count: 1,
           asset_count: asset_count,
           fixture: %{
@@ -272,16 +272,14 @@ defmodule FavnTestSupport.ManifestScalabilityMeasurement do
 
   defp attribution(decoded) do
     assets = Map.fetch!(decoded, "assets")
-    sql_executions = Enum.map(assets, &Map.fetch!(&1, "sql_execution"))
-    templates = Enum.map(sql_executions, &Map.fetch!(&1, "template"))
-    checks = Enum.flat_map(sql_executions, &Map.fetch!(&1, "checks"))
+    assurances = assets |> Enum.map(&Map.get(&1, "assurance")) |> Enum.reject(&is_nil/1)
+    checks = Enum.flat_map(assurances, &Map.fetch!(&1, "checks"))
 
     %{
       graph_json_bytes: encoded_size(Map.fetch!(decoded, "graph")),
       metadata_json_bytes: encoded_size(Map.fetch!(decoded, "metadata")),
       asset_field_value_json_bytes: aggregate_field_sizes(assets),
-      sql_execution_field_value_json_bytes: aggregate_field_sizes(sql_executions),
-      template_field_value_json_bytes: aggregate_field_sizes(templates),
+      assurance_field_value_json_bytes: aggregate_field_sizes(assurances),
       check_field_value_json_bytes: aggregate_field_sizes(checks)
     }
   end

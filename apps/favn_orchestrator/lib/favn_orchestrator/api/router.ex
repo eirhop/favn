@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.API.AuthRouter
   alias FavnOrchestrator.API.BackfillsRouter
   alias FavnOrchestrator.API.DTO
+  alias FavnOrchestrator.API.ExecutionPackagesRouter
   alias FavnOrchestrator.API.Filters
   alias FavnOrchestrator.API.ManifestPublication
   alias FavnOrchestrator.API.ManifestsRouter
@@ -116,6 +117,8 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   forward("/api/orchestrator/v1/manifests", to: ManifestsRouter)
+
+  forward("/api/orchestrator/v1/execution-packages", to: ExecutionPackagesRouter)
 
   forward("/api/orchestrator/v1/runs", to: RunsRouter)
 

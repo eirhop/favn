@@ -9,6 +9,7 @@ defmodule Favn.Manifest.Build do
 
   @type t :: %__MODULE__{
           manifest: map() | struct(),
+          execution_packages: [Favn.Manifest.ExecutionPackage.t()],
           diagnostics: [term()],
           generated_at: DateTime.t() | nil,
           compiler_version: String.t() | nil,
@@ -16,6 +17,7 @@ defmodule Favn.Manifest.Build do
         }
 
   defstruct manifest: %{},
+            execution_packages: [],
             diagnostics: [],
             generated_at: nil,
             compiler_version: nil,
@@ -23,6 +25,7 @@ defmodule Favn.Manifest.Build do
 
   @type opt ::
           {:diagnostics, [term()]}
+          | {:execution_packages, [Favn.Manifest.ExecutionPackage.t()]}
           | {:generated_at, DateTime.t()}
           | {:compiler_version, String.t()}
           | {:build_metadata, map()}
@@ -31,6 +34,7 @@ defmodule Favn.Manifest.Build do
   def new(manifest, opts \\ []) when is_list(opts) do
     %__MODULE__{
       manifest: manifest,
+      execution_packages: Keyword.get(opts, :execution_packages, []),
       diagnostics: Keyword.get(opts, :diagnostics, []),
       generated_at: Keyword.get(opts, :generated_at, DateTime.utc_now()),
       compiler_version: Keyword.get(opts, :compiler_version),

@@ -605,7 +605,8 @@ defmodule Favn.Dev.Stack do
     progress(opts, "building manifest")
 
     with {:ok, build} <- FavnAuthoring.build_manifest(),
-         {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
+         {:ok, publication} <- FavnAuthoring.prepare_manifest_publication(build),
+         version <- publication.version,
          :ok <-
            progress_step(opts, "waiting for orchestrator API", fn ->
              wait_orchestrator_health(
@@ -618,14 +619,7 @@ defmodule Favn.Dev.Stack do
            OrchestratorClient.publish_manifest(
              config.orchestrator_base_url,
              "",
-             %{
-               manifest_version_id: version.manifest_version_id,
-               content_hash: version.content_hash,
-               schema_version: version.schema_version,
-               runner_contract_version: version.runner_contract_version,
-               serialization_format: version.serialization_format,
-               manifest: version.manifest
-             },
+             publication,
              LocalContext.session_context()
            ),
          canonical_manifest_version_id <- canonical_manifest_version_id(published, version),

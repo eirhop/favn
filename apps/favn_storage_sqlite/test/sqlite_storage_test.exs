@@ -7,7 +7,10 @@ defmodule Favn.SQLiteStorageTest do
   alias Ecto.Adapters.SQL
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Graph
   alias Favn.Manifest.Identity
+  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
   alias Favn.Run
   alias Favn.RuntimeInput.Pin
@@ -15,6 +18,7 @@ defmodule Favn.SQLiteStorageTest do
   alias Favn.Scheduler.State, as: SchedulerState
   alias Favn.Storage
   alias Favn.Storage.Adapter.SQLite, as: Adapter
+  alias Favn.SQL.Template
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.ServiceTokens
@@ -91,6 +95,150 @@ defmodule Favn.SQLiteStorageTest do
     assert {:ok, fetched} = Storage.get_run("sqlite-run-1")
     assert fetched.id == run.id
     assert fetched.status == :running
+  end
+
+  test "atomically requires and persists execution packages for manifest indexes" do
+    ref = {Favn.SQLiteStorageTest, :packaged_sql_asset}
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/sqlite_execution_package.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    assert {:ok, package} =
+             ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+
+    manifest = %Manifest{
+      assets: [
+        %Asset{
+          ref: ref,
+          module: elem(ref, 0),
+          name: elem(ref, 1),
+          type: :sql,
+          execution_package_hash: package.content_hash
+        }
+      ],
+      graph: %Graph{nodes: [ref], topo_order: [ref]}
+    }
+
+    assert {:ok, version} =
+             Version.new(manifest, manifest_version_id: "manifest_with_execution_package")
+
+    assert {:error, {:missing_execution_packages, [missing_hash]}} =
+             OrchestratorStorage.put_manifest_version(version)
+
+    assert missing_hash == package.content_hash
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT COUNT(*) FROM favn_manifest_versions WHERE manifest_version_id = ?1",
+               [version.manifest_version_id]
+             )
+
+    assert {:ok, [package.content_hash]} ==
+             OrchestratorStorage.missing_execution_package_hashes([package.content_hash])
+
+    assert :ok = OrchestratorStorage.put_execution_packages([package])
+
+    assert {:ok, []} =
+             OrchestratorStorage.missing_execution_package_hashes([package.content_hash])
+
+    assert {:ok, ^package} = OrchestratorStorage.get_execution_package(package.content_hash)
+
+    wrong_ref = {Favn.SQLiteStorageTest, :wrong_packaged_sql_asset}
+
+    wrong_manifest = %Manifest{
+      assets: [
+        %Asset{
+          ref: wrong_ref,
+          module: elem(wrong_ref, 0),
+          name: elem(wrong_ref, 1),
+          type: :sql,
+          execution_package_hash: package.content_hash
+        }
+      ],
+      graph: %Graph{nodes: [wrong_ref], topo_order: [wrong_ref]}
+    }
+
+    assert {:ok, wrong_version} =
+             Version.new(wrong_manifest, manifest_version_id: "manifest_with_wrong_package_owner")
+
+    assert {:error, {:execution_package_asset_mismatch, package_hash, ^wrong_ref, actual_ref}} =
+             OrchestratorStorage.put_manifest_version(wrong_version)
+
+    assert package_hash == package.content_hash
+
+    assert actual_ref == %{
+             module: Atom.to_string(elem(ref, 0)),
+             name: Atom.to_string(elem(ref, 1))
+           }
+
+    assert :ok = OrchestratorStorage.put_manifest_version(version)
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               "SELECT COUNT(*) FROM favn_manifest_execution_packages WHERE manifest_version_id = ?1 AND package_hash = ?2",
+               [version.manifest_version_id, package.content_hash]
+             )
+  end
+
+  test "bulk persists execution packages and manifest references" do
+    pairs =
+      Enum.map(1..3, fn index ->
+        ref = {Module.concat([Favn.SQLiteStorageTest, "BulkAsset#{index}"]), :asset}
+        sql = "SELECT #{index} AS id"
+
+        template =
+          Template.compile!(sql,
+            file: "test/sqlite_bulk_execution_package.sql",
+            line: index,
+            module: __MODULE__,
+            scope: :query,
+            enforce_query_root: true
+          )
+
+        {:ok, package} =
+          ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+
+        {ref, package}
+      end)
+
+    assets =
+      Enum.map(pairs, fn {{module, name} = ref, package} ->
+        %Asset{
+          ref: ref,
+          module: module,
+          name: name,
+          type: :sql,
+          execution_package_hash: package.content_hash
+        }
+      end)
+
+    refs = Enum.map(pairs, &elem(&1, 0))
+    packages = Enum.map(pairs, &elem(&1, 1))
+
+    assert {:ok, version} =
+             Version.new(
+               %Manifest{assets: assets, graph: %Graph{nodes: refs, topo_order: refs}},
+               manifest_version_id: "manifest_with_bulk_execution_packages"
+             )
+
+    assert :ok = OrchestratorStorage.put_execution_packages(packages)
+    assert :ok = OrchestratorStorage.put_manifest_version(version)
+
+    assert %{rows: [[3]]} =
+             SQL.query!(
+               Repo,
+               "SELECT COUNT(*) FROM favn_manifest_execution_packages WHERE manifest_version_id = ?1",
+               [version.manifest_version_id]
+             )
   end
 
   test "atomically persists runtime-input pins and protects sensitive payloads", %{
@@ -1653,21 +1801,21 @@ defmodule Favn.SQLiteStorageTest do
   end
 
   defp replace_manifest_value(manifest_version_id, from, to) do
-    assert {:ok, %{rows: [[manifest_json]]}} =
+    assert {:ok, %{rows: [[manifest_index_json]]}} =
              SQL.query(
                Repo,
-               "SELECT manifest_json FROM favn_manifest_versions WHERE manifest_version_id = ?1",
+               "SELECT manifest_index_json FROM favn_manifest_versions WHERE manifest_version_id = ?1",
                [manifest_version_id]
              )
 
-    manifest_json = replace_string_value(manifest_json, from, to)
-    content_hash = manifest_content_hash!(manifest_json)
+    manifest_index_json = replace_string_value(manifest_index_json, from, to)
+    content_hash = manifest_content_hash!(manifest_index_json)
 
     assert {:ok, _} =
              SQL.query(
                Repo,
-               "UPDATE favn_manifest_versions SET manifest_json = ?1, content_hash = ?2 WHERE manifest_version_id = ?3",
-               [manifest_json, content_hash, manifest_version_id]
+               "UPDATE favn_manifest_versions SET manifest_index_json = ?1, content_hash = ?2 WHERE manifest_version_id = ?3",
+               [manifest_index_json, content_hash, manifest_version_id]
              )
 
     content_hash
@@ -1717,8 +1865,8 @@ defmodule Favn.SQLiteStorageTest do
 
   defp replace_string_value_in_term(value, _from, _to), do: value
 
-  defp manifest_content_hash!(manifest_json) do
-    manifest_json
+  defp manifest_content_hash!(manifest_index_json) do
+    manifest_index_json
     |> JSON.decode!()
     |> Identity.hash_manifest()
     |> case do

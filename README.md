@@ -48,7 +48,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.runs`, `mix favn.logs`, `mix favn.inspect`, `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, explicit service wrapper pid/log-write failures, structured local API failure diagnostics, and normalized runner RPC dispatch failures at the orchestrator boundary
 - the old SvelteKit frontend has been removed; local dev now starts a single operator process that runs orchestrator plus the thin Phoenix/LiveView `apps/favn_view` shell on the standard local web port, `http://127.0.0.1:4173`
-- local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
+- local development publishes one compact schema-8 manifest index plus immutable content-addressed SQL execution packages, then registers the same pinned index across runner and orchestrator so scheduled runs execute against the same identity without loading every generated SQL payload
 - run snapshot, run event, and operational-backfill read-model persistence store explicit JSON-safe storage records, not BEAM terms or reconstructed exception structs; runner/backfill failures are normalized, bounded, and redacted before durable storage
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
 - stage-parallel pipeline runs drain each submitted stage before failing later work, so independent sibling assets are reported even when one sibling fails; manifest-persisted freshness policies can skip already-fresh nodes, force selected nodes, block failed dependencies, and dirty downstream nodes only when an upstream actually refreshes
@@ -59,7 +59,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
 - single-node packaging now includes `mix favn.build.single` with a verified project-local backend-only SQLite launcher under `.favn/dist/single/<build_id>/`; it still depends on the installed runtime source root and is not a self-contained or relocatable release artifact (see `OPERATOR_NOTES.md` in each artifact)
-- backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates a manifest JSON file, registers and activates the manifest by default, asks the orchestrator to register that persisted manifest with the local runner, and reports service-auth active-manifest verification status; it does not make browser login/session/audit durable
+- backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates `manifest-index.json` and its sibling `execution-packages/`, uploads only missing packages with gzip, registers and activates the index by default, asks the orchestrator to register that persisted index with the local runner, and reports service-auth active-manifest verification status; it does not make browser login/session/audit durable
 - operational backfill foundations are implemented in the control plane for resolving ranges, dry-running plans, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; child pipeline backfills default to `refresh: :missing`, and operational backfill does not accept lookback-policy input until concrete runtime semantics exist
 - operational backfill read-model storage is derived projection state; the closeout migration to JSON-safe DTO storage rebuilds the durable backfill read-model tables, and operators can repopulate them with `mix favn.backfill repair --apply` from authoritative run snapshots/events when needed
 
@@ -386,7 +386,7 @@ Declare it once before the query with
 `runtime_inputs MyDataPlatform.Lakehouse.Raw.Orders.Inputs`. Returned values use
 the normal `@name` SQL placeholder and adapter binding path, including through
 nested `defsql`; they cannot add SQL source. The resolver module reference is
-stored in the manifest. Resolution is bounded to 30 seconds and by the remaining
+stored in the SQL asset's immutable execution package. Resolution is bounded to 30 seconds and by the remaining
 node deadline, rejects collisions and reserved window names, and exposes only
 safe identity/lineage. Before SQL starts, the orchestrator atomically persists a
 run/node pin; automatic attempts and safe restart recovery reuse it. Mark
@@ -952,12 +952,16 @@ runner process that exits during startup is reported as a service exit with log
 guidance instead of only as an unreachable node. `--root-dir` remains an
 install/runtime-source override for split-root workflows.
 
-Manifest publication accepts plain or gzip-compressed JSON. Local development
-publishes gzip by default; the orchestrator bounds both the compressed request
-(8 MiB by default) and expanded JSON (32 MiB by default) while ordinary API
-requests retain their 1 MiB parser limit. Production deployments can tune both
-manifest-specific budgets with the environment keys documented in the
-single-node operator runbook.
+Manifest-index and execution-package publication accepts plain or gzip-compressed
+JSON. Local development queries missing package hashes, uploads only those
+packages in bounded batches, and then publishes the compact index; all three
+requests use gzip by default. The orchestrator bounds compressed requests (8
+MiB by default), expanded JSON (32 MiB by default), package count (100), package
+size (4 MiB), and missing-hash queries (10,000), while ordinary API requests
+retain their 1 MiB parser limit. The missing-hash response advertises the
+effective request budgets so the local publisher applies configured lower
+limits before upload. Production deployments can tune the body budgets with the
+environment keys documented in the single-node operator runbook.
 
 Local tooling HTTP calls are plain HTTP loopback calls to Favn-managed local
 services. They intentionally do not support remote or HTTPS URLs in the local
@@ -1183,8 +1187,9 @@ environment fallbacks are also required. Bootstrap uses
 `FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN` for service auth, with
 `FAVN_ORCHESTRATOR_SERVICE_TOKEN` accepted only as a legacy fallback.
 The command verifies service-token auth, logs in the bootstrap operator when
-activation is enabled, reads and verifies the manifest JSON, registers the
-manifest, activates it by default with operator actor context, and calls
+activation is enabled, reads and verifies the compact manifest index and exact
+sibling execution-package set, queries and uploads only missing packages,
+registers the index, activates it by default with operator actor context, and calls
 `/api/orchestrator/v1/manifests/:manifest_version_id/runner/register` so the
 orchestrator registers the persisted manifest with the local runner. Repeating
 the command with the same manifest and runner registration is safe and
@@ -1229,9 +1234,9 @@ expose them through the adapter boundary.
 - implementation is owned by `apps/favn_local`
 - `mix favn.build.runner` is rooted in the current Mix project; `--root-dir`
   must match the current project root
-- runner artifacts include the pinned manifest and compiled beams from the
-  current project app so helper modules and connection modules are available at
-  execution time
+- runner artifacts include `manifest-index.json`, immutable
+  `execution-packages/<sha256>.json`, and compiled beams from the current project
+  app so helper modules and connection modules are available at execution time
 - install now materializes a runnable runtime workspace under
   `.favn/install/runtime_root` and records runtime metadata in
   `.favn/install/runtime.json`
@@ -1251,6 +1256,7 @@ part of the stable `v1` contract unless they are documented here or in
 - `Favn.resolve_pipeline/2`
 - `Favn.generate_manifest/0,1`
 - `Favn.build_manifest/0,1`
+- `Favn.prepare_manifest_publication/1,2`
 - `Favn.plan_asset_run/2`
 - `Favn.SQLClient.connect/1,2`, `query/2,3`, `execute/2,3`, `transaction/2,3`,
   `capabilities/1`, `relation/2`, `columns/2`, `with_connection/2,3`, and

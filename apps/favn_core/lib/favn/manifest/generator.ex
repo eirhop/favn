@@ -25,6 +25,7 @@ defmodule Favn.Manifest.Generator do
   alias Favn.Manifest.Build
   alias Favn.Manifest.Catalog
   alias Favn.Manifest.Compatibility
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Pipeline, as: ManifestPipeline
   alias Favn.Manifest.Schedule, as: ManifestSchedule
@@ -55,8 +56,12 @@ defmodule Favn.Manifest.Generator do
   @spec build(opts()) :: {:ok, Build.t()} | {:error, term()}
   def build(opts \\ []) when is_list(opts) do
     with {:ok, catalog} <- build_catalog(opts),
-         {:ok, manifest} <- manifest_from_catalog(catalog) do
-      {:ok, Build.new(manifest, diagnostics: catalog.diagnostics)}
+         {:ok, manifest, execution_packages} <- manifest_and_packages_from_catalog(catalog) do
+      {:ok,
+       Build.new(manifest,
+         diagnostics: catalog.diagnostics,
+         execution_packages: execution_packages
+       )}
     end
   end
 
@@ -85,27 +90,52 @@ defmodule Favn.Manifest.Generator do
   end
 
   defp manifest_from_catalog(%Catalog{} = catalog) do
-    assets = manifest_assets_from_catalog(catalog)
-    pipelines = manifest_pipelines_from_catalog(catalog)
-    schedules = manifest_schedules_from_catalog(catalog)
-
-    with {:ok, graph} <- Graph.build(assets) do
-      {:ok,
-       %Manifest{
-         schema_version: Compatibility.current_schema_version(),
-         runner_contract_version: Compatibility.current_runner_contract_version(),
-         assets: assets,
-         pipelines: pipelines,
-         schedules: schedules,
-         graph: graph,
-         metadata: %{}
-       }}
+    with {:ok, manifest, _packages} <- manifest_and_packages_from_catalog(catalog) do
+      {:ok, manifest}
     end
   end
 
-  defp manifest_assets_from_catalog(%Catalog{} = catalog) do
+  defp manifest_and_packages_from_catalog(%Catalog{} = catalog) do
+    with {:ok, packages_by_ref} <- execution_packages_from_catalog(catalog) do
+      assets = manifest_assets_from_catalog(catalog, packages_by_ref)
+      pipelines = manifest_pipelines_from_catalog(catalog)
+      schedules = manifest_schedules_from_catalog(catalog)
+
+      with {:ok, graph} <- Graph.build(assets) do
+        {:ok,
+         %Manifest{
+           schema_version: Compatibility.current_schema_version(),
+           runner_contract_version: Compatibility.current_runner_contract_version(),
+           assets: assets,
+           pipelines: pipelines,
+           schedules: schedules,
+           graph: graph,
+           metadata: %{}
+         }, packages_by_ref |> Map.values() |> Enum.sort_by(& &1.content_hash)}
+      end
+    end
+  end
+
+  defp execution_packages_from_catalog(%Catalog{} = catalog) do
+    Enum.reduce_while(catalog.assets, {:ok, %{}}, fn asset, {:ok, packages} ->
+      case ExecutionPackage.from_asset(asset) do
+        {:ok, nil} ->
+          {:cont, {:ok, packages}}
+
+        {:ok, %ExecutionPackage{} = package} ->
+          {:cont, {:ok, Map.put(packages, asset.ref, package)}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:execution_package_build_failed, asset.ref, reason}}}
+      end
+    end)
+  end
+
+  defp manifest_assets_from_catalog(%Catalog{} = catalog, packages_by_ref) do
     catalog.assets
-    |> Enum.map(&ManifestAsset.from_asset/1)
+    |> Enum.map(fn asset ->
+      ManifestAsset.from_asset(asset, execution_package: Map.get(packages_by_ref, asset.ref))
+    end)
     |> Enum.sort(&compare_assets/2)
   end
 

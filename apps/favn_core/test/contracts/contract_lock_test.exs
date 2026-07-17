@@ -14,6 +14,7 @@ defmodule Favn.Contracts.ContractLockTest do
         :asset_step_id,
         :attempt,
         :deadline_at,
+        :execution_package,
         :manifest_content_hash,
         :manifest_version_id,
         :max_attempts,

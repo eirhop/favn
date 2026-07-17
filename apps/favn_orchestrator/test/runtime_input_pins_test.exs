@@ -2,9 +2,7 @@ defmodule FavnOrchestrator.RuntimeInputPinsTest do
   use ExUnit.Case, async: false
 
   alias Favn.Contracts.RunnerWork
-  alias Favn.Manifest
-  alias Favn.Manifest.Asset
-  alias Favn.Manifest.Version
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Plan.NodeIdentity
   alias Favn.RuntimeInput.Resolution
   alias Favn.RuntimeInputResolver.Ref, as: ResolverRef
@@ -153,9 +151,7 @@ defmodule FavnOrchestrator.RuntimeInputPinsTest do
   end
 
   defp prepare(work) do
-    RuntimeInputPins.prepare(work, manifest_version(), RunnerClientStub,
-      counter: __MODULE__.Counter
-    )
+    RuntimeInputPins.prepare(work, RunnerClientStub, counter: __MODULE__.Counter)
   end
 
   defp work(run_id, mode) do
@@ -172,25 +168,12 @@ defmodule FavnOrchestrator.RuntimeInputPinsTest do
       asset_ref: @asset_ref,
       asset_refs: [@asset_ref],
       planned_asset_refs: [@asset_ref],
+      execution_package: %ExecutionPackage{
+        content_hash: String.duplicate("b", 64),
+        asset_ref: @asset_ref,
+        sql_execution: %{runtime_inputs: %ResolverRef{module: MyApp.RuntimeInputResolver}}
+      },
       metadata: %{runtime_input_mode: mode}
-    }
-  end
-
-  defp manifest_version do
-    %Version{
-      manifest_version_id: "mv-runtime-inputs",
-      content_hash: String.duplicate("a", 64),
-      schema_version: 7,
-      runner_contract_version: 7,
-      manifest: %Manifest{
-        assets: [
-          %Asset{
-            ref: @asset_ref,
-            type: :sql,
-            sql_execution: %{runtime_inputs: %ResolverRef{module: MyApp.RuntimeInputResolver}}
-          }
-        ]
-      }
     }
   end
 end

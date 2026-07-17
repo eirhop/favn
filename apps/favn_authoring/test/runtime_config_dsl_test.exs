@@ -143,8 +143,8 @@ defmodule Favn.RuntimeConfigDSLTest do
 
     assert {:ok, encoded} =
              Serializer.encode_manifest(%{
-               schema_version: 7,
-               runner_contract_version: 7,
+               schema_version: 8,
+               runner_contract_version: 8,
                assets: [manifest_asset]
              })
 

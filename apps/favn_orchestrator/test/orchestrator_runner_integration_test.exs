@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.SQLExecution
@@ -230,8 +231,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
-      schema_version: 7,
-      runner_contract_version: 7,
+      schema_version: 8,
+      runner_contract_version: 8,
       assets: assets,
       pipelines: [
         %Pipeline{
@@ -276,8 +277,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
-      schema_version: 7,
-      runner_contract_version: 7,
+      schema_version: 8,
+      runner_contract_version: 8,
       assets: assets,
       pipelines: [
         %Pipeline{
@@ -312,8 +313,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     ]
 
     manifest = %Manifest{
-      schema_version: 7,
-      runner_contract_version: 7,
+      schema_version: 8,
+      runner_contract_version: 8,
       assets: assets,
       pipelines: [],
       schedules: [],
@@ -340,8 +341,8 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     }
 
     manifest = %Manifest{
-      schema_version: 7,
-      runner_contract_version: 7,
+      schema_version: 8,
+      runner_contract_version: 8,
       assets: [asset],
       pipelines: [],
       schedules: [],
@@ -365,6 +366,10 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
         enforce_query_root: true
       )
 
+    execution = %SQLExecution{sql: "SELECT 1 AS id", template: template, sql_definitions: []}
+    {:ok, package} = ExecutionPackage.new(ref, execution)
+    :ok = FavnOrchestrator.register_execution_packages([package])
+
     %Asset{
       ref: ref,
       module: elem(ref, 0),
@@ -374,7 +379,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
       depends_on: Keyword.get(opts, :depends_on, []),
       relation: relation,
       materialization: :table,
-      sql_execution: %SQLExecution{sql: "SELECT 1 AS id", template: template, sql_definitions: []}
+      execution_package_hash: package.content_hash
     }
   end
 

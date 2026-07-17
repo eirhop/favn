@@ -1,7 +1,9 @@
 # Manifest Scalability Baseline
 
-This report records the issue #483 Phase 2 core-manifest measurement. It does
-not change the manifest schema or runner contract.
+This report records the historical issue #483 schema-7 baseline that motivated
+the production change. Schema 8 now implements the recommended compact index
+and immutable execution packages; the table below remains before-change
+evidence rather than a description of the current manifest shape.
 
 ## Assumptions and scope
 
@@ -20,7 +22,8 @@ not change the manifest schema or runner contract.
   and field attribution. Storage-adapter persistence and runner registration
   remain separate end-to-end measurements for the package-design phase.
 
-Reproduce the safe baseline after compiling the repository:
+The current harness uses schema 8. Running it after compiling the repository
+measures the compact index rather than reproducing the historical table:
 
 ```bash
 MIX_ENV=test mix run --no-compile scripts/measure_manifest_scalability.exs \
@@ -82,15 +85,15 @@ verbose JSON representation of already-compiled template nodes, followed by
 compiled check templates. Removing small duplicate identity or graph fields
 cannot materially change the production curve.
 
-## Decision
+## Implemented outcome
 
 Gzip should remain the publication transport optimization for current
 few-hundred-asset projects. Raising the monolithic request limits again is not
 the production scaling strategy: it would leave versioning, decode, storage,
 registration, and memory proportional to the complete catalogue.
 
-The recommended next design is a content-addressed manifest index plus immutable
-per-asset execution packages:
+Schema 8 implements a content-addressed manifest index plus immutable per-asset
+execution packages:
 
 1. Keep dependencies, schedules, catalogue metadata, and each execution-package
    hash in a small canonical index.
@@ -99,8 +102,8 @@ per-asset execution packages:
    content hash.
 3. Upload only missing packages, then atomically publish or activate the index
    after every package is present and verified.
-4. Let runners fetch and cache packages on demand with an explicit bounded
-   cache, instead of registering the entire decoded catalogue.
+4. Load one package for one selected SQL work item instead of registering the
+   entire decoded catalogue. A runner cache remains optional future tuning.
 5. Preserve packages referenced by pinned manifests and runs; garbage collect
    only unreferenced packages.
 
@@ -111,11 +114,15 @@ package first. Recompiling templates from source during publication or runner
 load is not recommended: it moves compiler cost and compiler-version coupling
 into the runtime path.
 
-Proposed decision gates for the detailed package plan are:
+Current regression gates are:
 
-- a 6,600-asset canonical index no larger than 16 MiB;
+- a directly measured 300-asset index below 2 MiB and a conservative 6,600-asset
+  projection below the 32 MiB expanded publication limit;
 - no-op publication transfers no execution packages;
-- publication peak memory stays below 512 MiB on the target single-node host;
 - activation remains atomic and pinned runs remain reproducible; and
-- runner package memory is bounded by cache configuration rather than total
+- runner package memory grows with admitted concurrent work rather than total
   catalogue size.
+
+Production retention, garbage collection, cold package-read measurements, and
+whether a bounded runner-local cache is worthwhile remain explicit follow-up
+work rather than compatibility layers in schema 8.

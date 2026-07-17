@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory.State do
   from silently adding misspelled state keys.
   """
 
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.AssetFreshnessState
@@ -20,6 +21,8 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory.State do
   @type t :: %__MODULE__{
           manifest_versions: %{optional(String.t()) => Version.t()},
           manifest_version_ids_by_content_hash: %{optional(String.t()) => String.t()},
+          execution_packages: %{optional(String.t()) => ExecutionPackage.t()},
+          manifest_package_hashes: %{optional(String.t()) => MapSet.t(String.t())},
           active_manifest_version_id: String.t() | nil,
           runs: %{optional(String.t()) => RunState.t()},
           runtime_input_pins: %{optional({String.t(), Favn.Plan.node_key()}) => Pin.t()},
@@ -66,6 +69,8 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory.State do
 
   defstruct manifest_versions: %{},
             manifest_version_ids_by_content_hash: %{},
+            execution_packages: %{},
+            manifest_package_hashes: %{},
             active_manifest_version_id: nil,
             runs: %{},
             runtime_input_pins: %{},

@@ -6,6 +6,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
@@ -189,6 +190,10 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
         enforce_query_root: true
       )
 
+    execution = %SQLExecution{sql: "SELECT 1 AS id", template: template, sql_definitions: []}
+    {:ok, package} = ExecutionPackage.new(ref, execution)
+    Process.put({:execution_package, ref}, package)
+
     %Asset{
       ref: ref,
       module: elem(ref, 0),
@@ -197,7 +202,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
       execution: %{entrypoint: elem(ref, 1), arity: 1},
       relation: relation,
       materialization: :table,
-      sql_execution: %SQLExecution{sql: "SELECT 1 AS id", template: template, sql_definitions: []}
+      execution_package_hash: package.content_hash
     }
   end
 
@@ -205,8 +210,8 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     refs = Enum.map(assets, & &1.ref)
 
     manifest = %Manifest{
-      schema_version: 7,
-      runner_contract_version: 7,
+      schema_version: 8,
+      runner_contract_version: 8,
       assets: assets,
       pipelines: [],
       schedules: [],
@@ -232,6 +237,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
       asset_ref: asset_ref,
       asset_refs: [asset_ref],
       planned_asset_refs: planned_refs,
+      execution_package: Process.get({:execution_package, asset_ref}),
       metadata: %{}
     }
   end

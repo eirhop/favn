@@ -2,33 +2,31 @@ defmodule Favn.Dev.OrchestratorClient do
   @moduledoc false
 
   alias Favn.Dev.LocalHttpClient
+  alias Favn.Dev.ExecutionPackageBatches
+  alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
 
   @manifest_publication_timeout_ms 60_000
 
   @type session_context :: %{required(String.t()) => String.t()}
 
-  @spec publish_manifest(String.t(), String.t(), map(), session_context() | nil) ::
+  @spec publish_manifest(String.t(), String.t(), Publication.t(), session_context() | nil) ::
           {:ok, map()} | {:error, term()}
-  def publish_manifest(base_url, service_token, payload, session_context \\ nil)
-      when is_binary(base_url) and is_binary(service_token) and is_map(payload) do
-    body =
-      payload
-      |> normalize_publish_payload()
-      |> JSON.encode!()
-      |> :zlib.gzip()
-
-    request(
-      :publish_manifest,
-      :post,
-      base_url <> "/api/orchestrator/v1/manifests",
-      service_token,
-      body,
-      session_context,
-      nil,
-      [{"content-encoding", "gzip"}],
-      timeout_ms: @manifest_publication_timeout_ms
-    )
+  def publish_manifest(base_url, service_token, %Publication{} = publication, session_context \\ nil)
+      when is_binary(base_url) and is_binary(service_token) do
+    with {:ok, missing, batch_limits} <-
+           missing_execution_packages(base_url, service_token, publication, session_context),
+         :ok <-
+           upload_execution_packages(
+             base_url,
+             service_token,
+             publication,
+             missing,
+             batch_limits,
+             session_context
+           ) do
+      publish_manifest_index(base_url, service_token, publication, session_context)
+    end
   end
 
   @spec verify_service_token(String.t(), String.t()) :: :ok | {:error, term()}
@@ -633,20 +631,135 @@ defmodule Favn.Dev.OrchestratorClient do
     %{operation: operation, method: method, url: url, reason: reason}
   end
 
-  defp normalize_publish_payload(payload) when is_map(payload) do
-    manifest = Map.get(payload, :manifest) || Map.get(payload, "manifest")
+  defp missing_execution_packages(base_url, service_token, publication, session_context) do
+    hashes = Publication.required_package_hashes(publication.version)
 
-    if manifest do
-      manifest_payload =
-        manifest
-        |> Serializer.encode_manifest!()
-        |> JSON.decode!()
+    case gzip_post(
+           :missing_execution_packages,
+           base_url <> "/api/orchestrator/v1/execution-packages/missing",
+           service_token,
+           %{hashes: hashes},
+           session_context
+         ) do
+      {:ok,
+       %{
+         "data" => %{
+           "missing" => missing,
+           "publication_limits" => publication_limits
+         }
+       }}
+      when is_list(missing) ->
+        with {:ok, batch_limits} <- execution_package_batch_limits(publication_limits) do
+          {:ok, missing, batch_limits}
+        end
 
-      payload
-      |> Map.put(:manifest, manifest_payload)
-      |> Map.delete("manifest")
-    else
-      payload
+      {:ok, _response} -> {:error, :invalid_missing_execution_packages_response}
+      {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp upload_execution_packages(
+         base_url,
+         service_token,
+         publication,
+         missing,
+         batch_limits,
+         session_context
+       ) do
+    packages_by_hash = Publication.packages_by_hash(publication)
+
+    with {:ok, packages} <- select_missing_packages(missing, packages_by_hash),
+         {:ok, batches} <- ExecutionPackageBatches.build(packages, batch_limits) do
+      batches
+      |> Enum.reduce_while(:ok, fn batch, :ok ->
+        payload = %{packages: batch}
+
+        case gzip_post(
+               :upload_execution_packages,
+               base_url <> "/api/orchestrator/v1/execution-packages",
+               service_token,
+               payload,
+               session_context
+             ) do
+          {:ok, _response} -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  defp execution_package_batch_limits(%{
+         "max_packages" => max_packages,
+         "compressed_limit_bytes" => compressed_limit_bytes,
+         "decompressed_limit_bytes" => decompressed_limit_bytes
+       })
+       when is_integer(max_packages) and max_packages > 0 and
+              is_integer(compressed_limit_bytes) and compressed_limit_bytes > 0 and
+              is_integer(decompressed_limit_bytes) and decompressed_limit_bytes > 0 do
+    {:ok,
+     [
+       max_count: max_packages,
+       max_compressed_bytes: compressed_limit_bytes,
+       max_decompressed_bytes: decompressed_limit_bytes
+     ]}
+  end
+
+  defp execution_package_batch_limits(_limits),
+    do: {:error, :invalid_execution_package_publication_limits}
+
+  defp select_missing_packages(missing, packages_by_hash) do
+    missing
+    |> Enum.uniq()
+    |> Enum.reduce_while({:ok, []}, fn hash, {:ok, packages} ->
+      case Map.fetch(packages_by_hash, hash) do
+        {:ok, package} -> {:cont, {:ok, [package | packages]}}
+        :error -> {:halt, {:error, {:unexpected_missing_execution_package_hash, hash}}}
+      end
+    end)
+    |> case do
+      {:ok, packages} -> {:ok, Enum.reverse(packages)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp publish_manifest_index(base_url, service_token, publication, session_context) do
+    version = publication.version
+
+    gzip_post(
+      :publish_manifest,
+      base_url <> "/api/orchestrator/v1/manifests",
+      service_token,
+      %{
+        manifest_version_id: version.manifest_version_id,
+        content_hash: version.content_hash,
+        schema_version: version.schema_version,
+        runner_contract_version: version.runner_contract_version,
+        serialization_format: version.serialization_format,
+        manifest: canonical_json_value(version.manifest)
+      },
+      session_context
+    )
+  end
+
+  defp gzip_post(operation, url, service_token, payload, session_context) do
+    body = payload |> JSON.encode!() |> :zlib.gzip()
+
+    request(
+      operation,
+      :post,
+      url,
+      service_token,
+      body,
+      session_context,
+      nil,
+      [{"content-encoding", "gzip"}],
+      timeout_ms: @manifest_publication_timeout_ms
+    )
+  end
+
+  defp canonical_json_value(value) do
+    value
+    |> Serializer.encode_manifest!()
+    |> JSON.decode!()
   end
 end

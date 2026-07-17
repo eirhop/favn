@@ -335,7 +335,8 @@ defmodule Favn.Dev.Build.Single do
          {:ok, _} <- Application.ensure_all_started(:favn_runner),
          {:ok, _} <- Application.ensure_all_started(:favn_storage_sqlite),
          {:ok, _} <- Application.ensure_all_started(:favn_orchestrator) do
-      manifest_path = Path.join([artifact_root, "runner", "manifest.json"])
+      manifest_path = Path.join([artifact_root, "runner", "manifest-index.json"])
+      packages_path = Path.join([artifact_root, "runner", "execution-packages", "*.json"])
       metadata_path = Path.join([artifact_root, "runner", "metadata.json"])
 
       if File.regular?(manifest_path) do
@@ -348,6 +349,21 @@ defmodule Favn.Dev.Build.Single do
                   manifest_version_id: Map.fetch!(manifest_metadata, "manifest_version_id"),
                   content_hash: Map.fetch!(manifest_metadata, "content_hash")
                 ),
+              {:ok, packages} <-
+                packages_path
+                |> Path.wildcard()
+                |> Enum.reduce_while({:ok, []}, fn path, {:ok, packages} ->
+                  with {:ok, package_encoded} <- File.read(path),
+                       {:ok, package_json} <-
+                         Favn.Manifest.Serializer.decode_manifest(package_encoded),
+                       {:ok, package} <-
+                         Favn.Manifest.ExecutionPackage.from_published(package_json) do
+                    {:cont, {:ok, [package | packages]}}
+                  else
+                    {:error, reason} -> {:halt, {:error, reason}}
+                  end
+                end),
+              :ok <- FavnOrchestrator.register_execution_packages(packages),
               :ok <- FavnRunner.register_manifest(version),
               :ok <- FavnOrchestrator.register_manifest(version) do
           :ok

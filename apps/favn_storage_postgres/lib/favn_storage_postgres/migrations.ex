@@ -43,6 +43,8 @@ defmodule FavnStoragePostgres.Migrations do
   ]
   @required_tables [
     "public.favn_manifest_versions",
+    "public.favn_execution_packages",
+    "public.favn_manifest_execution_packages",
     "public.favn_runtime_settings",
     "public.favn_runs",
     "public.favn_run_events",

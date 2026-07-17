@@ -20,6 +20,15 @@ defmodule Favn.StorageFacadeTest do
     def put_manifest_version(_version, _opts), do: :ok
 
     @impl true
+    def put_execution_packages(_packages, _opts), do: :ok
+
+    @impl true
+    def missing_execution_package_hashes(hashes, _opts), do: {:ok, hashes}
+
+    @impl true
+    def get_execution_package(_hash, _opts), do: {:error, :not_found}
+
+    @impl true
     def get_manifest_version(_manifest_version_id, _opts), do: {:error, :not_found}
 
     @impl true
@@ -232,6 +241,15 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def put_manifest_version(_version, _opts), do: :ok
+
+    @impl true
+    def put_execution_packages(_packages, _opts), do: :ok
+
+    @impl true
+    def missing_execution_package_hashes(hashes, _opts), do: {:ok, hashes}
+
+    @impl true
+    def get_execution_package(_hash, _opts), do: {:error, :not_found}
 
     @impl true
     def get_manifest_version(_manifest_version_id, _opts), do: {:error, :not_found}

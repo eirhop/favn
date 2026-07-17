@@ -45,6 +45,9 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
 
     defdelegate child_spec(opts), to: Memory
     defdelegate put_manifest_version(version, opts), to: Memory
+    defdelegate put_execution_packages(packages, opts), to: Memory
+    defdelegate missing_execution_package_hashes(hashes, opts), to: Memory
+    defdelegate get_execution_package(hash, opts), to: Memory
     defdelegate get_manifest_version(id, opts), to: Memory
     defdelegate get_manifest_version_by_content_hash(hash, opts), to: Memory
     defdelegate list_manifest_versions(opts), to: Memory

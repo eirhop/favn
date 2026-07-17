@@ -47,6 +47,8 @@ defmodule FavnStorageSqlite.Migrations do
   ]
   @required_tables [
     "favn_manifest_versions",
+    "favn_execution_packages",
+    "favn_manifest_execution_packages",
     "favn_runtime_settings",
     "favn_runs",
     "favn_run_events",

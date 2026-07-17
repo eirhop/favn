@@ -12,6 +12,7 @@ defmodule FavnOrchestrator do
   alias Favn.Backfill.RangeRequest
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerClient
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias Favn.Window.Anchor
@@ -158,6 +159,12 @@ defmodule FavnOrchestrator do
   """
   @spec register_manifest(Version.t()) :: :ok | {:error, term()}
   def register_manifest(%Version{} = version), do: ManifestStore.register_manifest(version)
+
+  @doc "Stores immutable execution packages before their manifest index is registered."
+  @spec register_execution_packages([ExecutionPackage.t()]) :: :ok | {:error, term()}
+  def register_execution_packages(packages) when is_list(packages) do
+    Storage.put_execution_packages(packages)
+  end
 
   @doc """
   Publishes one manifest version, returning the canonical stored version for duplicate content.

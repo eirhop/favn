@@ -3,13 +3,16 @@ defmodule Favn.Dev.Bootstrap.Single do
   API-driven bootstrap workflow for the first SQLite single-node production shape.
 
   The workflow does not write storage directly. It verifies orchestrator service
-  credentials, validates a manifest JSON file as a `Favn.Manifest.Version`, then
-  registers and activates that manifest before asking the orchestrator to
-  register the persisted manifest with the local runner.
+  credentials, validates `manifest-index.json` and its sibling immutable
+  execution packages as a `Favn.Manifest.Publication`, then publishes and
+  activates that index before asking the orchestrator to register the persisted
+  index with the local runner.
   """
 
   alias Favn.Dev.OrchestratorClient
   alias Favn.Manifest.Identity
+  alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
 
@@ -43,9 +46,10 @@ defmodule Favn.Dev.Bootstrap.Single do
          :ok <- client.verify_service_token(orchestrator_url, service_token),
          {:ok, session_context} <-
            maybe_operator_session(client, orchestrator_url, service_token, opts),
-         {:ok, version} <- read_manifest_version(manifest_path),
+         {:ok, publication} <- read_manifest_publication(manifest_path),
+         version <- publication.version,
          {:ok, registration} <-
-           client.publish_manifest(orchestrator_url, service_token, manifest_payload(version)),
+           client.publish_manifest(orchestrator_url, service_token, publication),
          manifest_registration <- registration_status(registration, "manifest"),
          {:ok, activated?} <-
            maybe_activate(
@@ -82,6 +86,35 @@ defmodule Favn.Dev.Bootstrap.Single do
          metadata_opts <- packaged_manifest_opts(path),
          {:ok, version} <- decode_manifest_version_bytes(bytes, metadata_opts) do
       Version.verify(version)
+    end
+  end
+
+  @doc false
+  @spec read_manifest_publication(Path.t()) :: {:ok, Publication.t()} | {:error, term()}
+  def read_manifest_publication(path) when is_binary(path) do
+    with {:ok, version} <- read_manifest_version(path),
+         {:ok, packages} <- read_execution_packages(Path.dirname(path)),
+         {:ok, publication} <- Publication.from_parts(version, packages) do
+      {:ok, publication}
+    end
+  end
+
+  defp read_execution_packages(artifact_dir) do
+    artifact_dir
+    |> Path.join("execution-packages/*.json")
+    |> Path.wildcard()
+    |> Enum.reduce_while({:ok, []}, fn path, {:ok, packages} ->
+      with {:ok, encoded} <- File.read(path),
+           {:ok, decoded} <- Serializer.decode_manifest(encoded),
+           {:ok, package} <- ExecutionPackage.from_published(decoded) do
+        {:cont, {:ok, [package | packages]}}
+      else
+        {:error, reason} -> {:halt, {:error, {path, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, packages} -> {:ok, Enum.reverse(packages)}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -156,21 +189,11 @@ defmodule Favn.Dev.Bootstrap.Single do
     end
   end
 
-  defp decode_manifest_version(_other, _metadata_opts), do: {:error, :invalid_manifest_json}
+  defp decode_manifest_version(_other, _metadata_opts),
+    do: {:error, :invalid_manifest_index_json}
 
   defp stable_manifest_version_id(content_hash) when is_binary(content_hash) do
     "mv_" <> String.slice(content_hash, 0, 32)
-  end
-
-  defp manifest_payload(%Version{} = version) do
-    %{
-      manifest_version_id: version.manifest_version_id,
-      content_hash: version.content_hash,
-      schema_version: version.schema_version,
-      runner_contract_version: version.runner_contract_version,
-      serialization_format: version.serialization_format,
-      manifest: version.manifest
-    }
   end
 
   defp runner_payload(%Version{} = version) do

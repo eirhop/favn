@@ -91,8 +91,9 @@ end
 
 ## Execution Model
 
-Favn compiles check SQL into the manifest. The runner does not load the
-authoring module to execute it.
+Favn compiles check SQL into the asset's immutable execution package. The
+compact manifest index keeps only assurance summaries and the package hash. The
+runner does not load the authoring module to execute checks.
 
 At runtime Favn:
 

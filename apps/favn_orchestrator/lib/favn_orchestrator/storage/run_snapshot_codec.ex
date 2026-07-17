@@ -135,7 +135,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @type manifest_record :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
-          required(:manifest_json) => String.t()
+          required(:manifest_index_json) => String.t()
         }
 
   @spec encode_run(RunState.t()) :: {:ok, String.t()} | {:error, term()}

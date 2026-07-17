@@ -8,9 +8,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
   @max_module_length 512
 
   @spec extract(map()) :: {:ok, MapSet.t(String.t())} | {:error, term()}
-  def extract(%{content_hash: content_hash, manifest_json: manifest_json})
-      when is_binary(content_hash) and is_binary(manifest_json) do
-    with {:ok, manifest} <- decode_manifest(manifest_json),
+  def extract(%{content_hash: content_hash, manifest_index_json: manifest_index_json})
+      when is_binary(content_hash) and is_binary(manifest_index_json) do
+    with {:ok, manifest} <- decode_manifest(manifest_index_json),
          :ok <- validate_content_hash(manifest, content_hash),
          {:ok, atoms} <- atoms_from_manifest(manifest),
          atoms = MapSet.new(atoms),
@@ -21,11 +21,11 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
 
   def extract(record), do: {:error, {:invalid_manifest_record, record}}
 
-  defp decode_manifest(manifest_json) do
-    case JSON.decode(manifest_json) do
+  defp decode_manifest(manifest_index_json) do
+    case JSON.decode(manifest_index_json) do
       {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-      {:ok, decoded} -> {:error, {:invalid_manifest_json_root, decoded}}
-      {:error, reason} -> {:error, {:invalid_manifest_json, reason}}
+      {:ok, decoded} -> {:error, {:invalid_manifest_index_json_root, decoded}}
+      {:error, reason} -> {:error, {:invalid_manifest_index_json, reason}}
     end
   end
 

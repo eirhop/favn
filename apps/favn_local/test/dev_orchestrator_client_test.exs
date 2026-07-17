@@ -2,7 +2,14 @@ defmodule Favn.Dev.OrchestratorClientTest do
   use ExUnit.Case, async: false
 
   alias Favn.Dev.OrchestratorClient
+  alias Favn.Manifest
+  alias Favn.Manifest.Asset
+  alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Graph
+  alias Favn.Manifest.Publication
+  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
+  alias Favn.SQL.Template
 
   test "in_flight_runs/2 parses run ids" do
     {:ok, base_url, _server} = start_server(~s({"data":{"run_ids":["run_a","run_b"]}}), 200)
@@ -40,11 +47,19 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
   test "publish_manifest/3 serializes manifest structs before JSON encoding" do
     parent = self()
-    {:ok, base_url, _server} = start_server(~s({"data":{"ok":true}}), 200, parent: parent)
+
+    {:ok, base_url, _server} =
+      start_server_sequence(
+        [
+          {missing_response([]), 200, 0},
+          {~s({"data":{"ok":true}}), 200, 0}
+        ],
+        parent: parent
+      )
 
     manifest = %{
-      schema_version: 7,
-      runner_contract_version: 7,
+      schema_version: 8,
+      runner_contract_version: 8,
       assets: [],
       pipelines: [],
       schedules: [],
@@ -53,15 +68,21 @@ defmodule Favn.Dev.OrchestratorClientTest do
     }
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_orchestrator_client_test")
+    {:ok, publication} = Publication.from_parts(version, [])
 
     assert {:ok, %{"data" => %{"ok" => true}}} =
-             OrchestratorClient.publish_manifest(base_url, "token", %{
-               manifest_version_id: version.manifest_version_id,
-               manifest: version.manifest
-             })
+             OrchestratorClient.publish_manifest(base_url, "token", publication)
 
+    assert_receive {:request_path, "/api/orchestrator/v1/execution-packages/missing"}
     assert_receive {:request_headers, headers}
     assert headers["content-encoding"] == "gzip"
+
+    assert_receive {:request_body, missing_body}
+    assert JSON.decode!(:zlib.gunzip(missing_body)) == %{"hashes" => []}
+
+    assert_receive {:request_path, "/api/orchestrator/v1/manifests"}
+    assert_receive {:request_headers, publish_headers}
+    assert publish_headers["content-encoding"] == "gzip"
 
     assert_receive {:request_body, compressed_body}
     body = :zlib.gunzip(compressed_body)
@@ -72,20 +93,80 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
   test "publish_manifest/3 allows a response beyond the generic client timeout" do
     {:ok, base_url, _server} =
-      start_server(~s({"data":{"ok":true}}), 200, response_delay_ms: 5_100)
+      start_server_sequence([
+        {missing_response([]), 200, 0},
+        {~s({"data":{"ok":true}}), 200, 5_100}
+      ])
+
+    manifest = %{
+      schema_version: 8,
+      runner_contract_version: 8,
+      assets: [],
+      pipelines: [],
+      schedules: [],
+      graph: %{},
+      metadata: %{}
+    }
+
+    {:ok, version} = Version.new(manifest)
+    {:ok, publication} = Publication.from_parts(version, [])
 
     assert {:ok, %{"data" => %{"ok" => true}}} =
-             OrchestratorClient.publish_manifest(base_url, "token", %{
-               manifest: %{
-                 schema_version: 7,
-                 runner_contract_version: 7,
-                 assets: [],
-                 pipelines: [],
-                 schedules: [],
-                 graph: %{},
-                 metadata: %{}
-               }
-             })
+             OrchestratorClient.publish_manifest(base_url, "token", publication)
+  end
+
+  test "publish_manifest/3 rejects a missing hash outside the publication" do
+    unknown_hash = String.duplicate("0", 64)
+
+    {:ok, base_url, _server} =
+      start_server(missing_response([unknown_hash]), 200)
+
+    manifest = %{
+      schema_version: 8,
+      runner_contract_version: 8,
+      assets: [],
+      pipelines: [],
+      schedules: [],
+      graph: %{},
+      metadata: %{}
+    }
+
+    {:ok, version} = Version.new(manifest)
+    {:ok, publication} = Publication.from_parts(version, [])
+
+    assert {:error, {:unexpected_missing_execution_package_hash, ^unknown_hash}} =
+             OrchestratorClient.publish_manifest(base_url, "token", publication)
+  end
+
+  test "publish_manifest/3 honors server-advertised package batch limits" do
+    publication = packaged_publication(2)
+    hashes = Publication.required_package_hashes(publication.version)
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server_sequence(
+        [
+          {missing_response(hashes, max_packages: 1), 200, 0},
+          {~s({"data":{"stored":1}}), 201, 0},
+          {~s({"data":{"stored":1}}), 201, 0},
+          {~s({"data":{"ok":true}}), 201, 0}
+        ],
+        parent: parent
+      )
+
+    assert {:ok, %{"data" => %{"ok" => true}}} =
+             OrchestratorClient.publish_manifest(base_url, "token", publication)
+
+    assert_receive {:request_path, "/api/orchestrator/v1/execution-packages/missing"}
+    assert_receive {:request_headers, _headers}
+    assert_receive {:request_body, _body}
+    assert_receive {:request_path, "/api/orchestrator/v1/execution-packages"}
+    assert_receive {:request_headers, _headers}
+    assert_receive {:request_body, _body}
+    assert_receive {:request_path, "/api/orchestrator/v1/execution-packages"}
+    assert_receive {:request_headers, _headers}
+    assert_receive {:request_body, _body}
+    assert_receive {:request_path, "/api/orchestrator/v1/manifests"}
   end
 
   test "verify_service_token/2 checks bootstrap service-token endpoint" do
@@ -360,25 +441,91 @@ defmodule Favn.Dev.OrchestratorClientTest do
   end
 
   defp start_server(body, status, opts \\ []) when is_binary(body) and is_integer(status) do
-    parent = Keyword.get(opts, :parent)
     response_delay_ms = Keyword.get(opts, :response_delay_ms, 0)
+    start_server_sequence([{body, status, response_delay_ms}], opts)
+  end
+
+  defp missing_response(missing, opts \\ []) do
+    JSON.encode!(%{
+      data: %{
+        missing: missing,
+        publication_limits: %{
+          max_packages: Keyword.get(opts, :max_packages, 100),
+          compressed_limit_bytes: Keyword.get(opts, :compressed_limit_bytes, 8 * 1024 * 1024),
+          decompressed_limit_bytes:
+            Keyword.get(opts, :decompressed_limit_bytes, 32 * 1024 * 1024)
+        }
+      }
+    })
+  end
+
+  defp packaged_publication(count) do
+    pairs =
+      Enum.map(1..count, fn index ->
+        ref = {Module.concat([MyApp.OrchestratorClient, "Asset#{index}"]), :asset}
+        sql = "SELECT #{index} AS id"
+
+        template =
+          Template.compile!(sql,
+            file: "test/orchestrator_client_package.sql",
+            line: index,
+            module: __MODULE__,
+            scope: :query,
+            enforce_query_root: true
+          )
+
+        {:ok, package} =
+          ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+
+        {ref, package}
+      end)
+
+    assets =
+      Enum.map(pairs, fn {{module, name} = ref, package} ->
+        %Asset{
+          ref: ref,
+          module: module,
+          name: name,
+          type: :sql,
+          execution_package_hash: package.content_hash
+        }
+      end)
+
+    refs = Enum.map(pairs, &elem(&1, 0))
+    packages = Enum.map(pairs, &elem(&1, 1))
+
+    {:ok, version} =
+      Version.new(
+        %Manifest{assets: assets, graph: %Graph{nodes: refs, topo_order: refs}},
+        manifest_version_id: "mv_orchestrator_client_packages"
+      )
+
+    {:ok, publication} = Publication.from_parts(version, packages)
+    publication
+  end
+
+  defp start_server_sequence(responses, opts \\ []) when is_list(responses) do
+    parent = Keyword.get(opts, :parent)
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
     {:ok, {_addr, port}} = :inet.sockname(listen_socket)
 
     server =
       spawn_link(fn ->
-        {:ok, socket} = :gen_tcp.accept(listen_socket)
-        request = receive_request(socket, "")
-        Process.sleep(response_delay_ms)
-        :ok = :gen_tcp.send(socket, response(status, body))
-        :ok = :gen_tcp.close(socket)
-        :ok = :gen_tcp.close(listen_socket)
+        Enum.each(responses, fn {body, status, response_delay_ms} ->
+          {:ok, socket} = :gen_tcp.accept(listen_socket)
+          request = receive_request(socket, "")
+          Process.sleep(response_delay_ms)
+          :ok = :gen_tcp.send(socket, response(status, body))
+          :ok = :gen_tcp.close(socket)
 
-        if parent do
-          send(parent, {:request_path, request_path(request)})
-          send(parent, {:request_headers, request_headers(request)})
-          send(parent, {:request_body, request_body(request)})
-        end
+          if parent do
+            send(parent, {:request_path, request_path(request)})
+            send(parent, {:request_headers, request_headers(request)})
+            send(parent, {:request_body, request_body(request)})
+          end
+        end)
+
+        :ok = :gen_tcp.close(listen_socket)
       end)
 
     {:ok, "http://127.0.0.1:#{port}", server}

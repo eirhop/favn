@@ -48,9 +48,9 @@ runtime_inputs do
 end
 ```
 
-The stable module reference is independently testable and serializable. The
-manifest stores `%Favn.RuntimeInputResolver.Ref{}`; authoring code does not
-construct that internal reference directly.
+The stable module reference is independently testable and serializable. The SQL
+asset's immutable execution package stores `%Favn.RuntimeInputResolver.Ref{}`;
+authoring code does not construct that internal reference directly.
 
 ## Define The Resolver
 

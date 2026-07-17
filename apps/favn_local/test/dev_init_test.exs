@@ -225,8 +225,9 @@ defmodule Favn.Dev.InitTest do
           File.mkdir_p!(".favn/data")
           {:ok, _started} = Application.ensure_all_started(:favn_runner)
 
-          {:ok, manifest} = Favn.generate_manifest()
-          {:ok, version} = Favn.pin_manifest_version(manifest)
+          {:ok, build} = Favn.build_manifest()
+          {:ok, publication} = Favn.prepare_manifest_publication(build)
+          version = publication.version
           :ok = FavnRunner.register_manifest(version)
 
           raw_ref = {#{base}.Lakehouse.Raw.Sales.Orders, :asset}
@@ -243,7 +244,9 @@ defmodule Favn.Dev.InitTest do
               run_id: "generated-" <> run_id,
               manifest_version_id: version.manifest_version_id,
               manifest_content_hash: version.content_hash,
-              asset_ref: ref
+              asset_ref: ref,
+              execution_package:
+                Enum.find(publication.execution_packages, &(&1.asset_ref == ref))
             }
 
             assert {:ok, result} = FavnRunner.run(work, timeout: 30_000)

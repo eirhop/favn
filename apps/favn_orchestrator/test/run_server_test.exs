@@ -6,8 +6,11 @@ defmodule FavnOrchestrator.RunServerTest do
   alias Favn.Contracts.RunnerWork
   alias Favn.Freshness.{Key, Policy}
   alias Favn.Manifest
+  alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
   alias Favn.Plan
+  alias Favn.SQL.Template
   alias Favn.Window.Runtime
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.AssetStepIdentity
@@ -108,6 +111,23 @@ defmodule FavnOrchestrator.RunServerTest do
 
     def put_execution_ownership(ownership, opts),
       do: Memory.put_execution_ownership(ownership, opts)
+  end
+
+  defmodule PackageFetchCountingStorageAdapter do
+    @moduledoc false
+    @behaviour Favn.Storage.Adapter
+
+    use FavnOrchestrator.RunServerTest.StorageAdapterDelegate,
+      except: [:get_execution_package]
+
+    @impl true
+    def get_execution_package(hash, opts) do
+      :favn_orchestrator
+      |> Application.fetch_env!(:package_fetch_count_agent)
+      |> Agent.update(&(&1 + 1))
+
+      Memory.get_execution_package(hash, opts)
+    end
   end
 
   defmodule RunnerClientCancelBeforeStepStartedStub do
@@ -399,6 +419,9 @@ defmodule FavnOrchestrator.RunServerTest do
 
     defdelegate child_spec(opts), to: Memory
     defdelegate put_manifest_version(version, opts), to: Memory
+    defdelegate put_execution_packages(packages, opts), to: Memory
+    defdelegate missing_execution_package_hashes(hashes, opts), to: Memory
+    defdelegate get_execution_package(hash, opts), to: Memory
     defdelegate get_manifest_version(id, opts), to: Memory
     defdelegate get_manifest_version_by_content_hash(hash, opts), to: Memory
     defdelegate list_manifest_versions(opts), to: Memory
@@ -1573,6 +1596,79 @@ defmodule FavnOrchestrator.RunServerTest do
     assert {:ok, []} = Storage.list_execution_leases()
   end
 
+  test "pipeline admission does not load execution packages for queued stage work" do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_agent = Application.get_env(:favn_orchestrator, :package_fetch_count_agent)
+    {:ok, fetch_count} = Agent.start_link(fn -> 0 end)
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :package_fetch_count_agent, previous_agent)
+    end)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      PackageFetchCountingStorageAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :package_fetch_count_agent, fetch_count)
+
+    refs = [
+      {MyApp.Assets.QueuedPackage.AssetOne, :asset},
+      {MyApp.Assets.QueuedPackage.AssetTwo, :asset}
+    ]
+
+    packages = Enum.map(refs, &execution_package/1)
+
+    assets =
+      Enum.zip_with(refs, packages, fn {module, name} = ref, package ->
+        %Favn.Manifest.Asset{
+          ref: ref,
+          module: module,
+          name: name,
+          type: :sql,
+          execution_package_hash: package.content_hash
+        }
+      end)
+
+    {:ok, version} =
+      Version.new(
+        FavnTestSupport.with_manifest_graph(%Manifest{assets: assets}),
+        manifest_version_id: "mv_pipeline_queued_packages"
+      )
+
+    plan = same_stage_plan(refs)
+
+    run_state =
+      "run_pipeline_queued_packages"
+      |> pipeline_run_state(version, plan, refs)
+      |> RunState.transition(metadata: %{pipeline_execution_policy: %{max_concurrency: 1}})
+
+    assert :ok = Storage.put_execution_packages(packages)
+    assert :ok = Storage.put_manifest_version(version)
+    assert :ok = Storage.put_run(run_state)
+    hold_execution_slot(run_state)
+
+    node_keys = Enum.map(refs, &{&1, nil})
+
+    assert {:ok, _queued_run, [], ^node_keys, _queued_steps, [_waiter]} =
+             StageAdmission.submit(%{
+               run: run_state,
+               version: version,
+               stage: 0,
+               node_keys: node_keys,
+               decisions: %{},
+               freshness_context: %{},
+               attempt: 1,
+               runner_client: RunnerClientRecordingStub,
+               runner_opts: [submit_log: submit_log]
+             })
+
+    assert Agent.get(fetch_count, & &1) == 0
+  end
+
   test "pipeline admission rejection does not rewrite terminal runs to error" do
     {:ok, submit_log} = Agent.start_link(fn -> [] end)
     ref = {MyApp.Assets.PipelineTerminalAdmission.Asset, :asset}
@@ -2332,6 +2428,22 @@ defmodule FavnOrchestrator.RunServerTest do
       )
 
     version
+  end
+
+  defp execution_package(ref) do
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/run_server_execution_package.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    {:ok, package} = ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+    package
   end
 
   defp single_node_plan(ref, opts) do

@@ -3,12 +3,16 @@ defmodule Favn.Manifest.Compatibility do
   Manifest schema and runner contract compatibility checks.
   """
 
-  @current_schema_version 7
-  @current_runner_contract_version 7
+  @current_schema_version 8
+  @current_runner_contract_version 8
 
   @type error ::
           {:invalid_manifest_input, term()}
           | {:missing_manifest_field, :schema_version | :runner_contract_version}
+          | {:invalid_execution_package_hash, Favn.Ref.t(), term()}
+          | {:duplicate_execution_package_hash, String.t(), [Favn.Ref.t()]}
+          | {:missing_execution_package_hash, Favn.Ref.t()}
+          | {:unexpected_execution_package_hash, Favn.Ref.t()}
           | {:unsupported_schema_version, term(), pos_integer()}
           | {:unsupported_runner_contract_version, term(), pos_integer()}
 
@@ -23,8 +27,9 @@ defmodule Favn.Manifest.Compatibility do
     with {:ok, schema_version} <- read_required_field(manifest, :schema_version),
          {:ok, runner_contract_version} <-
            read_required_field(manifest, :runner_contract_version),
-         :ok <- validate_schema_version(schema_version) do
-      validate_runner_contract_version(runner_contract_version)
+         :ok <- validate_schema_version(schema_version),
+         :ok <- validate_runner_contract_version(runner_contract_version) do
+      validate_execution_package_refs(manifest)
     end
   end
 
@@ -41,6 +46,65 @@ defmodule Favn.Manifest.Compatibility do
 
   def validate_runner_contract_version(other),
     do: {:error, {:unsupported_runner_contract_version, other, @current_runner_contract_version}}
+
+  defp validate_execution_package_refs(manifest) do
+    assets = Map.get(manifest, :assets, Map.get(manifest, "assets", []))
+
+    with :ok <- validate_asset_package_refs(assets) do
+      validate_unique_package_hashes(assets)
+    end
+  end
+
+  defp validate_asset_package_refs(assets) do
+    Enum.reduce_while(assets, :ok, fn asset, :ok ->
+      type = Map.get(asset, :type, Map.get(asset, "type"))
+      ref = Map.get(asset, :ref, Map.get(asset, "ref"))
+      hash = Map.get(asset, :execution_package_hash, Map.get(asset, "execution_package_hash"))
+
+      case {type, hash} do
+        {:sql, value} when is_binary(value) ->
+          if canonical_hash?(value) do
+            {:cont, :ok}
+          else
+            {:halt, {:error, {:invalid_execution_package_hash, ref, value}}}
+          end
+
+        {:sql, nil} ->
+          {:halt, {:error, {:missing_execution_package_hash, ref}}}
+
+        {:sql, value} ->
+          {:halt, {:error, {:invalid_execution_package_hash, ref, value}}}
+
+        {_type, nil} ->
+          {:cont, :ok}
+
+        {_type, _value} ->
+          {:halt, {:error, {:unexpected_execution_package_hash, ref}}}
+      end
+    end)
+  end
+
+  defp validate_unique_package_hashes(assets) do
+    assets
+    |> Enum.flat_map(fn asset ->
+      case {
+        Map.get(asset, :execution_package_hash, Map.get(asset, "execution_package_hash")),
+        Map.get(asset, :ref, Map.get(asset, "ref"))
+      } do
+        {hash, ref} when is_binary(hash) -> [{hash, ref}]
+        _other -> []
+      end
+    end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.find(fn {_hash, refs} -> length(refs) > 1 end)
+    |> case do
+      nil -> :ok
+      {hash, refs} -> {:error, {:duplicate_execution_package_hash, hash, Enum.sort(refs)}}
+    end
+  end
+
+  defp canonical_hash?(hash), do: Regex.match?(~r/\A[0-9a-f]{64}\z/, hash)
 
   defp read_required_field(value, field) do
     atom_key = field

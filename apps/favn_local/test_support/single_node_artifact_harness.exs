@@ -21,7 +21,7 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
     %{
       project_dir: project_dir,
       dist_dir: dist_dir,
-      manifest_path: Path.join([dist_dir, "runner", "manifest.json"]),
+      manifest_path: Path.join([dist_dir, "runner", "manifest-index.json"]),
       manifest_metadata: read_manifest_metadata!(dist_dir),
       build_output: build_output
     }
@@ -157,7 +157,9 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
     changed =
       before_snapshot
       |> Map.keys()
-      |> Enum.filter(&(Map.has_key?(after_snapshot, &1) and before_snapshot[&1] != after_snapshot[&1]))
+      |> Enum.filter(
+        &(Map.has_key?(after_snapshot, &1) and before_snapshot[&1] != after_snapshot[&1])
+      )
       |> Enum.sort()
 
     assert added == [] and removed == [] and changed == [],
@@ -356,5 +358,4 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
       {:ok, data}
     end
   end
-
 end

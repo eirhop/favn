@@ -10,6 +10,7 @@ defmodule Favn.Dev.Build.Runner do
   alias Favn.Dev.Install
   alias Favn.Dev.Paths
   alias Favn.Dev.State
+  alias Favn.Manifest.Serializer
 
   @schema_version 1
   @target "runner"
@@ -23,13 +24,15 @@ defmodule Favn.Dev.Build.Runner do
          :ok <- State.ensure_layout(opts),
          :ok <- compile_project(opts),
          {:ok, build} <- FavnAuthoring.build_manifest(),
-         {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
+         {:ok, publication} <- FavnAuthoring.prepare_manifest_publication(build),
+         version <- publication.version,
          {:ok, serialized_manifest} <- FavnAuthoring.serialize_manifest(version.manifest),
          {build_id, root_dir} <- {build_id(), Paths.root_dir(opts)},
          build_dir <- Paths.build_runner_dir(root_dir, build_id),
          dist_dir <- Paths.dist_runner_dir(root_dir, build_id),
          :ok <- File.mkdir_p(build_dir),
          :ok <- File.mkdir_p(dist_dir),
+         :ok <- write_execution_packages(dist_dir, publication.execution_packages),
          modules <- user_modules(version.manifest),
          copied_modules <- copy_user_beams(modules, Path.join(dist_dir, "ebin")),
          plugins <- selected_plugins(root_dir),
@@ -38,7 +41,8 @@ defmodule Favn.Dev.Build.Runner do
          metadata_json <- metadata_json(build_id, version, modules, plugins, copied_modules, opts),
          :ok <- write_json(Path.join(build_dir, "build.json"), build_json),
          :ok <- write_json(Path.join(dist_dir, "metadata.json"), metadata_json),
-         :ok <- File.write(Path.join(dist_dir, "manifest.json"), serialized_manifest <> "\n"),
+         :ok <-
+           File.write(Path.join(dist_dir, "manifest-index.json"), serialized_manifest <> "\n"),
          :ok <- write_operator_notes(dist_dir) do
       {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
     end
@@ -173,6 +177,27 @@ defmodule Favn.Dev.Build.Runner do
     File.write(path, serialized_manifest <> "\n")
   end
 
+  defp write_execution_packages(dist_dir, packages) do
+    package_dir = Path.join(dist_dir, "execution-packages")
+
+    with :ok <- File.mkdir_p(package_dir) do
+      Enum.reduce_while(packages, :ok, fn package, :ok ->
+        path = Path.join(package_dir, package.content_hash <> ".json")
+
+        case Serializer.encode_manifest(package) do
+          {:ok, encoded} ->
+            case File.write(path, encoded <> "\n") do
+              :ok -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
   defp build_json(build_id, version, modules, plugins, copied_modules, opts) do
     base(build_id, version, opts)
     |> Map.put("phase", "build")
@@ -200,7 +225,9 @@ defmodule Favn.Dev.Build.Runner do
     })
     |> Map.put("manifest", %{
       "manifest_version_id" => version.manifest_version_id,
-      "content_hash" => version.content_hash
+      "content_hash" => version.content_hash,
+      "index_path" => "manifest-index.json",
+      "execution_packages_path" => "execution-packages"
     })
     |> Map.put("plugins", plugins)
     |> Map.put("user_modules", Enum.map(modules, &Atom.to_string/1))

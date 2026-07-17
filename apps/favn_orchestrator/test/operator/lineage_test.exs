@@ -3,8 +3,11 @@ defmodule FavnOrchestrator.Operator.LineageTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
+  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
+  alias Favn.SQL.Template
   alias FavnOrchestrator.Operator.Lineage
   alias FavnOrchestrator.Operator.Lineage.AssetInspector
   alias FavnOrchestrator.Operator.Lineage.EdgeInspector
@@ -198,7 +201,7 @@ defmodule FavnOrchestrator.Operator.LineageTest do
   end
 
   defp asset(name, type, connection, catalog, schema, depends_on) do
-    %Asset{
+    asset = %Asset{
       ref: {__MODULE__.Assets, name},
       module: __MODULE__.Assets,
       name: name,
@@ -211,7 +214,28 @@ defmodule FavnOrchestrator.Operator.LineageTest do
         name: Atom.to_string(name)
       }
     }
+
+    maybe_attach_execution_package(asset)
   end
+
+  defp maybe_attach_execution_package(%Asset{type: :sql, ref: ref} = asset) do
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/operator_lineage_package.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    {:ok, package} = ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+    :ok = FavnOrchestrator.register_execution_packages([package])
+    %{asset | execution_package_hash: package.content_hash}
+  end
+
+  defp maybe_attach_execution_package(%Asset{} = asset), do: asset
 
   defp target_id(name), do: "asset:#{Atom.to_string(__MODULE__.Assets)}:#{name}"
 

@@ -2,14 +2,13 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
   @moduledoc """
   Builds deterministic SQL-heavy manifests for repeatable scalability measurements.
 
-  The fixture intentionally carries the current runtime representation: SQL is
-  present both as executable source and inside compiled template IR, checks carry
-  their own SQL/template pairs, and the graph repeats asset references. It is a
-  measurement input, not a proposed manifest contract.
+  The fixture models schema 8: the manifest contains compact SQL asset metadata
+  and content hashes while generated SQL/template IR lives in immutable packages.
   """
 
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.SQLExecution
   alias Favn.RelationRef
@@ -35,29 +34,46 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
   def build(asset_count, opts \\ [])
 
   def build(asset_count, opts) when is_integer(asset_count) and is_list(opts) do
+    {manifest, _packages} = build_with_packages(asset_count, opts)
+    manifest
+  end
+
+  def build(asset_count, _opts) do
+    raise ArgumentError,
+          "manifest scalability asset_count must be an integer in 1..#{@maximum_assets}, got: #{inspect(asset_count)}"
+  end
+
+  @doc "Builds a compact manifest and its exact execution package set."
+  @spec build_with_packages(pos_integer(), [option()]) :: {Manifest.t(), [ExecutionPackage.t()]}
+  def build_with_packages(asset_count, opts \\ [])
+
+  def build_with_packages(asset_count, opts) when is_integer(asset_count) and is_list(opts) do
     config = validate_options!(asset_count, opts)
     contract = contract(config.contract_columns)
 
-    assets =
+    asset_packages =
       Enum.map(1..asset_count, fn index ->
         asset(index, config, contract)
       end)
 
+    assets = Enum.map(asset_packages, &elem(&1, 0))
+    packages = Enum.map(asset_packages, &elem(&1, 1))
+
     {:ok, graph} = Graph.build(assets)
 
-    %Manifest{
-      assets: assets,
-      graph: graph,
-      metadata: %{
-        fixture: "sql_heavy_manifest_scalability",
-        fixture_version: 1,
-        sql_columns_per_asset: config.sql_columns,
-        contract_columns_per_asset: config.contract_columns
-      }
-    }
+    {%Manifest{
+       assets: assets,
+       graph: graph,
+       metadata: %{
+         fixture: "sql_heavy_manifest_scalability",
+         fixture_version: 2,
+         sql_columns_per_asset: config.sql_columns,
+         contract_columns_per_asset: config.contract_columns
+       }
+     }, packages}
   end
 
-  def build(asset_count, _opts) do
+  def build_with_packages(asset_count, _opts) do
     raise ArgumentError,
           "manifest scalability asset_count must be an integer in 1..#{@maximum_assets}, got: #{inspect(asset_count)}"
   end
@@ -78,41 +94,52 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
 
     template = compile_template(sql, file, module)
 
-    %Asset{
-      ref: ref,
-      module: module,
-      name: :asset,
-      type: :sql,
-      depends_on: dependencies(index),
-      execution: %{entrypoint: :asset, arity: 1},
-      description:
-        "Synthetic SQL-heavy analytics asset #{padded(index, 5)} used for manifest scalability measurement.",
-      relation:
-        RelationRef.new!(
-          connection: :warehouse,
-          catalog: "analytics",
-          schema: "manifest_scale",
-          name: "asset_#{padded(index, 5)}"
-        ),
-      materialization:
-        {:incremental,
-         strategy: :delete_insert, unique_key: [:metric_001], window_column: :event_date},
-      session_requirements: SessionRequirements.new!([:analytics_catalog, :quality_macros]),
-      sql_execution: %SQLExecution{
-        sql: sql,
-        template: template,
-        runtime_inputs: nil,
-        contract: contract,
-        sql_definitions: [],
-        checks: checks(file, module)
-      },
-      metadata: %{
-        owner: "analytics-platform",
-        domain: "manifest-scalability",
-        category: "gold",
-        tags: ["sql", "synthetic", "scalability"]
-      }
+    execution = %SQLExecution{
+      sql: sql,
+      template: template,
+      runtime_inputs: nil,
+      contract: contract,
+      sql_definitions: [],
+      checks: checks(file, module)
     }
+
+    {:ok, package} = ExecutionPackage.new(ref, execution)
+
+    {%Asset{
+       ref: ref,
+       module: module,
+       name: :asset,
+       type: :sql,
+       depends_on: dependencies(index),
+       execution: %{entrypoint: :asset, arity: 1},
+       description:
+         "Synthetic SQL-heavy analytics asset #{padded(index, 5)} used for manifest scalability measurement.",
+       relation:
+         RelationRef.new!(
+           connection: :warehouse,
+           catalog: "analytics",
+           schema: "manifest_scale",
+           name: "asset_#{padded(index, 5)}"
+         ),
+       materialization:
+         {:incremental,
+          strategy: :delete_insert, unique_key: [:metric_001], window_column: :event_date},
+       session_requirements: SessionRequirements.new!([:analytics_catalog, :quality_macros]),
+       execution_package_hash: package.content_hash,
+       assurance: %{
+         contract: contract,
+         checks:
+           Enum.map(execution.checks, fn check ->
+             Map.take(check, [:name, :origin, :claim_id, :at, :when, :on_violation, :message])
+           end)
+       },
+       metadata: %{
+         owner: "analytics-platform",
+         domain: "manifest-scalability",
+         category: "gold",
+         tags: ["sql", "synthetic", "scalability"]
+       }
+     }, package}
   end
 
   defp sql(index, column_count) do

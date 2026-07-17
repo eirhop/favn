@@ -48,9 +48,32 @@ defmodule Favn.ManifestScalabilityMeasurementTest do
     assert report.sizes.decoded_flat_heap_bytes > 0
     assert report.operations.encode.duration_us > 0
     assert report.operations.decode.duration_us > 0
-    assert report.attribution.asset_field_value_json_bytes["sql_execution"] > 0
-    assert report.attribution.sql_execution_field_value_json_bytes["sql"] > 0
-    assert report.attribution.template_field_value_json_bytes["nodes"] > 0
-    assert report.attribution.check_field_value_json_bytes["sql"] > 0
+    assert report.attribution.asset_field_value_json_bytes["execution_package_hash"] > 0
+    refute Map.has_key?(report.attribution.asset_field_value_json_bytes, "sql_execution")
+    refute Map.has_key?(report.attribution.check_field_value_json_bytes, "sql")
+  end
+
+  test "compact index stays production-safe for hundreds of SQL-heavy assets" do
+    {one_asset, _one_package} = ManifestScalabilityFixture.build_with_packages(1)
+    {manifest, packages} = ManifestScalabilityFixture.build_with_packages(300)
+
+    one_asset_bytes = one_asset |> Serializer.encode_manifest!() |> byte_size()
+    encoded_index = Serializer.encode_manifest!(manifest)
+    index_bytes = byte_size(encoded_index)
+    marginal_bytes = div(index_bytes - one_asset_bytes + 298, 299)
+    projected_6_600_bytes = one_asset_bytes + marginal_bytes * 6_599
+
+    assert length(packages) == 300
+    assert index_bytes < 2 * 1024 * 1024
+    assert projected_6_600_bytes < 32 * 1024 * 1024
+    refute encoded_index =~ ~s|"sql_execution"|
+    refute encoded_index =~ ~s|"template"|
+
+    package_bytes =
+      Enum.reduce(packages, 0, fn package, total ->
+        total + byte_size(Serializer.encode_manifest!(package))
+      end)
+
+    assert package_bytes > index_bytes * 10
   end
 end
