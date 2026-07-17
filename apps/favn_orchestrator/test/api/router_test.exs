@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   alias Favn.Manifest
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
+  alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
   alias Favn.RuntimeConfig.Ref
   alias Favn.Window.Anchor
@@ -2759,6 +2760,33 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert manifest["manifest_version_id"] == "mv_register_router"
   end
 
+  test "registers the same canonical manifest through gzip JSON" do
+    version = schedule_manifest_version("mv_register_gzip")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/manifests", gzip_manifest_publish_payload(version))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("content-encoding", "gzip")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 201
+    assert {:ok, stored} = FavnOrchestrator.get_manifest("mv_register_gzip")
+    assert stored.content_hash == version.content_hash
+    assert stored.manifest == version.manifest
+  end
+
+  test "ordinary API requests retain the global one-megabyte parser limit" do
+    body = Jason.encode!(%{"padding" => String.duplicate("a", 1_000_000)})
+
+    assert_raise Plug.Parsers.RequestTooLargeError, fn ->
+      conn(:post, "/api/orchestrator/v1/auth/password/sessions", body)
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+    end
+  end
+
   test "repeated identical manifest publication reports already published" do
     version = schedule_manifest_version("mv_register_repeat")
     payload = manifest_publish_payload(version)
@@ -3151,6 +3179,16 @@ defmodule FavnOrchestrator.API.RouterTest do
       serialization_format: version.serialization_format,
       manifest: version.manifest
     }
+  end
+
+  defp gzip_manifest_publish_payload(version) do
+    manifest = version.manifest |> Serializer.encode_manifest!() |> Jason.decode!()
+
+    version
+    |> manifest_publish_payload()
+    |> Map.put(:manifest, manifest)
+    |> Jason.encode!()
+    |> :zlib.gzip()
   end
 
   defp put_manifest_metadata(%Version{} = version, metadata) when is_map(metadata) do

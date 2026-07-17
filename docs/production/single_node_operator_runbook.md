@@ -107,6 +107,10 @@ Supported backend environment keys are:
 - `FAVN_SQLITE_POOL_SIZE=1`.
 - `FAVN_ORCHESTRATOR_API_BIND_HOST`, IPv4 address, default `127.0.0.1`.
 - `FAVN_ORCHESTRATOR_API_PORT`, `1..65535`, default `4101`.
+- `FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES`, `1..67108864`, default
+  `8388608` (8 MiB).
+- `FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES`, `1..268435456`, default
+  `33554432` (32 MiB).
 - `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`, comma-separated
   `service_identity:token` entries.
 - `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN`, used by bootstrap tooling unless

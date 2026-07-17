@@ -937,6 +937,13 @@ runner process that exits during startup is reported as a service exit with log
 guidance instead of only as an unreachable node. `--root-dir` remains an
 install/runtime-source override for split-root workflows.
 
+Manifest publication accepts plain or gzip-compressed JSON. Local development
+publishes gzip by default; the orchestrator bounds both the compressed request
+(8 MiB by default) and expanded JSON (32 MiB by default) while ordinary API
+requests retain their 1 MiB parser limit. Production deployments can tune both
+manifest-specific budgets with the environment keys documented in the
+single-node operator runbook.
+
 Local tooling HTTP calls are plain HTTP loopback calls to Favn-managed local
 services. They intentionally do not support remote or HTTPS URLs in the local
 developer loop. `mix favn.dev` starts the runner, orchestrator, and the Phoenix

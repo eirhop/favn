@@ -57,6 +57,31 @@ defmodule FavnOrchestrator.API.ConfigTest do
     assert {:error, {:invalid_api_config, {:invalid_bind_ip, "not-an-ip"}}} = Config.validate()
   end
 
+  test "validate/0 rejects invalid manifest-publication limits when API server enabled" do
+    previous_server = Application.get_env(:favn_orchestrator, :api_server)
+    previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
+    previous_manifest = Application.get_env(:favn_orchestrator, :manifest_publication)
+
+    Application.put_env(:favn_orchestrator, :api_server, enabled: true)
+
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      [service_identity: "favn_web", token: "token", enabled: true]
+    ])
+
+    Application.put_env(:favn_orchestrator, :manifest_publication, compressed_limit_bytes: 0)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :api_server, previous_server)
+      restore_env(:favn_orchestrator, :api_service_tokens, previous_tokens)
+      restore_env(:favn_orchestrator, :manifest_publication, previous_manifest)
+    end)
+
+    assert {:error,
+            {:invalid_api_config,
+             {:invalid_manifest_publication_limit, :compressed_limit_bytes, 0, _maximum}}} =
+             Config.validate()
+  end
+
   test "bind_ip/1 accepts IPv4 tuples and strings" do
     assert {:ok, {127, 0, 0, 1}} = Config.bind_ip([])
     assert {:ok, {127, 0, 0, 1}} = Config.bind_ip(bind_ip: {127, 0, 0, 1})

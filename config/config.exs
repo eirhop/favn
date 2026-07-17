@@ -70,6 +70,10 @@ config :favn_orchestrator,
     enabled: System.get_env("FAVN_ORCHESTRATOR_API_ENABLED") in ["1", "true", "TRUE"],
     port: String.to_integer(System.get_env("FAVN_ORCHESTRATOR_API_PORT", "4101"))
   ],
+  manifest_publication: [
+    compressed_limit_bytes: 8 * 1024 * 1024,
+    decompressed_limit_bytes: 32 * 1024 * 1024
+  ],
   api_service_tokens: [],
   api_service_tokens_env:
     System.get_env("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", service_token_env_default),
