@@ -6,16 +6,16 @@ defmodule Favn.Manifest.SerializerTest do
   alias Favn.RuntimeConfig.Ref
 
   test "encodes canonical json with sorted keys" do
-    manifest = %{schema_version: 6, runner_contract_version: 6, z: 1, a: 2}
+    manifest = %{schema_version: 7, runner_contract_version: 7, z: 1, a: 2}
 
     assert {:ok, encoded} = Serializer.encode_manifest(manifest)
-    assert encoded == ~s|{"a":2,"runner_contract_version":6,"schema_version":6,"z":1}|
+    assert encoded == ~s|{"a":2,"runner_contract_version":7,"schema_version":7,"z":1}|
   end
 
   test "drops build-only keys from encoded payload" do
     manifest = %{
-      schema_version: 6,
-      runner_contract_version: 6,
+      schema_version: 7,
+      runner_contract_version: 7,
       generated_at: DateTime.utc_now(),
       diagnostics: [%{message: "warn"}],
       assets: []
@@ -28,20 +28,20 @@ defmodule Favn.Manifest.SerializerTest do
 
   test "uses build manifest payload when build struct is provided" do
     build =
-      Build.new(%{schema_version: 6, runner_contract_version: 6, assets: []},
+      Build.new(%{schema_version: 7, runner_contract_version: 7, assets: []},
         diagnostics: ["ignored"]
       )
 
     assert {:ok, encoded} = Serializer.encode_manifest(build)
     assert {:ok, decoded} = Serializer.decode_manifest(encoded)
-    assert decoded["schema_version"] == 6
+    assert decoded["schema_version"] == 7
     refute Map.has_key?(decoded, "diagnostics")
   end
 
   test "encodes runtime config refs without resolved values" do
     manifest = %{
-      schema_version: 6,
-      runner_contract_version: 6,
+      schema_version: 7,
+      runner_contract_version: 7,
       assets: [
         %{
           ref: {__MODULE__, :asset},

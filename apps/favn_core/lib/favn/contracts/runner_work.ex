@@ -13,6 +13,7 @@ defmodule Favn.Contracts.RunnerWork do
 
   @type t :: %__MODULE__{
           run_id: String.t() | nil,
+          run_started_at: DateTime.t() | nil,
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
           node_identity: NodeIdentity.t() | nil,
@@ -32,6 +33,7 @@ defmodule Favn.Contracts.RunnerWork do
         }
 
   defstruct run_id: nil,
+            run_started_at: nil,
             manifest_version_id: nil,
             manifest_content_hash: nil,
             node_identity: nil,

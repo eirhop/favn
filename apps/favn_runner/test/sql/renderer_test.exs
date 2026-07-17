@@ -3,6 +3,8 @@ defmodule FavnRunner.SQLRendererTest do
 
   alias Favn.RelationRef
   alias Favn.SQL.Definition, as: SQLDefinition
+  alias Favn.SQL.Contract
+  alias Favn.SQL.Contract.Param
   alias Favn.SQL.Template
   alias Favn.SQLAsset.Definition
   alias Favn.SQLAsset.Renderer
@@ -42,6 +44,114 @@ defmodule FavnRunner.SQLRendererTest do
 
     assert {:error, error} = Renderer.render(definition)
     assert error.message =~ "must be a scalar bind value"
+  end
+
+  test "binds Favn-owned run identity and start time as runtime inputs" do
+    started_at = ~U[2026-07-17 10:15:30Z]
+
+    definition =
+      definition(
+        %{connection: :warehouse, schema: "gold", name: "orders"},
+        "SELECT @favn_run_id AS run_id, @favn_run_started_at AS started_at"
+      )
+
+    assert {:ok, rendered} =
+             Renderer.render(definition,
+               runtime: %{favn_run_id: "run-123", favn_run_started_at: started_at}
+             )
+
+    assert rendered.sql == "SELECT ? AS run_id, ? AS started_at"
+
+    assert [
+             %{name: :favn_run_id, source: :runtime, value: "run-123"},
+             %{name: :favn_run_started_at, source: :runtime, value: ^started_at}
+           ] = rendered.params.bindings
+
+    assert rendered.metadata.runtime_input_names == [:favn_run_id, :favn_run_started_at]
+  end
+
+  test "rejects missing or invalid Favn-owned runtime inputs without exposing values" do
+    definition =
+      definition(
+        %{connection: :warehouse, schema: "gold", name: "orders"},
+        "SELECT @favn_run_id AS run_id"
+      )
+
+    assert {:error, missing} = Renderer.render(definition)
+    assert missing.type == :missing_runtime_input
+    assert missing.message =~ ":favn_run_id"
+
+    assert {:error, invalid} = Renderer.render(definition, runtime: %{favn_run_id: 42})
+    assert invalid.type == :binding_failure
+    assert invalid.details == %{name: :favn_run_id, expected: "a non-empty string"}
+    refute inspect(invalid.details) =~ "42"
+  end
+
+  test "rejects atom and string reserved names in params and settings without exposing values" do
+    collisions = [
+      {definition(), [params: %{favn_run_id: "spoofed-run"}], :favn_run_id, :params},
+      {definition(), [params: %{"favn_run_started_at" => "spoofed-start"}], :favn_run_started_at,
+       :params},
+      {put_in(definition().asset.settings, %{window_start: "spoofed-window"}), [], :window_start,
+       :settings},
+      {put_in(definition().asset.settings, %{"window_end" => "spoofed-window"}), [], :window_end,
+       :settings}
+    ]
+
+    Enum.each(collisions, fn {definition, opts, name, source} ->
+      assert {:error, error} = Renderer.render(definition, opts)
+      assert error.type == :binding_failure
+      assert error.details == %{name: name, source: source}
+      refute inspect(error) =~ "spoofed"
+
+      assert {:error, contract_error} = Renderer.validate_contract_params(definition, opts)
+      assert contract_error.details == %{name: name, source: source}
+      refute inspect(contract_error) =~ "spoofed"
+    end)
+  end
+
+  test "validates parameterized row-count inputs before SQL execution" do
+    contract =
+      Contract.new!(%{
+        columns: [%{name: :id, type: :integer}],
+        row_count: [equals: Param.new!(:expected_rows)]
+      })
+
+    definition = %{definition() | contract: contract}
+
+    assert :ok = Renderer.validate_contract_params(definition, params: %{expected_rows: 10})
+
+    assert {:error, missing} = Renderer.validate_contract_params(definition, params: %{})
+    assert missing.type == :missing_query_param
+    assert missing.message == "missing SQL contract parameter @expected_rows"
+
+    assert {:error, invalid} =
+             Renderer.validate_contract_params(definition, params: %{expected_rows: -1})
+
+    assert invalid.type == :binding_failure
+    assert invalid.details == %{name: :expected_rows, expected: :non_neg_integer}
+    refute Map.has_key?(invalid.details, :value)
+  end
+
+  test "contract parameters follow the normal setting and collision rules" do
+    contract =
+      Contract.new!(%{
+        columns: [%{name: :id, type: :integer}],
+        row_count: [equals: Param.new!(:expected_rows)]
+      })
+
+    definition =
+      definition()
+      |> Map.put(:contract, contract)
+      |> put_in([Access.key!(:asset), Access.key!(:settings)], %{expected_rows: 10})
+
+    assert :ok = Renderer.validate_contract_params(definition, params: %{})
+
+    assert {:error, collision} =
+             Renderer.validate_contract_params(definition, params: %{expected_rows: 10})
+
+    assert collision.type == :binding_failure
+    assert collision.details.sources == [:settings, :params]
   end
 
   test "rejects value placeholders in relation position" do

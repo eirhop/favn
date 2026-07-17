@@ -147,6 +147,10 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           })
       },
       %Variation{
+        id: :contract_fragment_and_parameterized_row_count,
+        attributes: assurance_attributes()
+      },
+      %Variation{
         id: :placeholder_mode,
         attributes:
           base_attributes()
@@ -187,6 +191,53 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
       selected_window: List.last(refresh_timeline()),
       freshness: AssetDetailPage.sample_freshness(state)
     })
+  end
+
+  defp assurance_attributes do
+    fragment = MyApp.Contracts.AuditMetadata
+
+    base_attributes()
+    |> Map.merge(%{
+      active_mode: :details,
+      assurance: %{
+        quality_status: :passed,
+        write_outcome: :written,
+        latest_run_id: "run_customer_orders_daily",
+        contract_validation: nil,
+        checks: [],
+        contract: %{
+          grain: %{by: [:order_id], description: "one customer order"},
+          unique_keys: [[:order_id]],
+          row_count: %{
+            equals: %{source: :param, name: :expected_rows},
+            min: nil,
+            max: nil,
+            on_violation: :fail
+          },
+          compositions: [
+            %{module: fragment, start_index: 1, columns: [:processed_at, :favn_run_id]}
+          ],
+          columns: [
+            contract_column(:order_id, :integer, %{kind: :local}),
+            contract_column(:processed_at, :datetime, %{kind: :fragment, module: fragment}),
+            contract_column(:favn_run_id, :string, %{kind: :fragment, module: fragment})
+          ]
+        }
+      }
+    })
+  end
+
+  defp contract_column(name, type, origin) do
+    %{
+      name: name,
+      type: type,
+      nullable?: false,
+      description: nil,
+      tags: [],
+      via: nil,
+      sources: [],
+      origin: origin
+    }
   end
 
   defp refresh_timeline do

@@ -2,7 +2,7 @@ defmodule Favn.SQL.ContractTest do
   use ExUnit.Case, async: true
 
   alias Favn.SQL.{Check, Contract, Template}
-  alias Favn.SQL.Contract.Diff
+  alias Favn.SQL.Contract.{Composition, Diff, Fragment, Param}
   alias Favn.SQL.ContractValidation
 
   test "normalizes common backend types and reports ordered schema differences" do
@@ -166,6 +166,121 @@ defmodule Favn.SQL.ContractTest do
     assert [required, unique] = Contract.generated_check_specs(contract)
     assert required.claim_id == "columns.not_null"
     assert unique.claim_id == "keys.unique"
+  end
+
+  test "generates stable row-count claims for exact and bounded constraints" do
+    cases = [
+      {[equals: 12], "row_count.equals.literal.12", "actual = 12", "12 AS expected"},
+      {[min: 2, max: 9], "row_count.range.2.9", "actual >= 2 AND actual <= 9",
+       "2 AS min, 9 AS max"},
+      {[max: 50], "row_count.max.50", "actual <= 50", "50 AS max"}
+    ]
+
+    Enum.each(cases, fn {row_count, claim_id, predicate, metrics} ->
+      contract = Contract.new!(%{columns: [%{name: :id, type: :integer}], row_count: row_count})
+
+      assert [%{claim_id: ^claim_id, sql: sql}] = Contract.generated_check_specs(contract)
+      assert sql =~ predicate
+      assert sql =~ metrics
+      assert sql =~ "FROM (SELECT count(*) AS actual FROM query())"
+    end)
+  end
+
+  test "exposes typed requirements for parameterized exact row counts" do
+    contract =
+      Contract.new!(%{
+        columns: [%{name: :id, type: :integer}],
+        row_count: [equals: Param.new!(:expected_rows)]
+      })
+
+    assert %{expected_rows: :non_neg_integer} = Contract.runtime_param_requirements(contract)
+
+    assert [%{claim_id: "row_count.equals.param.expected_rows", sql: sql}] =
+             Contract.generated_check_specs(contract)
+
+    assert sql =~ "actual = @expected_rows"
+    assert sql =~ "@expected_rows AS expected"
+  end
+
+  test "rejects ambiguous and invalid row-count constraints" do
+    columns = [%{name: :id, type: :integer}]
+
+    assert_raise ArgumentError, ~r/equals: cannot be combined/, fn ->
+      Contract.new!(%{columns: columns, row_count: [equals: 1, min: 1]})
+    end
+
+    assert_raise ArgumentError, ~r/min: must not exceed max:/, fn ->
+      Contract.new!(%{columns: columns, row_count: [min: 2, max: 1]})
+    end
+
+    assert_raise ArgumentError, ~r/max: must be a non-negative integer/, fn ->
+      Contract.new!(%{columns: columns, row_count: [max: -1]})
+    end
+
+    assert_raise ArgumentError, ~r/reserved for Favn runtime input/, fn ->
+      Param.new!(:favn_run_id)
+    end
+
+    assert_raise ArgumentError, ~r/must start with a lowercase letter/, fn ->
+      Param.new!(:"expected-rows")
+    end
+  end
+
+  test "validates flattened fragment composition and keeps provenance out of semantic diffs" do
+    previous =
+      Contract.new!(%{
+        columns: [
+          %{name: :id, type: :integer},
+          %{name: :created_at, type: :datetime},
+          %{name: :run_id, type: :string}
+        ],
+        compositions: [Composition.new!(__MODULE__.AuditMetadata, 1, [:created_at, :run_id])]
+      })
+
+    current =
+      Contract.new!(%{
+        columns: previous.columns,
+        compositions: [Composition.new!(__MODULE__.AuditMetadata, 0, [:id, :created_at])]
+      })
+
+    assert Diff.between(previous, current) == []
+
+    assert [
+             %{kind: :fragment_moved, module: __MODULE__.AuditMetadata, from: 1, to: 0},
+             %{
+               kind: :fragment_columns_changed,
+               module: __MODULE__.AuditMetadata,
+               from: [:created_at, :run_id],
+               to: [:id, :created_at]
+             }
+           ] = Diff.provenance_between(previous, current)
+
+    assert_raise ArgumentError, ~r/do not match the flattened contract/, fn ->
+      Contract.new!(%{
+        columns: previous.columns,
+        compositions: [Composition.new!(__MODULE__.AuditMetadata, 1, [:created_at, :missing])]
+      })
+    end
+
+    assert_raise ArgumentError, ~r/overlap or are out of order/, fn ->
+      Contract.new!(%{
+        columns: previous.columns,
+        compositions: [
+          Composition.new!(__MODULE__.First, 0, [:id, :created_at]),
+          Composition.new!(__MODULE__.Second, 1, [:created_at, :run_id])
+        ]
+      })
+    end
+  end
+
+  test "rejects non-module atoms in typed fragment provenance" do
+    assert_raise ArgumentError, ~r/must be an Elixir module atom/, fn ->
+      Composition.new!(:not_a_module, 0, [:id])
+    end
+
+    assert_raise ArgumentError, ~r/must be an Elixir module atom/, fn ->
+      Fragment.new!(:not_a_module, [%{name: :id, type: :integer}])
+    end
   end
 
   test "rejects generated checks whose executable template was tampered with" do

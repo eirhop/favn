@@ -19,6 +19,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.SQL.Check
   alias Favn.SQL.Column
   alias Favn.SQL.Contract
+  alias Favn.SQL.Contract.Param
   alias Favn.SQL.SessionRequirements
   alias Favn.SQL.Template
 
@@ -182,6 +183,26 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert {:ok, result} = FavnRunner.run(work)
     if result.status != :ok, do: flunk(inspect(result, pretty: true))
     assert [%{status: :ok}] = result.asset_results
+  end
+
+  test "manifest execution binds Favn-owned run identity and start time" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+    sql = "SELECT @favn_run_id AS run_id, @favn_run_started_at AS started_at"
+    run_started_at = ~U[2026-07-17 08:30:00Z]
+
+    version =
+      register_sql_manifest!(ref, nil, [], SessionRequirements.empty(), sql)
+
+    work = %RunnerWork{
+      run_id: "run_sql_favn_runtime_inputs",
+      run_started_at: run_started_at,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      asset_ref: ref
+    }
+
+    assert {:ok, %{status: :ok}} = FavnRunner.run(work)
+    assert_received {:materialize_params, ["run_sql_favn_runtime_inputs", ^run_started_at]}
   end
 
   test "resolves and pins manifest-declared runtime inputs before execution" do
@@ -800,6 +821,82 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert_received {:checked_materialize, _write_plan}
   end
 
+  test "validates parameterized row-count inputs before opening a SQL session" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+
+    contract =
+      Contract.new!(%{
+        columns: [%{name: :id, type: :integer}],
+        row_count: [equals: Param.new!(:expected_rows)]
+      })
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, [], nil, contract)
+
+    assert {:ok, missing_result} =
+             FavnRunner.run(work_for(version, ref, "run_contract_param_missing"))
+
+    assert missing_result.status == :error
+    assert [%{error: %{type: :missing_query_param}}] = missing_result.asset_results
+    refute_received :checked_connect
+    refute_received {:checked_execute, _statement}
+
+    work =
+      version
+      |> work_for(ref, "run_contract_param_valid")
+      |> Map.put(:params, %{expected_rows: 1})
+
+    assert {:ok, valid_result} = FavnRunner.run(work)
+    assert valid_result.status == :ok
+    assert_received :checked_connect
+    assert_received {:checked_query_params, [1, 1]}
+  end
+
+  test "rejects caller-supplied Favn runtime names before opening a SQL session" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, [], nil, nil)
+
+    work =
+      version
+      |> work_for(ref, "run_reserved_runtime_param")
+      |> Map.put(:params, %{"favn_run_id" => "spoofed-run"})
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :error
+    assert [%{error: %{type: :binding_failure, details: details}}] = result.asset_results
+    assert details.details == %{name: :favn_run_id, source: :params}
+    refute inspect(result) =~ "spoofed-run"
+    refute_received :checked_connect
+  end
+
+  test "parameterized row counts accept pinned runtime-input resolver values" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+
+    contract =
+      Contract.new!(%{
+        columns: [%{name: :id, type: :integer}],
+        row_count: [equals: Param.new!(:expected_rows)]
+      })
+
+    resolver = %RuntimeInputResolverRef{
+      module: FavnRunner.ExecutionSQLAssetTest.ExpectedRowsResolver
+    }
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, [], resolver, contract)
+
+    work =
+      version
+      |> work_for(ref, "run_contract_param_resolved")
+      |> resolve_and_pin!()
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :ok
+    assert_received {:checked_query_params, [1, 1]}
+  end
+
   test "fails a schema mismatch before target mutation with structured differences" do
     reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
 
@@ -999,8 +1096,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_inspection_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 6,
-      runner_contract_version: 6,
+      schema_version: 7,
+      runner_contract_version: 7,
       assets: [
         %Asset{
           ref: ref,
@@ -1033,13 +1130,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
          ref,
          relation \\ nil,
          relation_inputs \\ [],
-         session_requirements \\ SessionRequirements.empty()
+         session_requirements \\ SessionRequirements.empty(),
+         sql \\ "SELECT 1 AS id"
        ) do
     relation =
       relation || RelationRef.new!(%{connection: :runner_sql_runtime, name: "manifest_sql_asset"})
 
     template =
-      Template.compile!("SELECT 1 AS id",
+      Template.compile!(sql,
         file: "test/sql_asset_manifest.sql",
         line: 1,
         module: __MODULE__,
@@ -1049,8 +1147,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 6,
-        runner_contract_version: 6,
+        schema_version: 7,
+        runner_contract_version: 7,
         assets: [
           %Asset{
             ref: ref,
@@ -1063,7 +1161,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
             relation_inputs: relation_inputs,
             session_requirements: session_requirements,
             sql_execution: %SQLExecution{
-              sql: "SELECT 1 AS id",
+              sql: sql,
               template: template,
               sql_definitions: []
             }
@@ -1103,8 +1201,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     manifest = %Manifest{
-      schema_version: 6,
-      runner_contract_version: 6,
+      schema_version: 7,
+      runner_contract_version: 7,
       assets: [
         %Asset{
           ref: ref,
@@ -1156,8 +1254,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     checks = generated_contract_checks(contract) ++ checks
 
     manifest = %Manifest{
-      schema_version: 6,
-      runner_contract_version: 6,
+      schema_version: 7,
+      runner_contract_version: 7,
       assets: [
         %Asset{
           ref: ref,
@@ -1307,8 +1405,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 6,
-        runner_contract_version: 6,
+        schema_version: 7,
+        runner_contract_version: 7,
         assets: [
           %Asset{
             ref: ref,
@@ -1347,8 +1445,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 6,
-        runner_contract_version: 6,
+        schema_version: 7,
+        runner_contract_version: 7,
         assets: [
           %Asset{
             ref: ref,
@@ -1379,8 +1477,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 6,
-      runner_contract_version: 6,
+      schema_version: 7,
+      runner_contract_version: 7,
       assets: [
         %Asset{
           ref: ref,
@@ -1487,6 +1585,17 @@ defmodule FavnRunner.ExecutionSQLAssetTest.RuntimeInputsFailureResolver do
        message: "external manifest is not ready",
        retryable?: true
      }}
+  end
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.ExpectedRowsResolver do
+  @behaviour Favn.SQLAsset.RuntimeInputs
+
+  alias Favn.SQLAsset.RuntimeInputs.Result
+
+  @impl true
+  def resolve(_context) do
+    {:ok, %Result{params: %{expected_rows: 1}, identity: "expected-rows:1"}}
   end
 end
 
@@ -1701,7 +1810,11 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedExecutionAdapter do
   alias Favn.Connection.Resolved
   alias Favn.SQL.{Capabilities, Error, Relation, Result}
 
-  def connect(%Resolved{}, _opts), do: {:ok, :checked_conn}
+  def connect(%Resolved{}, _opts) do
+    notify(:checked_connect)
+    {:ok, :checked_conn}
+  end
+
   def disconnect(:checked_conn, _opts), do: :ok
 
   def capabilities(%Resolved{}, _opts),

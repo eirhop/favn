@@ -180,8 +180,8 @@ defmodule FavnOrchestrator.RuntimeInputPinsTest do
     %Version{
       manifest_version_id: "mv-runtime-inputs",
       content_hash: String.duplicate("a", 64),
-      schema_version: 6,
-      runner_contract_version: 6,
+      schema_version: 7,
+      runner_contract_version: 7,
       manifest: %Manifest{
         assets: [
           %Asset{

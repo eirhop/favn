@@ -152,8 +152,8 @@ defmodule Favn.SQLAsset do
 
   Table and incremental assets may declare one typed output contract. The
   contract is compiled into the manifest and describes ordered columns,
-  structured or descriptive grain, unique keys, a minimum row count, and
-  explicit column lineage:
+  structured or descriptive grain, unique keys, an exact or bounded row count,
+  reusable column-fragment provenance, and explicit column lineage:
 
       contract do
         grain by: [:record_id], description: "one normalized record"
@@ -173,7 +173,7 @@ defmodule Favn.SQLAsset do
 
   Candidate names, order, logical types, and reliable adapter nullability
   metadata are hard requirements checked before target mutation. Non-null
-  columns, `grain by:`, unique keys, and minimum row counts compile into the
+  columns, `grain by:`, unique keys, and row-count constraints compile into the
   ordinary transactional check engine. Generated checks carry origin
   `:contract` and stable claim identities; authored checks carry origin
   `:authored`, and both appear in the same assurance result model.
@@ -186,6 +186,17 @@ defmodule Favn.SQLAsset do
   list of `{Module, :column}`, `{{Module, :asset}, :column}`, or
   `{"external.dataset", "field"}` tuples. `via:` may be `:identity`,
   `:transformation`, or `:aggregation`. Favn does not infer lineage from SQL.
+
+  Repeated column metadata may use an explicit `Favn.SQL.ContractFragment` and
+  `include Module` at the required output position. Includes flatten into the
+  canonical ordered columns and retain separate composition provenance. Only
+  column declarations belong in a fragment; grain, keys, row counts, checks,
+  nesting, and overrides remain local to the asset.
+
+  Row counts accept literal `equals:`, `min:`, `max:`, or a `min:`/`max:` range.
+  Exact counts may use `equals: param(:name)` to bind a normal setting or runtime
+  param that the runner validates as a non-negative integer before opening a SQL
+  session.
 
   The contract describes the result; it does not generate `select` expressions,
   aliases, casts, or SQL. Read `Favn.SQLAsset.contract/1` and the HexDocs guide
@@ -329,7 +340,10 @@ defmodule Favn.SQLAsset do
   winner without calling the resolver again. Its values use the normal SQL
   binding path and can be referenced by nested `defsql` calls. Resolver values
   never become SQL source. Submitted and resolved parameter names may not
-  collide, and `window_start`/`window_end` remain reserved.
+  collide, and `window_start`, `window_end`, `favn_run_id`, and
+  `favn_run_started_at` remain reserved. The two Favn-owned execution values are
+  bound automatically from the runner context and may be referenced directly as
+  `@favn_run_id` and `@favn_run_started_at`.
 
   Resolution has a 30-second upper bound, additionally limited by the remaining
   node deadline. The runner accepts at most 128 parameters, a 4 MiB parameter
@@ -413,6 +427,7 @@ defmodule Favn.SQLAsset do
   alias Favn.SQL
   alias Favn.SQL.Check
   alias Favn.SQL.Contract
+  alias Favn.SQL.Contract.{Composition, Fragment, Param}
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.SessionRequirements
   alias Favn.SQL.Source
@@ -461,7 +476,15 @@ defmodule Favn.SQLAsset do
         ]
 
       import Favn.SQLAsset,
-        only: [check: 3, contract: 1, materialized: 1, query: 1, resources: 1, runtime_inputs: 1]
+        only: [
+          check: 3,
+          contract: 1,
+          materialized: 1,
+          param: 1,
+          query: 1,
+          resources: 1,
+          runtime_inputs: 1
+        ]
 
       import Favn.SQL, only: [sigil_SQL: 2]
     end
@@ -613,14 +636,37 @@ defmodule Favn.SQLAsset do
   types, and observable nullability are hard contract requirements checked
   before target mutation. The contract never generates the query or its select
   list. See the HexDocs guide `guides/sql-output-contracts.md` for the complete
-  option, type, enforcement, bounds, and result reference.
+  option, fragment, runtime parameter, type, enforcement, bounds, and result
+  reference.
   """
   defmacro contract(do: body) do
     raw = parse_contract!(body, __CALLER__)
 
-    quote bind_quoted: [raw: Macro.escape(raw)] do
+    fragment_dependencies =
+      Enum.map(raw.definition.compositions, fn composition ->
+        quote do
+          require unquote(composition.module)
+          unquote(composition.module).__favn_sql_contract_dependency__()
+        end
+      end)
+
+    quote do
+      unquote_splicing(fragment_dependencies)
+      raw = unquote(Macro.escape(raw))
       @favn_sql_contracts raw
       :ok
+    end
+  end
+
+  @doc """
+  References one normal runtime-bound SQL parameter from a contract claim.
+
+  This marker is currently supported only by
+  `row_count equals: param(:parameter_name)` inside `contract/1`.
+  """
+  defmacro param(name) do
+    quote do
+      Favn.SQL.Contract.Param.new!(unquote(name))
     end
   end
 
@@ -1562,7 +1608,7 @@ defmodule Favn.SQLAsset do
     definition =
       Enum.reduce(
         statements,
-        %{grain: nil, columns: [], unique_keys: [], row_count: nil},
+        %{grain: nil, columns: [], compositions: [], unique_keys: [], row_count: nil},
         &parse_contract_statement!(&1, &2, env)
       )
 
@@ -1599,22 +1645,52 @@ defmodule Favn.SQLAsset do
     %{definition | unique_keys: definition.unique_keys ++ [columns]}
   end
 
+  defp parse_contract_statement!({:include, meta, [module_ast]}, definition, env) do
+    module = contract_module!(module_ast, env, meta)
+
+    if Enum.any?(definition.compositions, &(&1.module == module)) do
+      contract_compile_error!(
+        env,
+        meta,
+        "contract fragment #{inspect(module)} is already included"
+      )
+    end
+
+    fragment = fetch_contract_fragment!(module, env, meta)
+    existing_names = MapSet.new(definition.columns, &contract_column_name/1)
+
+    case Enum.find(fragment.columns, &MapSet.member?(existing_names, &1.name)) do
+      nil ->
+        :ok
+
+      column ->
+        contract_compile_error!(
+          env,
+          meta,
+          "contract fragment #{inspect(module)} conflicts with existing column #{inspect(column.name)}"
+        )
+    end
+
+    start_index = length(definition.columns)
+    column_names = Enum.map(fragment.columns, & &1.name)
+    composition = Composition.new!(module, start_index, column_names)
+
+    %{
+      definition
+      | columns: definition.columns ++ fragment.columns,
+        compositions: definition.compositions ++ [composition]
+    }
+  end
+
   defp parse_contract_statement!({:row_count, meta, [opts_ast]}, definition, env) do
     if definition.row_count do
       contract_compile_error!(env, meta, "contract can declare row_count only once")
     end
 
-    opts =
-      contract_keyword!(
-        opts_ast,
-        env,
-        meta,
-        :row_count,
-        [:min, :when, :on_violation]
-      )
+    opts = contract_row_count_opts!(opts_ast, env, meta)
 
-    unless Keyword.has_key?(opts, :min),
-      do: contract_compile_error!(env, meta, "contract row_count requires min:")
+    unless Enum.any?([:equals, :min, :max], &Keyword.has_key?(opts, &1)),
+      do: contract_compile_error!(env, meta, "contract row_count requires equals:, min:, or max:")
 
     %{definition | row_count: opts}
   end
@@ -1641,8 +1717,103 @@ defmodule Favn.SQLAsset do
       )
 
     column = %{name: name, type: type, opts: opts}
+
+    case Enum.find(definition.columns, &(contract_column_name(&1) == name)) do
+      nil -> :ok
+      _column -> contract_compile_error!(env, meta, "duplicate contract column #{inspect(name)}")
+    end
+
     %{definition | columns: definition.columns ++ [column]}
   end
+
+  defp contract_row_count_opts!(ast, env, meta) do
+    unless is_list(ast) and Keyword.keyword?(ast) do
+      contract_compile_error!(env, meta, "contract row_count options must be a keyword list")
+    end
+
+    allowed = [:equals, :min, :max, :when, :on_violation]
+    keys = Keyword.keys(ast)
+
+    case keys -- Enum.uniq(keys) do
+      [] ->
+        :ok
+
+      [key | _rest] ->
+        contract_compile_error!(env, meta, "duplicate contract row_count option #{inspect(key)}")
+    end
+
+    case Enum.find(keys, &(&1 not in allowed)) do
+      nil ->
+        :ok
+
+      key ->
+        contract_compile_error!(env, meta, "unknown contract row_count option #{inspect(key)}")
+    end
+
+    Enum.map(ast, fn
+      {:equals, {:param, param_meta, [name_ast]}} ->
+        name = contract_literal!(name_ast, env, param_meta, "contract param name")
+
+        try do
+          {:equals, Param.new!(name)}
+        rescue
+          error in ArgumentError -> contract_compile_error!(env, param_meta, error.message)
+        end
+
+      {key, value_ast} ->
+        {key, contract_literal!(value_ast, env, meta, "contract row_count #{key}")}
+    end)
+  end
+
+  defp contract_module!(ast, env, meta) do
+    module = Macro.expand(ast, env)
+
+    if is_atom(module) and DSLCompiler.module_atom?(module) do
+      module
+    else
+      contract_compile_error!(
+        env,
+        meta,
+        "contract include expects a module, got: #{Macro.to_string(ast)}"
+      )
+    end
+  end
+
+  defp fetch_contract_fragment!(module, env, meta) do
+    ensure_contract_fragment_compiled!(module, env, meta)
+
+    unless function_exported?(module, :__favn_sql_contract_fragment__, 0) do
+      contract_compile_error!(
+        env,
+        meta,
+        "contract fragment #{inspect(module)} must use Favn.SQL.ContractFragment"
+      )
+    end
+
+    case module.__favn_sql_contract_fragment__() do
+      %Fragment{} = fragment ->
+        Fragment.validate!(fragment)
+
+      _other ->
+        contract_compile_error!(env, meta, "contract fragment #{inspect(module)} is invalid")
+    end
+  rescue
+    error in ArgumentError -> contract_compile_error!(env, meta, error.message)
+  end
+
+  defp ensure_contract_fragment_compiled!(module, env, meta) do
+    Code.ensure_compiled!(module)
+  rescue
+    _error in ArgumentError ->
+      contract_compile_error!(
+        env,
+        meta,
+        "contract fragment #{inspect(module)} could not be resolved"
+      )
+  end
+
+  defp contract_column_name(%Favn.SQL.Contract.Column{name: name}), do: name
+  defp contract_column_name(%{name: name}), do: name
 
   defp contract_keyword!(ast, env, meta, declaration, allowed_keys) do
     value = contract_literal!(ast, env, meta, "contract #{declaration} options")

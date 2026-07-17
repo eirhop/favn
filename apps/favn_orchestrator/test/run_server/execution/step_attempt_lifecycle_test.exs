@@ -3,6 +3,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
 
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
+  alias Favn.Manifest
+  alias Favn.Manifest.Version
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
   alias FavnOrchestrator.RunState
 
@@ -125,6 +127,19 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     assert DateTime.compare(deadline_at, before_attach) == :gt
     assert DateTime.diff(deadline_at, before_attach, :millisecond) <= 100
     assert StepAttemptLifecycle.deadline_at(prepared) == deadline_at
+  end
+
+  test "runner work preserves the logical run start across attempts" do
+    run = run_state(max_attempts: 2)
+    node_key = {{MyApp.Assets.Lifecycle, :asset}, nil}
+
+    assert {:ok, version} =
+             Version.new(%Manifest{}, manifest_version_id: run.manifest_version_id)
+
+    lifecycle = StepAttemptLifecycle.new(run, version, node_key, 0, 2)
+
+    assert {:ok, %{work: work}} = StepAttemptLifecycle.build_work(lifecycle)
+    assert work.run_started_at == run.inserted_at
   end
 
   defp run_state(opts) do

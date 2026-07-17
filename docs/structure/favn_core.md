@@ -41,7 +41,7 @@ Integration boundaries opt in explicitly; DuckDB session-script parameters are
 the first consumer. Providers return bounded errors, refs have redacted Inspect
 output, and secret refs are tracked by connection redaction.
 
-Manifest schema 6 and runner contract 6 are the only accepted versions. Static
+Manifest schema 7 and runner contract 7 are the only accepted versions. Static
 asset and pipeline settings use `Favn.Settings`; top-level atom keys are retained
 for runtime access while nested maps normalize to JSON-safe string keys.
 `Favn.Run.Context`, `Favn.Run.AssetContext`, and `Favn.Run.PipelineContext`
@@ -52,7 +52,11 @@ execution payloads carry an optional typed `%Favn.SQL.Contract{}` plus typed
 share the same policy/result types and are distinguished by origin and stable
 claim identity. `%Favn.SQL.ContractValidation{}` owns candidate schema
 comparison and `%Favn.SQL.Contract.Diff{}` owns semantic authored-contract
-comparison. Templates may contain runtime `query()`/`target()` relation nodes,
+comparison while fragment-composition provenance is diffed separately.
+Contracts retain flattened columns, bounded `%Favn.SQL.Contract.Composition{}`
+records, and typed `%Favn.SQL.Contract.Param{}` requirements. Templates reserve
+`@favn_run_id` and `@favn_run_started_at` alongside the two window inputs and may
+contain runtime `query()`/`target()` relation nodes,
 and attempts carry bounded `%Favn.SQL.CheckResult{}` diagnostics. Older manifest
 schemas and missing-graph payloads are rejected rather than upgraded.
 

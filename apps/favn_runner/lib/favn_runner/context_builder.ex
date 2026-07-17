@@ -31,7 +31,7 @@ defmodule FavnRunner.ContextBuilder do
          params: normalized_map(work.params),
          window: RunnerWork.window(work) || Map.get(work.trigger, :window),
          pipeline: work.pipeline,
-         run_started_at: DateTime.utc_now(),
+         run_started_at: normalized_run_started_at(work.run_started_at),
          deadline_at: work.deadline_at,
          stage: stage,
          attempt: attempt,
@@ -42,6 +42,9 @@ defmodule FavnRunner.ContextBuilder do
 
   defp normalized_map(map) when is_map(map), do: map
   defp normalized_map(_other), do: %{}
+
+  defp normalized_run_started_at(%DateTime{} = run_started_at), do: run_started_at
+  defp normalized_run_started_at(_other), do: DateTime.utc_now()
 
   defp normalized_stage(stage) do
     case stage do

@@ -6,8 +6,9 @@ contract.
 Documentation type: how-to and reference guide.
 
 Start with `Favn.SQLAsset`. Use a contract for stable output shape, grain,
-keys, minimum volume, and column lineage. Use custom `check` declarations for
-asset-specific quality rules that do not belong in the reusable contract DSL.
+keys, exact or bounded volume, reusable column metadata, and column lineage.
+Use custom `check` declarations for asset-specific quality rules that do not
+belong in the reusable contract DSL.
 
 ## Define A Contract
 
@@ -129,6 +130,40 @@ The tuples compile into typed manifest values. An `external()` or `input()`
 wrapper would add vocabulary without adding information, so the canonical DSL
 uses `from:` directly. Favn does not infer column lineage from SQL text.
 
+### Reusable Column Fragments
+
+Use an explicit column-only fragment when the same metadata columns repeat
+across a data layer:
+
+```elixir
+defmodule MyApp.Contracts.AuditMetadata do
+  use Favn.SQL.ContractFragment
+
+  column :processed_at, :datetime, null: false,
+    description: "start time of the Favn run"
+
+  column :favn_run_id, :string, null: false
+end
+```
+
+Include it exactly where those columns appear in each asset's ordered output:
+
+```elixir
+contract do
+  column :record_id, :integer, null: false
+  include MyApp.Contracts.AuditMetadata
+  column :payload, :json
+end
+```
+
+Fragments support only `column/2` and `column/3`. They cannot declare grain,
+keys, row counts, checks, nested includes, defaults, or per-asset overrides.
+Each fragment may be included once per contract, and every flattened column
+name must remain unique. Favn stores the flattened canonical columns used for
+validation and a separate bounded composition record containing the fragment
+module, start index, and column names. Runtime behavior never depends on loading
+the fragment module from a published manifest.
+
 ### Unique Keys
 
 Declare additional uniqueness claims separately from grain:
@@ -142,11 +177,30 @@ Each unique key generates a candidate check.
 
 ### Row Count
 
-Declare a minimum candidate row count:
+Declare one exact or bounded candidate row count:
 
 ```elixir
+row_count equals: 500, on_violation: :fail
 row_count min: 1, on_violation: :fail
+row_count max: 10_000, on_violation: :warn
+row_count min: 1, max: 10_000, on_violation: :fail
 ```
+
+`equals:` cannot be combined with `min:` or `max:`, and `min:` cannot exceed
+`max:`. Every literal must be a non-negative integer.
+
+An exact count may come from the asset's normal settings or runtime params:
+
+```elixir
+row_count equals: param(:expected_rows), on_violation: :fail
+```
+
+`param/1` is accepted only in `equals:` and its name must be a literal atom.
+The compiled contract stores a typed parameter requirement, not a resolved
+value. The runner applies the normal settings/params collision rules and
+requires a non-negative integer before opening a SQL session. Values remain
+bound SQL parameters and are never interpolated into SQL source or copied into
+error details.
 
 For an empty refresh where an existing target should remain available:
 
@@ -170,6 +224,23 @@ checks.
 bootstrap, that claim is condition-skipped and materialization proceeds rather
 than pretending a missing target is a successful no-op.
 
+### Favn-Owned Runtime Inputs
+
+SQL asset queries and reusable `defsql` bodies may bind two execution identity
+values owned by Favn:
+
+```sql
+select
+  @favn_run_id as favn_run_id,
+  @favn_run_started_at as processed_at
+```
+
+`@favn_run_id` is the current non-empty run id and
+`@favn_run_started_at` is the runner context's UTC `DateTime`. They use the same
+bound-parameter path as `@window_start` and `@window_end`. All four names are
+reserved and cannot be supplied by settings, submitted params, runtime-input
+resolvers, or contract `param/1`.
+
 ## What Favn Checks Automatically
 
 Contracts have two enforcement classes.
@@ -190,10 +261,14 @@ Data claims compile into the ordinary transactional check engine:
 - every `null: false` column must contain no null values;
 - structured grain columns must be unique;
 - every `unique` declaration must be unique; and
-- `row_count` must satisfy its configured minimum.
+- `row_count` must satisfy its configured exact, minimum, maximum, or range
+  constraint.
 
 Generated checks use grouped stable claim identities: `columns.not_null`,
-`keys.unique`, and `row_count.min.N`. Grouping makes a wide contract a bounded
+`keys.unique`, `row_count.equals.literal.N`, `row_count.equals.param.NAME`,
+`row_count.min.N`, `row_count.max.N`, and `row_count.range.MIN.MAX`. Each
+row-count check computes `count(*)` once and returns the actual count plus the
+applicable expected/bound metrics. Grouping makes a wide contract a bounded
 number of scans and durable results instead of one check per required column.
 Durable results identify their origin as `:contract`; authored checks use origin
 `:authored`. Both appear together in the asset assurance UI and share the same
@@ -203,13 +278,14 @@ fail, warn, and no-op behavior.
 
 For a contracted asset, Favn:
 
-1. opens the adapter transaction;
-2. stages the candidate once;
-3. inspects and validates its structural schema;
-4. runs contract-generated and authored before-materialization checks;
-5. applies the write plan unless a claim selects a successful no-op;
-6. runs authored after-materialization checks; and
-7. commits only when required validation succeeds.
+1. validates required contract parameters before opening a SQL session;
+2. opens the adapter transaction;
+3. stages the candidate once;
+4. inspects and validates its structural schema;
+5. runs contract-generated and authored before-materialization checks;
+6. applies the write plan unless a claim selects a successful no-op;
+7. runs authored after-materialization checks; and
+8. commits only when required validation succeeds.
 
 Candidate schema observations, structural differences, check results,
 `quality_status`, and `write_outcome` are persisted with run metadata. The
@@ -223,7 +299,8 @@ inspection. Contracted views are rejected.
 
 ## Bounds
 
-One contract supports up to 1,000 ordered columns and 128 explicit unique keys.
+One contract supports up to 1,000 ordered columns, 128 explicit fragment
+compositions, and 128 explicit unique keys.
 Automatic enforcement is grouped into at most three checks—required columns,
 keys, and row count—so wide schemas do not consume the separate budget of 50
 authored custom checks. Candidate schema evidence retains up to 1,000 observed
@@ -238,6 +315,11 @@ Each custom or generated check still uses the metric and message limits in
 Favn can compare two compiled contracts without guessing intent. Added,
 removed, reordered, renamed, type-changed, nullability-changed, grain, key, and
 row-count changes are represented structurally.
+
+Fragment provenance is deliberately separate from semantic compatibility.
+`Favn.SQL.Contract.Diff.provenance_between/2` reports fragment additions,
+removals, moves, and changed flattened membership. Changing only provenance
+does not make identical canonical columns a schema change.
 
 Use `renamed_from:` only when a rename is intentional:
 
@@ -277,5 +359,6 @@ a typed contract primitive.
 
 For custom check phases, runtime relations, metrics, and result limits, read
 [Transactional SQL Asset Checks](sql-asset-checks.md). For compiled structures,
-read `Favn.SQL.Contract`, `Favn.SQL.Contract.Column`, and
-`Favn.SQL.ContractValidation`.
+read `Favn.SQL.Contract`, `Favn.SQL.Contract.Column`,
+`Favn.SQL.Contract.Fragment`, `Favn.SQL.Contract.Composition`,
+`Favn.SQL.Contract.Param`, and `Favn.SQL.ContractValidation`.

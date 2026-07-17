@@ -165,6 +165,12 @@ defmodule FavnRunner.RuntimeInputResolverTest do
     assert {:error, %{type: :runtime_inputs_param_collision}} =
              resolve_result(%Result{params: %{window_start: 1}, identity: "reserved"}, context)
 
+    assert {:error, %{type: :runtime_inputs_param_collision}} =
+             resolve_result(
+               %Result{params: %{favn_run_id: "override"}, identity: "reserved"},
+               context
+             )
+
     assert {:error, %{type: :runtime_inputs_invalid_result}} =
              resolve_result(%Result{params: %{bad: self()}, identity: "bad"}, context)
 

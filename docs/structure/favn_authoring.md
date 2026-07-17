@@ -34,10 +34,14 @@ session-requirements contract.
 
 `Favn.SQLAsset` compiles one optional typed `contract` plus up to 50 ordered
 authored `check` declarations through the same `Favn.SQL.Template` and visible
-`defsql` catalog as the asset query. Contract columns, structured/descriptive
-grain, explicit lineage, unique keys, and row-count policy normalize into core
-types. Required columns and keys are grouped into bounded generated checks, and
-the compiler validates that the generated claim set exactly matches the
+`defsql` catalog as the asset query. `Favn.SQL.ContractFragment` owns reusable
+column-only declarations; explicit `include Module` statements flatten those
+columns at the declaration position and retain composition provenance. Contract
+columns, structured/descriptive grain, explicit lineage, unique keys, and
+exact/bounded row-count policy normalize into core types. Only
+`row_count equals: param(:name)` may introduce a typed contract runtime
+parameter. Required columns and keys are grouped into bounded generated checks,
+and the compiler validates that the generated claim set exactly matches the
 contract before emitting manifest runtime data. It validates
 phase/policy/condition combinations at compile time; no authoring module is
 loaded to execute a check.

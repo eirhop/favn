@@ -2,9 +2,16 @@ defmodule Favn.SQLCheckDSLTest do
   use ExUnit.Case, async: false
 
   alias Favn.SQL.{Check, Contract}
-  alias Favn.SQL.Contract.{Column, Grain, Lineage, RowCount, UniqueKey}
+  alias Favn.SQL.Contract.{Column, Composition, Grain, Lineage, Param, RowCount, UniqueKey}
 
   defmodule SourceAsset do
+  end
+
+  defmodule AuditMetadata do
+    use Favn.SQL.ContractFragment
+
+    column(:recorded_at, :datetime, null: false, description: "ingestion timestamp")
+    column(:favn_execution_id, :string, null: false)
   end
 
   defmodule CheckSQL do
@@ -109,6 +116,26 @@ defmodule Favn.SQLCheckDSLTest do
     end
   end
 
+  defmodule ComposedContract do
+    use Favn.Namespace,
+      relation: [connection: :warehouse, catalog: "generic", schema: "records"]
+
+    use Favn.SQLAsset
+
+    materialized(:table)
+
+    contract do
+      column(:record_id, :integer, null: false)
+      include(AuditMetadata)
+      column(:payload, :string)
+      row_count(equals: param(:expected_rows))
+    end
+
+    query do
+      ~SQL"select 1 as record_id, now() as recorded_at, 'run' as favn_execution_id, 'value' as payload"
+    end
+  end
+
   test "compiles ordered checks with runtime relation usage" do
     definition = CheckedOrders.__favn_sql_asset_definition__()
 
@@ -184,6 +211,117 @@ defmodule Favn.SQLCheckDSLTest do
     assert custom.origin == :authored
     assert custom.claim_id == nil
     assert Enum.all?([row_count, not_null, unique], & &1.uses_query?)
+  end
+
+  test "flattens explicit fragments in declaration order and preserves composition provenance" do
+    definition = ComposedContract.__favn_sql_asset_definition__()
+
+    assert Enum.map(definition.contract.columns, & &1.name) == [
+             :record_id,
+             :recorded_at,
+             :favn_execution_id,
+             :payload
+           ]
+
+    assert [
+             %Composition{
+               module: AuditMetadata,
+               start_index: 1,
+               columns: [:recorded_at, :favn_execution_id]
+             }
+           ] = definition.contract.compositions
+
+    assert %RowCount{equals: %Param{name: :expected_rows}} = definition.contract.row_count
+
+    assert [
+             %{claim_id: "row_count.equals.param.expected_rows"},
+             %{claim_id: "columns.not_null"}
+           ] = definition.checks
+  end
+
+  test "rejects fragment column conflicts and duplicate includes at compile time" do
+    assert_raise CompileError, ~r/duplicate contract column :recorded_at/, fn ->
+      compile_definition!("""
+      contract do
+        include #{inspect(AuditMetadata)}
+        column :recorded_at, :datetime
+      end
+      """)
+    end
+
+    assert_raise CompileError, ~r/contract fragment .* is already included/, fn ->
+      compile_definition!("""
+      contract do
+        include #{inspect(AuditMetadata)}
+        include #{inspect(AuditMetadata)}
+      end
+      """)
+    end
+  end
+
+  test "rejects empty fragments and unsupported fragment declarations" do
+    empty_fragment =
+      Module.concat([__MODULE__, "EmptyFragment#{System.unique_integer([:positive])}"])
+
+    assert_raise CompileError, ~r/requires at least one column/, fn ->
+      Code.compile_string(
+        """
+        defmodule #{inspect(empty_fragment)} do
+          use Favn.SQL.ContractFragment
+        end
+        """,
+        "test/sql_check_dsl_test.exs"
+      )
+    end
+
+    invalid_fragment =
+      Module.concat([__MODULE__, "InvalidFragment#{System.unique_integer([:positive])}"])
+
+    assert_raise CompileError, ~r/cannot compile module/, fn ->
+      Code.compile_string(
+        """
+        defmodule #{inspect(invalid_fragment)} do
+          use Favn.SQL.ContractFragment
+          column :id, :integer
+          unique [:id]
+        end
+        """,
+        "test/sql_check_dsl_test.exs"
+      )
+    end
+
+    missing_fragment =
+      Module.concat([__MODULE__, "MissingFragment#{System.unique_integer([:positive])}"])
+
+    assert_raise CompileError, ~r/contract fragment .* could not be resolved/, fn ->
+      compile_definition!("""
+      contract do
+        include #{inspect(missing_fragment)}
+      end
+      """)
+    end
+  end
+
+  test "rejects ambiguous row-count bounds and non-literal parameter markers" do
+    assert_raise CompileError, ~r/equals: cannot be combined/, fn ->
+      compile_definition!("""
+      contract do
+        column :id, :integer
+        row_count equals: 1, min: 1
+      end
+      """)
+    end
+
+    assert_raise CompileError, ~r/contract param name must be literal/, fn ->
+      compile_definition!("""
+      expected = :expected_rows
+
+      contract do
+        column :id, :integer
+        row_count equals: param(expected)
+      end
+      """)
+    end
   end
 
   test "supports descriptive-only grain without generating a uniqueness claim" do

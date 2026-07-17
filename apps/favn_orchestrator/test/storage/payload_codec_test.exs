@@ -170,6 +170,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
 
     work = %RunnerWork{
       run_id: "run_payload_runner_work",
+      run_started_at: ~U[2026-07-17 08:30:00Z],
       manifest_version_id: "mv_payload_runner_work",
       manifest_content_hash: String.duplicate("c", 64),
       node_identity: identity,

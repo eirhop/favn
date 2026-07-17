@@ -103,7 +103,7 @@ A manifest can include:
 - freshness and window metadata
 - JSON-safe asset and pipeline settings
 - runtime config requirements
-- schema and runner contract version 6 data used by the runtime
+- schema and runner contract version 7 data used by the runtime
 
 The exact struct is managed by Favn. Application code should normally build
 manifests with `Favn.generate_manifest/1`, not by constructing manifest structs

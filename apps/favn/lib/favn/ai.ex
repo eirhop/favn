@@ -62,11 +62,17 @@ defmodule Favn.AI do
   - To author one SQL asset, including a typed output `contract`,
     behaviour-based runtime inputs, or transactional `check` declarations with
     fail, warning, or successful warning/no-op outcomes, read `Favn.SQLAsset`,
-    then `Favn.SQL.Contract`, `Favn.SQLAsset.RuntimeInputs`, `Favn.SQL`,
-    `Favn.Connection`, `Favn.Namespace`, and `Favn.Window` as needed. A contract
-    describes ordered output columns, grain, keys, minimum row count, and
-    explicit lineage; it does not generate SQL. Runtime input values remain
-    bound parameters, including through reusable `defsql`. Referenced scalar
+    then `Favn.SQL.Contract`, `Favn.SQL.ContractFragment`,
+    `Favn.SQLAsset.RuntimeInputs`, `Favn.SQL`, `Favn.Connection`,
+    `Favn.Namespace`, and `Favn.Window` as needed. A contract describes ordered
+    output columns, grain, keys, exact or bounded row count, and explicit
+    lineage; it does not generate SQL. Use explicit column-only fragments to
+    remove repeated metadata declarations; includes flatten into canonical
+    columns and retain separate provenance. Only exact row count accepts
+    `param(:name)`, using the normal settings/runtime-param source with
+    pre-session integer validation. Runtime input values remain bound
+    parameters, including Favn-owned `@favn_run_id` and
+    `@favn_run_started_at` and through reusable `defsql`. Referenced scalar
     SQLAsset settings also become bound parameters; settings cannot provide
     relation identifiers, and a settings/params collision is an error.
     Contract-generated
@@ -233,13 +239,15 @@ defmodule Favn.AI do
   ## SQL Output Contract Breadcrumbs
 
   When a task mentions output schema, grain, data contract, column lineage,
-  logical types, nullable columns, unique keys, minimum row count, contract
-  diffs, `renamed_from`, expected-versus-observed schema, or Contract versus
-  Custom checks, read these docs in order:
+  logical types, nullable columns, unique keys, exact or bounded row count,
+  `param/1`, column fragments, contract diffs, `renamed_from`,
+  expected-versus-observed schema, or Contract versus Custom checks, read these
+  docs in order:
 
   1. `Favn.SQLAsset` and `Favn.SQLAsset.contract/1` for the public declaration.
-  2. `Favn.SQL.Contract` and its nested column, grain, lineage, unique-key, and
-     row-count modules for the typed compiled model.
+  2. `Favn.SQL.Contract`, `Favn.SQL.ContractFragment`, and the nested column,
+     grain, lineage, unique-key, row-count, fragment, composition, and parameter
+     modules for the typed compiled model.
   3. `Favn.SQL.ContractValidation` for candidate schema enforcement.
   4. `Favn.SQL.Contract.Diff` for semantic manifest-to-manifest changes.
   5. `Favn.SQL.CheckResult` for durable generated and authored check outcomes.
@@ -413,12 +421,14 @@ defmodule Favn.AI do
     keeping an existing target on an empty candidate, `query()`, `target()`,
     `quality_status`, `write_outcome`, or check result metrics. Read
     `Favn.SQL.Check` only for manifest/compiler work.
-  - Read `Favn.SQLAsset.contract/1`, `Favn.SQL.Contract`, and
-    `Favn.SQL.ContractValidation` whenever a task mentions SQL output shape,
-    grain, keys, column lineage, logical types, contract-generated checks, or
-    expected-versus-observed schema. Read `Favn.SQL.Contract.Diff` when
-    comparing manifest definitions. User code declares the DSL and does not
-    construct these core structs directly.
+  - Read `Favn.SQLAsset.contract/1`, `Favn.SQL.ContractFragment`,
+    `Favn.SQL.Contract`, and `Favn.SQL.ContractValidation` whenever a task
+    mentions SQL output shape, repeated contract metadata, fragments, grain,
+    keys, exact/bounded row count, `param/1`, column lineage, logical types,
+    contract-generated checks, or expected-versus-observed schema. Read
+    `Favn.SQL.Contract.Diff` for semantic or separate provenance comparison.
+    User code declares the DSL and does not construct these core structs
+    directly.
   - Read `FavnOrchestrator.MaterializationClaim` and
     `FavnOrchestrator.Repair.RuntimeState` when a task mentions duplicate asset
     materializations, stuck runs after a crash, orphaned `running`/`queued` steps,
@@ -451,7 +461,8 @@ defmodule Favn.AI do
   - `apps/favn/guides/sql-asset-checks.md`: complete transactional SQL check
     authoring and result reference
   - `apps/favn/guides/sql-output-contracts.md`: canonical SQL output contract
-    DSL, enforcement, lineage, policies, assurance, and evolution reference
+    DSL, fragments, row-count parameters, enforcement, lineage, policies,
+    assurance, and evolution reference
   - `apps/favn/guides/sql-runtime-inputs.md`: canonical behaviour-based SQL
     runtime input authoring, result/error contracts, limits, and retry boundary
   - `apps/favn/guides/duckdb-session-scripts.md`: native DuckDB session setup,
