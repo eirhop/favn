@@ -19,6 +19,9 @@ defmodule Favn.Freshness.Policy do
     `{unit, amount}` and accepts `:second`, `:minute`, `:hour`, `:day` plus plural
     aliases.
   - `[window_success: true]`: freshness is scoped to the exact runtime window.
+    If the asset window spec declares `refresh_from`, the orchestrator combines
+    the exact window and current calendar refresh period so every lookback window
+    is evaluated independently on each cadence boundary.
   - `:always`: always run when planned, overriding the implicit window-success
     default for windowed assets.
   - `%Favn.Freshness.Policy{}` or JSON/manifest-shaped maps with `:mode`/`"mode"`.
@@ -32,6 +35,10 @@ defmodule Favn.Freshness.Policy do
   `refresh: :missing`, which skips prior successes even for `:always` assets.
 
   Read `Favn.Freshness.Key` for the stable keys used to persist freshness state.
+
+  An explicit calendar policy such as `freshness :daily` is asset-wide. Use an
+  asset window's `refresh_from: :day` with window-success freshness when each
+  exact monthly/daily window must refresh independently each day.
 
   """
 

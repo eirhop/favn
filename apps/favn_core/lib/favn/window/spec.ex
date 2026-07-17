@@ -4,6 +4,18 @@ defmodule Favn.Window.Spec do
 
   A window spec describes how an asset is windowed independently from any
   particular run request.
+
+  `lookback` adds earlier data windows to every resolved run anchor.
+  `refresh_from` gives each exact data window a repeatable calendar refresh
+  cadence under window-success freshness. For example, a monthly asset with
+  `lookback: 1, refresh_from: :day` plans the anchor month plus the previous
+  month and tracks a separate daily success for each. A success for one month
+  never satisfies the other.
+
+  When `refresh_from` is nil, window-success freshness is keyed only by the exact
+  runtime window. An explicit non-window freshness policy such as
+  `freshness :daily` remains asset-wide and overrides the implicit
+  window-success policy.
   """
 
   alias Favn.Window.Policy

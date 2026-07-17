@@ -231,7 +231,7 @@ defmodule Favn.TimePeriod do
     do: local_midnight(local.year, 1, 1, local.time_zone)
 
   defp shift_kind(%DateTime{} = datetime, :hour, count),
-    do: {:ok, DateTime.add(datetime, count * 3600, :second)}
+    do: {:ok, DateTime.add(datetime, count * 3600, :second, Favn.Timezone.database!())}
 
   defp shift_kind(%DateTime{} = datetime, :day, count) do
     datetime

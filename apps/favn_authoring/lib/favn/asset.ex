@@ -156,7 +156,11 @@ defmodule Favn.Asset do
 
   Windowed assets default to `[window_success: true]` when no explicit freshness
   is declared. Non-windowed assets have no implicit freshness. `:always` is the
-  explicit opt-out from that window default.
+  explicit opt-out from that window default. A window spec with `refresh_from`
+  retains exact-window identity while adding a calendar refresh cadence. For
+  example, `Favn.Window.monthly(lookback: 1, refresh_from: :day)` tracks today's
+  success independently for the current and previous month. An explicit
+  `freshness :daily` is asset-wide and does not provide that per-window identity.
 
       window Favn.Window.daily()
       freshness {:daily, timezone: "Europe/Oslo"}

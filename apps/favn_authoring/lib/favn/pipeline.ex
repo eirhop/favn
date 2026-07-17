@@ -115,9 +115,20 @@ defmodule Favn.Pipeline do
 
   A windowed pipeline expects manual runs to provide a concrete window request,
   for example `mix favn.run MyApp.Pipelines.Monthly --window month:2026-03`.
-  Scheduled windowed runs resolve the previous complete period in the schedule
-  timezone. Pipelines without a `window` clause submit no anchor window and are
-  the normal full-load path.
+  Scheduled windowed runs use the explicit anchor policy in the effective
+  timezone. `:previous_complete_period` is the default and selects the period
+  immediately before the occurrence. `:current_period` selects the possibly
+  incomplete period containing the occurrence. Schedule cadence remains
+  independent: a daily schedule may use monthly anchor windows. Pipelines
+  without a `window` clause submit no anchor window and are the normal full-load
+  path.
+
+      schedule cron: "0 2 * * *", timezone: "Europe/Oslo"
+      window :monthly, anchor: :current_period
+
+  Manual run and backfill requests remain constrained to the pipeline window
+  kind. A monthly pipeline therefore accepts monthly requests regardless of its
+  schedule cadence.
 
   Assets can mark their asset-level window spec as required with
   `window Favn.Window.monthly(required: true)`. Planning fails before runner
@@ -399,7 +410,7 @@ defmodule Favn.Pipeline do
 
   Supported options:
 
-  - `anchor: :previous_complete_period`
+  - `anchor: :previous_complete_period | :current_period`
   - `timezone: "Etc/UTC"`
   - `allow_full_load: true | false`
   """

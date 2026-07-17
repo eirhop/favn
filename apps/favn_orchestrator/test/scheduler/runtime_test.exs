@@ -667,6 +667,45 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert Enum.all?(occurrences, &("Will not submit until enabled" in &1.notes))
   end
 
+  test "daily schedule previews a current monthly window at the local month boundary" do
+    version =
+      scheduler_manifest_version("mv_scheduler_current_month_preview",
+        cron: "0 2 * * *",
+        timezone: "Europe/Oslo",
+        window: Policy.new!(:monthly, anchor: :current_period)
+      )
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+    [entry] = Runtime.scheduled(name)
+    schedule_entry_id = "schedule:#{entry.module}:#{entry.schedule.name}"
+
+    assert {:ok, [occurrence]} =
+             FavnOrchestrator.preview_schedule_occurrences(schedule_entry_id,
+               limit: 1,
+               now: ~U[2026-06-30 23:59:00Z]
+             )
+
+    assert occurrence.due_at == ~U[2026-07-01 00:00:00Z]
+
+    assert occurrence.window.start_at ==
+             DateTime.from_naive!(
+               ~N[2026-07-01 00:00:00],
+               "Europe/Oslo",
+               Favn.Timezone.database!()
+             )
+
+    assert occurrence.window.end_at ==
+             DateTime.from_naive!(
+               ~N[2026-08-01 00:00:00],
+               "Europe/Oslo",
+               Favn.Timezone.database!()
+             )
+  end
+
   test "schedule operator queries reject malformed and unsupported options" do
     assert {:error, :invalid_schedule_list_filters} =
              FavnOrchestrator.page_schedule_list_entries([:not_a_keyword])

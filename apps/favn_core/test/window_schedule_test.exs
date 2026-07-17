@@ -166,6 +166,73 @@ defmodule Favn.WindowTest do
     assert {:error, {:invalid_window_policy_kind, :weekly}} = Policy.new(:weekly)
   end
 
+  test "current-period scheduled anchors include the incomplete named-timezone period" do
+    policy =
+      Policy.new!(:monthly,
+        anchor: :current_period,
+        timezone: "Europe/Oslo"
+      )
+
+    due_at =
+      DateTime.from_naive!(~N[2026-07-17 02:00:00], "Europe/Oslo", Favn.Timezone.database!())
+
+    assert {:ok, anchor} = Policy.resolve_scheduled(policy, due_at, nil)
+    assert anchor.kind == :month
+    assert anchor.timezone == "Europe/Oslo"
+    assert anchor.start_at == oslo_datetime!(~N[2026-07-01 00:00:00])
+    assert anchor.end_at == oslo_datetime!(~N[2026-08-01 00:00:00])
+
+    assert {:ok, ^policy} =
+             Policy.from_value(%{
+               "kind" => "month",
+               "anchor" => "current_period",
+               "timezone" => "Europe/Oslo"
+             })
+  end
+
+  test "current-period hourly anchors remain distinct across repeated DST hours" do
+    policy =
+      Policy.new!(:hourly,
+        anchor: :current_period,
+        timezone: "Europe/Oslo"
+      )
+
+    assert {:ok, first} =
+             Policy.resolve_scheduled(policy, ~U[2026-10-25 00:30:00Z], nil)
+
+    assert {:ok, second} =
+             Policy.resolve_scheduled(policy, ~U[2026-10-25 01:30:00Z], nil)
+
+    assert first.start_at == oslo_instant!(~U[2026-10-25 00:00:00Z])
+    assert first.end_at == oslo_instant!(~U[2026-10-25 01:00:00Z])
+    assert second.start_at == first.end_at
+    assert second.end_at == oslo_instant!(~U[2026-10-25 02:00:00Z])
+    refute first.key == second.key
+  end
+
+  test "scheduled anchors remain distinct at the first day of a local month" do
+    due_at = oslo_datetime!(~N[2026-07-01 02:00:00])
+
+    assert {:ok, previous} =
+             Policy.resolve_scheduled(
+               Policy.new!(:monthly, anchor: :previous_complete_period),
+               due_at,
+               "Europe/Oslo"
+             )
+
+    assert {:ok, current} =
+             Policy.resolve_scheduled(
+               Policy.new!(:monthly, anchor: :current_period),
+               due_at,
+               "Europe/Oslo"
+             )
+
+    assert previous.start_at == oslo_datetime!(~N[2026-06-01 00:00:00])
+    assert previous.end_at == oslo_datetime!(~N[2026-07-01 00:00:00])
+    assert current.start_at == oslo_datetime!(~N[2026-07-01 00:00:00])
+    assert current.end_at == oslo_datetime!(~N[2026-08-01 00:00:00])
+  end
+
   test "manual window requests parse hour day month and year" do
     assert {:ok, %Request{kind: :hour, value: "2026-04-27T13"}} =
              Request.parse("hour:2026-04-27T13")
@@ -246,5 +313,13 @@ defmodule Favn.WindowTest do
            ) == :eq
 
     assert DateTime.diff(autumn_anchor.end_at, autumn_anchor.start_at, :hour) == 25
+  end
+
+  defp oslo_datetime!(naive) do
+    DateTime.from_naive!(naive, "Europe/Oslo", Favn.Timezone.database!())
+  end
+
+  defp oslo_instant!(datetime) do
+    DateTime.shift_zone!(datetime, "Europe/Oslo", Favn.Timezone.database!())
   end
 end

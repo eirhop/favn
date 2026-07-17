@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Freshness.Decider do
 
   alias Favn.Freshness.{Key, Policy}
   alias Favn.{Plan, TimePeriod}
+  alias Favn.Window.Spec
   alias FavnOrchestrator.{AssetFreshnessState, RefreshPolicy}
   alias FavnOrchestrator.Freshness.Staleness
 
@@ -192,7 +193,7 @@ defmodule FavnOrchestrator.Freshness.Decider do
   defp freshness_key(node, context) do
     case freshness_policy(node, context) do
       %Policy{mode: :window_success} ->
-        window_freshness_key(node)
+        window_freshness_key(node, context)
 
       %Policy{mode: :calendar_period, kind: kind, timezone: timezone} ->
         calendar_freshness_key(kind, timezone, context.now)
@@ -202,8 +203,27 @@ defmodule FavnOrchestrator.Freshness.Decider do
     end
   end
 
-  defp window_freshness_key(%{window: %{key: window_key}}), do: Key.window!(window_key)
-  defp window_freshness_key(_node), do: Key.latest()
+  defp window_freshness_key(%{ref: ref, window: %{key: window_key}}, context) do
+    case window_spec(ref, context) do
+      %Spec{refresh_from: refresh_from, timezone: timezone} when not is_nil(refresh_from) ->
+        period = TimePeriod.current(refresh_from, context.now, timezone) |> elem(1)
+        Key.window_refresh!(window_key, refresh_from, timezone, period.start_at)
+
+      _other ->
+        Key.window!(window_key)
+    end
+  end
+
+  defp window_freshness_key(_node, _context), do: Key.latest()
+
+  defp window_spec(ref, context) do
+    value = context.assets_by_ref |> Map.get(ref, %{}) |> field(:window)
+
+    case Spec.from_value(value) do
+      {:ok, spec} -> spec
+      {:error, reason} -> raise ArgumentError, "invalid window spec: #{inspect(reason)}"
+    end
+  end
 
   defp calendar_freshness_key(kind, timezone, now) do
     period = TimePeriod.current(kind, now, timezone) |> elem(1)
