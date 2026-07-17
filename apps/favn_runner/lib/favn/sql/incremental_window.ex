@@ -1,6 +1,7 @@
 defmodule Favn.SQL.IncrementalWindow do
   @moduledoc false
 
+  alias Favn.TimePeriod
   alias Favn.Window.{Runtime, Spec}
 
   @enforce_keys [:kind, :start_at, :end_at, :timezone, :lookback, :requested_window]
@@ -69,15 +70,6 @@ defmodule Favn.SQL.IncrementalWindow do
 
   defp shift_kind(datetime, :day, count), do: {:ok, DateTime.add(datetime, count, :day)}
 
-  defp shift_kind(%DateTime{} = datetime, :month, count) do
-    date = DateTime.to_date(datetime)
-    total = date.year * 12 + (date.month - 1) + count
-    year = div(total, 12)
-    month = rem(total, 12) + 1
-
-    with {:ok, new_date} <- Date.new(year, month, 1),
-         {:ok, naive} <- NaiveDateTime.new(new_date, ~T[00:00:00.000000]) do
-      {:ok, DateTime.from_naive!(naive, datetime.time_zone)}
-    end
-  end
+  defp shift_kind(%DateTime{} = datetime, :month, count),
+    do: TimePeriod.shift(datetime, :month, count)
 end
