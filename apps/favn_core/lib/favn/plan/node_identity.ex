@@ -70,8 +70,8 @@ defmodule Favn.Plan.NodeIdentity do
         new(%{
           manifest_version_id: manifest_version_id,
           node_key: node_key,
-          target_refs: plan.target_refs,
-          planned_asset_refs: plan.topo_order,
+          target_refs: [node.ref],
+          planned_asset_refs: [node.ref],
           window: Map.get(node, :window),
           execution_pool: Map.get(node, :execution_pool)
         })

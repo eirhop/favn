@@ -63,12 +63,10 @@ defmodule Mix.Tasks.Favn.Dev do
     opts =
       CLIArgs.parse_no_args!("favn.dev", args,
         root_dir: :string,
-        sqlite: :boolean,
-        postgres: :boolean,
         scheduler: :boolean
       )
 
-    normalize_storage_flags(opts)
+    opts
   end
 
   defp error_message(:stack_already_running), do: "local stack already running"
@@ -145,18 +143,4 @@ defmodule Mix.Tasks.Favn.Dev do
 
   defp configured_error_message(reason),
     do: "invalid favn.dev environment bootstrap: #{inspect(reason)}; run mix favn.dev"
-
-  defp normalize_storage_flags(opts) do
-    sqlite? = Keyword.get(opts, :sqlite, false)
-    postgres? = Keyword.get(opts, :postgres, false)
-
-    opts = opts |> Keyword.delete(:sqlite) |> Keyword.delete(:postgres)
-
-    cond do
-      sqlite? and postgres? -> Mix.raise("choose only one storage flag: --sqlite or --postgres")
-      sqlite? -> Keyword.put(opts, :storage, :sqlite)
-      postgres? -> Keyword.put(opts, :storage, :postgres)
-      true -> opts
-    end
-  end
 end

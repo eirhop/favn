@@ -48,9 +48,31 @@ defmodule Favn.Plan.NodeIdentityTest do
     assert identity.manifest_version_id == "manifest-v1"
     assert identity.node_key == node_key
     assert identity.target_refs == [{MyApp.Gold, :asset}]
-    assert identity.planned_asset_refs == [{MyApp.Raw, :asset}, {MyApp.Gold, :asset}]
+    assert identity.planned_asset_refs == [{MyApp.Gold, :asset}]
     assert identity.window == nil
     assert identity.execution_pool == :warehouse
+  end
+
+  test "keeps each work identity bounded independently of plan width" do
+    node_key = {{MyApp.Gold, :asset}, nil}
+    wide_refs = List.duplicate({MyApp.Raw, :asset}, 100_000)
+
+    plan = %Plan{
+      target_refs: wide_refs,
+      topo_order: wide_refs,
+      nodes: %{
+        node_key => %{
+          ref: {MyApp.Gold, :asset},
+          node_key: node_key,
+          execution_pool: :default
+        }
+      }
+    }
+
+    assert {:ok, identity} = NodeIdentity.from_plan("manifest-v1", plan, node_key)
+    assert identity.target_refs == [{MyApp.Gold, :asset}]
+    assert identity.planned_asset_refs == [{MyApp.Gold, :asset}]
+    assert byte_size(:erlang.term_to_binary(identity)) < 1_000
   end
 
   test "returns an explicit error for unknown plan nodes" do

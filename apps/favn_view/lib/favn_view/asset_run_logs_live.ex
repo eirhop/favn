@@ -8,10 +8,12 @@ defmodule FavnView.AssetRunLogsLive do
 
   @impl true
   def mount(%{"run_id" => run_id, "asset_step_id" => asset_step_id}, _session, socket) do
-    context = LogsLiveSupport.asset_context(run_id, asset_step_id)
+    operator_context = socket.assigns.current_scope.operator_context
+    context = LogsLiveSupport.asset_context(operator_context, run_id, asset_step_id)
 
     socket =
       LogsLiveSupport.mount_logs(socket, %{
+        operator_context: operator_context,
         filter:
           context.log_filter || %Favn.Log.Filter{run_id: run_id, asset_step_id: asset_step_id},
         scope: :asset,
@@ -35,6 +37,8 @@ defmodule FavnView.AssetRunLogsLive do
   @impl true
   def handle_info({:favn_log_entry, entry}, socket),
     do: {:noreply, LogsLiveSupport.add_live_log(socket, entry)}
+
+  def handle_info(:poll_logs, socket), do: {:noreply, LogsLiveSupport.poll(socket)}
 
   @impl true
   def handle_event("filter_logs", params, socket),

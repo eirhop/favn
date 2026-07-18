@@ -251,7 +251,7 @@ defmodule Favn.Dev.Init do
         {FavnDuckdb, execution_mode: :in_process}
       ],
       local: [
-        storage: :memory
+        workspace_id: "local-dev"
       ]
     '''
   end

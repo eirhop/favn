@@ -15,8 +15,9 @@ A run is one accepted attempt to execute an asset, pipeline, scheduled occurrenc
 or backfill child. The orchestrator records the run before the runner starts
 execution.
 
-For production startup, backup, and restore, use
-`docs/production/single_node_operator_runbook.md`.
+For production database startup, backup, and restore, use
+`docs/production/postgresql_operator_runbook.md`. The single-node launcher adds
+only the process steps in `docs/production/single_node_operator_runbook.md`.
 
 ## Assumptions
 
@@ -191,8 +192,8 @@ Important rules:
   not automatically submit missed catch-up work.
 - Disabling does not cancel existing in-flight runs.
 - Schedule state is persisted by the orchestrator storage boundary.
-- In the supported single-node topology, exactly one scheduler runtime should be
-  active.
+- Multiple orchestrator nodes may run scheduler workers; durable PostgreSQL
+  claims and fencing decide ownership. Process registration is not authority.
 - `favn_view` may show schedule state, but it must not calculate schedule
   semantics itself.
 
@@ -220,12 +221,12 @@ Production command examples are in
 
 ## Boundaries To Preserve
 
-- Do not edit SQLite or other control-plane storage rows by hand.
+- Do not edit PostgreSQL control-plane rows by hand.
 - Do not ask the runner to own schedules, active manifest selection, or persisted
   run state.
 - Do not infer lifecycle truth from UI state.
 - Do not let `favn_view` call storage, scheduler internals, runner internals,
   repositories, compiler internals, plugins, or adapters directly.
-- Do not treat DuckDB data-plane backup as part of SQLite control-plane backup.
-- Do not run multiple active schedulers against one single-node SQLite
-  control-plane database.
+- Do not treat DuckDB/DuckLake data-plane recovery as part of PostgreSQL
+  control-plane recovery; reconcile their recovery points explicitly.
+- Do not bypass scheduler claims or fencing with node-local locks.

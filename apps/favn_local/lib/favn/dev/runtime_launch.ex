@@ -84,14 +84,12 @@ defmodule Favn.Dev.RuntimeLaunch do
   def operator_spec(runtime, %Config{} = config, opts, node_names, secrets)
       when is_map(runtime) and is_list(opts) and is_map(node_names) and is_map(secrets) do
     elixir = System.find_executable("elixir") || "elixir"
-    sqlite_path = Path.expand(config.sqlite_path, Paths.root_dir(opts))
     distribution = local_distribution!(opts)
+    runtime_input_pin_key = Map.fetch!(secrets, "runtime_input_pin_key")
 
     code =
       """
       Favn.Dev.ConsumerConfigTransport.apply_from_env!()
-
-      storage = System.fetch_env!("FAVN_DEV_STORAGE")
 
       api_bind_ip =
         System.fetch_env!("FAVN_ORCHESTRATOR_API_BIND_IP")
@@ -121,40 +119,20 @@ defmodule Favn.Dev.RuntimeLaunch do
 
       Application.put_env(:favn_orchestrator, :local_dev_mode, true)
 
-      case storage do
-        "memory" ->
-          Application.put_env(:favn_orchestrator, :storage_adapter, FavnOrchestrator.Storage.Adapter.Memory)
-          Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+      workspace_id = System.fetch_env!("FAVN_LOCAL_WORKSPACE_ID")
 
-        "sqlite" ->
-          Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.SQLite)
-          Application.put_env(:favn_orchestrator, :storage_adapter_opts,
-            database: System.fetch_env!("FAVN_DEV_SQLITE_PATH"),
-            migration_mode: :auto
-          )
-          {:ok, _} = Application.ensure_all_started(:favn_storage_sqlite)
+      Application.put_env(:favn_orchestrator, :persistence_backend, FavnStoragePostgres.Backend)
+      Application.put_env(:favn_orchestrator, :workspace_ids, [workspace_id])
 
-        "postgres" ->
-          Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.Postgres)
+      Application.put_env(
+        :favn_orchestrator,
+        :persistence_options,
+        url: System.fetch_env!("FAVN_DATABASE_URL"),
+        ssl_mode: if(System.get_env("FAVN_DEV_POSTGRES_SSL", "false") == "true", do: :verify_full, else: :disable),
+        pool_size: String.to_integer(System.get_env("FAVN_DATABASE_POOL_SIZE", "10"))
+      )
 
-          Application.put_env(
-            :favn_orchestrator,
-            :storage_adapter_opts,
-            hostname: System.fetch_env!("FAVN_DEV_POSTGRES_HOST"),
-            port: String.to_integer(System.fetch_env!("FAVN_DEV_POSTGRES_PORT")),
-            username: System.fetch_env!("FAVN_DEV_POSTGRES_USERNAME"),
-            password: System.fetch_env!("FAVN_DEV_POSTGRES_PASSWORD"),
-            database: System.fetch_env!("FAVN_DEV_POSTGRES_DATABASE"),
-            ssl: System.get_env("FAVN_DEV_POSTGRES_SSL", "false") == "true",
-            pool_size: String.to_integer(System.get_env("FAVN_DEV_POSTGRES_POOL_SIZE", "10"))
-          )
-
-          {:ok, _} = Application.ensure_all_started(:favn_storage_postgres)
-
-        other ->
-          raise ArgumentError,
-                "unsupported FAVN_DEV_STORAGE=\#{inspect(other)}; expected memory, sqlite, or postgres"
-      end
+      Application.put_env(:favn_storage_postgres, :environment, :dev)
 
       validate_runner_node_name! = fn node_name ->
         valid_part? = fn part ->
@@ -179,6 +157,7 @@ defmodule Favn.Dev.RuntimeLaunch do
       Application.put_env(:favn_orchestrator, :runner_client_opts, [runner_node: runner_node])
       Application.put_env(:favn_orchestrator, :scheduler,
         enabled: System.get_env("FAVN_DEV_SCHEDULER_ENABLED", "0") == "1",
+        workspace_ids: [workspace_id],
         tick_ms: 15_000
       )
 
@@ -222,22 +201,21 @@ defmodule Favn.Dev.RuntimeLaunch do
       env:
         runtime_env(distribution, opts)
         |> Map.merge(%{
-          "FAVN_DEV_STORAGE" => Atom.to_string(config.storage),
-          "FAVN_DEV_SQLITE_PATH" => sqlite_path,
-          "FAVN_DEV_POSTGRES_HOST" => config.postgres.hostname,
-          "FAVN_DEV_POSTGRES_PORT" => Integer.to_string(config.postgres.port),
-          "FAVN_DEV_POSTGRES_USERNAME" => config.postgres.username,
-          "FAVN_DEV_POSTGRES_PASSWORD" => config.postgres.password,
-          "FAVN_DEV_POSTGRES_DATABASE" => config.postgres.database,
+          "FAVN_DEV_STORAGE" => "postgres",
+          "FAVN_DATABASE_URL" => config.postgres.url,
+          "FAVN_LOCAL_WORKSPACE_ID" => config.workspace_id,
+          "FAVN_WORKSPACE_IDS" => config.workspace_id,
+          "FAVN_RUNTIME_INPUT_PIN_KEY" => runtime_input_pin_key,
           "FAVN_DEV_POSTGRES_SSL" => if(config.postgres.ssl, do: "true", else: "false"),
-          "FAVN_DEV_POSTGRES_POOL_SIZE" => Integer.to_string(config.postgres.pool_size),
+          "FAVN_DATABASE_POOL_SIZE" => Integer.to_string(config.postgres.pool_size),
           "FAVN_DEV_SCHEDULER_ENABLED" => if(config.scheduler_enabled, do: "1", else: "0"),
           "FAVN_DEV_RUNNER_NODE" => node_names.runner_full,
           "FAVN_ORCHESTRATOR_API_ENABLED" =>
             if(config.orchestrator_api_enabled, do: "1", else: "0"),
           "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(config.orchestrator_port),
           "FAVN_ORCHESTRATOR_API_BIND_IP" => @loopback_host,
-          "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "favn_view:" <> secrets["service_token"],
+          "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
+            "favn_view|platform_operator:" <> secrets["service_token"],
           "FAVN_VIEW_PORT" => Integer.to_string(config.web_port),
           "FAVN_VIEW_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
           "FAVN_VIEW_PUBLIC_ORIGIN" => config.web_base_url,

@@ -2,9 +2,9 @@ defmodule FavnView.Auth.Scope do
   @moduledoc """
   Sanitized operator authentication scope for browser and LiveView assigns.
 
-  The Phoenix session stores only a random browser session id. This scope is
-  reconstructed through the public orchestrator facade and deliberately excludes
-  raw tokens, token hashes, passwords, and service credential material.
+  The encrypted Phoenix session stores the raw opaque session token, while this
+  reconstructed scope deliberately excludes tokens, token hashes, passwords, and
+  service credential material.
   """
 
   @type actor :: %{
@@ -23,18 +23,28 @@ defmodule FavnView.Auth.Scope do
           required(:revoked_at) => DateTime.t() | nil
         }
 
-  @type t :: %__MODULE__{actor: actor(), session: session(), roles: [atom()]}
+  @type t :: %__MODULE__{
+          workspace_id: String.t(),
+          operator_context: FavnOrchestrator.OperatorContext.t(),
+          actor: actor(),
+          session: session(),
+          roles: [atom()]
+        }
 
-  defstruct [:actor, :session, roles: []]
+  defstruct [:workspace_id, :operator_context, :actor, :session, roles: []]
 
   @doc """
   Builds a browser-safe scope from orchestrator-owned actor and session data.
   """
-  @spec new(map(), map()) :: t()
-  def new(actor, session) when is_map(actor) and is_map(session) do
+  @spec new(String.t(), map(), map()) :: t()
+  def new(workspace_id, actor, session)
+      when is_binary(workspace_id) and workspace_id != "" and is_map(actor) and is_map(session) do
     roles = sanitize_roles(Map.get(actor, :roles) || Map.get(actor, "roles") || [])
+    {:ok, operator_context} = FavnOrchestrator.operator_context(workspace_id, actor, session)
 
     %__MODULE__{
+      workspace_id: workspace_id,
+      operator_context: operator_context,
       actor: %{
         id: Map.get(actor, :id) || Map.fetch!(actor, "id"),
         username: Map.get(actor, :username) || Map.get(actor, "username"),

@@ -9,14 +9,16 @@ defmodule FavnOrchestrator.Operator.Commands do
   """
 
   alias Favn.Manifest.Version
-  alias FavnOrchestrator.BackfillManager
+  alias FavnOrchestrator.Backfills
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestTarget
-  alias FavnOrchestrator.Operator.Authorization
+  alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.OperatorCommands.AssetBackfillRequest
   alias FavnOrchestrator.OperatorCommands.AssetRunRequest
   alias FavnOrchestrator.OperatorCommands.PipelineBackfillRequest
   alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
+  alias FavnOrchestrator.Persistence.CommandIdempotency
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunSubmission.AssetOptions
 
@@ -31,95 +33,112 @@ defmodule FavnOrchestrator.Operator.Commands do
 
   @doc "Submits an authenticated operator asset run."
   @spec submit_asset_run(
-          Authorization.context(),
+          WorkspaceContext.t(),
           String.t(),
           String.t(),
           AssetRunRequest.t() | map() | keyword() | nil
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_asset_run(context, manifest_version_id, target_id, input)
+  def submit_asset_run(%WorkspaceContext{} = context, manifest_version_id, target_id, input)
       when is_binary(manifest_version_id) and is_binary(target_id) do
     submit_run(context, manifest_version_id, %{type: :asset, id: target_id}, input)
   end
 
   @doc "Submits an authenticated operator asset or pipeline run."
   @spec submit_run(
-          Authorization.context(),
+          WorkspaceContext.t(),
           String.t(),
           run_target(),
           AssetRunRequest.t() | PipelineRunRequest.t() | map() | keyword() | nil
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_run(context, manifest_version_id, target, input)
+  def submit_run(%WorkspaceContext{} = context, manifest_version_id, target, input)
       when is_binary(manifest_version_id) and is_map(target) do
-    with {:ok, _actor} <- Authorization.authorize(context, :operator),
+    submit_run(context, manifest_version_id, target, input, [])
+  end
+
+  @doc false
+  @spec submit_run(
+          WorkspaceContext.t(),
+          String.t(),
+          run_target(),
+          AssetRunRequest.t() | PipelineRunRequest.t() | map() | keyword() | nil,
+          keyword()
+        ) :: {:ok, run_id()} | {:error, term()}
+  def submit_run(%WorkspaceContext{} = context, manifest_version_id, target, input, opts)
+      when is_binary(manifest_version_id) and is_map(target) and is_list(opts) do
+    with :ok <- authorize_operator(context),
+         :ok <- validate_command_opts(opts),
          {:ok, descriptor} <- target_descriptor(target),
          {:ok, request} <- normalize_run_request(descriptor, input),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
+         {:ok, version} <- active_target_release(context, manifest_version_id, descriptor),
          {:ok, resolved_target} <- resolve_run_target(version, descriptor) do
-      submit_resolved_run(version, resolved_target, request)
+      submit_resolved_run(context, version, resolved_target, request, opts)
     end
   end
 
-  def submit_run(_context, _manifest_version_id, _target, _input),
-    do: {:error, :invalid_target}
-
   @doc "Submits an authenticated operator pipeline run."
   @spec submit_pipeline_run(
-          Authorization.context(),
+          WorkspaceContext.t(),
           String.t(),
           String.t(),
           PipelineRunRequest.t() | map() | keyword() | nil
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_pipeline_run(context, manifest_version_id, target_id, input)
+  def submit_pipeline_run(%WorkspaceContext{} = context, manifest_version_id, target_id, input)
       when is_binary(manifest_version_id) and is_binary(target_id) do
     submit_run(context, manifest_version_id, %{type: :pipeline, id: target_id}, input)
   end
 
   @doc "Submits an authenticated operator asset backfill."
   @spec submit_asset_backfill(
-          Authorization.context(),
+          WorkspaceContext.t(),
           String.t(),
           String.t(),
           AssetBackfillRequest.t() | map() | keyword()
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_asset_backfill(context, manifest_version_id, target_id, input)
+  def submit_asset_backfill(%WorkspaceContext{} = context, manifest_version_id, target_id, input)
       when is_binary(manifest_version_id) and is_binary(target_id) do
-    with {:ok, _actor} <- Authorization.authorize(context, :operator),
+    with :ok <- authorize_operator(context),
          {:ok, request} <- AssetBackfillRequest.from_input(input),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
+         {:ok, version} <- ManifestStore.get_manifest(context, manifest_version_id),
          {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id),
-         {:ok, opts} <- asset_backfill_options(asset.ref, request) do
-      BackfillManager.submit_asset_backfill(
-        asset.ref,
-        Keyword.put(opts, :manifest_version_id, manifest_version_id)
-      )
+         {:ok, opts} <- asset_backfill_options(asset.ref, request),
+         {:ok, backfill} <-
+           Backfills.submit_asset(context, manifest_version_id, target_id, request.range, opts) do
+      {:ok, backfill.root_run_id}
     end
   end
 
   @doc "Submits an authenticated operator pipeline backfill."
   @spec submit_pipeline_backfill(
-          Authorization.context(),
+          WorkspaceContext.t(),
           String.t(),
           String.t(),
           PipelineBackfillRequest.t() | map() | keyword()
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_pipeline_backfill(context, manifest_version_id, target_id, input)
-      when is_binary(manifest_version_id) and is_binary(target_id) do
-    with {:ok, _actor} <- Authorization.authorize(context, :operator),
-         {:ok, request} <- PipelineBackfillRequest.from_input(input),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
-         {:ok, pipeline_module} <- ManifestTarget.resolve_pipeline_module(version, target_id),
-         {:ok, opts} <- pipeline_backfill_options(request) do
-      BackfillManager.submit_pipeline_backfill(
-        pipeline_module,
-        Keyword.put(opts, :manifest_version_id, manifest_version_id)
+  def submit_pipeline_backfill(
+        %WorkspaceContext{} = context,
+        manifest_version_id,
+        target_id,
+        input
       )
+      when is_binary(manifest_version_id) and is_binary(target_id) do
+    with :ok <- authorize_operator(context),
+         {:ok, request} <- PipelineBackfillRequest.from_input(input),
+         {:ok, version} <- ManifestStore.get_manifest(context, manifest_version_id),
+         {:ok, _pipeline} <- ManifestTarget.resolve_pipeline(version, target_id),
+         {:ok, opts} <- pipeline_backfill_options(request),
+         true <- is_nil(request.coverage_baseline_id),
+         {:ok, backfill} <-
+           Backfills.submit_pipeline(context, manifest_version_id, target_id, request.range, opts) do
+      {:ok, backfill.root_run_id}
+    else
+      false -> {:error, {:unsupported_backfill_option, :coverage_baseline_id}}
+      {:error, _reason} = error -> error
     end
   end
 
   defp target_descriptor(target) do
     type = field(target, :type)
     id = field(target, :id)
-    pipeline_module = field(target, :module)
 
     cond do
       type in [:asset, "asset"] and is_binary(id) ->
@@ -128,9 +147,6 @@ defmodule FavnOrchestrator.Operator.Commands do
       type in [:pipeline, "pipeline"] and is_binary(id) ->
         {:ok, {:pipeline, id}}
 
-      type in [:pipeline, "pipeline"] and is_atom(pipeline_module) ->
-        {:ok, {:pipeline_module, pipeline_module}}
-
       true ->
         {:error, :invalid_target}
     end
@@ -138,9 +154,8 @@ defmodule FavnOrchestrator.Operator.Commands do
 
   defp normalize_run_request({:asset, _id}, input), do: AssetRunRequest.from_input(input)
 
-  defp normalize_run_request({kind, _target}, input)
-       when kind in [:pipeline, :pipeline_module],
-       do: PipelineRunRequest.from_input(input)
+  defp normalize_run_request({:pipeline, _target}, input),
+    do: PipelineRunRequest.from_input(input)
 
   defp resolve_run_target(%Version{} = version, {:asset, target_id}) do
     with {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id) do
@@ -149,38 +164,92 @@ defmodule FavnOrchestrator.Operator.Commands do
   end
 
   defp resolve_run_target(%Version{} = version, {:pipeline, target_id}) do
-    with {:ok, pipeline_module} <- ManifestTarget.resolve_pipeline_module(version, target_id) do
-      {:ok, {:pipeline, pipeline_module}}
+    with {:ok, pipeline} <- ManifestTarget.resolve_pipeline(version, target_id) do
+      {:ok, {:pipeline, {pipeline.module, pipeline.name}}}
     end
   end
 
-  defp resolve_run_target(%Version{} = version, {:pipeline_module, pipeline_module}) do
-    if Enum.any?(List.wrap(version.manifest.pipelines), &(&1.module == pipeline_module)) do
-      {:ok, {:pipeline, pipeline_module}}
-    else
-      {:error, :invalid_pipeline_target}
-    end
-  end
-
-  defp submit_resolved_run(%Version{} = version, {:asset, asset}, %AssetRunRequest{} = request) do
+  defp submit_resolved_run(
+         context,
+         %Version{} = version,
+         {:asset, asset},
+         %AssetRunRequest{} = request,
+         command_opts
+       ) do
     with {:ok, opts} <- AssetOptions.from_operator_request(asset, request) do
-      RunManager.submit_asset_run(
+      submit_asset_run(
+        context,
         asset.ref,
-        Keyword.put(opts, :manifest_version_id, version.manifest_version_id)
+        command_run_opts(opts, version, command_opts)
       )
     end
   end
 
   defp submit_resolved_run(
+         context,
          %Version{} = version,
-         {:pipeline, pipeline_module},
-         %PipelineRunRequest{} = request
-       ) do
+         {:pipeline, {module, name} = pipeline_ref},
+         %PipelineRunRequest{} = request,
+         command_opts
+       )
+       when is_atom(module) and is_atom(name) do
     with {:ok, opts} <- pipeline_run_options(request) do
-      RunManager.submit_pipeline_module_run(
-        pipeline_module,
-        Keyword.put(opts, :manifest_version_id, version.manifest_version_id)
+      submit_pipeline_run(
+        context,
+        pipeline_ref,
+        command_run_opts(opts, version, command_opts)
       )
+    end
+  end
+
+  defp authorize_operator(%WorkspaceContext{} = context) do
+    if Enum.any?(
+         context.roles,
+         &(&1 in [:customer_operator, :workspace_admin, :platform_operator])
+       ),
+       do: :ok,
+       else: {:error, :forbidden}
+  end
+
+  defp active_target_release(context, manifest_version_id, {target_kind, target_id})
+       when target_kind in [:asset, :pipeline] do
+    Manifests.get_active_target_release(context, manifest_version_id, target_kind, target_id)
+  end
+
+  defp submit_asset_run(%WorkspaceContext{} = context, asset_ref, opts),
+    do: RunManager.submit_asset_run(context, asset_ref, opts)
+
+  defp submit_pipeline_run(%WorkspaceContext{} = context, {module, name} = pipeline_ref, opts)
+       when is_atom(module) and is_atom(name),
+       do: RunManager.submit_pipeline_ref_run(context, pipeline_ref, opts)
+
+  defp command_run_opts(opts, version, command_opts) do
+    opts
+    |> Keyword.put(:manifest_version_id, version.manifest_version_id)
+    |> maybe_put(:run_id, Keyword.get(command_opts, :run_id))
+    |> maybe_put(:_idempotency, Keyword.get(command_opts, :idempotency))
+  end
+
+  defp validate_command_opts(opts) do
+    allowed = [:run_id, :idempotency]
+    run_id = Keyword.get(opts, :run_id)
+    idempotency = Keyword.get(opts, :idempotency)
+
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, :invalid_command_options}
+
+      Keyword.keys(opts) -- allowed != [] ->
+        {:error, :invalid_command_options}
+
+      not is_nil(run_id) and not (is_binary(run_id) and run_id != "") ->
+        {:error, :invalid_run_id}
+
+      not is_nil(idempotency) and not match?(%CommandIdempotency{}, idempotency) ->
+        {:error, :invalid_idempotency_context}
+
+      true ->
+        :ok
     end
   end
 

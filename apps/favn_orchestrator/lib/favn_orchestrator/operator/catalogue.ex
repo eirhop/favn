@@ -7,21 +7,23 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   must continue to call the facade rather than this implementation module.
   """
 
-  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
-  alias Favn.SQL.Contract.Param
-  alias FavnOrchestrator.Freshness.Query, as: FreshnessQuery
+  alias Favn.Window.Key, as: WindowKey
+  alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Operator.Catalogue.AssetFreshness
-  alias FavnOrchestrator.Operator.Catalogue.PageReader
   alias FavnOrchestrator.Operator.Catalogue.RunHistory
   alias FavnOrchestrator.Operator.Catalogue.Status
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Operator.Catalogue.Timeline
-  alias FavnOrchestrator.Page
-  alias FavnOrchestrator.Storage
-  alias FavnOrchestrator.TargetStatus
-  alias FavnOrchestrator.TargetStatus.Projector, as: TargetStatusProjector
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Queries.GetAssetDetailState
+  alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
+  alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
+  alias FavnOrchestrator.Persistence.Results.TargetStatus, as: PersistenceTargetStatus
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Projector
 
   @type manifest_summary :: %{
           required(:manifest_version_id) => String.t(),
@@ -164,130 +166,89 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:reasons) => [asset_freshness_reason()]
         }
 
-  @doc "Lists stable operator-facing manifest summaries."
-  @spec list_manifest_summaries() :: {:ok, [manifest_summary()]} | {:error, term()}
-  def list_manifest_summaries do
-    with {:ok, versions} <- ManifestStore.list_manifests() do
-      {:ok,
-       versions
-       |> Enum.map(&manifest_summary/1)
-       |> Enum.sort_by(& &1.manifest_version_id)}
-    end
-  end
-
-  @doc "Returns one stable operator-facing manifest summary."
-  @spec get_manifest_summary(String.t()) :: {:ok, manifest_summary()} | {:error, term()}
-  def get_manifest_summary(manifest_version_id) when is_binary(manifest_version_id) do
-    with {:ok, version} <- ManifestStore.get_manifest(manifest_version_id) do
-      {:ok, manifest_summary(version)}
-    end
-  end
-
-  @doc "Returns manifest-scoped operator submit targets."
-  @spec manifest_targets(String.t()) :: {:ok, manifest_targets()} | {:error, term()}
-  def manifest_targets(manifest_version_id) when is_binary(manifest_version_id) do
-    with {:ok, version} <- ManifestStore.get_manifest(manifest_version_id) do
-      {:ok,
-       %{
-         manifest_version_id: manifest_version_id,
-         assets: Targets.assets(version),
-         pipelines: Targets.pipelines(version)
-       }}
-    end
-  end
-
-  @doc "Returns operator submit targets for the active manifest."
-  @spec active_manifest_targets() :: {:ok, manifest_targets()} | {:error, term()}
-  def active_manifest_targets do
-    with {:ok, manifest_version_id} <- ManifestStore.get_active_manifest() do
-      manifest_targets(manifest_version_id)
-    end
-  end
-
-  @doc "Rebuilds current target-status projections for a manifest version."
-  @spec rebuild_target_statuses(String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def rebuild_target_statuses(manifest_version_id) when is_binary(manifest_version_id) do
-    with {:ok, version} <- ManifestStore.get_manifest(manifest_version_id) do
-      TargetStatusProjector.rebuild_manifest(version)
-    end
-  end
-
-  @doc "Returns asset catalogue entries for the active manifest."
-  @spec active_asset_catalogue() :: {:ok, [asset_catalogue_entry()]} | {:error, term()}
-  def active_asset_catalogue do
-    with {:ok, manifest_version_id} <- ManifestStore.get_active_manifest(),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
-         targets <- Enum.map(List.wrap(version.manifest.assets), &Targets.asset/1),
-         {:ok, statuses} <- target_statuses(manifest_version_id, :asset, targets) do
+  @doc "Returns customer-visible asset catalogue entries in one workspace deployment."
+  @spec active_asset_catalogue(WorkspaceContext.t()) ::
+          {:ok, [asset_catalogue_entry()]} | {:error, term()}
+  def active_asset_catalogue(%WorkspaceContext{} = context) do
+    with {:ok, {runtime, grants}} <-
+           ManifestStore.get_active_deployment(context, customer_visible_only: true),
+         {:ok, targets} <- deployment_target_descriptors(grants, :asset),
+         {:ok, statuses} <- target_statuses(context, runtime, :asset, targets) do
       {:ok, catalogue_entries(targets, statuses)}
     end
   end
 
-  @doc "Returns pipeline catalogue entries for the active manifest."
-  @spec active_pipeline_catalogue() :: {:ok, [pipeline_catalogue_entry()]} | {:error, term()}
-  def active_pipeline_catalogue do
-    with {:ok, manifest_version_id} <- ManifestStore.get_active_manifest(),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
-         targets <-
-           Enum.map(List.wrap(version.manifest.pipelines), &Targets.pipeline(index, &1)),
-         {:ok, statuses} <- target_statuses(manifest_version_id, :pipeline, targets) do
+  @doc "Returns customer-visible pipeline catalogue entries in one workspace deployment."
+  @spec active_pipeline_catalogue(WorkspaceContext.t()) ::
+          {:ok, [pipeline_catalogue_entry()]} | {:error, term()}
+  def active_pipeline_catalogue(%WorkspaceContext{} = context) do
+    with {:ok, {runtime, grants}} <-
+           ManifestStore.get_active_deployment(context, customer_visible_only: true),
+         {:ok, targets} <- deployment_target_descriptors(grants, :pipeline),
+         {:ok, statuses} <- target_statuses(context, runtime, :pipeline, targets) do
       {:ok, catalogue_entries(targets, statuses)}
     end
   end
 
-  @doc "Returns one active pipeline's operator detail read model."
-  @spec active_pipeline_detail(String.t()) :: {:ok, pipeline_detail()} | {:error, term()}
-  def active_pipeline_detail(target_id) when is_binary(target_id) do
-    with {:ok, manifest_version_id} <- ManifestStore.get_active_manifest(),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
-         {:ok, pipeline} <- pipeline_for_target(version, target_id),
-         {:ok, status} <- target_status(manifest_version_id, :pipeline, target_id),
-         {:ok, recent_runs} <-
-           Storage.list_target_runs(manifest_version_id, :pipeline, pipeline.module, limit: 50) do
-      {:ok, pipeline_detail_entry(version, index, pipeline, target_id, status, recent_runs)}
+  @doc "Returns one customer-visible pipeline detail in a workspace deployment."
+  @spec active_pipeline_detail(WorkspaceContext.t(), String.t()) ::
+          {:ok, pipeline_detail()} | {:error, term()}
+  def active_pipeline_detail(%WorkspaceContext{} = context, target_id)
+      when is_binary(target_id) do
+    with {:ok, {runtime, grants}} <-
+           ManifestStore.get_active_deployment(context, customer_visible_only: true),
+         {:ok, target} <- deployment_target_descriptor(grants, :pipeline, target_id),
+         {:ok, status} <- target_status(context, runtime, :pipeline, target_id),
+         {:ok, page} <- target_runs(context, runtime, :pipeline, target_id),
+         detail <-
+           target
+           |> Map.put(:manifest_version_id, runtime.manifest_version_id)
+           |> Status.put(status || unknown_status(context, runtime, :pipeline, target_id))
+           |> Map.put(
+             :runs,
+             Enum.map(page.items, &(Projector.project_run_summary(&1) |> RunHistory.entry()))
+           ) do
+      {:ok, detail}
+    else
+      {:error, _reason} = error -> error
     end
   end
 
-  @doc "Returns one active asset's operator detail read model."
-  @spec active_asset_detail(String.t(), keyword()) :: {:ok, asset_detail()} | {:error, term()}
-  def active_asset_detail(target_id, opts \\ [])
+  @doc "Returns one customer-visible asset detail in a workspace deployment."
+  @spec active_asset_detail(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, asset_detail()} | {:error, term()}
+  def active_asset_detail(%WorkspaceContext{} = context, target_id, opts)
       when is_binary(target_id) and is_list(opts) do
     with {:ok, opts} <- normalize_asset_detail_opts(opts),
-         {:ok, manifest_version_id} <- ManifestStore.get_active_manifest(),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
+         {:ok, {runtime, grants}} <-
+           ManifestStore.get_active_deployment(context, customer_visible_only: true),
+         true <- MapSet.member?(granted_ids(grants, :asset), target_id),
+         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
          {:ok, asset} <- asset_for_target(version, target_id),
-         {:ok, freshness_states} <- detail_freshness_states(manifest_version_id),
-         {:ok, asset_window_states} <-
-           detail_asset_window_states(manifest_version_id, asset.ref),
-         {:ok, recent_runs} <-
-           Storage.list_target_runs(manifest_version_id, :asset, asset.ref, limit: 50),
-         {:ok, status} <- target_status(manifest_version_id, :asset, target_id) do
+         {:ok, status} <- target_status(context, runtime, :asset, target_id),
+         {:ok, page} <- target_runs(context, runtime, :asset, target_id),
+         {:ok, projection_state} <- asset_projection_state(context, runtime, target_id),
+         {:ok, freshness_states} <-
+           catalogue_freshness_states(projection_state.freshness_states, asset),
+         {:ok, window_states} <-
+           catalogue_window_states(projection_state.window_states, asset, version) do
+      runs = Enum.map(page.items, &Projector.project_run_summary/1)
+
       {:ok,
        asset_detail_entry(
          version,
          asset,
          target_id,
-         status,
+         status || unknown_status(context, runtime, :asset, target_id),
          freshness_states,
-         asset_window_states,
-         recent_runs,
+         window_states,
+         runs,
          opts
        )}
+    else
+      false -> {:error, :not_found}
+      {:error, _reason} = error -> error
     end
-  end
-
-  defp manifest_summary(%Version{} = version) do
-    manifest = version.manifest
-
-    %{
-      manifest_version_id: version.manifest_version_id,
-      content_hash: version.content_hash,
-      asset_count: length(List.wrap(manifest.assets)),
-      pipeline_count: length(List.wrap(manifest.pipelines)),
-      schedule_count: length(List.wrap(manifest.schedules))
-    }
   end
 
   defp normalize_asset_detail_opts(opts) do
@@ -320,45 +281,196 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   defp validate_optional_date(value, field),
     do: {:error, {:invalid_asset_detail_option, field, value}}
 
-  defp target_statuses(manifest_version_id, target_kind, targets) do
+  defp target_statuses(context, runtime, target_kind, targets) do
     target_ids = Enum.map(targets, & &1.target_id)
 
     with {:ok, statuses} <-
-           Storage.list_target_statuses(manifest_version_id, target_kind, target_ids) do
+           Persistence.stores().operator_reads.get_target_statuses(%GetTargetStatuses{
+             workspace_context: context,
+             manifest_version_id: runtime.manifest_version_id,
+             target_kind: target_kind,
+             target_ids: target_ids
+           }) do
+      indexed = Map.new(statuses, &{&1.target_id, &1})
+
       {:ok,
        Map.new(targets, fn target ->
-         status =
-           Map.get(statuses, target.target_id) ||
-             TargetStatus.unknown(
-               manifest_version_id,
-               target_kind,
-               target.target_id,
-               target_ref_text(target_kind, target)
-             )
-
-         {target.target_id, status}
+         {target.target_id,
+          Map.get(indexed, target.target_id) ||
+            unknown_status(context, runtime, target_kind, target.target_id)}
        end)}
     end
   end
 
-  defp target_status(manifest_version_id, target_kind, target_id) do
-    case Storage.get_target_status(manifest_version_id, target_kind, target_id) do
-      {:ok, %TargetStatus{} = status} -> {:ok, status}
-      {:error, :not_found} -> {:ok, nil}
-      {:error, reason} -> {:error, reason}
+  defp target_status(context, runtime, target_kind, target_id) do
+    with {:ok, statuses} <-
+           Persistence.stores().operator_reads.get_target_statuses(%GetTargetStatuses{
+             workspace_context: context,
+             manifest_version_id: runtime.manifest_version_id,
+             target_kind: target_kind,
+             target_ids: [target_id]
+           }) do
+      {:ok, List.first(statuses)}
     end
   end
 
-  defp target_ref_text(:asset, target), do: Map.fetch!(target, :asset_ref)
-  defp target_ref_text(:pipeline, target), do: Map.fetch!(target, :label)
+  defp unknown_status(context, runtime, target_kind, target_id) do
+    %PersistenceTargetStatus{
+      workspace_id: context.workspace_id,
+      deployment_id: runtime.deployment_id,
+      target_kind: target_kind,
+      target_id: target_id,
+      status: :unknown,
+      run_id: nil,
+      event_id: nil,
+      source_publication_id: 0,
+      updated_at: runtime.activated_at || DateTime.utc_now()
+    }
+  end
 
-  defp pipeline_for_target(%Version{} = version, target_id) do
-    version.manifest.pipelines
-    |> List.wrap()
-    |> Enum.find(&(Targets.pipeline(&1).target_id == target_id))
+  defp target_runs(context, runtime, target_kind, target_id) do
+    Persistence.stores().operator_reads.page_target_runs(%PageTargetRuns{
+      workspace_context: context,
+      deployment_id: runtime.deployment_id,
+      target_kind: target_kind,
+      target_id: target_id,
+      limit: 50
+    })
+  end
+
+  defp asset_projection_state(context, runtime, target_id) do
+    Persistence.stores().operator_reads.get_asset_detail_state(%GetAssetDetailState{
+      workspace_context: context,
+      deployment_id: runtime.deployment_id,
+      manifest_version_id: runtime.manifest_version_id,
+      target_id: target_id,
+      limit: 200
+    })
+  end
+
+  defp catalogue_freshness_states(states, asset) do
+    map_validated(states, fn state ->
+      payload = state.payload || %{}
+      {module, name} = asset.ref
+
+      AssetFreshnessState.new(%{
+        asset_ref_module: module,
+        asset_ref_name: name,
+        freshness_key: state.freshness_key,
+        status: catalogue_freshness_status(state.status),
+        freshness_version: field(payload, :freshness_version),
+        latest_success_run_id: field(payload, :run_id),
+        latest_success_node_key: nil,
+        latest_success_at: state.updated_at,
+        latest_attempt_run_id: field(payload, :run_id),
+        latest_attempt_status: catalogue_freshness_status(state.status),
+        latest_attempt_at: state.updated_at,
+        manifest_version_id: field(payload, :manifest_version_id),
+        manifest_content_hash: field(payload, :manifest_content_hash),
+        input_versions: [],
+        metadata: %{"input_fingerprint" => field(payload, :input_fingerprint)},
+        updated_at: state.updated_at
+      })
+    end)
+  end
+
+  defp catalogue_window_states(states, asset, version) do
+    map_validated(states, fn state ->
+      with "window:" <> encoded_key <- state.window_key,
+           {:ok, key} <- WindowKey.decode(encoded_key) do
+        {module, name} = asset.ref
+
+        AssetWindowState.new(%{
+          asset_ref_module: module,
+          asset_ref_name: name,
+          pipeline_module: nil,
+          manifest_version_id: version.manifest_version_id,
+          window_kind: key.kind,
+          window_start_at: state.window_start,
+          window_end_at: state.window_end,
+          timezone: key.timezone,
+          window_key: state.window_key,
+          status: catalogue_window_status(state.status),
+          latest_run_id: state.run_id,
+          latest_parent_run_id: nil,
+          latest_success_run_id: if(state.status == :succeeded, do: state.run_id),
+          latest_error: nil,
+          errors: [],
+          rows_written: field(state.payload, :rows_written),
+          metadata: state.payload || %{},
+          updated_at: state.updated_at
+        })
+      else
+        _other -> {:error, {:invalid_window_projection_key, state.window_key}}
+      end
+    end)
+  end
+
+  defp map_validated(values, mapper) do
+    values
+    |> Enum.reduce_while({:ok, []}, fn value, {:ok, acc} ->
+      case mapper.(value) do
+        {:ok, mapped} -> {:cont, {:ok, [mapped | acc]}}
+        {:error, reason} -> {:halt, {:error, {:invalid_persisted_projection, reason}}}
+      end
+    end)
+    |> then(fn
+      {:ok, mapped} -> {:ok, Enum.reverse(mapped)}
+      error -> error
+    end)
+  end
+
+  defp catalogue_freshness_status(:fresh), do: :ok
+  defp catalogue_freshness_status(:stale), do: :error
+  defp catalogue_freshness_status(:failed), do: :error
+  defp catalogue_freshness_status(status), do: status
+
+  defp catalogue_window_status(:succeeded), do: :ok
+  defp catalogue_window_status(:failed), do: :error
+  defp catalogue_window_status(status), do: status
+
+  defp granted_ids(grants, target_kind) do
+    grants
+    |> Enum.filter(&(&1.target_kind == target_kind and &1.customer_visible))
+    |> MapSet.new(& &1.target_id)
+  end
+
+  defp deployment_target_descriptors(grants, target_kind) do
+    grants
+    |> Enum.filter(&(&1.target_kind == target_kind and &1.customer_visible))
+    |> Enum.reduce_while({:ok, []}, fn grant, {:ok, acc} ->
+      case restore_deployment_target(grant) do
+        {:ok, target} -> {:cont, {:ok, [target | acc]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, targets} -> {:ok, Enum.reverse(targets)}
+      error -> error
+    end)
+  end
+
+  defp deployment_target_descriptor(grants, target_kind, target_id) do
+    grants
+    |> Enum.find(
+      &(&1.target_kind == target_kind and &1.target_id == target_id and &1.customer_visible)
+    )
     |> case do
       nil -> {:error, :not_found}
-      pipeline -> {:ok, pipeline}
+      grant -> restore_deployment_target(grant)
+    end
+  end
+
+  defp restore_deployment_target(grant) do
+    target =
+      grant.descriptor
+      |> Targets.restore_descriptor()
+      |> Map.put(:target_id, grant.target_id)
+
+    if is_binary(target[:label]) do
+      {:ok, target}
+    else
+      {:error, :deployment_target_descriptor_missing}
     end
   end
 
@@ -372,34 +484,6 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     end
   end
 
-  defp detail_freshness_states(manifest_version_id) do
-    case PageReader.all(fn offset ->
-           FreshnessQuery.list_asset_freshness(
-             manifest_version_id: manifest_version_id,
-             limit: Page.max_limit(),
-             offset: offset
-           )
-         end) do
-      {:error, :asset_freshness_state_not_supported} ->
-        {:ok, []}
-
-      result ->
-        result
-    end
-  end
-
-  defp detail_asset_window_states(manifest_version_id, {module, name}) do
-    PageReader.all(fn offset ->
-      Storage.list_asset_window_states(
-        manifest_version_id: manifest_version_id,
-        asset_ref_module: module,
-        asset_ref_name: name,
-        limit: Page.max_limit(),
-        offset: offset
-      )
-    end)
-  end
-
   defp catalogue_entries(targets, statuses) do
     targets
     |> Enum.map(fn target ->
@@ -409,31 +493,10 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Enum.sort_by(& &1.label)
   end
 
-  defp pipeline_detail_entry(
-         %Version{} = version,
-         %Index{} = index,
-         pipeline,
-         target_id,
-         status,
-         runs
-       ) do
-    target = Targets.pipeline(index, pipeline)
-    pipeline_runs = RunHistory.for_pipeline(pipeline, target, runs)
-
-    status =
-      status ||
-        TargetStatus.unknown(version.manifest_version_id, :pipeline, target_id, target.label)
-
-    target
-    |> Map.put(:manifest_version_id, version.manifest_version_id)
-    |> Status.put(status)
-    |> Map.put(:runs, Enum.map(pipeline_runs, &RunHistory.entry/1))
-  end
-
   defp asset_detail_entry(
          %Version{} = version,
          asset,
-         target_id,
+         _target_id,
          status,
          freshness_states,
          asset_window_states,
@@ -445,9 +508,6 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     latest_freshness = AssetFreshness.latest_for_ref(freshness_states, ref_string)
     latest_run = latest_run_for_ref(runs, ref_string)
     runs_by_id = Map.new(runs, &{&1.id, &1})
-
-    status =
-      status || TargetStatus.unknown(version.manifest_version_id, :asset, target_id, ref_string)
 
     timeline =
       Timeline.build(
@@ -515,20 +575,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           nil -> nil
           grain -> %{by: grain.by, description: grain.description}
         end,
-      columns:
-        contract.columns
-        |> Enum.with_index()
-        |> Enum.map(fn {column, index} ->
-          contract_column_detail(column, composition_origin(contract.compositions, index))
-        end),
-      compositions:
-        Enum.map(contract.compositions, fn composition ->
-          %{
-            module: composition.module,
-            start_index: composition.start_index,
-            columns: composition.columns
-          }
-        end),
+      columns: Enum.map(contract.columns, &contract_column_detail/1),
       unique_keys: Enum.map(contract.unique_keys, & &1.columns),
       row_count:
         case contract.row_count do
@@ -537,9 +584,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
 
           row_count ->
             %{
-              equals: row_count_equals_detail(row_count.equals),
               min: row_count.min,
-              max: row_count.max,
               when: row_count.when,
               on_violation: row_count.on_violation
             }
@@ -547,7 +592,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     }
   end
 
-  defp contract_column_detail(column, origin) do
+  defp contract_column_detail(column) do
     %{
       name: column.name,
       type: column.type,
@@ -556,24 +601,9 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       tags: column.tags,
       renamed_from: column.renamed_from,
       via: column.via,
-      sources: Enum.map(column.sources, &lineage_detail/1),
-      origin: origin
+      sources: Enum.map(column.sources, &lineage_detail/1)
     }
   end
-
-  defp composition_origin(compositions, index) do
-    case Enum.find(compositions, fn composition ->
-           index >= composition.start_index and
-             index < composition.start_index + length(composition.columns)
-         end) do
-      nil -> %{kind: :local}
-      composition -> %{kind: :fragment, module: composition.module}
-    end
-  end
-
-  defp row_count_equals_detail(nil), do: nil
-  defp row_count_equals_detail(%Param{name: name}), do: %{source: :param, name: name}
-  defp row_count_equals_detail(value), do: %{source: :literal, value: value}
 
   defp lineage_detail(%{kind: :asset} = lineage) do
     %{kind: :asset, asset_ref: lineage.asset_ref, column: lineage.column}

@@ -55,17 +55,16 @@ Use plain ownership language. Readers should be able to tell what each part does
 | `favn_runner` | Executes pinned work. It does not own schedules or persisted control-plane truth. |
 | `favn_view` | Renders operator state and sends commands through orchestrator facades. It does not call storage, scheduler, or runner internals directly. |
 | SQL execution adapters | Open backend sessions, bootstrap SQL systems, inspect relations, and run SQL for assets or `Favn.SQLClient`. |
-| Storage adapters | Save orchestrator state. They do not own user asset data, DuckDB tables, SQL sessions, scheduling policy, or UI state. |
+| Control-plane persistence | Saves orchestrator state through capability stores. It does not own user asset data, DuckDB tables, SQL sessions, scheduling policy, or UI state. |
 
 ## Storage Adapter Or SQL Execution Adapter
 
 When writing adapter docs, keep this distinction clear:
 
-- A storage adapter saves Favn control-plane state for the orchestrator.
+- A capability store saves one area of Favn control-plane state for the orchestrator.
 - A SQL execution adapter connects to a SQL backend and runs SQL work.
 - DuckDB and DuckDB ADBC are SQL execution adapters.
-- SQLite and Postgres storage adapters are orchestrator persistence
-  implementations.
+- PostgreSQL is the current control-plane persistence implementation.
 - Public users should not call storage adapters directly.
 - Public users should normally see SQL execution through `Favn.SQLClient`, SQL
   assets, connection modules, and adapter configuration guides.

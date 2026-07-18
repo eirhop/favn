@@ -13,7 +13,6 @@ defmodule Favn.Manifest.Index do
   @type ref :: {module(), atom()}
 
   @type t :: %__MODULE__{
-          manifest: Manifest.t(),
           planning_index: PlanningIndex.t(),
           assets_by_ref: %{required(ref()) => Asset.t()},
           pipelines_by_ref: %{required(ref()) => Pipeline.t()},
@@ -31,7 +30,6 @@ defmodule Favn.Manifest.Index do
           | PlanningIndex.error()
 
   defstruct [
-    :manifest,
     :planning_index,
     assets_by_ref: %{},
     pipelines_by_ref: %{},
@@ -41,12 +39,11 @@ defmodule Favn.Manifest.Index do
   @spec build(Manifest.t()) :: {:ok, t()} | {:error, error()}
   def build(%Manifest{} = manifest) do
     with {:ok, assets_by_ref} <- build_assets_by_ref(manifest.assets),
-         {:ok, planning_index} <- PlanningIndex.build(manifest),
+         {:ok, planning_index} <- PlanningIndex.build(manifest, assets_by_ref),
          {:ok, pipelines_by_ref} <- build_pipelines_by_ref(manifest.pipelines),
          {:ok, schedules_by_ref} <- build_schedules_by_ref(manifest.schedules) do
       {:ok,
        %__MODULE__{
-         manifest: manifest,
          planning_index: planning_index,
          assets_by_ref: assets_by_ref,
          pipelines_by_ref: pipelines_by_ref,

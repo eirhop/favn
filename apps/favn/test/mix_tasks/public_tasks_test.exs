@@ -363,7 +363,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     on_exit(fn -> restore_bootstrap_env(previous_env) end)
 
     assert_raise Mix.Error,
-                 ~r/missing required option\(s\): --manifest, --orchestrator-url, --service-token, --operator-username, --operator-password/,
+                 ~r/missing required option\(s\): --manifest, --orchestrator-url, --service-token, --workspace-id, --operator-username, --operator-password/,
                  fn -> BootstrapSingleTask.parse_args([]) end
   end
 
@@ -374,6 +374,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     System.put_env("FAVN_BOOTSTRAP_MANIFEST_PATH", "/env/manifest.json")
     System.put_env("FAVN_VIEW_ORCHESTRATOR_BASE_URL", "http://127.0.0.1:4000")
     System.put_env("FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN", "env-token")
+    System.put_env("FAVN_BOOTSTRAP_WORKSPACE_ID", "workspace-env")
     System.put_env("FAVN_BOOTSTRAP_OPERATOR_USERNAME", "env-admin")
     System.put_env("FAVN_BOOTSTRAP_OPERATOR_PASSWORD", "env-password-long")
 
@@ -384,6 +385,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert Keyword.fetch!(opts, :manifest_path) == "/flag/manifest.json"
     assert Keyword.fetch!(opts, :orchestrator_url) == "http://127.0.0.1:4000"
     assert Keyword.fetch!(opts, :service_token) == "env-token"
+    assert Keyword.fetch!(opts, :workspace_id) == "workspace-env"
     assert Keyword.fetch!(opts, :operator_username) == "env-admin"
     assert Keyword.fetch!(opts, :operator_password) == "env-password-long"
   end
@@ -397,6 +399,12 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         "http://127.0.0.1:4101",
         "--service-token",
         "token",
+        "--workspace-id",
+        "workspace-1",
+        "--operator-username",
+        "admin",
+        "--operator-password",
+        "admin-password-long",
         "--no-activate"
       ])
 
@@ -1402,7 +1410,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     output =
       capture_io(fn ->
-        BuildSingleTask.run(["--storage", "sqlite"])
+        BuildSingleTask.run(["--storage", "postgres"])
       end)
 
     assert output =~ "Favn single build complete"
@@ -1437,6 +1445,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       base_url,
       "--service-token",
       "token-1",
+      "--workspace-id",
+      "workspace-1",
       "--operator-username",
       "admin",
       "--operator-password",
@@ -1644,6 +1654,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN",
       "FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN",
       "FAVN_ORCHESTRATOR_SERVICE_TOKEN",
+      "FAVN_BOOTSTRAP_WORKSPACE_ID",
+      "FAVN_WORKSPACE_IDS",
       "FAVN_BOOTSTRAP_OPERATOR_USERNAME",
       "FAVN_BOOTSTRAP_OPERATOR_PASSWORD",
       "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME",

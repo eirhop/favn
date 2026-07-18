@@ -29,11 +29,10 @@ defmodule Favn.AI do
   Add the optional `:favn_azure` package when runner code or DuckDB session
   scripts need cached Azure CLI or managed-identity access tokens.
 
-  Do not add internal runtime/control-plane apps such as `:favn_storage_sqlite`,
+  Do not add internal runtime/control-plane apps such as `:favn_storage_postgres`,
   `:favn_orchestrator`, `:favn_runner`, `:favn_local`, `:favn_core`, or
-  `:favn_sql_runtime` as ordinary consumer dependencies. Local SQLite
-  control-plane storage is selected through `config :favn, :local` or
-  `mix favn.dev --sqlite`.
+  `:favn_sql_runtime` as ordinary consumer dependencies. Local control-plane
+  storage uses PostgreSQL through Favn's runtime tooling.
 
   ## What To Read
 

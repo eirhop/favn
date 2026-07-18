@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repository_root"
+
+: "${FAVN_DATABASE_SOURCE_URL:?set FAVN_DATABASE_SOURCE_URL to the database being backed up}"
+: "${FAVN_DATABASE_RESTORE_URL:?set FAVN_DATABASE_RESTORE_URL to an empty isolated restore database}"
+
+if [[ "$FAVN_DATABASE_SOURCE_URL" == "$FAVN_DATABASE_RESTORE_URL" ]]; then
+  echo "source and restore URLs must be different" >&2
+  exit 2
+fi
+
+artifact_dir="${FAVN_RESTORE_ARTIFACT_DIR:-$(mktemp -d)}"
+mkdir -p "$artifact_dir"
+dump_path="$artifact_dir/favn-control-plane.dump"
+
+pg_dump \
+  --dbname="${FAVN_DATABASE_SOURCE_URL/ecto:\/\//postgresql://}" \
+  --format=custom \
+  --schema=favn_control \
+  --no-owner \
+  --no-acl \
+  --file="$dump_path"
+
+sha256sum "$dump_path" > "$dump_path.sha256"
+sha256sum --check "$dump_path.sha256"
+
+pg_restore \
+  --dbname="${FAVN_DATABASE_RESTORE_URL/ecto:\/\//postgresql://}" \
+  --clean \
+  --if-exists \
+  --no-owner \
+  --no-acl \
+  "$dump_path"
+
+FAVN_DATABASE_URL="$FAVN_DATABASE_RESTORE_URL" mix favn.postgres.verify_restore
+
+echo "Restore verification passed. Evidence: $dump_path and $dump_path.sha256"

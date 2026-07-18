@@ -160,6 +160,57 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     refute inspect(result.error) =~ "raw-secret-like-value"
   end
 
+  test "preflights a wide plan once at lease acquisition and never per work submission" do
+    unique = System.unique_integer([:positive])
+
+    assets =
+      Enum.map(1..1_000, fn index ->
+        name = String.to_atom("wide_#{unique}_#{index}")
+        source_asset({__MODULE__.WideSource, name})
+      end)
+
+    version = register_manifest!(assets)
+    planned_refs = Enum.map(assets, & &1.ref)
+    selected_ref = hd(planned_refs)
+    lease_id = "wide-preflight:#{unique}"
+    expires_at = DateTime.add(DateTime.utc_now(), 60, :second)
+    handler_id = {__MODULE__, self(), make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn, :runner, :sql_runtime_preflight],
+        fn _event, measurements, metadata, pid ->
+          send(pid, {:sql_preflight, measurements, metadata})
+        end,
+        self()
+      )
+
+    try do
+      assert :ok =
+               FavnRunner.acquire_manifest(version, lease_id, expires_at, planned_refs)
+
+      leased_work =
+        version
+        |> work(selected_ref, [selected_ref])
+        |> Map.put(:manifest_lease_id, lease_id)
+
+      assert {:ok, execution_id} = FavnRunner.submit_work(leased_work)
+      assert {:ok, result} = FavnRunner.await_result(execution_id, 1_000)
+      assert result.status == :ok
+
+      assert [
+               {%{count: 1, planned_asset_count: 1_000},
+                %{manifest_version_id: manifest_version_id}}
+             ] = collect_preflights([])
+
+      assert manifest_version_id == version.manifest_version_id
+    after
+      :ok = FavnRunner.release_manifest(lease_id)
+      :telemetry.detach(handler_id)
+    end
+  end
+
   defp configure_missing_secret_connection do
     Application.put_env(:favn, :connection_modules, [__MODULE__.MissingSecretConnection])
 
@@ -203,6 +254,16 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
       relation: relation,
       materialization: :table,
       execution_package_hash: package.content_hash
+    }
+  end
+
+  defp source_asset(ref) do
+    %Asset{
+      ref: ref,
+      module: elem(ref, 0),
+      name: elem(ref, 1),
+      type: :source,
+      relation: %{name: Atom.to_string(elem(ref, 1))}
     }
   end
 
@@ -258,6 +319,15 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
 
   defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_app_env(app, key, value), do: Application.put_env(app, key, value)
+
+  defp collect_preflights(events) do
+    receive do
+      {:sql_preflight, measurements, metadata} ->
+        collect_preflights([{measurements, metadata} | events])
+    after
+      10 -> Enum.reverse(events)
+    end
+  end
 end
 
 defmodule FavnRunner.SQLRuntimePreflightTest.CountingAsset do
@@ -271,6 +341,9 @@ defmodule FavnRunner.SQLRuntimePreflightTest.CountingAsset do
 end
 
 defmodule FavnRunner.SQLRuntimePreflightTest.SQLAsset do
+end
+
+defmodule FavnRunner.SQLRuntimePreflightTest.WideSource do
 end
 
 defmodule FavnRunner.SQLRuntimePreflightTest.MissingSecretConnection do

@@ -44,14 +44,11 @@ defmodule Favn do
 
   ## Runtime-dependent helpers
 
-  This module also keeps callable helper functions for SQL runtime operations,
-  run control, and scheduler control, including `render/2`, `preview/2`,
-  `explain/2`, `materialize/2`, `run_pipeline/2`, `get_run/1`, `list_runs/1`,
-  `list_run_events/2`, `rerun/2`, `cancel_run/2`, `reload_scheduler/0`,
-  `tick_scheduler/0`, and `list_scheduled_pipelines/0`.
+  This module also keeps callable helpers for local SQL runtime operations:
+  `render/2`, `preview/2`, `explain/2`, and `materialize/2`.
 
   Those helpers are intentionally not documented as stable ordinary user APIs.
-  They delegate to optional runtime apps when available and return
+  They delegate to the optional SQL runtime when available and return
   `{:error, :runtime_not_available}` when the relevant runtime boundary is not
   loaded or running.
 
@@ -360,16 +357,6 @@ defmodule Favn do
   end
 
   @doc false
-  @spec run_pipeline(module(), keyword()) :: {:ok, term()} | {:error, term()}
-  def run_pipeline(pipeline_module, opts \\ [])
-
-  def run_pipeline(pipeline_module, opts) when is_atom(pipeline_module) and is_list(opts) do
-    orchestrator_runtime_call(:submit_pipeline_run, [pipeline_module, opts])
-  end
-
-  def run_pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
-
-  @doc false
   @spec render(module() | Favn.Ref.t() | Favn.Asset.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def render(asset_input, opts \\ []) when is_list(opts) do
@@ -397,127 +384,12 @@ defmodule Favn do
     normalized_sql_asset_call(:materialize, asset_input, opts)
   end
 
-  @doc false
-  @spec get_run(term()) :: {:ok, term()} | {:error, term()}
-  def get_run(run_id) do
-    orchestrator_runtime_call(:get_run, [run_id])
-  end
-
-  @doc false
-  @spec list_runs(keyword()) :: {:ok, [term()]} | {:error, term()}
-  def list_runs(opts \\ []) when is_list(opts) do
-    orchestrator_runtime_call(:list_runs, [opts])
-  end
-
-  @doc false
-  @spec list_run_events(run_id(), keyword()) :: {:ok, [map()]} | {:error, term()}
-  def list_run_events(run_id, opts \\ []) when is_list(opts) do
-    orchestrator_runtime_call(:list_run_events, [run_id, opts])
-  end
-
-  @doc false
-  @spec rerun(run_id(), keyword()) :: {:ok, run_id()} | {:error, term()}
-  def rerun(run_id, opts \\ []) when is_list(opts) do
-    orchestrator_runtime_call(:rerun, [run_id, opts])
-  end
-
-  @doc false
-  @spec cancel_run(run_id(), map()) :: :ok | {:error, term()}
-  def cancel_run(run_id, reason \\ %{}) when is_map(reason) do
-    orchestrator_runtime_call(:cancel_run, [run_id, reason])
-  end
-
-  @doc false
-  @spec reload_scheduler() :: :ok | {:error, term()}
-  def reload_scheduler do
-    scheduler_runtime_call(:reload)
-  end
-
-  @doc false
-  @spec tick_scheduler() :: :ok | {:error, term()}
-  def tick_scheduler do
-    scheduler_runtime_call(:tick)
-  end
-
-  @doc false
-  @spec list_scheduled_pipelines() :: [map()] | {:error, term()}
-  def list_scheduled_pipelines do
-    scheduler_runtime_call(:list_scheduled_pipelines)
-  end
-
   defp normalized_sql_asset_call(runtime_function, asset_input, opts)
        when is_atom(runtime_function) and is_list(opts) do
     with {:ok, asset} <- SQLAssetInput.normalize(asset_input) do
       sql_runtime_call(runtime_function, [asset, opts])
     end
   end
-
-  defp orchestrator_runtime_call(runtime_function, runtime_args)
-       when is_atom(runtime_function) and is_list(runtime_args) do
-    orchestrator_module = FavnOrchestrator
-    arity = length(runtime_args)
-
-    if runtime_function_exported?(orchestrator_module, runtime_function, arity) do
-      try do
-        orchestrator_module
-        |> apply(runtime_function, runtime_args)
-        |> normalize_orchestrator_result()
-      rescue
-        UndefinedFunctionError ->
-          {:error, :runtime_not_available}
-      catch
-        :exit, {:noproc, _detail} ->
-          {:error, :runtime_not_available}
-
-        :exit, {:normal, _detail} ->
-          {:error, :runtime_not_available}
-
-        :exit, reason ->
-          {:error, {:runtime_call_exited, reason}}
-      end
-    else
-      {:error, :runtime_not_available}
-    end
-  end
-
-  defp normalize_orchestrator_result({:error, {:exited, {:noproc, _detail}}}),
-    do: {:error, :runtime_not_available}
-
-  defp normalize_orchestrator_result({:error, {:exited, {:normal, _detail}}}),
-    do: {:error, :runtime_not_available}
-
-  defp normalize_orchestrator_result(other), do: other
-
-  defp scheduler_runtime_call(runtime_function) when is_atom(runtime_function) do
-    scheduler_module = Favn.Scheduler
-
-    if runtime_function_exported?(scheduler_module, runtime_function, 0) do
-      try do
-        scheduler_module
-        |> apply(runtime_function, [])
-        |> normalize_scheduler_result()
-      rescue
-        UndefinedFunctionError ->
-          {:error, :runtime_not_available}
-      catch
-        :exit, {:noproc, _detail} ->
-          {:error, :runtime_not_available}
-
-        :exit, {:normal, _detail} ->
-          {:error, :runtime_not_available}
-
-        :exit, reason ->
-          {:error, {:runtime_call_exited, reason}}
-      end
-    else
-      {:error, :runtime_not_available}
-    end
-  end
-
-  defp normalize_scheduler_result({:error, :scheduler_not_running}),
-    do: {:error, :runtime_not_available}
-
-  defp normalize_scheduler_result(other), do: other
 
   defp sql_runtime_call(runtime_function, runtime_args)
        when is_atom(runtime_function) and is_list(runtime_args) do

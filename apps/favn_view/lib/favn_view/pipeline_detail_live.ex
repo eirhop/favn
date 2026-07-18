@@ -20,7 +20,7 @@ defmodule FavnView.PipelineDetailLive do
 
   @impl true
   def mount(%{"pipeline_id" => pipeline_id}, _session, socket) do
-    pipeline_state = load_pipeline(pipeline_id)
+    pipeline_state = load_pipeline(socket.assigns.current_scope.operator_context, pipeline_id)
     pipeline = pipeline_from_state(pipeline_state)
 
     socket =
@@ -185,10 +185,10 @@ defmodule FavnView.PipelineDetailLive do
     """
   end
 
-  defp load_pipeline(pipeline_id) do
+  defp load_pipeline(operator_context, pipeline_id) do
     target_id = AssetRoute.from_param(pipeline_id)
 
-    case FavnOrchestrator.active_pipeline_detail(target_id) do
+    case FavnOrchestrator.active_pipeline_detail(operator_context, target_id) do
       {:ok, detail} ->
         {:ok, pipeline_from_detail(detail)}
 
@@ -212,7 +212,7 @@ defmodule FavnView.PipelineDetailLive do
 
   defp actor_context(socket) do
     %Scope{} = scope = socket.assigns.current_scope
-    %{actor: scope.actor, session: scope.session}
+    scope.operator_context
   end
 
   defp pipeline_from_detail(detail) do

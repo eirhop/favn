@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.API.AuthRouter do
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Persistence.WorkspaceContext
 
   plug(:match)
   plug(:dispatch)
@@ -18,11 +19,8 @@ defmodule FavnOrchestrator.API.AuthRouter do
     with :ok <- Authentication.ensure_service(conn),
          {:ok, username} <- required_string(params, "username"),
          {:ok, password} <- required_string(params, "password"),
-         {:ok, session, actor} <-
-           Auth.password_login(username, password,
-             remote_identity: Authentication.remote_identity(conn)
-           ) do
-      audit(conn, "auth.password.login", session, actor)
+         {:ok, session, actor, context} <- password_login(conn, username, password) do
+      audit(conn, context, "auth.password.login", session, actor)
 
       Response.data(conn, 201, %{
         session: DTO.session(session),
@@ -47,7 +45,7 @@ defmodule FavnOrchestrator.API.AuthRouter do
   post "/sessions/introspect" do
     with :ok <- Authentication.ensure_service(conn),
          {:ok, session_token} <- required_string(conn.body_params, "session_token"),
-         {:ok, session, actor} <- Auth.introspect_session(session_token) do
+         {:ok, session, actor} <- introspect_session(conn, session_token) do
       Response.data(conn, 200, %{session: DTO.session(session), actor: DTO.actor(actor)})
     else
       {:error, :invalid_session} ->
@@ -67,9 +65,9 @@ defmodule FavnOrchestrator.API.AuthRouter do
   post "/sessions/revoke" do
     with :ok <- Authentication.ensure_service(conn),
          {:ok, token} <- session_token(conn),
-         {:ok, session, actor} <- Auth.introspect_session(token),
-         :ok <- Auth.revoke_session(session.id) do
-      audit(conn, "auth.session.revoke_current", session, actor)
+         {:ok, session, actor, context} <- session_context(conn, token),
+         :ok <- revoke_session(context, session.id) do
+      audit(conn, context, "auth.session.revoke_current", session, actor)
 
       Response.data(conn, 200, %{
         revoked: true,
@@ -96,17 +94,16 @@ defmodule FavnOrchestrator.API.AuthRouter do
 
   post "/sessions/:session_id/revoke" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, session, actor} <- Authentication.actor_context(conn, :admin),
-         :ok <- Auth.revoke_session(session_id) do
-      %{
+         {:ok, session, actor, context} <- admin_context(conn),
+         :ok <- revoke_session(context, session_id) do
+      Audit.put_best_effort(context, %{
         action: "auth.session.revoke",
         actor_id: actor.id,
         session_id: session.id,
         target_session_id: session_id,
         outcome: "accepted",
         service_identity: Authentication.service_identity(conn)
-      }
-      |> Audit.put_best_effort()
+      })
 
       Response.data(conn, 200, %{revoked: true, session_id: session_id})
     else
@@ -125,8 +122,8 @@ defmodule FavnOrchestrator.API.AuthRouter do
     Response.error(conn, 404, "not_found", "Route was not found")
   end
 
-  defp audit(conn, action, session, actor) do
-    Audit.put_best_effort(%{
+  defp audit(conn, context, action, session, actor) do
+    Audit.put_best_effort(context, %{
       action: action,
       actor_id: actor.id,
       session_id: session.id,
@@ -139,6 +136,58 @@ defmodule FavnOrchestrator.API.AuthRouter do
     case Map.get(conn.body_params, "session_token") || header(conn, "x-favn-session-token") do
       value when is_binary(value) and value != "" -> {:ok, value}
       _missing_or_invalid -> {:error, {:missing_field, "session_token"}}
+    end
+  end
+
+  defp password_login(conn, username, password) do
+    opts = [remote_identity: Authentication.remote_identity(conn)]
+
+    with {:ok, context} <- auth_context(conn),
+         {:ok, session, actor} <- Auth.password_login(context, username, password, opts),
+         {:ok, authorized} <-
+           WorkspaceContext.new(context.workspace_id, actor.id, persistence_roles(actor.roles),
+             request_id: session.id
+           ) do
+      {:ok, session, actor, authorized}
+    end
+  end
+
+  defp introspect_session(conn, token) do
+    with {:ok, context} <- auth_context(conn) do
+      Auth.introspect_session(context, token)
+    end
+  end
+
+  defp session_context(conn, token) do
+    with {:ok, context} <- auth_context(conn),
+         {:ok, session, actor} <- Auth.introspect_session(context, token),
+         {:ok, authorized} <-
+           WorkspaceContext.new(context.workspace_id, actor.id, persistence_roles(actor.roles),
+             request_id: session.id
+           ) do
+      {:ok, session, actor, authorized}
+    end
+  end
+
+  defp admin_context(conn), do: Authentication.workspace_context(conn, :admin)
+
+  defp revoke_session(context, session_id), do: Auth.revoke_session(context, session_id)
+
+  defp persistence_roles(roles) do
+    Enum.map(roles, fn
+      :viewer -> :customer_reader
+      :operator -> :customer_operator
+      :admin -> :workspace_admin
+    end)
+  end
+
+  defp auth_context(conn) do
+    with {:ok, workspace_id} <- Authentication.workspace_id(conn),
+         {:ok, context} <-
+           WorkspaceContext.new(workspace_id, "auth:request", [:customer_reader]) do
+      {:ok, context}
+    else
+      _invalid -> {:error, :unauthenticated}
     end
   end
 

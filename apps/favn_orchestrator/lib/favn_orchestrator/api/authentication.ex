@@ -14,6 +14,8 @@ defmodule FavnOrchestrator.API.Authentication do
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Auth.Store
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Persistence.PlatformContext
 
   @type role :: :viewer | :operator | :admin
 
@@ -34,13 +36,121 @@ defmodule FavnOrchestrator.API.Authentication do
   @spec actor_context(Plug.Conn.t(), role()) ::
           {:ok, Auth.session(), Auth.actor()} | {:error, :forbidden | :unauthenticated | term()}
   def actor_context(conn, required_role) when required_role in [:viewer, :operator, :admin] do
+    case workspace_context(conn, required_role) do
+      {:ok, session, actor, _context} -> {:ok, session, actor}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Returns the active actor and its database-authorized workspace context."
+  @spec workspace_context(Plug.Conn.t(), role()) ::
+          {:ok, Auth.session(), Auth.actor(), WorkspaceContext.t()}
+          | {:error, :forbidden | :unauthenticated | term()}
+  def workspace_context(conn, required_role)
+      when required_role in [:viewer, :operator, :admin] do
+    with {:ok, workspace_id} <- workspace_id(conn),
+         {:ok, auth_context} <-
+           WorkspaceContext.new(workspace_id, "auth:session", [:customer_reader]),
+         {:ok, session, actor} <- persisted_actor_context(conn, auth_context),
+         {:ok, context} <- authorized_context(workspace_id, session, actor, required_role) do
+      {:ok, session, actor, context}
+    else
+      {:error, :invalid_context} -> {:error, :unauthenticated}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Returns the one explicit workspace selected by the request."
+  @spec workspace_id(Plug.Conn.t()) :: {:ok, String.t()} | {:error, :unauthenticated}
+  def workspace_id(conn) do
+    case get_req_header(conn, "x-favn-workspace-id") do
+      [workspace_id] when workspace_id != "" and byte_size(workspace_id) <= 255 ->
+        {:ok, workspace_id}
+
+      _missing_or_ambiguous ->
+        {:error, :unauthenticated}
+    end
+  end
+
+  @doc "Builds explicit platform authority from an authenticated internal service."
+  @spec platform_context(Plug.Conn.t(), :platform_reader | :platform_operator) ::
+          {:ok, PlatformContext.t()} | {:error, :service_unauthorized | :forbidden}
+  def platform_context(conn, role) when role in [:platform_reader, :platform_operator] do
+    with {:ok, principal} <- authenticate_platform_service(conn),
+         true <- role in principal.platform_roles,
+         identity <- principal.service_identity,
+         {:ok, context} <-
+           PlatformContext.new(
+             "service:" <> identity,
+             "api-service:" <> identity,
+             [role]
+           ) do
+      {:ok, context}
+    else
+      false -> {:error, :forbidden}
+      {:error, :invalid_context} -> {:error, :forbidden}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp persisted_actor_context(conn, context) do
     case header(conn, "x-favn-session-token") do
       token when is_binary(token) and token != "" ->
-        forwarded_actor_context(header(conn, "x-favn-actor-id"), token, required_role)
+        case Auth.actor_from_forwarded_context(
+               context,
+               header(conn, "x-favn-actor-id"),
+               token
+             ) do
+          {:ok, session, actor} -> {:ok, session, actor}
+          {:error, _reason} -> {:error, :unauthenticated}
+        end
 
-      _other ->
-        local_actor_context(conn, required_role)
+      _missing ->
+        cond do
+          local_dev_allowed?(conn) -> persisted_local_actor_context(context)
+          local_dev_requested?(conn) -> {:error, :forbidden}
+          true -> {:error, :unauthenticated}
+        end
     end
+  end
+
+  defp persisted_local_actor_context(context) do
+    with {:ok, local_context} <-
+           WorkspaceContext.new(
+             context.workspace_id,
+             "favn:local-dev-context",
+             [:workspace_admin]
+           ) do
+      Store.trusted_local_dev_context(
+        local_context,
+        "local-dev-cli",
+        "Local Dev CLI",
+        [:admin]
+      )
+    end
+  end
+
+  defp authorized_context(workspace_id, session, actor, required_role) do
+    if Auth.has_role?(actor, required_role) do
+      WorkspaceContext.new(
+        workspace_id,
+        actor.id,
+        persistence_roles(actor.roles),
+        request_id: session.id
+      )
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  defp persistence_roles(roles) do
+    roles
+    |> Enum.map(fn
+      :viewer -> :customer_reader
+      :operator -> :customer_operator
+      :admin -> :workspace_admin
+    end)
+    |> Enum.uniq()
   end
 
   @doc "Returns the authenticated service identity without exposing token material."
@@ -50,7 +160,7 @@ defmodule FavnOrchestrator.API.Authentication do
       "local-dev-cli"
     else
       case authenticate_service(conn) do
-        {:ok, identity} -> identity
+        {:ok, principal} -> principal.service_identity
         {:error, :service_unauthorized} -> nil
       end
     end
@@ -82,37 +192,19 @@ defmodule FavnOrchestrator.API.Authentication do
     }
   end
 
-  defp forwarded_actor_context(actor_id, token, required_role) do
-    case Auth.actor_from_forwarded_context(actor_id, token) do
-      {:ok, session, actor} -> authorize_role(session, actor, required_role)
-      {:error, _reason} -> {:error, :unauthenticated}
-    end
-  end
-
-  defp local_actor_context(conn, required_role) do
-    cond do
-      local_dev_allowed?(conn) ->
-        with {:ok, session, actor} <-
-               Store.trusted_local_dev_context("local-dev-cli", "Local Dev CLI", [:admin]) do
-          authorize_role(session, actor, required_role)
-        end
-
-      local_dev_requested?(conn) ->
-        {:error, :forbidden}
-
-      true ->
-        {:error, :unauthenticated}
-    end
-  end
-
-  defp authorize_role(session, actor, required_role) do
-    if Auth.has_role?(actor, required_role),
-      do: {:ok, session, actor},
-      else: {:error, :forbidden}
-  end
-
   defp authenticate_service(conn) do
     ServiceTokens.authenticate(bearer_token(conn), configured_tokens())
+  end
+
+  defp authenticate_platform_service(conn) do
+    if local_dev_allowed?(conn),
+      do:
+        {:ok,
+         %{
+           service_identity: "local-dev-cli",
+           platform_roles: [:platform_reader, :platform_operator]
+         }},
+      else: authenticate_service(conn)
   end
 
   defp bearer_token(conn) do

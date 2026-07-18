@@ -77,16 +77,21 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
     end
   end
 
-  def runtime_env(runtime_home, sqlite_path, port, service_token, extra_env \\ %{}) do
+  def runtime_env(runtime_home, database_url, workspace_id, port, service_token, extra_env \\ %{}) do
     %{
-      "FAVN_STORAGE" => "sqlite",
-      "FAVN_SQLITE_PATH" => sqlite_path,
-      "FAVN_SQLITE_MIGRATION_MODE" => "auto",
-      "FAVN_SQLITE_BUSY_TIMEOUT_MS" => "5000",
-      "FAVN_SQLITE_POOL_SIZE" => "1",
+      "FAVN_STORAGE" => "postgres",
+      "FAVN_DATABASE_URL" => database_url,
+      "FAVN_DATABASE_SSL_MODE" => "disable",
+      "FAVN_UNSAFE_ALLOW_PLAINTEXT_DATABASE" => "true",
+      "FAVN_DATABASE_POOL_SIZE" => "3",
+      "FAVN_RUNTIME_INPUT_PIN_KEYS" =>
+        Jason.encode!(%{"1" => "0123456789abcdef0123456789abcdef"}),
+      "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION" => "1",
+      "FAVN_WORKSPACE_IDS" => workspace_id,
+      "FAVN_BOOTSTRAP_WORKSPACE_ID" => workspace_id,
       "FAVN_ORCHESTRATOR_API_BIND_HOST" => "127.0.0.1",
       "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(port),
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "favn_view:#{service_token}",
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "favn_view|platform_operator:#{service_token}",
       "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN" => service_token,
       "FAVN_SCHEDULER_ENABLED" => "true",
       "FAVN_SCHEDULER_TICK_MS" => "1000",
@@ -116,12 +121,11 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
     System.cmd(env_exec, env_args, stderr_to_stdout: true)
   end
 
-  def assert_runtime_paths!(runtime_home, sqlite_path) do
+  def assert_runtime_paths!(runtime_home) do
     assert File.exists?(Path.join(runtime_home, "run/backend.pid"))
     assert File.exists?(Path.join(runtime_home, "run/backend_boot.exs"))
     assert File.exists?(Path.join(runtime_home, "log/backend.log"))
     assert File.dir?(Path.join(runtime_home, "data"))
-    assert File.exists?(sqlite_path)
   end
 
   def assert_ready_check!(ready, name) do

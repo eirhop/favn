@@ -1,29 +1,78 @@
 # favn_storage_postgres
 
-Purpose: Postgres implementation of the orchestrator storage adapter, including
-managed/external repo modes, schema readiness, migrations, JSON-safe
-run/event/backfill, freshness, materialization-claim, and target-status DTO
-persistence, and canonical payload persistence. High-growth operator reads use
-indexed log cursor scans, persisted execution-group summaries, and persisted
-target-status rows rather than repeated full run aggregation.
+Purpose: the production, development, and integration-test implementation of
+Favn's PostgreSQL 18 control-plane persistence.
 
-Code:
-- `apps/favn_storage_postgres/lib/favn/storage/adapter/postgres.ex`
-- `apps/favn_storage_postgres/lib/favn_storage_postgres/`
-- Run-event global sequence migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_run_event_global_sequence.ex`
-- Asset freshness state migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_asset_freshness_state.ex`
-- Materialization claim migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_materialization_claims.ex`
-- Execution-group summaries and log cursor indexes: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_execution_group_summaries.ex`
-- Target status projection migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_target_statuses.ex`
-- Pipeline target run-history query metadata migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_run_pipeline_query_column.ex`
-- Runtime-input pin migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_runtime_input_pins.ex`
+## Ownership
 
-Tests:
-- `apps/favn_storage_postgres/test/`
-- live Postgres coverage is opt-in through configured environment variables
+- `FavnStoragePostgres.Backend` composes the capability stores required by
+  `FavnOrchestrator.Persistence.Backend`.
+- `FavnStoragePostgres.BackendSupervisor` owns the repo, notification listener,
+  publisher, projectors, and bounded maintenance workers.
+- Capability stores live under `registry/`, `runs/`, `run_ownership/`,
+  `scheduler/`, `admission/`, `materialization/`, `backfills/`, `identity/`,
+  `logs/`, `operator_reads/`, and `maintenance/`.
+- Ecto schemas live under `schemas/`. Ordinary typed queries use Ecto;
+  concurrency-critical commands may use focused SQL.
+- The registry stores compact manifest indexes in `manifest_versions`, immutable
+  SQL execution artifacts in `execution_packages`, and their exact asset bindings
+  in `manifest_execution_packages`. Publication uploads missing packages first;
+  manifest registration rejects dangling or asset-mismatched references.
+- `manifest_versions` stores non-null scalar catalogue counts and a bounded atom
+  inventory, so runtime-state and run decoding do not repeatedly scan or transfer
+  the full JSONB release.
+- `run_plans` stores one bounded immutable plan per planned run. `runs.snapshot`
+  stores only mutable state plus the plan hash, keeping every transition below its
+  independent 4 MiB boundary.
+- Immutable deployment-target rows include bounded, fingerprinted JSONB catalogue
+  descriptors. Customer catalogue reads use those indexed rows and do not decode a
+  full manifest.
+- Reset-baseline migrations live under `migrations/` and create the dedicated
+  `favn_control` schema.
+- Mix tasks under `lib/mix/` own migration, workspace provisioning, runtime grants,
+  restore verification, and bounded operational commands.
+- Platform maintenance can remove old execution packages only when no manifest link
+  references them; the global content-addressed registry cannot be purged by
+  workspace.
 
-Use when changing Postgres persistence, migrations, readiness checks,
-transaction semantics, materialization claim acquisition, or production-oriented
-storage behavior. Runtime-input pins use a unique `(run_id, node_key_hash)` row,
-atomic winner reuse/conflict checks, and the same fail-closed protected codec as
-SQLite.
+The application does not define product lifecycle decisions. Those remain in
+`favn_orchestrator`; this application implements transactional persistence and
+database-enforced invariants.
+
+## Runtime contract
+
+- PostgreSQL major 18 is required.
+- Runtime startup validates the exact schema and fails closed.
+- Production requires verified TLS and a least-privilege runtime role.
+- Runtime nodes never migrate at boot.
+- Tenant access requires explicit workspace/platform context.
+- The storage-owned node-local manifest cache contains only decoded compact immutable
+  releases and is bounded by entry and byte budgets. The orchestrator and runner own
+  their separate bounded compiled lookup caches. Execution packages are fetched by SHA-256
+  primary key for one admitted runtime asset, with indexed joins proving its pinned
+  workspace deployment and target authorization, and are not cached as manifest
+  state.
+- Runtime-input pins carry the exact execution-package hash and resolver identity,
+  preventing a pin from replaying against changed SQL execution content.
+- PostgreSQL `NOTIFY` and local PubSub are wake-up optimizations only; durable
+  publications and cursors provide replay correctness.
+
+## Tests
+
+`apps/favn_storage_postgres/test/storage_v2/` covers schema authority,
+transactions, idempotency, fencing, concurrency, workspace isolation, bounded
+reads, query plans, privileges, migrations, and restore behavior. Live PostgreSQL
+is mandatory; tests do not substitute memory or SQLite behavior.
+
+Use this app when changing PostgreSQL configuration, migrations, schemas, queries,
+transactions, outbox/projectors, encryption-at-rest for runtime-input pins,
+maintenance, or database operations.
+
+See:
+
+- `docs/storage/postgresql/architecture.md`
+- `docs/storage/postgresql/data-model.md`
+- `docs/storage/postgresql/testing.md`
+- `docs/architecture/postgresql-control-plane-storage-v2.md`
+- `docs/adapters/storage-adapters.md`
+- `docs/production/postgresql_operator_runbook.md`

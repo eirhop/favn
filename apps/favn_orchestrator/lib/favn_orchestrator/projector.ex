@@ -9,7 +9,7 @@ defmodule FavnOrchestrator.Projector do
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Persistence.Results.RunSummary
 
   @spec run_event(RunState.t(), atom(), map()) :: RunEvent.t()
   def run_event(%RunState{} = run_state, event_type, data \\ %{}) when is_atom(event_type) do
@@ -29,9 +29,6 @@ defmodule FavnOrchestrator.Projector do
       data: normalized_data
     })
   end
-
-  @spec persist_snapshot(RunState.t()) :: :ok | {:error, term()}
-  def persist_snapshot(%RunState{} = run_state), do: Storage.put_run(run_state)
 
   @spec project_run(RunState.t()) :: Run.t()
   def project_run(%RunState{} = run_state) do
@@ -78,6 +75,23 @@ defmodule FavnOrchestrator.Projector do
 
   @spec project_runs([RunState.t()]) :: [Run.t()]
   def project_runs(runs) when is_list(runs), do: Enum.map(runs, &project_run/1)
+
+  @doc "Projects one compact persistence row without loading its authoritative snapshot."
+  @spec project_run_summary(RunSummary.t()) :: map()
+  def project_run_summary(%RunSummary{} = summary) do
+    %{
+      id: summary.run_id,
+      manifest_version_id: summary.manifest_version_id,
+      submit_kind: summary.submit_kind,
+      status: summary.status,
+      event_seq: summary.event_sequence,
+      started_at: summary.inserted_at,
+      finished_at: summary.terminal_at,
+      parent_run_id: summary.parent_run_id,
+      rerun_of_run_id: summary.rerun_of_run_id,
+      root_run_id: summary.root_run_id
+    }
+  end
 
   defp projected_retry_policy(%RunState{plan: %Favn.Plan{nodes: nodes}}) do
     %{

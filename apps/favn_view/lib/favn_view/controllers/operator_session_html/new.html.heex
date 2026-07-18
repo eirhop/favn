@@ -26,6 +26,17 @@
         <input :if={@return_to} type="hidden" name="operator[return_to]" value={@return_to} />
 
         <label class="form-control">
+          <span class="label-text text-xs">Workspace ID</span>
+          <.input
+            field={f[:workspace_id]}
+            value={@workspace_id}
+            autocomplete="organization"
+            maxlength="255"
+            required
+          />
+        </label>
+
+        <label class="form-control">
           <span class="label-text text-xs">Username</span>
           <.input field={f[:username]} value={@username} autocomplete="username" required />
         </label>

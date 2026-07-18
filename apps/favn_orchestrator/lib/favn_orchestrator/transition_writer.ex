@@ -3,85 +3,131 @@ defmodule FavnOrchestrator.TransitionWriter do
   Writes authoritative run transitions and publishes live events after successful writes.
   """
 
-  alias FavnOrchestrator.AssetWindowProjector
-  alias FavnOrchestrator.Backfill
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.LogWriter
   alias FavnOrchestrator.OperationalEvents
-  alias FavnOrchestrator.ProjectionDiagnostics
   alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Persistence.Results.RunCommitted
   alias FavnOrchestrator.Storage.JsonSafe
 
   require Logger
 
-  @spec persist_transition(RunState.t(), atom(), map()) :: :ok | {:error, term()}
-  def persist_transition(%RunState{} = run_state, event_type, data \\ %{})
-      when is_atom(event_type) and is_map(data) do
+  @doc "Persists one workspace-scoped authoritative transition through Storage V2."
+  @spec persist_transition(WorkspaceContext.t(), RunState.t(), atom(), map()) ::
+          :ok | {:error, term()}
+  def persist_transition(
+        %WorkspaceContext{} = context,
+        %RunState{} = run_state,
+        event_type,
+        data
+      ) do
+    persist_transition(context, run_state, event_type, data, [])
+  end
+
+  @spec persist_transition(WorkspaceContext.t(), RunState.t(), atom(), map(), keyword()) ::
+          :ok | {:ok, boolean()} | {:error, term()}
+  def persist_transition(
+        %WorkspaceContext{} = context,
+        %RunState{} = run_state,
+        event_type,
+        data,
+        opts
+      )
+      when is_atom(event_type) and is_map(data) and is_list(opts) do
     event = Projector.run_event(run_state, event_type, data)
 
-    case Storage.persist_run_transition(run_state, RunEvent.to_map(event)) do
-      :ok ->
-        OperationalEvents.emit(:run_transition_persisted, %{count: 1}, %{
-          run_id: run_state.id,
-          event_type: event_type,
-          status: run_state.status,
-          submit_kind: run_state.submit_kind
-        })
+    result =
+      if run_state.event_seq == 1 do
+        Runs.create(context, run_state, event,
+          command_id: Keyword.get(opts, :command_id),
+          idempotency: Keyword.get(opts, :idempotency),
+          pipeline_refs: Keyword.get(opts, :pipeline_refs, [])
+        )
+      else
+        Runs.commit(context, run_state, event,
+          command_id: Keyword.get(opts, :command_id),
+          idempotency: Keyword.get(opts, :idempotency),
+          owner_id: Keyword.get(opts, :owner_id, run_state.storage_owner_id),
+          fencing_token: Keyword.get(opts, :fencing_token, run_state.storage_fencing_token)
+        )
+      end
 
-        event |> hydrate_persisted_event() |> Events.broadcast_run_event()
-        project_derived_state(run_state, event_type, data)
-        safe_emit_transition_log(event)
-        :ok
+    case result do
+      {:ok, committed} ->
+        :ok = publish_committed(context, committed)
 
-      :idempotent ->
-        :ok
+        if Keyword.get(opts, :return_commit?, false),
+          do: {:ok, committed.replayed?},
+          else: :ok
 
       {:error, reason} ->
-        OperationalEvents.emit(
-          :run_transition_failed,
-          %{},
-          %{
-            run_id: run_state.id,
-            event_type: event_type,
-            reason: reason
-          },
-          level: :error
-        )
-
+        emit_transition_failure(run_state, event_type, reason)
         {:error, reason}
     end
   end
 
-  defp hydrate_persisted_event(%RunEvent{} = event) do
-    case Storage.list_run_events(event.run_id,
-           after_sequence: event.sequence - 1,
-           limit: 1
-         ) do
-      {:ok, [persisted | _]} ->
-        RunEvent.from_map(persisted)
-
-      {:ok, []} ->
-        Logger.warning("persisted run event missing after transition write")
-        event
-
-      {:error, reason} ->
-        Logger.warning("persisted run event hydration failed: #{inspect(reason)}")
-        event
+  @doc false
+  @spec publish_committed(WorkspaceContext.t(), RunCommitted.t()) :: :ok
+  def publish_committed(%WorkspaceContext{} = context, %RunCommitted{} = committed) do
+    unless committed.replayed? do
+      event = RunEvent.from_map(committed.event)
+      emit_persisted_transition(committed.run, event.event_type)
+      Events.broadcast_run_event(context.workspace_id, event)
+      safe_emit_transition_log(context, committed.event)
     end
+
+    :ok
   end
 
-  defp project_derived_state(%RunState{} = run_state, event_type, data) do
-    safe_project(Backfill.Projector, run_state, event_type, data)
-    safe_project(Backfill.CoverageProjector, run_state, event_type, data)
-    safe_project(AssetWindowProjector, run_state, event_type, data)
-    safe_project(FavnOrchestrator.TargetStatus.Projector, run_state, event_type, data)
+  defp emit_persisted_transition(run_state, event_type) do
+    OperationalEvents.emit(:run_transition_persisted, %{count: 1}, %{
+      workspace_id: run_state.workspace_id,
+      run_id: run_state.id,
+      event_type: event_type,
+      status: run_state.status,
+      submit_kind: run_state.submit_kind
+    })
   end
 
-  defp safe_emit_transition_log(%RunEvent{entity: :step} = event) do
-    entry = %{
+  defp emit_transition_failure(run_state, event_type, reason) do
+    OperationalEvents.emit(
+      :run_transition_failed,
+      %{},
+      %{
+        workspace_id: run_state.workspace_id,
+        run_id: run_state.id,
+        event_type: event_type,
+        reason: reason
+      },
+      level: :error
+    )
+  end
+
+  defp safe_emit_transition_log(%WorkspaceContext{} = context, event) when is_map(event) do
+    event = RunEvent.from_map(event)
+
+    if event.entity == :step do
+      entry = transition_log_entry(event)
+
+      case LogWriter.write(context, entry, occurred_at: event.occurred_at) do
+        {:ok, _entries} -> :ok
+        {:error, reason} -> Logger.warning("transition log write failed: #{inspect(reason)}")
+      end
+    else
+      :ok
+    end
+  rescue
+    error -> Logger.warning("transition log write raised: #{Exception.message(error)}")
+  catch
+    kind, reason -> Logger.warning("transition log write exited: #{inspect({kind, reason})}")
+  end
+
+  defp transition_log_entry(%RunEvent{} = event) do
+    %{
       run_id: event.run_id,
       asset_step_id: data_field(event, :asset_step_id),
       node_key: data_field(event, :node_key),
@@ -96,18 +142,7 @@ defmodule FavnOrchestrator.TransitionWriter do
       producer_id: "orchestrator:#{event.run_id}",
       producer_sequence: event.sequence
     }
-
-    case LogWriter.write(entry) do
-      {:ok, _entries} -> :ok
-      {:error, reason} -> Logger.warning("transition log write failed: #{inspect(reason)}")
-    end
-  rescue
-    error -> Logger.warning("transition log write raised: #{Exception.message(error)}")
-  catch
-    kind, reason -> Logger.warning("transition log write exited: #{inspect({kind, reason})}")
   end
-
-  defp safe_emit_transition_log(%RunEvent{}), do: :ok
 
   defp transition_log_level(event_type)
        when event_type in [:step_failed, :step_timed_out, :step_cancelled, :step_blocked],
@@ -152,66 +187,4 @@ defmodule FavnOrchestrator.TransitionWriter do
   end
 
   defp data_field(%RunEvent{}, _key), do: nil
-
-  defp safe_project(projector, %RunState{} = run_state, event_type, data) do
-    case projector.project_transition(run_state, event_type, data) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        ProjectionDiagnostics.record_failure(projector, run_state, event_type, reason)
-
-        OperationalEvents.emit(
-          :projection_degraded,
-          %{},
-          %{
-            projector: inspect(projector),
-            run_id: run_state.id,
-            event_type: event_type,
-            reason: reason
-          },
-          level: :warning
-        )
-
-        Logger.warning("derived projection failed: #{inspect(projector)} #{inspect(reason)}")
-    end
-  rescue
-    error ->
-      ProjectionDiagnostics.record_failure(projector, run_state, event_type, error)
-
-      OperationalEvents.emit(
-        :projection_degraded,
-        %{},
-        %{
-          projector: inspect(projector),
-          run_id: run_state.id,
-          event_type: event_type,
-          reason: error
-        },
-        level: :warning
-      )
-
-      Logger.warning(
-        "derived projection raised: #{inspect(projector)} #{Exception.message(error)}"
-      )
-  catch
-    kind, reason ->
-      ProjectionDiagnostics.record_failure(projector, run_state, event_type, {kind, reason})
-
-      OperationalEvents.emit(
-        :projection_degraded,
-        %{},
-        %{
-          projector: inspect(projector),
-          run_id: run_state.id,
-          event_type: event_type,
-          reason: {kind, reason}
-        },
-        level: :warning
-      )
-
-      Logger.warning(
-        "derived projection exited: #{inspect(projector)} #{inspect({kind, reason})}"
-      )
-  end
 end

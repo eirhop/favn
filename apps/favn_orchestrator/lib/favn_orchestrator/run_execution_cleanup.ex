@@ -14,7 +14,7 @@ defmodule FavnOrchestrator.RunExecutionCleanup do
 
   @spec cancel_active(RunState.t(), term()) :: [map()]
   def cancel_active(%RunState{} = run, reason) do
-    case RunExecutionOwnership.fetch_active(run.id) do
+    case RunExecutionOwnership.fetch_active(run) do
       {:ok, ownerships} -> cancel_ownerships(run, ownerships, reason)
       {:error, error} -> [unknown_status({:execution_ownership_read_failed, error})]
     end
@@ -25,9 +25,13 @@ defmodule FavnOrchestrator.RunExecutionCleanup do
     Enum.all?(statuses, &(Map.get(&1, :status) in @confirmed_statuses))
   end
 
-  @spec release_admission(String.t()) :: :ok
-  def release_admission(run_id) when is_binary(run_id) do
-    case ExecutionAdmission.release_run(run_id) do
+  @spec release_admission(RunState.t()) :: :ok
+  def release_admission(%RunState{} = run) do
+    release_admission(run, run.id)
+  end
+
+  defp release_admission(run_or_id, run_id) do
+    case ExecutionAdmission.release_run(run_or_id) do
       :ok ->
         :ok
 
@@ -51,7 +55,7 @@ defmodule FavnOrchestrator.RunExecutionCleanup do
       |> Enum.uniq()
 
     missing_id_statuses =
-      case RunExecutionOwnership.persist_unknown_without_execution_id(run.id, reason) do
+      case RunExecutionOwnership.persist_unknown_without_execution_id(run, reason) do
         :ok -> []
         {:error, error} -> [unknown_status(error)]
       end
@@ -60,7 +64,7 @@ defmodule FavnOrchestrator.RunExecutionCleanup do
       missing_id_statuses
     else
       results = cancel_execution_ids(run, execution_ids, reason)
-      persist_result = RunExecutionOwnership.persist_cancel_outcomes(run.id, results, reason)
+      persist_result = RunExecutionOwnership.persist_cancel_outcomes(run, results, reason)
 
       missing_id_statuses ++ result_statuses(results) ++ persist_statuses(persist_result)
     end

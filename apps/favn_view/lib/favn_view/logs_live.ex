@@ -8,8 +8,11 @@ defmodule FavnView.LogsLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    operator_context = socket.assigns.current_scope.operator_context
+
     socket =
       LogsLiveSupport.mount_logs(socket, %{
+        operator_context: operator_context,
         filter: %Favn.Log.Filter{},
         scope: :global,
         nav_items: LogsLiveSupport.nav_items(:logs),
@@ -24,6 +27,8 @@ defmodule FavnView.LogsLive do
   @impl true
   def handle_info({:favn_log_entry, entry}, socket),
     do: {:noreply, LogsLiveSupport.add_live_log(socket, entry)}
+
+  def handle_info(:poll_logs, socket), do: {:noreply, LogsLiveSupport.poll(socket)}
 
   @impl true
   def handle_event("filter_logs", params, socket),

@@ -12,15 +12,15 @@ defmodule FavnRunner.Server do
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
-  alias Favn.Manifest.Version
   alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Version
   alias Favn.SQL.SessionPool
   alias FavnRunner.ExecutionAdmission
   alias FavnRunner.ExecutionLifecycle
   alias FavnRunner.Inspection
   alias FavnRunner.ManifestResolver
+  alias FavnRunner.ManifestHandle
   alias FavnRunner.ManifestStore
-  alias FavnRunner.SQLRuntimePreflight
   alias FavnRunner.Worker
 
   @type execution_id :: String.t()
@@ -28,8 +28,7 @@ defmodule FavnRunner.Server do
   @type state :: %{
           lifecycle: ExecutionLifecycle.t(),
           admission: ExecutionAdmission.t(),
-          queue: :queue.queue(map()),
-          queue_monitors: %{optional(reference()) => reference()}
+          manifest_store: GenServer.server()
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -40,16 +39,31 @@ defmodule FavnRunner.Server do
 
   @spec register_manifest(Version.t(), keyword()) :: :ok | {:error, term()}
   def register_manifest(%Version{} = version, opts \\ []) when is_list(opts) do
-    server = Keyword.get(opts, :server, __MODULE__)
-    GenServer.call(server, {:register_manifest, version})
+    ManifestStore.register(version,
+      server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore),
+      timeout: Keyword.get(opts, :timeout, 30_000)
+    )
   end
 
   @spec submit_work(RunnerWork.t(), keyword()) :: {:ok, execution_id()} | {:error, term()}
   def submit_work(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
 
-    with {:ok, submission} <- prepare_submission(work) do
-      GenServer.call(server, {:submit_work, submission}, submit_call_timeout_ms(opts))
+    case GenServer.call(server, {:lookup_execution_replay, work}, submit_call_timeout_ms(opts)) do
+      {:replay, execution_id} ->
+        {:ok, execution_id}
+
+      :new ->
+        with {:ok, submission} <-
+               prepare_submission(
+                 work,
+                 Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+               ) do
+          GenServer.call(server, {:submit_work, submission}, submit_call_timeout_ms(opts))
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   catch
     :exit, {:timeout, _call} ->
@@ -151,14 +165,19 @@ defmodule FavnRunner.Server do
      %{
        lifecycle: ExecutionLifecycle.new(opts),
        admission: ExecutionAdmission.new(opts),
-       queue: :queue.new(),
-       queue_monitors: %{}
+       manifest_store: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
      }}
   end
 
   @impl true
-  def handle_call({:register_manifest, %Version{} = version}, _from, state) do
-    reply = ManifestStore.register(version, server: FavnRunner.ManifestStore)
+  def handle_call({:lookup_execution_replay, %RunnerWork{} = work}, _from, state) do
+    reply =
+      case reserve_execution_id(work, state) do
+        {:replay, execution_id} -> {:replay, execution_id}
+        {:ok, _execution_id} -> :new
+        {:error, _reason} = error -> error
+      end
+
     {:reply, reply, state}
   end
 
@@ -166,52 +185,60 @@ defmodule FavnRunner.Server do
         {:submit_work,
          %{
            work: %RunnerWork{} = work,
-           version: %Version{} = version,
+           manifest: %ManifestHandle{} = manifest,
            asset: asset,
+           relation_by_module: relation_by_module,
            preflight: preflight
          }},
-        from,
+        _from,
         state
       ) do
-    execution_id = new_execution_id()
-
     reply =
-      case preflight do
-        :ok ->
-          case admit_worker(state) do
-            {:ok, admission} ->
-              start_admitted_worker(execution_id, work, version, asset, %{
-                state
-                | admission: admission
-              })
+      case reserve_execution_id(work, state) do
+        {:replay, execution_id} ->
+          {{:ok, execution_id}, state}
 
-            {{:error, %RunnerError{} = error}, next_state} ->
-              enqueue_or_reject_submit(
-                next_state,
-                from,
-                execution_id,
-                work,
-                version,
-                asset,
-                error
-              )
+        {:ok, execution_id} ->
+          case preflight do
+            :ok ->
+              case admit_worker(state) do
+                {:ok, admission} ->
+                  start_admitted_worker(
+                    execution_id,
+                    work,
+                    manifest,
+                    asset,
+                    relation_by_module,
+                    %{
+                      state
+                      | admission: admission
+                    }
+                  )
+
+                {{:error, %RunnerError{} = error}, next_state} ->
+                  {{:error, error}, next_state}
+              end
+
+            {:error, diagnostic} ->
+              lifecycle =
+                ExecutionLifecycle.put_completed(
+                  state.lifecycle,
+                  execution_id,
+                  work,
+                  preflight_failed_result(work, manifest, diagnostic)
+                )
+
+              {{:ok, execution_id}, %{state | lifecycle: lifecycle}}
           end
 
-        {:error, diagnostic} ->
-          lifecycle =
-            ExecutionLifecycle.put_completed(
-              state.lifecycle,
-              execution_id,
-              work,
-              preflight_failed_result(work, version, diagnostic)
-            )
-
-          {{:ok, execution_id}, %{state | lifecycle: lifecycle}}
+        {:error, _reason} = error ->
+          error
       end
 
     case reply do
       {{:ok, execution_id}, next_state} -> {:reply, {:ok, execution_id}, next_state}
       {{:error, reason}, next_state} -> {:reply, {:error, reason}, next_state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
@@ -307,7 +334,7 @@ defmodule FavnRunner.Server do
     reply =
       with {:ok, version} <-
              ManifestStore.fetch(request.manifest_version_id, request.manifest_content_hash,
-               server: FavnRunner.ManifestStore
+               server: state.manifest_store
              ) do
         Inspection.inspect_relation(request, version)
       end
@@ -324,6 +351,7 @@ defmodule FavnRunner.Server do
          available?: true,
          server: __MODULE__,
          admission: admission_diagnostics(state),
+         manifest_cache: ManifestStore.diagnostics(server: state.manifest_store),
          data_plane: data_plane_diagnostics()
        })}
 
@@ -370,50 +398,31 @@ defmodule FavnRunner.Server do
     {:noreply, %{state | lifecycle: lifecycle}}
   end
 
-  def handle_info({:queued_submit_timeout, queue_ref}, state) do
-    {entries, state} = pop_queued_submit(state, queue_ref)
-
-    Enum.each(entries, fn entry ->
-      GenServer.reply(
-        entry.from,
-        {:error,
-         RunnerError.normalize(:runner_queue_timeout,
-           kind: :boundary,
-           type: :runner_queue_timeout,
-           retryable?: true,
-           outcome: :safe_failure
-         )}
-      )
-    end)
-
-    {:noreply, state}
-  end
-
   def handle_info({:DOWN, monitor_ref, :process, _pid, reason}, state) do
-    if Map.has_key?(state.queue_monitors, monitor_ref) do
-      {_entries, state} = pop_queued_submit_by_monitor(state, monitor_ref)
-      {:noreply, state}
-    else
-      handle_lifecycle_down(monitor_ref, reason, state)
-    end
+    handle_lifecycle_down(monitor_ref, reason, state)
   end
 
-  defp prepare_submission(%RunnerWork{} = work) do
+  defp prepare_submission(%RunnerWork{} = work, manifest_store) do
     with {:ok, asset_ref} <- ManifestResolver.resolve_target_ref(work),
-         {:ok, version} <-
-           ManifestStore.fetch(work.manifest_version_id, work.manifest_content_hash,
-             server: FavnRunner.ManifestStore
+         {:ok, manifest, asset, relation_by_module} <-
+           ManifestStore.fetch_execution_bundle(
+             work.manifest_lease_id,
+             work.manifest_version_id,
+             work.manifest_content_hash,
+             asset_ref,
+             work.execution_package,
+             server: manifest_store
            ),
-         {:ok, asset} <- ManifestResolver.resolve_asset(version, asset_ref),
          {:ok, package} <- ExecutionPackage.verify_for_asset(work.execution_package, asset) do
       work = %{work | execution_package: package}
 
       {:ok,
        %{
          work: work,
-         version: version,
+         manifest: manifest,
          asset: asset,
-         preflight: SQLRuntimePreflight.run(work, version)
+         relation_by_module: relation_by_module,
+         preflight: :ok
        }}
     end
   end
@@ -448,7 +457,7 @@ defmodule FavnRunner.Server do
     end
   end
 
-  defp start_worker(execution_id, work, version, asset) do
+  defp start_worker(execution_id, work, manifest, asset, relation_by_module, result_max_bytes) do
     child_spec = %{
       id: {Worker, execution_id},
       start:
@@ -458,8 +467,10 @@ defmodule FavnRunner.Server do
              server: self(),
              execution_id: execution_id,
              work: work,
-             version: version,
-             asset: asset
+             manifest: manifest,
+             asset: asset,
+             relation_by_module: relation_by_module,
+             result_max_bytes: result_max_bytes
            }
          ]},
       restart: :temporary,
@@ -470,8 +481,22 @@ defmodule FavnRunner.Server do
     DynamicSupervisor.start_child(FavnRunner.WorkerSupervisor, child_spec)
   end
 
-  defp start_admitted_worker(execution_id, work, version, asset, state) do
-    case start_worker(execution_id, work, version, asset) do
+  defp start_admitted_worker(
+         execution_id,
+         work,
+         manifest,
+         asset,
+         relation_by_module,
+         state
+       ) do
+    case start_worker(
+           execution_id,
+           work,
+           manifest,
+           asset,
+           relation_by_module,
+           ExecutionLifecycle.worker_result_budget(state.lifecycle)
+         ) do
       {:ok, pid} ->
         monitor_ref = Process.monitor(pid)
 
@@ -491,9 +516,6 @@ defmodule FavnRunner.Server do
     end
   end
 
-  defp enqueue_or_reject_submit(state, _from, _execution_id, _work, _version, _asset, error),
-    do: {{:error, error}, state}
-
   defp admit_worker(state) do
     case ExecutionAdmission.admit(state.admission, active_worker_count(state)) do
       {:ok, admission} ->
@@ -505,14 +527,8 @@ defmodule FavnRunner.Server do
   end
 
   defp admission_diagnostics(state) do
-    ExecutionAdmission.diagnostics(
-      state.admission,
-      active_worker_count(state),
-      queued_worker_count(state)
-    )
+    ExecutionAdmission.diagnostics(state.admission, active_worker_count(state))
   end
-
-  defp queued_worker_count(state), do: :queue.len(state.queue)
 
   defp active_worker_count(state) do
     state.lifecycle.executions
@@ -526,78 +542,15 @@ defmodule FavnRunner.Server do
 
     cleanup_monitor_refs(monitor_refs)
 
+    {:ok, retained_result} = ExecutionLifecycle.fetch_result(lifecycle, execution_id)
+
     Enum.each(waiters, fn %{from: from, timer_ref: timer_ref, monitor_ref: monitor_ref} ->
       _ = Process.cancel_timer(timer_ref)
       cleanup_monitor_refs([monitor_ref])
-      GenServer.reply(from, {:ok, result})
+      GenServer.reply(from, {:ok, retained_result})
     end)
 
     %{state | lifecycle: lifecycle}
-    |> drain_submit_queue()
-  end
-
-  defp drain_submit_queue(state) do
-    if active_worker_count(state) < state.admission.max_active_workers do
-      case :queue.out(state.queue) do
-        {{:value, entry}, queue} ->
-          state = %{
-            state
-            | queue: queue,
-              queue_monitors: Map.delete(state.queue_monitors, entry.monitor_ref)
-          }
-
-          _ = Process.cancel_timer(entry.timer_ref)
-          Process.demonitor(entry.monitor_ref, [:flush])
-
-          case start_admitted_worker(
-                 entry.execution_id,
-                 entry.work,
-                 entry.version,
-                 entry.asset,
-                 state
-               ) do
-            {{:ok, execution_id}, next_state} ->
-              GenServer.reply(entry.from, {:ok, execution_id})
-              drain_submit_queue(next_state)
-
-            {{:error, reason}, next_state} ->
-              GenServer.reply(entry.from, {:error, reason})
-              drain_submit_queue(next_state)
-          end
-
-        {:empty, _queue} ->
-          state
-      end
-    else
-      state
-    end
-  end
-
-  defp pop_queued_submit(state, queue_ref) do
-    pop_queued_submit_by(state, &(&1.ref == queue_ref))
-  end
-
-  defp pop_queued_submit_by_monitor(state, monitor_ref) do
-    pop_queued_submit_by(state, &(&1.monitor_ref == monitor_ref))
-  end
-
-  defp pop_queued_submit_by(state, predicate) when is_function(predicate, 1) do
-    {matched, remaining} =
-      state.queue
-      |> :queue.to_list()
-      |> Enum.split_with(predicate)
-
-    Enum.each(matched, fn entry ->
-      _ = Process.cancel_timer(entry.timer_ref)
-      Process.demonitor(entry.monitor_ref, [:flush])
-    end)
-
-    queue_monitors =
-      Enum.reduce(matched, state.queue_monitors, fn entry, acc ->
-        Map.delete(acc, entry.monitor_ref)
-      end)
-
-    {matched, %{state | queue: :queue.from_list(remaining), queue_monitors: queue_monitors}}
   end
 
   defp cleanup_monitor_refs(monitor_refs) when is_list(monitor_refs),
@@ -627,11 +580,17 @@ defmodule FavnRunner.Server do
     }
   end
 
-  defp preflight_failed_result(%RunnerWork{} = work, %Version{} = version, diagnostic) do
+  @doc false
+  @spec preflight_failed_result(RunnerWork.t(), ManifestHandle.t(), map()) :: RunnerResult.t()
+  def preflight_failed_result(
+        %RunnerWork{} = work,
+        %ManifestHandle{} = manifest,
+        diagnostic
+      ) do
     %RunnerResult{
       run_id: work.run_id,
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
+      manifest_version_id: manifest.manifest_version_id,
+      manifest_content_hash: manifest.content_hash,
       status: :error,
       asset_results: [],
       error:
@@ -767,6 +726,68 @@ defmodule FavnRunner.Server do
       value when is_integer(value) and value > 0 -> value
       _other -> default
     end
+  end
+
+  defp reserve_execution_id(%RunnerWork{execution_id: nil}, state) do
+    {:ok, unique_execution_id(state)}
+  end
+
+  defp reserve_execution_id(%RunnerWork{execution_id: execution_id} = work, state)
+       when is_binary(execution_id) and execution_id != "" and byte_size(execution_id) <= 255 do
+    replay_fingerprint = RunnerWork.replay_fingerprint(work)
+
+    case existing_work(state, execution_id) do
+      {:ok, ^replay_fingerprint} ->
+        {:replay, execution_id}
+
+      {:ok, _different_fingerprint} ->
+        execution_id_conflict()
+
+      :error ->
+        {:ok, execution_id}
+    end
+  end
+
+  defp reserve_execution_id(%RunnerWork{}, _state) do
+    {:error,
+     RunnerError.normalize(:invalid_runner_execution_id,
+       kind: :boundary,
+       type: :invalid_runner_execution_id,
+       retryable?: false,
+       outcome: :safe_failure
+     )}
+  end
+
+  defp unique_execution_id(state) do
+    execution_id = new_execution_id()
+
+    if execution_id_available?(state, execution_id),
+      do: execution_id,
+      else: unique_execution_id(state)
+  end
+
+  defp execution_id_available?(state, execution_id) do
+    not Map.has_key?(state.lifecycle.executions, execution_id)
+  end
+
+  defp existing_work(state, execution_id) do
+    case ExecutionLifecycle.fetch_execution(state.lifecycle, execution_id) do
+      {:ok, %{work_fingerprint: fingerprint}} when is_binary(fingerprint) ->
+        {:ok, fingerprint}
+
+      :error ->
+        :error
+    end
+  end
+
+  defp execution_id_conflict do
+    {:error,
+     RunnerError.normalize(:runner_execution_id_in_use,
+       kind: :boundary,
+       type: :runner_execution_id_in_use,
+       retryable?: false,
+       outcome: :safe_failure
+     )}
   end
 
   defp new_execution_id do

@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Status do
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Operator.Catalogue.RunHistory
   alias FavnOrchestrator.TargetStatus
+  alias FavnOrchestrator.Persistence.Results.TargetStatus, as: PersistenceTargetStatus
 
   @doc "Applies a projected target status to a target DTO."
   @spec put(map(), TargetStatus.t()) :: map()
@@ -16,6 +17,15 @@ defmodule FavnOrchestrator.Operator.Catalogue.Status do
     |> Map.put(:latest_run_status, status.latest_run_status)
     |> Map.put(:latest_run_at, status.latest_run_at)
     |> Map.put(:latest_run_duration_ms, status.latest_run_duration_ms)
+  end
+
+  def put(target, %PersistenceTargetStatus{} = status) when is_map(target) do
+    target
+    |> Map.put(:status, status.status)
+    |> Map.put(:latest_run_id, status.run_id)
+    |> Map.put(:latest_run_status, run_status(status.status))
+    |> Map.put(:latest_run_at, status.updated_at)
+    |> Map.put(:latest_run_duration_ms, nil)
   end
 
   @doc "Maps freshness or run evidence to a catalogue health status."
@@ -70,5 +80,9 @@ defmodule FavnOrchestrator.Operator.Catalogue.Status do
        when status in [:partial, :error, :cancelled, :timed_out],
        do: :failed
 
+  defp run_status(:healthy), do: :ok
+  defp run_status(:running), do: :running
+  defp run_status(:failed), do: :error
+  defp run_status(:unknown), do: nil
   defp run_status(_run), do: :unknown
 end

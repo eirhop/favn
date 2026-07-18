@@ -227,16 +227,24 @@ defmodule Favn.Assets.Planner do
   defp selected_refs(_index, target_refs, :none), do: {:ok, MapSet.new(target_refs)}
 
   defp selected_refs(index, target_refs, :all) do
-    refs =
-      Enum.reduce(target_refs, MapSet.new(), fn ref, acc ->
-        upstream_refs = Map.fetch!(index.transitive_upstream, ref)
+    walk_upstream(index.upstream, target_refs, MapSet.new())
+  end
 
-        acc
-        |> MapSet.union(upstream_refs)
-        |> MapSet.put(ref)
-      end)
+  defp walk_upstream(_upstream, [], selected), do: {:ok, selected}
 
-    {:ok, refs}
+  defp walk_upstream(upstream, [ref | rest], selected) do
+    if MapSet.member?(selected, ref) do
+      walk_upstream(upstream, rest, selected)
+    else
+      case Map.fetch(upstream, ref) do
+        {:ok, dependencies} ->
+          pending = Enum.reduce(dependencies, rest, &[&1 | &2])
+          walk_upstream(upstream, pending, MapSet.put(selected, ref))
+
+        :error ->
+          {:error, :asset_not_found}
+      end
+    end
   end
 
   defp projected_index(index, refs) do

@@ -69,17 +69,14 @@ defmodule Favn.Dev.Build.Orchestrator do
     |> Map.put("compatibility", %{
       "orchestrator_api_version" => "v1",
       "runner_contract_version" => 5,
-      "supported_storage_modes" => ["memory", "sqlite", "postgres"]
+      "supported_storage_modes" => ["postgres"]
     })
     |> Map.put("required_env", [
       "FAVN_STORAGE",
-      "FAVN_SQLITE_PATH",
-      "FAVN_POSTGRES_HOST",
-      "FAVN_POSTGRES_PORT",
-      "FAVN_POSTGRES_USERNAME",
-      "FAVN_POSTGRES_PASSWORD",
-      "FAVN_POSTGRES_DATABASE",
-      "FAVN_POSTGRES_SSL",
+      "FAVN_DATABASE_URL",
+      "FAVN_RUNTIME_INPUT_PIN_KEYS",
+      "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION",
+      "FAVN_WORKSPACE_IDS",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"
     ])
   end

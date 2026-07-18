@@ -24,7 +24,7 @@ defmodule Favn.Dev.Secrets do
   defp read_or_initialize(opts) do
     case State.read_secrets(opts) do
       {:ok, %{"schema_version" => @schema_version} = secrets} ->
-        {:ok, secrets}
+        {:ok, Map.put_new_lazy(secrets, "runtime_input_pin_key", &runtime_input_pin_key/0)}
 
       {:ok, _invalid} ->
         {:error, :invalid_local_secrets}
@@ -42,7 +42,8 @@ defmodule Favn.Dev.Secrets do
       "schema_version" => @schema_version,
       "service_token" => random_secret(24),
       "web_session_secret" => random_secret(48),
-      "rpc_cookie" => random_cookie(32)
+      "rpc_cookie" => random_cookie(32),
+      "runtime_input_pin_key" => runtime_input_pin_key()
     }
   end
 
@@ -59,6 +60,8 @@ defmodule Favn.Dev.Secrets do
     with token when is_binary(token) and token != "" <- secrets["service_token"],
          session when is_binary(session) and byte_size(session) >= 32 <-
            secrets["web_session_secret"],
+         {:ok, pin_key} <- Base.decode64(secrets["runtime_input_pin_key"]),
+         32 <- byte_size(pin_key),
          :ok <- DistributedErlang.validate_cookie(secrets["rpc_cookie"]) do
       :ok
     else
@@ -83,5 +86,11 @@ defmodule Favn.Dev.Secrets do
     size
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
+  end
+
+  defp runtime_input_pin_key do
+    32
+    |> :crypto.strong_rand_bytes()
+    |> Base.encode64()
   end
 end

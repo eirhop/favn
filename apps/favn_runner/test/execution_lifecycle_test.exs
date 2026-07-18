@@ -3,6 +3,7 @@ defmodule FavnRunner.ExecutionLifecycleTest do
 
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
+  alias Favn.Manifest.ExecutionPackage
   alias FavnRunner.ExecutionLifecycle
 
   test "finalize returns waiters and makes result awaitable" do
@@ -63,6 +64,97 @@ defmodule FavnRunner.ExecutionLifecycleTest do
     assert {:ok, execution} = ExecutionLifecycle.fetch_execution(lifecycle, "rx_preflight_failed")
     assert execution.started_at == nil
     assert %DateTime{} = execution.completed_at
+    assert execution.work == nil
+    assert byte_size(execution.work_fingerprint) == 32
+  end
+
+  test "completed execution retains a fingerprint instead of a large execution package" do
+    package = %ExecutionPackage{
+      content_hash: String.duplicate("a", 64),
+      asset_ref: {__MODULE__, :asset},
+      sql_execution: %{sql: String.duplicate("x", 4 * 1_024 * 1_024)}
+    }
+
+    work = %{work("run_large_package") | execution_package: package}
+
+    lifecycle =
+      ExecutionLifecycle.new()
+      |> ExecutionLifecycle.put_completed("rx_large_package", work, result(work))
+
+    assert {:ok, execution} =
+             ExecutionLifecycle.fetch_execution(lifecycle, "rx_large_package")
+
+    assert execution.work == nil
+    assert execution.work_fingerprint == RunnerWork.replay_fingerprint(work)
+    assert :erlang.external_size(execution) < 100_000
+  end
+
+  test "completed retention is bounded per entry and in aggregate bytes" do
+    large_result = fn work ->
+      %{result(work) | metadata: %{payload: String.duplicate("x", 50_000)}}
+    end
+
+    first_work = work("run_byte_first")
+    second_work = work("run_byte_second")
+
+    per_entry_lifecycle =
+      ExecutionLifecycle.new(
+        retention: [
+          max_completed_executions: 10,
+          max_completed_execution_bytes: 2_000,
+          max_completed_bytes: 100_000
+        ]
+      )
+      |> ExecutionLifecycle.put_completed("rx_byte_first", first_work, large_result.(first_work))
+
+    assert {:ok, execution} =
+             ExecutionLifecycle.fetch_execution(per_entry_lifecycle, "rx_byte_first")
+
+    assert execution.retained_bytes <= 2_000
+    assert execution.result_truncated
+
+    lifecycle =
+      ExecutionLifecycle.new(
+        retention: [
+          max_completed_executions: 10,
+          max_completed_execution_bytes: 2_000,
+          max_completed_bytes: 1
+        ]
+      )
+      |> ExecutionLifecycle.put_completed("rx_byte_first", first_work, large_result.(first_work))
+      |> ExecutionLifecycle.put_completed(
+        "rx_byte_second",
+        second_work,
+        large_result.(second_work)
+      )
+
+    diagnostics = ExecutionLifecycle.diagnostics(lifecycle)
+    assert diagnostics.retention.completed_bytes <= 1
+    assert diagnostics.retention.truncated_completed_executions == 2
+    assert diagnostics.retention.evicted_completed_executions >= 1
+  end
+
+  test "replay fingerprint uses the verified execution package identity, not its payload" do
+    package = %ExecutionPackage{
+      content_hash: String.duplicate("a", 64),
+      asset_ref: {__MODULE__, :asset},
+      sql_execution: %{sql: String.duplicate("x", 4 * 1_024 * 1_024)}
+    }
+
+    work = %{work("run_package_fingerprint") | execution_package: package}
+
+    same_identity = %{
+      work
+      | execution_package: %{package | sql_execution: %{sql: "not rehashed"}}
+    }
+
+    changed_identity = %{
+      work
+      | execution_package: %{package | content_hash: String.duplicate("b", 64)}
+    }
+
+    assert RunnerWork.replay_fingerprint(work) == RunnerWork.replay_fingerprint(same_identity)
+    refute RunnerWork.replay_fingerprint(work) == RunnerWork.replay_fingerprint(changed_identity)
   end
 
   test "log and event buffers drop oldest entries under configured bounds" do
@@ -89,6 +181,41 @@ defmodule FavnRunner.ExecutionLifecycleTest do
     execution = lifecycle.executions[execution_id]
     assert Enum.reverse(execution.logs) == [%{sequence: 2}, %{sequence: 3}]
     assert Enum.reverse(execution.events) == [%{sequence: 2}]
+
+    diagnostics = ExecutionLifecycle.diagnostics(lifecycle)
+    assert diagnostics.retention.dropped_logs == 1
+    assert diagnostics.retention.dropped_events == 1
+  end
+
+  test "log and event buffers also enforce byte budgets" do
+    lifecycle =
+      ExecutionLifecycle.new(
+        retention: [
+          max_logs_per_execution: 100,
+          max_events_per_execution: 100,
+          max_log_bytes_per_execution: 200,
+          max_event_bytes_per_execution: 200
+        ]
+      )
+
+    work = work("run_byte_buffers")
+
+    lifecycle =
+      ExecutionLifecycle.put_running(lifecycle, "rx_byte_buffers", work, self(), make_ref())
+
+    {_subscribers, lifecycle} =
+      ExecutionLifecycle.append_log(lifecycle, "rx_byte_buffers", %{
+        payload: String.duplicate("l", 500)
+      })
+
+    lifecycle =
+      ExecutionLifecycle.append_event(lifecycle, "rx_byte_buffers", %{
+        payload: String.duplicate("e", 500)
+      })
+
+    execution = lifecycle.executions["rx_byte_buffers"]
+    assert execution.logs == []
+    assert execution.events == []
 
     diagnostics = ExecutionLifecycle.diagnostics(lifecycle)
     assert diagnostics.retention.dropped_logs == 1

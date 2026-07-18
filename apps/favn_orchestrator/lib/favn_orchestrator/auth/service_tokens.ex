@@ -6,12 +6,19 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   @max_identity_bytes 128
   @weak_fragments ~w(replace change placeholder example secret password test token todo)
   @identity_pattern ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
-  @config_keys [:enabled, :service_identity, :token, :token_hash]
+  @platform_roles [:platform_reader, :platform_operator, :platform_admin]
+  @config_keys [:enabled, :platform_roles, :service_identity, :token, :token_hash]
 
   @type token_config :: %{
           required(:service_identity) => String.t(),
           required(:token_hash) => String.t(),
-          required(:enabled) => boolean()
+          required(:enabled) => boolean(),
+          required(:platform_roles) => [FavnOrchestrator.Persistence.PlatformContext.role()]
+        }
+
+  @type authenticated_principal :: %{
+          required(:service_identity) => String.t(),
+          required(:platform_roles) => [FavnOrchestrator.Persistence.PlatformContext.role()]
         }
 
   @spec min_token_bytes() :: pos_integer()
@@ -51,7 +58,7 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   end
 
   @spec authenticate(String.t() | nil, [term()]) ::
-          {:ok, String.t()} | {:error, :service_unauthorized}
+          {:ok, authenticated_principal()} | {:error, :service_unauthorized}
   def authenticate(provided, configured_tokens)
       when is_binary(provided) and provided != "" and byte_size(provided) <= @max_token_bytes do
     provided_hash = hash_token(provided)
@@ -63,10 +70,10 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
       {:error, _reason} -> []
     end
     |> Enum.find_value(fn
-      %{enabled: true, token_hash: token_hash, service_identity: identity} ->
+      %{enabled: true, token_hash: token_hash} = config ->
         if byte_size(token_hash) == byte_size(provided_hash) and
              Plug.Crypto.secure_compare(token_hash, provided_hash) do
-          {:ok, identity}
+          {:ok, Map.take(config, [:service_identity, :platform_roles])}
         else
           false
         end
@@ -75,7 +82,7 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
         false
     end)
     |> case do
-      {:ok, identity} -> {:ok, identity}
+      {:ok, principal} -> {:ok, principal}
       _other -> {:error, :service_unauthorized}
     end
   end
@@ -143,14 +150,21 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   end
 
   defp parse_env_token(entry) do
-    with [identity, token] <- String.split(entry, ":", parts: 2),
-         {:ok, identity} <- normalize_identity(identity),
+    with [principal, token] <- String.split(entry, ":", parts: 2),
+         {:ok, {identity, platform_roles}} <- normalize_env_principal(principal),
          :ok <- validate_secret(token) do
       {:ok,
-       %{service_identity: identity, token_hash: hash_token(String.trim(token)), enabled: true}}
+       %{
+         service_identity: identity,
+         token_hash: hash_token(String.trim(token)),
+         enabled: true,
+         platform_roles: platform_roles
+       }}
     else
       [_token_without_identity] ->
-        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "identity:token"}}
+        {:error,
+         {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
+          "identity[|platform_role+...]:token"}}
 
       {:error, reason} ->
         {:error, reason}
@@ -181,7 +195,12 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   end
 
   defp normalize_config({identity, token}) when is_binary(identity) and is_binary(token) do
-    normalize_config(%{service_identity: identity, token: token, enabled: true})
+    normalize_config(%{
+      service_identity: identity,
+      token: token,
+      enabled: true,
+      platform_roles: []
+    })
   end
 
   defp normalize_config(config) when is_map(config) do
@@ -190,8 +209,15 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
          {:ok, identity} <- normalize_identity(value(config, :service_identity)),
          enabled? <- Map.get(config, :enabled, Map.get(config, "enabled", true)),
          true <- is_boolean(enabled?),
+         {:ok, platform_roles} <- normalize_platform_roles(value(config, :platform_roles) || []),
          {:ok, token_hash} <- normalize_token_hash(config) do
-      {:ok, %{service_identity: identity, token_hash: token_hash, enabled: enabled?}}
+      {:ok,
+       %{
+         service_identity: identity,
+         token_hash: token_hash,
+         enabled: enabled?,
+         platform_roles: platform_roles
+       }}
     else
       {:error, reason} -> {:error, reason}
       _other -> {:error, :invalid_service_token_config}
@@ -239,6 +265,42 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
 
   defp normalize_identity(_identity),
     do: {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :blank_identity}}
+
+  defp normalize_env_principal(principal) do
+    case String.split(principal, "|", parts: 2) do
+      [identity] ->
+        with {:ok, identity} <- normalize_identity(identity), do: {:ok, {identity, []}}
+
+      [identity, roles] ->
+        with {:ok, identity} <- normalize_identity(identity),
+             {:ok, roles} <- roles |> String.split("+", trim: true) |> normalize_platform_roles(),
+             true <- roles != [] do
+          {:ok, {identity, roles}}
+        else
+          false -> invalid_platform_roles()
+          {:error, _reason} = error -> error
+        end
+    end
+  end
+
+  defp normalize_platform_roles(roles) when is_list(roles) do
+    normalized =
+      Enum.map(roles, fn
+        role when role in @platform_roles -> role
+        role when is_binary(role) -> Enum.find(@platform_roles, &(Atom.to_string(&1) == role))
+        _role -> nil
+      end)
+
+    if length(normalized) == length(Enum.uniq(normalized)) and
+         Enum.all?(normalized, &(&1 in @platform_roles)),
+       do: {:ok, normalized},
+       else: invalid_platform_roles()
+  end
+
+  defp normalize_platform_roles(_roles), do: invalid_platform_roles()
+
+  defp invalid_platform_roles,
+    do: {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :invalid_platform_roles}}
 
   defp validate_secret(token) when is_binary(token) do
     trimmed = String.trim(token)
@@ -321,6 +383,7 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
 
   defp normalize_config_key(key) when key in @config_keys, do: key
   defp normalize_config_key("enabled"), do: :enabled
+  defp normalize_config_key("platform_roles"), do: :platform_roles
   defp normalize_config_key("service_identity"), do: :service_identity
   defp normalize_config_key("token"), do: :token
   defp normalize_config_key("token_hash"), do: :token_hash

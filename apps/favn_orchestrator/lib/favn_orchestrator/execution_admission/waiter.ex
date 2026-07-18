@@ -19,6 +19,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Waiter do
         }
 
   @type t :: %__MODULE__{
+          workspace_id: String.t() | nil,
           waiter_id: String.t(),
           run_id: String.t(),
           asset_step_id: String.t(),
@@ -47,6 +48,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Waiter do
     :wake_generation
   ]
   defstruct [
+    :workspace_id,
     :waiter_id,
     :run_id,
     :asset_step_id,
@@ -113,6 +115,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Waiter do
          {:ok, wake_generation} <- fetch_non_neg_integer(waiter, :wake_generation) do
       {:ok,
        %__MODULE__{
+         workspace_id: optional_string(field_value(waiter, :workspace_id)),
          waiter_id: waiter_id,
          run_id: run_id,
          asset_step_id: asset_step_id,
@@ -234,4 +237,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Waiter do
       :error -> Map.get(map, Atom.to_string(field))
     end
   end
+
+  defp optional_string(value) when is_binary(value) and value != "", do: value
+  defp optional_string(_value), do: nil
 end

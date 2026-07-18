@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   alias Favn.Plan
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
+  alias Favn.Retry.Policy
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ManifestCodec
@@ -25,7 +26,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
     decoded = Jason.decode!(payload)
 
-    assert decoded["format"] == "favn.run_snapshot.storage.v1"
+    assert decoded["format"] == "favn.run_snapshot.storage.v2"
+    assert decoded["schema_version"] == 2
 
     assert decoded["asset_ref"] == %{
              "module" => Atom.to_string(__MODULE__.Asset),
@@ -255,10 +257,14 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
            %{
              ref: ref,
              node_key: {ref, nil},
+             window: nil,
              upstream: [],
              downstream: [],
              stage: 0,
-             execution_pool: :warehouse
+             execution_pool: :warehouse,
+             action: :run,
+             retry_policy: Policy.default(),
+             retry_policy_source: :default
            }}
         end),
       topo_order: refs,

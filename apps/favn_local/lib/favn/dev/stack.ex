@@ -242,7 +242,7 @@ defmodule Favn.Dev.Stack do
     end
   end
 
-  defp ensure_storage_ready(%{storage: :postgres, postgres: postgres}, opts)
+  defp ensure_storage_ready(%{postgres: postgres}, opts)
        when is_map(postgres) and is_list(opts) do
     case validate_postgres_config(postgres) do
       :ok ->
@@ -253,8 +253,6 @@ defmodule Favn.Dev.Stack do
         error
     end
   end
-
-  defp ensure_storage_ready(_config, _opts), do: :ok
 
   defp postgres_connect_timeout(opts) do
     case Keyword.get(opts, :postgres_connect_timeout_ms, 1_500) do
@@ -545,7 +543,7 @@ defmodule Favn.Dev.Stack do
       "schema_version" => @runtime_schema_version,
       "owner_app" => "favn_local",
       "started_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
-      "storage" => Atom.to_string(config.storage),
+      "storage" => "postgres",
       "scheduler" => if(config.scheduler_enabled, do: "enabled", else: "disabled"),
       "orchestrator_base_url" => config.orchestrator_base_url,
       "web_base_url" => config.web_base_url,
@@ -1236,7 +1234,7 @@ defmodule Favn.Dev.Stack do
          services: services
        }) do
     IO.puts("Favn local dev stack")
-    IO.puts("storage: #{config.storage}")
+    IO.puts("storage: postgres")
     IO.puts("scheduler: #{if(config.scheduler_enabled, do: "enabled", else: "disabled")}")
     operator = services["operator"] || services["orchestrator"] || services["web"]
 

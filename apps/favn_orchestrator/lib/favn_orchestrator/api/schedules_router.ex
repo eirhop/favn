@@ -7,15 +7,16 @@ defmodule FavnOrchestrator.API.SchedulesRouter do
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.Response
+  alias FavnOrchestrator.Operator.Schedules
 
   plug(:match)
   plug(:dispatch)
 
   get "/" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor} <- Authentication.actor_context(conn, :viewer),
-         {:ok, schedules} <- FavnOrchestrator.list_schedule_entries() do
-      Response.data(conn, 200, %{items: Enum.map(schedules, &DTO.schedule/1)})
+         {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :viewer),
+         {:ok, page} <- Schedules.page_entries(context, limit: 100) do
+      Response.data(conn, 200, %{items: Enum.map(page.items, &DTO.schedule/1)})
     else
       {:error, :active_manifest_not_set} ->
         Response.error(conn, 404, "not_found", "Active manifest is not set")
@@ -30,8 +31,8 @@ defmodule FavnOrchestrator.API.SchedulesRouter do
 
   get "/:schedule_id" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor} <- Authentication.actor_context(conn, :viewer),
-         {:ok, schedule} <- FavnOrchestrator.get_schedule_entry(schedule_id) do
+         {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :viewer),
+         {:ok, schedule} <- Schedules.get_entry(context, schedule_id) do
       Response.data(conn, 200, %{schedule: DTO.schedule(schedule)})
     else
       {:error, :active_manifest_not_set} ->

@@ -4,39 +4,71 @@ defmodule FavnRunner.SQLRuntimePreflight do
   alias Favn.Connection.Error, as: ConnectionError
   alias Favn.Connection.Loader
   alias Favn.Connection.Registry, as: ConnectionRegistry
-  alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
   alias Favn.RelationRef
+  alias FavnRunner.ManifestHandle
+  alias FavnRunner.ManifestStore
 
   @runner_registry FavnRunner.ConnectionRegistry
 
-  @spec run(RunnerWork.t(), Version.t()) :: :ok | {:error, map()}
-  def run(%RunnerWork{} = work, %Version{} = version) do
-    requirements =
-      version
-      |> planned_assets(work)
-      |> sql_connection_requirements()
+  @spec run(Version.t() | ManifestHandle.t(), [Favn.Ref.t()], keyword()) ::
+          :ok | {:error, map()}
+  def run(manifest, planned_asset_refs, opts \\ [])
 
-    preflight_connections(requirements)
+  def run(%Version{} = version, planned_asset_refs, _opts) when is_list(planned_asset_refs) do
+    refs = normalize_refs(planned_asset_refs)
+    emit(version.manifest_version_id, refs)
+
+    with {:ok, assets} <- planned_assets(version, refs) do
+      assets
+      |> sql_connection_requirements()
+      |> preflight_connections()
+    end
   end
 
-  defp planned_assets(%Version{manifest: %{assets: assets}}, %RunnerWork{} = work)
+  def run(%ManifestHandle{} = handle, planned_asset_refs, opts)
+      when is_list(planned_asset_refs) do
+    refs = normalize_refs(planned_asset_refs)
+    emit(handle.manifest_version_id, refs)
+
+    with {:ok, assets} <- planned_assets(handle, refs, opts) do
+      assets
+      |> sql_connection_requirements()
+      |> preflight_connections()
+    else
+      {:error, reason} -> {:error, manifest_cache_diagnostic(reason)}
+    end
+  end
+
+  @doc false
+  @spec run_asset(Asset.t()) :: :ok | {:error, map()}
+  def run_asset(%Asset{} = asset) do
+    [asset]
+    |> sql_connection_requirements()
+    |> preflight_connections()
+  end
+
+  defp planned_assets(%Version{manifest: %{assets: assets}}, planned_asset_refs)
        when is_list(assets) do
     by_ref = Map.new(assets, &{&1.ref, &1})
 
-    work
-    |> RunnerWork.planned_asset_refs()
-    |> normalize_refs()
-    |> Enum.flat_map(fn ref ->
-      case Map.fetch(by_ref, ref) do
-        {:ok, %Asset{} = asset} -> [asset]
-        :error -> []
-      end
-    end)
+    assets =
+      Enum.flat_map(planned_asset_refs, fn ref ->
+        case Map.fetch(by_ref, ref) do
+          {:ok, %Asset{} = asset} -> [asset]
+          :error -> []
+        end
+      end)
+
+    {:ok, assets}
   end
 
-  defp planned_assets(_version, _work), do: []
+  defp planned_assets(_version, _planned_asset_refs), do: {:ok, []}
+
+  defp planned_assets(%ManifestHandle{} = handle, planned_asset_refs, opts) do
+    ManifestStore.fetch_assets(handle, planned_asset_refs, opts)
+  end
 
   defp normalize_refs(refs) do
     refs
@@ -113,6 +145,15 @@ defmodule FavnRunner.SQLRuntimePreflight do
     }
   end
 
+  defp manifest_cache_diagnostic(reason) do
+    %{
+      type: :manifest_cache_unavailable,
+      phase: :sql_preflight,
+      message: "pinned manifest index is unavailable",
+      details: %{reason: reason}
+    }
+  end
+
   defp safe_error(%ConnectionError{} = error) do
     details = error.details || %{}
 
@@ -156,5 +197,13 @@ defmodule FavnRunner.SQLRuntimePreflight do
   defp compare_refs({left_module, left_name}, {right_module, right_name}) do
     {Atom.to_string(left_module), Atom.to_string(left_name)} <=
       {Atom.to_string(right_module), Atom.to_string(right_name)}
+  end
+
+  defp emit(manifest_version_id, planned_asset_refs) do
+    :telemetry.execute(
+      [:favn, :runner, :sql_runtime_preflight],
+      %{count: 1, planned_asset_count: length(planned_asset_refs)},
+      %{manifest_version_id: manifest_version_id}
+    )
   end
 end

@@ -11,13 +11,16 @@ defmodule Favn.Dev.OrchestratorClientTest do
   alias Favn.Manifest.Version
   alias Favn.SQL.Template
 
-  test "in_flight_runs/2 parses run ids" do
+  test "in_flight_runs/3 parses run ids" do
     {:ok, base_url, _server} = start_server(~s({"data":{"run_ids":["run_a","run_b"]}}), 200)
 
-    assert {:ok, ["run_a", "run_b"]} = OrchestratorClient.in_flight_runs(base_url, "token")
+    assert {:ok, ["run_a", "run_b"]} =
+             OrchestratorClient.in_flight_runs(base_url, "token", %{
+               "local_dev_context" => "trusted"
+             })
   end
 
-  test "in_flight_runs/2 returns operation context on non-2xx response" do
+  test "in_flight_runs/3 returns operation context on non-2xx response" do
     {:ok, base_url, _server} = start_server(~s({"error":{"code":"bad_request"}}), 400)
 
     assert {:error,
@@ -26,7 +29,10 @@ defmodule Favn.Dev.OrchestratorClientTest do
               method: :get,
               url: url,
               reason: {:http_error, 400, _decoded}
-            }} = OrchestratorClient.in_flight_runs(base_url, "token")
+            }} =
+             OrchestratorClient.in_flight_runs(base_url, "token", %{
+               "local_dev_context" => "trusted"
+             })
 
     assert url == base_url <> "/api/orchestrator/v1/runs/in-flight"
   end
@@ -40,7 +46,10 @@ defmodule Favn.Dev.OrchestratorClientTest do
               method: :get,
               url: url,
               reason: {:connect_failed, _reason}
-            }} = OrchestratorClient.in_flight_runs(base_url, "token")
+            }} =
+             OrchestratorClient.in_flight_runs(base_url, "token", %{
+               "local_dev_context" => "trusted"
+             })
 
     assert url == base_url <> "/api/orchestrator/v1/runs/in-flight"
   end
@@ -189,7 +198,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert_receive {:request_path, "/api/orchestrator/v1/health"}
   end
 
-  test "register_runner/3 asks orchestrator to register manifest with runner" do
+  test "register_runner/4 sends the workspace actor context" do
     parent = self()
 
     {:ok, base_url, _server} =
@@ -198,28 +207,33 @@ defmodule Favn.Dev.OrchestratorClientTest do
       )
 
     assert {:ok, %{"data" => %{"registration" => %{"manifest_version_id" => "mv_1"}}}} =
-             OrchestratorClient.register_runner(base_url, "token", %{
-               manifest_version_id: "mv_1"
-             })
+             OrchestratorClient.register_runner(
+               base_url,
+               "token",
+               session_context(),
+               %{manifest_version_id: "mv_1"}
+             )
 
     assert_receive {:request_path, "/api/orchestrator/v1/manifests/mv_1/runner/register"}
     assert_receive {:request_body, body}
     assert body == "{}"
+    assert_receive {:request_headers, headers}
+    assert headers["x-favn-workspace-id"] == "workspace-1"
   end
 
-  test "bootstrap_active_manifest/2 reads service-auth bootstrap active manifest endpoint" do
+  test "bootstrap_active_manifest/3 reads the workspace active manifest" do
     parent = self()
 
     {:ok, base_url, _server} =
       start_server(~s({"data":{"manifest":{"manifest_version_id":"mv_1"}}}), 200, parent: parent)
 
     assert {:ok, %{"manifest" => %{"manifest_version_id" => "mv_1"}}} =
-             OrchestratorClient.bootstrap_active_manifest(base_url, "token")
+             OrchestratorClient.bootstrap_active_manifest(base_url, "token", session_context())
 
     assert_receive {:request_path, "/api/orchestrator/v1/bootstrap/active-manifest"}
   end
 
-  test "password_login/4 returns forwarded session context" do
+  test "password_login/5 selects a workspace and returns forwarded session context" do
     body =
       ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})
 
@@ -229,9 +243,16 @@ defmodule Favn.Dev.OrchestratorClientTest do
             %{
               "actor_id" => "act_1",
               "session_id" => "sess_1",
-              "session_token" => "raw_session_token_1"
+              "session_token" => "raw_session_token_1",
+              "workspace_id" => "workspace-1"
             }} =
-             OrchestratorClient.password_login(base_url, "token", "user", "password-1")
+             OrchestratorClient.password_login(
+               base_url,
+               "token",
+               "workspace-1",
+               "user",
+               "password-1"
+             )
   end
 
   test "submit_run/4 sends forwarded actor and raw session token headers" do
@@ -297,17 +318,18 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
   test "mutating command helpers send idempotency keys without secrets" do
     session_context = %{
+      "workspace_id" => "workspace_1",
       "actor_id" => "act_1",
       "session_id" => "sess_1",
       "session_token" => "raw_session_token_1"
     }
 
     assert_mutating_header(fn base_url, token ->
-      OrchestratorClient.activate_manifest(base_url, token, "mv_1")
+      OrchestratorClient.activate_manifest(base_url, token, "mv_1", session_context)
     end)
 
     assert_mutating_header(fn base_url, token ->
-      OrchestratorClient.cancel_run(base_url, token, "run_1")
+      OrchestratorClient.cancel_run(base_url, token, "run_1", session_context)
     end)
 
     assert_mutating_header(fn base_url, token ->
@@ -326,6 +348,46 @@ defmodule Favn.Dev.OrchestratorClientTest do
         "day:2026-01-01:Etc/UTC"
       )
     end)
+  end
+
+  test "logical command idempotency is stable across renewed sessions" do
+    parent = self()
+
+    session = %{
+      "workspace_id" => "workspace_1",
+      "actor_id" => "act_1",
+      "session_token" => "raw_session_token_1"
+    }
+
+    {:ok, first_url, _server} =
+      start_server(~s({"data":{"activated":true}}), 200, parent: parent)
+
+    assert {:ok, _response} =
+             OrchestratorClient.activate_manifest(
+               first_url,
+               "token",
+               "mv_1",
+               Map.put(session, "session_id", "sess_1")
+             )
+
+    assert_receive {:request_headers, first_headers}
+
+    {:ok, second_url, _server} =
+      start_server(~s({"data":{"activated":true}}), 200, parent: parent)
+
+    assert {:ok, _response} =
+             OrchestratorClient.activate_manifest(
+               second_url,
+               "token",
+               "mv_1",
+               session
+               |> Map.put("session_id", "sess_2")
+               |> Map.put("session_token", "raw_session_token_2")
+             )
+
+    assert_receive {:request_headers, second_headers}
+
+    assert first_headers["idempotency-key"] == second_headers["idempotency-key"]
   end
 
   test "cancel_run/4 parses cancel response and encodes run id" do
@@ -438,6 +500,15 @@ defmodule Favn.Dev.OrchestratorClientTest do
              )
 
     assert_receive {:request_path, "/api/orchestrator/v1/runs/run_1/events?limit=20"}
+  end
+
+  defp session_context do
+    %{
+      "workspace_id" => "workspace-1",
+      "actor_id" => "act_1",
+      "session_id" => "sess_1",
+      "session_token" => "raw_session_token_1"
+    }
   end
 
   defp start_server(body, status, opts \\ []) when is_binary(body) and is_integer(status) do

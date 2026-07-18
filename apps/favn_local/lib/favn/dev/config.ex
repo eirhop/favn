@@ -4,9 +4,8 @@ defmodule Favn.Dev.Config do
   """
 
   @enforce_keys [
-    :storage,
-    :sqlite_path,
     :postgres,
+    :workspace_id,
     :orchestrator_api_enabled,
     :orchestrator_port,
     :web_port,
@@ -17,9 +16,8 @@ defmodule Favn.Dev.Config do
     :web_session_secret
   ]
   defstruct [
-    :storage,
-    :sqlite_path,
     :postgres,
+    :workspace_id,
     :orchestrator_api_enabled,
     :orchestrator_port,
     :web_port,
@@ -37,15 +35,13 @@ defmodule Favn.Dev.Config do
           password: String.t(),
           database: String.t(),
           ssl: boolean(),
-          pool_size: pos_integer()
+          pool_size: pos_integer(),
+          url: String.t()
         }
 
-  @type storage_mode :: :memory | :sqlite | :postgres
-
   @type t :: %__MODULE__{
-          storage: storage_mode(),
-          sqlite_path: Path.t(),
           postgres: postgres_opts(),
+          workspace_id: String.t(),
           orchestrator_api_enabled: boolean(),
           orchestrator_port: pos_integer(),
           web_port: pos_integer(),
@@ -59,8 +55,6 @@ defmodule Favn.Dev.Config do
   @typedoc "Keyword overrides used by local tooling tasks."
   @type opts :: keyword()
 
-  @default_storage :memory
-  @default_sqlite_path ".favn/data/orchestrator.sqlite3"
   @default_postgres %{
     hostname: "127.0.0.1",
     port: 5432,
@@ -92,10 +86,15 @@ defmodule Favn.Dev.Config do
       |> Keyword.get(:web_port, @default_web_port)
       |> normalize_int(@default_web_port)
 
+    postgres =
+      case Keyword.fetch(merged, :postgres) do
+        {:ok, explicit} -> explicit
+        :error -> Map.put(@default_postgres, :url, System.get_env("FAVN_DATABASE_URL"))
+      end
+
     %__MODULE__{
-      storage: normalize_storage(Keyword.get(merged, :storage, @default_storage)),
-      sqlite_path: Keyword.get(merged, :sqlite_path, @default_sqlite_path),
-      postgres: normalize_postgres(Keyword.get(merged, :postgres, @default_postgres)),
+      postgres: normalize_postgres(postgres),
+      workspace_id: normalize_workspace_id(Keyword.get(merged, :workspace_id, "local-dev")),
       orchestrator_api_enabled: Keyword.get(merged, :orchestrator_api_enabled, true),
       orchestrator_port: orchestrator_port,
       web_port: web_port,
@@ -108,21 +107,17 @@ defmodule Favn.Dev.Config do
     }
   end
 
-  defp normalize_storage(:sqlite), do: :sqlite
-  defp normalize_storage("sqlite"), do: :sqlite
-  defp normalize_storage(:postgres), do: :postgres
-  defp normalize_storage("postgres"), do: :postgres
-  defp normalize_storage(_other), do: :memory
-
   defp normalize_postgres(value) when is_list(value),
     do: value |> Enum.into(%{}) |> normalize_postgres()
 
   defp normalize_postgres(value) when is_map(value) do
     map = for {k, v} <- value, into: %{}, do: {normalize_postgres_key(k), v}
+    url = postgres_url(map)
+    uri = URI.parse(url)
 
     %{
-      hostname: to_string(Map.get(map, :hostname, @default_postgres.hostname)),
-      port: normalize_int(Map.get(map, :port, @default_postgres.port), @default_postgres.port),
+      hostname: uri.host || to_string(Map.get(map, :hostname, @default_postgres.hostname)),
+      port: uri.port || normalize_int(Map.get(map, :port), @default_postgres.port),
       username: to_string(Map.get(map, :username, @default_postgres.username)),
       password: to_string(Map.get(map, :password, @default_postgres.password)),
       database: to_string(Map.get(map, :database, @default_postgres.database)),
@@ -131,7 +126,8 @@ defmodule Favn.Dev.Config do
         normalize_int(
           Map.get(map, :pool_size, @default_postgres.pool_size),
           @default_postgres.pool_size
-        )
+        ),
+      url: url
     }
   end
 
@@ -145,6 +141,7 @@ defmodule Favn.Dev.Config do
   defp normalize_postgres_key("database"), do: :database
   defp normalize_postgres_key("ssl"), do: :ssl
   defp normalize_postgres_key("pool_size"), do: :pool_size
+  defp normalize_postgres_key("url"), do: :url
   defp normalize_postgres_key(_key), do: :unknown
 
   defp normalize_int(value, _default) when is_integer(value) and value > 0, do: value
@@ -162,4 +159,35 @@ defmodule Favn.Dev.Config do
   defp normalize_bool("true", _default), do: true
   defp normalize_bool("false", _default), do: false
   defp normalize_bool(_value, default), do: default
+
+  defp normalize_workspace_id(value) when is_binary(value) do
+    case String.trim(value) do
+      id when id != "" and byte_size(id) <= 255 -> id
+      _invalid -> raise ArgumentError, "local workspace_id must contain 1..255 bytes"
+    end
+  end
+
+  defp normalize_workspace_id(_value),
+    do: raise(ArgumentError, "local workspace_id must be a string")
+
+  defp postgres_url(map) do
+    case Map.get(map, :url) do
+      url when is_binary(url) and url != "" ->
+        url
+
+      _missing ->
+        username = Map.get(map, :username, @default_postgres.username) |> encode_url_component()
+        password = Map.get(map, :password, @default_postgres.password) |> encode_url_component()
+        hostname = Map.get(map, :hostname, @default_postgres.hostname)
+        port = normalize_int(Map.get(map, :port, @default_postgres.port), @default_postgres.port)
+        database = Map.get(map, :database, @default_postgres.database) |> encode_url_component()
+        "ecto://#{username}:#{password}@#{hostname}:#{port}/#{database}"
+    end
+  end
+
+  defp encode_url_component(value) do
+    value
+    |> to_string()
+    |> URI.encode(&URI.char_unreserved?/1)
+  end
 end

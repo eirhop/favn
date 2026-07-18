@@ -10,20 +10,65 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RetryPolicyResolver
   alias FavnOrchestrator.RunManager.Submission
   alias FavnOrchestrator.RunManager.SubmissionOptions
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Runs
 
-  @spec asset(Favn.Ref.t(), keyword()) :: {:ok, Submission.t()} | {:error, term()}
-  def asset(asset_ref, opts) when is_list(opts) do
+  @spec asset(WorkspaceContext.t(), Favn.Ref.t(), keyword()) ::
+          {:ok, Submission.t()} | {:error, term()}
+  def asset(%WorkspaceContext{} = context, asset_ref, opts) when is_list(opts) do
+    with {:ok, scoped_opts} <- workspace_opts(context, opts) do
+      do_asset(asset_ref, scoped_opts)
+    end
+  end
+
+  @spec pipeline(WorkspaceContext.t(), [Favn.Ref.t()], keyword()) ::
+          {:ok, Submission.t()} | {:error, term()}
+  def pipeline(%WorkspaceContext{} = context, target_refs, opts) when is_list(opts) do
+    with {:ok, scoped_opts} <- workspace_opts(context, opts) do
+      do_pipeline(target_refs, scoped_opts)
+    end
+  end
+
+  @spec pipeline_module(WorkspaceContext.t(), module(), keyword()) ::
+          {:ok, Submission.t()} | {:error, term()}
+  def pipeline_module(%WorkspaceContext{} = context, pipeline_module, opts)
+      when is_atom(pipeline_module) and is_list(opts) do
+    with {:ok, scoped_opts} <- workspace_opts(context, opts) do
+      do_pipeline_module(pipeline_module, scoped_opts)
+    end
+  end
+
+  @spec pipeline_ref(WorkspaceContext.t(), {module(), atom()}, keyword()) ::
+          {:ok, Submission.t()} | {:error, term()}
+  def pipeline_ref(%WorkspaceContext{} = context, {module, name} = pipeline_ref, opts)
+      when is_atom(module) and is_atom(name) and is_list(opts) do
+    with {:ok, scoped_opts} <- workspace_opts(context, opts) do
+      do_pipeline_ref(pipeline_ref, scoped_opts)
+    end
+  end
+
+  @spec rerun(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, Submission.t()} | {:error, term()}
+  def rerun(%WorkspaceContext{} = context, source_run_id, opts)
+      when is_binary(source_run_id) and is_list(opts) do
+    do_rerun(source_run_id, Keyword.put(opts, :_workspace_context, context))
+  end
+
+  defp do_asset(asset_ref, opts) when is_list(opts) do
     with :ok <- validate_opts(opts),
          {:ok, run_state, version} <- build_run_submission(asset_ref, opts) do
       {:ok,
        %Submission{
          run_state: run_state,
+         workspace_context: Keyword.get(opts, :_workspace_context),
+         deployment_id: Keyword.get(opts, :_deployment_id),
+         idempotency: Keyword.get(opts, :_idempotency),
          manifest_version: version,
          submit_kind: :manual,
          transition_metadata: %{status: run_state.status, submit_kind: :manual},
@@ -32,16 +77,19 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     end
   end
 
-  @spec pipeline([Favn.Ref.t()], keyword()) :: {:ok, Submission.t()} | {:error, term()}
-  def pipeline(target_refs, opts) when is_list(target_refs) and is_list(opts) do
+  defp do_pipeline(target_refs, opts) when is_list(target_refs) and is_list(opts) do
     with :ok <- validate_opts(opts),
          :ok <- validate_target_refs(target_refs),
          {:ok, run_state, version} <- build_pipeline_submission(target_refs, opts) do
       {:ok,
        %Submission{
          run_state: run_state,
+         workspace_context: Keyword.get(opts, :_workspace_context),
+         deployment_id: Keyword.get(opts, :_deployment_id),
+         idempotency: Keyword.get(opts, :_idempotency),
          manifest_version: version,
          submit_kind: :pipeline,
+         pipeline_refs: pipeline_refs_from_opts(opts),
          transition_metadata: %{
            status: run_state.status,
            submit_kind: :pipeline,
@@ -52,15 +100,19 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     end
   end
 
-  @spec pipeline_module(module(), keyword()) :: {:ok, Submission.t()} | {:error, term()}
-  def pipeline_module(pipeline_module, opts) when is_atom(pipeline_module) and is_list(opts) do
+  defp do_pipeline_module(pipeline_module, opts)
+       when is_atom(pipeline_module) and is_list(opts) do
     with :ok <- validate_opts(opts),
          {:ok, run_state, version} <- build_pipeline_module_submission(pipeline_module, opts) do
       {:ok,
        %Submission{
          run_state: run_state,
+         workspace_context: Keyword.get(opts, :_workspace_context),
+         deployment_id: Keyword.get(opts, :_deployment_id),
+         idempotency: Keyword.get(opts, :_idempotency),
          manifest_version: version,
          submit_kind: :pipeline,
+         pipeline_refs: pipeline_refs_from_run(run_state),
          transition_metadata: %{
            status: run_state.status,
            submit_kind: :pipeline,
@@ -72,18 +124,49 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     end
   end
 
-  @spec rerun(String.t(), keyword()) :: {:ok, Submission.t()} | {:error, term()}
-  def rerun(source_run_id, opts) when is_binary(source_run_id) and is_list(opts) do
+  defp do_pipeline_ref({module, name} = pipeline_ref, opts)
+       when is_atom(module) and is_atom(name) and is_list(opts) do
     with :ok <- validate_opts(opts),
-         {:ok, source_run} <- Storage.get_run(source_run_id),
+         {:ok, run_state, version} <- build_pipeline_ref_submission(pipeline_ref, opts) do
+      {:ok,
+       %Submission{
+         run_state: run_state,
+         workspace_context: Keyword.get(opts, :_workspace_context),
+         deployment_id: Keyword.get(opts, :_deployment_id),
+         idempotency: Keyword.get(opts, :_idempotency),
+         manifest_version: version,
+         submit_kind: :pipeline,
+         pipeline_refs: [pipeline_ref],
+         transition_metadata: %{
+           status: run_state.status,
+           submit_kind: :pipeline,
+           pipeline_target_refs: run_state.target_refs,
+           pipeline_ref: pipeline_ref
+         },
+         event_metadata: %{run_id: run_state.id, submit_kind: :pipeline}
+       }}
+    end
+  end
+
+  defp do_rerun(source_run_id, opts) when is_binary(source_run_id) and is_list(opts) do
+    with :ok <- validate_opts(opts),
+         {:ok, source_run} <- get_run(opts, source_run_id),
+         opts <-
+           opts
+           |> Keyword.put(:_workspace_id, source_run.workspace_id)
+           |> Keyword.put(:_deployment_id, source_run.deployment_id),
          :ok <- reject_backfill_parent_rerun(source_run),
          :ok <- require_terminal_rerun_source(source_run),
          {:ok, run_state, version} <- build_rerun_submission(source_run, opts) do
       {:ok,
        %Submission{
          run_state: run_state,
+         workspace_context: Keyword.get(opts, :_workspace_context),
+         deployment_id: run_state.deployment_id,
+         idempotency: Keyword.get(opts, :_idempotency),
          manifest_version: version,
          submit_kind: :rerun,
+         pipeline_refs: pipeline_refs_from_run(run_state),
          transition_metadata: %{
            status: run_state.status,
            submit_kind: :rerun,
@@ -105,8 +188,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
            |> Map.put(:refresh_policy, refresh_policy)
            |> Map.put(:runtime_input_mode, input_mode),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, version} <- get_manifest(opts, manifest_version_id),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, _asset} <- Index.fetch_asset(index, asset_ref),
          {:ok, plan} <-
            Planner.plan(asset_ref,
@@ -139,8 +222,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              refresh_policy: refresh_policy
            }),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, version} <- get_manifest(opts, manifest_version_id),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          input <- %{input | metadata: metadata},
          {:ok, run_state} <-
            build_pipeline_run_state(target_refs, input, version, index, nil) do
@@ -157,8 +240,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          {:ok, request} <-
            normalize_pipeline_window_request(input.anchor_window, window_request),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, version} <- get_manifest(opts, manifest_version_id),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, pipeline} <- fetch_pipeline_by_module(index, pipeline_module),
          {:ok, resolved_anchor_window} <-
            resolve_pipeline_anchor_window(pipeline, input.anchor_window, request),
@@ -175,7 +258,59 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              pipeline_target_refs: resolution.target_refs,
              pipeline_context: resolution.pipeline_ctx,
              pipeline_dependencies: resolution.dependencies,
-             pipeline_submit_ref: pipeline_module,
+             pipeline_submit_ref: pipeline.module,
+             pipeline_identity_ref: {pipeline.module, pipeline.name},
+             pipeline_execution_policy: pipeline_execution_policy(resolution.pipeline),
+             runtime_input_mode: input_mode,
+             refresh_policy: refresh_policy
+           }),
+         input <-
+           %{
+             input
+             | metadata: metadata,
+               dependencies: resolution.dependencies,
+               anchor_window: resolved_anchor_window
+           },
+         {:ok, run_state} <-
+           build_pipeline_run_state(
+             resolution.target_refs,
+             input,
+             version,
+             index,
+             resolution.pipeline.retry_policy
+           ) do
+      {:ok, run_state, version}
+    end
+  end
+
+  defp build_pipeline_ref_submission({module, name} = pipeline_ref, opts)
+       when is_atom(module) and is_atom(name) and is_list(opts) do
+    window_request = Keyword.get(opts, :window_request)
+
+    with {:ok, input} <- SubmissionOptions.new(opts, trigger: %{kind: :pipeline}),
+         {:ok, input_mode} <- runtime_input_mode(opts, :manual),
+         {:ok, request} <- normalize_pipeline_window_request(input.anchor_window, window_request),
+         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
+         {:ok, version} <- get_manifest(opts, manifest_version_id),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
+         {:ok, %Pipeline{} = pipeline} <- Index.fetch_pipeline(index, pipeline_ref),
+         {:ok, resolved_anchor_window} <-
+           resolve_pipeline_anchor_window(pipeline, input.anchor_window, request),
+         {:ok, resolution} <-
+           PipelineResolver.resolve(index, pipeline,
+             trigger: input.trigger,
+             params: input.params,
+             anchor_window: resolved_anchor_window
+           ),
+         {:ok, refresh_policy} <- refresh_policy_metadata(opts, resolution.dependencies),
+         metadata <-
+           Map.merge(input.metadata, %{
+             submit_kind: :pipeline,
+             pipeline_target_refs: resolution.target_refs,
+             pipeline_context: resolution.pipeline_ctx,
+             pipeline_dependencies: resolution.dependencies,
+             pipeline_submit_ref: pipeline.module,
+             pipeline_identity_ref: pipeline_ref,
              pipeline_execution_policy: pipeline_execution_policy(resolution.pipeline),
              runtime_input_mode: input_mode,
              refresh_policy: refresh_policy
@@ -234,6 +369,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
        ) do
     base = [
       id: input.run_id,
+      workspace_id: input.workspace_id,
+      deployment_id: input.deployment_id,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
       asset_ref: asset_ref,
@@ -277,8 +414,9 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
            ),
          {:ok, refresh_policy} <- refresh_policy_metadata(opts, input.dependencies),
          :ok <- validate_rerun_manifest_pin(opts, source_run),
-         {:ok, version} <- ManifestStore.get_manifest(source_run.manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, version} <-
+           get_manifest(opts, source_run.manifest_version_id, source_run.deployment_id),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, _asset} <- Index.fetch_asset(index, rerun_asset_ref),
          :ok <- ensure_assets_exist(index, rerun_targets),
          {:ok, plan} <-
@@ -583,6 +721,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     metadata_value(metadata, :replay_submit_kind) in [:pipeline, "pipeline"] or
       is_map(metadata_value(metadata, :pipeline_context)) or
       present_atom?(metadata_value(metadata, :pipeline_submit_ref)) or
+      valid_ref?(metadata_value(metadata, :pipeline_submit_ref)) or
       (is_list(target_refs) and target_refs != [])
   end
 
@@ -590,7 +729,14 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   defp present_atom?(_value), do: false
 
   defp replay_pipeline_retry_policy(%RunState{} = source_run, %Index{} = index) do
-    case metadata_value(source_run.metadata, :pipeline_submit_ref) do
+    case metadata_value(source_run.metadata, :pipeline_identity_ref) ||
+           metadata_value(source_run.metadata, :pipeline_submit_ref) do
+      {module, name} = pipeline_ref when is_atom(module) and is_atom(name) ->
+        case Index.fetch_pipeline(index, pipeline_ref) do
+          {:ok, pipeline} -> pipeline.retry_policy
+          {:error, _reason} -> nil
+        end
+
       pipeline_module when is_atom(pipeline_module) and not is_nil(pipeline_module) ->
         case fetch_pipeline_by_module(index, pipeline_module) do
           {:ok, pipeline} -> pipeline.retry_policy
@@ -624,10 +770,30 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   defp validate_refresh_policy_dependencies(%RefreshPolicy{}, _dependencies), do: :ok
 
   defp resolve_manifest_version_id(opts) when is_list(opts) do
-    case Keyword.get(opts, :manifest_version_id) do
-      nil -> ManifestStore.get_active_manifest()
-      value when is_binary(value) and value != "" -> {:ok, value}
-      invalid -> {:error, {:invalid_manifest_version_id, invalid}}
+    requested = Keyword.get(opts, :manifest_version_id)
+    active = Keyword.get(opts, :_active_manifest_version_id)
+
+    cond do
+      is_binary(active) and is_nil(requested) ->
+        {:ok, active}
+
+      is_binary(active) and requested == active ->
+        {:ok, active}
+
+      is_binary(active) and is_binary(requested) ->
+        {:error, {:manifest_not_active_in_workspace, requested}}
+
+      is_binary(active) ->
+        {:error, {:invalid_manifest_version_id, requested}}
+
+      is_nil(requested) ->
+        {:error, :workspace_context_required}
+
+      is_binary(requested) and requested != "" ->
+        {:ok, requested}
+
+      true ->
+        {:error, {:invalid_manifest_version_id, requested}}
     end
   end
 
@@ -671,5 +837,52 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
 
   defp require_terminal_rerun_source(%RunState{status: status}) do
     if RunState.terminal_status?(status), do: :ok, else: {:error, {:run_not_terminal, status}}
+  end
+
+  defp workspace_opts(%WorkspaceContext{} = context, opts) do
+    with {:ok, runtime} <- ManifestStore.get_runtime_state(context) do
+      {:ok,
+       opts
+       |> Keyword.put(:_workspace_context, context)
+       |> Keyword.put(:_workspace_id, context.workspace_id)
+       |> Keyword.put(:_deployment_id, runtime.deployment_id)
+       |> Keyword.put(:_active_manifest_version_id, runtime.manifest_version_id)}
+    end
+  end
+
+  defp get_manifest(opts, manifest_version_id, deployment_id \\ nil) do
+    case Keyword.get(opts, :_workspace_context) do
+      %WorkspaceContext{} = context ->
+        ManifestStore.get_deployment_manifest(
+          context,
+          deployment_id || Keyword.get(opts, :_deployment_id),
+          manifest_version_id
+        )
+
+      nil ->
+        {:error, :workspace_context_required}
+    end
+  end
+
+  defp get_run(opts, run_id) do
+    case Keyword.get(opts, :_workspace_context) do
+      %WorkspaceContext{} = context -> Runs.get(context, run_id)
+      nil -> {:error, :workspace_context_required}
+    end
+  end
+
+  defp pipeline_refs_from_opts(opts) do
+    case Keyword.get(opts, :_submit_ref) do
+      {module, name} = ref when is_atom(module) and is_atom(name) -> [ref]
+      _other -> []
+    end
+  end
+
+  defp pipeline_refs_from_run(%RunState{metadata: metadata}) do
+    case metadata_value(metadata, :pipeline_identity_ref) ||
+           metadata_value(metadata, :pipeline_submit_ref) do
+      {module, name} = ref when is_atom(module) and is_atom(name) -> [ref]
+      _other -> []
+    end
   end
 end

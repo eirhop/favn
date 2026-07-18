@@ -4,14 +4,18 @@ defmodule FavnOrchestrator.Diagnostics do
   """
 
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.OperationalEvents
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.ProjectionDiagnostics
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunnerClientValidator
+  alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
-  alias FavnOrchestrator.Storage
 
   @default_recent_limit 5
   @max_recent_limit 100
@@ -40,6 +44,8 @@ defmodule FavnOrchestrator.Diagnostics do
     checks = [
       safe_check(:storage_readiness, &storage_check/0),
       safe_check(:active_manifest, &active_manifest_check/0),
+      safe_check(:manifest_index_cache, &manifest_index_cache_check/0),
+      safe_check(:active_run_plan_capacity, &active_run_plan_capacity_check/0),
       safe_check(:scheduler, &scheduler_check/0),
       safe_check(:runner, &runner_check/0),
       safe_check(:projections, &projection_check/0),
@@ -58,8 +64,47 @@ defmodule FavnOrchestrator.Diagnostics do
     report
   end
 
+  defp manifest_index_cache_check do
+    details = ManifestIndexCache.diagnostics()
+
+    if details.running? do
+      ok(:manifest_index_cache, "Compiled manifest index cache is available", details)
+    else
+      warning(
+        :manifest_index_cache,
+        "Compiled manifest index cache is unavailable",
+        details,
+        :not_running
+      )
+    end
+  end
+
+  defp active_run_plan_capacity_check do
+    case RunManager.plan_capacity_diagnostics() do
+      {:ok, details} ->
+        if details.available_bytes == 0 do
+          warning(
+            :active_run_plan_capacity,
+            "Active run plan capacity is exhausted",
+            details,
+            :capacity_exhausted
+          )
+        else
+          ok(:active_run_plan_capacity, "Active run plan capacity is available", details)
+        end
+
+      {:error, reason} ->
+        warning(
+          :active_run_plan_capacity,
+          "Active run plan capacity is unavailable",
+          %{},
+          normalize_error(reason)
+        )
+    end
+  end
+
   defp storage_check do
-    case Storage.diagnostics() do
+    case Persistence.diagnostics() do
       {:ok, %{ready?: false} = details} ->
         error(:storage_readiness, "Storage is not ready", details, Map.get(details, :status))
 
@@ -72,21 +117,49 @@ defmodule FavnOrchestrator.Diagnostics do
   end
 
   defp active_manifest_check do
-    with {:ok, manifest_version_id} <- ManifestStore.get_active_manifest(),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id) do
-      ok(:active_manifest, "Active manifest is set", %{
-        manifest_version_id: version.manifest_version_id,
-        content_hash: version.content_hash,
-        asset_count: length(version.manifest.assets),
-        pipeline_count: length(version.manifest.pipelines),
-        schedule_count: length(version.manifest.schedules)
-      })
-    else
-      {:error, :active_manifest_not_set} ->
-        warning(:active_manifest, "Active manifest is not set", %{}, :active_manifest_not_set)
+    case active_workspace_manifests() do
+      {:ok, manifests} ->
+        ok(:active_manifest, "Workspace manifests are active", %{
+          workspace_count: length(manifests),
+          manifests: manifests
+        })
 
       {:error, reason} ->
-        error(:active_manifest, "Active manifest cannot be loaded", %{}, normalize_error(reason))
+        error(
+          :active_manifest,
+          "Workspace manifests cannot be loaded",
+          %{},
+          normalize_error(reason)
+        )
+    end
+  end
+
+  defp active_workspace_manifests do
+    workspace_ids()
+    |> Enum.reduce_while({:ok, []}, fn workspace_id, {:ok, acc} ->
+      context = SystemContext.workspace(workspace_id, :diagnostics)
+
+      case ManifestStore.get_active_manifest(context) do
+        {:ok, version} ->
+          item = %{
+            workspace_id: workspace_id,
+            manifest_version_id: version.manifest_version_id,
+            content_hash: version.content_hash,
+            asset_count: length(version.manifest.assets),
+            pipeline_count: length(version.manifest.pipelines),
+            schedule_count: length(version.manifest.schedules)
+          }
+
+          {:cont, {:ok, [item | acc]}}
+
+        {:error, reason} ->
+          {:halt, {:error, {workspace_id, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, []} -> {:error, :workspace_ids_not_configured}
+      {:ok, manifests} -> {:ok, Enum.reverse(manifests)}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -193,7 +266,7 @@ defmodule FavnOrchestrator.Diagnostics do
   defp list_runs_by_status(statuses, limit) when is_list(statuses) and is_integer(limit) do
     statuses
     |> Enum.reduce_while({:ok, []}, fn status, {:ok, acc} ->
-      case Storage.list_runs(status: status, limit: limit) do
+      case list_workspace_runs(status, limit) do
         {:ok, runs} -> {:cont, {:ok, runs ++ acc}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -207,6 +280,33 @@ defmodule FavnOrchestrator.Diagnostics do
     end
   end
 
+  defp list_workspace_runs(status, limit) do
+    workspace_ids()
+    |> Enum.reduce_while({:ok, []}, fn workspace_id, {:ok, acc} ->
+      context = SystemContext.workspace(workspace_id, :diagnostics)
+
+      case Runs.page_summaries(context, status: status, limit: limit) do
+        {:ok, page} -> {:cont, {:ok, page.items ++ acc}}
+        {:error, reason} -> {:halt, {:error, {workspace_id, reason}}}
+      end
+    end)
+  end
+
+  defp workspace_ids do
+    Application.get_env(:favn_orchestrator, :workspace_ids, [])
+  end
+
+  defp run_summary(%FavnOrchestrator.Persistence.Results.RunSummary{} = run) do
+    %{
+      run_id: run.run_id,
+      status: run.status,
+      manifest_version_id: run.manifest_version_id,
+      submit_kind: run.submit_kind,
+      updated_at: run.updated_at,
+      runner_execution_id: nil
+    }
+  end
+
   defp run_summary(%RunState{} = run) do
     %{
       run_id: run.id,
@@ -218,15 +318,21 @@ defmodule FavnOrchestrator.Diagnostics do
     }
   end
 
-  defp run_sort_key(%RunState{updated_at: %DateTime{} = updated_at}),
+  defp run_sort_key(%{updated_at: %DateTime{} = updated_at}),
     do: DateTime.to_unix(updated_at, :microsecond)
 
-  defp run_sort_key(%RunState{}), do: 0
+  defp run_sort_key(_run), do: 0
 
   defp failed_run_summary(%RunState{} = run) do
     run
     |> run_summary()
     |> Map.put(:error_summary, error_summary(run.error))
+  end
+
+  defp failed_run_summary(%FavnOrchestrator.Persistence.Results.RunSummary{} = run) do
+    run
+    |> run_summary()
+    |> Map.put(:error_summary, %{kind: :unavailable_in_compact_summary})
   end
 
   defp error_summary(nil), do: nil

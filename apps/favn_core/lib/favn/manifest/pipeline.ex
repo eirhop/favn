@@ -7,6 +7,8 @@ defmodule Favn.Manifest.Pipeline do
   """
 
   alias Favn.Window.Policy
+  alias Favn.Manifest.Schedule
+  alias Favn.Triggers.Schedule, as: TriggerSchedule
 
   @type t :: %__MODULE__{
           module: module() | nil,
@@ -40,12 +42,15 @@ defmodule Favn.Manifest.Pipeline do
 
   @spec from_definition(map()) :: t()
   def from_definition(definition) when is_map(definition) do
+    module = Map.get(definition, :module)
+    name = Map.get(definition, :name)
+
     %__MODULE__{
-      module: Map.get(definition, :module),
-      name: Map.get(definition, :name),
+      module: module,
+      name: name,
       selectors: normalize_list(Map.get(definition, :selectors, [])),
       deps: normalize_deps(Map.get(definition, :deps, :all)),
-      schedule: Map.get(definition, :schedule),
+      schedule: normalize_schedule(Map.get(definition, :schedule), module, name),
       window: Policy.from_value!(Map.get(definition, :window)),
       retry_policy: normalize_retry_policy(Map.get(definition, :retry_policy)),
       max_concurrency: normalize_max_concurrency(Map.get(definition, :max_concurrency)),
@@ -56,6 +61,16 @@ defmodule Favn.Manifest.Pipeline do
       metadata: normalize_map(Map.get(definition, :meta, %{}))
     }
   end
+
+  defp normalize_schedule({:inline, %TriggerSchedule{} = schedule}, module, name)
+       when is_atom(module) and is_atom(name),
+       do: {:inline, Schedule.from_schedule(module, name, schedule)}
+
+  defp normalize_schedule({:inline, %Schedule{} = schedule}, module, name)
+       when is_atom(module) and is_atom(name),
+       do: {:inline, Schedule.apply_identity(schedule, module, name)}
+
+  defp normalize_schedule(schedule, _module, _name), do: schedule
 
   defp normalize_deps(:all), do: :all
   defp normalize_deps(:none), do: :none

@@ -129,7 +129,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSet do
       Enum.reduce(cancelled_ids, work_set, fn id, acc -> elem(complete_entry(acc, id), 1) end)
 
     ledger_result =
-      RunExecutionOwnership.persist_cancel_outcomes(run_state.id, cancel_results, reason)
+      RunExecutionOwnership.persist_cancel_outcomes(run_state, cancel_results, reason)
 
     run_state =
       run_state
@@ -143,7 +143,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSet do
   defp put_cancel_outcomes(%RunState{} = run_state, cancel_results) do
     outcomes = Enum.map(cancel_results, &CancellationOutcome.to_map/1)
     metadata = Map.put(run_state.metadata, :cancel_outcomes, outcomes)
-    RunState.transition(run_state, metadata: metadata)
+    Snapshots.snapshot_update(run_state, metadata: metadata)
   end
 
   defp put_cancellation_ledger_result(%RunState{} = run_state, :ok) do

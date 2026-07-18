@@ -8,40 +8,63 @@ defmodule FavnOrchestrator.API.OperatorCommands do
   """
 
   alias FavnOrchestrator
+  alias FavnOrchestrator.Backfills
   alias FavnOrchestrator.ManifestTarget
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias Favn.Retry.Policy
 
   @type actor_context :: %{required(:actor) => map(), required(:session) => map()}
 
-  @doc "Submits an asset or pipeline run described by HTTP request parameters."
-  @spec submit_run(map(), actor_context()) :: {:ok, String.t()} | {:error, term()}
-  def submit_run(params, actor_context) when is_map(params) and is_map(actor_context) do
+  @doc false
+  @spec submit_run(map(), actor_context() | WorkspaceContext.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def submit_run(params, actor_context, opts)
+      when is_map(params) and is_map(actor_context) and is_list(opts) do
     with :ok <- reject_legacy_retry_fields(params),
-         {:ok, manifest_version_id} <- manifest_version(params),
-         {:ok, target} <- target(params, manifest_version_id),
+         {:ok, manifest_version_id} <- manifest_version(params, actor_context),
+         {:ok, target} <- target(params, manifest_version_id, actor_context),
          {:ok, command_input} <- run_input(params, target) do
-      FavnOrchestrator.submit_operator_run(
-        actor_context,
-        manifest_version_id,
-        target,
-        command_input
-      )
+      submit_operator_run(actor_context, manifest_version_id, target, command_input, opts)
     end
   end
 
-  @doc "Submits a pipeline backfill described by HTTP request parameters."
-  @spec submit_backfill(map()) :: {:ok, String.t()} | {:error, term()}
-  def submit_backfill(params) when is_map(params) do
+  defp submit_operator_run(
+         %WorkspaceContext{} = context,
+         manifest_version_id,
+         target,
+         command_input,
+         opts
+       ) do
+    FavnOrchestrator.submit_operator_run(
+      context,
+      manifest_version_id,
+      target,
+      command_input,
+      opts
+    )
+  end
+
+  @doc false
+  @spec submit_backfill(map(), WorkspaceContext.t(), keyword()) ::
+          {:ok, FavnOrchestrator.Persistence.Results.Backfill.t()} | {:error, term()}
+  def submit_backfill(params, %WorkspaceContext{} = context, opts)
+      when is_map(params) and is_list(opts) do
     with :ok <- reject_legacy_retry_fields(params),
          :ok <- reject_removed_lookback(params),
-         {:ok, manifest_version_id} <- manifest_version(params),
-         {:ok, %{type: "pipeline", id: target_id}} <- target(params, manifest_version_id),
+         :ok <- reject_removed_coverage_baseline(params),
+         {:ok, manifest_version_id} <- manifest_version(params, context),
+         {:ok, %{type: "pipeline", id: target_id}} <-
+           target(params, manifest_version_id, context),
          {:ok, range_request} <- range_request(params),
-         {:ok, opts} <- backfill_options(params, range_request) do
-      FavnOrchestrator.submit_pipeline_backfill_for_manifest(
+         {:ok, command_opts} <- backfill_options(params, range_request) do
+      Backfills.submit_pipeline(
+        context,
         manifest_version_id,
         target_id,
-        opts
+        range_request,
+        Keyword.merge(command_opts, opts)
+        |> Keyword.delete(:range_request)
+        |> Keyword.delete(:coverage_baseline_id)
       )
     else
       {:ok, _target} -> {:error, :invalid_target}
@@ -49,16 +72,26 @@ defmodule FavnOrchestrator.API.OperatorCommands do
     end
   end
 
-  @doc "Plans a pipeline backfill without submitting it."
-  @spec plan_backfill(map()) :: {:ok, map()} | {:error, term()}
-  def plan_backfill(params) when is_map(params) do
+  @doc false
+  @spec plan_backfill(map(), WorkspaceContext.t()) :: {:ok, map()} | {:error, term()}
+  def plan_backfill(params, %WorkspaceContext{} = context) when is_map(params) do
     with :ok <- reject_legacy_retry_fields(params),
          :ok <- reject_removed_lookback(params),
-         {:ok, manifest_version_id} <- manifest_version(params),
-         {:ok, %{type: "pipeline", id: target_id}} <- target(params, manifest_version_id),
+         :ok <- reject_removed_coverage_baseline(params),
+         {:ok, manifest_version_id} <- manifest_version(params, context),
+         {:ok, %{type: "pipeline", id: target_id}} <-
+           target(params, manifest_version_id, context),
          {:ok, range_request} <- range_request(params),
          {:ok, opts} <- backfill_options(params, range_request) do
-      FavnOrchestrator.plan_pipeline_backfill_for_manifest(manifest_version_id, target_id, opts)
+      Backfills.plan_pipeline(
+        context,
+        manifest_version_id,
+        target_id,
+        range_request,
+        opts
+        |> Keyword.delete(:range_request)
+        |> Keyword.delete(:coverage_baseline_id)
+      )
     else
       {:ok, _target} -> {:error, :invalid_target}
       {:error, _reason} = error -> error
@@ -125,6 +158,12 @@ defmodule FavnOrchestrator.API.OperatorCommands do
       true ->
         :ok
     end
+  end
+
+  defp reject_removed_coverage_baseline(params) do
+    if Map.has_key?(params, "coverage_baseline_id"),
+      do: {:error, {:unsupported_backfill_option, :coverage_baseline_id}},
+      else: :ok
   end
 
   defp reject_legacy_retry_fields(params) do
@@ -200,32 +239,37 @@ defmodule FavnOrchestrator.API.OperatorCommands do
   defp optional_metadata(value) when is_map(value), do: {:ok, value}
   defp optional_metadata(value), do: {:error, {:invalid_operator_metadata, value}}
 
-  defp target(params, manifest_version_id) do
+  defp target(params, manifest_version_id, context) do
     with %{} = target <- Map.get(params, "target"),
          {:ok, type} <- required_string(target, "type") do
-      target(type, target, manifest_version_id)
+      target(type, target, manifest_version_id, context)
     else
       _invalid -> {:error, :invalid_target}
     end
   end
 
-  defp target(type, target, manifest_version_id)
+  defp target(type, target, manifest_version_id, context)
        when type in ["asset", "pipeline"] do
     case Map.get(target, "id") do
-      id when is_binary(id) and id != "" -> {:ok, %{type: type, id: id}}
-      _missing when type == "pipeline" -> pipeline_module_target(target, manifest_version_id)
-      _missing -> {:error, :invalid_target}
+      id when is_binary(id) and id != "" ->
+        {:ok, %{type: type, id: id}}
+
+      _missing when type == "pipeline" ->
+        pipeline_module_target(target, manifest_version_id, context)
+
+      _missing ->
+        {:error, :invalid_target}
     end
   end
 
-  defp target(_type, _target, _manifest_version_id), do: {:error, :invalid_target}
+  defp target(_type, _target, _manifest_version_id, _context), do: {:error, :invalid_target}
 
-  defp pipeline_module_target(target, manifest_version_id) do
+  defp pipeline_module_target(target, manifest_version_id, context) do
     with module_name when is_binary(module_name) and module_name != "" <-
            Map.get(target, "module"),
-         {:ok, version} <- FavnOrchestrator.get_manifest(manifest_version_id),
-         {:ok, module} <- find_pipeline_module(version.manifest.pipelines, module_name) do
-      {:ok, %{type: "pipeline", id: ManifestTarget.pipeline_id(module)}}
+         {:ok, version} <- get_manifest(context, manifest_version_id),
+         {:ok, pipeline} <- find_pipeline(version.manifest.pipelines, module_name) do
+      {:ok, %{type: "pipeline", id: ManifestTarget.pipeline_id(pipeline.module, pipeline.name)}}
     else
       nil -> {:error, :invalid_target}
       "" -> {:error, :invalid_target}
@@ -235,9 +279,9 @@ defmodule FavnOrchestrator.API.OperatorCommands do
     end
   end
 
-  defp find_pipeline_module(pipelines, module_name) do
+  defp find_pipeline(pipelines, module_name) do
     Enum.find_value(pipelines, {:error, :not_allowed}, fn pipeline ->
-      if module_name in module_names(pipeline.module), do: {:ok, pipeline.module}
+      if module_name in module_names(pipeline.module), do: {:ok, pipeline}
     end)
   end
 
@@ -250,10 +294,10 @@ defmodule FavnOrchestrator.API.OperatorCommands do
     end)
   end
 
-  defp manifest_version(params) do
+  defp manifest_version(params, context) do
     case Map.get(params, "manifest_selection", %{"mode" => "active"}) do
       %{"mode" => "active"} ->
-        FavnOrchestrator.active_manifest()
+        active_manifest(context)
 
       %{"mode" => "version", "manifest_version_id" => id}
       when is_binary(id) and id != "" ->
@@ -263,6 +307,12 @@ defmodule FavnOrchestrator.API.OperatorCommands do
         {:error, :invalid_manifest_selection}
     end
   end
+
+  defp get_manifest(%WorkspaceContext{} = context, manifest_version_id),
+    do: FavnOrchestrator.get_manifest(context, manifest_version_id)
+
+  defp active_manifest(%WorkspaceContext{} = context),
+    do: FavnOrchestrator.active_manifest(context)
 
   defp required_string(params, key) do
     case Map.get(params, key) do

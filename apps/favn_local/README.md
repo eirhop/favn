@@ -117,7 +117,7 @@ mix favn.reset
 mix favn.build.runner
 mix favn.build.web
 mix favn.build.orchestrator
-mix favn.build.single --storage sqlite
+mix favn.build.single
 ```
 
 ## Configuration contract
@@ -131,37 +131,30 @@ Example:
 
 ```elixir
 config :favn, :local,
-  storage: :memory,
-  sqlite_path: ".favn/data/orchestrator.sqlite3",
   postgres: [
-    hostname: "127.0.0.1",
-    port: 5432,
-    username: "postgres",
-    password: "postgres",
-    database: "favn",
+    url: "ecto://favn_runtime:favn_runtime_local@127.0.0.1:5432/favn_dev",
     ssl: false,
     pool_size: 10
   ],
+  workspace_id: "local-dev",
   scheduler: false,
   orchestrator_port: 4101,
   web_port: 4173
 ```
 
-Storage selection:
-
-- default: `:memory`
-- `mix favn.dev --sqlite` forces `:sqlite`
-- `mix favn.dev --postgres` forces `:postgres`
+PostgreSQL is the only supported control-plane backend. Run
+`scripts/postgres/setup` from the Favn repository first; it migrates the schema,
+grants the runtime role, and provisions the configured local workspace.
 
 ### Consumer dependency boundary
 
-Consumer projects select local control-plane storage through `config :favn,
-:local` or local tooling flags such as `mix favn.dev --sqlite`.
+Consumer projects configure the local PostgreSQL connection through `config
+:favn, :local` or `FAVN_DATABASE_URL`.
 
-Do not add `:favn_storage_sqlite`, `:favn_orchestrator`, `:favn_runner`, or
-`:favn_local` directly to a normal consumer `mix.exs` for local development.
-Those apps are Favn-owned runtime/package components materialized under `.favn/`
-by `mix favn.install` and used by `mix favn.dev`.
+Do not add `:favn_storage_postgres`, `:favn_orchestrator`, `:favn_runner`, or
+`:favn_local` directly to a normal consumer `mix.exs` for local development. Those
+apps are Favn-owned runtime/package components materialized under `.favn/` by
+`mix favn.install` and used by `mix favn.dev`.
 
 Scheduler selection:
 
@@ -198,7 +191,7 @@ Local env files:
 - `build/` per-target build working directories
 - `dist/` per-target final artifact outputs
 - `logs/` local service logs
-- `data/` local sqlite data
+- `data/` local DuckDB files and other project data-plane state
 - `manifests/` latest and cached manifest metadata
 - `history/` failure metadata
 - `secrets.json` generated project-local service, session, and Distributed
@@ -338,12 +331,12 @@ is out of sync.
   manifest + plugin inventory metadata
 - `build.web`: Phoenix/LiveView UI artifact metadata and bundle contract
 - `build.orchestrator`: orchestrator artifact metadata and storage contract
-- `build.single`: assembles a project-local backend-only SQLite launcher with
+- `build.single`: assembles a project-local backend-only PostgreSQL launcher with
   generated `config/assembly.json`, `env/backend.env.example`, and executable
-  `bin/start|stop` scripts. It runs runner, SQLite storage, and orchestrator in
-  one backend BEAM runtime, but still depends on the installed runtime source
-  root and is not yet a self-contained operational production artifact. Web
-  startup and Postgres production mode are out of scope for this artifact.
+  `bin/start|stop` scripts. It runs runner, PostgreSQL persistence, and
+  orchestrator in one backend BEAM runtime. The launcher is operational and
+  start/stop tested, but remains project-local and non-relocatable because it
+  depends on the installed runtime source root. Web startup is a separate process.
 
 ## Platform assumptions
 

@@ -7,24 +7,36 @@ defmodule FavnOrchestrator.RunManager do
 
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Persistence.Results.RunOwnership, as: Ownership
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunExecutionCleanup
   alias FavnOrchestrator.RunExecutionOwnership
+  alias FavnOrchestrator.RunCancellation
   alias FavnOrchestrator.RunManager.Submission
   alias FavnOrchestrator.RunManager.SubmissionBuilder
+  alias FavnOrchestrator.RunManager.PlanCapacity
+  alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RuntimeConfig
-  alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.TransitionWriter
 
   @type state :: %{
-          run_pids: %{required(String.t()) => pid()},
-          monitors: %{required(reference()) => String.t()}
+          run_pids: %{required({String.t(), String.t()}) => pid()},
+          monitors: %{required(reference()) => {String.t(), String.t()}},
+          plan_capacity: PlanCapacity.t()
         }
+
+  defguardp is_run_plan_capacity_error(reason)
+            when is_tuple(reason) and tuple_size(reason) == 2 and
+                   elem(reason, 0) == :run_plan_capacity_exhausted
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -32,107 +44,193 @@ defmodule FavnOrchestrator.RunManager do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @spec submit_asset_run(Favn.Ref.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def submit_asset_run({module, name} = asset_ref, opts \\ [])
+  @spec admit_prepared_submission(Submission.t()) :: {:ok, String.t()} | {:error, term()}
+  def admit_prepared_submission(%Submission{} = submission) do
+    persist_and_admit(submission)
+  end
+
+  @spec submit_asset_run(WorkspaceContext.t(), Favn.Ref.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def submit_asset_run(%WorkspaceContext{} = context, {module, name} = asset_ref, opts)
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    prepare_and_admit(:manual, fn -> SubmissionBuilder.asset(asset_ref, opts) end)
+    prepare_and_admit(:manual, fn -> SubmissionBuilder.asset(context, asset_ref, opts) end)
   end
 
-  @spec submit_pipeline_run([Favn.Ref.t()], keyword()) :: {:ok, String.t()} | {:error, term()}
-  def submit_pipeline_run(target_refs, opts \\ []) when is_list(target_refs) and is_list(opts) do
-    prepare_and_admit(:pipeline, fn -> SubmissionBuilder.pipeline(target_refs, opts) end)
+  @spec submit_pipeline_run(WorkspaceContext.t(), [Favn.Ref.t()], keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def submit_pipeline_run(%WorkspaceContext{} = context, target_refs, opts)
+      when is_list(target_refs) and is_list(opts) do
+    prepare_and_admit(:pipeline, fn -> SubmissionBuilder.pipeline(context, target_refs, opts) end)
   end
 
-  @spec submit_pipeline_module_run(module(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def submit_pipeline_module_run(pipeline_module, opts \\ [])
+  @spec submit_pipeline_module_run(WorkspaceContext.t(), module(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def submit_pipeline_module_run(%WorkspaceContext{} = context, pipeline_module, opts)
       when is_atom(pipeline_module) and is_list(opts) do
     prepare_and_admit(:pipeline, fn ->
-      SubmissionBuilder.pipeline_module(pipeline_module, opts)
+      SubmissionBuilder.pipeline_module(context, pipeline_module, opts)
     end)
   end
 
-  @spec rerun(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def rerun(source_run_id, opts \\ []) when is_binary(source_run_id) and is_list(opts) do
-    prepare_and_admit(:rerun, fn -> SubmissionBuilder.rerun(source_run_id, opts) end)
+  @doc "Submits one exact named manifest pipeline in an authorized workspace."
+  @spec submit_pipeline_ref_run(WorkspaceContext.t(), {module(), atom()}, keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def submit_pipeline_ref_run(%WorkspaceContext{} = context, {module, name} = pipeline_ref, opts)
+      when is_atom(module) and is_atom(name) and is_list(opts) do
+    prepare_and_admit(:pipeline, fn ->
+      SubmissionBuilder.pipeline_ref(context, pipeline_ref, opts)
+    end)
   end
 
-  @spec prepare_rerun(String.t(), keyword()) :: {:ok, Submission.t()} | {:error, term()}
-  def prepare_rerun(source_run_id, opts \\ []) when is_binary(source_run_id) and is_list(opts) do
-    SubmissionBuilder.rerun(source_run_id, opts)
+  @spec rerun(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def rerun(%WorkspaceContext{} = context, source_run_id, opts)
+      when is_binary(source_run_id) and is_list(opts) do
+    prepare_and_admit(:rerun, fn -> SubmissionBuilder.rerun(context, source_run_id, opts) end)
   end
 
-  @spec admit_prepared_submission(Submission.t()) :: {:ok, String.t()} | {:error, term()}
-  def admit_prepared_submission(%Submission{} = submission) do
-    call_manager({:admit_submission, submission})
+  @spec prepare_rerun(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, Submission.t()} | {:error, term()}
+  def prepare_rerun(%WorkspaceContext{} = context, source_run_id, opts)
+      when is_binary(source_run_id) and is_list(opts) do
+    SubmissionBuilder.rerun(context, source_run_id, opts)
   end
 
-  @spec cancel_run(String.t(), map()) :: :ok | {:error, term()}
-  def cancel_run(run_id, reason \\ %{}) when is_binary(run_id) and is_map(reason) do
-    call_manager({:cancel_run, run_id, reason})
+  @spec cancel_run(WorkspaceContext.t(), String.t(), map()) :: :ok | {:error, term()}
+  def cancel_run(%WorkspaceContext{} = context, run_id, reason)
+      when is_binary(run_id) and is_map(reason) do
+    cancel_run(context, run_id, reason, [])
   end
 
   @doc false
-  @spec recover_run(String.t()) :: {:ok, String.t()} | {:error, term()}
-  def recover_run(run_id) when is_binary(run_id), do: call_manager({:recover_run, run_id})
+  @spec cancel_run(WorkspaceContext.t(), String.t(), map(), keyword()) ::
+          :ok | {:error, term()}
+  def cancel_run(%WorkspaceContext{} = context, run_id, reason, opts)
+      when is_binary(run_id) and is_map(reason) and is_list(opts) do
+    run_key = {context.workspace_id, run_id}
+
+    with {:ok, safe_reason} <- sanitize_cancel_reason(reason),
+         {:ok, committed} <-
+           Runs.request_cancellation(
+             context,
+             run_id,
+             safe_reason,
+             Keyword.take(opts, [:command_id, :idempotency, :occurred_at])
+           ),
+         :ok <- TransitionWriter.publish_committed(context, committed) do
+      case call_manager({:notify_cancellation, run_key, safe_reason}) do
+        :active -> :ok
+        :inactive -> continue_inactive_cancellation(context, committed.run, safe_reason)
+        {:error, _reason} = error -> error
+      end
+    else
+      {:error, %Error{} = error} -> {:error, normalize_cancellation_error(error)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  @spec recover_run(WorkspaceContext.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def recover_run(%WorkspaceContext{} = context, run_id) when is_binary(run_id) do
+    with {:ok, %RunState{} = run} <- Runs.get(context, run_id),
+         true <- retry_wait?(run),
+         {:ok, version} <- load_run_manifest(context, run) do
+      call_manager({:recover_prepared_run, context, run, version})
+    else
+      false -> {:error, :run_not_recoverable}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  @spec recover_claimed_run(WorkspaceContext.t(), Ownership.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def recover_claimed_run(%WorkspaceContext{} = context, %Ownership{} = ownership) do
+    result =
+      with true <- ownership.workspace_id == context.workspace_id,
+           {:ok, %RunState{} = run} <- Runs.get(context, ownership.run_id),
+           true <- run.status in [:pending, :running],
+           {:ok, version} <- load_run_manifest(context, run) do
+        call_manager({:recover_prepared_claimed_run, context, ownership, run, version})
+      else
+        false -> {:error, :run_not_recoverable}
+        {:error, reason} -> {:error, reason}
+      end
+
+    case result do
+      {:ok, _run_id} = success ->
+        success
+
+      {:error, reason} ->
+        _release = RunOwnership.release(context, ownership)
+        {:error, reason}
+    end
+  end
+
+  @doc false
+  @spec plan_capacity_diagnostics() :: {:ok, map()} | {:error, term()}
+  def plan_capacity_diagnostics do
+    call_manager(:plan_capacity_diagnostics)
+  end
 
   @impl true
-  def init(_args), do: {:ok, %{run_pids: %{}, monitors: %{}}}
+  def init(opts) do
+    {:ok, %{run_pids: %{}, monitors: %{}, plan_capacity: PlanCapacity.new(opts)}}
+  end
 
   @impl true
-  def handle_call({:admit_submission, %Submission{} = submission}, _from, state) do
-    case admit_submission(submission, state) do
+  def handle_call({:validate_submission, %RunState{} = run}, _from, state) do
+    {:reply, PlanCapacity.validate_run(state.plan_capacity, run), state}
+  end
+
+  def handle_call(
+        {:admit_persisted_submission, %Submission{} = submission, replayed?},
+        _from,
+        state
+      ) do
+    case admit_persisted_submission(submission, replayed?, state) do
       {{:ok, run_id}, next_state} ->
         OperationalEvents.emit(:run_submitted, %{count: 1}, submission.event_metadata)
 
         {:reply, {:ok, run_id}, next_state}
 
       {:error, reason} ->
-        OperationalEvents.emit(
-          :run_submission_failed,
-          %{},
-          %{submit_kind: submission.submit_kind, reason: reason},
-          level: :warning
-        )
-
         {:reply, {:error, reason}, state}
     end
   end
 
-  def handle_call({:cancel_run, run_id, reason}, _from, state) do
-    reply =
-      with {:ok, safe_reason} <- sanitize_cancel_reason(reason),
-           {:ok, run} <- Storage.get_run(run_id),
-           :ok <- reject_backfill_parent_cancel(run),
-           {:ok, cancel_requested, cancelled} <- build_cancel_snapshots(run, safe_reason),
-           :ok <-
-             TransitionWriter.persist_transition(cancel_requested, :run_cancel_requested, %{
-               reason: safe_reason
-             }) do
-        if active_run_server?(state, run_id) do
-          notify_active_run_server(state, run_id, safe_reason)
-          :ok
-        else
-          case forward_cancel_result(run, safe_reason) do
-            :ok ->
-              TransitionWriter.persist_transition(cancelled, :run_cancelled, %{
-                reason: safe_reason
-              })
-
-            {:already_completed, details} ->
-              {:error, {:runner_cancel_already_completed, details}}
-
-            {:error, cancel_error} ->
-              {:error, {:runner_cancel_failed, cancel_error}}
-          end
-        end
-      end
-
-    {:reply, reply, state}
+  def handle_call(:plan_capacity_diagnostics, _from, state) do
+    {:reply, {:ok, PlanCapacity.diagnostics(state.plan_capacity)}, state}
   end
 
-  def handle_call({:recover_run, run_id}, _from, state) do
-    case recover_run_server(run_id, state) do
-      {{:ok, ^run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
+  def handle_call({:notify_cancellation, run_key, reason}, _from, state) do
+    if active_run_server?(state, run_key) do
+      :ok = notify_active_run_server(state, run_key, reason)
+      {:reply, :active, state}
+    else
+      {:reply, :inactive, state}
+    end
+  end
+
+  def handle_call(
+        {:recover_prepared_run, %WorkspaceContext{} = context, %RunState{} = run, version},
+        _from,
+        state
+      ) do
+    case recover_prepared_run_server(context, run, version, state) do
+      {{:ok, run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(
+        {:recover_prepared_claimed_run, %WorkspaceContext{} = context, %Ownership{} = ownership,
+         %RunState{} = run, version},
+        _from,
+        state
+      ) do
+    case recover_prepared_claimed_run_server(context, ownership, run, version, state) do
+      {{:ok, run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -143,23 +241,29 @@ defmodule FavnOrchestrator.RunManager do
       {nil, monitors} ->
         {:noreply, %{state | monitors: monitors}}
 
-      {run_id, monitors} ->
-        next_state = %{state | monitors: monitors, run_pids: Map.delete(state.run_pids, run_id)}
+      {run_key, monitors} ->
+        next_state = %{
+          state
+          | monitors: monitors,
+            run_pids: Map.delete(state.run_pids, run_key),
+            plan_capacity: PlanCapacity.release(state.plan_capacity, run_key)
+        }
 
-        if reason != :normal and retry_wait_run?(run_id) do
-          case recover_run_server(run_id, next_state) do
-            {{:ok, ^run_id}, recovered_state} ->
-              {:noreply, recovered_state}
+        if reason != :normal,
+          do: schedule_crash_recovery(run_key, run_server_down_error(reason), 1)
 
-            {:error, _reason} ->
-              terminalize_active_run(run_id, run_server_down_error(reason))
-              {:noreply, next_state}
-          end
-        else
-          if reason != :normal, do: terminalize_active_run(run_id, run_server_down_error(reason))
-          {:noreply, next_state}
-        end
+        {:noreply, next_state}
     end
+  end
+
+  def handle_info({:retry_run_crash_recovery, run_key, error, attempt}, state) do
+    unless active_run_server?(state, run_key) do
+      Task.Supervisor.start_child(FavnOrchestrator.RunManagerTaskSupervisor, fn ->
+        recover_or_terminalize_crashed_run(run_key, error, attempt)
+      end)
+    end
+
+    {:noreply, state}
   end
 
   defp call_manager(message) do
@@ -175,7 +279,7 @@ defmodule FavnOrchestrator.RunManager do
   defp prepare_and_admit(submit_kind, prepare) when is_function(prepare, 0) do
     case prepare.() do
       {:ok, %Submission{} = submission} ->
-        call_manager({:admit_submission, submission})
+        persist_and_admit(submission)
 
       {:error, reason} = error ->
         OperationalEvents.emit(
@@ -200,51 +304,151 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
-  defp admit_submission(%Submission{run_state: %RunState{} = run_state} = submission, state) do
-    with :ok <- validate_admission(run_state, state),
-         :ok <-
-           TransitionWriter.persist_transition(
-             run_state,
-             :run_created,
-             submission.transition_metadata
-           ) do
-      case start_run_server(run_state, submission.manifest_version) do
-        {:ok, pid} -> track_run_server(state, run_state.id, pid)
-        {:error, reason} -> compensate_run_server_start(run_state, reason)
+  defp persist_and_admit(%Submission{run_state: %RunState{} = run_state} = submission) do
+    result =
+      with :ok <- call_manager({:validate_submission, run_state}),
+           {:ok, replayed?} <- persist_submission(submission) do
+        call_manager({:admit_persisted_submission, submission, replayed?})
+      end
+
+    case result do
+      {:ok, _run_id} = success ->
+        success
+
+      {:error, reason} = error ->
+        OperationalEvents.emit(
+          :run_submission_failed,
+          %{},
+          %{submit_kind: submission.submit_kind, reason: reason},
+          level: :warning
+        )
+
+        error
+    end
+  end
+
+  defp admit_persisted_submission(
+         %Submission{run_state: %RunState{} = run_state} = submission,
+         replayed?,
+         state
+       ) do
+    if replayed? do
+      {{:ok, run_state.id}, state}
+    else
+      with :ok <- validate_admission(run_state, state) do
+        case reserve_run_plan(state, run_state) do
+          {:ok, reserved_state} ->
+            case start_run_server(run_state, submission.manifest_version) do
+              {:ok, pid} ->
+                track_run_server(reserved_state, run_state, pid)
+
+              {:error, reason} ->
+                schedule_run_server_start_compensation(run_state, reason)
+                {:error, {:run_server_start_failed, JsonSafe.error(reason)}}
+            end
+
+          {:error, capacity_error} ->
+            emit_run_plan_capacity_deferred(run_state, capacity_error)
+            {{:ok, run_state.id}, state}
+        end
       end
     end
   end
 
-  defp track_run_server(state, run_id, pid) do
+  defp persist_submission(
+         %Submission{
+           workspace_context: %WorkspaceContext{} = context,
+           run_state: %RunState{} = run_state
+         } = submission
+       ) do
+    TransitionWriter.persist_transition(
+      context,
+      run_state,
+      :run_submitted,
+      submission.transition_metadata,
+      pipeline_refs: submission.pipeline_refs,
+      idempotency: submission.idempotency,
+      return_commit?: true
+    )
+  end
+
+  defp track_run_server(state, %RunState{} = run, pid) do
+    key = run_key(run)
+    track_run_server(state, key, run.id, pid)
+  end
+
+  defp track_run_server(state, key, run_id, pid) do
     ref = Process.monitor(pid)
 
     next_state =
       state
-      |> put_in([:run_pids, run_id], pid)
-      |> put_in([:monitors, ref], run_id)
+      |> put_in([:run_pids, key], pid)
+      |> put_in([:monitors, ref], key)
 
     {{:ok, run_id}, next_state}
   end
 
-  defp recover_run_server(run_id, state) do
-    with false <- active_run_server?(state, run_id),
-         {:ok, %RunState{} = run} <- Storage.get_run(run_id),
+  defp recover_prepared_run_server(
+         %WorkspaceContext{} = context,
+         %RunState{} = run,
+         version,
+         state
+       ) do
+    key = {context.workspace_id, run.id}
+
+    with false <- active_run_server?(state, key),
          true <- retry_wait?(run),
-         {:ok, version} <- ManifestStore.get_manifest(run.manifest_version_id),
+         {:ok, reserved_state} <- reserve_run_plan(state, run),
          {:ok, pid} <- start_run_server(run, version, recovering?: true) do
-      track_run_server(state, run_id, pid)
+      track_run_server(reserved_state, key, run.id, pid)
     else
-      true -> {:error, {:run_already_active, run_id}}
+      true -> {:error, {:run_already_active, run.id}}
       false -> {:error, :run_not_recoverable}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp retry_wait_run?(run_id) do
-    case Storage.get_run(run_id) do
-      {:ok, run} -> retry_wait?(run)
-      {:error, _reason} -> false
+  defp recover_prepared_claimed_run_server(
+         %WorkspaceContext{} = context,
+         %Ownership{} = ownership,
+         %RunState{} = run,
+         version,
+         state
+       ) do
+    key = {context.workspace_id, ownership.run_id}
+
+    if active_run_server?(state, key) do
+      {{:ok, run.id}, state}
+    else
+      with true <- ownership.workspace_id == context.workspace_id,
+           true <- run.status in [:pending, :running],
+           {:ok, reserved_state} <- reserve_run_plan(state, run),
+           {:ok, pid} <-
+             start_run_server(run, version,
+               recovering?: true,
+               storage_ownership: ownership
+             ) do
+        track_run_server(reserved_state, key, run.id, pid)
+      else
+        false ->
+          {:error, :run_not_recoverable}
+
+        {:error, capacity_error} when is_run_plan_capacity_error(capacity_error) ->
+          emit_run_plan_capacity_deferred(ownership, capacity_error)
+          {:error, capacity_error}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
+  end
+
+  defp load_run_manifest(%WorkspaceContext{} = context, %RunState{} = run) do
+    ManifestStore.get_deployment_manifest(
+      context,
+      run.deployment_id,
+      run.manifest_version_id
+    )
   end
 
   defp retry_wait?(%RunState{status: status, metadata: metadata})
@@ -274,23 +478,41 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
-  defp validate_admission(%RunState{id: run_id}, state) do
-    if active_run_server?(state, run_id) do
-      {:error, {:run_already_active, run_id}}
+  defp schedule_run_server_start_compensation(%RunState{} = run, reason) do
+    worker = fn -> compensate_run_server_start(run, reason) end
+
+    case Process.whereis(FavnOrchestrator.RunManagerTaskSupervisor) do
+      pid when is_pid(pid) -> Task.Supervisor.start_child(pid, worker)
+      nil -> Task.start(worker)
+    end
+
+    :ok
+  end
+
+  defp validate_admission(%RunState{} = run, state) do
+    if active_run_server?(state, run_key(run)) do
+      {:error, {:run_already_active, run.id}}
     else
       :ok
     end
   end
 
   defp start_run_server(%RunState{} = run_state, version, opts \\ []) when is_list(opts) do
-    args = %{
-      run_state: run_state,
-      version: version,
-      recovering?: Keyword.get(opts, :recovering?, false)
-    }
+    args =
+      %{
+        run_state: run_state,
+        version: version,
+        recovering?: Keyword.get(opts, :recovering?, false)
+      }
+      |> then(fn args ->
+        case Keyword.get(opts, :storage_ownership) do
+          %Ownership{} = ownership -> Map.put(args, :storage_ownership, ownership)
+          nil -> args
+        end
+      end)
 
     child_spec = %{
-      id: {RunServer, run_state.id},
+      id: {RunServer, run_key(run_state)},
       start: {RunServer, :start_link, [args]},
       restart: :temporary,
       shutdown: 5000,
@@ -300,25 +522,114 @@ defmodule FavnOrchestrator.RunManager do
     DynamicSupervisor.start_child(FavnOrchestrator.RunSupervisor, child_spec)
   end
 
-  defp terminalize_active_run(run_id, error) when is_binary(run_id) and is_map(error) do
-    case Storage.get_run(run_id) do
-      {:ok, %RunState{status: status} = run} when status in [:pending, :running] ->
-        cleanup_statuses =
-          RunExecutionCleanup.cancel_active(run, %{kind: :run_server_down, error: error})
+  defp terminalize_active_run({workspace_id, run_id}, error) when is_map(error) do
+    context = SystemContext.workspace(workspace_id, :run_recovery)
 
-        terminalize_run(run, error, cleanup_statuses)
+    with {:ok, %RunState{status: status} = run} when status in [:pending, :running] <-
+           Runs.get(context, run_id),
+         owner_id = RunOwnership.owner_id(run_id),
+         {:ok, ownership} <- RunOwnership.claim(context, run_id, owner_id),
+         owned_run <-
+           RunState.with_storage_fence(run, ownership.owner_id, ownership.fencing_token) do
+      cleanup_statuses =
+        RunExecutionCleanup.cancel_active(owned_run, %{kind: :run_server_down, error: error})
 
+      result = terminalize_run(owned_run, error, cleanup_statuses)
+      _release = RunOwnership.release(context, ownership)
+      result
+    else
       {:ok, %RunState{}} ->
         :ok
 
       {:error, reason} ->
+        {:retry, reason}
+    end
+  end
+
+  defp recover_or_terminalize_crashed_run({workspace_id, run_id} = run_key, error, attempt) do
+    context = SystemContext.workspace(workspace_id, :run_recovery)
+
+    case recover_run(context, run_id) do
+      {:ok, ^run_id} ->
+        :ok
+
+      {:error, capacity_error} when is_run_plan_capacity_error(capacity_error) ->
+        schedule_crash_recovery(run_key, error, attempt)
+
+      {:error, _recovery_error} ->
+        terminalize_or_schedule(run_key, error, attempt)
+    end
+  end
+
+  defp terminalize_or_schedule(run_key, error, attempt) do
+    case terminalize_active_run(run_key, error) do
+      {:retry, reason} when is_tuple(run_key) and attempt < 3 ->
+        Process.send_after(
+          __MODULE__,
+          {:retry_run_crash_recovery, run_key, error, attempt + 1},
+          RunOwnership.default_lease_duration_ms() + 1_000
+        )
+
+        OperationalEvents.emit(
+          :run_crash_recovery_deferred,
+          %{},
+          %{run_key: run_key, attempt: attempt, reason: reason},
+          level: :warning
+        )
+
+      {:retry, reason} ->
         OperationalEvents.emit(
           :run_crash_terminalization_failed,
           %{},
-          %{run_id: run_id, reason: reason},
+          %{run_key: run_key, reason: reason},
           level: :error
         )
+
+      _result ->
+        :ok
     end
+  end
+
+  defp reserve_run_plan(state, %RunState{} = run) do
+    case PlanCapacity.reserve(state.plan_capacity, run_key(run), run) do
+      {:ok, plan_capacity} -> {:ok, %{state | plan_capacity: plan_capacity}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp schedule_crash_recovery(run_key, error, attempt) do
+    Process.send_after(__MODULE__, {:retry_run_crash_recovery, run_key, error, attempt}, 1_000)
+  end
+
+  defp emit_run_plan_capacity_deferred(
+         %RunState{workspace_id: workspace_id, id: run_id},
+         capacity_error
+       ) do
+    do_emit_run_plan_capacity_deferred(workspace_id, run_id, capacity_error)
+  end
+
+  defp emit_run_plan_capacity_deferred(
+         %Ownership{workspace_id: workspace_id, run_id: run_id},
+         capacity_error
+       ) do
+    do_emit_run_plan_capacity_deferred(workspace_id, run_id, capacity_error)
+  end
+
+  defp do_emit_run_plan_capacity_deferred(
+         workspace_id,
+         run_id,
+         {:run_plan_capacity_exhausted, details}
+       ) do
+    OperationalEvents.emit(
+      :run_plan_capacity_deferred,
+      %{required_bytes: details.required_bytes, allocated_bytes: details.allocated_bytes},
+      %{
+        workspace_id: workspace_id,
+        run_id: run_id,
+        max_bytes: details.max_bytes
+      },
+      level: :warning
+    )
   end
 
   defp terminalize_run(%RunState{} = run, error, cleanup_statuses) when is_map(error) do
@@ -330,11 +641,15 @@ defmodule FavnOrchestrator.RunManager do
         metadata: Map.put(run.metadata, :terminal_event_type, :run_failed)
       )
 
-    TransitionWriter.persist_transition(failed, :run_failed, %{
-      status: failed.status,
-      error: failed.error
-    })
+    transition_data = %{status: failed.status, error: failed.error}
+
+    context = SystemContext.workspace(failed.workspace_id, :run_recovery)
+    TransitionWriter.persist_transition(context, failed, :run_failed, transition_data)
   end
+
+  defp run_key(%RunState{workspace_id: workspace_id, id: run_id})
+       when is_binary(workspace_id),
+       do: {workspace_id, run_id}
 
   defp run_server_down_error(reason) do
     %{
@@ -347,47 +662,39 @@ defmodule FavnOrchestrator.RunManager do
   defp sanitize_cancel_reason(value) when is_map(value),
     do: {:ok, Redaction.redact_operational_bounded(value)}
 
-  defp sanitize_cancel_reason(_value), do: {:error, :invalid_cancel_reason}
-
-  defp reject_backfill_parent_cancel(%RunState{submit_kind: submit_kind})
-       when submit_kind in [:backfill_pipeline, :backfill_asset],
-       do: {:error, :backfill_parent_cancel_not_supported}
-
-  defp reject_backfill_parent_cancel(_run), do: :ok
-
-  defp build_cancel_snapshots(%RunState{} = run, reason) do
-    if RunState.finalized?(run) do
-      {:error, :run_already_terminal}
+  defp continue_inactive_cancellation(context, %RunState{} = run, reason) do
+    if RunState.terminal_status?(run.status) do
+      :ok
     else
-      build_active_cancel_snapshots(run, reason)
+      case forward_cancel_result(run, reason) do
+        :ok ->
+          {cancelled, _event} = RunCancellation.finish(run, reason, DateTime.utc_now())
+
+          TransitionWriter.persist_transition(context, cancelled, :run_cancelled, %{
+            reason: reason
+          })
+
+        {:already_completed, details} ->
+          {:error, {:runner_cancel_already_completed, details}}
+
+        {:error, cancel_error} ->
+          {:error, {:runner_cancel_failed, cancel_error}}
+      end
     end
   end
 
-  defp build_active_cancel_snapshots(%RunState{} = run, reason) do
-    cancel_requested =
-      RunState.transition(run,
-        metadata:
-          Map.merge(run.metadata, %{
-            cancel_requested: true,
-            cancel_reason: reason,
-            cancel_requested_at: DateTime.utc_now()
-          })
-      )
+  defp normalize_cancellation_error(%Error{kind: :not_found}), do: :not_found
 
-    cancelled =
-      RunState.transition(cancel_requested,
-        status: :cancelled,
-        error: {:cancelled, reason},
-        runner_execution_id: nil,
-        metadata:
-          Map.merge(cancel_requested.metadata, %{
-            cancelled: true,
-            in_flight_execution_ids: []
-          })
-      )
+  defp normalize_cancellation_error(%Error{kind: :conflict, details: %{reason: reason}}),
+    do: reason
 
-    {:ok, cancel_requested, cancelled}
+  defp normalize_cancellation_error(%Error{kind: :conflict, message: message}) do
+    if String.contains?(message, "idempotency key"),
+      do: :idempotency_conflict,
+      else: {:persistence_conflict, message}
   end
+
+  defp normalize_cancellation_error(%Error{} = error), do: error
 
   defp active_run_server?(state, run_id) do
     case Map.get(state.run_pids, run_id) do
@@ -424,7 +731,7 @@ defmodule FavnOrchestrator.RunManager do
               runner_opts
             )
 
-          case RunExecutionOwnership.persist_cancel_outcomes(run.id, results, reason) do
+          case RunExecutionOwnership.persist_cancel_outcomes(run, results, reason) do
             :ok -> classify_cancel_results(results)
             {:error, error} -> {:error, %{type: :cancel_outcome_persist_failed, reason: error}}
           end
@@ -477,7 +784,7 @@ defmodule FavnOrchestrator.RunManager do
         _other -> []
       end
 
-    case RunExecutionOwnership.fetch_active(run.id) do
+    case RunExecutionOwnership.fetch_active(run) do
       {:ok, ownerships} ->
         ledger_ids =
           ownerships

@@ -4,14 +4,14 @@ defmodule Favn.Log.Filter do
   """
 
   alias Favn.Log.Entry
-  alias Favn.Ref
+  alias Favn.Log.Identity
 
   @type t :: %__MODULE__{
           run_id: String.t() | nil,
           asset_step_id: String.t() | nil,
           runner_execution_id: String.t() | nil,
           node_key: String.t() | nil,
-          asset_ref: Ref.t() | nil,
+          asset_ref: String.t() | nil,
           stream: Entry.stream() | nil,
           levels: [Entry.level()],
           sources: [Entry.source()],
@@ -44,8 +44,8 @@ defmodule Favn.Log.Filter do
       run_id: Map.get(attrs, :run_id),
       asset_step_id: Map.get(attrs, :asset_step_id),
       runner_execution_id: Map.get(attrs, :runner_execution_id),
-      node_key: Map.get(attrs, :node_key),
-      asset_ref: Map.get(attrs, :asset_ref),
+      node_key: normalize_identity(Map.get(attrs, :node_key), &Identity.node_key/1),
+      asset_ref: normalize_identity(Map.get(attrs, :asset_ref), &Identity.asset_ref/1),
       stream: normalize_optional_enum(Map.get(attrs, :stream), Entry.streams(), :stream),
       levels: normalize_list(Map.get(attrs, :levels, []), Entry.levels(), :level),
       sources: normalize_list(Map.get(attrs, :sources, []), Entry.sources(), :source),
@@ -98,4 +98,13 @@ defmodule Favn.Log.Filter do
 
   defp normalize_optional_enum(nil, _allowed, _field), do: nil
   defp normalize_optional_enum(value, allowed, field), do: normalize_enum(value, allowed, field)
+
+  defp normalize_identity(nil, _normalizer), do: nil
+
+  defp normalize_identity(value, normalizer) do
+    case normalizer.(value) do
+      {:ok, identity} -> identity
+      {:error, reason} -> raise ArgumentError, "invalid log identity: #{inspect(reason)}"
+    end
+  end
 end

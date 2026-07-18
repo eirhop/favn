@@ -14,7 +14,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       "web_root" => "/tmp/favn_runtime/apps/favn_view"
     }
 
-    config = Config.resolve(storage: :sqlite)
+    config = Config.resolve()
 
     node_names = %{
       runner_short: "favn_runner_test",
@@ -26,7 +26,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => String.duplicate("s", 64)
+      "web_session_secret" => String.duplicate("s", 64),
+      "runtime_input_pin_key" => Base.encode64(String.duplicate("k", 32))
     }
 
     opts = distribution_opts()
@@ -42,8 +43,10 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert runner.env["MIX_OS_CONCURRENCY_LOCK"] == "0"
     assert operator.env["MIX_OS_CONCURRENCY_LOCK"] == "0"
     assert operator.exec == (System.find_executable("elixir") || "elixir")
-    assert operator.env["FAVN_DEV_STORAGE"] == "sqlite"
-    assert operator.env["FAVN_DEV_SQLITE_PATH"] == Path.expand(config.sqlite_path)
+    assert operator.env["FAVN_DEV_STORAGE"] == "postgres"
+    assert operator.env["FAVN_DATABASE_URL"] == config.postgres.url
+    assert operator.env["FAVN_LOCAL_WORKSPACE_ID"] == "local-dev"
+    assert is_binary(operator.env["FAVN_RUNTIME_INPUT_PIN_KEY"])
     assert operator.env["FAVN_VIEW_PUBLIC_ORIGIN"] == config.web_base_url
     assert operator.env["FAVN_VIEW_SECRET_KEY_BASE"] == String.duplicate("s", 64)
     assert operator.env["FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH"] == "1"
@@ -69,7 +72,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => String.duplicate("s", 64)
+      "web_session_secret" => String.duplicate("s", 64),
+      "runtime_input_pin_key" => Base.encode64(String.duplicate("k", 32))
     }
 
     opts = distribution_opts(root_dir: root_dir)
@@ -93,15 +97,14 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert code =~ "bind_ip: api_bind_ip"
     assert operator.env["FAVN_VIEW_PORT"] == "4173"
 
-    assert code =~ "storage = System.fetch_env!(\"FAVN_DEV_STORAGE\")"
-    assert code =~ "Application.put_env(:favn_orchestrator, :storage_adapter"
-    assert code =~ "Application.ensure_all_started(:favn_storage_sqlite)"
+    assert code =~ "Application.put_env(:favn_orchestrator, :persistence_backend"
+    assert code =~ "FavnStoragePostgres.Backend"
     assert code =~ "endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])"
     assert code =~ "Keyword.merge(endpoint_config"
 
     assert before?(
              code,
-             "Application.put_env(:favn_orchestrator, :storage_adapter",
+             "Application.put_env(:favn_orchestrator, :persistence_backend",
              "Application.ensure_all_started(:favn_orchestrator)"
            )
 
@@ -112,12 +115,12 @@ defmodule Favn.Dev.RuntimeLaunchTest do
            )
   end
 
-  test "orchestrator spec handles memory storage explicitly" do
+  test "orchestrator spec always selects PostgreSQL Storage V2" do
     runtime = %{
       "orchestrator_root" => "/tmp/favn_runtime"
     }
 
-    config = Config.resolve(storage: :memory)
+    config = Config.resolve()
 
     node_names = %{
       runner_full: "favn_runner_test@host",
@@ -127,7 +130,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => String.duplicate("s", 64)
+      "web_session_secret" => String.duplicate("s", 64),
+      "runtime_input_pin_key" => Base.encode64(String.duplicate("k", 32))
     }
 
     orchestrator =
@@ -135,17 +139,17 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     code = eval_code!(orchestrator)
 
-    assert orchestrator.env["FAVN_DEV_STORAGE"] == "memory"
+    assert orchestrator.env["FAVN_DEV_STORAGE"] == "postgres"
     refute Map.has_key?(orchestrator.env, "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME")
     refute Map.has_key?(orchestrator.env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD")
-    assert code =~ ~s("memory" ->)
-    assert code =~ "FavnOrchestrator.Storage.Adapter.Memory"
-    assert code =~ "unsupported FAVN_DEV_STORAGE"
+    assert code =~ "FavnStoragePostgres.Backend"
+    refute code =~ "FavnOrchestrator.Storage.Adapter.Memory"
+    refute code =~ "Favn.Storage.Adapter.SQLite"
   end
 
   test "orchestrator spec configures storage before starting orchestrator" do
     runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
-    config = Config.resolve(storage: :sqlite)
+    config = Config.resolve()
 
     node_names = %{
       runner_full: "favn_runner_test@host",
@@ -155,7 +159,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => String.duplicate("s", 64)
+      "web_session_secret" => String.duplicate("s", 64),
+      "runtime_input_pin_key" => Base.encode64(String.duplicate("k", 32))
     }
 
     code =
@@ -165,17 +170,12 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     assert before?(
              code,
-             "Application.put_env(:favn_orchestrator, :storage_adapter",
-             "Application.ensure_all_started(:favn_storage_sqlite)"
-           )
-
-    assert before?(
-             code,
-             "Application.ensure_all_started(:favn_storage_sqlite)",
+             "Application.put_env(:favn_orchestrator, :persistence_backend",
              "Application.ensure_all_started(:favn_orchestrator)"
            )
 
-    assert code =~ "migration_mode: :auto"
+    assert code =~ "persistence_options"
+    assert code =~ "FAVN_DATABASE_URL"
   end
 
   test "consumer code path excludes runtime-owned favn apps" do
@@ -324,7 +324,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => String.duplicate("s", 64)
+      "web_session_secret" => String.duplicate("s", 64),
+      "runtime_input_pin_key" => Base.encode64(String.duplicate("k", 32))
     }
 
     code =
@@ -348,7 +349,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => String.duplicate("s", 64)
+      "web_session_secret" => String.duplicate("s", 64),
+      "runtime_input_pin_key" => Base.encode64(String.duplicate("k", 32))
     }
 
     previous_connections = Application.get_env(:favn, :connections)
@@ -411,7 +413,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => String.duplicate("s", 64)
+      "web_session_secret" => String.duplicate("s", 64),
+      "runtime_input_pin_key" => Base.encode64(String.duplicate("k", 32))
     }
 
     orchestrator =
@@ -431,7 +434,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       "web_root" => "/tmp/favn_runtime/apps/favn_view"
     }
 
-    config = Config.resolve(storage: :sqlite)
+    config = Config.resolve()
 
     node_names = %{
       runner_short: "favn_runner_test",
@@ -442,7 +445,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => String.duplicate("s", 64)
+      "web_session_secret" => String.duplicate("s", 64),
+      "runtime_input_pin_key" => Base.encode64(String.duplicate("k", 32))
     }
 
     opts =
@@ -463,7 +467,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     assert runner.env["MIX_ENV"] == "dev"
     assert operator.env["MIX_ENV"] == "dev"
-    assert operator.env["FAVN_DEV_STORAGE"] == "sqlite"
+    assert operator.env["FAVN_DEV_STORAGE"] == "postgres"
     assert operator.env["FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN"] == "token"
   end
 
@@ -479,7 +483,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => String.duplicate("s", 64)
+      "web_session_secret" => String.duplicate("s", 64),
+      "runtime_input_pin_key" => Base.encode64(String.duplicate("k", 32))
     }
 
     operator =

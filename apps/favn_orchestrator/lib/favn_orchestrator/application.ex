@@ -6,28 +6,41 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.API.Config, as: APIConfig
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
+  alias FavnOrchestrator.BackfillDispatcher
   alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.ExecutionAdmission.Coordinator, as: AdmissionCoordinator
+  alias FavnOrchestrator.LocalDevBootstrap
+  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.OperationalEvents
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
   alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunRecovery
   alias FavnOrchestrator.RuntimeConfig
-  alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
-  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Scheduler.PersistenceRuntime, as: PersistenceSchedulerRuntime
 
   @impl true
   def start(_type, _args) do
+    if Application.get_env(:favn_orchestrator, :start_runtime, true) do
+      start_runtime()
+    else
+      Supervisor.start_link([], strategy: :one_for_one, name: FavnOrchestrator.Supervisor)
+    end
+  end
+
+  defp start_runtime do
     with :ok <- ProductionRuntimeConfig.apply_from_env_if_configured(),
          _timezone_database <- Favn.Timezone.database!(),
          :ok <- APIConfig.validate(),
          runtime_config <- RuntimeConfig.from_app_env(),
-         {:ok, storage_children} <- Storage.child_specs(runtime_config) do
+         persistence_runtime <- PersistenceRuntime.from_app_env!(),
+         {:ok, persistence_children} <- Persistence.child_specs(persistence_runtime) do
       OperationalEvents.emit(
         :orchestrator_starting,
-        %{storage_child_count: length(storage_children)},
+        %{persistence_child_count: length(persistence_children)},
         %{
-          storage_adapter: runtime_config.storage_adapter,
+          persistence_backend: persistence_runtime.backend,
           scheduler_enabled?: scheduler_enabled?(),
           api_enabled?: api_enabled?()
         }
@@ -35,16 +48,20 @@ defmodule FavnOrchestrator.Application do
 
       children =
         [{RuntimeConfig, runtime_config}] ++
-          storage_children ++
+          [{PersistenceRuntime, persistence_runtime}] ++
+          persistence_children ++
+          [{ManifestIndexCache, []}] ++
+          local_dev_bootstrap_children() ++
           [
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},
             {AdmissionCoordinator, []},
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
-            {RunManager, []},
-            {RunRecovery, []},
-            {BoundedDispatcher, []}
-          ] ++ scheduler_children() ++ api_children()
+            {Task.Supervisor, name: FavnOrchestrator.RunManagerTaskSupervisor},
+            {RunManager, []}
+          ] ++
+          [{BackfillDispatcher, []}] ++
+          [{RunRecovery, []}, {BoundedDispatcher, []}] ++ scheduler_children() ++ api_children()
 
       with {:ok, supervisor} <-
              Supervisor.start_link(children,
@@ -62,9 +79,17 @@ defmodule FavnOrchestrator.Application do
     scheduler_opts = Application.get_env(:favn_orchestrator, :scheduler, [])
 
     if Keyword.get(scheduler_opts, :enabled, false) do
-      [{SchedulerRuntime, scheduler_opts}]
+      [{PersistenceSchedulerRuntime, scheduler_opts}]
     else
       OperationalEvents.emit(:scheduler_disabled, %{}, %{})
+      []
+    end
+  end
+
+  defp local_dev_bootstrap_children do
+    if Application.get_env(:favn_orchestrator, :local_dev_mode, false) do
+      [{LocalDevBootstrap, []}]
+    else
       []
     end
   end

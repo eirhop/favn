@@ -34,10 +34,7 @@ defmodule FavnOrchestrator.HTTPContract.SchemaTest do
       "manifest_version_id" => "mv_123",
       "event_seq" => 1,
       "started_at" => "2026-01-01T00:00:00Z",
-      "finished_at" => nil,
-      "target_refs" => [],
-      "asset_results" => [],
-      "error" => nil
+      "finished_at" => nil
     })
   end
 

@@ -19,6 +19,29 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
     assert normalized.snapshot_hash == RunState.with_snapshot_hash(run_state).snapshot_hash
   end
 
+  test "unplanned target references are hashed and immutable after submission" do
+    run =
+      RunState.new(
+        id: "run_target_identity",
+        manifest_version_id: "mv_codec",
+        manifest_content_hash: "hash_codec",
+        asset_ref: {MyApp.Asset, :asset},
+        target_refs: [{MyApp.Asset, :asset}]
+      )
+
+    changed =
+      %{run | target_refs: [{MyApp.OtherAsset, :asset}]}
+      |> RunState.with_snapshot_hash()
+
+    refute changed.snapshot_hash == run.snapshot_hash
+
+    assert_raise ArgumentError,
+                 "run plans and target references are immutable after submission",
+                 fn ->
+                   RunState.transition(run, target_refs: [{MyApp.OtherAsset, :asset}])
+                 end
+  end
+
   test "accepts backfill submit kinds and partial status" do
     run_state =
       RunState.new(

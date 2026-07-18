@@ -32,7 +32,7 @@ mix favn.stop
 | `mix favn.init --duckdb --sample` | Generate local Favn files and a sample DuckDB pipeline. | `--duckdb`, `--sample` |
 | `mix favn.doctor` | Check local configuration before running. | `--skip-compile` |
 | `mix favn.install` | Prepare `.favn/install`. | `--force`, `--skip-runtime-deps-install`, `--root-dir PATH` |
-| `mix favn.dev` | Start local runtime processes and the UI. | `--sqlite`, `--postgres`, `--scheduler`, `--root-dir PATH` |
+| `mix favn.dev` | Start PostgreSQL-backed local runtime processes and the UI. | `--scheduler`, `--root-dir PATH` |
 
 `mix favn.dev` stays in the foreground. It prints service logs and URLs. Stop it
 with `mix favn.stop` from another terminal or by ending the foreground process.

@@ -37,9 +37,10 @@ defmodule FavnOrchestrator.Freshness.Decider do
   """
   @spec decide(Plan.t(), Plan.node_key(), opts()) :: decision()
   def decide(%Plan{} = plan, node_key, opts \\ []) do
-    node = Map.fetch!(plan.nodes, node_key)
-    context = context(plan, opts)
+    decide_with_context(node_key, Map.fetch!(plan.nodes, node_key), context(plan, opts))
+  end
 
+  defp decide_with_context(node_key, node, context) do
     with :ok <- dependency_satisfied?(node, context) do
       cond do
         MapSet.member?(context.forced_node_keys, node_key) ->
@@ -61,7 +62,11 @@ defmodule FavnOrchestrator.Freshness.Decider do
           required(Plan.node_key()) => decision()
         }
   def decide_many(%Plan{} = plan, node_keys, opts \\ []) when is_list(node_keys) do
-    Map.new(node_keys, &{&1, decide(plan, &1, opts)})
+    context = context(plan, opts)
+
+    Map.new(node_keys, fn node_key ->
+      {node_key, decide_with_context(node_key, Map.fetch!(plan.nodes, node_key), context)}
+    end)
   end
 
   @doc """
@@ -250,10 +255,7 @@ defmodule FavnOrchestrator.Freshness.Decider do
   defp context(plan, opts) do
     refresh_policy = refresh_policy(Keyword.get(opts, :refresh_policy))
 
-    forced_node_keys =
-      opts
-      |> Keyword.get(:forced_node_keys, RefreshPolicy.expand_force_set(refresh_policy, plan))
-      |> set()
+    forced_node_keys = forced_node_keys(opts, refresh_policy, plan)
 
     %{
       plan: plan,
@@ -276,6 +278,13 @@ defmodule FavnOrchestrator.Freshness.Decider do
     case RefreshPolicy.from_value(value) do
       {:ok, policy} -> policy
       {:error, reason} -> raise ArgumentError, "invalid refresh policy: #{inspect(reason)}"
+    end
+  end
+
+  defp forced_node_keys(opts, refresh_policy, plan) do
+    case Keyword.fetch(opts, :forced_node_keys) do
+      {:ok, value} -> set(value)
+      :error -> RefreshPolicy.expand_force_set(refresh_policy, plan)
     end
   end
 

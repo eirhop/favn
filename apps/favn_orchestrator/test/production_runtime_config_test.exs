@@ -14,117 +14,201 @@ end
 defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
   use ExUnit.Case, async: false
 
-  alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.ProductionRuntimeConfig
 
   @token "alpha-credential-value-1234567890abcd"
   @token_env "favn_web:#{@token}"
+  @pin_key :binary.copy(<<7>>, 32) |> Base.encode64()
+  @old_pin_key :binary.copy(<<6>>, 32) |> Base.encode64()
 
-  test "validate/1 accepts the Phase 1 production defaults" do
-    assert {:ok, config} =
-             ProductionRuntimeConfig.validate(%{
-               "FAVN_STORAGE" => "sqlite",
-               "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
-               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
-               "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
-               "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long"
-             })
+  setup do
+    ca_file =
+      Path.join(System.tmp_dir!(), "favn-runtime-config-ca-#{System.unique_integer()}.pem")
 
-    assert config.storage == :sqlite
-    assert config.sqlite[:database] == "/var/lib/favn/orchestrator.sqlite3"
-    assert config.sqlite[:migration_mode] == :manual
-    assert config.sqlite[:busy_timeout] == 5_000
-    assert config.sqlite[:pool_size] == 1
+    File.write!(ca_file, "test-ca")
+    on_exit(fn -> File.rm(ca_file) end)
+    %{ca_file: ca_file}
+  end
+
+  test "validate/1 accepts the PostgreSQL production defaults", %{ca_file: ca_file} do
+    assert {:ok, config} = ProductionRuntimeConfig.validate(base_env(ca_file))
+
+    assert config.storage == :postgres
+    assert config.postgres[:url] == "ecto://favn:secret@postgres.example/favn"
+    assert config.postgres[:ssl_mode] == :verify_full
+    assert config.postgres[:ssl_ca_file] == ca_file
+    assert config.postgres[:pool_size] == 15
+
+    assert config.runtime_input_pin == %{
+             keys: %{1 => :binary.copy(<<7>>, 32)},
+             current_version: 1
+           }
+
     assert config.api_server == [enabled: true, host: "127.0.0.1", port: 4101]
-
-    assert config.manifest_publication == [
-             compressed_limit_bytes: 8 * 1024 * 1024,
-             decompressed_limit_bytes: 32 * 1024 * 1024
-           ]
+    assert config.active_run_plan_max_bytes == 512 * 1_024 * 1_024
 
     assert config.api_service_tokens == [
              %{
                service_identity: "favn_web",
                token_hash: ServiceTokens.hash_token(@token),
-               enabled: true
+               enabled: true,
+               platform_roles: []
              }
            ]
 
-    assert config.scheduler == [enabled: true, tick_ms: 15_000, max_missed_all_occurrences: 1_000]
-    assert config.runner == %{mode: :local, topology: :single_node}
-  end
-
-  test "validate/1 accepts explicit supported production values" do
-    env = %{
-      "FAVN_STORAGE" => "sqlite",
-      "FAVN_SQLITE_PATH" => "/srv/favn/control.sqlite3",
-      "FAVN_SQLITE_MIGRATION_MODE" => "auto",
-      "FAVN_SQLITE_BUSY_TIMEOUT_MS" => "7500",
-      "FAVN_SQLITE_POOL_SIZE" => "1",
-      "FAVN_ORCHESTRATOR_API_BIND_HOST" => "0.0.0.0",
-      "FAVN_ORCHESTRATOR_API_PORT" => "4444",
-      "FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES" => "1048576",
-      "FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES" => "4194304",
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
-        "favn_web:#{@token},bootstrap_cli:#{@token <> "-bravo"}",
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long",
-      "FAVN_RUNNER_MODE" => "local",
-      "FAVN_SCHEDULER_ENABLED" => "false",
-      "FAVN_SCHEDULER_TICK_MS" => "250",
-      "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES" => "2"
-    }
-
-    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
-    assert config.sqlite[:migration_mode] == :auto
-    assert config.sqlite[:busy_timeout] == 7_500
-    assert config.api_server == [enabled: true, host: "0.0.0.0", port: 4444]
-
-    assert config.manifest_publication == [
-             compressed_limit_bytes: 1_048_576,
-             decompressed_limit_bytes: 4_194_304
+    assert config.scheduler == [
+             enabled: true,
+             workspace_ids: ["salmon-one", "salmon-two"],
+             tick_ms: 15_000,
+             max_missed_all_occurrences: 1_000
            ]
 
-    assert length(config.api_service_tokens) == 2
-    assert config.scheduler == [enabled: false, tick_ms: 250, max_missed_all_occurrences: 2]
     assert config.runner == %{mode: :local, topology: :single_node}
   end
 
-  test "validate/1 rejects missing required production config" do
+  test "validate/1 accepts explicit supported production values", %{ca_file: ca_file} do
+    env =
+      ca_file
+      |> base_env()
+      |> Map.merge(%{
+        "FAVN_STORAGE" => "postgresql",
+        "FAVN_DATABASE_POOL_SIZE" => "32",
+        "FAVN_DATABASE_QUEUE_TARGET_MS" => "75",
+        "FAVN_DATABASE_QUEUE_INTERVAL_MS" => "1500",
+        "FAVN_DATABASE_TIMEOUT_MS" => "30000",
+        "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION" => "4",
+        "FAVN_RUNTIME_INPUT_PIN_KEYS" => Jason.encode!(%{"1" => @old_pin_key, "4" => @pin_key}),
+        "FAVN_ORCHESTRATOR_API_BIND_HOST" => "0.0.0.0",
+        "FAVN_ORCHESTRATOR_API_PORT" => "4444",
+        "FAVN_ORCHESTRATOR_ACTIVE_RUN_PLAN_MAX_BYTES" => "1073741824",
+        "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
+          "favn_web:#{@token},bootstrap_cli:#{@token <> "-bravo"}",
+        "FAVN_SCHEDULER_ENABLED" => "false",
+        "FAVN_SCHEDULER_TICK_MS" => "250",
+        "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES" => "2"
+      })
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+    assert config.postgres[:pool_size] == 32
+    assert config.postgres[:queue_target] == 75
+    assert config.postgres[:queue_interval] == 1_500
+    assert config.postgres[:timeout] == 30_000
+    assert config.runtime_input_pin.current_version == 4
+    assert config.runtime_input_pin.keys |> Map.keys() |> Enum.sort() == [1, 4]
+    assert config.api_server == [enabled: true, host: "0.0.0.0", port: 4444]
+    assert config.active_run_plan_max_bytes == 1_073_741_824
+    assert length(config.api_service_tokens) == 2
+
+    assert config.scheduler == [
+             enabled: false,
+             workspace_ids: [],
+             tick_ms: 250,
+             max_missed_all_occurrences: 2
+           ]
+  end
+
+  test "validate/1 rejects missing and unsupported storage", %{ca_file: ca_file} do
     assert {:error, %{error: {:missing_env, "FAVN_STORAGE"}}} =
              ProductionRuntimeConfig.validate(%{})
-  end
 
-  test "validate/1 rejects unsupported storage and relative sqlite path" do
-    assert {:error, %{error: {:invalid_env, "FAVN_STORAGE", "sqlite"}}} =
-             ProductionRuntimeConfig.validate(%{
-               "FAVN_STORAGE" => "postgres",
-               "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
-               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env
-             })
-
-    assert {:error, %{error: {:invalid_env, "FAVN_SQLITE_PATH", "absolute path"}}} =
-             ProductionRuntimeConfig.validate(%{
-               "FAVN_STORAGE" => "sqlite",
-               "FAVN_SQLITE_PATH" => "relative.sqlite3",
-               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env
-             })
-  end
-
-  test "validate/1 rejects invalid Phase 1 bounds and redacts token values" do
-    base = %{
-      "FAVN_STORAGE" => "sqlite",
-      "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long"
-    }
-
-    assert {:error, %{error: {:invalid_env, "FAVN_SQLITE_POOL_SIZE", 1}}} =
-             base
-             |> Map.put("FAVN_SQLITE_POOL_SIZE", "2")
+    assert {:error, %{error: {:invalid_env, "FAVN_STORAGE", "postgres"}}} =
+             ca_file
+             |> base_env()
+             |> Map.put("FAVN_STORAGE", "sqlite")
              |> ProductionRuntimeConfig.validate()
+  end
+
+  test "validate/1 rejects unsafe PostgreSQL configuration", %{ca_file: ca_file} do
+    base = base_env(ca_file)
+
+    assert {:error, %{error: {:invalid_env, "FAVN_DATABASE_URL", "PostgreSQL connection URL"}}} =
+             base
+             |> Map.put("FAVN_DATABASE_URL", "sqlite:///tmp/favn.db")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{error: {:invalid_env, "FAVN_DATABASE_SSL_CA_FILE", "absolute readable file"}}} =
+             base
+             |> Map.put("FAVN_DATABASE_SSL_CA_FILE", "/missing/ca.pem")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{error: {:invalid_env, "FAVN_DATABASE_POOL_SIZE", "1..200"}}} =
+             base
+             |> Map.put("FAVN_DATABASE_POOL_SIZE", "201")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_ORCHESTRATOR_ACTIVE_RUN_PLAN_MAX_BYTES",
+                 "67108864..8589934592"}
+            }} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_ACTIVE_RUN_PLAN_MAX_BYTES", "67108863")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{error: {:invalid_secret_env, "FAVN_RUNTIME_INPUT_PIN_KEYS", :invalid_key}}} =
+             base
+             |> Map.put("FAVN_RUNTIME_INPUT_PIN_KEYS", Jason.encode!(%{"1" => "not-a-key"}))
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION",
+                 "version present in FAVN_RUNTIME_INPUT_PIN_KEYS"}
+            }} =
+             base
+             |> Map.put("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "2")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_DATABASE_SSL_MODE",
+                 "verify-full or explicit loopback plaintext interlock"}
+            }} =
+             base
+             |> Map.put("FAVN_DATABASE_SSL_MODE", "disable")
+             |> Map.delete("FAVN_DATABASE_SSL_CA_FILE")
+             |> ProductionRuntimeConfig.validate()
+  end
+
+  test "validate/1 permits plaintext only for loopback with the explicit interlock", %{
+    ca_file: ca_file
+  } do
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_DATABASE_SSL_MODE",
+                 "verify-full or explicit loopback plaintext interlock"}
+            }} =
+             ca_file
+             |> base_env()
+             |> Map.delete("FAVN_DATABASE_SSL_CA_FILE")
+             |> Map.put("FAVN_DATABASE_SSL_MODE", "disable")
+             |> Map.put("FAVN_UNSAFE_ALLOW_PLAINTEXT_DATABASE", "true")
+             |> ProductionRuntimeConfig.validate()
+
+    env =
+      ca_file
+      |> base_env()
+      |> Map.delete("FAVN_DATABASE_SSL_CA_FILE")
+      |> Map.put("FAVN_DATABASE_URL", "ecto://favn:secret@127.0.0.1/favn")
+      |> Map.put("FAVN_DATABASE_SSL_MODE", "disable")
+      |> Map.put("FAVN_UNSAFE_ALLOW_PLAINTEXT_DATABASE", "true")
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+    assert config.postgres[:ssl_mode] == :disable
+    assert config.postgres[:allow_insecure_database?]
+    refute Keyword.has_key?(config.postgres, :ssl_ca_file)
+  end
+
+  test "validate/1 rejects invalid service, auth, scheduler, and runner values", %{
+    ca_file: ca_file
+  } do
+    base = base_env(ca_file)
 
     assert {:error, %{error: {:invalid_env, "FAVN_SCHEDULER_TICK_MS", "100..86400000"}}} =
              base
@@ -137,62 +221,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "favn_web:short-secret")
              |> ProductionRuntimeConfig.validate()
 
-    assert {:error,
-            %{error: {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :duplicate_identity}}} =
-             base
-             |> Map.put(
-               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
-               "favn_web:#{@token},favn_web:#{@token <> "-bravo"}"
-             )
-             |> ProductionRuntimeConfig.validate()
-
-    assert {:error,
-            %{error: {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :blank_identity}}} =
-             base
-             |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", ":#{@token}")
-             |> ProductionRuntimeConfig.validate()
-
-    assert {:error,
-            %{
-              error: {:invalid_env, "FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "1..2592000"}
-            }} =
+    assert {:error, %{error: {:invalid_env, "FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "1..2592000"}}} =
              base
              |> Map.put("FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "0")
-             |> ProductionRuntimeConfig.validate()
-
-    assert {:error,
-            %{
-              error: {:invalid_env, "FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "1..2592000"}
-            }} =
-             base
-             |> Map.put("FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "2592001")
-             |> ProductionRuntimeConfig.validate()
-
-    compressed_range = "1..#{ManifestPublicationConfig.maximum_compressed_limit_bytes()}"
-
-    assert {:error,
-            %{
-              error:
-                {:invalid_env, "FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES",
-                 ^compressed_range}
-            }} =
-             base
-             |> Map.put("FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES", "0")
-             |> ProductionRuntimeConfig.validate()
-
-    decompressed_range = "1..#{ManifestPublicationConfig.maximum_decompressed_limit_bytes()}"
-
-    assert {:error,
-            %{
-              error:
-                {:invalid_env, "FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES",
-                 ^decompressed_range}
-            }} =
-             base
-             |> Map.put(
-               "FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES",
-               Integer.to_string(ManifestPublicationConfig.maximum_decompressed_limit_bytes() + 1)
-             )
              |> ProductionRuntimeConfig.validate()
 
     assert {:error,
@@ -204,29 +235,22 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> Map.put("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", "short")
              |> ProductionRuntimeConfig.validate()
 
-    assert {:error,
-            %{
-              error: {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "viewer,operator,admin"}
-            }} =
-             base
-             |> Map.put("FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "root")
-             |> ProductionRuntimeConfig.validate()
-
     assert {:error, %{error: {:invalid_env, "FAVN_RUNNER_MODE", "local"}}} =
              base
              |> Map.put("FAVN_RUNNER_MODE", "distributed")
              |> ProductionRuntimeConfig.validate()
   end
 
-  test "apply_from_env/1 writes orchestrator application env" do
-    keys = [
-      :storage_adapter,
-      :storage_adapter_opts,
+  test "apply_from_env/1 freezes redacted PostgreSQL composition", %{ca_file: ca_file} do
+    orchestrator_keys = [
+      :persistence_backend,
+      :persistence_options,
       :api_server,
-      :manifest_publication,
       :api_service_tokens,
       :api_service_tokens_env,
+      :workspace_ids,
       :auth_session_ttl_seconds,
+      :active_run_plan_max_bytes,
       :scheduler,
       :runner_client,
       :runner_client_opts,
@@ -238,60 +262,80 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :local_dev_mode
     ]
 
-    previous = Map.new(keys, &{&1, Application.get_env(:favn_orchestrator, &1)})
+    postgres_keys = [:runtime_input_pin_keys, :runtime_input_pin_current_key_version]
+    previous_orchestrator = snapshot_env(:favn_orchestrator, orchestrator_keys)
+    previous_postgres = snapshot_env(:favn_storage_postgres, postgres_keys)
 
-    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_env(key, value) end) end)
-
-    Application.put_env(:favn_orchestrator, :api_service_tokens_env, @token_env)
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, previous_orchestrator)
+      restore_env(:favn_storage_postgres, previous_postgres)
+    end)
 
     assert :ok =
-             ProductionRuntimeConfig.apply_from_env(%{
-               "FAVN_STORAGE" => "sqlite",
-               "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
-               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
-               "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
-               "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long",
-               "FAVN_SCHEDULER_ENABLED" => "0"
-             })
+             ca_file
+             |> base_env()
+             |> Map.put(
+               "FAVN_RUNTIME_INPUT_PIN_KEYS",
+               Jason.encode!(%{"1" => @old_pin_key, "2" => @pin_key})
+             )
+             |> Map.put("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "2")
+             |> Map.put("FAVN_SCHEDULER_ENABLED", "0")
+             |> ProductionRuntimeConfig.apply_from_env()
 
-    assert Application.get_env(:favn_orchestrator, :storage_adapter) ==
-             ProductionRuntimeConfig.sqlite_adapter()
+    assert Application.get_env(:favn_orchestrator, :persistence_backend) ==
+             ProductionRuntimeConfig.postgres_backend()
 
-    assert Application.get_env(:favn_orchestrator, :storage_adapter_opts)[:database] ==
-             "/var/lib/favn/orchestrator.sqlite3"
+    options = Application.get_env(:favn_orchestrator, :persistence_options)
+    assert options[:url] == "ecto://favn:secret@postgres.example/favn"
 
-    assert Application.get_env(:favn_orchestrator, :api_service_tokens) == [
-             %{
-               service_identity: "favn_web",
-               token_hash: ServiceTokens.hash_token(@token),
-               enabled: true
-             }
-           ]
+    assert Application.get_env(:favn_storage_postgres, :runtime_input_pin_keys) == %{
+             1 => :binary.copy(<<6>>, 32),
+             2 => :binary.copy(<<7>>, 32)
+           }
 
-    refute Application.get_env(:favn_orchestrator, :api_service_tokens_env)
-
-    assert Application.get_env(:favn_orchestrator, :manifest_publication) == [
-             compressed_limit_bytes: 8 * 1024 * 1024,
-             decompressed_limit_bytes: 32 * 1024 * 1024
-           ]
+    assert Application.get_env(
+             :favn_storage_postgres,
+             :runtime_input_pin_current_key_version
+           ) == 2
 
     assert Application.get_env(:favn_orchestrator, :scheduler)[:enabled] == false
+    assert Application.get_env(:favn_orchestrator, :workspace_ids) == ["salmon-one", "salmon-two"]
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_username) == "admin"
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == [:admin]
     assert Application.get_env(:favn_orchestrator, :local_dev_mode) == false
 
-    assert Application.get_env(:favn_orchestrator, :runner_client) ==
-             FavnOrchestrator.RunnerClient.LocalNode
-
-    assert Application.get_env(:favn_orchestrator, :runner_client_opts) == []
+    assert Application.get_env(:favn_orchestrator, :active_run_plan_max_bytes) ==
+             512 * 1_024 * 1_024
 
     diagnostics = Application.get_env(:favn_orchestrator, :production_runtime_diagnostics)
-    refute inspect(diagnostics) =~ "/var/lib/favn/orchestrator.sqlite3"
-    assert diagnostics.manifest_publication.compressed_limit_bytes == 8 * 1024 * 1024
-    assert diagnostics.manifest_publication.decompressed_limit_bytes == 32 * 1024 * 1024
+    refute inspect(diagnostics) =~ "secret"
+    refute inspect(diagnostics) =~ ca_file
+    refute inspect(diagnostics) =~ @pin_key
+    refute inspect(diagnostics) =~ @old_pin_key
+    assert diagnostics.runtime_input_pin == %{current_version: 2, retained_versions: [1, 2]}
+    assert diagnostics.active_run_plan == %{max_bytes: 512 * 1_024 * 1_024}
     assert diagnostics.runner == %{mode: :local, topology: :single_node}
   end
 
-  defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
-  defp restore_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)
+  defp base_env(ca_file) do
+    %{
+      "FAVN_STORAGE" => "postgres",
+      "FAVN_DATABASE_URL" => "ecto://favn:secret@postgres.example/favn",
+      "FAVN_DATABASE_SSL_CA_FILE" => ca_file,
+      "FAVN_RUNTIME_INPUT_PIN_KEYS" => Jason.encode!(%{"1" => @pin_key}),
+      "FAVN_WORKSPACE_IDS" => "salmon-one,salmon-two",
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long"
+    }
+  end
+
+  defp snapshot_env(app, keys), do: Map.new(keys, &{&1, Application.get_env(app, &1)})
+
+  defp restore_env(app, values) do
+    Enum.each(values, fn
+      {key, nil} -> Application.delete_env(app, key)
+      {key, value} -> Application.put_env(app, key, value)
+    end)
+  end
 end

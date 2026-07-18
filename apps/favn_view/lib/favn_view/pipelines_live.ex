@@ -12,7 +12,7 @@ defmodule FavnView.PipelinesLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {pipelines, error} = load_pipelines()
+    {pipelines, error} = load_pipelines(socket.assigns.current_scope.operator_context)
 
     socket =
       assign(socket,
@@ -61,19 +61,22 @@ defmodule FavnView.PipelinesLive do
     """
   end
 
-  defp load_pipelines do
-    case active_pipeline_catalogue() do
+  defp load_pipelines(operator_context) do
+    case active_pipeline_catalogue(operator_context) do
       {:ok, entries} -> {Enum.map(entries, &pipeline_from_entry/1), nil}
       {:error, reason} -> {[], OperatorErrorLabels.load(reason)}
     end
   end
 
-  defp active_pipeline_catalogue do
-    Application.get_env(
-      :favn_view,
-      :active_pipeline_catalogue_fun,
-      &FavnOrchestrator.active_pipeline_catalogue/0
-    ).()
+  defp active_pipeline_catalogue(operator_context) do
+    fun =
+      Application.get_env(
+        :favn_view,
+        :active_pipeline_catalogue_fun,
+        &FavnOrchestrator.active_pipeline_catalogue/1
+      )
+
+    if is_function(fun, 1), do: fun.(operator_context), else: fun.()
   end
 
   defp pipeline_from_entry(entry) do

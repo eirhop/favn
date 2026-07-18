@@ -11,19 +11,25 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerWork
   alias Favn.Freshness.Key
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ExecutionAdmission
+  alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RuntimeInputPins
-  alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
   alias FavnOrchestrator.RunServer.Persistence
+  alias FavnOrchestrator.RunServer.PersistenceRetry
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Persistence.SystemContext
+
+  @max_batch_nodes 4
+  @max_batch_ms 25
 
   @type node_key :: Favn.Plan.node_key()
   @type entry :: map()
@@ -33,6 +39,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           | {:partial_retry, RunState.t(), [entry()], [node_key()], node_key(), term(),
              MapSet.t(term()), [map()]}
           | {:error, RunState.t(), [term()], [node_key()]}
+          | {:persist_retry, PersistenceRetry.t(), term()}
 
   @spec submit(map()) :: result()
   def submit(request) when is_map(request) do
@@ -44,6 +51,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp submit_request(%{
          run: %RunState{} = run_state,
          version: %Version{} = version,
+         manifest_index: %Index{} = manifest_index,
          stage: stage,
          node_keys: node_keys,
          decisions: decisions,
@@ -51,21 +59,26 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          attempt: attempt,
          runner_client: runner_client,
          runner_opts: runner_opts,
+         manifest_lease_id: manifest_lease_id,
          queued_steps: %MapSet{} = queued_steps
        })
        when is_list(node_keys) and is_map(decisions) and is_map(freshness_context) do
     ctx = %{
       current_run: run_state,
       version: version,
+      manifest_index: manifest_index,
       stage: stage,
       decisions: decisions,
       freshness_context: freshness_context,
       attempt: attempt,
       runner_client: runner_client,
       runner_opts: runner_opts,
+      manifest_lease_id: manifest_lease_id,
       entries_rev: [],
       queued_steps: queued_steps,
-      waiters: []
+      waiters: [],
+      batch_started_ms: System.monotonic_time(:millisecond),
+      batch_count: 0
     }
 
     do_submit(node_keys, ctx)
@@ -76,50 +89,70 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp do_submit([node_key | rest] = node_keys, ctx) do
-    if Persistence.externally_cancelled?(ctx.current_run.id) do
-      {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
-    else
-      work = stage_work(ctx.current_run, ctx.version, node_key, ctx.stage, ctx.attempt)
+    cond do
+      yield_batch?(ctx) ->
+        {:ok, ctx.current_run, entries(ctx), node_keys, ctx.queued_steps, ctx.waiters}
 
-      entry_context =
-        Map.merge(ctx, %{
-          rest: rest,
-          node_keys: node_keys,
-          node_key: node_key,
-          work: work
-        })
+      Persistence.externally_cancelled?(ctx.current_run) ->
+        {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
 
-      case ExecutionAdmission.acquire_or_wait(
-             ctx.current_run,
-             %{
-               asset_step_id: work.asset_step_id,
-               execution_pool: RunnerWork.execution_pool(work)
-             },
-             stage: ctx.stage,
-             attempt: ctx.attempt
-           ) do
-        {:ok, lease} ->
-          handle_admitted_entry(Map.put(entry_context, :lease, lease))
-
-        {:waiting, waiter} ->
-          persist_or_defer_queued_entry(
-            entry_context
-            |> Map.put(:queue_signature, queue_signature(work.asset_step_id, waiter))
-            |> Map.put(:queue_reason, waiter.queue_reason)
-            |> Map.put(:scope, waiter.blocked_scope)
-            |> Map.put(:waiter, waiter)
+      true ->
+        work =
+          stage_work(
+            ctx.current_run,
+            ctx.version,
+            ctx.manifest_lease_id,
+            node_key,
+            ctx.stage,
+            ctx.attempt
           )
 
-        {:error, {:run_not_admissible, run_id, _status}}
-        when run_id == ctx.current_run.id ->
-          {:error, ctx.current_run, [], attempted_node_keys(ctx)}
+        entry_context =
+          Map.merge(ctx, %{
+            rest: rest,
+            node_keys: node_keys,
+            node_key: node_key,
+            work: work,
+            batch_count: ctx.batch_count + 1
+          })
 
-        {:error, reason} ->
-          failed = RunState.transition(ctx.current_run, status: :error, error: reason)
-          {:error, failed, [], attempted_node_keys(ctx)}
-      end
+        case ExecutionAdmission.acquire_or_wait(
+               ctx.current_run,
+               %{
+                 asset_step_id: work.asset_step_id,
+                 execution_pool: RunnerWork.execution_pool(work)
+               },
+               stage: ctx.stage,
+               attempt: ctx.attempt
+             ) do
+          {:ok, lease} ->
+            handle_admitted_entry(Map.put(entry_context, :lease, lease))
+
+          {:waiting, waiter} ->
+            persist_or_defer_queued_entry(
+              entry_context
+              |> Map.put(:queue_signature, queue_signature(work.asset_step_id, waiter))
+              |> Map.put(:queue_reason, waiter.queue_reason)
+              |> Map.put(:scope, waiter.blocked_scope)
+              |> Map.put(:waiter, waiter)
+            )
+
+          {:error, {:run_not_admissible, run_id, _status}}
+          when run_id == ctx.current_run.id ->
+            {:error, ctx.current_run, [], attempted_node_keys(ctx)}
+
+          {:error, reason} ->
+            failed = Snapshots.snapshot_update(ctx.current_run, status: :error, error: reason)
+            {:error, failed, [], attempted_node_keys(ctx)}
+        end
     end
   end
+
+  defp yield_batch?(%{batch_count: count, batch_started_ms: started_at}) when count > 0 do
+    count >= @max_batch_nodes or System.monotonic_time(:millisecond) - started_at >= @max_batch_ms
+  end
+
+  defp yield_batch?(_ctx), do: false
 
   defp handle_admitted_entry(
          %{current_run: current_run, version: version, node_key: node_key} = ctx
@@ -156,7 +189,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
       {:error, reason} ->
         :ok = release_entry_lease(%{lease: ctx.lease})
-        failed = RunState.transition(current_run, status: :error, error: reason)
+        failed = Snapshots.snapshot_update(current_run, status: :error, error: reason)
         {:error, failed, [], attempted_node_keys(ctx)}
     end
   end
@@ -186,12 +219,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
 
         {:error, reason} ->
-          failed = RunState.transition(ctx.current_run, status: :error, error: reason)
+          failed = Snapshots.snapshot_update(ctx.current_run, status: :error, error: reason)
           {:error, failed, [], attempted_node_keys(ctx)}
       end
     else
       failed =
-        RunState.transition(ctx.current_run,
+        Snapshots.snapshot_update(ctx.current_run,
           status: :error,
           error: {:non_reusable_materialization_claim_succeeded, MaterializationClaims.key(claim)}
         )
@@ -221,7 +254,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
 
       {:error, reason} ->
-        failed = RunState.transition(ctx.current_run, status: :error, error: reason)
+        failed = Snapshots.snapshot_update(ctx.current_run, status: :error, error: reason)
         {:error, failed, [], attempted_node_keys(ctx)}
     end
   end
@@ -235,10 +268,25 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp execution_ids(ctx), do: Enum.map(entries(ctx), & &1.execution_id)
 
   defp submit_admitted_entry(ctx) do
-    with {:ok, work} <- ExecutionPackages.attach(ctx.work, ctx.version),
-         {:ok, work} <-
-           RuntimeInputPins.prepare(work, ctx.runner_client, ctx.runner_opts) do
-      do_submit_admitted_entry(%{ctx | work: work})
+    package_context =
+      SystemContext.workspace(ctx.current_run.workspace_id, :execution_package_fetch)
+
+    with {:ok, work} <-
+           ExecutionPackages.attach(
+             package_context,
+             ctx.current_run.deployment_id,
+             ctx.work,
+             ctx.version,
+             ctx.manifest_index
+           ),
+         {:ok, prepared} <-
+           RuntimeInputPins.prepare(
+             ctx.current_run,
+             work,
+             ctx.runner_client,
+             ctx.runner_opts
+           ) do
+      do_submit_admitted_entry(%{ctx | work: prepared})
     else
       {:error, reason} -> fail_unsubmitted_entry(ctx, ctx.work.asset_ref, reason)
     end
@@ -272,7 +320,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp submit_owned_entry(ctx, ownership, work, asset_ref) do
-    case ctx.runner_client.submit_work(work, ctx.runner_opts) do
+    result = ctx.runner_client.submit_work(work, ctx.runner_opts)
+
+    case result do
       {:ok, execution_id} ->
         submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)
 
@@ -288,12 +338,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         end
 
       {:error, reason} ->
-        _ =
-          RunExecutionOwnership.mark_dispatch_failed(
-            ctx.current_run.id,
-            ownership.ownership_id,
-            reason
-          )
+        _ = RunExecutionOwnership.fail_dispatch(ownership, reason)
 
         fail_unsubmitted_entry(ctx, asset_ref, reason)
     end
@@ -314,16 +359,19 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp persist_retryable_submit_failure(ctx, asset_ref, reason) do
     failed = RunState.transition(ctx.current_run, status: :error, error: reason)
 
-    case persist_stage_submit_failure_event(ctx, failed, asset_ref, reason, true) do
+    result =
+      {:partial_retry, failed, entries(ctx), ctx.rest, ctx.node_key, reason, ctx.queued_steps,
+       ctx.waiters}
+
+    case persist_stage_submit_failure_event(ctx, failed, asset_ref, reason, true, result) do
       :ok ->
-        {:partial_retry, failed, entries(ctx), ctx.rest, ctx.node_key, reason, ctx.queued_steps,
-         ctx.waiters}
+        result
 
       {:error, :external_cancel} ->
         terminalize_unsubmitted_entry(ctx, asset_ref, :external_cancel)
 
-      {:error, _persist_reason} ->
-        terminalize_unsubmitted_entry(ctx, asset_ref, reason)
+      {:error, persist_reason, retry} ->
+        {:persist_retry, retry, persist_reason}
     end
   end
 
@@ -388,20 +436,36 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp persist_stage_submit_failure(ctx, failed, asset_ref, reason, retryable?) do
-    case persist_stage_submit_failure_event(ctx, failed, asset_ref, reason, retryable?) do
+    result = {:error, failed, [], attempted_node_keys(ctx)}
+
+    case persist_stage_submit_failure_event(
+           ctx,
+           failed,
+           asset_ref,
+           reason,
+           retryable?,
+           result
+         ) do
       :ok ->
-        {:error, failed, [], attempted_node_keys(ctx)}
+        result
 
       {:error, :external_cancel} ->
         {:error, Snapshots.cancelled_snapshot(failed), [], attempted_node_keys(ctx)}
 
-      {:error, _persist_reason} ->
-        {:error, failed, [], attempted_node_keys(ctx)}
+      {:error, persist_reason, retry} ->
+        {:persist_retry, retry, persist_reason}
     end
   end
 
-  defp persist_stage_submit_failure_event(ctx, failed, asset_ref, reason, retryable?) do
-    Persistence.persist_run_step(failed, :step_failed, %{
+  defp persist_stage_submit_failure_event(
+         ctx,
+         failed,
+         asset_ref,
+         reason,
+         retryable?,
+         resume_result
+       ) do
+    data = %{
       asset_ref: asset_ref,
       error: reason,
       node_key: RunnerWork.node_key(ctx.work),
@@ -413,7 +477,21 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       retryable?: retryable?,
       retry_exhausted?: retryable? and ctx.attempt >= ctx.work.max_attempts,
       execution_pool: RunnerWork.execution_pool(ctx.work)
-    })
+    }
+
+    retry =
+      PersistenceRetry.new(
+        failed,
+        :step_failed,
+        data,
+        {:stage_admission, ctx.attempt, resume_result}
+      )
+
+    case PersistenceRetry.persist(retry) do
+      :ok -> :ok
+      {:error, :external_cancel} -> {:error, :external_cancel}
+      {:error, reason} -> {:error, reason, retry}
+    end
   end
 
   defp attach_ownership_metadata(%RunnerWork{} = work, %RunExecutionOwnership{} = ownership) do
@@ -423,7 +501,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       |> Map.put(:dispatch_id, ownership.dispatch_id)
       |> Map.put(:deadline_at, ownership.deadline_at)
 
-    %{work | metadata: metadata}
+    %{work | execution_id: ownership.dispatch_id, metadata: metadata}
   end
 
   defp submit_started_entry(ctx, ownership, execution_id) do
@@ -433,7 +511,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
     case RunExecutionOwnership.persist(started_ownership) do
       :ok ->
-        submit_started_entry_after_ownership(ctx, execution_id, asset_ref, asset_step_id)
+        submit_started_entry_after_ownership(
+          ctx,
+          RunExecutionOwnership.advance_local_version(started_ownership),
+          execution_id,
+          asset_ref,
+          asset_step_id
+        )
 
       {:error, reason} ->
         :ok = release_entry_lease(%{lease: ctx.lease})
@@ -450,13 +534,23 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           )
 
         failed =
-          RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
+          Snapshots.snapshot_update(cancelled,
+            status: :error,
+            error: reason,
+            runner_execution_id: nil
+          )
 
         {:error, failed, [], attempted_node_keys(ctx) ++ [ctx.node_key]}
     end
   end
 
-  defp submit_started_entry_after_ownership(ctx, execution_id, asset_ref, asset_step_id) do
+  defp submit_started_entry_after_ownership(
+         ctx,
+         ownership,
+         execution_id,
+         asset_ref,
+         asset_step_id
+       ) do
     updated_run =
       with_inflight_execution(
         ctx.current_run,
@@ -486,9 +580,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           window: RunnerWork.window(ctx.work),
           execution_id: execution_id,
           runner_execution_id: execution_id,
-          version: ctx.version,
+          ownership: ownership,
           decision: Map.get(ctx.decisions, ctx.node_key, %{}),
-          freshness_context: ctx.freshness_context,
           attempt: ctx.attempt,
           stage: ctx.stage,
           lease: ctx.lease,
@@ -540,14 +633,19 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           )
 
         failed =
-          RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
+          Snapshots.snapshot_update(ctx.current_run,
+            status: :error,
+            error: reason,
+            runner_execution_id: nil,
+            metadata: cancelled.metadata
+          )
 
         {:error, failed, [], attempted_node_keys(ctx) ++ [ctx.node_key]}
     end
   end
 
   defp persist_submitted_ownership_snapshot(%RunExecutionOwnership{} = ownership) do
-    if Persistence.externally_cancelled?(ownership.run_id) do
+    if Persistence.externally_cancelled?(ownership) do
       {:error, :external_cancel}
     else
       RunExecutionOwnership.persist(ownership)
@@ -624,13 +722,22 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     queue_signature(asset_step_id, waiter.queue_reason, waiter.blocked_scope)
   end
 
-  defp stage_work(%RunState{} = run_state, %Version{} = version, node_key, stage, attempt) do
+  defp stage_work(
+         %RunState{} = run_state,
+         %Version{} = version,
+         manifest_lease_id,
+         node_key,
+         stage,
+         attempt
+       ) do
     {:ok, %{work: work}} =
       run_state
       |> StepAttemptLifecycle.new(version, node_key, stage, attempt)
       |> StepAttemptLifecycle.build_work()
 
-    StepAttemptLifecycle.attach_deadline(work, run_state)
+    work
+    |> StepAttemptLifecycle.attach_deadline(run_state)
+    |> Map.put(:manifest_lease_id, manifest_lease_id)
   end
 
   defp safe_retryable?(%RunnerError{retryable?: true, outcome: :safe_failure}), do: true
@@ -708,19 +815,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         runner_opts
       )
 
-    _ = RunExecutionOwnership.persist_cancel_outcomes(run_state.id, cancel_results, reason)
+    _ = RunExecutionOwnership.persist_cancel_outcomes(run_state, cancel_results, reason)
 
-    {clear_inflight_executions(run_state, Enum.map(cancel_results, & &1.execution_id)),
-     cancel_results}
-  end
-
-  defp clear_inflight_executions(%RunState{} = run_state, execution_ids)
-       when is_list(execution_ids) do
-    ids = inflight_ids_from_metadata(run_state) -- Enum.filter(execution_ids, &is_binary/1)
-
-    RunState.transition(run_state,
-      metadata: Map.put(run_state.metadata, :in_flight_execution_ids, ids)
-    )
+    {Snapshots.clear_inflight_executions(
+       run_state,
+       Enum.map(cancel_results, & &1.execution_id)
+     ), cancel_results}
   end
 
   defp decision_freshness_key(decisions, node_key) when is_map(decisions) do

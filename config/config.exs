@@ -25,6 +25,14 @@ config :favn_view,
 
 config :phoenix, :json_library, Jason
 
+config :favn_storage_postgres,
+  environment: config_env(),
+  enforce_runtime_role: config_env() == :prod
+
+config :favn_orchestrator,
+  persistence_backend: Module.concat([FavnStoragePostgres, Backend]),
+  persistence_options: []
+
 config :favn_view, FavnView.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,

@@ -2,8 +2,8 @@
 
 Purpose: implementation behind local developer tooling, local stack lifecycle,
 install/reset/logs/status/diagnostics/reload/run/backfill flows, local run and
-SQL data inspection, single-node bootstrap, and packaging commands, including
-the project-local backend-only SQLite `build.single` launcher.
+SQL data inspection, PostgreSQL-backed single-node bootstrap, and packaging
+commands.
 
 Code:
 - `apps/favn/lib/mix/tasks/favn.dev.ex` and `favn.reload.ex` load only the code
@@ -16,6 +16,9 @@ Code:
   loopback and EPMD preflight
 - `apps/favn_local/lib/favn/dev/local_context.ex` for the shared trusted local-dev
   API context used by local CLI commands
+- local orchestrator startup provisions each configured development workspace
+  idempotently after the PostgreSQL backend starts and before auth/API children;
+  this is local-only and never creates the database or applies migrations
 - `apps/favn_local/lib/favn/dev/run.ex`, `apps/favn_local/lib/favn/dev/runs.ex`,
   and `apps/favn_local/lib/favn/dev/backfill.ex` for local operator run/backfill
   payloads and run operations, including target-aware dependency scope,
@@ -74,12 +77,10 @@ tiers.
 
 Single-node artifact invariant:
 - `dist_dir` is immutable after build. Runtime state must be written outside the
-  artifact tree, including `runtime_home`, SQLite/DuckDB files, logs, and pid
-  paths.
-- Runner artifacts contain `manifest-index.json` plus
-  `execution-packages/<sha256>.json`. Bootstrap queries missing hashes, uploads
-  only missing packages in gzip batches bounded by the effective limits returned
-  by the orchestrator, then publishes the compact index.
+  artifact tree, including `runtime_home`, DuckDB files, logs, and pid paths.
+- The control plane is an externally managed PostgreSQL database. Bootstrap
+  requires an explicit workspace and operator credentials; it never creates a
+  database or silently selects a tenant.
 
 Use when changing `mix favn.*` local behavior, local runtime state, local HTTP
 client behavior, consumer config transport, install/runtime workspaces,

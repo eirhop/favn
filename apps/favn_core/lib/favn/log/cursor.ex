@@ -3,7 +3,9 @@ defmodule Favn.Log.Cursor do
   Replay cursor for backend logs.
 
   All cursor scopes carry the authoritative global sequence so replay ordering
-  does not depend on per-run or per-asset counters.
+  does not depend on per-run or per-asset counters. Log sequences are an
+  order-preserving encoding of the outbox publication ID and batch offset; they
+  are not PostgreSQL row identity values.
   """
 
   @type scope :: :global | :run | :asset

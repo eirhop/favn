@@ -5,7 +5,6 @@ defmodule FavnView.AssetCatalogueLive do
 
   alias FavnView.AssetRoute
   alias FavnView.Components.AssetCataloguePage
-  alias FavnOrchestrator.Operator.Lineage
 
   @default_filters %{search: "", connection: "all", catalogue: "all"}
   @valid_modes ~w(list lineage)
@@ -13,7 +12,7 @@ defmodule FavnView.AssetCatalogueLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {assets, error} = load_assets()
+    {assets, error} = load_assets(socket.assigns.current_scope.operator_context)
 
     socket =
       assign(socket,
@@ -145,7 +144,7 @@ defmodule FavnView.AssetCatalogueLive do
       selected_id: socket.assigns.lineage_selected_id
     ]
 
-    case get_graph(opts) do
+    case get_graph(socket, opts) do
       {:ok, graph} ->
         socket
         |> assign(lineage_graph: graph, lineage_error: nil, lineage_loading: false)
@@ -173,7 +172,7 @@ defmodule FavnView.AssetCatalogueLive do
            }
          } = socket
        ) do
-    assign_lineage_inspector(socket, get_group(id, view_mode: view_mode))
+    assign_lineage_inspector(socket, get_group(socket, id, view_mode: view_mode))
   end
 
   defp load_lineage_inspector(
@@ -185,7 +184,7 @@ defmodule FavnView.AssetCatalogueLive do
            }
          } = socket
        ) do
-    assign_lineage_inspector(socket, get_asset(id, view_mode: view_mode))
+    assign_lineage_inspector(socket, get_asset(socket, id, view_mode: view_mode))
   end
 
   defp load_lineage_inspector(
@@ -197,7 +196,7 @@ defmodule FavnView.AssetCatalogueLive do
            }
          } = socket
        ) do
-    assign_lineage_inspector(socket, get_edge(id, view_mode: view_mode))
+    assign_lineage_inspector(socket, get_edge(socket, id, view_mode: view_mode))
   end
 
   defp load_lineage_inspector(socket), do: assign(socket, :lineage_inspector, nil)
@@ -214,16 +213,36 @@ defmodule FavnView.AssetCatalogueLive do
   defp mode_query("list"), do: %{}
   defp mode_query(mode), do: %{mode: mode}
 
-  defp get_graph(opts), do: configured_fun(:lineage_get_graph_fun, &Lineage.get_graph/1).(opts)
+  defp get_graph(socket, opts) do
+    configured_fun(:lineage_get_graph_fun, &FavnOrchestrator.get_operator_lineage_graph/2).(
+      socket.assigns.current_scope.operator_context,
+      opts
+    )
+  end
 
-  defp get_group(id, opts),
-    do: configured_fun(:lineage_get_group_fun, &Lineage.get_group/2).(id, opts)
+  defp get_group(socket, id, opts),
+    do:
+      configured_fun(:lineage_get_group_fun, &FavnOrchestrator.get_operator_lineage_group/3).(
+        socket.assigns.current_scope.operator_context,
+        id,
+        opts
+      )
 
-  defp get_asset(id, opts),
-    do: configured_fun(:lineage_get_asset_fun, &Lineage.get_asset/2).(id, opts)
+  defp get_asset(socket, id, opts),
+    do:
+      configured_fun(:lineage_get_asset_fun, &FavnOrchestrator.get_operator_lineage_asset/3).(
+        socket.assigns.current_scope.operator_context,
+        id,
+        opts
+      )
 
-  defp get_edge(id, opts),
-    do: configured_fun(:lineage_get_edge_fun, &Lineage.get_edge/2).(id, opts)
+  defp get_edge(socket, id, opts),
+    do:
+      configured_fun(:lineage_get_edge_fun, &FavnOrchestrator.get_operator_lineage_edge/3).(
+        socket.assigns.current_scope.operator_context,
+        id,
+        opts
+      )
 
   defp configured_fun(key, default), do: Application.get_env(:favn_view, key, default)
 
@@ -247,8 +266,16 @@ defmodule FavnView.AssetCatalogueLive do
     end)
   end
 
-  defp load_assets do
-    case configured_fun(:active_asset_catalogue_fun, &FavnOrchestrator.active_asset_catalogue/0).() do
+  defp load_assets(operator_context) do
+    fun =
+      configured_fun(
+        :active_asset_catalogue_fun,
+        &FavnOrchestrator.active_asset_catalogue/1
+      )
+
+    result = if is_function(fun, 1), do: fun.(operator_context), else: fun.()
+
+    case result do
       {:ok, entries} ->
         {Enum.map(entries, &asset_from_entry/1), nil}
 

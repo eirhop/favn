@@ -19,7 +19,7 @@ defmodule FavnView.SchedulesLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {entries, error} = load_entries(@default_filters)
+    {entries, error} = load_entries(operator_context(socket), @default_filters)
 
     socket =
       assign(socket,
@@ -40,7 +40,7 @@ defmodule FavnView.SchedulesLive do
   @impl true
   def handle_event("filter_schedules", %{"filters" => params}, socket) do
     filters = normalize_filters(socket.assigns.filters, params)
-    {entries, error} = load_entries(filters)
+    {entries, error} = load_entries(operator_context(socket), filters)
 
     {:noreply,
      assign(socket,
@@ -52,7 +52,7 @@ defmodule FavnView.SchedulesLive do
   end
 
   def handle_event("clear_filters", _params, socket) do
-    {entries, error} = load_entries(@default_filters)
+    {entries, error} = load_entries(operator_context(socket), @default_filters)
 
     {:noreply,
      assign(socket,
@@ -88,20 +88,25 @@ defmodule FavnView.SchedulesLive do
     """
   end
 
-  defp load_entries(filters) do
-    case page_schedule_list_entries(orchestrator_filters(filters)) do
+  defp load_entries(operator_context, filters) do
+    case page_schedule_list_entries(operator_context, orchestrator_filters(filters)) do
       {:ok, %{items: entries}} -> {Enum.map(entries, &schedule_from_public/1), nil}
       {:error, reason} -> {[], OperatorErrorLabels.load(reason)}
     end
   end
 
-  defp page_schedule_list_entries(opts) do
-    Application.get_env(
-      :favn_view,
-      :page_schedule_list_entries_fun,
-      &FavnOrchestrator.page_schedule_list_entries/1
-    ).(opts)
+  defp page_schedule_list_entries(operator_context, opts) do
+    fun =
+      Application.get_env(
+        :favn_view,
+        :page_schedule_list_entries_fun,
+        &FavnOrchestrator.page_schedule_list_entries/2
+      )
+
+    if is_function(fun, 2), do: fun.(operator_context, opts), else: fun.(opts)
   end
+
+  defp operator_context(socket), do: socket.assigns.current_scope.operator_context
 
   defp orchestrator_filters(filters) do
     []

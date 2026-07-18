@@ -60,17 +60,17 @@ defmodule Favn.Dev.Build.OrchestratorTest do
               "artifact" => %{"kind" => "assembly_metadata", "operational" => false},
               "compatibility" => %{
                 "runner_contract_version" => 5,
-                "supported_storage_modes" => ["memory", "sqlite", "postgres"]
+                "supported_storage_modes" => ["postgres"]
               },
               "required_env" => required_env
             }} =
              JSON.decode(metadata_json)
 
-    assert "FAVN_POSTGRES_HOST" in required_env
-    assert "FAVN_POSTGRES_PORT" in required_env
-    assert "FAVN_POSTGRES_USERNAME" in required_env
-    assert "FAVN_POSTGRES_PASSWORD" in required_env
-    assert "FAVN_POSTGRES_DATABASE" in required_env
+    assert "FAVN_DATABASE_URL" in required_env
+    assert "FAVN_RUNTIME_INPUT_PIN_KEYS" in required_env
+    assert "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION" in required_env
+    assert "FAVN_WORKSPACE_IDS" in required_env
+    assert "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" in required_env
   end
 
   test "build_orchestrator/1 requires install", %{root_dir: root_dir} do

@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.Operator.Lineage do
   alias FavnOrchestrator.Operator.Lineage.Query
   alias FavnOrchestrator.Operator.Lineage.Request
   alias FavnOrchestrator.Page
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Redaction
 
   @max_search_bytes 512
@@ -26,40 +27,44 @@ defmodule FavnOrchestrator.Operator.Lineage do
   @type graph_opts :: keyword()
 
   @doc "Returns a bounded grouped lineage graph for one manifest version."
-  @spec get_graph(graph_opts()) :: {:ok, Graph.t()} | {:error, error()}
-  def get_graph(opts \\ []) do
-    with {:ok, model} <- read_model(opts), do: {:ok, model.graph}
+  @spec get_graph(WorkspaceContext.t(), graph_opts()) :: {:ok, Graph.t()} | {:error, error()}
+  def get_graph(%WorkspaceContext{} = context, opts \\ []) do
+    with {:ok, model} <- read_model(context, opts), do: {:ok, model.graph}
   end
 
   @doc "Returns the inspector payload for one lineage group."
-  @spec get_group(String.t(), keyword()) :: {:ok, GroupInspector.t()} | {:error, error()}
-  def get_group(group_id, opts \\ []) do
+  @spec get_group(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, GroupInspector.t()} | {:error, error()}
+  def get_group(%WorkspaceContext{} = context, group_id, opts \\ []) do
     with :ok <- validate_id(group_id),
-         {:ok, model} <- read_model(put_selected_id(opts, group_id)),
+         {:ok, model} <- read_model(context, put_selected_id(opts, group_id)),
          do: Query.group(model, group_id)
   end
 
   @doc "Returns the inspector payload for one lineage asset."
-  @spec get_asset(String.t(), keyword()) :: {:ok, AssetInspector.t()} | {:error, error()}
-  def get_asset(asset_id, opts \\ []) do
+  @spec get_asset(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, AssetInspector.t()} | {:error, error()}
+  def get_asset(%WorkspaceContext{} = context, asset_id, opts \\ []) do
     with :ok <- validate_id(asset_id),
-         {:ok, model} <- read_model(put_selected_id(opts, asset_id)),
+         {:ok, model} <- read_model(context, put_selected_id(opts, asset_id)),
          do: Query.asset(model, asset_id)
   end
 
   @doc "Returns the inspector payload for one lineage dependency edge."
-  @spec get_edge(String.t(), keyword()) :: {:ok, EdgeInspector.t()} | {:error, error()}
-  def get_edge(edge_id, opts \\ []) do
+  @spec get_edge(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, EdgeInspector.t()} | {:error, error()}
+  def get_edge(%WorkspaceContext{} = context, edge_id, opts \\ []) do
     with :ok <- validate_id(edge_id),
-         {:ok, model} <- read_model(put_selected_id(opts, edge_id)),
+         {:ok, model} <- read_model(context, put_selected_id(opts, edge_id)),
          do: Query.edge(model, edge_id)
   end
 
   @doc "Searches lineage groups, schemas, and assets with bounded offset pagination."
-  @spec search(String.t(), keyword()) :: {:ok, Page.t(term())} | {:error, error()}
-  def search(query, opts \\ []) do
+  @spec search(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, Page.t(term())} | {:error, error()}
+  def search(%WorkspaceContext{} = context, query, opts \\ []) do
     with :ok <- validate_query(query),
-         {:ok, model} <- read_model(opts),
+         {:ok, model} <- read_model(context, opts),
          {:ok, page} <- Query.search(model, query, opts) do
       {:ok, page}
     else
@@ -69,11 +74,11 @@ defmodule FavnOrchestrator.Operator.Lineage do
   end
 
   @doc "Lists assets belonging to one lineage group with bounded offset pagination."
-  @spec list_group_assets(String.t(), keyword()) ::
+  @spec list_group_assets(WorkspaceContext.t(), String.t(), keyword()) ::
           {:ok, Page.t(AssetNode.t())} | {:error, error()}
-  def list_group_assets(group_id, opts \\ []) do
+  def list_group_assets(%WorkspaceContext{} = context, group_id, opts \\ []) do
     with :ok <- validate_id(group_id),
-         {:ok, model} <- read_model(opts),
+         {:ok, model} <- read_model(context, opts),
          {:ok, page} <- Query.group_assets(model, group_id, opts) do
       {:ok, page}
     else
@@ -82,9 +87,9 @@ defmodule FavnOrchestrator.Operator.Lineage do
     end
   end
 
-  defp read_model(opts) do
+  defp read_model(context, opts) do
     with {:ok, request} <- Request.normalize(opts),
-         {:ok, model} <- Projection.read(request) do
+         {:ok, model} <- Projection.read(context, request) do
       {:ok, model}
     else
       {:error, %Error{} = error} -> {:error, error}

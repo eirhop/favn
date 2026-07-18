@@ -19,24 +19,26 @@ defmodule FavnOrchestrator.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :crypto],
-      mod: {FavnOrchestrator.Application, []}
+      mod: {FavnOrchestrator.Application, []},
+      extra_applications: [:logger, :crypto, :ecto_sql]
     ]
   end
 
   defp deps do
     [
       internal_dep(:favn_core, "../favn_core"),
-      internal_dep(:favn_authoring, "../favn_authoring", only: :test),
-      internal_dep(:favn_runner, "../favn_runner", only: :test),
-      internal_dep(:favn_sql_runtime, "../favn_sql_runtime", only: :test),
-      internal_dep(:favn_test_support, "../favn_test_support", only: :test),
+      internal_dep(:favn_authoring, "../favn_authoring", only: :test, runtime: false),
+      internal_dep(:favn_runner, "../favn_runner", only: :test, runtime: false),
+      internal_dep(:favn_sql_runtime, "../favn_sql_runtime", only: :test, runtime: false),
+      internal_dep(:favn_test_support, "../favn_test_support", only: :test, runtime: false),
       {:phoenix_pubsub, "~> 2.2"},
       {:bandit, "~> 1.12"},
       {:tidewave, "~> 0.5", only: :dev},
       {:argon2_elixir, "~> 4.0"},
       {:decimal, "~> 3.0"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:ecto_sql, "~> 3.14"},
+      {:postgrex, "~> 0.22"}
     ]
   end
 

@@ -3,6 +3,11 @@ defmodule FavnOrchestrator.BoundedDispatcherTest do
 
   alias FavnOrchestrator.BoundedDispatcher
 
+  setup do
+    start_supervised!(BoundedDispatcher.child_spec([]))
+    :ok
+  end
+
   test "run_many honors explicit concurrency" do
     {:ok, tracker} = Agent.start_link(fn -> %{active: 0, max_active: 0} end)
 

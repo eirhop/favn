@@ -138,7 +138,13 @@ defmodule FavnOrchestrator.TargetStatus do
   @doc false
   @spec target_id_for_asset(Favn.Ref.t()) :: String.t()
   def target_id_for_asset({module, name}) when is_atom(module) and is_atom(name) do
-    "asset:" <> Atom.to_string(module) <> ":" <> Atom.to_string(name)
+    FavnOrchestrator.Persistence.TargetIdentity.for_asset({module, name})
+  end
+
+  @doc false
+  @spec target_id_for_pipeline({module(), atom()}) :: String.t()
+  def target_id_for_pipeline({module, name}) when is_atom(module) and is_atom(name) do
+    FavnOrchestrator.Persistence.TargetIdentity.for_pipeline({module, name})
   end
 
   @doc false

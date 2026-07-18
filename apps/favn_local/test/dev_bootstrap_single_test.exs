@@ -10,13 +10,13 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
       :ok
     end
 
-    def publish_manifest(url, token, payload) do
-      send(test_pid(), {:publish_manifest, url, token, payload})
+    def publish_manifest(url, token, payload, session_context) do
+      send(test_pid(), {:publish_manifest, url, token, payload, session_context})
       {:ok, %{"data" => %{"manifest" => %{}, "registration" => %{"status" => "accepted"}}}}
     end
 
-    def password_login(url, token, username, password) do
-      send(test_pid(), {:password_login, url, token, username, password})
+    def password_login(url, token, workspace_id, username, password) do
+      send(test_pid(), {:password_login, url, token, workspace_id, username, password})
       {:ok, %{"actor_id" => "act_1", "session_id" => "ses_1", "session_token" => "raw_1"}}
     end
 
@@ -25,13 +25,13 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
       {:ok, %{"data" => %{"activated" => true}}}
     end
 
-    def register_runner(url, token, payload) do
-      send(test_pid(), {:register_runner, url, token, payload})
+    def register_runner(url, token, session_context, payload) do
+      send(test_pid(), {:register_runner, url, token, session_context, payload})
       {:ok, %{"data" => %{"registration" => %{"status" => "accepted"}}}}
     end
 
-    def bootstrap_active_manifest(url, token) do
-      send(test_pid(), {:bootstrap_active_manifest, url, token})
+    def bootstrap_active_manifest(url, token, session_context) do
+      send(test_pid(), {:bootstrap_active_manifest, url, token, session_context})
       {:ok, %{"manifest" => %{"manifest_version_id" => active_manifest_id()}}}
     end
 
@@ -46,12 +46,12 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
 
   defmodule RunnerConflictClient do
     def verify_service_token(_url, _token), do: :ok
-    def publish_manifest(_url, _token, _payload), do: {:ok, %{}}
-    def password_login(_url, _token, _username, _password), do: {:ok, %{}}
+    def publish_manifest(_url, _token, _payload, _session_context), do: {:ok, %{}}
+    def password_login(_url, _token, _workspace_id, _username, _password), do: {:ok, %{}}
     def activate_manifest(_url, _token, _manifest_version_id, _session_context), do: {:ok, %{}}
-    def bootstrap_active_manifest(_url, _token), do: {:ok, %{}}
+    def bootstrap_active_manifest(_url, _token, _session_context), do: {:ok, %{}}
 
-    def register_runner(_url, _token, _payload) do
+    def register_runner(_url, _token, _session_context, _payload) do
       {:error, %{operation: :register_runner, reason: {:http_error, 409, %{}}}}
     end
   end
@@ -91,6 +91,7 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
       manifest_path: manifest_path,
       orchestrator_url: "http://127.0.0.1:4000",
       service_token: "token-1",
+      workspace_id: "workspace-1",
       operator_username: "admin",
       operator_password: "admin-password-long",
       client: FakeClient
@@ -104,11 +105,11 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
     assert summary.active_manifest_verification == :matched
 
     assert_receive {:verify_service_token, "http://127.0.0.1:4000", "token-1"}
-    assert_receive {:password_login, _url, _token, "admin", "admin-password-long"}
-    assert_receive {:publish_manifest, _url, _token, %Publication{} = publication}
-    assert_receive {:activate_manifest, _url, _token, manifest_version_id, session_context}
-    assert_receive {:register_runner, _url, _token, runner_payload}
-    assert_receive {:bootstrap_active_manifest, _url, _token}
+    assert_receive {:password_login, _url, _token, "workspace-1", "admin", "admin-password-long"}
+    assert_receive {:publish_manifest, _url, _token, %Publication{} = publication, session_context}
+    assert_receive {:activate_manifest, _url, _token, manifest_version_id, ^session_context}
+    assert_receive {:register_runner, _url, _token, ^session_context, runner_payload}
+    assert_receive {:bootstrap_active_manifest, _url, _token, ^session_context}
 
     assert session_context["actor_id"] == "act_1"
     assert session_context["session_token"] == "raw_1"
@@ -135,6 +136,7 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
                manifest_path: manifest_path,
                orchestrator_url: "http://127.0.0.1:4000",
                service_token: "token-1",
+               workspace_id: "workspace-1",
                operator_username: "admin",
                operator_password: "admin-password-long",
                client: RunnerConflictClient

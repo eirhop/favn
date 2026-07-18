@@ -31,7 +31,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptStateTest do
     assert StageAttemptState.settled_results(state) == [:first, :second, :third, :fourth]
     assert StageAttemptState.retry_node_keys(state) == [:retry_one, :retry_two]
 
-    assert {:ok, ^run, [:first, :second, :third, :fourth], [:retry_one, :retry_two], []} =
+    assert {:ok, ^run, [:first, :second, :third, :fourth], [:retry_one, :retry_two], [], %{}} =
              StageResult.finalize(state)
   end
 end

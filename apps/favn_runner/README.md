@@ -15,7 +15,7 @@ Allowed dependencies:
 Must not depend on:
 
 - `favn_orchestrator`
-- `favn_storage_postgres`, `favn_storage_sqlite`
+- `favn_storage_postgres`
 
 Current status:
 

@@ -9,56 +9,57 @@ defmodule FavnOrchestrator do
   stable authoring-time API that most application code should build against.
   """
 
-  alias Favn.Backfill.RangeRequest
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerClient
-  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
-  alias Favn.Window.Anchor
-  alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator.Auth
-  alias FavnOrchestrator.Backfill.Repair, as: BackfillRepair
-  alias FavnOrchestrator.BackfillManager
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
-  alias FavnOrchestrator.Freshness.Query, as: FreshnessQuery
   alias FavnOrchestrator.Logs
-  alias FavnOrchestrator.LogWriter
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestTarget
-  alias FavnOrchestrator.Operator.Authorization
+  alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.Operator.Catalogue
+  alias FavnOrchestrator.Operator.Lineage
   alias FavnOrchestrator.Operator.Commands, as: OperatorCommands
+  alias FavnOrchestrator.OperatorContext
   alias FavnOrchestrator.Operator.Schedules
   alias FavnOrchestrator.OperatorCommands.AssetBackfillRequest
   alias FavnOrchestrator.OperatorCommands.AssetRunRequest
   alias FavnOrchestrator.OperatorCommands.PipelineBackfillRequest
   alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
   alias FavnOrchestrator.OperatorErrorDTO
-  alias FavnOrchestrator.Page
+  alias FavnOrchestrator.Persistence.Error, as: PersistenceError
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
+  alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Projector
-  alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.RunnerManifestRegistration
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
+  alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.ScheduleListEntry
   alias FavnOrchestrator.ScheduleOccurrencePreview
-  alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.SchedulerEntry
-  alias FavnOrchestrator.Storage
 
   @type run_id :: String.t()
   @type operator_actor :: Auth.actor()
   @type operator_session :: Auth.session()
-  @type operator_actor_context :: %{
-          required(:actor) => operator_actor(),
-          required(:session) => operator_session()
-        }
+  @type operator_actor_context :: OperatorContext.t()
+
+  @doc "Builds browser-safe, non-authoritative operator identity hints."
+  @spec operator_context(String.t(), operator_actor(), operator_session()) ::
+          {:ok, OperatorContext.t()} | {:error, :invalid_operator_context}
+  def operator_context(workspace_id, actor, session),
+    do: OperatorContext.new(workspace_id, actor, session)
+
   @type manifest_summary :: Catalogue.manifest_summary()
   @type manifest_target_option :: Catalogue.manifest_target_option()
   @type manifest_targets :: Catalogue.manifest_targets()
@@ -70,6 +71,46 @@ defmodule FavnOrchestrator do
   @type asset_detail :: Catalogue.asset_detail()
   @type asset_freshness_reason :: Catalogue.asset_freshness_reason()
   @type asset_freshness_detail :: Catalogue.asset_freshness_detail()
+
+  @doc "Returns a customer-visible lineage graph after operator reauthorization."
+  @spec get_operator_lineage_graph(OperatorContext.t(), keyword()) ::
+          {:ok, Lineage.Graph.t()} | {:error, term()}
+  def get_operator_lineage_graph(%OperatorContext{} = operator_context, opts)
+      when is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Lineage.get_graph(context, opts)
+    end
+  end
+
+  @doc "Returns one customer-visible lineage group after operator reauthorization."
+  @spec get_operator_lineage_group(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, Lineage.GroupInspector.t()} | {:error, term()}
+  def get_operator_lineage_group(%OperatorContext{} = operator_context, group_id, opts)
+      when is_binary(group_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Lineage.get_group(context, group_id, opts)
+    end
+  end
+
+  @doc "Returns one customer-visible lineage asset after operator reauthorization."
+  @spec get_operator_lineage_asset(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, Lineage.AssetInspector.t()} | {:error, term()}
+  def get_operator_lineage_asset(%OperatorContext{} = operator_context, asset_id, opts)
+      when is_binary(asset_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Lineage.get_asset(context, asset_id, opts)
+    end
+  end
+
+  @doc "Returns one customer-visible lineage edge after operator reauthorization."
+  @spec get_operator_lineage_edge(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, Lineage.EdgeInspector.t()} | {:error, term()}
+  def get_operator_lineage_edge(%OperatorContext{} = operator_context, edge_id, opts)
+      when is_binary(edge_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Lineage.get_edge(context, edge_id, opts)
+    end
+  end
 
   @type operator_error_context ::
           :load
@@ -104,46 +145,41 @@ defmodule FavnOrchestrator do
   @spec readiness() :: map()
   def readiness, do: FavnOrchestrator.Readiness.readiness()
 
-  @doc """
-  Authenticates an operator browser user with username and password.
-
-  Returns a session containing the one-time raw session token for caller storage.
-  All auth failures, including login backoff, disabled actors, missing users, and
-  invalid passwords, are returned as `{:error, :invalid_credentials}`.
-  """
-  @spec operator_password_login(String.t(), String.t()) ::
+  @doc "Authenticates an operator against one explicit workspace membership."
+  @spec operator_password_login(String.t(), String.t(), String.t(), keyword() | map()) ::
           {:ok, operator_session(), operator_actor()} | {:error, :invalid_credentials}
-  @spec operator_password_login(String.t(), String.t(), keyword() | map()) ::
-          {:ok, operator_session(), operator_actor()} | {:error, :invalid_credentials}
-  def operator_password_login(username, password, opts \\ [])
-      when is_binary(username) and is_binary(password) and (is_list(opts) or is_map(opts)) do
-    case Auth.password_login(username, password, opts) do
-      {:ok, session, actor} -> {:ok, session, actor}
+  def operator_password_login(workspace_id, username, password, opts)
+      when is_binary(workspace_id) and is_binary(username) and is_binary(password) and
+             (is_list(opts) or is_map(opts)) do
+    with {:ok, context} <-
+           WorkspaceContext.new(workspace_id, "auth:login", [:customer_reader]),
+         {:ok, session, actor} <- Auth.password_login(context, username, password, opts) do
+      {:ok, session, actor}
+    else
       {:error, _reason} -> {:error, :invalid_credentials}
     end
   end
 
-  @doc """
-  Resolves an operator session token into the persisted session and actor.
-
-  Invalid, expired, revoked, or actor-disabled sessions are normalized to
-  `{:error, :invalid_session}` for browser-facing auth glue.
-  """
-  @spec introspect_operator_session(String.t()) ::
+  @doc "Resolves an operator session within one explicit workspace membership."
+  @spec introspect_operator_session(String.t(), String.t()) ::
           {:ok, operator_session(), operator_actor()} | {:error, :invalid_session}
-  def introspect_operator_session(session_token) when is_binary(session_token) do
-    case Auth.introspect_session(session_token) do
-      {:ok, session, actor} -> {:ok, session, actor}
+  def introspect_operator_session(workspace_id, session_token)
+      when is_binary(workspace_id) and is_binary(session_token) do
+    with {:ok, context} <-
+           WorkspaceContext.new(workspace_id, "auth:session", [:customer_reader]),
+         {:ok, session, actor} <- Auth.introspect_session(context, session_token) do
+      {:ok, session, actor}
+    else
       {:error, _reason} -> {:error, :invalid_session}
     end
   end
 
-  @doc """
-  Revokes an operator session by session id.
-  """
-  @spec revoke_operator_session(String.t()) :: :ok | {:error, term()}
-  def revoke_operator_session(session_id) when is_binary(session_id) do
-    Auth.revoke_session(session_id)
+  @doc "Revalidates and revokes the current operator session."
+  @spec revoke_operator_session(OperatorContext.t()) :: :ok | {:error, term()}
+  def revoke_operator_session(%OperatorContext{} = operator_context) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Auth.revoke_session(context, operator_context.session_id)
+    end
   end
 
   @doc """
@@ -154,54 +190,37 @@ defmodule FavnOrchestrator do
     Auth.has_role?(actor, role)
   end
 
-  @doc """
-  Registers one manifest version in orchestrator storage.
-  """
-  @spec register_manifest(Version.t()) :: :ok | {:error, term()}
-  def register_manifest(%Version{} = version), do: ManifestStore.register_manifest(version)
-
-  @doc "Stores immutable execution packages before their manifest index is registered."
-  @spec register_execution_packages([ExecutionPackage.t()]) :: :ok | {:error, term()}
-  def register_execution_packages(packages) when is_list(packages) do
-    Storage.put_execution_packages(packages)
+  @doc "Returns one manifest release through an explicit workspace authority."
+  @spec get_manifest(WorkspaceContext.t(), String.t()) ::
+          {:ok, Version.t()} | {:error, term()}
+  def get_manifest(%WorkspaceContext{} = context, manifest_version_id)
+      when is_binary(manifest_version_id) do
+    ManifestStore.get_manifest(context, manifest_version_id)
   end
 
-  @doc """
-  Publishes one manifest version, returning the canonical stored version for duplicate content.
-  """
-  @spec publish_manifest(Version.t()) ::
-          {:ok, :published | :already_published, Version.t()} | {:error, term()}
-  def publish_manifest(%Version{} = version), do: ManifestStore.publish_manifest(version)
-
-  @doc """
-  Returns one persisted manifest version.
-  """
-  @spec get_manifest(String.t()) :: {:ok, Version.t()} | {:error, term()}
-  def get_manifest(manifest_version_id) when is_binary(manifest_version_id) do
-    ManifestStore.get_manifest(manifest_version_id)
+  @doc "Registers the workspace's active manifest release with the runner."
+  @spec register_manifest_with_runner(WorkspaceContext.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def register_manifest_with_runner(%WorkspaceContext{} = context, manifest_version_id)
+      when is_binary(manifest_version_id) do
+    with {:ok, version} <- ManifestStore.get_active_manifest(context),
+         true <- version.manifest_version_id == manifest_version_id do
+      register_version_with_runner(version)
+    else
+      false -> {:error, :manifest_not_active_in_workspace}
+      {:error, _reason} = error -> error
+    end
   end
 
-  @doc """
-  Returns one persisted manifest version by content hash.
-  """
-  @spec get_manifest_by_content_hash(String.t()) :: {:ok, Version.t()} | {:error, term()}
-  def get_manifest_by_content_hash(content_hash) when is_binary(content_hash) do
-    ManifestStore.get_manifest_by_content_hash(content_hash)
-  end
-
-  @doc """
-  Registers a persisted manifest version with the configured runner boundary.
-  """
-  @spec register_manifest_with_runner(String.t()) :: {:ok, map()} | {:error, term()}
-  def register_manifest_with_runner(manifest_version_id) when is_binary(manifest_version_id) do
+  defp register_version_with_runner(%Version{} = version) do
     runner_client = configured_runner_client()
     runner_opts = configured_runner_opts()
+    manifest_version_id = version.manifest_version_id
 
-    with {:ok, version} <- get_manifest(manifest_version_id),
-         :ok <- validate_runner_client(runner_client) do
+    with :ok <- validate_runner_client(runner_client) do
       content_hash = version.content_hash
 
-      case runner_client.register_manifest(version, runner_opts) do
+      case RunnerManifestRegistration.ensure(runner_client, version, runner_opts) do
         :ok ->
           {:ok, runner_manifest_registration(version, runner_client, :accepted)}
 
@@ -217,128 +236,69 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc """
-  Lists persisted manifest versions.
-  """
-  @spec list_manifests() :: {:ok, [Version.t()]} | {:error, term()}
-  def list_manifests, do: ManifestStore.list_manifests()
-
-  @doc """
-  Lists stable operator-facing manifest summaries.
-  """
-  @spec list_manifest_summaries() :: {:ok, [manifest_summary()]} | {:error, term()}
-  def list_manifest_summaries, do: Catalogue.list_manifest_summaries()
-
-  @doc """
-  Returns one stable operator-facing manifest summary.
-  """
-  @spec get_manifest_summary(String.t()) :: {:ok, manifest_summary()} | {:error, term()}
-  def get_manifest_summary(manifest_version_id) when is_binary(manifest_version_id),
-    do: Catalogue.get_manifest_summary(manifest_version_id)
-
-  @doc """
-  Returns manifest-scoped submit targets for one persisted manifest version.
-  """
-  @spec manifest_targets(String.t()) :: {:ok, manifest_targets()} | {:error, term()}
-  def manifest_targets(manifest_version_id) when is_binary(manifest_version_id),
-    do: Catalogue.manifest_targets(manifest_version_id)
-
-  @doc """
-  Returns submit targets for the currently active manifest version.
-  """
-  @spec active_manifest_targets() :: {:ok, manifest_targets()} | {:error, term()}
-  def active_manifest_targets, do: Catalogue.active_manifest_targets()
-
-  @doc """
-  Rebuilds persisted current target statuses for one manifest version.
-
-  The target-status table is a repairable read model for operator catalogue and
-  detail pages. This function rebuilds it from authoritative persisted run and
-  freshness state and replaces rows for the manifest scope.
-  """
-  @spec rebuild_target_statuses(String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def rebuild_target_statuses(manifest_version_id) when is_binary(manifest_version_id),
-    do: Catalogue.rebuild_target_statuses(manifest_version_id)
-
-  @doc """
-  Returns operator-facing catalogue entries for the currently active manifest.
-
-  Entries are manifest target metadata enriched with latest known freshness/run
-  state. Missing runtime state is represented explicitly as `:unknown` with no
-  latest run timestamp.
-  """
-  @spec active_asset_catalogue() :: {:ok, [asset_catalogue_entry()]} | {:error, term()}
-  def active_asset_catalogue, do: Catalogue.active_asset_catalogue()
-
-  @doc """
-  Returns operator-facing catalogue entries for pipelines in the active manifest.
-
-  Entries include manifest-level pipeline selection metadata enriched with the
-  latest persisted run that can be associated with each pipeline.
-  """
-  @spec active_pipeline_catalogue() :: {:ok, [pipeline_catalogue_entry()]} | {:error, term()}
-  def active_pipeline_catalogue, do: Catalogue.active_pipeline_catalogue()
-
-  @doc """
-  Returns an operator-facing detail read model for one active pipeline target.
-
-  The detail is built at the orchestrator boundary and includes manifest target
-  metadata, selected assets, latest run state, and persisted run history matched
-  to the pipeline submit ref.
-  """
-  @spec active_pipeline_detail(String.t()) :: {:ok, pipeline_detail()} | {:error, term()}
-  def active_pipeline_detail(target_id) when is_binary(target_id),
-    do: Catalogue.active_pipeline_detail(target_id)
-
-  @doc """
-  Returns an operator-facing detail read model for one active asset target.
-
-  The detail is a DTO built at the orchestrator boundary. It includes manifest
-  target metadata, latest known freshness/run state, and a conservative 30-window
-  timeline matching the asset window policy. Missing runtime evidence is
-  represented as `:unknown`.
-  """
-  @spec active_asset_detail(String.t(), keyword()) :: {:ok, asset_detail()} | {:error, term()}
-  def active_asset_detail(target_id, opts \\ []) when is_binary(target_id) and is_list(opts),
-    do: Catalogue.active_asset_detail(target_id, opts)
-
-  @doc """
-  Persists and publishes one trusted backend log entry.
-  """
-  @spec emit_log(term()) :: {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
-  def emit_log(entry), do: LogWriter.write(entry)
-
-  @doc """
-  Persists and publishes trusted backend log entries as one batch.
-  """
-  @spec emit_logs([term()]) :: {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
-  def emit_logs(entries) when is_list(entries), do: LogWriter.write(entries)
-
-  @doc """
-  Lists persisted backend logs matching the given filter.
-  """
-  @spec list_logs(term(), keyword()) :: {:ok, Page.t(Favn.Log.Entry.t())} | {:error, term()}
-  def list_logs(filter \\ default_log_filter(), opts \\ []) when is_list(opts) do
-    Storage.list_logs(filter, opts)
+  @doc "Returns customer-visible asset catalogue entries for an operator workspace."
+  @spec active_asset_catalogue(OperatorContext.t()) ::
+          {:ok, [asset_catalogue_entry()]} | {:error, term()}
+  def active_asset_catalogue(%OperatorContext{} = operator_context) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Catalogue.active_asset_catalogue(context)
+    end
   end
 
-  @doc """
-  Replays persisted backend logs after an authoritative log cursor.
-  """
-  @spec replay_logs(term(), term(), keyword()) :: {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
-  def replay_logs(cursor, filter \\ default_log_filter(), opts \\ []) when is_list(opts) do
-    Storage.replay_logs_after(cursor, filter, opts)
+  @doc "Returns customer-visible pipeline catalogue entries for an operator workspace."
+  @spec active_pipeline_catalogue(OperatorContext.t()) ::
+          {:ok, [pipeline_catalogue_entry()]} | {:error, term()}
+  def active_pipeline_catalogue(%OperatorContext{} = operator_context) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Catalogue.active_pipeline_catalogue(context)
+    end
   end
 
-  @doc """
-  Subscribes the caller to live backend logs matching the given filter.
+  @doc "Returns one customer-visible pipeline detail for an operator workspace."
+  @spec active_pipeline_detail(OperatorContext.t(), String.t()) ::
+          {:ok, pipeline_detail()} | {:error, term()}
+  def active_pipeline_detail(%OperatorContext{} = operator_context, target_id)
+      when is_binary(target_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Catalogue.active_pipeline_detail(context, target_id)
+    end
+  end
 
-  Run-scoped filters subscribe to the run topic. Filters with both `run_id` and
-  `asset_step_id` subscribe to the asset-step topic, then apply the remaining
-  `Favn.Log.Filter` fields before forwarding entries to the caller.
-  """
-  @spec subscribe_logs(term()) :: {:ok, term()} | {:error, term()}
-  def subscribe_logs(filter \\ default_log_filter()), do: Logs.subscribe_logs(filter)
+  @doc "Returns one customer-visible asset detail for an operator workspace."
+  @spec active_asset_detail(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, asset_detail()} | {:error, term()}
+  def active_asset_detail(%OperatorContext{} = operator_context, target_id, opts)
+      when is_binary(target_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Catalogue.active_asset_detail(context, target_id, opts)
+    end
+  end
+
+  @doc "Lists workspace-isolated logs after reauthorizing an operator context."
+  @spec list_logs(OperatorContext.t(), term(), keyword()) :: {:ok, map()} | {:error, term()}
+  def list_logs(%OperatorContext{} = operator_context, filter, opts) when is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Logs.page(context, filter, opts)
+    end
+  end
+
+  @doc "Replays workspace-isolated logs after reauthorizing an operator context."
+  @spec replay_logs(OperatorContext.t(), term(), term(), keyword()) ::
+          {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
+  def replay_logs(%OperatorContext{} = operator_context, cursor, filter, opts)
+      when is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Logs.replay(context, cursor, filter, opts)
+    end
+  end
+
+  @doc "Subscribes to workspace-isolated log wakeups after reauthorization."
+  @spec subscribe_logs(OperatorContext.t(), term()) :: {:ok, term()} | {:error, term()}
+  def subscribe_logs(%OperatorContext{} = operator_context, filter) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Logs.subscribe_logs(context, filter)
+    end
+  end
 
   @doc """
   Unsubscribes the caller from a prior backend log subscription.
@@ -348,32 +308,6 @@ defmodule FavnOrchestrator do
   """
   @spec unsubscribe_logs(term()) :: :ok | {:error, :invalid_log_subscription}
   def unsubscribe_logs(subscription), do: Logs.unsubscribe_logs(subscription)
-
-  @doc """
-  Submits one asset run by manifest-scoped target id.
-  """
-  @spec submit_asset_run_for_manifest(String.t(), String.t(), keyword()) ::
-          {:ok, run_id()} | {:error, term()}
-  @spec submit_asset_run_for_manifest(String.t(), String.t(), map()) ::
-          {:ok, run_id()} | {:error, term()}
-  def submit_asset_run_for_manifest(manifest_version_id, target_id, opts_or_request \\ [])
-
-  def submit_asset_run_for_manifest(manifest_version_id, target_id, request)
-      when is_binary(manifest_version_id) and is_binary(target_id) and is_map(request) do
-    with {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id),
-         {:ok, opts} <- AssetOptions.from_input(asset, request) do
-      submit_asset_run(asset.ref, Keyword.put(opts, :manifest_version_id, manifest_version_id))
-    end
-  end
-
-  def submit_asset_run_for_manifest(manifest_version_id, target_id, opts)
-      when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
-    with {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, asset_ref} <- ManifestTarget.resolve_asset_ref(version, target_id) do
-      submit_asset_run(asset_ref, Keyword.put(opts, :manifest_version_id, manifest_version_id))
-    end
-  end
 
   @doc """
   Submits one asset run command for an authenticated operator actor context.
@@ -402,17 +336,14 @@ defmodule FavnOrchestrator do
           AssetRunRequest.t() | map() | keyword() | nil
         ) :: {:ok, run_id()} | {:error, term()}
   def submit_operator_asset_run(
-        actor_context,
+        %OperatorContext{} = operator_context,
         manifest_version_id,
         target_id,
         command_input \\ %{}
       ) do
-    OperatorCommands.submit_asset_run(
-      actor_context,
-      manifest_version_id,
-      target_id,
-      command_input
-    )
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator) do
+      OperatorCommands.submit_asset_run(context, manifest_version_id, target_id, command_input)
+    end
   end
 
   @doc """
@@ -428,8 +359,35 @@ defmodule FavnOrchestrator do
           map(),
           AssetRunRequest.t() | PipelineRunRequest.t() | map() | keyword() | nil
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_run(actor_context, manifest_version_id, target, command_input \\ %{}) do
-    OperatorCommands.submit_run(actor_context, manifest_version_id, target, command_input)
+  def submit_operator_run(actor_context, manifest_version_id, target, command_input \\ %{})
+
+  def submit_operator_run(
+        %OperatorContext{} = operator_context,
+        manifest_version_id,
+        target,
+        command_input
+      ) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator) do
+      OperatorCommands.submit_run(context, manifest_version_id, target, command_input, [])
+    end
+  end
+
+  @doc false
+  @spec submit_operator_run(
+          WorkspaceContext.t(),
+          String.t(),
+          map(),
+          AssetRunRequest.t() | PipelineRunRequest.t() | map() | keyword() | nil,
+          keyword()
+        ) :: {:ok, run_id()} | {:error, term()}
+  def submit_operator_run(
+        %WorkspaceContext{} = context,
+        manifest_version_id,
+        target,
+        command_input,
+        opts
+      ) do
+    OperatorCommands.submit_run(context, manifest_version_id, target, command_input, opts)
   end
 
   @doc """
@@ -456,47 +414,38 @@ defmodule FavnOrchestrator do
         manifest_version_id,
         target_id,
         command_input \\ %{}
-      ) do
-    OperatorCommands.submit_asset_backfill(
-      actor_context,
-      manifest_version_id,
-      target_id,
-      command_input
-    )
-  end
-
-  @doc """
-  Submits a manifest-pinned asset run for one stable asset detail window id.
-  """
-  @spec submit_asset_window_run(String.t(), String.t(), String.t(), keyword()) ::
-          {:ok, run_id()} | {:error, term()}
-  def submit_asset_window_run(manifest_version_id, target_id, window_id, opts \\ [])
-      when is_binary(manifest_version_id) and is_binary(target_id) and is_binary(window_id) and
-             is_list(opts) do
-    submit_asset_run_for_manifest(manifest_version_id, target_id, %{
-      selection: %{source: :data_coverage_timeline, id: window_id},
-      config: Map.new(opts)
-    })
-  end
-
-  @doc """
-  Submits one pipeline run by manifest-scoped target id.
-
-  Thin callers may pass plain map input with an optional `:window` map. The
-  orchestrator validates and translates it into the runtime window request.
-  """
-  @spec submit_pipeline_run_for_manifest(String.t(), String.t(), keyword() | map()) ::
-          {:ok, run_id()} | {:error, term()}
-  def submit_pipeline_run_for_manifest(manifest_version_id, target_id, opts \\ [])
-      when is_binary(manifest_version_id) and is_binary(target_id) and
-             (is_list(opts) or is_map(opts)) do
-    with {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, pipeline_module} <- ManifestTarget.resolve_pipeline_module(version, target_id),
-         {:ok, opts} <- normalize_pipeline_run_submit_opts(opts) do
-      submit_pipeline_run(
-        pipeline_module,
-        Keyword.put(opts, :manifest_version_id, manifest_version_id)
       )
+
+  def submit_operator_asset_backfill(
+        %OperatorContext{} = operator_context,
+        manifest_version_id,
+        target_id,
+        command_input
+      ) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, request} <- AssetBackfillRequest.from_input(command_input),
+         {:ok, version} <- ManifestStore.get_manifest(context, manifest_version_id),
+         {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id),
+         {:ok, refresh} <-
+           AssetOptions.operator_refresh(
+             request.refresh_mode,
+             asset.ref,
+             request.dependency_mode
+           ),
+         opts <-
+           request
+           |> operator_backfill_opts(actor, operator_context)
+           |> Keyword.put(:dependencies, request.dependency_mode)
+           |> Keyword.put(:refresh, refresh),
+         {:ok, backfill} <-
+           FavnOrchestrator.Backfills.submit_asset(
+             context,
+             manifest_version_id,
+             target_id,
+             request.range,
+             opts
+           ) do
+      {:ok, backfill.root_run_id}
     end
   end
 
@@ -526,102 +475,51 @@ defmodule FavnOrchestrator do
           PipelineRunRequest.t() | map() | keyword() | nil
         ) :: {:ok, run_id()} | {:error, term()}
   def submit_operator_pipeline_run(
-        actor_context,
+        %OperatorContext{} = operator_context,
         manifest_version_id,
         target_id,
         command_input \\ %{}
       ) do
-    OperatorCommands.submit_pipeline_run(
-      actor_context,
-      manifest_version_id,
-      target_id,
-      command_input
-    )
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator) do
+      OperatorCommands.submit_pipeline_run(context, manifest_version_id, target_id, command_input)
+    end
   end
 
-  @doc """
-  Sets the active manifest version used by default for new runs.
-  """
-  @spec activate_manifest(String.t()) :: :ok | {:error, term()}
-  def activate_manifest(manifest_version_id) when is_binary(manifest_version_id) do
-    ManifestStore.set_active_manifest(manifest_version_id)
+  @doc "Returns the active deployment's manifest ID for one workspace."
+  @spec active_manifest(WorkspaceContext.t()) :: {:ok, String.t()} | {:error, term()}
+  def active_manifest(%WorkspaceContext{} = context) do
+    with {:ok, runtime} <- ManifestStore.get_runtime_state(context) do
+      {:ok, runtime.manifest_version_id}
+    end
   end
 
-  @doc """
-  Returns the currently active manifest version id.
-  """
-  @spec active_manifest() :: {:ok, String.t()} | {:error, term()}
-  def active_manifest, do: ManifestStore.get_active_manifest()
-
-  @doc """
-  Submits one asset run pinned to a manifest version.
-
-  When `:manifest_version_id` is not provided, the active manifest version is used.
-
-  Freshness-related options:
-
-  - `:refresh` or `:refresh_policy` accepts `:auto`, `:force`, `:missing`,
-    `{:force_assets, refs}`, `{:force_assets, refs, include_upstream: true}`, or
-    equivalent maps. See `FavnOrchestrator.RefreshPolicy`.
-
-  `:retry_policy` accepts `%Favn.Retry.Policy{}` or its map/keyword input form
-  and is the explicit operator override for every planned node. It takes
-  precedence over asset and pipeline policy. The override changes attempt
-  count/timing only and never makes an unknown outcome safe to repeat.
-  """
-  @spec submit_asset_run(Favn.Ref.t(), keyword()) :: {:ok, run_id()} | {:error, term()}
-  def submit_asset_run(asset_ref, opts \\ [])
-
-  def submit_asset_run({module, name} = asset_ref, opts)
-      when is_atom(module) and is_atom(name) and is_list(opts) do
-    RunManager.submit_asset_run(asset_ref, opts)
-  end
-
-  def submit_asset_run(_asset_ref, _opts), do: {:error, :invalid_target_ref}
-
-  @doc """
-  Submits one pipeline run from explicit target refs or a persisted manifest pipeline module.
-
-  Freshness-related options:
-
-  - `:refresh` or `:refresh_policy` accepts `:auto`, `:force`, `:missing`,
-    `{:force_assets, refs}`, `{:force_assets, refs, include_upstream: true}`, or
-    equivalent maps. See `FavnOrchestrator.RefreshPolicy`.
-
-  Under `:auto`, manifest freshness policies decide which planned nodes run or
-  skip. `:missing` skips nodes with prior successful freshness state. `:force`
-  runs every planned node.
-
-  `:retry_policy` accepts `%Favn.Retry.Policy{}` or its map/keyword input form
-  and overrides asset/pipeline policy for this run only. `max_attempts` includes
-  the initial attempt. The effective policy and source are frozen per node and
-  exposed in run details.
-
-  """
-  @spec submit_pipeline_run([Favn.Ref.t()], keyword()) :: {:ok, run_id()} | {:error, term()}
-  @spec submit_pipeline_run(module(), keyword()) :: {:ok, run_id()} | {:error, term()}
-  def submit_pipeline_run(target_or_module, opts \\ [])
-
-  def submit_pipeline_run(target_refs, opts) when is_list(target_refs) and is_list(opts) do
-    RunManager.submit_pipeline_run(target_refs, opts)
-  end
-
-  def submit_pipeline_run(pipeline_module, opts)
-      when is_atom(pipeline_module) and is_list(opts) do
-    RunManager.submit_pipeline_module_run(pipeline_module, opts)
-  end
-
-  @doc """
-  Inspects one manifest-owned asset relation through the configured runner boundary.
-  """
-  @spec inspect_manifest_asset(String.t(), String.t(), keyword()) ::
+  @doc "Inspects an asset from the workspace's active manifest deployment."
+  @spec inspect_manifest_asset(WorkspaceContext.t(), String.t(), String.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
-  def inspect_manifest_asset(manifest_version_id, target_id, opts \\ [])
+  def inspect_manifest_asset(%WorkspaceContext{} = context, manifest_version_id, target_id, opts)
       when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
-    with {:ok, version} <- get_manifest(manifest_version_id),
+    with {:ok, version} <-
+           Manifests.get_active_target_release(
+             context,
+             manifest_version_id,
+             :asset,
+             target_id
+           ),
+         {:ok, result} <- inspect_manifest_asset_version(version, target_id, opts) do
+      {:ok, result}
+    end
+  end
+
+  defp inspect_manifest_asset_version(%Version{} = version, target_id, opts) do
+    with manifest_version_id <- version.manifest_version_id,
          {:ok, asset_ref} <- ManifestTarget.resolve_asset_ref(version, target_id),
          :ok <- validate_runner_client(configured_runner_client()),
-         :ok <- configured_runner_client().register_manifest(version, configured_runner_opts()) do
+         :ok <-
+           RunnerManifestRegistration.ensure(
+             configured_runner_client(),
+             version,
+             configured_runner_opts()
+           ) do
       request = %RelationInspectionRequest{
         manifest_version_id: manifest_version_id,
         manifest_content_hash: version.content_hash,
@@ -630,96 +528,6 @@ defmodule FavnOrchestrator do
       }
 
       configured_runner_client().inspect_relation(request, configured_runner_opts())
-    end
-  end
-
-  @doc """
-  Submits a parent pipeline backfill run and child pipeline runs for each resolved anchor.
-
-  This control-plane entrypoint is used by the private HTTP surface and internal
-  callers. It resolves `:range_request` through `Favn.Backfill.RangeResolver`,
-  persists a parent `:backfill_pipeline` run, creates one normalized backfill
-  window row per anchor, and submits one child pipeline run per window.
-
-  Required options:
-
-  - `:range_request` - `Favn.Backfill.RangeRequest.t/0`, map, or keyword input.
-
-  Common options:
-
-  - `:manifest_version_id` - defaults to the active manifest.
-  - `:coverage_baseline_id` - associates requested windows with a projected
-    coverage baseline.
-  - `:refresh` or `:refresh_policy` - forwarded to child pipeline runs. Defaults
-    to `:missing` when neither option is provided.
-  - `:metadata` - user metadata merged into the parent run metadata.
-  - `:retry_policy` and `:timeout_ms` - forwarded to child runs. Retry policy is
-    one typed node policy and does not alter schedule overlap or backfill child
-    identity.
-  """
-  @spec submit_pipeline_backfill(module(), keyword()) :: {:ok, run_id()} | {:error, term()}
-  def submit_pipeline_backfill(pipeline_module, opts \\ [])
-
-  def submit_pipeline_backfill(pipeline_module, opts)
-      when is_atom(pipeline_module) and is_list(opts) do
-    BackfillManager.submit_pipeline_backfill(pipeline_module, opts)
-  end
-
-  def submit_pipeline_backfill(_pipeline_module, _opts), do: {:error, :invalid_pipeline_module}
-
-  @doc """
-  Plans one pipeline backfill without persisting a parent run or submitting child runs.
-
-  The returned DTO contains the selected manifest, target, resolved range bounds,
-  and concrete window keys that a later submit would use.
-  """
-  @spec plan_pipeline_backfill(module(), keyword()) :: {:ok, map()} | {:error, term()}
-  def plan_pipeline_backfill(pipeline_module, opts \\ [])
-
-  def plan_pipeline_backfill(pipeline_module, opts)
-      when is_atom(pipeline_module) and is_list(opts) do
-    BackfillManager.plan_pipeline_backfill(pipeline_module, opts)
-  end
-
-  def plan_pipeline_backfill(_pipeline_module, _opts), do: {:error, :invalid_pipeline_module}
-
-  @doc """
-  Submits one pipeline backfill by manifest-scoped target id.
-
-  Thin callers may pass plain map input with `:range` containing `:from`, `:to`,
-  `:kind`, and `:timezone`. The orchestrator validates and translates it into
-  the runtime backfill range request.
-  """
-  @spec submit_pipeline_backfill_for_manifest(String.t(), String.t(), keyword() | map()) ::
-          {:ok, run_id()} | {:error, term()}
-  def submit_pipeline_backfill_for_manifest(manifest_version_id, target_id, opts \\ [])
-      when is_binary(manifest_version_id) and is_binary(target_id) and
-             (is_list(opts) or is_map(opts)) do
-    with {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, pipeline_module} <- ManifestTarget.resolve_pipeline_module(version, target_id),
-         {:ok, opts} <- normalize_pipeline_backfill_submit_opts(opts) do
-      submit_pipeline_backfill(
-        pipeline_module,
-        Keyword.put(opts, :manifest_version_id, manifest_version_id)
-      )
-    end
-  end
-
-  @doc """
-  Plans one pipeline backfill by manifest-scoped target id.
-  """
-  @spec plan_pipeline_backfill_for_manifest(String.t(), String.t(), keyword() | map()) ::
-          {:ok, map()} | {:error, term()}
-  def plan_pipeline_backfill_for_manifest(manifest_version_id, target_id, opts \\ [])
-      when is_binary(manifest_version_id) and is_binary(target_id) and
-             (is_list(opts) or is_map(opts)) do
-    with {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, pipeline_module} <- ManifestTarget.resolve_pipeline_module(version, target_id),
-         {:ok, opts} <- normalize_pipeline_backfill_submit_opts(opts) do
-      plan_pipeline_backfill(
-        pipeline_module,
-        Keyword.put(opts, :manifest_version_id, manifest_version_id)
-      )
     end
   end
 
@@ -753,145 +561,45 @@ defmodule FavnOrchestrator do
         manifest_version_id,
         target_id,
         command_input \\ %{}
-      ) do
-    OperatorCommands.submit_pipeline_backfill(
-      actor_context,
-      manifest_version_id,
-      target_id,
-      command_input
-    )
-  end
-
-  @doc """
-  Lists normalized backfill-window ledger rows.
-  """
-  @spec list_backfill_windows(keyword()) ::
-          {:ok, FavnOrchestrator.Page.t(FavnOrchestrator.Backfill.BackfillWindow.t())}
-          | {:error, term()}
-  def list_backfill_windows(filters \\ []) when is_list(filters) do
-    Storage.list_backfill_windows(filters)
-  end
-
-  @doc """
-  Lists projected coverage baselines.
-  """
-  @spec list_coverage_baselines(keyword()) ::
-          {:ok, FavnOrchestrator.Page.t(FavnOrchestrator.Backfill.CoverageBaseline.t())}
-          | {:error, term()}
-  def list_coverage_baselines(filters \\ []) when is_list(filters) do
-    Storage.list_coverage_baselines(filters)
-  end
-
-  @doc """
-  Lists latest asset/window states.
-  """
-  @spec list_asset_window_states(keyword()) ::
-          {:ok, FavnOrchestrator.Page.t(FavnOrchestrator.Backfill.AssetWindowState.t())}
-          | {:error, term()}
-  def list_asset_window_states(filters \\ []) when is_list(filters) do
-    Storage.list_asset_window_states(filters)
-  end
-
-  @doc """
-  Returns one internal freshness state for an asset/freshness key.
-
-  `freshness_key` must come from `Favn.Freshness.Key`, for example `"latest"`, a
-  calendar key, or a window key. This is an orchestrator control-plane API, not a
-  `favn_view` public endpoint.
-  """
-  @spec get_asset_freshness(Favn.Ref.t(), String.t()) ::
-          {:ok, FavnOrchestrator.AssetFreshnessState.t()} | {:error, term()}
-  def get_asset_freshness(asset_ref, freshness_key),
-    do: FreshnessQuery.get_asset_freshness(asset_ref, freshness_key)
-
-  @doc """
-  Lists internal asset freshness states.
-
-  Common filters are `:asset_ref_module`, `:asset_ref_name`, `:freshness_key`,
-  `:status`, `:manifest_version_id`, `:limit`, and `:offset`.
-  """
-  @spec list_asset_freshness(keyword()) ::
-          {:ok, FavnOrchestrator.Page.t(FavnOrchestrator.AssetFreshnessState.t())}
-          | {:error, term()}
-  def list_asset_freshness(filters \\ []) when is_list(filters),
-    do: FreshnessQuery.list_asset_freshness(filters)
-
-  @doc """
-  Explains whether a stored freshness state is stale against current upstream versions.
-
-  Options:
-
-  - `:freshness_key` - downstream freshness key, defaults to `"latest"`.
-  - `:upstream_node_keys` - concrete planned upstream node keys to compare.
-
-  Returns `status: :fresh` with no reasons when stored input versions still match
-  the current upstream freshness versions. Returns `status: :stale` with explicit
-  stale reasons when an upstream version is missing or changed.
-  """
-  @spec explain_asset_staleness(Favn.Ref.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def explain_asset_staleness(asset_ref, opts \\ []) when is_list(opts),
-    do: FreshnessQuery.explain_asset_staleness(asset_ref, opts)
-
-  @doc """
-  Repairs derived operational-backfill read models from persisted run snapshots.
-
-  The repair source is authoritative run state. By default this returns a dry-run
-  report; pass `apply: true` to replace scoped derived read models. Repair never
-  appends run events or rewrites run snapshots.
-  """
-  @spec repair_backfill_projections(keyword()) :: {:ok, map()} | {:error, term()}
-  def repair_backfill_projections(opts \\ []) when is_list(opts) do
-    BackfillRepair.repair(opts)
-  end
-
-  @doc """
-  Reruns the latest attempt for one failed backfill window.
-
-  Pass `allow_success: true` with an explicit refresh policy such as
-  `refresh: :force` to intentionally repair a successful window whose external
-  side effects need recomputation.
-  """
-  @spec rerun_backfill_window(String.t(), module(), String.t(), keyword()) ::
-          {:ok, run_id()} | {:error, term()}
-  def rerun_backfill_window(backfill_run_id, pipeline_module, window_key, opts \\ [])
-      when is_binary(backfill_run_id) and is_atom(pipeline_module) and is_binary(window_key) and
-             is_list(opts) do
-    with {:ok, window} <-
-           Storage.get_backfill_window(backfill_run_id, pipeline_module, window_key),
-         :ok <- ensure_window_rerunnable(window, opts),
-         source_run_id when is_binary(source_run_id) <- window.latest_attempt_run_id,
-         {:ok, anchor} <-
-           Anchor.new(window.window_kind, window.window_start_at, window.window_end_at,
-             timezone: window.timezone
-           ) do
-      rerun(
-        source_run_id,
-        opts
-        |> Keyword.put(:anchor_window, anchor)
-        |> Keyword.put(:parent_run_id, backfill_run_id)
-        |> Keyword.put(:root_run_id, backfill_run_id)
-        |> Keyword.put(:trigger, %{
-          kind: :backfill,
-          backfill_run_id: backfill_run_id,
-          window_key: window_key,
-          rerun: true
-        })
-        |> Keyword.update(:metadata, %{backfill_window_rerun: true}, fn metadata ->
-          Map.merge(metadata, %{backfill_window_rerun: true})
-        end)
       )
+
+  def submit_operator_pipeline_backfill(
+        %OperatorContext{} = operator_context,
+        manifest_version_id,
+        target_id,
+        command_input
+      ) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, request} <- PipelineBackfillRequest.from_input(command_input),
+         true <- is_nil(request.coverage_baseline_id),
+         {:ok, backfill} <-
+           FavnOrchestrator.Backfills.submit_pipeline(
+             context,
+             manifest_version_id,
+             target_id,
+             request.range,
+             operator_backfill_opts(request, actor, operator_context)
+           ) do
+      {:ok, backfill.root_run_id}
     else
-      nil -> {:error, :backfill_window_has_no_attempt}
+      false -> {:error, {:unsupported_backfill_option, :coverage_baseline_id}}
       {:error, _reason} = error -> error
     end
   end
 
-  @doc """
-  Requests cancellation for one run and forwards cancellation to the runner when work is in flight.
-  """
-  @spec cancel_run(run_id(), map()) :: :ok | {:error, term()}
-  def cancel_run(run_id, reason \\ %{}) when is_binary(run_id) and is_map(reason) do
-    RunManager.cancel_run(run_id, reason)
+  @doc "Requests cancellation within one explicit workspace."
+  @spec cancel_run(WorkspaceContext.t(), run_id(), map()) :: :ok | {:error, term()}
+  def cancel_run(%WorkspaceContext{} = context, run_id, reason)
+      when is_binary(run_id) and is_map(reason) do
+    RunManager.cancel_run(context, run_id, reason)
+  end
+
+  @doc false
+  @spec cancel_run(WorkspaceContext.t(), run_id(), map(), keyword()) ::
+          :ok | {:error, term()}
+  def cancel_run(%WorkspaceContext{} = context, run_id, reason, opts)
+      when is_binary(run_id) and is_map(reason) and is_list(opts) do
+    RunManager.cancel_run(context, run_id, reason, opts)
   end
 
   @doc """
@@ -902,30 +610,23 @@ defmodule FavnOrchestrator do
   run-manager lifecycle contract.
   """
   @spec cancel_operator_run(operator_actor_context(), run_id()) :: :ok | {:error, term()}
-  def cancel_operator_run(actor_context, run_id)
-      when is_map(actor_context) and is_binary(run_id) do
-    with {:ok, actor} <- Authorization.authorize(actor_context, :operator) do
-      cancel_run(run_id, %{actor_id: actor.id, requested_by: :operator})
+  def cancel_operator_run(%OperatorContext{} = operator_context, run_id)
+      when is_binary(run_id) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
+      cancel_run(context, run_id, %{actor_id: actor.id, requested_by: :operator})
     end
   end
 
   def cancel_operator_run(_actor_context, _run_id), do: {:error, :unauthenticated}
 
-  @doc """
-  Plans remaining retry work for a failed run or backfill execution group.
-  """
-  @spec plan_remaining_retry(run_id()) :: {:ok, RunRetryPlanner.retry_plan()} | {:error, term()}
-  def plan_remaining_retry(run_id) when is_binary(run_id), do: RunRetryPlanner.remaining(run_id)
-
-  @doc """
-  Submits retry runs for failed or not-started assets, preserving source run config.
-  """
-  @spec retry_remaining(run_id(), keyword()) ::
+  @doc false
+  @spec retry_remaining(WorkspaceContext.t(), run_id(), keyword()) ::
           {:ok, map()} | {:partial, map()} | {:error, term()}
-  def retry_remaining(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+  def retry_remaining(%WorkspaceContext{} = context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
     with :ok <- validate_remaining_retry_opts(opts),
-         {:ok, plan} <- RunRetryPlanner.remaining(run_id) do
-      submit_remaining_retry_plan(plan, opts)
+         {:ok, plan} <- RunRetryPlanner.remaining(context, run_id) do
+      submit_remaining_retry_plan(context, plan, opts)
     end
   end
 
@@ -934,12 +635,10 @@ defmodule FavnOrchestrator do
   """
   @spec retry_operator_run_remaining(operator_actor_context(), run_id()) ::
           {:ok, map()} | {:partial, map()} | {:error, term()}
-  def retry_operator_run_remaining(actor_context, run_id)
-      when is_map(actor_context) and is_binary(run_id) do
-    with {:ok, actor} <- Authorization.authorize(actor_context, :operator) do
-      retry_remaining(run_id,
-        metadata: %{operator_retry: true, actor_id: actor.id}
-      )
+  def retry_operator_run_remaining(%OperatorContext{} = operator_context, run_id)
+      when is_binary(run_id) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
+      retry_remaining(context, run_id, metadata: %{operator_retry: true, actor_id: actor.id})
     end
   end
 
@@ -958,32 +657,31 @@ defmodule FavnOrchestrator do
   def operator_error(:run_cancel, reason), do: OperatorErrorDTO.run_cancel(reason)
   def operator_error(:run_failure_detail, reason), do: OperatorErrorDTO.run_failure_detail(reason)
 
-  @doc """
-  Submits a rerun pinned to the source run's manifest version.
-
-  Exact replay defaults to `input_mode: :pinned`: every selected SQL asset with
-  runtime inputs must reuse a source-run pin. `:inherit` copies available pins
-  and resolves nodes the source run never reached; `:fresh` deliberately
-  resolves again and therefore is not exact replay. A `:retry_policy` option is
-  an explicit run-only operator override.
-  """
-  @spec rerun(run_id(), keyword()) :: {:ok, run_id()} | {:error, term()}
-  def rerun(source_run_id, opts \\ []) when is_binary(source_run_id) and is_list(opts) do
-    RunManager.rerun(source_run_id, opts)
+  @doc "Submits a rerun within one explicit workspace."
+  @spec rerun(WorkspaceContext.t(), run_id(), keyword()) ::
+          {:ok, run_id()} | {:error, term()}
+  def rerun(%WorkspaceContext{} = context, source_run_id, opts)
+      when is_binary(source_run_id) and is_list(opts) do
+    RunManager.rerun(context, source_run_id, opts)
   end
 
-  defp submit_remaining_retry_plan(%{children: children, asset_count: asset_count} = plan, opts) do
-    with {:ok, submissions} <- prepare_remaining_retry_submissions(plan, children, opts) do
+  defp submit_remaining_retry_plan(
+         %WorkspaceContext{} = context,
+         %{children: children, asset_count: asset_count} = plan,
+         opts
+       ) do
+    with {:ok, submissions} <-
+           prepare_remaining_retry_submissions(context, plan, children, opts) do
       admit_remaining_retry_submissions(plan, submissions, asset_count)
     end
   end
 
-  defp prepare_remaining_retry_submissions(plan, children, opts) do
+  defp prepare_remaining_retry_submissions(context, plan, children, opts) do
     children
     |> Enum.reduce_while({:ok, []}, fn child, {:ok, acc} ->
       submit_opts = remaining_retry_opts(plan, child, opts)
 
-      case RunManager.prepare_rerun(child.source_run_id, submit_opts) do
+      case RunManager.prepare_rerun(context, child.source_run_id, submit_opts) do
         {:ok, submission} -> {:cont, {:ok, [submission | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -1084,237 +782,124 @@ defmodule FavnOrchestrator do
     |> Map.new()
   end
 
-  defp ensure_window_rerunnable(window, opts) when is_list(opts) do
-    if Keyword.get(opts, :allow_success, false) == true do
-      ensure_success_rerun_refresh(opts)
-    else
-      ensure_window_rerunnable(window)
-    end
-  end
-
-  defp ensure_success_rerun_refresh(opts) do
-    case RefreshPolicy.from_opts(opts) do
-      {:ok, %RefreshPolicy{mode: :force}} -> :ok
-      {:ok, _policy} -> {:error, :successful_backfill_window_requires_force_refresh}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp ensure_window_rerunnable(%FavnOrchestrator.Backfill.BackfillWindow{status: status})
-       when status in [:error, :cancelled, :timed_out, :partial],
-       do: :ok
-
-  defp ensure_window_rerunnable(_window), do: {:error, :backfill_window_not_rerunnable}
-
-  @doc """
-  Returns one persisted run snapshot.
-  """
-  @spec get_run(run_id()) :: {:ok, Favn.Run.t()} | {:error, term()}
-  def get_run(run_id) when is_binary(run_id) do
-    with {:ok, run_state} <- Storage.get_run(run_id),
-         {:ok, pins} <- runtime_input_pins_for_read(run_id) do
+  @doc "Returns one persisted run only within the authorized workspace."
+  @spec get_run(WorkspaceContext.t(), run_id()) :: {:ok, Favn.Run.t()} | {:error, term()}
+  def get_run(%WorkspaceContext{} = context, run_id) when is_binary(run_id) do
+    with {:ok, run_state} <- Runs.get(context, run_id),
+         {:ok, pins} <- Runs.get_runtime_inputs(context, run_id) do
       run = Projector.project_run(run_state)
       metadata = maybe_put_runtime_input_lineage(run.metadata, pins)
       {:ok, %{run | metadata: metadata}}
-    end
-  end
-
-  @doc """
-  Lists persisted run snapshots.
-  """
-  @spec list_runs(keyword()) :: {:ok, [Favn.Run.t()]} | {:error, term()}
-  def list_runs(opts \\ []) when is_list(opts) do
-    case Storage.list_runs(opts) do
-      {:ok, runs} -> {:ok, Projector.project_runs(runs)}
+    else
+      {:error, %PersistenceError{kind: :not_found}} -> {:error, :not_found}
       {:error, _reason} = error -> error
     end
   end
 
-  @doc """
-  Returns one public run detail with orchestrator-owned classification.
-  """
-  @spec get_run_detail(run_id()) :: {:ok, run_detail()} | {:error, term()}
-  def get_run_detail(run_id) when is_binary(run_id) do
-    RunReadModel.get_run_detail(run_id)
+  @doc "Returns one bounded keyset page of runs in the authorized workspace."
+  @spec list_runs(WorkspaceContext.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_runs(%WorkspaceContext{} = context, opts) when is_list(opts) do
+    case Runs.page_summaries(context, opts) do
+      {:ok, page} -> {:ok, Enum.map(page.items, &Projector.project_run_summary/1)}
+      {:error, _reason} = error -> error
+    end
   end
 
-  @doc """
-  Returns bounded operator-facing run detail for the run detail page.
+  @doc "Returns one run detail after reauthorizing a browser-safe operator context."
+  @spec get_run_detail(OperatorContext.t(), run_id()) :: {:ok, run_detail()} | {:error, term()}
+  def get_run_detail(%OperatorContext{} = operator_context, run_id) when is_binary(run_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      RunReadModel.get_run_detail(context, run_id)
+    end
+  end
 
-  By default this does not include full event streams. Pass `include: [:events]`
-  with `event_limit` to request bounded events explicitly.
-  """
-  @spec get_operator_run_detail(run_id(), keyword()) ::
+  @doc "Returns bounded run detail after reauthorizing a browser-safe operator context."
+  @spec get_operator_run_detail(OperatorContext.t(), run_id(), keyword()) ::
           {:ok, operator_run_detail()} | {:error, term()}
-  def get_operator_run_detail(run_id, opts \\ [])
-
-  def get_operator_run_detail(run_id, opts) when is_binary(run_id) and is_list(opts) do
-    RunReadModel.get_operator_run_detail(run_id, opts)
+  def get_operator_run_detail(%OperatorContext{} = operator_context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      RunReadModel.get_operator_run_detail(context, run_id, opts)
+    end
   end
 
-  @doc """
-  Lists execution groups with orchestrator-owned run/backfill aggregation.
-  """
-  @spec list_execution_groups(keyword()) :: {:ok, [execution_group_summary()]} | {:error, term()}
-  def list_execution_groups(filters \\ []) when is_list(filters) do
-    RunReadModel.list_execution_groups(filters)
+  @doc "Returns a bounded execution-group page for one authorized operator workspace."
+  @spec page_execution_groups(OperatorContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def page_execution_groups(%OperatorContext{} = operator_context, filters)
+      when is_list(filters) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, page} <-
+           Persistence.stores().operator_reads.page_execution_groups(%PageExecutionGroups{
+             scope: context,
+             status: execution_group_status(filters),
+             limit: min(Keyword.get(filters, :limit, 100), 500)
+           }) do
+      {:ok, %{page | items: Enum.map(page.items, &execution_group_summary/1)}}
+    end
   end
 
-  @doc """
-  Returns a bounded page of execution groups with orchestrator-owned semantics.
-  """
-  @spec page_execution_groups(keyword()) ::
-          {:ok, FavnOrchestrator.Page.t(execution_group_summary())} | {:error, term()}
-  def page_execution_groups(filters \\ []) when is_list(filters) do
-    RunReadModel.page_execution_groups(filters)
-  end
-
-  @doc """
-  Returns one execution group detail for redesigned run views.
-  """
-  @spec get_execution_group_detail(run_id(), keyword()) ::
-          {:ok, execution_group_detail()} | {:error, term()}
-  def get_execution_group_detail(group_id, filters \\ [])
+  @doc "Returns bounded execution-group details for one authorized operator workspace."
+  @spec get_execution_group_detail(OperatorContext.t(), run_id(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def get_execution_group_detail(%OperatorContext{} = operator_context, group_id, filters)
       when is_binary(group_id) and is_list(filters) do
-    RunReadModel.get_execution_group_detail(group_id, filters)
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, detail} <-
+           Persistence.stores().operator_reads.get_execution_group(%GetExecutionGroup{
+             workspace_context: context,
+             root_run_id: group_id,
+             detail_limit: min(Keyword.get(filters, :limit, 100), 200)
+           }) do
+      {:ok,
+       %{
+         overview: execution_group_summary(detail.overview),
+         child_runs: Enum.map(detail.runs.items, &execution_group_run/1),
+         windows: Enum.map(detail.windows.items, &Map.from_struct/1),
+         failures: Enum.map(detail.failures.items, &execution_group_run/1)
+       }}
+    end
   end
 
-  @doc """
-  Returns execution group detail for any run id in that group.
-  """
-  @spec get_execution_group_detail_for_run(run_id(), keyword()) ::
-          {:ok, execution_group_detail()} | {:error, term()}
-  def get_execution_group_detail_for_run(run_id, filters \\ [])
-      when is_binary(run_id) and is_list(filters) do
-    RunReadModel.get_execution_group_detail_for_run(run_id, filters)
-  end
-
-  @doc """
-  Lists asset attempts for one execution group.
-  """
-  @spec list_execution_group_asset_attempts(run_id(), keyword()) ::
-          {:ok, [RunReadModel.asset_attempt_summary()]} | {:error, term()}
-  def list_execution_group_asset_attempts(group_id, filters \\ [])
-      when is_binary(group_id) and is_list(filters) do
-    RunReadModel.list_execution_group_asset_attempts(group_id, filters)
-  end
-
-  @doc """
-  Lists window summaries for one execution group.
-  """
-  @spec list_execution_group_windows(run_id(), keyword()) :: {:ok, [map()]} | {:error, term()}
-  def list_execution_group_windows(group_id, filters \\ [])
-      when is_binary(group_id) and is_list(filters) do
-    RunReadModel.list_execution_group_windows(group_id, filters)
-  end
-
-  @doc """
-  Lists wall-clock timeline entries for one execution group.
-  """
-  @spec list_execution_group_timeline(run_id(), keyword()) ::
-          {:ok, [RunReadModel.timeline_entry()]} | {:error, term()}
-  def list_execution_group_timeline(group_id, filters \\ [])
-      when is_binary(group_id) and is_list(filters) do
-    RunReadModel.list_execution_group_timeline(group_id, filters)
-  end
-
-  @doc """
-  Lists persisted events for an execution group, including child/window runs.
-  """
-  @spec list_execution_group_events(run_id(), keyword()) ::
-          {:ok, [RunEvent.t()]} | {:error, term()}
-  def list_execution_group_events(group_id, filters \\ [])
-      when is_binary(group_id) and is_list(filters) do
-    RunReadModel.list_execution_group_events(group_id, filters)
-  end
-
-  @doc """
-  Returns public log-page context for one asset step in a run.
-  """
-  @spec get_asset_step_log_context(run_id(), String.t()) ::
+  @doc "Returns asset-step log context after reauthorizing an operator context."
+  @spec get_asset_step_log_context(OperatorContext.t(), run_id(), String.t()) ::
           {:ok, RunReadModel.asset_step_log_context()} | {:error, term()}
-  def get_asset_step_log_context(run_id, asset_step_id)
+  def get_asset_step_log_context(%OperatorContext{} = operator_context, run_id, asset_step_id)
       when is_binary(run_id) and is_binary(asset_step_id) do
-    RunReadModel.get_asset_step_log_context(run_id, asset_step_id)
-  end
-
-  @doc """
-  Lists persisted runs that have not reached a terminal status.
-  """
-  @spec list_in_flight_runs() :: {:ok, [Favn.Run.t()]} | {:error, term()}
-  def list_in_flight_runs do
-    with {:ok, pending} <- list_runs(status: :pending),
-         {:ok, running} <- list_runs(status: :running) do
-      {:ok, Enum.sort_by(pending ++ running, &run_updated_at_sort_key/1, :desc)}
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      RunReadModel.get_asset_step_log_context(context, run_id, asset_step_id)
     end
   end
 
-  @doc """
-  Lists persisted run events for one run.
-
-  This public facade is bounded for operator/API callers: `:limit` defaults to
-  `100` and is capped at `500`; `:after_sequence` is an optional non-negative
-  cursor. Orchestrator-internal repair/projection code that intentionally needs
-  an unbounded adapter read should call the storage boundary directly.
-  """
-  @spec list_run_events(run_id(), keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
-  def list_run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+  @doc "Returns one bounded run-event page in the authorized workspace."
+  @spec list_run_events(WorkspaceContext.t(), run_id(), keyword()) ::
+          {:ok, [RunEvent.t()]} | {:error, term()}
+  def list_run_events(%WorkspaceContext{} = context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
     with {:ok, opts} <- RunEventQuery.normalize_opts(opts),
-         {:ok, events} <- Storage.list_run_events(run_id, opts) do
-      {:ok, Enum.map(events, &RunEvent.from_map/1)}
+         {:ok, page} <- Runs.page_events(context, run_id, opts) do
+      {:ok, Enum.map(page.items, &RunEvent.from_map/1)}
     end
   end
 
-  @doc """
-  Lists replayable events for one run stream after an optional persisted cursor sequence.
-  """
-  @spec list_run_stream_events(run_id(), keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
-  def list_run_stream_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+  @doc "Lists replayable per-run events after reauthorizing an operator context."
+  @spec list_run_stream_events(OperatorContext.t(), run_id(), keyword()) ::
+          {:ok, [RunEvent.t()]} | {:error, term()}
+  def list_run_stream_events(%OperatorContext{} = operator_context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
     after_sequence = Keyword.get(opts, :after_sequence)
     limit = Keyword.get(opts, :limit, 200)
 
-    with true <- is_integer(limit) and limit > 0,
-         {:ok, cursor_valid?} <- run_event_cursor_valid?(run_id, after_sequence),
-         true <- cursor_valid?,
+    with true <- is_integer(limit) and limit > 0 and limit <= 200,
+         true <- is_nil(after_sequence) or (is_integer(after_sequence) and after_sequence >= 0),
+         {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, run} <- Runs.get(context, run_id),
+         true <- is_nil(after_sequence) or after_sequence <= run.event_seq,
          {:ok, events} <-
-           list_run_events(run_id, after_sequence: after_sequence || 0, limit: limit) do
-      case after_sequence do
-        nil ->
-          {:ok, events}
-
-        sequence when is_integer(sequence) and sequence >= 0 ->
-          {:ok, events}
-
-        _ ->
-          {:error, :cursor_invalid}
-      end
-    else
-      false -> {:error, :cursor_invalid}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp run_updated_at_sort_key(%{updated_at: %DateTime{} = updated_at}),
-    do: DateTime.to_unix(updated_at, :microsecond)
-
-  defp run_updated_at_sort_key(_run), do: 0
-
-  @doc """
-  Lists replayable events for the global runs stream after an optional persisted cursor.
-  """
-  @spec list_global_run_stream_events(keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
-  def list_global_run_stream_events(opts \\ []) when is_list(opts) do
-    after_global_sequence = Keyword.get(opts, :after_global_sequence)
-    limit = Keyword.get(opts, :limit, 200)
-
-    with true <- is_integer(limit) and limit > 0,
-         true <- is_nil(after_global_sequence) or is_integer(after_global_sequence),
-         {:ok, events} <-
-           Storage.list_global_run_events(
-             after_global_sequence: after_global_sequence,
+           list_run_events(context, run_id,
+             after_sequence: after_sequence || 0,
              limit: limit
            ) do
-      {:ok, Enum.map(events, &RunEvent.from_map/1)}
+      {:ok, events}
     else
       false -> {:error, :cursor_invalid}
       {:error, _reason} = error -> error
@@ -1324,118 +909,103 @@ defmodule FavnOrchestrator do
   @doc """
   Subscribes the current process to one run-scoped live event stream.
   """
-  @spec subscribe_run(run_id()) :: :ok | {:error, term()}
-  def subscribe_run(run_id) when is_binary(run_id), do: Events.subscribe_run(run_id)
-  def subscribe_run(_run_id), do: {:error, :invalid_run_id}
+  @spec subscribe_run(OperatorContext.t(), run_id()) :: :ok | {:error, term()}
+  def subscribe_run(%OperatorContext{} = operator_context, run_id) when is_binary(run_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, _run} <- Runs.get(context, run_id) do
+      Events.subscribe_run(context.workspace_id, run_id)
+    end
+  end
+
+  def subscribe_run(_operator_context, _run_id), do: {:error, :invalid_run_subscription}
 
   @doc """
   Unsubscribes the current process from one run-scoped live event stream.
   """
-  @spec unsubscribe_run(run_id()) :: :ok
-  def unsubscribe_run(run_id) when is_binary(run_id), do: Events.unsubscribe_run(run_id)
-  def unsubscribe_run(_run_id), do: :ok
+  @spec unsubscribe_run(OperatorContext.t(), run_id()) :: :ok | {:error, term()}
+  def unsubscribe_run(%OperatorContext{} = operator_context, run_id) when is_binary(run_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Events.unsubscribe_run(context.workspace_id, run_id)
+    end
+  end
+
+  def unsubscribe_run(_operator_context, _run_id), do: :ok
+
+  @doc "Unsubscribes the current process from cross-node durable run wake-ups."
+  @spec unsubscribe_run_wakeups(OperatorContext.t()) :: :ok | {:error, term()}
+  def unsubscribe_run_wakeups(%OperatorContext{} = operator_context) do
+    with {:ok, _context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Events.unsubscribe_persistence_publications()
+    end
+  end
 
   @doc """
   Subscribes the current process to the global runs live event stream.
   """
-  @spec subscribe_runs() :: :ok | {:error, term()}
-  def subscribe_runs, do: Events.subscribe_runs()
+  @spec subscribe_runs(OperatorContext.t()) :: :ok | {:error, term()}
+  def subscribe_runs(%OperatorContext{} = operator_context) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Events.subscribe_runs(context.workspace_id)
+    end
+  end
 
   @doc """
   Unsubscribes the current process from the global runs live event stream.
   """
-  @spec unsubscribe_runs() :: :ok
-  def unsubscribe_runs, do: Events.unsubscribe_runs()
-
-  @doc """
-  Reloads scheduler entries from the active manifest.
-  """
-  @spec reload_scheduler() :: :ok | {:error, term()}
-  def reload_scheduler do
-    SchedulerRuntime.reload()
-  catch
-    :exit, {:noproc, _} -> {:error, :scheduler_not_running}
+  @spec unsubscribe_runs(OperatorContext.t()) :: :ok | {:error, term()}
+  def unsubscribe_runs(%OperatorContext{} = operator_context) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Events.unsubscribe_runs(context.workspace_id)
+    end
   end
 
-  @doc """
-  Forces one scheduler evaluation tick.
-  """
-  @spec tick_scheduler() :: :ok | {:error, term()}
-  def tick_scheduler do
-    SchedulerRuntime.tick()
-  catch
-    :exit, {:noproc, _} -> {:error, :scheduler_not_running}
+  @doc "Returns active-deployment schedules for one reauthorized operator workspace."
+  @spec page_schedule_list_entries(OperatorContext.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def page_schedule_list_entries(%OperatorContext{} = operator_context, filters)
+      when is_list(filters) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Schedules.page_entries(context, filters)
+    end
   end
 
-  @doc """
-  Lists scheduler runtime entries derived from the active manifest.
-  """
-  @spec scheduled_entries() :: [SchedulerEntry.t()] | {:error, term()}
-  def scheduled_entries do
-    SchedulerRuntime.inspect_entries()
-  catch
-    :exit, {:noproc, _} -> {:error, :scheduler_not_running}
+  @doc "Returns one active schedule for a reauthorized operator workspace."
+  @spec get_schedule_entry(OperatorContext.t(), String.t()) ::
+          {:ok, SchedulerEntry.t()} | {:error, term()}
+  def get_schedule_entry(%OperatorContext{} = operator_context, schedule_id)
+      when is_binary(schedule_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Schedules.get_entry(context, schedule_id)
+    end
   end
 
-  @doc """
-  Lists operator-facing schedule inspection entries.
+  @doc "Rejects ad-hoc activation; schedule activation is manifest/deployment controlled."
+  @spec enable_schedule(OperatorContext.t(), String.t()) :: {:error, term()}
+  def enable_schedule(%OperatorContext{} = operator_context, schedule_id)
+      when is_binary(schedule_id) do
+    with {:ok, _context, _actor} <- authorize_operator_context(operator_context, :operator) do
+      {:error, :schedule_activation_manifest_controlled}
+    end
+  end
 
-  Falls back to active-manifest schedule descriptors when scheduler runtime is not running.
-  """
-  @spec list_schedule_entries() :: {:ok, [SchedulerEntry.t()]} | {:error, term()}
-  def list_schedule_entries, do: Schedules.list_entries()
+  @doc "Rejects ad-hoc deactivation; schedule activation is manifest/deployment controlled."
+  @spec disable_schedule(OperatorContext.t(), String.t()) :: {:error, term()}
+  def disable_schedule(%OperatorContext{} = operator_context, schedule_id)
+      when is_binary(schedule_id) do
+    with {:ok, _context, _actor} <- authorize_operator_context(operator_context, :operator) do
+      {:error, :schedule_activation_manifest_controlled}
+    end
+  end
 
-  @doc """
-  Returns a bounded page of operator schedule list entries.
-
-  Supported filters are `:search`, `:activation_state`, `:runtime_state`,
-  `:pipeline_module`, `:window`, `:limit`, and `:offset`.
-  """
-  @spec page_schedule_list_entries(keyword()) ::
-          {:ok, Page.t(schedule_list_entry())} | {:error, term()}
-  def page_schedule_list_entries(filters \\ []) when is_list(filters),
-    do: Schedules.page_entries(filters)
-
-  @doc """
-  Returns one schedule inspection entry by remote schedule id.
-  """
-  @spec get_schedule_entry(String.t()) :: {:ok, SchedulerEntry.t()} | {:error, term()}
-  def get_schedule_entry(schedule_id) when is_binary(schedule_id),
-    do: Schedules.get_entry(schedule_id)
-
-  @doc """
-  Enables a schedule for future submissions through the orchestrator facade.
-
-  Enabling starts from the next due occurrence by moving the scheduler cursor to
-  the latest due occurrence observed at command time. It does not submit missed
-  catch-up work automatically.
-  """
-  @spec enable_schedule(String.t()) :: {:ok, SchedulerEntry.t()} | {:error, term()}
-  def enable_schedule(schedule_id) when is_binary(schedule_id), do: Schedules.enable(schedule_id)
-
-  @doc """
-  Disables a schedule for future submissions through the orchestrator facade.
-
-  Existing in-flight runs are not cancelled. Any queued due occurrence is cleared
-  because disabled schedules do not submit future work.
-  """
-  @spec disable_schedule(String.t()) :: {:ok, SchedulerEntry.t()} | {:error, term()}
-  def disable_schedule(schedule_id) when is_binary(schedule_id),
-    do: Schedules.disable(schedule_id)
-
-  @doc """
-  Returns an orchestrator-owned preview of upcoming occurrences for one schedule.
-
-  Options:
-
-    * `:limit` - number of preview rows, defaults to `10` and is capped at `100`.
-    * `:now` - `DateTime` from which to preview, defaulting to the current UTC time.
-  """
-  @spec preview_schedule_occurrences(String.t(), keyword()) ::
+  @doc "Previews occurrences for one reauthorized operator workspace."
+  @spec preview_schedule_occurrences(OperatorContext.t(), String.t(), keyword()) ::
           {:ok, [schedule_occurrence_preview()]} | {:error, term()}
-  def preview_schedule_occurrences(schedule_id, opts \\ [])
-      when is_binary(schedule_id) and is_list(opts),
-      do: Schedules.preview_occurrences(schedule_id, opts)
+  def preview_schedule_occurrences(%OperatorContext{} = operator_context, schedule_id, opts)
+      when is_binary(schedule_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Schedules.preview_occurrences(context, schedule_id, opts)
+    end
+  end
 
   @doc """
   Returns the stable remote id for one schedule inspection entry.
@@ -1449,75 +1019,104 @@ defmodule FavnOrchestrator do
   @spec schedule_list_summary([schedule_list_entry()]) :: map()
   def schedule_list_summary(entries) when is_list(entries), do: Schedules.summary(entries)
 
-  defp run_event_cursor_valid?(_run_id, nil), do: {:ok, true}
-  defp run_event_cursor_valid?(_run_id, 0), do: {:ok, true}
-
-  defp run_event_cursor_valid?(run_id, sequence) when is_integer(sequence) and sequence > 0 do
-    with {:ok, events} <- list_run_events(run_id, after_sequence: sequence - 1, limit: 1) do
-      {:ok, match?([%RunEvent{sequence: ^sequence}], events)}
-    end
-  end
-
-  defp run_event_cursor_valid?(_run_id, _sequence), do: {:ok, false}
-
-  defp normalize_pipeline_run_submit_opts(opts) when is_list(opts) do
-    with {:ok, window_request} <- normalize_window_request(Keyword.get(opts, :window_request)) do
-      {:ok, Keyword.put(opts, :window_request, window_request)}
-    end
-  end
-
-  defp normalize_pipeline_run_submit_opts(opts) when is_map(opts) do
-    with {:ok, window_request} <- normalize_window_request(field_value(opts, :window)) do
-      opts =
-        []
-        |> maybe_put_opt(:metadata, field_value(opts, :metadata))
-        |> maybe_put_opt(:window_request, window_request)
-        |> maybe_put_opt(:refresh, field_value(opts, :refresh))
-        |> maybe_put_opt(:refresh_policy, field_value(opts, :refresh_policy))
-        |> maybe_put_opt(:timeout_ms, field_value(opts, :timeout_ms))
-
-      {:ok, opts}
-    end
-  end
-
-  defp normalize_pipeline_backfill_submit_opts(opts) when is_list(opts) do
-    with {:ok, range_request} <- RangeRequest.from_value(Keyword.get(opts, :range_request)) do
-      {:ok, Keyword.put(opts, :range_request, range_request)}
-    end
-  end
-
-  defp normalize_pipeline_backfill_submit_opts(opts) when is_map(opts) do
-    range = field_value(opts, :range) || field_value(opts, :range_request)
-
-    with {:ok, range_request} <- RangeRequest.from_value(range) do
-      submit_opts =
-        []
-        |> Keyword.put(:range_request, range_request)
-        |> maybe_put_opt(:metadata, field_value(opts, :metadata))
-        |> maybe_put_opt(:coverage_baseline_id, field_value(opts, :coverage_baseline_id))
-        |> maybe_put_opt(:refresh, field_value(opts, :refresh))
-        |> maybe_put_opt(:refresh_policy, field_value(opts, :refresh_policy))
-        |> maybe_put_opt(:retry_policy, field_value(opts, :retry_policy))
-        |> maybe_put_opt(:timeout_ms, field_value(opts, :timeout_ms))
-
-      {:ok, submit_opts}
-    end
-  end
-
-  defp normalize_window_request(nil), do: {:ok, nil}
-  defp normalize_window_request(%WindowRequest{} = request), do: WindowRequest.from_value(request)
-
-  defp normalize_window_request(value) when is_binary(value), do: WindowRequest.parse(value)
-  defp normalize_window_request(value) when is_map(value), do: WindowRequest.from_value(value)
-
-  defp normalize_window_request(value), do: {:error, {:invalid_window_request, value}}
-
   defp maybe_put_opt(opts, _key, nil), do: opts
   defp maybe_put_opt(opts, _key, ""), do: opts
   defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp field_value(value, field) when is_map(value) do
-    Map.get(value, field) || Map.get(value, Atom.to_string(field))
+  defp authorize_operator_context(%OperatorContext{} = operator_context, required_role) do
+    with {:ok, lookup_context} <-
+           WorkspaceContext.new(
+             operator_context.workspace_id,
+             "operator:session",
+             [:customer_reader]
+           ),
+         {:ok, context, _session, actor} <-
+           FavnOrchestrator.Identity.authorize_session(
+             lookup_context,
+             operator_context.actor_id,
+             operator_context.session_id,
+             required_role
+           ) do
+      {:ok, context, actor}
+    end
+  end
+
+  defp operator_backfill_opts(request, actor, operator_context) do
+    []
+    |> maybe_put_opt(:refresh, operator_refresh(request.refresh_mode))
+    |> maybe_put_opt(:retry_policy, request.retry_policy)
+    |> maybe_put_opt(:timeout_ms, request.timeout_ms)
+    |> Keyword.put(
+      :metadata,
+      Map.merge(request.metadata || %{}, %{
+        operator_actor_id: actor.id,
+        operator_session_id: operator_context.session_id
+      })
+    )
+  end
+
+  defp operator_refresh(:auto), do: nil
+  defp operator_refresh(:missing), do: :missing
+  defp operator_refresh(:force_all), do: :force
+
+  defp execution_group_status(filters) do
+    cond do
+      Keyword.get(filters, :only_failed) -> :failed
+      Keyword.get(filters, :only_running) -> :running
+      Keyword.get(filters, :status) in [:ok, :succeeded] -> :succeeded
+      Keyword.get(filters, :status) in [:error, :failed, :partial] -> :failed
+      Keyword.get(filters, :status) in [:pending, :queued] -> :pending
+      Keyword.get(filters, :status) == :running -> :running
+      true -> nil
+    end
+  end
+
+  defp execution_group_summary(group) do
+    %{
+      id: group.root_run_id,
+      root_run_id: group.root_run_id,
+      status: group.status,
+      started_at: group.updated_at,
+      trigger_type: nil,
+      target_assets: [],
+      child_run_ids: [],
+      currently_running_asset_attempts: [],
+      total_windows: 0,
+      completed_windows: 0,
+      failed_windows: 0,
+      total_asset_attempts: group.run_count,
+      completed_asset_attempts: group.succeeded_count,
+      failed_asset_attempts: group.failed_count,
+      running_asset_attempts: group.running_count,
+      queued_asset_attempts: group.pending_count,
+      summary_totals: %{
+        windows: %{total: 0, completed: 0},
+        asset_attempts: %{
+          total: group.run_count,
+          completed: group.succeeded_count,
+          failed: group.failed_count,
+          running: group.running_count,
+          queued: group.pending_count
+        }
+      }
+    }
+  end
+
+  defp execution_group_run(run) do
+    %{
+      id: run.run_id,
+      status: run.status,
+      submit_kind: run.submit_kind,
+      target_refs: [],
+      asset_ref: nil,
+      started_at: run.inserted_at,
+      finished_at: if(run.status in [:pending, :running], do: nil, else: run.updated_at),
+      duration_ms:
+        if(run.status in [:pending, :running],
+          do: nil,
+          else: max(DateTime.diff(run.updated_at, run.inserted_at, :millisecond), 0)
+        )
+    }
   end
 
   defp configured_runner_client do
@@ -1528,25 +1127,10 @@ defmodule FavnOrchestrator do
     RuntimeConfig.current().runner_client_opts
   end
 
-  defp runtime_input_pins_for_read(run_id) do
-    case Storage.list_runtime_input_pins(run_id) do
-      {:ok, pins} -> {:ok, pins}
-      {:error, :runtime_input_pins_not_supported} -> {:ok, []}
-      {:error, _reason} = error -> error
-    end
-  end
-
   defp maybe_put_runtime_input_lineage(metadata, []), do: metadata
 
   defp maybe_put_runtime_input_lineage(metadata, pins),
     do: Map.put(metadata, :runtime_input_lineage, Enum.map(pins, &Pin.lineage/1))
-
-  defp default_log_filter do
-    case Code.ensure_loaded(Favn.Log.Filter) do
-      {:module, Favn.Log.Filter} -> struct(Favn.Log.Filter)
-      _other -> %{}
-    end
-  end
 
   defp validate_runner_client(module) when is_atom(module) do
     callbacks =

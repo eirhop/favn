@@ -23,6 +23,7 @@ defmodule FavnRunner do
   alias FavnRunner.ManifestStore
   alias FavnRunner.RuntimeInputResolver
   alias FavnRunner.Server
+  alias FavnRunner.SQLRuntimePreflight
 
   @type execution_id :: String.t()
 
@@ -59,6 +60,66 @@ defmodule FavnRunner do
   def register_manifest(%Version{} = version, opts) when is_list(opts),
     do: Server.register_manifest(version, opts)
 
+  @doc "Checks whether an exact manifest identity is already compiled by the runner."
+  @impl true
+  @spec ensure_manifest(String.t(), String.t(), keyword()) ::
+          :ok | :missing | {:error, term()}
+  def ensure_manifest(manifest_version_id, content_hash, opts \\ [])
+      when is_binary(manifest_version_id) and is_binary(content_hash) and is_list(opts) do
+    ManifestStore.ensure(manifest_version_id, content_hash,
+      server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+    )
+  end
+
+  @doc "Atomically registers and leases one manifest identity for an active run."
+  @impl true
+  @spec acquire_manifest(Version.t(), String.t(), DateTime.t(), [Favn.Ref.t()], keyword()) ::
+          :ok | {:error, term()}
+  def acquire_manifest(
+        %Version{} = version,
+        lease_id,
+        %DateTime{} = expires_at,
+        planned_asset_refs,
+        opts \\ []
+      )
+      when is_binary(lease_id) and is_list(planned_asset_refs) and is_list(opts) do
+    manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+
+    with :ok <-
+           ManifestStore.acquire(version, lease_id, expires_at,
+             server: manifest_store,
+             timeout: Keyword.get(opts, :timeout, 30_000)
+           ) do
+      case SQLRuntimePreflight.run(version, planned_asset_refs) do
+        :ok ->
+          :ok
+
+        {:error, _diagnostic} = error ->
+          :ok = ManifestStore.release(lease_id, server: manifest_store)
+          error
+      end
+    end
+  end
+
+  @doc "Releases an active-run manifest lease."
+  @impl true
+  @spec release_manifest(String.t(), keyword()) :: :ok
+  def release_manifest(lease_id, opts \\ []) when is_binary(lease_id) and is_list(opts) do
+    ManifestStore.release(lease_id,
+      server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+    )
+  end
+
+  @doc "Renews an active-run manifest lease."
+  @impl true
+  @spec renew_manifest(String.t(), DateTime.t(), keyword()) :: :ok | {:error, term()}
+  def renew_manifest(lease_id, %DateTime{} = expires_at, opts \\ [])
+      when is_binary(lease_id) and is_list(opts) do
+    ManifestStore.renew(lease_id, expires_at,
+      server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+    )
+  end
+
   @doc """
   Submits one manifest-pinned work request for asynchronous execution.
   """
@@ -73,21 +134,30 @@ defmodule FavnRunner do
   @spec resolve_runtime_inputs(RunnerWork.t(), keyword()) ::
           {:ok, Resolution.t() | nil} | {:error, term()}
   def resolve_runtime_inputs(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
+    with_scoped_manifest_lease(work, opts, &do_resolve_runtime_inputs(&1, opts))
+  end
+
+  defp do_resolve_runtime_inputs(%RunnerWork{} = work, opts) do
     with {:ok, asset_ref} <- ManifestResolver.resolve_target_ref(work),
-         {:ok, version} <-
-           ManifestStore.fetch(work.manifest_version_id, work.manifest_content_hash,
-             server: FavnRunner.ManifestStore
+         {:ok, manifest, asset, relation_by_module} <-
+           ManifestStore.fetch_execution_bundle(
+             work.manifest_lease_id,
+             work.manifest_version_id,
+             work.manifest_content_hash,
+             asset_ref,
+             work.execution_package,
+             server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
            ),
-         {:ok, asset} <- ManifestResolver.resolve_asset(version, asset_ref),
          {:ok, package} <- ExecutionPackage.verify_for_asset(work.execution_package, asset) do
-      resolve_asset_runtime_inputs(asset, package, version, work, opts)
+      resolve_asset_runtime_inputs(asset, package, manifest, relation_by_module, work, opts)
     end
   end
 
   defp resolve_asset_runtime_inputs(
          _asset,
          %ExecutionPackage{sql_execution: %{runtime_inputs: nil}},
-         _version,
+         _manifest,
+         _relation_by_module,
          _work,
          _opts
        ),
@@ -96,7 +166,8 @@ defmodule FavnRunner do
   defp resolve_asset_runtime_inputs(
          asset,
          %ExecutionPackage{sql_execution: %{runtime_inputs: resolver}} = package,
-         version,
+         manifest,
+         relation_by_module,
          work,
          opts
        ) do
@@ -104,7 +175,14 @@ defmodule FavnRunner do
 
     with {:ok, context} <- ContextBuilder.build(work, asset, execution_id),
          {:ok, _definition, final_context, final_opts} <-
-           SQLAssetRuntime.prepare_manifest_execution(asset, package, version, work, context),
+           SQLAssetRuntime.prepare_manifest_execution(
+             asset,
+             package,
+             manifest,
+             relation_by_module,
+             work,
+             context
+           ),
          {:ok, resolution} <-
            RuntimeInputResolver.resolve(
              resolver,
@@ -136,7 +214,15 @@ defmodule FavnRunner do
     end
   end
 
-  defp resolve_asset_runtime_inputs(_asset, _package, _version, _work, _opts), do: {:ok, nil}
+  defp resolve_asset_runtime_inputs(
+         _asset,
+         _package,
+         _manifest,
+         _relation_by_module,
+         _work,
+         _opts
+       ),
+       do: {:ok, nil}
 
   defp resolver_retryable?(%{details: details}) when is_map(details),
     do: Map.get(details, :asset_retryable?, Map.get(details, "asset_retryable?", false)) == true
@@ -248,10 +334,64 @@ defmodule FavnRunner do
   """
   @spec run(RunnerWork.t(), keyword()) :: {:ok, RunnerResult.t()} | {:error, term()}
   def run(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
-    timeout = Keyword.get(opts, :timeout, 5_000)
+    with_scoped_manifest_lease(work, opts, fn leased_work ->
+      timeout = Keyword.get(opts, :timeout, 5_000)
 
-    with {:ok, execution_id} <- submit_work(work, opts) do
-      await_result(execution_id, timeout, opts)
+      case preflight_work_scope(leased_work, opts) do
+        :ok ->
+          with {:ok, execution_id} <- submit_work(leased_work, opts) do
+            await_result(execution_id, timeout, opts)
+          end
+
+        {:error, {%FavnRunner.ManifestHandle{} = handle, diagnostic}} ->
+          {:ok, Server.preflight_failed_result(leased_work, handle, diagnostic)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end)
+  end
+
+  defp preflight_work_scope(%RunnerWork{} = work, opts) do
+    manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+
+    with {:ok, handle} <-
+           ManifestStore.fetch_handle(
+             work.manifest_version_id,
+             work.manifest_content_hash,
+             server: manifest_store
+           ) do
+      case SQLRuntimePreflight.run(handle, RunnerWork.planned_asset_refs(work),
+             server: manifest_store
+           ) do
+        :ok -> :ok
+        {:error, diagnostic} -> {:error, {handle, diagnostic}}
+      end
+    end
+  end
+
+  defp with_scoped_manifest_lease(%RunnerWork{manifest_lease_id: lease_id} = work, _opts, fun)
+       when is_binary(lease_id),
+       do: fun.(work)
+
+  defp with_scoped_manifest_lease(%RunnerWork{} = work, opts, fun) do
+    lease_id = "direct:" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    expires_at = DateTime.add(DateTime.utc_now(), 60, :second)
+    manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+
+    with :ok <-
+           ManifestStore.acquire_registered(
+             work.manifest_version_id,
+             work.manifest_content_hash,
+             lease_id,
+             expires_at,
+             server: manifest_store
+           ) do
+      try do
+        fun.(%{work | manifest_lease_id: lease_id})
+      after
+        ManifestStore.release(lease_id, server: manifest_store)
+      end
     end
   end
 end

@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.API.DTO do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Persistence.Results.Backfill, as: BackfillV2
+  alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: BackfillWindowV2
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.Storage.JsonSafe
@@ -120,11 +122,7 @@ defmodule FavnOrchestrator.API.DTO do
       manifest_version_id: run.manifest_version_id,
       event_seq: run.event_seq,
       started_at: datetime(run.started_at),
-      finished_at: datetime(run.finished_at),
-      max_concurrency: Map.get(run, :max_concurrency),
-      target_refs: Enum.map(List.wrap(run.target_refs), &ref_to_string/1),
-      asset_results: asset_results(run.asset_results),
-      error: error_payload(run.error)
+      finished_at: datetime(run.finished_at)
     }
   end
 
@@ -305,6 +303,41 @@ defmodule FavnOrchestrator.API.DTO do
       finished_at: datetime(window.finished_at),
       created_at: datetime(window.created_at),
       updated_at: datetime(window.updated_at)
+    }
+  end
+
+  @spec backfill_window(BackfillWindowV2.t()) :: map()
+  def backfill_window(%BackfillWindowV2{} = window) do
+    %{
+      backfill_id: window.backfill_id,
+      window_id: window.window_id,
+      window_key: window.window_key,
+      window_start: datetime(window.window_start),
+      window_end: datetime(window.window_end),
+      status: atom_name(window.status),
+      run_id: window.run_id,
+      attempt_count: window.attempt_count,
+      last_error: error_payload(window.last_error),
+      version: window.version
+    }
+  end
+
+  @spec backfill(BackfillV2.t()) :: map()
+  def backfill(%BackfillV2{} = backfill) do
+    %{
+      backfill_id: backfill.backfill_id,
+      root_run_id: backfill.root_run_id,
+      workspace_id: backfill.workspace_id,
+      deployment_id: backfill.deployment_id,
+      manifest_version_id: backfill.manifest_version_id,
+      target_kind: atom_name(backfill.target_kind),
+      target_id: backfill.target_id,
+      range_start: datetime(backfill.range_start),
+      range_end: datetime(backfill.range_end),
+      status: atom_name(backfill.status),
+      expected_window_count: backfill.expected_window_count,
+      appended_window_count: backfill.appended_window_count,
+      progress: normalize(backfill.progress)
     }
   end
 

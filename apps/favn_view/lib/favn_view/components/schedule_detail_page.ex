@@ -103,24 +103,9 @@ defmodule FavnView.Components.ScheduleDetailPage do
       >
         <.icon name="hero-clipboard-document" class="size-4" /> Copy id
       </button>
-      <button
-        type="button"
-        class={[
-          "btn btn-sm rounded-field gap-2",
-          @schedule.activation_state == :enabled && "btn-error btn-soft border-error/30",
-          @schedule.activation_state != :enabled && "btn-primary"
-        ]}
-        phx-click="set_schedule_activation"
-        phx-value-action={if(@schedule.activation_state == :enabled, do: "disable", else: "enable")}
-        disabled={!@schedule.manifest_active?}
-        data-testid="schedule-activation-action"
-      >
-        <.icon
-          name={if(@schedule.activation_state == :enabled, do: "hero-no-symbol", else: "hero-bolt")}
-          class="size-4"
-        />
-        {if @schedule.activation_state == :enabled, do: "Disable schedule", else: "Enable schedule"}
-      </button>
+      <span class="badge badge-sm favn-surface-control gap-2" data-testid="schedule-manifest-control">
+        <.icon name="hero-code-bracket" class="size-4" /> Managed by manifest
+      </span>
     </div>
     """
   end

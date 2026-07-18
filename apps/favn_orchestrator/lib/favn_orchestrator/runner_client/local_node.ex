@@ -33,6 +33,44 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   end
 
   @impl true
+  @spec ensure_manifest(String.t(), String.t(), [opt()]) ::
+          :ok | :missing | {:error, term()}
+  def ensure_manifest(manifest_version_id, content_hash, opts \\ [])
+      when is_binary(manifest_version_id) and is_binary(content_hash) and is_list(opts) do
+    dispatch(opts, :ensure_manifest, [manifest_version_id, content_hash, opts])
+  end
+
+  @impl true
+  @spec acquire_manifest(Version.t(), String.t(), DateTime.t(), [Favn.Ref.t()], [opt()]) ::
+          :ok | {:error, term()}
+  def acquire_manifest(
+        %Version{} = version,
+        lease_id,
+        %DateTime{} = expires_at,
+        planned_asset_refs,
+        opts \\ []
+      )
+      when is_binary(lease_id) and is_list(planned_asset_refs) and is_list(opts) do
+    dispatch(opts, :acquire_manifest, [version, lease_id, expires_at, planned_asset_refs, opts])
+  end
+
+  @impl true
+  @spec renew_manifest(String.t(), DateTime.t(), [opt()]) :: :ok | {:error, term()}
+  def renew_manifest(lease_id, %DateTime{} = expires_at, opts \\ [])
+      when is_binary(lease_id) and is_list(opts) do
+    dispatch(opts, :renew_manifest, [lease_id, expires_at, opts])
+  end
+
+  @impl true
+  @spec release_manifest(String.t(), [opt()]) :: :ok
+  def release_manifest(lease_id, opts \\ []) when is_binary(lease_id) and is_list(opts) do
+    case dispatch(opts, :release_manifest, [lease_id, opts]) do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  @impl true
   @spec submit_work(RunnerWork.t(), [opt()]) :: {:ok, String.t()} | {:error, term()}
   def submit_work(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
     dispatch(opts, :submit_work, [work, opts])

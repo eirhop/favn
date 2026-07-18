@@ -5,8 +5,8 @@ defmodule Favn.Manifest.PlanningIndex do
   The planning index is the in-memory query shape used by planners after a
   `%Favn.Manifest{}` has been built, persisted, and pinned in a manifest
   version. It validates that manifest assets and the embedded
-  `%Favn.Manifest.Graph{}` agree before exposing adjacency, transitive closure,
-  and topological rank data.
+  `%Favn.Manifest.Graph{}` agree before exposing adjacency and topological rank
+  data. Transitive reachability is computed only for the requested root.
   """
 
   alias Favn.Manifest
@@ -21,8 +21,6 @@ defmodule Favn.Manifest.PlanningIndex do
           assets_by_ref: %{Ref.t() => Asset.t()},
           upstream: %{Ref.t() => MapSet.t(Ref.t())},
           downstream: %{Ref.t() => MapSet.t(Ref.t())},
-          transitive_upstream: %{Ref.t() => MapSet.t(Ref.t())},
-          transitive_downstream: %{Ref.t() => MapSet.t(Ref.t())},
           topo_order: [Ref.t()],
           topo_rank: %{Ref.t() => non_neg_integer()}
         }
@@ -42,8 +40,6 @@ defmodule Favn.Manifest.PlanningIndex do
   defstruct assets_by_ref: %{},
             upstream: %{},
             downstream: %{},
-            transitive_upstream: %{},
-            transitive_downstream: %{},
             topo_order: [],
             topo_rank: %{}
 
@@ -57,6 +53,13 @@ defmodule Favn.Manifest.PlanningIndex do
 
   def build(_other), do: {:error, :invalid_manifest}
 
+  @doc false
+  @spec build(Manifest.t(), %{Ref.t() => Asset.t()}) :: {:ok, t()} | {:error, error()}
+  def build(%Manifest{assets: assets, graph: %Graph{} = graph}, assets_by_ref)
+      when is_map(assets_by_ref) do
+    build(graph, assets, assets_by_ref)
+  end
+
   @doc """
   Builds a planning index from an explicit manifest graph and asset list.
   """
@@ -67,25 +70,45 @@ defmodule Favn.Manifest.PlanningIndex do
 
   def build(%Graph{} = graph, assets) when is_list(assets) do
     with {:ok, assets_by_ref} <- build_assets_by_ref(assets),
+         {:ok, index} <- build(graph, assets, assets_by_ref) do
+      {:ok, index}
+    end
+  end
+
+  def build(%Graph{}, invalid), do: {:error, {:invalid_assets_input, invalid}}
+
+  defp build(%Graph{} = graph, assets, assets_by_ref) do
+    with true <- map_size(assets_by_ref) == length(assets),
          {:ok, expected_graph} <- Graph.build(assets),
          :ok <- validate_graph(graph, expected_graph),
-         {upstream, downstream} <- build_adjacency(graph),
-         transitive_upstream <- build_transitive_index(upstream),
-         transitive_downstream <- build_transitive_index(downstream) do
+         {upstream, downstream} <- build_adjacency(graph) do
       {:ok,
        %__MODULE__{
          assets_by_ref: assets_by_ref,
          upstream: upstream,
          downstream: downstream,
-         transitive_upstream: transitive_upstream,
-         transitive_downstream: transitive_downstream,
          topo_order: graph.topo_order,
          topo_rank: build_topo_rank(graph.topo_order)
        }}
+    else
+      false -> {:error, {:invalid_assets_input, assets}}
+      {:error, _reason} = error -> error
     end
   end
 
-  def build(%Graph{}, invalid), do: {:error, {:invalid_assets_input, invalid}}
+  @doc "Returns transitive upstream refs on demand without retaining quadratic closure maps."
+  @spec transitive_upstream_of(t(), Ref.t()) ::
+          {:ok, MapSet.t(Ref.t())} | {:error, :asset_not_found}
+  def transitive_upstream_of(%__MODULE__{} = index, ref) do
+    reachable(index.upstream, ref)
+  end
+
+  @doc "Returns transitive downstream refs on demand without retaining quadratic closure maps."
+  @spec transitive_downstream_of(t(), Ref.t()) ::
+          {:ok, MapSet.t(Ref.t())} | {:error, :asset_not_found}
+  def transitive_downstream_of(%__MODULE__{} = index, ref) do
+    reachable(index.downstream, ref)
+  end
 
   @doc """
   Projects an existing planning index to a selected ref set.
@@ -163,11 +186,12 @@ defmodule Favn.Manifest.PlanningIndex do
     end)
   end
 
-  defp build_transitive_index(adjacency) do
-    Map.new(adjacency, fn {ref, _neighbors} ->
-      reachable = reachable_from_map(ref, adjacency, %{})
-      {ref, reachable |> Map.keys() |> MapSet.new()}
-    end)
+  defp reachable(adjacency, ref) do
+    if Map.has_key?(adjacency, ref) do
+      {:ok, ref |> reachable_from_map(adjacency, %{}) |> Map.keys() |> MapSet.new()}
+    else
+      {:error, :asset_not_found}
+    end
   end
 
   defp reachable_from_map(ref, adjacency, visited) do

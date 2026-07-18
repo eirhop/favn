@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
 
   defmodule StubRunner do
     def register_manifest(_version, _opts), do: :ok
+    def ensure_manifest(_manifest_version_id, _content_hash, _opts), do: :ok
     def submit_work(_work, _opts), do: {:ok, "exec_1"}
     def await_result(_execution_id, _timeout, _opts), do: {:ok, %RunnerResult{status: :ok}}
     def cancel_work(_execution_id, _reason, _opts), do: :ok
@@ -56,6 +57,10 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
     opts = [runner_module: StubRunner]
 
     assert :ok = LocalNode.register_manifest(version, opts)
+
+    assert :ok =
+             LocalNode.ensure_manifest(version.manifest_version_id, version.content_hash, opts)
+
     assert {:ok, "exec_1"} = LocalNode.submit_work(work, opts)
     assert {:ok, %RunnerResult{status: :ok}} = LocalNode.await_result("exec_1", 1_000, opts)
     assert :ok = LocalNode.cancel_work("exec_1", %{}, opts)

@@ -4,9 +4,11 @@ defmodule FavnOrchestrator.RunnerLogBridge do
   require Logger
 
   alias FavnOrchestrator.LogWriter
+  alias FavnOrchestrator.Persistence.SystemContext
 
   @context_fields [
     :run_id,
+    :workspace_id,
     :asset_step_id,
     :node_key,
     :asset_ref,
@@ -129,7 +131,16 @@ defmodule FavnOrchestrator.RunnerLogBridge do
   end
 
   defp safe_write(entry) do
-    case LogWriter.write(entry) do
+    result =
+      case Map.get(entry, :workspace_id) do
+        workspace_id when is_binary(workspace_id) and workspace_id != "" ->
+          LogWriter.write(SystemContext.workspace(workspace_id, :runner_log_bridge), entry)
+
+        _missing_workspace ->
+          {:error, :workspace_context_required}
+      end
+
+    case result do
       {:ok, _entries} -> :ok
       {:error, reason} -> log_ignored_entry(reason)
     end

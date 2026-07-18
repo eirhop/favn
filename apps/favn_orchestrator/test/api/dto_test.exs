@@ -236,8 +236,18 @@ defmodule FavnOrchestrator.API.DTOTest do
     summary = DTO.run_summary(run)
     detail = DTO.run_detail(run)
 
-    assert summary.asset_results == [DTO.asset_result(asset_result)]
-    assert summary.error["kind"] == "error"
+    assert summary == %{
+             id: "run_1",
+             status: "error",
+             submit_kind: "manual",
+             manifest_version_id: "manifest_1",
+             event_seq: 3,
+             started_at: DateTime.to_iso8601(@now),
+             finished_at: DateTime.to_iso8601(@later)
+           }
+
+    refute Map.has_key?(summary, :asset_results)
+    refute Map.has_key?(summary, :error)
     assert detail.params == %{"api_token" => "[REDACTED]", "limit" => 5}
     assert detail.asset_results == [DTO.asset_result(asset_result)]
     refute Map.has_key?(detail, :retry_backoff_ms)

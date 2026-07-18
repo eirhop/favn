@@ -250,6 +250,7 @@ defmodule FavnOrchestrator.RefreshPolicy do
 
     forced = Enum.reduce(upstream, forced, &MapSet.put(&2, &1))
 
-    do_expand_upstream(rest ++ upstream, nodes, forced)
+    pending = Enum.reduce(upstream, rest, &[&1 | &2])
+    do_expand_upstream(pending, nodes, forced)
   end
 end
