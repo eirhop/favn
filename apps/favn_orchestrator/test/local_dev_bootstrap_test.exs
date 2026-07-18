@@ -38,11 +38,16 @@ defmodule FavnOrchestrator.LocalDevBootstrapTest do
     assert_receive {:provisioned, %ProvisionWorkspace{} = local}
     assert local.workspace_id == "local-dev"
     assert local.slug == "local-dev"
-    assert local.display_name == "local-dev"
+    assert local.display_name == "Local Development"
     assert local.occurred_at == occurred_at
     assert local.platform_context.roles == [:platform_admin]
 
-    assert_receive {:provisioned, %ProvisionWorkspace{workspace_id: "customer-dev"}}
+    assert_receive {:provisioned,
+                    %ProvisionWorkspace{
+                      workspace_id: "customer-dev",
+                      display_name: "customer-dev"
+                    }}
+
     refute_receive {:provisioned, _command}
   end
 

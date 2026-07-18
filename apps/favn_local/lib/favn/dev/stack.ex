@@ -26,7 +26,6 @@ defmodule Favn.Dev.Stack do
 
   @runtime_schema_version 1
   @runner_node_poll_interval_ms 100
-  @default_orchestrator_wait_timeout_ms 60_000
   @type root_opt :: [root_dir: Path.t()]
 
   @spec start_foreground(root_opt()) :: :ok | {:error, term()}
@@ -743,7 +742,7 @@ defmodule Favn.Dev.Stack do
   end
 
   defp orchestrator_wait_timeout_ms(opts) do
-    Keyword.get(opts, :orchestrator_wait_timeout_ms, @default_orchestrator_wait_timeout_ms)
+    Keyword.get(opts, :orchestrator_wait_timeout_ms, 30_000)
   end
 
   defp do_wait_orchestrator_health(url, deadline_ms) do

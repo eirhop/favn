@@ -37,7 +37,7 @@ defmodule FavnOrchestrator.LocalDevBootstrap do
           platform_context: context,
           workspace_id: workspace_id,
           slug: workspace_id,
-          display_name: workspace_id,
+          display_name: workspace_display_name(workspace_id),
           occurred_at: occurred_at
         }
 
@@ -72,4 +72,7 @@ defmodule FavnOrchestrator.LocalDevBootstrap do
   defp valid_workspace_id?(workspace_id) do
     is_binary(workspace_id) and workspace_id != "" and byte_size(workspace_id) <= 255
   end
+
+  defp workspace_display_name("local-dev"), do: "Local Development"
+  defp workspace_display_name(workspace_id), do: workspace_id
 end
