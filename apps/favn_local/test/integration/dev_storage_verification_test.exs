@@ -46,6 +46,7 @@ defmodule Favn.Dev.StorageVerificationTest do
   } do
     orchestrator_port = free_port()
     web_port = free_port()
+
     database_url =
       System.get_env("FAVN_DATABASE_URL") ||
         raise "FAVN_DATABASE_URL is required for PostgreSQL dev verification"
@@ -71,25 +72,32 @@ defmodule Favn.Dev.StorageVerificationTest do
 
     assert File.exists?(Path.join(dist_dir, "metadata.json"))
 
+    test_pid = self()
+
     task =
       Task.async(fn ->
         ExUnit.CaptureIO.capture_io(fn ->
-          Dev.dev(
-            root_dir: root_dir,
-            orchestrator_port: orchestrator_port,
-            web_port: web_port,
-            storage: :postgres,
-            postgres: [url: database_url, ssl: false, pool_size: 2],
-            skip_tool_checks: true,
-            skip_bootstrap: true,
-            skip_readiness: true,
-            service_specs_override: service_specs(root_dir)
-          )
+          result =
+            Dev.dev(
+              root_dir: root_dir,
+              orchestrator_port: orchestrator_port,
+              web_port: web_port,
+              storage: :postgres,
+              postgres: [url: database_url, ssl: false, pool_size: 2],
+              skip_tool_checks: true,
+              skip_bootstrap: true,
+              skip_readiness: true,
+              service_specs_override: service_specs(root_dir)
+            )
+
+          send(test_pid, {:dev_finished, self(), result})
         end)
       end)
 
+    task_pid = task.pid
+
     assert :ok =
-             wait_until(fn ->
+             wait_until(task, fn ->
                match?(
                  {:ok, %{"services" => %{"operator" => _, "runner" => _}}},
                  State.read_runtime(root_dir: root_dir)
@@ -106,6 +114,7 @@ defmodule Favn.Dev.StorageVerificationTest do
 
     assert :ok = Dev.stop(root_dir: root_dir)
     _ = Task.await(task, 30_000)
+    assert_receive {:dev_finished, ^task_pid, :ok}
     assert %{stack_status: :stopped} = Dev.status(root_dir: root_dir)
 
     assert :ok = Dev.reset(root_dir: root_dir)
@@ -135,15 +144,21 @@ defmodule Favn.Dev.StorageVerificationTest do
     ]
   end
 
-  defp wait_until(fun, attempts \\ 80)
-  defp wait_until(_fun, 0), do: {:error, :timeout}
+  defp wait_until(task, fun, attempts \\ 300)
+  defp wait_until(_task, _fun, 0), do: {:error, :timeout}
 
-  defp wait_until(fun, attempts) do
-    if fun.() do
-      :ok
-    else
-      Process.sleep(100)
-      wait_until(fun, attempts - 1)
+  defp wait_until(%Task{pid: task_pid} = task, fun, attempts) do
+    receive do
+      {:dev_finished, ^task_pid, result} ->
+        {:error, {:dev_exited_before_runtime_state, result}}
+    after
+      0 ->
+        if fun.() do
+          :ok
+        else
+          Process.sleep(100)
+          wait_until(task, fun, attempts - 1)
+        end
     end
   end
 
