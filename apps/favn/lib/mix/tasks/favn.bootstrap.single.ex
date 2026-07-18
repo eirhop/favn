@@ -4,7 +4,7 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
   @shortdoc "Bootstraps a single-node backend through orchestrator APIs"
 
   @moduledoc """
-  Bootstraps a SQLite single-node backend by registering and activating a
+  Bootstraps a PostgreSQL-backed single-node backend by registering and activating a
   manifest through the orchestrator API, then registering that manifest with the
   single-node runner.
 
@@ -14,16 +14,17 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
   - `--orchestrator-url` or `FAVN_VIEW_ORCHESTRATOR_BASE_URL`
   - `--service-token` or `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN` /
     `FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN`
+  - `--workspace-id` or `FAVN_BOOTSTRAP_WORKSPACE_ID` / `FAVN_WORKSPACE_IDS`
 
-  When activation is enabled, which is the default, operator credentials are
-  also required so activation has an operator actor context:
+  Operator credentials are required because activation and runner registration
+  are workspace-authorized operations:
 
   - `--operator-username` or `FAVN_BOOTSTRAP_OPERATOR_USERNAME` /
     `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME`
   - `--operator-password` or `FAVN_BOOTSTRAP_OPERATOR_PASSWORD` /
     `FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD`
 
-  `--no-activate` skips operator login and activation.
+  `--no-activate` skips deployment activation but still authenticates for runner registration.
   """
 
   alias Favn.Dev
@@ -78,6 +79,7 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
       manifest: :string,
       orchestrator_url: :string,
       service_token: :string,
+      workspace_id: :string,
       operator_username: :string,
       operator_password: :string,
       activate: :boolean
@@ -111,6 +113,11 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
         env("FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN") || env("FAVN_ORCHESTRATOR_SERVICE_TOKEN")
     )
     |> put_default(
+      :workspace_id,
+      Keyword.get(opts, :workspace_id) || env("FAVN_BOOTSTRAP_WORKSPACE_ID") ||
+        single_workspace_id(env("FAVN_WORKSPACE_IDS"))
+    )
+    |> put_default(
       :operator_username,
       Keyword.get(opts, :operator_username) || env("FAVN_BOOTSTRAP_OPERATOR_USERNAME") ||
         env("FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME")
@@ -121,6 +128,15 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
         env("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD")
     )
   end
+
+  defp single_workspace_id(value) when is_binary(value) do
+    case String.split(value, ",", trim: true) do
+      [workspace_id] -> String.trim(workspace_id)
+      _other -> nil
+    end
+  end
+
+  defp single_workspace_id(_value), do: nil
 
   defp put_default(opts, key, value) when is_binary(value) and value != "",
     do: Keyword.put(opts, key, value)
@@ -141,14 +157,15 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
 
   defp present?(value), do: is_binary(value) and value != ""
 
-  defp required_keys(opts) do
-    base = [:manifest_path, :orchestrator_url, :service_token]
-
-    if Keyword.get(opts, :activate?, true) do
-      base ++ [:operator_username, :operator_password]
-    else
-      base
-    end
+  defp required_keys(_opts) do
+    [
+      :manifest_path,
+      :orchestrator_url,
+      :service_token,
+      :workspace_id,
+      :operator_username,
+      :operator_password
+    ]
   end
 
   defp option_name(:manifest_path), do: "--manifest"

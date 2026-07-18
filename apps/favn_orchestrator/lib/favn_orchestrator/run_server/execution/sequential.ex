@@ -11,9 +11,10 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias FavnOrchestrator.AssetStepIdentity
+  alias FavnOrchestrator.ExecutionPackages
+  alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RuntimeInputPins
-  alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.ResultSanitizer
@@ -183,7 +184,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   @doc false
   @spec resume_persisted(RunExecutionState.t(), map()) :: directive()
   def resume_persisted(%RunExecutionState{} = state, %{kind: :step_result} = resume) do
-    _ = RunExecutionOwnership.complete_execution(state.run.id, resume.entry.execution_id)
+    _ = RunExecutionOwnership.complete_execution(state.run, resume.entry.execution_id)
     state = %{state | run: resume.run}
 
     cond do
@@ -257,9 +258,16 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
            |> StepAttemptLifecycle.new(state.version, node_key, stage, attempt)
            |> StepAttemptLifecycle.build_work(),
          work <- StepAttemptLifecycle.attach_deadline(work, state.run),
-         {:ok, work} <- ExecutionPackages.attach(work, state.version),
+         package_context <-
+           SystemContext.workspace(state.run.workspace_id, :execution_package_fetch),
+         {:ok, work} <- ExecutionPackages.attach(package_context, work, state.version),
          {:ok, work} <-
-           RuntimeInputPins.prepare(work, state.runner_client, state.runner_opts),
+           RuntimeInputPins.prepare(
+             state.run,
+             work,
+             state.runner_client,
+             state.runner_opts
+           ),
          ownership <-
            RunExecutionOwnership.new(state.run,
              asset_step_id: work.asset_step_id,
@@ -297,7 +305,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
       {:error, reason} ->
         _ =
-          RunExecutionOwnership.mark_dispatch_failed(state.run.id, ownership.ownership_id, reason)
+          RunExecutionOwnership.mark_dispatch_failed(state.run, ownership.ownership_id, reason)
 
         persist_pre_submit_failure(
           state,
@@ -579,7 +587,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   end
 
   defp persist_submitted_ownership_snapshot(%RunExecutionOwnership{} = ownership) do
-    if Persistence.externally_cancelled?(ownership.run_id) do
+    if Persistence.externally_cancelled?(ownership) do
       {:error, :external_cancel}
     else
       RunExecutionOwnership.persist(ownership)
@@ -593,7 +601,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       |> Map.put(:dispatch_id, ownership.dispatch_id)
       |> Map.put(:deadline_at, ownership.deadline_at)
 
-    %{work | metadata: metadata}
+    %{work | execution_id: ownership.dispatch_id, metadata: metadata}
   end
 
   defp persist_submit_persist_failure_outcome(ownership, run_state, execution_id, reason) do

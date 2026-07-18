@@ -3,7 +3,7 @@ defmodule Favn.CheckTestTagTiers do
 
   @allowed_apps %{
     acceptance: MapSet.new(["favn_local"]),
-    slow: MapSet.new(["favn", "favn_local"]),
+    slow: MapSet.new(["favn", "favn_local", "favn_storage_postgres"]),
     browser: MapSet.new([])
   }
 

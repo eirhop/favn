@@ -10,14 +10,26 @@ defmodule FavnOrchestrator.Scheduler.ManifestEntries do
   @spec discover(Version.t(), Index.t()) ::
           {:ok, %{optional(module()) => map()}} | {:error, term()}
   def discover(%Version{} = version, %Index{} = index) do
+    with {:ok, entries} <- discover_all(version, index) do
+      {:ok, Map.new(entries, &{&1.module, &1})}
+    end
+  end
+
+  @doc false
+  @spec discover_all(Version.t(), Index.t()) :: {:ok, [map()]} | {:error, term()}
+  def discover_all(%Version{} = version, %Index{} = index) do
     index
     |> Index.list_pipelines()
-    |> Enum.reduce_while({:ok, %{}}, fn pipeline, {:ok, acc} ->
+    |> Enum.reduce_while({:ok, []}, fn pipeline, {:ok, acc} ->
       case build_entry(version, index, pipeline) do
         {:ok, nil} -> {:cont, {:ok, acc}}
-        {:ok, entry} -> {:cont, {:ok, Map.put(acc, pipeline.module, entry)}}
+        {:ok, entry} -> {:cont, {:ok, [entry | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
+    end)
+    |> then(fn
+      {:ok, entries} -> {:ok, Enum.reverse(entries)}
+      error -> error
     end)
   end
 
@@ -28,15 +40,17 @@ defmodule FavnOrchestrator.Scheduler.ManifestEntries do
           {:ok, nil}
 
         %Schedule{} = value ->
-          with :ok <- validate_window_for_schedule(pipeline.window, value) do
+          schedule = Schedule.apply_identity(value, pipeline.module, pipeline.name)
+
+          with :ok <- validate_window_for_schedule(pipeline.window, schedule) do
             {:ok,
              %{
                module: pipeline.module,
                id: pipeline.name,
                pipeline: pipeline,
-               schedule: value,
+               schedule: schedule,
                window: pipeline.window,
-               schedule_fingerprint: fingerprint(value, pipeline.window),
+               schedule_fingerprint: fingerprint(schedule, pipeline.window),
                manifest_version_id: version.manifest_version_id,
                manifest_content_hash: version.content_hash
              }}

@@ -270,8 +270,7 @@ lineage.
 
 Sensitive parameter values are stored only in the dedicated protected pin
 payload, never in generic run metadata, events, logs, telemetry, or errors.
-SQLite and PostgreSQL storage require a valid 32-byte
-`runtime_input_pin_key` (raw or base64-encoded) when a pin contains sensitive
+PostgreSQL storage requires a valid 32-byte `FAVN_RUNTIME_INPUT_PIN_KEY` when a pin contains sensitive
 parameters. Missing or invalid protection fails before materialization rather
 than storing plaintext.
 

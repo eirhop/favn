@@ -13,14 +13,15 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
   alias FavnOrchestrator.API.Filters
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.Response
+  alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.Redaction
 
   plug(:match)
   plug(:dispatch)
 
   get "/" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor} <- Authentication.actor_context(conn, :viewer),
-         {:ok, manifests} <- FavnOrchestrator.list_manifest_summaries() do
+         {:ok, manifests} <- list_manifests(conn) do
       Response.data(conn, 200, %{items: manifests})
     else
       {:error, :active_manifest_not_set} ->
@@ -38,10 +39,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
   post "/" do
     with :ok <- Authentication.ensure_service(conn),
          {:ok, version} <- build_version(conn.body_params),
-         {:ok, registration_status, canonical_version} <- publish(version),
-         {:ok, summary} <-
-           FavnOrchestrator.get_manifest_summary(canonical_version.manifest_version_id) do
-      Audit.put_best_effort(%{
+         {:ok, registration_status, canonical_version, platform_context} <- publish(conn, version),
+         summary <- Manifests.summary(canonical_version) do
+      Audit.put_best_effort(platform_context, %{
         action: "manifest.register",
         session_id: nil,
         resource_type: "manifest",
@@ -106,6 +106,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, :service_unauthorized} ->
         authentication_error(conn, :service_unauthorized)
 
+      {:error, :forbidden} ->
+        authentication_error(conn, :forbidden)
+
       {:error, reason} ->
         Logger.error("manifest.register failed: #{inspect(reason)}")
         Response.error(conn, 400, "bad_request", "Request failed")
@@ -114,11 +117,8 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   get "/active" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor} <- Authentication.actor_context(conn, :viewer),
-         {:ok, manifest_version_id} <- FavnOrchestrator.active_manifest(),
-         {:ok, summary} <- FavnOrchestrator.get_manifest_summary(manifest_version_id),
-         {:ok, targets} <- FavnOrchestrator.manifest_targets(manifest_version_id) do
-      Response.data(conn, 200, %{manifest: summary, targets: DTO.manifest_targets(targets)})
+         {:ok, details} <- active_details(conn) do
+      Response.data(conn, 200, normalize_details(details))
     else
       {:error, :active_manifest_not_set} ->
         Response.error(conn, 404, "not_found", "Active manifest is not set")
@@ -130,10 +130,8 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   get "/:manifest_version_id" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor} <- Authentication.actor_context(conn, :viewer),
-         {:ok, summary} <- FavnOrchestrator.get_manifest_summary(manifest_version_id),
-         {:ok, targets} <- FavnOrchestrator.manifest_targets(manifest_version_id) do
-      Response.data(conn, 200, %{manifest: summary, targets: DTO.manifest_targets(targets)})
+         {:ok, details} <- manifest_details(conn, manifest_version_id) do
+      Response.data(conn, 200, normalize_details(details))
     else
       {:error, :manifest_version_not_found} ->
         Response.error(conn, 404, "not_found", "Manifest version was not found")
@@ -148,10 +146,10 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   get "/:manifest_version_id/assets/:target_id/inspection" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor} <- Authentication.actor_context(conn, :viewer),
+         {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :viewer),
          {:ok, sample_limit} <- Filters.inspection_sample_limit(conn.params),
          {:ok, result} <-
-           FavnOrchestrator.inspect_manifest_asset(manifest_version_id, target_id,
+           FavnOrchestrator.inspect_manifest_asset(context, manifest_version_id, target_id,
              sample_limit: sample_limit
            ) do
       Response.data(conn, 200, %{inspection: DTO.inspection_result(result)})
@@ -191,17 +189,8 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   post "/:manifest_version_id/activate" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, session, actor} <- Authentication.actor_context(conn, :operator) do
-      IdempotentCommand.run(
-        conn,
-        "manifest.activate",
-        actor.id,
-        session.id,
-        %{manifest_version_id: manifest_version_id},
-        fn idempotency ->
-          activate(conn, manifest_version_id, session, actor, idempotency)
-        end
-      )
+         {:ok, session, actor, context} <- activation_context(conn) do
+      run_activation(conn, manifest_version_id, session, actor, context)
     else
       {:error, reason} -> authentication_error(conn, reason)
     end
@@ -209,8 +198,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   post "/:manifest_version_id/runner/register" do
     with :ok <- Authentication.ensure_service(conn),
+         {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :operator),
          {:ok, registration} <-
-           FavnOrchestrator.register_manifest_with_runner(manifest_version_id) do
+           FavnOrchestrator.register_manifest_with_runner(context, manifest_version_id) do
       Response.data(conn, 200, %{registration: registration})
     else
       {:error, :manifest_version_not_found} ->
@@ -245,11 +235,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     Response.error(conn, 404, "not_found", "Route was not found")
   end
 
-  defp activate(conn, manifest_version_id, session, actor, idempotency) do
-    case FavnOrchestrator.activate_manifest(manifest_version_id) do
-      :ok ->
-        reload_scheduler_best_effort()
-
+  defp activate(conn, manifest_version_id, session, actor, context, idempotency) do
+    case activate_manifest(conn, context, manifest_version_id, idempotency) do
+      {:ok, runtime} ->
         %{
           action: "manifest.activate",
           actor_id: actor.id,
@@ -257,32 +245,29 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           resource_type: "manifest",
           resource_id: manifest_version_id,
           outcome: "accepted",
+          workspace_id: runtime.workspace_id,
           service_identity: Authentication.service_identity(conn)
         }
         |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "accepted"))
-        |> Audit.put_best_effort()
+        |> then(&Audit.put_best_effort(context, &1))
 
-        {:ok, 200, %{activated: true, manifest_version_id: manifest_version_id}, "manifest",
-         manifest_version_id}
+        {:ok, 200,
+         %{
+           activated: true,
+           manifest_version_id: manifest_version_id,
+           deployment_id: runtime.deployment_id,
+           revision: runtime.revision
+         }, "manifest", manifest_version_id}
 
       {:error, :manifest_version_not_found} ->
         {:error, 404, "not_found", "Manifest version was not found", %{}}
 
-      {:error, _reason} ->
-        {:error, 400, "bad_request", "Request failed", %{}}
-    end
-  end
-
-  defp reload_scheduler_best_effort do
-    case FavnOrchestrator.reload_scheduler() do
-      :ok ->
-        :ok
-
-      {:error, :scheduler_not_running} ->
-        :ok
-
       {:error, reason} ->
-        Logger.warning("manifest activated but scheduler reload failed: #{inspect(reason)}")
+        Logger.error(
+          "manifest.activate failed: #{inspect(Redaction.redact_operational_bounded(reason))}"
+        )
+
+        {:error, 400, "bad_request", "Request failed", %{}}
     end
   end
 
@@ -296,10 +281,20 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     end
   end
 
-  defp publish(%Version{} = version) do
-    case FavnOrchestrator.publish_manifest(version) do
-      {:ok, :published, %Version{} = canonical} -> {:ok, :published, canonical}
-      {:ok, :already_published, %Version{} = canonical} -> {:ok, :already_published, canonical}
+  defp publish(conn, %Version{} = version) do
+    with {:ok, context} <- Authentication.platform_context(conn, :platform_operator),
+         result <- Manifests.publish(context, version) do
+      case result do
+        {:ok, :published, %Version{} = canonical} ->
+          {:ok, :published, canonical, context}
+
+        {:ok, :already_published, %Version{} = canonical} ->
+          {:ok, :already_published, canonical, context}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
       {:error, reason} -> {:error, reason}
     end
   end
@@ -334,4 +329,64 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   defp validation_error(conn, message),
     do: Response.error(conn, 422, "validation_failed", message)
+
+  defp list_manifests(conn) do
+    with {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :viewer),
+         {:ok, %{manifest: manifest}} <- Manifests.active(context) do
+      {:ok, [manifest]}
+    end
+  end
+
+  defp active_details(conn) do
+    with {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :viewer) do
+      Manifests.active(context)
+    end
+  end
+
+  defp manifest_details(conn, manifest_version_id) do
+    with {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :viewer) do
+      Manifests.get_active_release(context, manifest_version_id)
+    end
+  end
+
+  defp activation_context(conn), do: Authentication.workspace_context(conn, :admin)
+
+  defp run_activation(conn, manifest_version_id, session, actor, context) do
+    request = %{
+      manifest_version_id: manifest_version_id,
+      selection: Map.get(conn.body_params, "selection"),
+      configuration: Map.get(conn.body_params, "configuration", %{})
+    }
+
+    execute = fn idempotency ->
+      activate(conn, manifest_version_id, session, actor, context, idempotency)
+    end
+
+    IdempotentCommand.run(
+      conn,
+      context,
+      "manifest.activate",
+      actor.id,
+      session.id,
+      request,
+      execute
+    )
+  end
+
+  defp activate_manifest(conn, context, manifest_version_id, idempotency) do
+    with %{} = selection <- Map.get(conn.body_params, "selection"),
+         %{} = configuration <- Map.get(conn.body_params, "configuration", %{}) do
+      Manifests.deploy(context, manifest_version_id, selection,
+        deployment_id: "deployment:" <> idempotency.key_hash,
+        configuration: configuration,
+        idempotency: idempotency.command_idempotency
+      )
+    else
+      _invalid -> {:error, :invalid_deployment_selection}
+    end
+  end
+
+  defp normalize_details(%{manifest: manifest, targets: targets}) do
+    %{manifest: manifest, targets: DTO.manifest_targets(targets)}
+  end
 end

@@ -10,7 +10,8 @@ defmodule FavnOrchestrator.API.ExecutionPackagesRouter do
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.ManifestPublication.Config
   alias FavnOrchestrator.API.Response
-  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.ExecutionPackages
+  alias FavnOrchestrator.Persistence.Error
 
   @max_packages_per_request 100
   @max_package_bytes 4 * 1024 * 1024
@@ -20,9 +21,10 @@ defmodule FavnOrchestrator.API.ExecutionPackagesRouter do
 
   post "/missing" do
     with :ok <- Authentication.ensure_service(conn),
+         {:ok, context} <- Authentication.platform_context(conn, :platform_operator),
          {:ok, config} <- Config.from_app_env(),
          {:ok, hashes} <- fetch_list(conn.body_params, "hashes"),
-         {:ok, missing} <- Storage.missing_execution_package_hashes(hashes) do
+         {:ok, missing} <- ExecutionPackages.missing_hashes(context, hashes) do
       Response.data(conn, 200, %{
         missing: missing,
         publication_limits: %{
@@ -47,6 +49,12 @@ defmodule FavnOrchestrator.API.ExecutionPackagesRouter do
       {:error, :service_unauthorized} ->
         Response.error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
+      {:error, :forbidden} ->
+        Response.error(conn, 403, "forbidden", "Service cannot publish execution packages")
+
+      {:error, %Error{kind: :invalid}} ->
+        validation_error(conn, "Invalid execution package hash")
+
       {:error, reason} ->
         Logger.error("execution_package.missing failed: #{inspect(reason)}")
         Response.error(conn, 400, "bad_request", "Request failed")
@@ -55,10 +63,11 @@ defmodule FavnOrchestrator.API.ExecutionPackagesRouter do
 
   post "/" do
     with :ok <- Authentication.ensure_service(conn),
+         {:ok, context} <- Authentication.platform_context(conn, :platform_operator),
          {:ok, values} <- fetch_list(conn.body_params, "packages"),
          :ok <- validate_package_count(values),
          {:ok, packages} <- decode_packages(values),
-         :ok <- Storage.put_execution_packages(packages) do
+         :ok <- ExecutionPackages.register(context, packages) do
       Response.data(conn, 201, %{stored: length(packages)})
     else
       {:error, :too_many_execution_packages} ->
@@ -72,6 +81,15 @@ defmodule FavnOrchestrator.API.ExecutionPackagesRouter do
 
       {:error, :service_unauthorized} ->
         Response.error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :forbidden} ->
+        Response.error(conn, 403, "forbidden", "Service cannot publish execution packages")
+
+      {:error, %Error{kind: :invalid}} ->
+        validation_error(conn, "Invalid execution package")
+
+      {:error, %Error{kind: :conflict}} ->
+        Response.error(conn, 409, "execution_package_conflict", "Execution package conflicts with stored content")
 
       {:error, reason}
       when reason in [

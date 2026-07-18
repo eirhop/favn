@@ -52,10 +52,7 @@ defmodule FavnTestSupport.Fixtures do
     },
     runner_assets: %{
       path: "fixtures/assets/runner_assets.ex",
-      modules: [
-        Favn.Test.Fixtures.Assets.Runner.RunnerAssets,
-        Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore
-      ]
+      modules: [Favn.Test.Fixtures.Assets.Runner.RunnerAssets]
     }
   }
 

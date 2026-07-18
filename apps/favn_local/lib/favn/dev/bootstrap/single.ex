@@ -1,6 +1,6 @@
 defmodule Favn.Dev.Bootstrap.Single do
   @moduledoc """
-  API-driven bootstrap workflow for the first SQLite single-node production shape.
+  API-driven bootstrap workflow for a PostgreSQL-backed single-node runtime.
 
   The workflow does not write storage directly. It verifies orchestrator service
   credentials, validates `manifest-index.json` and its sibling immutable
@@ -20,6 +20,7 @@ defmodule Favn.Dev.Bootstrap.Single do
           manifest_path: Path.t(),
           orchestrator_url: String.t(),
           service_token: String.t(),
+          workspace_id: String.t(),
           operator_username: String.t(),
           operator_password: String.t(),
           activate?: boolean(),
@@ -43,13 +44,18 @@ defmodule Favn.Dev.Bootstrap.Single do
     with {:ok, manifest_path} <- required_string(opts, :manifest_path),
          {:ok, orchestrator_url} <- required_string(opts, :orchestrator_url),
          {:ok, service_token} <- required_string(opts, :service_token),
+         {:ok, workspace_id} <- required_string(opts, :workspace_id),
          :ok <- client.verify_service_token(orchestrator_url, service_token),
          {:ok, session_context} <-
-           maybe_operator_session(client, orchestrator_url, service_token, opts),
+           maybe_operator_session(client, orchestrator_url, service_token, workspace_id, opts),
          {:ok, publication} <- read_manifest_publication(manifest_path),
          version <- publication.version,
          {:ok, registration} <-
-           client.publish_manifest(orchestrator_url, service_token, publication),
+           client.publish_manifest(orchestrator_url, service_token, publication, session_context),
+         {:ok, canonical_manifest_version_id} <-
+           canonical_manifest_version_id(registration, version.manifest_version_id),
+         canonical_version <-
+           %{version | manifest_version_id: canonical_manifest_version_id},
          manifest_registration <- registration_status(registration, "manifest"),
          {:ok, activated?} <-
            maybe_activate(
@@ -57,20 +63,28 @@ defmodule Favn.Dev.Bootstrap.Single do
              orchestrator_url,
              service_token,
              session_context,
-             version,
+             canonical_version,
              activate?
            ),
          {:ok, runner} <-
            client.register_runner(
              orchestrator_url,
              service_token,
-             runner_payload(version)
+             session_context,
+             runner_payload(canonical_version)
            ),
          runner_registration <- registration_status(runner, "registration"),
-         verification <- verify_active_manifest(client, orchestrator_url, service_token, version) do
+         verification <-
+           verify_active_manifest(
+             client,
+             orchestrator_url,
+             service_token,
+             session_context,
+             canonical_version
+           ) do
       {:ok,
        %{
-         manifest_version_id: version.manifest_version_id,
+         manifest_version_id: canonical_version.manifest_version_id,
          content_hash: version.content_hash,
          manifest_registration: manifest_registration,
          runner_registration: runner_registration,
@@ -213,14 +227,24 @@ defmodule Favn.Dev.Bootstrap.Single do
 
   defp registration_status(_payload, _key), do: "unknown"
 
-  defp maybe_operator_session(client, orchestrator_url, service_token, opts) do
-    if Keyword.get(opts, :activate?, true) do
-      with {:ok, username} <- required_string(opts, :operator_username),
-           {:ok, password} <- required_string(opts, :operator_password) do
-        client.password_login(orchestrator_url, service_token, username, password)
-      end
+  defp canonical_manifest_version_id(registration, packaged_manifest_version_id) do
+    canonical_id =
+      get_in(registration, ["data", "registration", "canonical_manifest_version_id"]) ||
+        get_in(registration, ["data", "manifest", "registration", "canonical_manifest_version_id"]) ||
+        get_in(registration, ["registration", "canonical_manifest_version_id"]) ||
+        packaged_manifest_version_id
+
+    if is_binary(canonical_id) and canonical_id != "" do
+      {:ok, canonical_id}
     else
-      {:ok, nil}
+      {:error, :invalid_manifest_registration}
+    end
+  end
+
+  defp maybe_operator_session(client, orchestrator_url, service_token, workspace_id, opts) do
+    with {:ok, username} <- required_string(opts, :operator_username),
+         {:ok, password} <- required_string(opts, :operator_password) do
+      client.password_login(orchestrator_url, service_token, workspace_id, username, password)
     end
   end
 
@@ -238,8 +262,8 @@ defmodule Favn.Dev.Bootstrap.Single do
     end
   end
 
-  defp verify_active_manifest(client, orchestrator_url, service_token, version) do
-    case client.bootstrap_active_manifest(orchestrator_url, service_token) do
+  defp verify_active_manifest(client, orchestrator_url, service_token, session_context, version) do
+    case client.bootstrap_active_manifest(orchestrator_url, service_token, session_context) do
       {:ok, %{"manifest" => %{"manifest_version_id" => id}}}
       when id == version.manifest_version_id ->
         :matched

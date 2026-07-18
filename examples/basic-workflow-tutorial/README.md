@@ -287,15 +287,16 @@ Install freshness notes:
 - `mix favn.install --force` remains available when you want an unconditional
   rebuild of the installed runtime workspace
 
-The default `mix favn.dev` path keeps the scheduler disabled so one-time local
-ETL does not run active schedules unexpectedly. To exercise the tutorial's
-15-second scheduled smoke flow, start the stack with `mix favn.dev --scheduler`
-instead.
+The default `mix favn.dev` path uses the PostgreSQL connection from
+`FAVN_DATABASE_URL` and keeps the scheduler disabled so one-time local ETL does
+not run active schedules unexpectedly. Run `scripts/postgres/setup` from the Favn
+source checkout before the first start. To exercise the tutorial's 15-second
+scheduled smoke flow, start the stack with `mix favn.dev --scheduler` instead.
 
 ## Alternative configurations you can try
 
-The default tutorial path keeps things simple (DuckDB + in-memory local control
-plane), but you can change behavior through
+The default tutorial path keeps things simple (DuckDB data plane + PostgreSQL
+control plane), but you can change behavior through
 `examples/basic-workflow-tutorial/config/config.exs`.
 
 ### 1) Change DuckDB file location
@@ -321,29 +322,25 @@ config :favn,
   ]
 ```
 
-### 2) Change local orchestrator storage mode
+### 2) Change the local PostgreSQL connection
 
-Current config is in-memory:
+PostgreSQL is the only supported control-plane backend. The tutorial selects the
+workspace in application config:
 
 ```elixir
 config :favn, :local,
-  storage: :memory
+  workspace_id: "local-dev"
 ```
 
-Alternative modes:
-- `:memory` for ephemeral local state (fast, but not persisted)
-- `:sqlite` for SQLite-backed local control-plane state, selected with
-  `config :favn, :local, storage: :sqlite, sqlite_path: "..."` or
-  `mix favn.dev --sqlite`
-- `:postgres` for Postgres-backed local control-plane storage
+Set the runtime-role URL in the project `.env` or shell:
 
-Do not add `:favn_storage_sqlite` to this consumer project's `mix.exs` for local
-control-plane storage. SQLite storage is owned by Favn's local runtime/package
-setup under `.favn/`; the consumer selects it through local config or CLI flags.
+```bash
+FAVN_DATABASE_URL=ecto://favn_runtime:favn_runtime_local@127.0.0.1:5432/favn_dev
+```
 
-You can also switch at runtime with flags:
-- `mix favn.dev --sqlite`
-- `mix favn.dev --postgres`
+Do not add `:favn_storage_postgres` to this consumer project's `mix.exs`.
+PostgreSQL persistence is a Favn-owned runtime component materialized by
+`mix favn.install`.
 
 ### 3) Change DuckDB execution placement
 

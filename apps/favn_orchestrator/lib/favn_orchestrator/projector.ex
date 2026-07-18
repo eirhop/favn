@@ -9,7 +9,6 @@ defmodule FavnOrchestrator.Projector do
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage
 
   @spec run_event(RunState.t(), atom(), map()) :: RunEvent.t()
   def run_event(%RunState{} = run_state, event_type, data \\ %{}) when is_atom(event_type) do
@@ -29,9 +28,6 @@ defmodule FavnOrchestrator.Projector do
       data: normalized_data
     })
   end
-
-  @spec persist_snapshot(RunState.t()) :: :ok | {:error, term()}
-  def persist_snapshot(%RunState{} = run_state), do: Storage.put_run(run_state)
 
   @spec project_run(RunState.t()) :: Run.t()
   def project_run(%RunState{} = run_state) do

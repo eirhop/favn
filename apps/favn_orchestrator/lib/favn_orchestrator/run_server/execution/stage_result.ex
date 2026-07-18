@@ -62,7 +62,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         await_result,
         %{stage: stage, attempt: attempt, runner_client: runner_client, runner_opts: runner_opts}
       ) do
-    if Persistence.externally_cancelled?(current_run.id) do
+    if Persistence.externally_cancelled?(current_run) do
       cancelled =
         cancel_execution_ids(
           current_run,
@@ -369,7 +369,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   defp finish_persisted_step(resume) do
     _ =
       RunExecutionOwnership.complete_execution(
-        resume.original_run.id,
+        resume.original_run,
         resume.entry.execution_id
       )
 
@@ -426,9 +426,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     end
   end
 
-  defp persist_post_step_state(%RunState{} = step_state, entry, status, failure_reason) do
-    with {:ok, _state} <- record_freshness(step_state, entry, status),
-         :ok <- MaterializationClaims.fail_entry(entry, failure_reason) do
+  defp persist_post_step_state(%RunState{} = _step_state, entry, status, failure_reason) do
+    with :ok <- MaterializationClaims.fail_entry(entry, {status, failure_reason}) do
       :ok
     else
       {:error, reason} -> {:error, reason}
@@ -436,24 +435,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   end
 
   defp record_freshness(%RunState{} = run_state, entry, :ok) do
-    StateWriter.put_success_state(
-      run_state,
-      Map.fetch!(entry, :version),
-      Map.fetch!(entry, :node_key),
-      Map.get(entry, :decision, %{}),
-      Map.fetch!(entry, :freshness_context)
-    )
-  end
-
-  defp record_freshness(%RunState{} = run_state, entry, status) do
-    StateWriter.put_attempt_state(
-      run_state,
-      Map.fetch!(entry, :version),
-      Map.fetch!(entry, :node_key),
-      status,
-      Map.fetch!(entry, :freshness_key),
-      Map.get(entry, :decision, %{})
-    )
+    {:ok,
+     StateWriter.build_success_state(
+       run_state,
+       Map.fetch!(entry, :version),
+       Map.fetch!(entry, :node_key),
+       Map.get(entry, :decision, %{}),
+       Map.fetch!(entry, :freshness_context)
+     )}
   end
 
   defp reduce_outcome(
@@ -633,7 +622,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         runner_opts
       )
 
-    _ = RunExecutionOwnership.persist_cancel_outcomes(run_state.id, cancel_results, reason)
+    _ = RunExecutionOwnership.persist_cancel_outcomes(run_state, cancel_results, reason)
     clear_inflight_executions(run_state, Enum.map(cancel_results, & &1.execution_id))
   end
 

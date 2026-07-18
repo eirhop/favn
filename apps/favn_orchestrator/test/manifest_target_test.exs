@@ -10,8 +10,8 @@ defmodule FavnOrchestrator.ManifestTargetTest do
     assert ManifestTarget.asset_id({__MODULE__.Asset, :orders}) ==
              "asset:Elixir.FavnOrchestrator.ManifestTargetTest.Asset:orders"
 
-    assert ManifestTarget.pipeline_id(__MODULE__.Pipeline) ==
-             "pipeline:Elixir.FavnOrchestrator.ManifestTargetTest.Pipeline"
+    assert ManifestTarget.pipeline_id({__MODULE__.Pipeline, :daily}) ==
+             "pipeline:Elixir.FavnOrchestrator.ManifestTargetTest.Pipeline:daily"
 
     assert {:ok, %{ref: {__MODULE__.Asset, :orders}}} =
              ManifestTarget.resolve_asset(
@@ -22,7 +22,7 @@ defmodule FavnOrchestrator.ManifestTargetTest do
     assert {:ok, __MODULE__.Pipeline} =
              ManifestTarget.resolve_pipeline_module(
                version,
-               ManifestTarget.pipeline_id(__MODULE__.Pipeline)
+               ManifestTarget.pipeline_id({__MODULE__.Pipeline, :daily})
              )
   end
 
@@ -41,7 +41,7 @@ defmodule FavnOrchestrator.ManifestTargetTest do
       content_hash: "sha256:test",
       manifest: %{
         assets: [%{ref: {__MODULE__.Asset, :orders}}],
-        pipelines: [%{module: __MODULE__.Pipeline}]
+        pipelines: [%{module: __MODULE__.Pipeline, name: :daily}]
       }
     }
   end

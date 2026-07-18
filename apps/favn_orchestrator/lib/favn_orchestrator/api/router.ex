@@ -23,14 +23,14 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.API.SSE
   alias FavnOrchestrator.API.SSE.Cursor
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.Runs
 
   plug(Plug.RequestId)
 
   if Mix.env() == :dev and Code.ensure_loaded?(Tidewave) do
     plug(Tidewave)
   end
-
-  plug(ManifestPublication)
 
   plug(Plug.Parsers,
     parsers: [:json],
@@ -79,8 +79,7 @@ defmodule FavnOrchestrator.API.Router do
 
   get "/api/orchestrator/v1/bootstrap/active-manifest" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, manifest_version_id} <- FavnOrchestrator.active_manifest(),
-         {:ok, summary} <- FavnOrchestrator.get_manifest_summary(manifest_version_id) do
+         {:ok, summary} <- bootstrap_active_manifest(conn) do
       data(conn, 200, %{manifest: summary})
     else
       {:error, :active_manifest_not_set} ->
@@ -118,53 +117,17 @@ defmodule FavnOrchestrator.API.Router do
 
   forward("/api/orchestrator/v1/manifests", to: ManifestsRouter)
 
-  forward("/api/orchestrator/v1/execution-packages", to: ExecutionPackagesRouter)
-
   forward("/api/orchestrator/v1/runs", to: RunsRouter)
 
   forward("/api/orchestrator/v1/schedules", to: SchedulesRouter)
 
   forward("/api/orchestrator/v1/backfills", to: BackfillsRouter)
 
-  get "/api/orchestrator/v1/assets/window-states" do
-    with :ok <- ensure_service_auth(conn),
-         {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
-         {:ok, filters} <- Filters.asset_window_states(conn.params),
-         {:ok, page} <- FavnOrchestrator.list_asset_window_states(filters) do
-      data(conn, 200, page_response(page, &DTO.asset_window_state/1))
-    else
-      {:error, :invalid_asset_ref} ->
-        error(conn, 422, "validation_failed", "Invalid asset ref filter")
-
-      {:error, :invalid_filter} ->
-        error(conn, 422, "validation_failed", "Invalid asset window state filter")
-
-      {:error, :invalid_pagination} ->
-        error(conn, 422, "validation_failed", "Invalid pagination parameters")
-
-      {:error, :forbidden} ->
-        error(conn, 403, "forbidden", "Actor does not have access")
-
-      {:error, :service_unauthorized} ->
-        error(conn, 401, "service_unauthorized", "Invalid service credentials")
-
-      {:error, :unauthenticated} ->
-        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
-
-      {:error, {:manifest_filter_lookup_failed, reason}} ->
-        Logger.error("asset_window_state.filter_lookup failed: #{inspect(reason)}")
-        error(conn, 400, "bad_request", "Request failed")
-
-      {:error, _reason} ->
-        error(conn, 400, "bad_request", "Request failed")
-    end
-  end
-
   get "/api/orchestrator/v1/streams/runs" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
+         {:ok, _session, _actor, context} <- stream_actor_context(conn),
          {:ok, global_sequence} <- Cursor.global(header(conn, "last-event-id")) do
-      SSE.stream(conn, {:global, global_sequence})
+      stream(conn, context, {:global, global_sequence})
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -185,10 +148,10 @@ defmodule FavnOrchestrator.API.Router do
 
   get "/api/orchestrator/v1/streams/runs/:run_id" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
-         {:ok, _run} <- FavnOrchestrator.get_run(run_id),
+         {:ok, _session, _actor, context} <- stream_actor_context(conn),
+         {:ok, _run} <- get_stream_run(context, run_id),
          {:ok, sequence} <- Cursor.run(header(conn, "last-event-id"), run_id) do
-      SSE.stream(conn, {:run, run_id, sequence})
+      stream(conn, context, {:run, run_id, sequence})
     else
       {:error, :not_found} ->
         error(conn, 404, "not_found", "Run was not found")
@@ -212,8 +175,12 @@ defmodule FavnOrchestrator.API.Router do
 
   get "/api/orchestrator/v1/audit" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, _actor} <- ensure_actor_context(conn, :admin) do
-      data(conn, 200, %{items: Auth.list_audit(limit: 200) |> Enum.map(&DTO.audit/1)})
+         {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :admin),
+         {:ok, page} <- Auth.page_audit(context, limit: 200) do
+      data(conn, 200, %{
+        items: Enum.map(page.items, &DTO.audit/1),
+        next_cursor: page.next_cursor
+      })
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -239,6 +206,19 @@ defmodule FavnOrchestrator.API.Router do
   defp ensure_actor_context(conn, required_role),
     do: Authentication.actor_context(conn, required_role)
 
+  defp stream_actor_context(conn), do: Authentication.workspace_context(conn, :viewer)
+
+  defp get_stream_run(context, run_id), do: Runs.get(context, run_id)
+
+  defp stream(conn, context, stream), do: SSE.stream(conn, context, stream)
+
+  defp bootstrap_active_manifest(conn) do
+    with {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :viewer),
+         {:ok, %{manifest: summary}} <- Manifests.active(context) do
+      {:ok, summary}
+    end
+  end
+
   defp header(conn, key) do
     case get_req_header(conn, key) do
       [value | _] -> value
@@ -247,10 +227,6 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp data(conn, status, payload), do: Response.data(conn, status, payload)
-
-  defp page_response(page, mapper) when is_function(mapper, 1) do
-    Response.page(page, mapper)
-  end
 
   defp error(conn, status, code, message, details \\ %{}) do
     Response.error(conn, status, code, message, details)

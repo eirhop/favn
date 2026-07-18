@@ -12,7 +12,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
   alias Favn.Retry.Policy, as: RetryPolicy
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.Freshness.Decider
-  alias FavnOrchestrator.Freshness.StateWriter
   alias FavnOrchestrator.RunServer.Execution.ExecutionPool
   alias FavnOrchestrator.RunServer.Execution.FreshnessContext
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
@@ -144,7 +143,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
         ) :: {:ok, RunState.t()} | {:error, term()}
   def persist_decision(
         %RunState{} = run_state,
-        %Version{} = version,
+        %Version{} = _version,
         node_key,
         stage,
         status,
@@ -196,20 +195,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
       :ok ->
         next_run
         |> ResultBuilder.append_node_result(result)
-        |> persist_freshness_state(version, node_key, status, freshness_key, decision)
+        |> then(&{:ok, &1})
 
       {:error, :external_cancel} ->
         {:error, :external_cancel}
 
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  defp persist_freshness_state(run, version, node_key, status, freshness_key, decision) do
-    case StateWriter.put_attempt_state(run, version, node_key, status, freshness_key, decision) do
-      {:ok, _state} -> {:ok, run}
-      {:error, reason} -> {:error, {:freshness_state_write_failed, reason}}
     end
   end
 

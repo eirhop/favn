@@ -17,11 +17,13 @@ defmodule FavnOrchestrator.API.SSE do
 
   require Logger
 
-  alias FavnOrchestrator
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.Response
-  alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunEvents.EventType
+  alias FavnOrchestrator.Events
+  alias FavnOrchestrator.Persistence.Error, as: PersistenceError
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Runs
 
   @retry_ms 3_000
   @heartbeat_ms 15_000
@@ -30,15 +32,12 @@ defmodule FavnOrchestrator.API.SSE do
   @type field_name :: :event | :id
   @type stream :: {:global, non_neg_integer() | nil} | {:run, String.t(), non_neg_integer()}
 
-  @doc """
-  Opens an SSE response for a previously validated stream cursor.
-
-  `Plug.Adapters.Test.Conn` receives the finite replay plus one ready event so
-  focused request tests do not enter the live receive loop.
-  """
-  @spec stream(Plug.Conn.t(), stream()) :: Plug.Conn.t()
-  def stream(conn, stream) do
-    if test_conn?(conn), do: test_stream(conn, stream), else: live_stream(conn, stream)
+  @doc "Opens a workspace-scoped PostgreSQL-backed SSE stream."
+  @spec stream(Plug.Conn.t(), WorkspaceContext.t(), stream()) :: Plug.Conn.t()
+  def stream(conn, %WorkspaceContext{} = context, stream) do
+    if test_conn?(conn),
+      do: test_persistence_stream(conn, context, stream),
+      else: live_persistence_stream(conn, context, stream)
   end
 
   @doc """
@@ -63,81 +62,126 @@ defmodule FavnOrchestrator.API.SSE do
   def delivery_error_action(_reason), do: :continue
 
   # sobelow_skip ["XSS.SendResp"]
-  defp test_stream(conn, stream) do
-    with {:ok, replay_events} <- fetch_replay_events(stream),
-         {:ok, replay_body, cursor} <- encode_replay(stream, replay_events) do
+  defp test_persistence_stream(conn, context, stream) do
+    with {:ok, page} <- fetch_persistence_page(context, stream, initial_cursor(stream)),
+         {:ok, replay_body, cursor} <- encode_replay(stream, page.items) do
       body =
         "retry: #{@retry_ms}\n\n" <>
           replay_body <> ready_body(stream_name(stream), cursor) <> ": heartbeat\n\n"
 
-      conn = put_sse_headers(conn)
-      send_resp(conn, 200, body)
+      conn |> put_sse_headers() |> send_resp(200, body)
     else
       {:error, :cursor_invalid} ->
         Response.error(conn, 410, "cursor_expired", "Cursor is invalid or no longer replayable")
 
       {:error, reason} ->
-        Logger.error("sse.replay failed: #{inspect(reason)}")
+        Logger.error("sse.persistence_replay failed: #{inspect(reason)}")
         Response.error(conn, 400, "bad_request", "Request failed")
     end
   end
 
-  defp live_stream(conn, stream) do
-    with :ok <- subscribe(stream),
-         {:ok, replay_events} <- fetch_replay_events(stream) do
+  defp live_persistence_stream(conn, context, stream) do
+    with :ok <- Events.subscribe_persistence_publications(),
+         {:ok, page} <- fetch_persistence_page(context, stream, initial_cursor(stream)) do
       conn = conn |> put_sse_headers() |> send_chunked(200)
       heartbeat_ref = Process.send_after(self(), :sse_heartbeat, @heartbeat_ms)
 
       try do
         with {:ok, conn} <- chunk(conn, "retry: #{@retry_ms}\n\n"),
-             {:ok, conn, cursor} <- chunk_replay(conn, stream, replay_events),
+             {:ok, conn, cursor} <- chunk_replay(conn, stream, page.items),
              {:ok, conn} <- chunk(conn, ready_body(stream_name(stream), cursor)) do
-          live_loop(conn, stream, cursor, heartbeat_ref)
+          if page.has_more?, do: send(self(), :favn_persistence_published)
+          persistence_loop(conn, context, stream, cursor, heartbeat_ref)
         else
           {:error, _reason} -> conn
         end
       after
         Process.cancel_timer(heartbeat_ref)
-        unsubscribe(stream)
+        Events.unsubscribe_persistence_publications()
       end
     else
       {:error, :cursor_invalid} ->
-        unsubscribe(stream)
+        Events.unsubscribe_persistence_publications()
         Response.error(conn, 410, "cursor_expired", "Cursor is invalid or no longer replayable")
 
       {:error, reason} ->
-        unsubscribe(stream)
-        Logger.error("sse.open failed: #{inspect(reason)}")
+        Events.unsubscribe_persistence_publications()
+        Logger.error("sse.persistence_open failed: #{inspect(reason)}")
         Response.error(conn, 400, "bad_request", "Request failed")
     end
   end
 
-  defp fetch_replay_events({:run, run_id, sequence}) do
-    run_id
-    |> FavnOrchestrator.list_run_stream_events(
-      after_sequence: sequence,
-      limit: @replay_limit + 1
-    )
-    |> reject_incomplete_replay()
+  defp persistence_loop(conn, context, stream, cursor, heartbeat_ref) do
+    receive do
+      :favn_persistence_published ->
+        deliver_persistence_page(conn, context, stream, cursor, heartbeat_ref)
+
+      :sse_heartbeat ->
+        deliver_persistence_page(conn, context, stream, cursor, heartbeat_ref, true)
+    end
   end
 
-  defp fetch_replay_events({:global, nil}) do
-    FavnOrchestrator.list_global_run_stream_events(
-      after_global_sequence: nil,
-      limit: @replay_limit
-    )
+  defp deliver_persistence_page(
+         conn,
+         context,
+         stream,
+         cursor,
+         heartbeat_ref,
+         heartbeat? \\ false
+       ) do
+    with {:ok, page} <- fetch_persistence_page(context, stream, cursor),
+         {:ok, conn, next_cursor} <- chunk_replay(conn, stream, page.items, cursor),
+         {:ok, conn} <- maybe_heartbeat(conn, heartbeat?) do
+      next_ref = reschedule_heartbeat(heartbeat_ref, heartbeat?)
+      if page.has_more?, do: send(self(), :favn_persistence_published)
+      persistence_loop(conn, context, stream, next_cursor || cursor, next_ref)
+    else
+      {:error, :cursor_invalid} ->
+        Process.cancel_timer(heartbeat_ref)
+        conn
+
+      {:error, reason} ->
+        Logger.error("sse.persistence_delivery failed: #{inspect(reason)}")
+        persistence_loop(conn, context, stream, cursor, heartbeat_ref)
+    end
   end
 
-  defp fetch_replay_events({:global, global_sequence}) do
-    [after_global_sequence: global_sequence, limit: @replay_limit + 1]
-    |> FavnOrchestrator.list_global_run_stream_events()
-    |> reject_incomplete_replay()
+  defp fetch_persistence_page(context, {:run, run_id, initial_sequence}, cursor) do
+    sequence = if is_binary(cursor), do: run_sequence(cursor), else: initial_sequence
+
+    case Runs.page_events(context, run_id,
+           after_sequence: sequence,
+           limit: @replay_limit
+         ) do
+      {:ok, page} -> {:ok, page}
+      {:error, %PersistenceError{kind: :invalid}} -> {:error, :cursor_invalid}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp reject_incomplete_replay({:ok, events}) when length(events) > @replay_limit,
-    do: {:error, :cursor_invalid}
+  defp fetch_persistence_page(context, {:global, initial_publication_id}, cursor) do
+    publication_id =
+      if is_binary(cursor), do: global_sequence(cursor), else: initial_publication_id
 
-  defp reject_incomplete_replay(result), do: result
+    case Runs.page_published_events(context,
+           after_publication_id: publication_id,
+           limit: @replay_limit
+         ) do
+      {:ok, page} -> {:ok, page}
+      {:error, %PersistenceError{kind: :invalid}} -> {:error, :cursor_invalid}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_heartbeat(conn, false), do: {:ok, conn}
+  defp maybe_heartbeat(conn, true), do: chunk(conn, ": heartbeat\n\n")
+
+  defp reschedule_heartbeat(heartbeat_ref, false), do: heartbeat_ref
+
+  defp reschedule_heartbeat(heartbeat_ref, true) do
+    Process.cancel_timer(heartbeat_ref)
+    Process.send_after(self(), :sse_heartbeat, @heartbeat_ms)
+  end
 
   defp encode_replay(stream, events) do
     Enum.reduce_while(events, {:ok, "", initial_cursor(stream)}, fn event, {:ok, body, _cursor} ->
@@ -151,8 +195,11 @@ defmodule FavnOrchestrator.API.SSE do
   end
 
   defp chunk_replay(conn, stream, events) do
-    Enum.reduce_while(events, {:ok, conn, initial_cursor(stream)}, fn event,
-                                                                      {:ok, conn, _cursor} ->
+    chunk_replay(conn, stream, events, initial_cursor(stream))
+  end
+
+  defp chunk_replay(conn, stream, events, initial_cursor) do
+    Enum.reduce_while(events, {:ok, conn, initial_cursor}, fn event, {:ok, conn, _cursor} ->
       cursor = event_cursor(stream, event)
 
       with {:ok, body} <- event_body(event, stream, cursor),
@@ -165,74 +212,6 @@ defmodule FavnOrchestrator.API.SSE do
       end
     end)
   end
-
-  defp live_loop(conn, stream, cursor, heartbeat_ref) do
-    receive do
-      {:favn_run_event, %RunEvent{} = event} ->
-        deliver_live_event(conn, stream, cursor, heartbeat_ref, event)
-
-      :sse_heartbeat ->
-        next_ref = Process.send_after(self(), :sse_heartbeat, @heartbeat_ms)
-        Process.cancel_timer(heartbeat_ref)
-
-        case chunk(conn, ": heartbeat\n\n") do
-          {:ok, conn} -> live_loop(conn, stream, cursor, next_ref)
-          {:error, _reason} -> conn
-        end
-    end
-  end
-
-  defp deliver_live_event(conn, stream, cursor, heartbeat_ref, event) do
-    with {:ok, %RunEvent{} = event} <- hydrate_live_event(stream, event, cursor),
-         next_cursor = event_cursor(stream, event),
-         {:ok, body} <- event_body(event, stream, next_cursor),
-         {:ok, conn} <- chunk(conn, body) do
-      live_loop(conn, stream, next_cursor, heartbeat_ref)
-    else
-      {:ok, nil} ->
-        live_loop(conn, stream, cursor, heartbeat_ref)
-
-      {:error, reason} ->
-        Logger.error("sse.run_event delivery failed: #{inspect(reason)}")
-
-        case delivery_error_action(reason) do
-          :close ->
-            Process.cancel_timer(heartbeat_ref)
-            conn
-
-          :continue ->
-            live_loop(conn, stream, cursor, heartbeat_ref)
-        end
-    end
-  end
-
-  defp hydrate_live_event(
-         {:run, run_id, _initial_sequence},
-         %RunEvent{run_id: run_id} = event,
-         cursor
-       ) do
-    if event.sequence > run_sequence(cursor), do: {:ok, event}, else: {:ok, nil}
-  end
-
-  defp hydrate_live_event({:run, _run_id, _initial_sequence}, _event, _cursor), do: {:ok, nil}
-
-  defp hydrate_live_event(
-         {:global, _initial_sequence},
-         %RunEvent{global_sequence: sequence} = event,
-         cursor
-       )
-       when is_integer(sequence) and sequence > 0 do
-    if sequence > global_sequence(cursor), do: {:ok, event}, else: {:ok, nil}
-  end
-
-  defp hydrate_live_event({:global, _initial_sequence}, %RunEvent{}, _cursor),
-    do: {:error, :missing_global_sequence}
-
-  defp subscribe({:run, run_id, _sequence}), do: FavnOrchestrator.subscribe_run(run_id)
-  defp subscribe({:global, _sequence}), do: FavnOrchestrator.subscribe_runs()
-
-  defp unsubscribe({:run, run_id, _sequence}), do: FavnOrchestrator.unsubscribe_run(run_id)
-  defp unsubscribe({:global, _sequence}), do: FavnOrchestrator.unsubscribe_runs()
 
   defp event_body(event, stream, cursor) do
     with {:ok, event_name} <- field(:event, event.event_type),

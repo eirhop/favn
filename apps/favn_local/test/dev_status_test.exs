@@ -107,7 +107,7 @@ defmodule Favn.Dev.StatusTest do
     pid = :os.getpid() |> List.to_string() |> String.to_integer()
 
     runtime = %{
-      "storage" => "sqlite",
+      "storage" => "postgres",
       "orchestrator_base_url" => "http://127.0.0.1:4101",
       "web_base_url" => "http://127.0.0.1:4173",
       "node_names" => %{

@@ -11,12 +11,15 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
   require Logger
 
   alias FavnOrchestrator.ExecutionAdmission.Waiter
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Commands.ExpireAdmission
+  alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Redaction
-  alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.ExecutionLeaseCodec
 
   @name __MODULE__
   @call_timeout_ms 5_000
+  @poll_interval_ms 30_000
 
   @type state :: %{
           subscribers: %{optional(String.t()) => map()},
@@ -38,14 +41,22 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
   @spec notify_scopes([map()]) :: :ok
   def notify_scopes(scopes) when is_list(scopes), do: cast_if_running({:notify_scopes, scopes})
 
+  @doc false
+  @spec storage_changed() :: :ok
+  def storage_changed, do: cast_if_running(:storage_changed)
+
   @impl true
-  def init(_args), do: {:ok, %{subscribers: %{}, monitors: %{}}}
+  def init(_args) do
+    schedule_poll(0)
+    {:ok, %{subscribers: %{}, monitors: %{}}}
+  end
 
   @impl true
   def handle_call({:register, %Waiter{} = waiter, owner}, _from, state) do
     {monitor_ref, state} = monitor_owner(state, waiter.waiter_id, owner)
 
     subscriber = %{
+      workspace_id: waiter.workspace_id,
       owner: owner,
       monitor_ref: monitor_ref,
       wake_generation: waiter.wake_generation,
@@ -74,17 +85,38 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
     {:noreply, state}
   end
 
+  def handle_cast(:storage_changed, state) do
+    wake_all(state)
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info({:DOWN, monitor_ref, :process, _pid, _reason}, state) do
     waiter_ids = Map.get(state.monitors, monitor_ref, MapSet.new())
 
     state =
       Enum.reduce(waiter_ids, state, fn waiter_id, acc ->
-        _delete_result = Storage.delete_execution_admission_waiter(waiter_id)
         %{acc | subscribers: Map.delete(acc.subscribers, waiter_id)}
       end)
 
     {:noreply, %{state | monitors: Map.delete(state.monitors, monitor_ref)}}
+  end
+
+  def handle_info(:poll_persisted_waiters, state) do
+    now = DateTime.utc_now()
+    maybe_expire_waiters()
+
+    Enum.each(state.subscribers, fn {waiter_id, subscriber} ->
+      if waiter_live?(subscriber, now) do
+        send(
+          subscriber.owner,
+          {:execution_admission_wakeup, waiter_id, subscriber.wake_generation}
+        )
+      end
+    end)
+
+    schedule_poll()
+    {:noreply, state}
   end
 
   defp monitor_owner(state, waiter_id, owner) do
@@ -165,15 +197,51 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
   end
 
   defp maybe_expire_waiters do
-    case Storage.expire_execution_admission_waiters(DateTime.utc_now()) do
-      {:ok, _count} ->
-        :ok
+    Enum.each(workspace_ids(), &expire_workspace/1)
+  end
 
-      {:error, reason} ->
-        Logger.warning(
-          "execution admission waiter expiry failed reason=#{safe_diagnostic(reason)}"
-        )
+  defp expire_workspace(workspace_id) do
+    context = SystemContext.workspace(workspace_id, :admission_expiry)
+
+    command = %ExpireAdmission{
+      workspace_context: context,
+      batch_id:
+        "admission-expire:#{System.unique_integer([:positive, :monotonic])}:#{workspace_hash(workspace_id)}",
+      limit: 500
+    }
+
+    case Persistence.stores().admission.expire(command) do
+      {:ok, _release} -> :ok
+      {:error, reason} -> log_expiry_failure(reason)
     end
+  end
+
+  defp log_expiry_failure(reason) do
+    Logger.warning("execution admission expiry failed reason=#{safe_diagnostic(reason)}")
+  end
+
+  defp wake_all(state) do
+    Enum.each(state.subscribers, fn {waiter_id, subscriber} ->
+      if waiter_live?(subscriber, DateTime.utc_now()) do
+        send(
+          subscriber.owner,
+          {:execution_admission_wakeup, waiter_id, subscriber.wake_generation}
+        )
+      end
+    end)
+  end
+
+  defp workspace_ids do
+    :favn_orchestrator
+    |> Application.get_env(:workspace_ids, [])
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+  end
+
+  defp workspace_hash(workspace_id) do
+    :crypto.hash(:sha256, workspace_id)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 16)
   end
 
   defp call_if_running(message, fallback) do
@@ -204,4 +272,7 @@ defmodule FavnOrchestrator.ExecutionAdmission.Coordinator do
     |> Redaction.redact_operational_bounded()
     |> inspect(limit: 20, printable_limit: 2_000)
   end
+
+  defp schedule_poll(delay \\ @poll_interval_ms),
+    do: Process.send_after(self(), :poll_persisted_waiters, delay)
 end

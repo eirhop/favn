@@ -10,21 +10,15 @@ defmodule FavnOrchestrator.RuntimeConfig do
 
   use GenServer
 
-  alias FavnOrchestrator.Storage.Adapter.Memory
-
   @type t :: %__MODULE__{
           runner_client: module() | nil,
           runner_client_opts: keyword(),
-          storage_adapter: module(),
-          storage_adapter_opts: keyword(),
           log_redaction_policy: term()
         }
   @type error :: {:invalid_runtime_config, {atom(), term()}}
 
   defstruct runner_client: nil,
             runner_client_opts: [],
-            storage_adapter: Memory,
-            storage_adapter_opts: [],
             log_redaction_policy: nil
 
   @doc """
@@ -73,8 +67,6 @@ defmodule FavnOrchestrator.RuntimeConfig do
     normalize!(
       runner_client: Application.get_env(:favn_orchestrator, :runner_client, nil),
       runner_client_opts: Application.get_env(:favn_orchestrator, :runner_client_opts, []),
-      storage_adapter: Application.get_env(:favn_orchestrator, :storage_adapter, Memory),
-      storage_adapter_opts: Application.get_env(:favn_orchestrator, :storage_adapter_opts, []),
       log_redaction_policy: Application.get_env(:favn_orchestrator, :log_redaction_policy)
     )
   end
@@ -94,20 +86,13 @@ defmodule FavnOrchestrator.RuntimeConfig do
   def normalize(attrs) when is_list(attrs) do
     runner_client = Keyword.get(attrs, :runner_client, nil)
     runner_client_opts = Keyword.get(attrs, :runner_client_opts, [])
-    storage_adapter = Keyword.get(attrs, :storage_adapter, Memory)
-    storage_adapter_opts = Keyword.get(attrs, :storage_adapter_opts, [])
 
     with :ok <- validate_module_or_nil(:runner_client, runner_client),
-         {:ok, runner_client_opts} <- validate_keyword(:runner_client_opts, runner_client_opts),
-         :ok <- validate_module(:storage_adapter, storage_adapter),
-         {:ok, storage_adapter_opts} <-
-           validate_keyword(:storage_adapter_opts, storage_adapter_opts) do
+         {:ok, runner_client_opts} <- validate_keyword(:runner_client_opts, runner_client_opts) do
       {:ok,
        %__MODULE__{
          runner_client: runner_client,
          runner_client_opts: runner_client_opts,
-         storage_adapter: storage_adapter,
-         storage_adapter_opts: storage_adapter_opts,
          log_redaction_policy: Keyword.get(attrs, :log_redaction_policy)
        }}
     end

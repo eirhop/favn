@@ -1,87 +1,105 @@
 defmodule FavnOrchestrator.RunRecovery do
   @moduledoc false
 
+  use GenServer
+
   alias FavnOrchestrator.OperationalEvents
-  alias FavnOrchestrator.Repair.RuntimeState
+  alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunManager
-  alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.RunOwnership
+
+  @default_interval_ms 5_000
+  @default_batch_size 100
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
       id: __MODULE__,
       start: {__MODULE__, :start_link, [opts]},
-      restart: :temporary,
+      restart: :permanent,
       type: :worker
     }
   end
 
-  @spec start_link(keyword()) :: :ignore | {:error, term()}
+  @spec start_link(keyword()) :: GenServer.on_start() | :ignore
   def start_link(opts \\ []) when is_list(opts) do
-    if Keyword.get(opts, :enabled, true) do
-      reconcile_orphaned_runs()
-    end
-
-    :ignore
+    if Keyword.get(opts, :enabled, true),
+      do: GenServer.start_link(__MODULE__, opts, name: __MODULE__),
+      else: :ignore
   end
 
   @spec reconcile_orphaned_runs() :: :ok
-  def reconcile_orphaned_runs do
-    {runs, failures} = active_runs()
+  def reconcile_orphaned_runs, do: reconcile_workspaces()
 
-    runs
-    |> Enum.each(fn run ->
-      if retry_wait?(run), do: recover_retry_wait(run), else: repair_run(run)
-    end)
+  @impl true
+  def init(opts) do
+    state = %{
+      interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
+      batch_size: Keyword.get(opts, :batch_size, @default_batch_size)
+    }
 
-    Enum.each(failures, fn {status, reason} ->
-      emit_failure(nil, {:active_run_scan_failed, status, reason})
-    end)
+    send(self(), :reconcile)
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_info(:reconcile, state) do
+    reconcile_workspaces(state.batch_size)
+    Process.send_after(self(), :reconcile, state.interval_ms)
+    {:noreply, state}
+  end
+
+  defp reconcile_workspaces(batch_size \\ @default_batch_size) do
+    workspace_ids()
+    |> Enum.each(&recover_workspace(&1, batch_size))
 
     :ok
   end
 
-  defp active_runs do
-    [:pending, :running]
-    |> Enum.reduce({[], []}, fn status, {runs, failures} ->
-      case Storage.list_runs(status: status) do
-        {:ok, matching} -> {matching ++ runs, failures}
-        {:error, reason} -> {runs, [{status, reason} | failures]}
-      end
-    end)
-  end
+  defp recover_workspace(workspace_id, batch_size) do
+    context = SystemContext.workspace(workspace_id, :run_recovery)
+    owner_id = recovery_owner_id(workspace_id)
 
-  defp retry_wait?(%RunState{metadata: metadata}) when is_map(metadata),
-    do: is_map(Map.get(metadata, :retry_state, Map.get(metadata, "retry_state")))
-
-  defp retry_wait?(%RunState{}), do: false
-
-  defp recover_retry_wait(%RunState{} = run) do
-    case RunManager.recover_run(run.id) do
-      {:ok, _run_id} ->
-        :ok
+    case RunOwnership.claim_recovery_batch(context, owner_id,
+           batch_id: recovery_batch_id(workspace_id),
+           limit: batch_size
+         ) do
+      {:ok, ownerships} ->
+        Enum.each(ownerships, &recover_claimed(context, &1))
 
       {:error, reason} ->
-        emit_operator_required(run.id, {:retry_wait_recovery_failed, reason})
-        emit_failure(run.id, {:retry_wait_recovery_failed, reason})
+        emit_failure(nil, {:recovery_claim_failed, workspace_id, reason})
     end
   end
 
-  defp repair_run(%RunState{} = run) do
-    case RuntimeState.repair(dry_run: false, freshness: false, run_id: run.id) do
-      {:ok, _report} -> emit_operator_required(run.id, :unsafe_automatic_recovery_not_proven)
-      {:error, report} -> emit_failure(run.id, report.errors)
+  defp recover_claimed(%WorkspaceContext{} = context, ownership) do
+    case RunManager.recover_claimed_run(context, ownership) do
+      {:ok, _run_id} -> :ok
+      {:error, reason} -> emit_failure(ownership.run_id, {:run_recovery_failed, reason})
     end
   end
 
-  defp emit_operator_required(run_id, reason) do
-    OperationalEvents.emit(
-      :recovery_requires_operator,
-      %{},
-      %{run_id: run_id, reason: reason},
-      level: :warning
-    )
+  defp workspace_ids do
+    :favn_orchestrator
+    |> Application.get_env(:workspace_ids, [])
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+  end
+
+  defp recovery_owner_id(workspace_id) do
+    instance = System.get_env("FAVN_INSTANCE_ID", Atom.to_string(node()))
+    "#{String.slice(instance, 0, 96)}:run-recovery:#{short_hash(workspace_id)}"
+  end
+
+  defp recovery_batch_id(workspace_id) do
+    "recovery:#{short_hash({workspace_id, System.monotonic_time(:millisecond)})}"
+  end
+
+  defp short_hash(value) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(value))
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 24)
   end
 
   defp emit_failure(run_id, errors) do

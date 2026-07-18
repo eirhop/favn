@@ -10,7 +10,6 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.CommandErrors
   alias FavnOrchestrator.API.DTO
-  alias FavnOrchestrator.API.Filters
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.OperatorCommands
   alias FavnOrchestrator.API.Response
@@ -20,17 +19,10 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
 
   post "/" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, session, actor} <- Authentication.actor_context(conn, :operator) do
+         {:ok, session, actor, context} <- actor_context(conn, :operator) do
       params = conn.body_params
 
-      IdempotentCommand.run(
-        conn,
-        "backfill.submit",
-        actor.id,
-        session.id,
-        params,
-        fn idempotency -> submit_backfill(conn, params, session, actor, idempotency) end
-      )
+      idempotent_submit(conn, context, params, session, actor)
     else
       {:error, reason} -> authentication_error(conn, reason)
     end
@@ -38,8 +30,8 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
 
   post "/plan" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor} <- Authentication.actor_context(conn, :operator),
-         {:ok, plan} <- OperatorCommands.plan_backfill(conn.body_params) do
+         {:ok, _session, _actor, context} <- actor_context(conn, :operator),
+         {:ok, plan} <- plan_backfill(conn.body_params, context) do
       Response.data(conn, 200, %{plan: DTO.normalize(plan)})
     else
       {:error, :invalid_target} ->
@@ -67,10 +59,9 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
 
   get "/:backfill_run_id/windows" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor} <- Authentication.actor_context(conn, :viewer),
-         {:ok, filters} <- Filters.backfill_windows(conn.params, backfill_run_id),
-         {:ok, page} <- FavnOrchestrator.list_backfill_windows(filters) do
-      Response.data(conn, 200, Response.page(page, &DTO.backfill_window/1))
+         {:ok, _session, _actor, context} <- actor_context(conn, :viewer),
+         {:ok, page} <- list_windows(context, backfill_run_id, conn.params) do
+      Response.data(conn, 200, backfill_page(page))
     else
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
@@ -90,108 +81,29 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
     end
   end
 
-  post "/:backfill_run_id/windows/rerun" do
-    params = conn.body_params
-
-    with :ok <- Authentication.ensure_service(conn),
-         {:ok, session, actor} <- Authentication.actor_context(conn, :operator),
-         {:ok, window_key} <- required_string(params, "window_key"),
-         {:ok, window} <- find_window(backfill_run_id, window_key) do
-      request =
-        params
-        |> Map.take(["refresh", "refresh_policy", "allow_success"])
-        |> Map.merge(%{"backfill_run_id" => backfill_run_id, "window_key" => window_key})
-
-      IdempotentCommand.run(
-        conn,
-        "backfill.window.rerun",
-        actor.id,
-        session.id,
-        request,
-        fn idempotency ->
-          rerun_window(conn, params, backfill_run_id, window, session, actor, idempotency)
-        end
-      )
-    else
-      {:error, {:missing_field, field}} ->
-        Response.error(conn, 422, "validation_failed", "Missing required field", %{field: field})
-
-      {:error, :not_found} ->
-        Response.error(conn, 404, "not_found", "Backfill window was not found")
-
-      {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
-        authentication_error(conn, reason)
-
-      {:error, _reason} ->
-        Response.error(conn, 400, "bad_request", "Request failed")
-    end
-  end
-
-  post "/projections/repair" do
-    with :ok <- Authentication.ensure_service(conn),
-         {:ok, session, actor} <- Authentication.actor_context(conn, :operator),
-         {:ok, opts} <- Filters.backfill_repair(conn.body_params),
-         {:ok, report} <- FavnOrchestrator.repair_backfill_projections(opts) do
-      Audit.put_if(Keyword.get(opts, :apply, false), %{
-        action: "backfill.projections.repair",
-        actor_id: actor.id,
-        session_id: session.id,
-        resource_type: "backfill_projection",
-        resource_id: Filters.repair_resource_id(opts),
-        outcome: "accepted",
-        service_identity: Authentication.service_identity(conn)
-      })
-
-      Response.data(conn, 200, %{repair: DTO.normalize(report)})
-    else
-      {:error, :invalid_repair_scope} ->
-        validation_error(conn, "Invalid backfill projection repair scope")
-
-      {:error, :invalid_filter} ->
-        validation_error(conn, "Invalid backfill projection repair filter")
-
-      {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
-        authentication_error(conn, reason)
-
-      {:error, _reason} ->
-        Response.error(conn, 400, "bad_request", "Request failed")
-    end
-  end
-
-  get "/coverage-baselines" do
-    with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor} <- Authentication.actor_context(conn, :viewer),
-         {:ok, filters} <- Filters.coverage_baselines(conn.params),
-         {:ok, page} <- FavnOrchestrator.list_coverage_baselines(filters) do
-      Response.data(conn, 200, Response.page(page, &DTO.coverage_baseline/1))
-    else
-      {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
-        authentication_error(conn, reason)
-
-      {:error, :invalid_filter} ->
-        validation_error(conn, "Invalid coverage baseline filter")
-
-      {:error, :invalid_pagination} ->
-        validation_error(conn, "Invalid pagination parameters")
-
-      {:error, {:manifest_filter_lookup_failed, reason}} ->
-        Logger.error("coverage_baseline.filter_lookup failed: #{inspect(reason)}")
-        Response.error(conn, 400, "bad_request", "Request failed")
-
-      {:error, _reason} ->
-        Response.error(conn, 400, "bad_request", "Request failed")
-    end
-  end
-
   match _ do
     Response.error(conn, 404, "not_found", "Route was not found")
   end
 
-  defp submit_backfill(conn, params, session, actor, idempotency) do
-    case OperatorCommands.submit_backfill(params) do
-      {:ok, run_id} ->
-        audit_command(conn, "backfill.submit", run_id, session, actor, idempotency)
-        {:ok, 201, %{run: run_summary(run_id)}, "run", run_id}
+  defp submit_backfill(conn, params, session, actor, context, idempotency) do
+    opts = [
+      root_run_id: idempotency.run_id,
+      idempotency: idempotency.command_idempotency
+    ]
+
+    case OperatorCommands.submit_backfill(params, context, opts) do
+      {:ok, backfill} ->
+        audit_command(
+          conn,
+          "backfill.submit",
+          backfill.backfill_id,
+          session,
+          actor,
+          context,
+          idempotency
+        )
+
+        {:ok, 202, %{backfill: DTO.backfill(backfill)}, "backfill", backfill.backfill_id}
 
       {:error, :invalid_target} ->
         command_validation_error("Invalid backfill target request")
@@ -205,40 +117,100 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
       {:error, reason} when is_tuple(reason) ->
         CommandErrors.operator(reason) || CommandErrors.backfill(reason)
 
-      {:error, :active_manifest_not_set} ->
-        {:error, 404, "not_found", "Active manifest is not set", %{}}
-
       {:error, _reason} ->
         {:error, 400, "bad_request", "Request failed", %{}}
     end
   end
 
-  defp rerun_window(conn, params, backfill_run_id, window, session, actor, idempotency) do
-    case FavnOrchestrator.rerun_backfill_window(
-           backfill_run_id,
-           window.pipeline_module,
-           window.window_key,
-           rerun_options(params)
-         ) do
-      {:ok, run_id} ->
-        audit_command(conn, "backfill.window.rerun", run_id, session, actor, idempotency)
-        {:ok, 201, %{run: run_summary(run_id)}, "run", run_id}
+  defp idempotent_submit(conn, context, params, session, actor) do
+    IdempotentCommand.run(
+      conn,
+      context,
+      "backfill.submit",
+      actor.id,
+      session.id,
+      params,
+      fn idempotency ->
+        submit_backfill(conn, params, session, actor, context, idempotency)
+      end
+    )
+  end
 
-      {:error, :backfill_window_not_rerunnable} ->
-        {:error, 409, "conflict", "Backfill window is not rerunnable", %{}}
+  defp actor_context(conn, role), do: Authentication.workspace_context(conn, role)
 
-      {:error, :backfill_window_has_no_attempt} ->
-        {:error, 409, "conflict", "Backfill window has no attempt to rerun", %{}}
+  defp plan_backfill(params, context),
+    do: OperatorCommands.plan_backfill(params, context)
 
-      {:error, :successful_backfill_window_requires_force_refresh} ->
-        {:error, 409, "conflict", "Successful backfill window rerun requires force refresh", %{}}
-
-      {:error, _reason} ->
-        {:error, 400, "bad_request", "Request failed", %{}}
+  defp list_windows(context, backfill_id, params) do
+    with {:ok, opts} <- window_page_options(params) do
+      FavnOrchestrator.Backfills.page_windows(context, backfill_id, opts)
     end
   end
 
-  defp audit_command(conn, action, run_id, session, actor, idempotency) do
+  defp window_page_options(params) do
+    with {:ok, limit} <- page_limit(Map.get(params, "limit", "100")),
+         {:ok, status} <- window_status(Map.get(params, "status")),
+         {:ok, cursor} <- window_cursor(Map.get(params, "cursor")) do
+      {:ok, [limit: limit, status: status, after: cursor]}
+    end
+  end
+
+  defp page_limit(value) when is_integer(value) and value in 1..200, do: {:ok, value}
+
+  defp page_limit(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {limit, ""} when limit in 1..200 -> {:ok, limit}
+      _invalid -> {:error, :invalid_pagination}
+    end
+  end
+
+  defp page_limit(_value), do: {:error, :invalid_pagination}
+
+  defp window_status(nil), do: {:ok, nil}
+  defp window_status("planned"), do: {:ok, :planned}
+  defp window_status("ready"), do: {:ok, :ready}
+  defp window_status("claimed"), do: {:ok, :claimed}
+  defp window_status("running"), do: {:ok, :running}
+  defp window_status("succeeded"), do: {:ok, :succeeded}
+  defp window_status("failed"), do: {:ok, :failed}
+  defp window_status("cancelled"), do: {:ok, :cancelled}
+  defp window_status(_status), do: {:error, :invalid_filter}
+
+  defp window_cursor(nil), do: {:ok, nil}
+
+  defp window_cursor(value) when is_binary(value) do
+    with {:ok, decoded} <- Base.url_decode64(value, padding: false),
+         {:ok, %{"window_key" => key, "window_id" => id}} <- Jason.decode(decoded),
+         true <- is_binary(key) and is_binary(id) do
+      {:ok, %{window_key: key, window_id: id}}
+    else
+      _invalid -> {:error, :invalid_pagination}
+    end
+  end
+
+  defp backfill_page(%FavnOrchestrator.Page{} = page),
+    do: Response.page(page, &DTO.backfill_window/1)
+
+  defp backfill_page(%FavnOrchestrator.Persistence.Results.CursorPage{} = page) do
+    %{
+      items: Enum.map(page.items, &DTO.backfill_window/1),
+      pagination: %{
+        limit: page.limit,
+        has_more: page.has_more?,
+        next_cursor: encode_cursor(page.next_cursor)
+      }
+    }
+  end
+
+  defp encode_cursor(nil), do: nil
+
+  defp encode_cursor(cursor) do
+    cursor
+    |> Jason.encode!()
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp audit_command(conn, action, run_id, session, actor, context, idempotency) do
     %{
       action: action,
       actor_id: actor.id,
@@ -249,63 +221,7 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
       service_identity: Authentication.service_identity(conn)
     }
     |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "accepted"))
-    |> Audit.put_best_effort()
-  end
-
-  defp run_summary(run_id) do
-    case FavnOrchestrator.get_run(run_id) do
-      {:ok, run} -> DTO.run_summary(run)
-      {:error, reason} -> fallback_run_summary(run_id, reason)
-    end
-  end
-
-  defp fallback_run_summary(run_id, reason) do
-    Logger.warning("backfill command accepted but summary lookup failed: #{inspect(reason)}")
-
-    %{
-      id: run_id,
-      status: "accepted",
-      submit_kind: "unknown",
-      manifest_version_id: nil,
-      event_seq: nil,
-      started_at: nil,
-      finished_at: nil,
-      target_refs: [],
-      asset_results: [],
-      error: nil
-    }
-  end
-
-  defp rerun_options(params) do
-    []
-    |> put_optional(:refresh, Map.get(params, "refresh"))
-    |> put_optional(:refresh_policy, Map.get(params, "refresh_policy"))
-    |> Keyword.put(:allow_success, Map.get(params, "allow_success") == true)
-  end
-
-  defp put_optional(opts, _key, nil), do: opts
-  defp put_optional(opts, _key, ""), do: opts
-  defp put_optional(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp find_window(backfill_run_id, window_key) do
-    with {:ok, page} <-
-           FavnOrchestrator.list_backfill_windows(
-             backfill_run_id: backfill_run_id,
-             window_key: window_key,
-             limit: 1
-           ) do
-      case page.items do
-        [window | _rest] -> {:ok, window}
-        [] -> {:error, :not_found}
-      end
-    end
-  end
-
-  defp required_string(params, key) do
-    case Map.get(params, key) do
-      value when is_binary(value) and value != "" -> {:ok, value}
-      _missing_or_invalid -> {:error, {:missing_field, key}}
-    end
+    |> then(&Audit.put_best_effort(context, &1))
   end
 
   defp send_command_error(conn, nil, reason), do: CommandErrors.send_backfill(conn, reason)

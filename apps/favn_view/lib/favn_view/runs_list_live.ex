@@ -28,7 +28,8 @@ defmodule FavnView.RunsListLive do
   @impl true
   def mount(_params, _session, socket) do
     filters = @default_filters
-    {groups, error} = load_groups(filters)
+    operator_context = socket.assigns.current_scope.operator_context
+    {groups, error} = load_groups(operator_context, filters)
 
     socket =
       assign(socket,
@@ -85,8 +86,13 @@ defmodule FavnView.RunsListLive do
     {:noreply, schedule_coalesced_refresh(socket)}
   end
 
+  def handle_info(:favn_persistence_published, socket) do
+    {:noreply, schedule_coalesced_refresh(socket)}
+  end
+
   defp refresh_runs(socket) do
-    {groups, error} = load_groups(socket.assigns.filters)
+    {groups, error} =
+      load_groups(socket.assigns.current_scope.operator_context, socket.assigns.filters)
 
     socket
     |> assign_groups(groups, error)
@@ -103,7 +109,9 @@ defmodule FavnView.RunsListLive do
 
   def handle_event("filter_groups", %{"filters" => params}, socket) do
     filters = normalize_filters(socket.assigns.filters, params)
-    {visible_groups, error} = load_groups(filters)
+
+    {visible_groups, error} =
+      load_groups(socket.assigns.current_scope.operator_context, filters)
 
     {:noreply,
      assign(socket,
@@ -130,7 +138,7 @@ defmodule FavnView.RunsListLive do
   end
 
   def handle_event("clear_filters", _params, socket) do
-    {groups, error} = load_groups(@default_filters)
+    {groups, error} = load_groups(socket.assigns.current_scope.operator_context, @default_filters)
 
     {:noreply,
      socket
@@ -160,14 +168,14 @@ defmodule FavnView.RunsListLive do
   @impl true
   def terminate(_reason, socket) do
     if socket.assigns[:run_events_live?] do
-      unsubscribe_runs()
+      unsubscribe_runs(socket.assigns.current_scope.operator_context)
     end
 
     :ok
   end
 
-  defp load_groups(filters) do
-    case page_execution_groups(orchestrator_filters(filters)) do
+  defp load_groups(operator_context, filters) do
+    case page_execution_groups(operator_context, orchestrator_filters(filters)) do
       {:ok, %{items: groups}} ->
         {Enum.map(groups, &group_from_public/1), nil}
 
@@ -185,8 +193,6 @@ defmodule FavnView.RunsListLive do
     end
   end
 
-  defp maybe_schedule_fallback_poll(%{assigns: %{run_events_live?: true}} = socket), do: socket
-
   defp maybe_schedule_fallback_poll(%{assigns: %{groups: groups}} = socket) do
     if connected?(socket) and Enum.any?(groups, &active_status?(&1.status)) do
       LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_runs, @refresh_interval_ms)
@@ -199,7 +205,7 @@ defmodule FavnView.RunsListLive do
 
   defp maybe_subscribe_runs(socket) do
     if connected?(socket) do
-      case subscribe_runs() do
+      case subscribe_runs(socket.assigns.current_scope.operator_context) do
         :ok -> socket |> assign(:run_events_live?, true) |> schedule_coalesced_refresh()
         {:error, _reason} -> socket
       end
@@ -208,19 +214,26 @@ defmodule FavnView.RunsListLive do
     end
   end
 
-  defp page_execution_groups(opts) do
+  defp page_execution_groups(operator_context, opts) do
+    fun =
+      Application.get_env(
+        :favn_view,
+        :page_execution_groups_fun,
+        &FavnOrchestrator.page_execution_groups/2
+      )
+
+    if is_function(fun, 2), do: fun.(operator_context, opts), else: fun.(opts)
+  end
+
+  defp subscribe_runs(operator_context) do
     Application.get_env(
       :favn_view,
-      :page_execution_groups_fun,
-      &FavnOrchestrator.page_execution_groups/1
-    ).(opts)
+      :runs_subscribe_fun,
+      &FavnOrchestrator.subscribe_runs/1
+    ).(operator_context)
   end
 
-  defp subscribe_runs do
-    Application.get_env(:favn_view, :runs_subscribe_fun, &FavnOrchestrator.subscribe_runs/0).()
-  end
-
-  defp unsubscribe_runs, do: FavnOrchestrator.unsubscribe_runs()
+  defp unsubscribe_runs(operator_context), do: FavnOrchestrator.unsubscribe_runs(operator_context)
 
   defp assign_groups(socket, groups, error) do
     assign(socket,
@@ -291,7 +304,11 @@ defmodule FavnView.RunsListLive do
     if Map.has_key?(socket.assigns.group_details, group_id) do
       socket
     else
-      case FavnOrchestrator.get_execution_group_detail(group_id) do
+      case FavnOrchestrator.get_execution_group_detail(
+             socket.assigns.current_scope.operator_context,
+             group_id,
+             []
+           ) do
         {:ok, detail} ->
           update(socket, :group_details, &Map.put(&1, group_id, detail_from_public(detail)))
 

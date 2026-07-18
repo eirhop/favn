@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repository_root"
+
+docker compose -f compose.postgres.yml down --volumes
+docker compose -f compose.postgres.yml up -d --wait
+
+export FAVN_DATABASE_URL="${FAVN_DATABASE_MIGRATOR_URL:-ecto://favn_migrator:favn_migrator_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/favn_dev}"
+mix favn.postgres.migrate
+mix favn.postgres.grant_runtime --role favn_runtime
+mix favn.postgres.provision_workspace \
+  --id "${FAVN_LOCAL_WORKSPACE_ID:-local-dev}" \
+  --slug "${FAVN_LOCAL_WORKSPACE_SLUG:-local-dev}" \
+  --name "${FAVN_LOCAL_WORKSPACE_NAME:-Local Development}"

@@ -2,6 +2,11 @@ defmodule Favn.Contracts.RunnerWork do
   @moduledoc """
   Runner work request contract pinned to an immutable manifest version.
 
+  `execution_id` may be allocated by the orchestrator before submission. This
+  lets a durable dispatch intent name the external work before the runner call
+  is attempted. Runners must either honor the supplied identity or reject the
+  submission; they must never silently replace it.
+
   `node_identity` carries the manifest/planning identity for the current planned
   node. Attempt, retry, admission, and cancellation fields are explicit runner
   lifecycle fields and are not encoded in `metadata`.
@@ -13,6 +18,7 @@ defmodule Favn.Contracts.RunnerWork do
   alias Favn.Run.PipelineContext
 
   @type t :: %__MODULE__{
+          execution_id: String.t() | nil,
           run_id: String.t() | nil,
           run_started_at: DateTime.t() | nil,
           manifest_version_id: String.t(),
@@ -34,7 +40,8 @@ defmodule Favn.Contracts.RunnerWork do
           metadata: map()
         }
 
-  defstruct run_id: nil,
+  defstruct execution_id: nil,
+            run_id: nil,
             run_started_at: nil,
             manifest_version_id: nil,
             manifest_content_hash: nil,

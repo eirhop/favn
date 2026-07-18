@@ -5,16 +5,67 @@ defmodule FavnOrchestrator.Logs do
 
   require Logger
 
+  alias Favn.Log.Cursor
+  alias Favn.Log.Entry
   alias Favn.Log.Filter
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Queries.PageLogs
+  alias FavnOrchestrator.Persistence.Results.LogEntry, as: PersistedLogEntry
+  alias FavnOrchestrator.Persistence.WorkspaceContext
 
-  @global_topic "favn:orchestrator:logs"
-  @run_topic_prefix "favn:orchestrator:logs:run:"
-  @asset_topic_prefix "favn:orchestrator:logs:asset:"
+  @workspace_topic_prefix "favn:orchestrator:logs:workspace:"
 
-  @spec subscribe_logs(term()) :: {:ok, term()} | {:error, term()}
-  def subscribe_logs(filter \\ default_filter()) do
+  @doc "Returns one bounded PostgreSQL log page under an explicit workspace authority."
+  @spec page(WorkspaceContext.t(), Filter.t() | map(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def page(%WorkspaceContext{} = context, filter, opts \\ []) when is_list(opts) do
     with {:ok, normalized_filter} <- normalize_filter(filter),
-         topics <- subscription_topics(normalized_filter),
+         :ok <- validate_page_opts(opts),
+         {:ok, page} <-
+           Persistence.stores().logs.page(%PageLogs{
+             workspace_context: context,
+             filter_kind: indexed_filter_kind(normalized_filter),
+             filter_value: indexed_filter_value(normalized_filter),
+             after: Keyword.get(opts, :after),
+             direction: Keyword.get(opts, :direction, :older),
+             limit: Keyword.get(opts, :limit, 200)
+           }) do
+      entries =
+        page.items
+        |> Enum.map(&public_entry/1)
+        |> Enum.filter(&matches_filter?(&1, normalized_filter))
+
+      {:ok, %{page | items: entries}}
+    end
+  end
+
+  @doc "Replays committed logs newer than the authoritative PostgreSQL log id cursor."
+  @spec replay(
+          WorkspaceContext.t(),
+          Cursor.t() | non_neg_integer(),
+          Filter.t() | map(),
+          keyword()
+        ) ::
+          {:ok, [Entry.t()]} | {:error, term()}
+  def replay(%WorkspaceContext{} = context, cursor, filter, opts \\ []) when is_list(opts) do
+    with {:ok, log_id} <- cursor_log_id(cursor),
+         {:ok, page} <-
+           page(
+             context,
+             filter,
+             after: %{log_id: log_id},
+             direction: :newer,
+             limit: Keyword.get(opts, :limit, 200)
+           ) do
+      {:ok, page.items}
+    end
+  end
+
+  @doc "Subscribes to workspace-isolated log wakeups after authorization."
+  @spec subscribe_logs(WorkspaceContext.t(), term()) :: {:ok, term()} | {:error, term()}
+  def subscribe_logs(%WorkspaceContext{} = context, filter) do
+    with {:ok, normalized_filter} <- normalize_filter(filter),
+         topics <- subscription_topics(context.workspace_id, normalized_filter),
          {:ok, subscription} <- start_subscription_forwarder(self(), topics, normalized_filter) do
       {:ok, Map.merge(subscription, %{topics: topics, filter: normalized_filter})}
     end
@@ -33,15 +84,12 @@ defmodule FavnOrchestrator.Logs do
   def broadcast_log_entry(entry) do
     message = {:favn_log_entry, entry}
 
-    _ = Phoenix.PubSub.broadcast(pubsub_name(), global_topic(), message)
+    case field(entry, :workspace_id) do
+      workspace_id when is_binary(workspace_id) and workspace_id != "" ->
+        broadcast_workspace_entry(workspace_id, entry, message)
 
-    case entry_run_id(entry) do
-      run_id when is_binary(run_id) and run_id != "" ->
-        _ = Phoenix.PubSub.broadcast(pubsub_name(), run_topic(run_id), message)
-        maybe_broadcast_asset_log_entry(entry, run_id, message)
-
-      _other ->
-        :ok
+      _missing_workspace ->
+        Logger.warning("refused to broadcast log entry without workspace authority")
     end
 
     :ok
@@ -51,17 +99,19 @@ defmodule FavnOrchestrator.Logs do
       :ok
   end
 
-  @spec global_topic() :: String.t()
-  def global_topic, do: @global_topic
+  @spec workspace_topic(String.t()) :: String.t()
+  def workspace_topic(workspace_id) when is_binary(workspace_id),
+    do: @workspace_topic_prefix <> workspace_id
 
-  @spec run_topic(String.t()) :: String.t()
-  def run_topic(run_id) when is_binary(run_id), do: @run_topic_prefix <> run_id
+  @spec workspace_run_topic(String.t(), String.t()) :: String.t()
+  def workspace_run_topic(workspace_id, run_id)
+      when is_binary(workspace_id) and is_binary(run_id),
+      do: workspace_topic(workspace_id) <> ":run:" <> run_id
 
-  @spec asset_topic(String.t(), String.t()) :: String.t()
-  def asset_topic(run_id, asset_step_id)
-      when is_binary(run_id) and is_binary(asset_step_id) do
-    @asset_topic_prefix <> run_id <> ":" <> asset_step_id
-  end
+  @spec workspace_asset_topic(String.t(), String.t(), String.t()) :: String.t()
+  def workspace_asset_topic(workspace_id, run_id, asset_step_id)
+      when is_binary(workspace_id) and is_binary(run_id) and is_binary(asset_step_id),
+      do: workspace_run_topic(workspace_id, run_id) <> ":asset:" <> asset_step_id
 
   @spec pubsub_name() :: module()
   def pubsub_name do
@@ -119,30 +169,51 @@ defmodule FavnOrchestrator.Logs do
     end
   end
 
-  defp maybe_broadcast_asset_log_entry(entry, run_id, message) do
-    case field(entry, :asset_step_id) do
-      asset_step_id when is_binary(asset_step_id) and asset_step_id != "" ->
-        _ = Phoenix.PubSub.broadcast(pubsub_name(), asset_topic(run_id, asset_step_id), message)
-        :ok
+  defp broadcast_workspace_entry(workspace_id, entry, message) do
+    _ = Phoenix.PubSub.broadcast(pubsub_name(), workspace_topic(workspace_id), message)
+
+    case entry_run_id(entry) do
+      run_id when is_binary(run_id) and run_id != "" ->
+        _ =
+          Phoenix.PubSub.broadcast(
+            pubsub_name(),
+            workspace_run_topic(workspace_id, run_id),
+            message
+          )
+
+        case field(entry, :asset_step_id) do
+          asset_step_id when is_binary(asset_step_id) and asset_step_id != "" ->
+            _ =
+              Phoenix.PubSub.broadcast(
+                pubsub_name(),
+                workspace_asset_topic(workspace_id, run_id, asset_step_id),
+                message
+              )
+
+            :ok
+
+          _other ->
+            :ok
+        end
 
       _other ->
         :ok
     end
   end
 
-  defp subscription_topics(filter) do
+  defp subscription_topics(workspace_id, filter) do
     run_id = Map.get(filter, :run_id)
     asset_step_id = Map.get(filter, :asset_step_id)
 
     cond do
       is_binary(run_id) and run_id != "" and is_binary(asset_step_id) and asset_step_id != "" ->
-        [asset_topic(run_id, asset_step_id)]
+        [workspace_asset_topic(workspace_id, run_id, asset_step_id)]
 
       is_binary(run_id) and run_id != "" ->
-        [run_topic(run_id)]
+        [workspace_run_topic(workspace_id, run_id)]
 
       true ->
-        [global_topic()]
+        [workspace_topic(workspace_id)]
     end
   end
 
@@ -176,14 +247,21 @@ defmodule FavnOrchestrator.Logs do
 
   defp entry_run_id(entry), do: field(entry, :run_id)
 
-  defp field(%{__struct__: _struct} = value, key), do: Map.get(value, key)
+  defp field(%{__struct__: _struct} = value, key), do: map_field(value, key)
 
-  defp field(value, key) when is_map(value),
-    do: Map.get(value, key) || Map.get(value, Atom.to_string(key))
+  defp field(value, key) when is_map(value), do: map_field(value, key)
 
   defp field(_value, _key), do: nil
 
-  defp default_filter, do: %Filter{}
+  defp map_field(value, key) do
+    Map.get(value, key) || Map.get(value, Atom.to_string(key)) ||
+      metadata_field(Map.get(value, :metadata) || Map.get(value, "metadata"), key)
+  end
+
+  defp metadata_field(metadata, key) when is_map(metadata),
+    do: Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+
+  defp metadata_field(_metadata, _key), do: nil
 
   defp validate_optional_binary(filter, field) do
     case Map.get(filter, field) do
@@ -208,4 +286,76 @@ defmodule FavnOrchestrator.Logs do
   end
 
   defp validate_datetime_order(_filter), do: :ok
+
+  defp validate_page_opts(opts) do
+    unknown = Keyword.keys(opts) -- [:after, :direction, :limit]
+    limit = Keyword.get(opts, :limit, 200)
+    direction = Keyword.get(opts, :direction, :older)
+
+    cond do
+      unknown != [] -> {:error, {:unknown_log_page_options, unknown}}
+      not is_integer(limit) or limit < 1 or limit > 500 -> {:error, :invalid_log_page_limit}
+      direction not in [:older, :newer] -> {:error, :invalid_log_page_direction}
+      true -> :ok
+    end
+  end
+
+  defp indexed_filter_kind(%{run_id: run_id}) when is_binary(run_id) and run_id != "", do: :run
+  defp indexed_filter_kind(%{levels: [_level]}), do: :level
+  defp indexed_filter_kind(_filter), do: nil
+
+  defp indexed_filter_value(%{run_id: run_id}) when is_binary(run_id) and run_id != "", do: run_id
+  defp indexed_filter_value(%{levels: [level]}), do: level
+  defp indexed_filter_value(_filter), do: nil
+
+  defp cursor_log_id(%Cursor{global_sequence: sequence})
+       when is_integer(sequence) and sequence >= 0,
+       do: {:ok, sequence}
+
+  defp cursor_log_id(sequence) when is_integer(sequence) and sequence >= 0, do: {:ok, sequence}
+  defp cursor_log_id(_cursor), do: {:error, :invalid_cursor}
+
+  defp public_entry(%PersistedLogEntry{} = entry) do
+    metadata = entry.metadata || %{}
+
+    Entry.normalize(%{
+      id: "#{entry.workspace_id}:#{entry.log_id}",
+      global_sequence: entry.log_id,
+      run_id: entry.run_id,
+      asset_step_id: metadata_value(metadata, :asset_step_id),
+      node_key: metadata_value(metadata, :node_key),
+      asset_ref: metadata_value(metadata, :asset_ref),
+      runner_execution_id: metadata_value(metadata, :runner_execution_id),
+      attempt: metadata_value(metadata, :attempt),
+      producer_id: metadata_value(metadata, :producer_id),
+      producer_sequence: metadata_value(metadata, :producer_sequence),
+      occurred_at: entry.occurred_at,
+      level: entry.level,
+      source: known_source(entry.source),
+      stream: known_stream(metadata_value(metadata, :stream)),
+      message: entry.message,
+      metadata: metadata,
+      truncated: metadata_value(metadata, :truncated) == true
+    })
+  end
+
+  defp known_source(value) when is_binary(value) do
+    Enum.find(Entry.sources(), :system, &(Atom.to_string(&1) == value))
+  end
+
+  defp known_source(value)
+       when value in [:orchestrator, :runner, :sql_runtime, :adapter, :user_code, :system],
+       do: value
+
+  defp known_source(_value), do: :system
+
+  defp known_stream(value) when is_binary(value) do
+    Enum.find(Entry.streams(), :system, &(Atom.to_string(&1) == value))
+  end
+
+  defp known_stream(value) when value in [:stdout, :stderr, :system], do: value
+  defp known_stream(_value), do: :system
+
+  defp metadata_value(metadata, key) when is_map(metadata),
+    do: Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
 end

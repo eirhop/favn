@@ -4,8 +4,7 @@ config :logger, level: :error
 
 config :favn_orchestrator,
   runtime_config_dynamic_env?: true,
-  runner_client_opts: [],
-  storage_adapter_opts: []
+  runner_client_opts: []
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.

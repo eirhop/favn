@@ -48,7 +48,7 @@ defmodule Favn.DevSplitRootRegressionTest do
 
     dev_task =
       Task.async(fn ->
-        run_mix!(project_dir, ["favn.dev", "--sqlite" | root_arg], inetrc_path)
+        run_mix!(project_dir, ["favn.dev" | root_arg], inetrc_path)
       end)
 
     try do
@@ -62,7 +62,7 @@ defmodule Favn.DevSplitRootRegressionTest do
 
       {dev_output, 0} = Task.await(dev_task, 310_000)
       assert dev_output =~ "Favn local dev stack"
-      assert dev_output =~ "storage: sqlite"
+      assert dev_output =~ "storage: postgres"
       assert dev_output =~ "scheduler: disabled"
     after
       _ = run_mix!(project_dir, ["favn.stop" | root_arg], inetrc_path, allow_failure: true)

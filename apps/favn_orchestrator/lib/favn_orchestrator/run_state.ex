@@ -13,6 +13,8 @@ defmodule FavnOrchestrator.RunState do
 
   @type t :: %__MODULE__{
           id: String.t(),
+          workspace_id: String.t() | nil,
+          deployment_id: String.t() | nil,
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
           asset_ref: Favn.Ref.t(),
@@ -36,11 +38,15 @@ defmodule FavnOrchestrator.RunState do
           result: map() | nil,
           error: term() | nil,
           inserted_at: DateTime.t() | nil,
-          updated_at: DateTime.t() | nil
+          updated_at: DateTime.t() | nil,
+          storage_owner_id: String.t() | nil,
+          storage_fencing_token: pos_integer() | nil
         }
 
   defstruct [
     :id,
+    :workspace_id,
+    :deployment_id,
     :manifest_version_id,
     :manifest_content_hash,
     :asset_ref,
@@ -48,6 +54,8 @@ defmodule FavnOrchestrator.RunState do
     :snapshot_hash,
     :inserted_at,
     :updated_at,
+    :storage_owner_id,
+    :storage_fencing_token,
     status: :pending,
     event_seq: 1,
     target_refs: [],
@@ -73,6 +81,8 @@ defmodule FavnOrchestrator.RunState do
 
     %__MODULE__{
       id: Keyword.fetch!(opts, :id),
+      workspace_id: Keyword.get(opts, :workspace_id),
+      deployment_id: Keyword.get(opts, :deployment_id),
       manifest_version_id: Keyword.fetch!(opts, :manifest_version_id),
       manifest_content_hash: Keyword.fetch!(opts, :manifest_content_hash),
       asset_ref: Keyword.fetch!(opts, :asset_ref),
@@ -151,11 +161,31 @@ defmodule FavnOrchestrator.RunState do
 
   @spec transition(t(), keyword()) :: t()
   def transition(%__MODULE__{} = run, attrs) when is_list(attrs) do
+    transition(run, attrs, DateTime.utc_now())
+  end
+
+  @doc false
+  @spec transition(t(), keyword(), DateTime.t()) :: t()
+  def transition(%__MODULE__{} = run, attrs, %DateTime{} = occurred_at) when is_list(attrs) do
     run
     |> Map.merge(Enum.into(attrs, %{}))
     |> Map.put(:event_seq, run.event_seq + 1)
-    |> Map.put(:updated_at, DateTime.utc_now())
+    |> Map.put(:updated_at, occurred_at)
     |> with_snapshot_hash()
+  end
+
+  @doc false
+  @spec with_storage_fence(t(), String.t(), pos_integer()) :: t()
+  def with_storage_fence(%__MODULE__{} = run, owner_id, fencing_token)
+      when is_binary(owner_id) and owner_id != "" and is_integer(fencing_token) and
+             fencing_token > 0 do
+    %{run | storage_owner_id: owner_id, storage_fencing_token: fencing_token}
+  end
+
+  @doc false
+  @spec without_storage_fence(t()) :: t()
+  def without_storage_fence(%__MODULE__{} = run) do
+    %{run | storage_owner_id: nil, storage_fencing_token: nil}
   end
 
   @spec with_snapshot_hash(t()) :: t()
@@ -164,6 +194,8 @@ defmodule FavnOrchestrator.RunState do
       run
       |> Map.from_struct()
       |> Map.delete(:snapshot_hash)
+      |> Map.delete(:storage_owner_id)
+      |> Map.delete(:storage_fencing_token)
 
     hash =
       payload

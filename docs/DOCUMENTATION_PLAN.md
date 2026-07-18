@@ -1,6 +1,10 @@
 # Favn Documentation Plan
 
-Reader: documentation subagents, contributors, and maintainers coordinating the first coherent Favn documentation pass.
+> Historical coordination note: this file records the first documentation pass.
+> Current product and persistence direction lives in `docs/FEATURES.md`,
+> `docs/ROADMAP.md`, and `docs/architecture/postgresql-control-plane-storage-v2.md`.
+
+Reader: documentation contributors and maintainers reviewing that first pass.
 
 Documentation type: explanation and reference checklist.
 
@@ -48,7 +52,7 @@ Runtime/operator docs should:
 Adapter/plugin docs should:
 
 - Explain optional plugin dependency shape and adapter responsibilities.
-- Document DuckDB, ADBC, SQL runtime, SQLite storage, and Postgres storage at the right boundary.
+- Document DuckDB, ADBC, SQL runtime, and PostgreSQL control-plane storage at the right boundary.
 - Distinguish data-plane execution adapters from control-plane storage adapters.
 - Avoid putting scheduling, UI state, or product lifecycle semantics in adapter docs.
 
@@ -72,7 +76,7 @@ HexDocs/package docs should:
 | New users trying Favn | What Favn is, how to add `:favn`, how to define one asset, how to generate a manifest, how to run local tooling safely | `README.md`, `apps/favn/README.md`, `apps/favn/guides/getting-started.md`, `apps/favn/guides/local-development.md` | `apps/favn`, selected public authoring modules, `examples/basic-workflow-tutorial`, `docs/FEATURES.md` | Orchestrator internals, runner server internals, storage adapter implementation, Phoenix internals |
 | Developers authoring assets and pipelines | DSL modules, relation namespaces, runtime config refs, SQL assets, pipelines, schedules, manifest generation, planning | `apps/favn/guides/authoring-assets.md`, `apps/favn/guides/manifest-first.md`, public moduledocs for `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, `Favn.Pipeline`, `Favn.Connection`, `Favn.SQLClient` | `apps/favn`, `apps/favn_authoring/lib`, stable shared manifest structs in `apps/favn_core/lib/favn` | `apps/favn_view`, scheduler internals, storage schemas, runner process implementation |
 | Operators using runtime/operator tooling | Local dev stack, single-node runtime assumptions, manifests, runs, schedules, backfills, diagnostics, logs, restore, idempotent commands | `apps/favn/guides/local-development.md`, `apps/favn/guides/runtime-model.md`, `docs/operators/runs-and-schedules.md`, `docs/production/*.md` | `apps/favn/lib/mix/tasks`, `apps/favn_local`, `apps/favn_orchestrator` public facade/API contracts, production docs | Public DSL internals except manifest inputs, direct storage table internals unless restoring/diagnosing, UI component implementation |
-| Adapter/plugin authors | Adapter ownership, SQL runtime contracts, storage callback expectations, capability flags, external system assumptions, failure modes | `apps/favn/guides/adapters.md`, `docs/adapters/storage-adapters.md`, `docs/adapters/duckdb.md`, module docs for stable behaviours | `apps/favn_sql_runtime`, `apps/favn_duckdb`, `apps/favn_duckdb_adbc`, `apps/favn_storage_sqlite`, `apps/favn_storage_postgres`, relevant structure docs | `apps/favn_view`, public DSL implementation details unrelated to adapter inputs, scheduling policy internals |
+| Adapter/plugin authors | Adapter ownership, SQL runtime contracts, persistence capability expectations, external system assumptions, failure modes | `apps/favn/guides/adapters.md`, `docs/adapters/storage-adapters.md`, `docs/adapters/duckdb.md`, module docs for stable behaviours | `apps/favn_sql_runtime`, `apps/favn_duckdb`, `apps/favn_duckdb_adbc`, `apps/favn_storage_postgres`, relevant structure docs | `apps/favn_view`, public DSL implementation details unrelated to adapter inputs, scheduling policy internals |
 | Contributors and AI agents | App ownership, where to inspect, where to verify, which docs are public, how not to blur boundaries | `docs/DOCUMENTATION_GUIDE.md`, this plan, `docs/structure/*.md`, `docs/architecture/*.md`, `docs/contributing/documentation.md` | `docs/structure`, root `mix.exs`, affected app paths only | Whole-repo scans by default, accidental public HexDocs for internals |
 | Future maintainers | Why manifest-first matters, stable boundary decisions, public/internal package policy, deferred work | `docs/architecture/manifest-first.md`, `docs/architecture/runtime-model.md`, `docs/production/public_api_boundary.md`, this plan | `docs/architecture`, `docs/production`, selected public facades | Historical issue plans unless debugging a specific migration |
 
@@ -185,8 +189,7 @@ Do not create all proposed files in one pass. The minimum coherent first set is:
 | `favn_sql_runtime` | No | Yes | Adapter-author reference deferred until contracts settle | It is shared SQL runtime infrastructure. Public users should use `Favn.SQLClient` and adapter guides. |
 | `favn_duckdb` | Not yet | Partly plugin-facing | Yes, until plugin package docs are planned | It is an optional supported plugin, but public docs should start with `apps/favn/guides/adapters.md`. |
 | `favn_duckdb_adbc` | Not yet | Partly plugin-facing | Yes, until plugin package docs are planned | It is supported for explicit DuckDB driver control; document usage without exposing internals. |
-| `favn_storage_sqlite` | No | Yes | Storage adapter docs only when stable | It is control-plane persistence implementation, not a consumer dependency. |
-| `favn_storage_postgres` | No | Yes | Storage adapter docs only when stable | Same as SQLite; adapter authors need internal contracts, operators need deployment behavior. |
+| `favn_storage_postgres` | No | Yes | Capability docs only when stable | It is internal control-plane persistence; contributors need contracts and operators need deployment behavior. |
 | `favn_azure` | No | Yes | Plugin docs deferred | Azure token/bootstrap behavior appears through DuckDB/DuckLake adapter documentation. |
 | `favn_test_support` | No | Yes | No public docs | Shared fixtures are contributor-only. |
 

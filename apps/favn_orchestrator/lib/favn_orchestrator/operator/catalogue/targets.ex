@@ -61,7 +61,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
     target_module = pipeline.module
 
     %{
-      target_id: ManifestTarget.pipeline_id(target_module),
+      target_id: ManifestTarget.pipeline_id(target_module, pipeline.name),
       label: inspect(target_module),
       window: window_policy_dto(pipeline.window),
       max_concurrency: pipeline.max_concurrency,
@@ -125,8 +125,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
 
   defp pipeline_name(%{module: module}) when is_atom(module),
     do: module |> Atom.to_string() |> String.split(".") |> List.last()
-
-  defp pipeline_name(_pipeline), do: "pipeline"
 
   defp pipeline_dependencies(%{deps: deps}) when deps in [:all, :none], do: deps
   defp pipeline_dependencies(_pipeline), do: :unknown

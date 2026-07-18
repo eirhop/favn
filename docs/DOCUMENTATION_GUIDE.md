@@ -957,7 +957,7 @@ Preferred phrasing:
 - "This function returns `{:ok, result}` or `{:error, reason}`."
 - "The orchestrator owns persisted run state."
 - "The runner executes pinned work; it does not discover schedules."
-- "This guide assumes the local SQLite storage adapter is configured."
+- "This guide assumes the local PostgreSQL control plane is migrated and ready."
 
 Weak phrasing:
 

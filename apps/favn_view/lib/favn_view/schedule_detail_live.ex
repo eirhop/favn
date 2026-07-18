@@ -10,7 +10,10 @@ defmodule FavnView.ScheduleDetailLive do
   @impl true
   def mount(%{"schedule_id" => route_id}, _session, socket) do
     schedule_id = ScheduleRoute.from_param(route_id)
-    {schedule, error, occurrence_preview, occurrence_error} = load_schedule(schedule_id)
+    operator_context = socket.assigns.current_scope.operator_context
+
+    {schedule, error, occurrence_preview, occurrence_error} =
+      load_schedule(operator_context, schedule_id)
 
     socket =
       assign(socket,
@@ -43,13 +46,14 @@ defmodule FavnView.ScheduleDetailLive do
 
     result =
       case action do
-        "enable" -> enable_schedule(schedule_id)
-        "disable" -> disable_schedule(schedule_id)
+        "enable" -> enable_schedule(operator_context(socket), schedule_id)
+        "disable" -> disable_schedule(operator_context(socket), schedule_id)
       end
 
     case result do
       {:ok, _entry} ->
-        {schedule, error, occurrence_preview, occurrence_error} = load_schedule(schedule_id)
+        {schedule, error, occurrence_preview, occurrence_error} =
+          load_schedule(operator_context(socket), schedule_id)
 
         {:noreply,
          assign(socket,
@@ -83,10 +87,10 @@ defmodule FavnView.ScheduleDetailLive do
     """
   end
 
-  defp load_schedule(schedule_id) do
-    case get_schedule_entry(schedule_id) do
+  defp load_schedule(operator_context, schedule_id) do
+    case get_schedule_entry(operator_context, schedule_id) do
       {:ok, entry} ->
-        {preview, preview_error} = load_occurrence_preview(schedule_id)
+        {preview, preview_error} = load_occurrence_preview(operator_context, schedule_id)
         {schedule_from_public(schedule_id, entry), nil, preview, preview_error}
 
       {:error, reason} ->
@@ -94,40 +98,52 @@ defmodule FavnView.ScheduleDetailLive do
     end
   end
 
-  defp get_schedule_entry(schedule_id) do
-    Application.get_env(
-      :favn_view,
-      :get_schedule_entry_fun,
-      &FavnOrchestrator.get_schedule_entry/1
-    ).(schedule_id)
+  defp get_schedule_entry(operator_context, schedule_id) do
+    fun =
+      Application.get_env(
+        :favn_view,
+        :get_schedule_entry_fun,
+        &FavnOrchestrator.get_schedule_entry/2
+      )
+
+    if is_function(fun, 2), do: fun.(operator_context, schedule_id), else: fun.(schedule_id)
   end
 
-  defp load_occurrence_preview(schedule_id) do
-    case preview_schedule_occurrences(schedule_id, limit: 10) do
+  defp load_occurrence_preview(operator_context, schedule_id) do
+    case preview_schedule_occurrences(operator_context, schedule_id, limit: 10) do
       {:ok, occurrences} -> {Enum.map(occurrences, &occurrence_from_public/1), nil}
       {:error, reason} -> {[], OperatorErrorLabels.schedule_occurrences(reason)}
     end
   end
 
-  defp preview_schedule_occurrences(schedule_id, opts) do
-    Application.get_env(
-      :favn_view,
-      :preview_schedule_occurrences_fun,
-      &FavnOrchestrator.preview_schedule_occurrences/2
-    ).(schedule_id, opts)
+  defp preview_schedule_occurrences(operator_context, schedule_id, opts) do
+    fun =
+      Application.get_env(
+        :favn_view,
+        :preview_schedule_occurrences_fun,
+        &FavnOrchestrator.preview_schedule_occurrences/3
+      )
+
+    if is_function(fun, 3),
+      do: fun.(operator_context, schedule_id, opts),
+      else: fun.(schedule_id, opts)
   end
 
-  defp enable_schedule(schedule_id) do
-    Application.get_env(:favn_view, :enable_schedule_fun, &FavnOrchestrator.enable_schedule/1).(
-      schedule_id
-    )
+  defp enable_schedule(operator_context, schedule_id) do
+    fun =
+      Application.get_env(:favn_view, :enable_schedule_fun, &FavnOrchestrator.enable_schedule/2)
+
+    if is_function(fun, 2), do: fun.(operator_context, schedule_id), else: fun.(schedule_id)
   end
 
-  defp disable_schedule(schedule_id) do
-    Application.get_env(:favn_view, :disable_schedule_fun, &FavnOrchestrator.disable_schedule/1).(
-      schedule_id
-    )
+  defp disable_schedule(operator_context, schedule_id) do
+    fun =
+      Application.get_env(:favn_view, :disable_schedule_fun, &FavnOrchestrator.disable_schedule/2)
+
+    if is_function(fun, 2), do: fun.(operator_context, schedule_id), else: fun.(schedule_id)
   end
+
+  defp operator_context(socket), do: socket.assigns.current_scope.operator_context
 
   defp schedule_from_public(id, entry) do
     %{

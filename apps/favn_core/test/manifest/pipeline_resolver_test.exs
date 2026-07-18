@@ -43,6 +43,27 @@ defmodule Favn.Manifest.PipelineResolverTest do
     assert {:error, :schedule_not_found} = PipelineResolver.resolve(index, pipeline, [])
   end
 
+  test "gives an inline schedule the owning pipeline identity" do
+    asset = %Asset{ref: {MyApp.Raw, :asset}, module: MyApp.Raw, name: :asset}
+    {:ok, graph} = Graph.build([asset])
+
+    pipeline = %Pipeline{
+      module: MyApp.Pipelines.Inline,
+      name: :hourly,
+      selectors: [{:asset, asset.ref}],
+      schedule: {:inline, %Schedule{cron: "0 * * * *", timezone: "Etc/UTC", origin: :inline}}
+    }
+
+    {:ok, index} =
+      %Manifest{assets: [asset], pipelines: [pipeline], graph: graph} |> Index.build()
+
+    assert {:ok, resolution} = PipelineResolver.resolve(index, pipeline, [])
+
+    assert resolution.pipeline_ctx.schedule.name == :hourly
+    assert resolution.pipeline_ctx.schedule.module == MyApp.Pipelines.Inline
+    assert resolution.pipeline_ctx.schedule.ref == {MyApp.Pipelines.Inline, :hourly}
+  end
+
   test "returns pipeline_resolved_empty when selectors match no assets" do
     assert {:ok, index} = sample_manifest() |> Index.build()
 

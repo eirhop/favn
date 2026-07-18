@@ -21,7 +21,7 @@ defmodule FavnView.AssetDetailLive do
 
   @impl true
   def mount(%{"asset_id" => asset_id}, _session, socket) do
-    asset_state = load_asset(asset_id)
+    asset_state = load_asset(socket.assigns.current_scope.operator_context, asset_id)
     asset = asset_from_state(asset_state)
 
     socket =
@@ -339,10 +339,10 @@ defmodule FavnView.AssetDetailLive do
     """
   end
 
-  defp load_asset(asset_id) do
+  defp load_asset(operator_context, asset_id) do
     target_id = AssetRoute.from_param(asset_id)
 
-    case FavnOrchestrator.active_asset_detail(target_id) do
+    case FavnOrchestrator.active_asset_detail(operator_context, target_id, []) do
       {:ok, detail} ->
         {:ok, asset_from_detail(detail)}
 
@@ -366,7 +366,7 @@ defmodule FavnView.AssetDetailLive do
 
   defp actor_context(socket) do
     %Scope{} = scope = socket.assigns.current_scope
-    %{actor: scope.actor, session: scope.session}
+    scope.operator_context
   end
 
   defp asset_from_detail(detail) do

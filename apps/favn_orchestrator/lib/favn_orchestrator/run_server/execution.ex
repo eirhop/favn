@@ -225,7 +225,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       )
 
     :ok = RunWorkSet.cleanup_all(state.work_set, reason)
-    :ok = RunExecutionCleanup.release_admission(cancelled_run.id)
+    :ok = RunExecutionCleanup.release_admission(cancelled_run)
 
     cancellation_terminal(cancelled_run, accumulated_results(state))
   end
@@ -326,6 +326,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     parent = self()
     execution_id = entry.execution_id
     timeout_ms = state.run.timeout_ms
+    workspace_id = state.run.workspace_id
     runner_client = state.runner_client
     runner_opts = state.runner_opts
 
@@ -334,7 +335,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         send(
           parent,
           {:runner_result, execution_id,
-           await_runner_result(entry, timeout_ms, runner_client, runner_opts)}
+           await_runner_result(entry, workspace_id, timeout_ms, runner_client, runner_opts)}
         )
       end)
 
@@ -365,7 +366,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp process_await_result(%RunExecutionState{} = state, entry, result, :sequential) do
     state = elem(RunExecutionState.complete_work(state, entry.execution_id), 1)
-    _ = RunExecutionOwnership.mark_finish_persist_pending(state.run.id, entry.execution_id)
+    _ = RunExecutionOwnership.mark_finish_persist_pending(state.run, entry.execution_id)
 
     state
     |> Sequential.handle_result(entry, result)
@@ -373,7 +374,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp process_await_result(%RunExecutionState{} = state, entry, result, :pipeline) do
-    _ = RunExecutionOwnership.mark_finish_persist_pending(state.run.id, entry.execution_id)
+    _ = RunExecutionOwnership.mark_finish_persist_pending(state.run, entry.execution_id)
     handle_pipeline_await_result(state, entry, result)
   end
 
@@ -402,7 +403,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     else
       {stage, node_keys} = Enum.at(state.stage_groups, state.stage_index)
 
-      if Persistence.externally_cancelled?(state.run.id) do
+      if Persistence.externally_cancelled?(state.run) do
         {:terminal, Snapshots.cancelled_terminal(state.run, state.accumulated_results)}
       else
         case StageClassifier.classify(
@@ -960,7 +961,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp terminalize_pipeline_state(%RunExecutionState{terminal_failure: nil} = state) do
-    :ok = RunExecutionCleanup.release_admission(state.run.id)
+    :ok = RunExecutionCleanup.release_admission(state.run)
     all_results = ResultBuilder.sort_asset_results(state.run, state.accumulated_results)
 
     {:terminal,
@@ -973,7 +974,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp terminalize_pipeline_state(%RunExecutionState{} = state) do
-    :ok = RunExecutionCleanup.release_admission(state.run.id)
+    :ok = RunExecutionCleanup.release_admission(state.run)
     all_results = ResultBuilder.sort_asset_results(state.run, state.accumulated_results)
     {:terminal, terminalize_pipeline_failed_run(state.run, all_results, state.terminal_failure)}
   end
@@ -1166,8 +1167,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
     })
   end
 
-  defp await_runner_result(entry, timeout_ms, runner_client, runner_opts) do
-    bridge = start_runner_log_bridge(runner_client, entry.execution_id, runner_opts, entry)
+  defp await_runner_result(entry, workspace_id, timeout_ms, runner_client, runner_opts) do
+    log_context = Map.put(entry, :workspace_id, workspace_id)
+    bridge = start_runner_log_bridge(runner_client, entry.execution_id, runner_opts, log_context)
 
     try do
       runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)

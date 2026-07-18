@@ -20,7 +20,7 @@ defmodule FavnView.RunDetailLive do
 
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
-    run = load_run(run_id)
+    run = load_run(operator_context(socket), run_id)
 
     socket =
       assign(socket,
@@ -69,11 +69,20 @@ defmodule FavnView.RunDetailLive do
   end
 
   def handle_info({:favn_run_event, event}, socket) do
-    {:noreply, RunEventRefresh.handle_event(socket, event, run_event_refresh_opts())}
+    {:noreply, RunEventRefresh.handle_event(socket, event, run_event_refresh_opts(socket))}
+  end
+
+  def handle_info(:favn_persistence_published, socket) do
+    {:noreply, RunEventRefresh.schedule_refresh(socket, run_event_refresh_opts(socket))}
   end
 
   defp refresh_run(socket) do
-    run = load_run(socket.assigns.run_id, socket.assigns.run[:back_asset_href])
+    run =
+      load_run(
+        operator_context(socket),
+        socket.assigns.run_id,
+        socket.assigns.run[:back_asset_href]
+      )
 
     socket
     |> assign(:run, run)
@@ -252,20 +261,34 @@ defmodule FavnView.RunDetailLive do
 
   @impl true
   def terminate(_reason, socket) do
-    RunEventRefresh.unsubscribe_all(socket, &unsubscribe_run/1)
+    operator_context = operator_context(socket)
+    RunEventRefresh.unsubscribe_all(socket, &unsubscribe_run(operator_context, &1))
+    _ = FavnOrchestrator.unsubscribe_run_wakeups(operator_context)
 
     :ok
   end
 
-  defp load_run(run_id, existing_back_asset_href \\ nil) do
-    case get_operator_run_detail(run_id, include: [:events], event_limit: 200) do
-      {:ok, detail} -> detail_from_execution_group(detail, run_id, existing_back_asset_href)
-      {:error, reason} -> %{id: run_id, found?: false, error: error_label(reason)}
+  defp load_run(operator_context, run_id, existing_back_asset_href \\ nil) do
+    case get_operator_run_detail(operator_context, run_id,
+           include: [:events],
+           event_limit: 200
+         ) do
+      {:ok, detail} ->
+        detail_from_execution_group(
+          detail,
+          operator_context,
+          run_id,
+          existing_back_asset_href
+        )
+
+      {:error, reason} ->
+        %{id: run_id, found?: false, error: error_label(reason)}
     end
   end
 
   defp detail_from_execution_group(
          %{summary: summary, root_run: root_run} = detail,
+         operator_context,
          run_id,
          existing_back_asset_href
        ) do
@@ -340,7 +363,8 @@ defmodule FavnView.RunDetailLive do
       selected_attempt: nil,
       context: context_items(summary, root_run, target, windows),
       back_asset_href:
-        existing_back_asset_href || back_asset_href(List.first(summary.target_assets)),
+        existing_back_asset_href ||
+          back_asset_href(operator_context, List.first(summary.target_assets)),
       raw_run: inspect(detail, pretty: true, limit: 50, printable_limit: 2_000),
       raw_events: inspect(events, pretty: true, limit: 50, printable_limit: 2_000),
       root_event_sequence: Map.get(detail, :root_event_sequence),
@@ -373,7 +397,7 @@ defmodule FavnView.RunDetailLive do
       socket,
       Map.get(run, :subscribed_run_ids, []),
       run_event_sequences(run),
-      run_event_refresh_opts()
+      run_event_refresh_opts(socket)
     )
   end
 
@@ -387,31 +411,42 @@ defmodule FavnView.RunDetailLive do
 
   defp actor_context(socket) do
     %Scope{} = scope = socket.assigns.current_scope
-    %{actor: scope.actor, session: scope.session}
+    scope.operator_context
   end
 
-  defp get_operator_run_detail(run_id, opts) do
+  defp operator_context(socket), do: actor_context(socket)
+
+  defp get_operator_run_detail(operator_context, run_id, opts) do
+    fun =
+      Application.get_env(
+        :favn_view,
+        :operator_run_detail_fun,
+        &FavnOrchestrator.get_operator_run_detail/3
+      )
+
+    if is_function(fun, 3), do: fun.(operator_context, run_id, opts), else: fun.(run_id, opts)
+  end
+
+  defp subscribe_run(operator_context, run_id) do
     Application.get_env(
       :favn_view,
-      :operator_run_detail_fun,
-      &FavnOrchestrator.get_operator_run_detail/2
-    ).(run_id, opts)
+      :run_subscribe_fun,
+      &FavnOrchestrator.subscribe_run/2
+    ).(operator_context, run_id)
   end
 
-  defp subscribe_run(run_id) do
-    Application.get_env(:favn_view, :run_subscribe_fun, &FavnOrchestrator.subscribe_run/1).(
-      run_id
-    )
-  end
+  defp unsubscribe_run(operator_context, run_id),
+    do: FavnOrchestrator.unsubscribe_run(operator_context, run_id)
 
-  defp unsubscribe_run(run_id), do: FavnOrchestrator.unsubscribe_run(run_id)
+  defp list_run_stream_events(operator_context, run_id, opts) do
+    fun =
+      Application.get_env(
+        :favn_view,
+        :run_stream_events_fun,
+        &FavnOrchestrator.list_run_stream_events/3
+      )
 
-  defp list_run_stream_events(run_id, opts) do
-    Application.get_env(
-      :favn_view,
-      :run_stream_events_fun,
-      &FavnOrchestrator.list_run_stream_events/2
-    ).(run_id, opts)
+    if is_function(fun, 3), do: fun.(operator_context, run_id, opts), else: fun.(run_id, opts)
   end
 
   defp subscribed_run_ids(root_run, child_runs) do
@@ -460,11 +495,13 @@ defmodule FavnView.RunDetailLive do
 
   defp maybe_put_sequence(sequences, _run_id, _sequence), do: sequences
 
-  defp run_event_refresh_opts do
+  defp run_event_refresh_opts(socket) do
+    operator_context = operator_context(socket)
+
     [
-      subscribe_fun: &subscribe_run/1,
-      unsubscribe_fun: &unsubscribe_run/1,
-      list_events_fun: &list_run_stream_events/2,
+      subscribe_fun: &subscribe_run(operator_context, &1),
+      unsubscribe_fun: &unsubscribe_run(operator_context, &1),
+      list_events_fun: &list_run_stream_events(operator_context, &1, &2),
       refresh_key: :refresh_timer_ref,
       refresh_message: :refresh_run,
       coalesce_ms: @coalesce_refresh_ms
@@ -909,12 +946,12 @@ defmodule FavnView.RunDetailLive do
     ]
   end
 
-  defp back_asset_href(nil), do: nil
+  defp back_asset_href(_operator_context, nil), do: nil
 
-  defp back_asset_href(ref) do
+  defp back_asset_href(operator_context, ref) do
     ref_string = LogsViewModel.ref_label(ref)
 
-    with {:ok, entries} <- FavnOrchestrator.active_asset_catalogue(),
+    with {:ok, entries} <- FavnOrchestrator.active_asset_catalogue(operator_context),
          entry when not is_nil(entry) <-
            Enum.find(entries, fn entry ->
              LogsViewModel.ref_label(Map.get(entry, :asset_ref)) == ref_string

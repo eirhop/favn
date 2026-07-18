@@ -44,5 +44,21 @@ defmodule Favn.Manifest.Schedule do
       active: Map.get(schedule, :active, true),
       origin: Map.get(schedule, :origin, :named)
     }
+    |> apply_identity(module, name)
+  end
+
+  @doc false
+  @spec apply_identity(t(), module(), atom()) :: t()
+  def apply_identity(%__MODULE__{} = schedule, module, name)
+      when is_atom(module) and is_atom(name) do
+    effective_module = schedule.module || module
+    effective_name = schedule.name || name
+
+    %{
+      schedule
+      | module: effective_module,
+        name: effective_name,
+        ref: schedule.ref || {effective_module, effective_name}
+    }
   end
 end

@@ -8,23 +8,25 @@ defmodule FavnOrchestrator.API.Audit do
 
   require Logger
 
-  alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Identity
+  alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Redaction
 
-  @doc "Writes an audit entry and logs any storage failure."
-  @spec put_best_effort(map()) :: :ok
-  def put_best_effort(entry) when is_map(entry) do
-    case Auth.put_audit(entry) do
+  @doc "Persists redacted audit evidence without changing an already-committed response."
+  @spec put_best_effort(WorkspaceContext.t() | PlatformContext.t(), map()) :: :ok
+  def put_best_effort(context, entry) when is_map(entry) do
+    case Identity.record_audit(context, entry) do
       :ok ->
         :ok
 
       {:error, reason} ->
-        Logger.warning("auth audit write failed: #{inspect(reason)}")
+        Logger.error(
+          "api audit persistence failed: " <>
+            inspect(Redaction.redact_operational_bounded(reason))
+        )
+
         :ok
     end
   end
-
-  @doc "Writes an entry only when `enabled?` is true."
-  @spec put_if(boolean(), map()) :: :ok
-  def put_if(true, entry), do: put_best_effort(entry)
-  def put_if(false, _entry), do: :ok
 end

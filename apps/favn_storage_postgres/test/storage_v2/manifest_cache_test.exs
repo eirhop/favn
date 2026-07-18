@@ -1,0 +1,46 @@
+defmodule FavnStoragePostgres.StorageV2.ManifestCacheTest do
+  use ExUnit.Case, async: false
+
+  alias Favn.Manifest.Version
+  alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash
+  alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ById
+  alias FavnStoragePostgres.Registry.ManifestCache
+
+  test "bounds immutable manifest releases while indexing both stable identities" do
+    start_supervised!({ManifestCache, max_entries: 2})
+    first = version("first")
+    second = version("second")
+    third = version("third")
+
+    assert :ok = ManifestCache.put(first)
+    assert :ok = ManifestCache.put(second)
+
+    assert {:ok, ^first} =
+             ManifestCache.get(%ById{manifest_version_id: first.manifest_version_id})
+
+    assert {:ok, ^second} = ManifestCache.get(%ByContentHash{content_hash: second.content_hash})
+
+    assert :ok = ManifestCache.put(third)
+    assert :miss = ManifestCache.get(%ById{manifest_version_id: first.manifest_version_id})
+    assert :miss = ManifestCache.get(%ByContentHash{content_hash: first.content_hash})
+
+    assert {:ok, ^second} =
+             ManifestCache.get(%ById{manifest_version_id: second.manifest_version_id})
+
+    assert {:ok, ^third} =
+             ManifestCache.get(%ById{manifest_version_id: third.manifest_version_id})
+
+    assert ManifestCache.diagnostics() == %{running?: true, entries: 2, max_entries: 2}
+  end
+
+  defp version(identity) do
+    %Version{
+      manifest_version_id: "manifest-" <> identity,
+      content_hash: String.pad_trailing(identity, 64, "0"),
+      schema_version: 6,
+      runner_contract_version: 6,
+      manifest: %Favn.Manifest{},
+      serialization_format: "json-v1"
+    }
+  end
+end

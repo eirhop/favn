@@ -1,73 +1,48 @@
-# SSE Live Updates
+# Durable Live Updates
 
-Favn's production live-update contract is single-node first. The orchestrator is
-the source of truth for run lifecycle events, SQLite persists replayable run
-events, and in-memory PubSub is used only for same-node live fanout after the
-persisted write succeeds.
+Favn's live-update correctness comes from PostgreSQL, not process-local PubSub.
+Every run mutation commits its authoritative snapshot/event and outbox record in
+one transaction. A post-commit sequencer assigns publication IDs in durable commit
+order. Consumers page from those persisted publications with bounded cursors.
 
-## Endpoints
+PostgreSQL `NOTIFY` and Phoenix PubSub only wake consumers early. Lost or duplicate
+wakeups are safe because consumers always refresh from their last durable cursor.
 
-Private orchestrator endpoints:
+## Scope and authorization
+
+Private endpoints:
 
 - `GET /api/orchestrator/v1/streams/runs`
 - `GET /api/orchestrator/v1/streams/runs/:run_id`
 
-Browser-facing LiveView/SSE relay behavior will be rebuilt in `favn_view`. The
-orchestrator SSE endpoints remain private backend endpoints for now; no
-browser-facing stream route is part of the new Phoenix shell yet.
+Both require an authenticated viewer workspace context. Global-to-a-workspace run
+streams include only that workspace. Run-specific streams verify that the run
+belongs to the same workspace before subscribing. PubSub topics also include the
+workspace identifier; a run ID is never used as an authorization boundary.
 
-## Cursors and replay
+Platform-wide monitoring uses a separate explicitly authorized bounded read path,
+not a customer stream.
 
-Run-scoped cursors use:
+## Replay
 
-```text
-run:<run_id>:<sequence>
-```
+- Run cursor: `run:<run_id>:<sequence>`.
+- Workspace publication cursor: `global:<publication_id>`.
+- `Last-Event-ID` resumes after the supplied cursor.
+- Each fetch is capped at 200 events.
+- Malformed cursors return `400 validation_failed`.
+- A cursor ahead of durable state or outside retained replay history returns
+  `410 cursor_expired`.
 
-Global cursors use:
+Identity values and timestamps are not publication order. `global_sequence` in the
+wire DTO is the durable publication ID.
 
-```text
-global:<global_sequence>
-```
+## Frames and disconnects
 
-`Last-Event-ID` is supported for both streams. Replay is capped at 200 persisted
-events per stream connection. A missing run-scoped cursor replays the selected
-run from the beginning when it fits inside that cap. A missing global cursor
-replays the latest persisted run events up to the cap in ascending persisted
-order. A valid cursor replays only events after the cursor and then continues
-live when the full replay fits inside the cap.
+Streams emit a retry hint, redacted run-event frames, `stream.ready` after replay,
+and heartbeat comments. DTOs contain stable identifiers, status, timestamps,
+cursor, summary, and bounded safe details; they never expose internal structs,
+database URLs, tokens, cookies, SQL errors, or secrets.
 
-Malformed cursors return a safe `400 validation_failed` response. Well-formed
-cursors that are not known/replayable return `410 cursor_expired`. If more than
-200 persisted events would need replay after a cursor, the stream also returns
-`410 cursor_expired` instead of entering live mode with a replay gap.
-
-Global ordering is based on a persisted monotonic `global_sequence` assigned
-when the run event is stored. It is not wall-clock ordering.
-
-## Stream frames
-
-Streams send:
-
-- `retry: 3000` at stream start.
-- Redacted run-event frames with stable `id:` values matching the cursor format.
-- `event: stream.ready` after replay has completed.
-- `: heartbeat` comments every 15 seconds while connected.
-
-Run-event payloads are normalized DTOs containing run identity, event type,
-status, timestamp, run sequence, global sequence where available, cursor,
-summary, and safe details. Streams must not expose raw internal structs, service
-tokens, session tokens, cookies, stack traces, database paths, raw SQL errors,
-or secret material.
-
-## Disconnects
-
-The orchestrator subscribes to the relevant PubSub topic only for the lifetime
-of the stream. When the client disconnects or chunking fails, the stream loop
-stops, heartbeat timers are cancelled, and PubSub subscriptions are removed.
-
-## Limits
-
-This contract is for one orchestrator node with SQLite control-plane
-persistence. Distributed PubSub/replay and Postgres production guarantees are
-future production-mode work.
+Subscriptions exist only for the connection lifetime. Disconnects cancel timers
+and remove PubSub subscriptions. A reconnect resumes from PostgreSQL, so node
+failover does not require sticky sessions for correctness.

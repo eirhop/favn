@@ -5,10 +5,10 @@ defmodule FavnOrchestrator.Readiness do
 
   alias FavnOrchestrator.API.Config, as: APIConfig
   alias FavnOrchestrator.Redaction
+  alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
-  alias FavnOrchestrator.Storage
 
   @spec liveness() :: map()
   def liveness do
@@ -46,7 +46,7 @@ defmodule FavnOrchestrator.Readiness do
   end
 
   defp storage_check do
-    case Storage.readiness() do
+    case Persistence.readiness() do
       {:ok, %{ready?: false} = diagnostics} ->
         error(:storage, diagnostics)
 

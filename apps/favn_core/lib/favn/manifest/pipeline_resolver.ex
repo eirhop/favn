@@ -41,8 +41,10 @@ defmodule Favn.Manifest.PipelineResolver do
          :ok <- validate_trigger(trigger),
          :ok <- validate_params(params),
          :ok <- validate_anchor_window(anchor_window),
-         {:ok, schedule} <- resolve_schedule(index, normalized_pipeline.schedule),
+         {:ok, resolved_schedule} <- resolve_schedule(index, normalized_pipeline.schedule),
          {:ok, target_refs} <- resolve_selectors(index, selectors) do
+      schedule = apply_schedule_identity(resolved_schedule, normalized_pipeline)
+
       {:ok,
        %{
          pipeline: normalized_pipeline,
@@ -151,6 +153,15 @@ defmodule Favn.Manifest.PipelineResolver do
   defp resolve_schedule(_index, {:inline, %Schedule{} = schedule}), do: {:ok, schedule}
   defp resolve_schedule(_index, %Schedule{} = schedule), do: {:ok, schedule}
   defp resolve_schedule(_index, value), do: {:error, {:invalid_schedule, value}}
+
+  defp apply_schedule_identity(
+         %Schedule{} = schedule,
+         %Pipeline{module: module, name: name}
+       )
+       when is_atom(module) and is_atom(name),
+       do: Schedule.apply_identity(schedule, module, name)
+
+  defp apply_schedule_identity(schedule, _pipeline), do: schedule
 
   defp resolve_selectors(index, selectors) do
     assets = Index.list_assets(index)

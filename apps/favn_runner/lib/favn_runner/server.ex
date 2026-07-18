@@ -12,8 +12,8 @@ defmodule FavnRunner.Server do
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
-  alias Favn.Manifest.Version
   alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Version
   alias Favn.SQL.SessionPool
   alias FavnRunner.ExecutionAdmission
   alias FavnRunner.ExecutionLifecycle
@@ -173,45 +173,47 @@ defmodule FavnRunner.Server do
         from,
         state
       ) do
-    execution_id = new_execution_id()
-
     reply =
-      case preflight do
-        :ok ->
-          case admit_worker(state) do
-            {:ok, admission} ->
-              start_admitted_worker(execution_id, work, version, asset, %{
-                state
-                | admission: admission
-              })
+      with {:ok, execution_id} <- reserve_execution_id(work, state) do
+        case preflight do
+          :ok ->
+            case admit_worker(state) do
+              {:ok, admission} ->
+                start_admitted_worker(execution_id, work, version, asset, %{
+                  state
+                  | admission: admission
+                })
 
-            {{:error, %RunnerError{} = error}, next_state} ->
-              enqueue_or_reject_submit(
-                next_state,
-                from,
+              {{:error, %RunnerError{} = error}, next_state} ->
+                enqueue_or_reject_submit(
+                  next_state,
+                  from,
+                  execution_id,
+                  work,
+                  version,
+                  asset,
+                  error
+                )
+            end
+
+          {:error, diagnostic} ->
+            lifecycle =
+              ExecutionLifecycle.put_completed(
+                state.lifecycle,
                 execution_id,
                 work,
-                version,
-                asset,
-                error
+                preflight_failed_result(work, version, diagnostic)
               )
-          end
 
-        {:error, diagnostic} ->
-          lifecycle =
-            ExecutionLifecycle.put_completed(
-              state.lifecycle,
-              execution_id,
-              work,
-              preflight_failed_result(work, version, diagnostic)
-            )
-
-          {{:ok, execution_id}, %{state | lifecycle: lifecycle}}
+            {{:ok, execution_id}, %{state | lifecycle: lifecycle}}
+        end
       end
 
     case reply do
       {{:ok, execution_id}, next_state} -> {:reply, {:ok, execution_id}, next_state}
       {{:error, reason}, next_state} -> {:reply, {:error, reason}, next_state}
+      {:noreply, next_state} -> {:noreply, next_state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
@@ -767,6 +769,48 @@ defmodule FavnRunner.Server do
       value when is_integer(value) and value > 0 -> value
       _other -> default
     end
+  end
+
+  defp reserve_execution_id(%RunnerWork{execution_id: nil}, state) do
+    {:ok, unique_execution_id(state)}
+  end
+
+  defp reserve_execution_id(%RunnerWork{execution_id: execution_id}, state)
+       when is_binary(execution_id) and execution_id != "" and byte_size(execution_id) <= 255 do
+    if execution_id_available?(state, execution_id) do
+      {:ok, execution_id}
+    else
+      {:error,
+       RunnerError.normalize(:runner_execution_id_in_use,
+         kind: :boundary,
+         type: :runner_execution_id_in_use,
+         retryable?: false,
+         outcome: :safe_failure
+       )}
+    end
+  end
+
+  defp reserve_execution_id(%RunnerWork{}, _state) do
+    {:error,
+     RunnerError.normalize(:invalid_runner_execution_id,
+       kind: :boundary,
+       type: :invalid_runner_execution_id,
+       retryable?: false,
+       outcome: :safe_failure
+     )}
+  end
+
+  defp unique_execution_id(state) do
+    execution_id = new_execution_id()
+
+    if execution_id_available?(state, execution_id),
+      do: execution_id,
+      else: unique_execution_id(state)
+  end
+
+  defp execution_id_available?(state, execution_id) do
+    not Map.has_key?(state.lifecycle.executions, execution_id) and
+      Enum.all?(:queue.to_list(state.queue), &(&1.execution_id != execution_id))
   end
 
   defp new_execution_id do

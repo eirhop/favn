@@ -13,10 +13,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias Favn.Freshness.Key
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ExecutionAdmission
+  alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RuntimeInputPins
-  alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
@@ -24,6 +24,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Persistence.SystemContext
 
   @type node_key :: Favn.Plan.node_key()
   @type entry :: map()
@@ -68,7 +69,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       waiters: []
     }
 
-    do_submit(node_keys, ctx)
+    case prepare_stage_works(node_keys, ctx) do
+      {:ok, prepared_works} ->
+        do_submit(node_keys, Map.put(ctx, :prepared_works, prepared_works))
+
+      {:error, node_key, work, reason} ->
+        persist_prepare_failure(ctx, node_keys, node_key, work, reason)
+    end
   end
 
   defp do_submit([], ctx) do
@@ -76,10 +83,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp do_submit([node_key | rest] = node_keys, ctx) do
-    if Persistence.externally_cancelled?(ctx.current_run.id) do
+    if Persistence.externally_cancelled?(ctx.current_run) do
       {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
     else
-      work = stage_work(ctx.current_run, ctx.version, node_key, ctx.stage, ctx.attempt)
+      work = Map.fetch!(ctx.prepared_works, node_key)
 
       entry_context =
         Map.merge(ctx, %{
@@ -235,13 +242,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp execution_ids(ctx), do: Enum.map(entries(ctx), & &1.execution_id)
 
   defp submit_admitted_entry(ctx) do
-    with {:ok, work} <- ExecutionPackages.attach(ctx.work, ctx.version),
-         {:ok, work} <-
-           RuntimeInputPins.prepare(work, ctx.runner_client, ctx.runner_opts) do
-      do_submit_admitted_entry(%{ctx | work: work})
-    else
-      {:error, reason} -> fail_unsubmitted_entry(ctx, ctx.work.asset_ref, reason)
-    end
+    do_submit_admitted_entry(ctx)
   end
 
   defp do_submit_admitted_entry(ctx) do
@@ -290,7 +291,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       {:error, reason} ->
         _ =
           RunExecutionOwnership.mark_dispatch_failed(
-            ctx.current_run.id,
+            ctx.current_run,
             ownership.ownership_id,
             reason
           )
@@ -423,7 +424,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       |> Map.put(:dispatch_id, ownership.dispatch_id)
       |> Map.put(:deadline_at, ownership.deadline_at)
 
-    %{work | metadata: metadata}
+    %{work | execution_id: ownership.dispatch_id, metadata: metadata}
   end
 
   defp submit_started_entry(ctx, ownership, execution_id) do
@@ -547,7 +548,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp persist_submitted_ownership_snapshot(%RunExecutionOwnership{} = ownership) do
-    if Persistence.externally_cancelled?(ownership.run_id) do
+    if Persistence.externally_cancelled?(ownership) do
       {:error, :external_cancel}
     else
       RunExecutionOwnership.persist(ownership)
@@ -633,6 +634,56 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     StepAttemptLifecycle.attach_deadline(work, run_state)
   end
 
+  defp prepare_stage_works(node_keys, ctx) do
+    Enum.reduce_while(node_keys, {:ok, %{}}, fn node_key, {:ok, works} ->
+      work = stage_work(ctx.current_run, ctx.version, node_key, ctx.stage, ctx.attempt)
+      package_context =
+        SystemContext.workspace(ctx.current_run.workspace_id, :execution_package_fetch)
+
+      result =
+        with {:ok, work} <- ExecutionPackages.attach(package_context, work, ctx.version) do
+          RuntimeInputPins.prepare(
+            ctx.current_run,
+            work,
+            ctx.runner_client,
+            ctx.runner_opts
+          )
+        end
+
+      case result do
+        {:ok, prepared} -> {:cont, {:ok, Map.put(works, node_key, prepared)}}
+        {:error, reason} -> {:halt, {:error, node_key, work, reason}}
+      end
+    end)
+  end
+
+  defp persist_prepare_failure(ctx, node_keys, node_key, work, reason) do
+    failed = RunState.transition(ctx.current_run, status: :error, error: reason)
+    retryable? = safe_retryable?(reason)
+
+    case Persistence.persist_run_step(failed, :step_failed, %{
+           asset_ref: work.asset_ref,
+           node_key: node_key,
+           asset_step_id: work.asset_step_id,
+           stage: ctx.stage,
+           attempt: ctx.attempt,
+           max_attempts: work.max_attempts,
+           retryable?: retryable?,
+           retry_exhausted?:
+             retryable? and
+               not StepAttemptLifecycle.retry_allowed?(failed, node_key, ctx.attempt),
+           error: reason
+         }) do
+      :ok ->
+        if retryable? and StepAttemptLifecycle.retry_allowed?(failed, node_key, ctx.attempt),
+          do: {:retry, failed, node_keys, [node_key]},
+          else: {:error, failed, [], [node_key]}
+
+      {:error, _persist_reason} ->
+        {:error, failed, [], [node_key]}
+    end
+  end
+
   defp safe_retryable?(%RunnerError{retryable?: true, outcome: :safe_failure}), do: true
   defp safe_retryable?(_reason), do: false
 
@@ -708,7 +759,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         runner_opts
       )
 
-    _ = RunExecutionOwnership.persist_cancel_outcomes(run_state.id, cancel_results, reason)
+    _ = RunExecutionOwnership.persist_cancel_outcomes(run_state, cancel_results, reason)
 
     {clear_inflight_executions(run_state, Enum.map(cancel_results, & &1.execution_id)),
      cancel_results}

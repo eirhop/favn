@@ -12,16 +12,23 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
   @service_token "favnweb-runtime-credential-alpha-1234567890"
   @admin_username "admin"
   @admin_password "admin-password-long"
-  @pipeline_id "pipeline:Elixir.FavnIssue262Sample.Pipelines.ProductionSmoke"
+  @pipeline_id "pipeline:Elixir.FavnIssue262Sample.Pipelines.ProductionSmoke:production_smoke"
   @missing_secret_asset_id "asset:Elixir.FavnIssue262Sample.Assets.MissingSecret:asset"
+  @repo_root Path.expand("../../../..", __DIR__)
 
   setup_all do
     ensure_executable!("curl")
     ensure_executable!("env")
 
+    database_url =
+      System.get_env("FAVN_DATABASE_URL") ||
+        raise "FAVN_DATABASE_URL is required for PostgreSQL acceptance tests"
+
+    migrate_database!(database_url)
+
     artifact = shared_fixture_artifact!()
 
-    {:ok, artifact: artifact}
+    {:ok, artifact: artifact, database_url: database_url}
   end
 
   setup %{artifact: artifact} do
@@ -35,38 +42,54 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
   end
 
   test "single-node production artifact runs canonical pipeline and survives restart", %{
-    artifact: artifact
+    artifact: artifact,
+    database_url: database_url
   } do
-    runtime = fresh_runtime!(artifact.project_dir, "production")
+    runtime = fresh_runtime!(artifact.project_dir, "production", database_url)
+    provision_workspace!(runtime)
     env = production_env(runtime)
     base_url = base_url(runtime.port)
 
-    on_exit(fn -> stop_artifact(artifact.dist_dir, env) end)
-    on_exit(fn -> cleanup_runtime!(runtime) end)
+    on_exit(fn -> stop_and_cleanup_runtime(artifact.dist_dir, env, runtime) end)
 
     start_output = assert_artifact_started!(artifact.dist_dir, env, runtime.runtime_home)
     assert start_output =~ "Favn backend started with PID"
     assert_ready!(runtime.port)
-    assert_runtime_paths!(runtime.runtime_home, runtime.sqlite_path)
+    assert_runtime_paths!(runtime.runtime_home)
 
-    assert {bootstrap_output, 0} =
-             run_bootstrap(artifact.project_dir, artifact.manifest_path, base_url)
+    bootstrap_output =
+      assert_bootstrap_succeeded!(
+        artifact.project_dir,
+        artifact.manifest_path,
+        base_url,
+        runtime.runtime_home
+      )
 
     assert bootstrap_output =~ "Favn single-node bootstrap complete"
-    assert bootstrap_output =~ "manifest registration: already_published"
+
+    assert bootstrap_output =~ "manifest registration: published" or
+             bootstrap_output =~ "manifest registration: already_published"
+
     assert bootstrap_output =~ "runner registration: accepted"
     assert bootstrap_output =~ "active manifest verification: matched"
 
-    assert {repeat_output, 0} =
-             run_bootstrap(artifact.project_dir, artifact.manifest_path, base_url)
+    repeat_output =
+      assert_bootstrap_succeeded!(
+        artifact.project_dir,
+        artifact.manifest_path,
+        base_url,
+        runtime.runtime_home
+      )
 
     assert repeat_output =~ "manifest registration: already_published"
     assert repeat_output =~ "runner registration: accepted"
 
     assert {:ok, session_context} = login(base_url)
-    assert_active_manifest!(base_url, artifact.manifest_metadata)
 
-    run_payload = manifest_pinned_payload(@pipeline_id, artifact.manifest_metadata)
+    active_manifest_metadata =
+      assert_active_manifest!(base_url, session_context, artifact.manifest_metadata)
+
+    run_payload = manifest_pinned_payload(@pipeline_id, active_manifest_metadata)
     idempotency_key = "issue262-production-smoke-#{System.unique_integer([:positive])}"
 
     assert {:ok, run} =
@@ -81,11 +104,13 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
 
     assert repeat_run["id"] == run["id"]
 
-    assert {:ok, terminal_run} = await_terminal_run(base_url, session_context, run["id"])
+    terminal_run =
+      await_terminal_run!(base_url, session_context, run["id"], runtime.runtime_home)
+
     assert terminal_run["status"] == "ok", backend_log(runtime.runtime_home)
 
     assert terminal_run["manifest_version_id"] ==
-             artifact.manifest_metadata["manifest_version_id"]
+             active_manifest_metadata["manifest_version_id"]
 
     assert {:ok, diagnostics} = OrchestratorClient.diagnostics(base_url, @service_token)
     assert diagnostics["status"] == "ok"
@@ -100,7 +125,7 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     assert restart_output =~ "Favn backend started with PID"
     assert_ready!(runtime.port)
 
-    assert_active_manifest!(base_url, artifact.manifest_metadata)
+    assert_active_manifest!(base_url, session_context, artifact.manifest_metadata)
 
     assert {:ok, persisted_run} =
              OrchestratorClient.get_run(base_url, @service_token, session_context, run["id"])
@@ -121,13 +146,14 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
   end
 
   test "generated scripts are immutable and operational commands are idempotent", %{
-    artifact: artifact
+    artifact: artifact,
+    database_url: database_url
   } do
-    runtime = fresh_runtime!(artifact.project_dir, "scripts")
+    runtime = fresh_runtime!(artifact.project_dir, "scripts", database_url)
+    provision_workspace!(runtime)
     env = production_env(runtime)
 
-    on_exit(fn -> stop_artifact(artifact.dist_dir, env) end)
-    on_exit(fn -> cleanup_runtime!(runtime) end)
+    on_exit(fn -> stop_and_cleanup_runtime(artifact.dist_dir, env, runtime) end)
 
     assert File.exists?(Path.join(artifact.dist_dir, "metadata.json"))
     assert File.exists?(Path.join(artifact.dist_dir, "config/assembly.json"))
@@ -153,37 +179,55 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     end)
 
     assert_stop_idempotency!(artifact.dist_dir, Path.join(artifact.project_dir, "stop-runtime"))
-    assert_invalid_configs_fail_before_serving!(artifact.dist_dir, artifact.project_dir)
+
+    assert_invalid_configs_fail_before_serving!(
+      artifact.dist_dir,
+      artifact.project_dir,
+      database_url
+    )
   end
 
-  test "missing asset runtime config fails before user asset execution", %{artifact: artifact} do
-    runtime = fresh_runtime!(artifact.project_dir, "missing-config")
+  test "missing asset runtime config fails before user asset execution", %{
+    artifact: artifact,
+    database_url: database_url
+  } do
+    runtime = fresh_runtime!(artifact.project_dir, "missing-config", database_url)
+    provision_workspace!(runtime)
     env = production_env(runtime) |> Map.delete("FAVN_CANONICAL_MISSING_SECRET")
     base_url = base_url(runtime.port)
 
-    on_exit(fn -> stop_artifact(artifact.dist_dir, env) end)
-    on_exit(fn -> cleanup_runtime!(runtime) end)
+    on_exit(fn -> stop_and_cleanup_runtime(artifact.dist_dir, env, runtime) end)
 
     start_output = assert_artifact_started!(artifact.dist_dir, env, runtime.runtime_home)
     assert start_output =~ "Favn backend started with PID"
     assert_ready!(runtime.port)
 
-    assert {bootstrap_output, 0} =
-             run_bootstrap(artifact.project_dir, artifact.manifest_path, base_url)
+    bootstrap_output =
+      assert_bootstrap_succeeded!(
+        artifact.project_dir,
+        artifact.manifest_path,
+        base_url,
+        runtime.runtime_home
+      )
 
     assert bootstrap_output =~ "Favn single-node bootstrap complete"
 
     assert {:ok, session_context} = login(base_url)
+
+    active_manifest_metadata =
+      assert_active_manifest!(base_url, session_context, artifact.manifest_metadata)
 
     assert {:ok, run} =
              OrchestratorClient.submit_run(
                base_url,
                @service_token,
                session_context,
-               manifest_pinned_payload(@missing_secret_asset_id, artifact.manifest_metadata)
+               manifest_pinned_payload(@missing_secret_asset_id, active_manifest_metadata)
              )
 
-    assert {:ok, terminal_run} = await_terminal_run(base_url, session_context, run["id"])
+    terminal_run =
+      await_terminal_run!(base_url, session_context, run["id"], runtime.runtime_home)
+
     assert terminal_run["status"] == "error"
 
     encoded = inspect(terminal_run)
@@ -193,29 +237,36 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
   end
 
   defp production_env(runtime) do
-    runtime_env(runtime.runtime_home, runtime.sqlite_path, runtime.port, @service_token, %{
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => @admin_username,
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => @admin_password,
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME" => "Favn Admin",
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES" => "admin",
-      "FAVN_CANONICAL_SOURCE_NAME" => "canonical-source",
-      "FAVN_CANONICAL_SOURCE_TOKEN" => "canonical-source-token-1234567890",
-      "FAVN_CANONICAL_MISSING_SECRET" => "present-only-for-happy-path",
-      "FAVN_CANONICAL_DUCKDB_PATH" => runtime.duckdb_path
-    })
+    runtime_env(
+      runtime.runtime_home,
+      runtime.database_url,
+      runtime.workspace_id,
+      runtime.port,
+      @service_token,
+      %{
+        "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => @admin_username,
+        "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => @admin_password,
+        "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME" => "Favn Admin",
+        "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES" => "admin",
+        "FAVN_CANONICAL_SOURCE_NAME" => "canonical-source",
+        "FAVN_CANONICAL_SOURCE_TOKEN" => "canonical-source-token-1234567890",
+        "FAVN_CANONICAL_MISSING_SECRET" => "present-only-for-happy-path",
+        "FAVN_CANONICAL_DUCKDB_PATH" => runtime.duckdb_path
+      }
+    )
   end
 
-  defp fresh_runtime!(project_dir, name) do
+  defp fresh_runtime!(project_dir, name, database_url) do
     runtime_home = fresh_path(project_dir, "#{name}-runtime-home")
-    sqlite_path = fresh_path(project_dir, "#{name}-data/control-plane.sqlite3")
     duckdb_path = fresh_path(project_dir, "#{name}-duckdb/warehouse.duckdb")
+    workspace_id = "acceptance-#{name}-#{System.unique_integer([:positive])}"
 
-    File.mkdir_p!(Path.dirname(sqlite_path))
     File.mkdir_p!(Path.dirname(duckdb_path))
 
     %{
       runtime_home: runtime_home,
-      sqlite_path: sqlite_path,
+      database_url: database_url,
+      workspace_id: workspace_id,
       duckdb_path: duckdb_path,
       port: free_port()
     }
@@ -223,8 +274,15 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
 
   defp cleanup_runtime!(runtime) do
     File.rm_rf(runtime.runtime_home)
-    File.rm_rf(Path.dirname(runtime.sqlite_path))
     File.rm_rf(Path.dirname(runtime.duckdb_path))
+  end
+
+  defp stop_and_cleanup_runtime(dist_dir, env, runtime) do
+    try do
+      stop_artifact(dist_dir, env)
+    after
+      cleanup_runtime!(runtime)
+    end
   end
 
   defp run_bootstrap(project_dir, manifest_path, base_url) do
@@ -236,6 +294,8 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
       base_url,
       "--service-token",
       @service_token,
+      "--workspace-id",
+      runtime_workspace_id(base_url),
       "--operator-username",
       @admin_username,
       "--operator-password",
@@ -243,8 +303,26 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     ])
   end
 
+  defp assert_bootstrap_succeeded!(project_dir, manifest_path, base_url, runtime_home) do
+    case run_bootstrap(project_dir, manifest_path, base_url) do
+      {output, 0} ->
+        output
+
+      {output, status} ->
+        flunk(
+          "bootstrap failed (status=#{status}):\n#{output}\nbackend log:\n#{backend_log(runtime_home)}"
+        )
+    end
+  end
+
   defp login(base_url) do
-    OrchestratorClient.password_login(base_url, @service_token, @admin_username, @admin_password)
+    OrchestratorClient.password_login(
+      base_url,
+      @service_token,
+      runtime_workspace_id(base_url),
+      @admin_username,
+      @admin_password
+    )
   end
 
   defp base_url(port), do: "http://127.0.0.1:#{port}"
@@ -260,12 +338,19 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     assert_ready_check!(ready, "runner")
   end
 
-  defp assert_active_manifest!(base_url, manifest_metadata) do
+  defp assert_active_manifest!(base_url, session_context, manifest_metadata) do
     assert {:ok, active_manifest} =
-             OrchestratorClient.bootstrap_active_manifest(base_url, @service_token)
+             OrchestratorClient.bootstrap_active_manifest(
+               base_url,
+               @service_token,
+               session_context
+             )
 
-    assert get_in(active_manifest, ["manifest", "manifest_version_id"]) ==
-             manifest_metadata["manifest_version_id"]
+    manifest = Map.fetch!(active_manifest, "manifest")
+    assert manifest["content_hash"] == manifest_metadata["content_hash"]
+    assert is_binary(manifest["manifest_version_id"])
+
+    Map.put(manifest_metadata, "manifest_version_id", manifest["manifest_version_id"])
   end
 
   defp manifest_pinned_payload(target_id, manifest_metadata) do
@@ -306,6 +391,19 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
   defp await_terminal_run(_base_url, _session_context, _run_id, 0),
     do: {:error, :timeout_waiting_for_terminal_run}
 
+  defp await_terminal_run!(base_url, session_context, run_id, runtime_home) do
+    case await_terminal_run(base_url, session_context, run_id) do
+      {:ok, run} ->
+        run
+
+      {:error, reason} ->
+        flunk(
+          "run #{run_id} did not reach a terminal state: #{inspect(reason)}\n" <>
+            "backend log:\n#{backend_log(runtime_home)}"
+        )
+    end
+  end
+
   defp assert_diagnostic!(diagnostics, check, status) do
     assert %{"status" => ^status} =
              diagnostics
@@ -331,17 +429,18 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     refute File.exists?(pid_path(runtime_home))
   end
 
-  defp assert_invalid_configs_fail_before_serving!(dist_dir, project_dir) do
+  defp assert_invalid_configs_fail_before_serving!(dist_dir, project_dir, database_url) do
     cases = [
       {"missing storage", &Map.delete(&1, "FAVN_STORAGE")},
-      {"relative sqlite path", &Map.put(&1, "FAVN_SQLITE_PATH", "relative.sqlite3")},
-      {"unsupported postgres storage", &Map.put(&1, "FAVN_STORAGE", "postgres")},
+      {"missing database URL", &Map.delete(&1, "FAVN_DATABASE_URL")},
+      {"unsupported SQLite storage", &Map.put(&1, "FAVN_STORAGE", "sqlite")},
       {"short service token",
        &Map.put(&1, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "favn_view:short")}
     ]
 
     Enum.each(cases, fn {name, mutate} ->
-      runtime = fresh_runtime!(project_dir, "invalid-#{String.replace(name, " ", "-")}")
+      runtime =
+        fresh_runtime!(project_dir, "invalid-#{String.replace(name, " ", "-")}", database_url)
 
       env =
         production_env(runtime)
@@ -363,5 +462,46 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
 
   defp fresh_path(project_dir, relative) do
     Path.join(project_dir, "#{System.unique_integer([:positive])}-#{relative}")
+  end
+
+  defp provision_workspace!(runtime) do
+    {output, status} =
+      System.cmd(
+        System.find_executable("mix") || "mix",
+        ["favn.postgres.provision_workspace", "--id", runtime.workspace_id],
+        cd: @repo_root,
+        stderr_to_stdout: true,
+        env: postgres_task_env(runtime.database_url)
+      )
+
+    assert status == 0, output
+    Process.put({__MODULE__, :workspace_by_url, base_url(runtime.port)}, runtime.workspace_id)
+    :ok
+  end
+
+  defp migrate_database!(database_url) do
+    {output, status} =
+      System.cmd(
+        System.find_executable("mix") || "mix",
+        ["favn.postgres.migrate"],
+        cd: @repo_root,
+        stderr_to_stdout: true,
+        env: postgres_task_env(database_url)
+      )
+
+    assert status == 0, output
+  end
+
+  defp postgres_task_env(database_url) do
+    %{
+      "MIX_ENV" => "test",
+      "FAVN_DATABASE_URL" => database_url,
+      "FAVN_RUNTIME_INPUT_PIN_KEY" => "0123456789abcdef0123456789abcdef"
+    }
+  end
+
+  defp runtime_workspace_id(base_url) do
+    Process.get({__MODULE__, :workspace_by_url, base_url}) ||
+      flunk("workspace was not registered for #{base_url}")
   end
 end

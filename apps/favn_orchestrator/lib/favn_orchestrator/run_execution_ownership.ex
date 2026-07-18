@@ -10,8 +10,15 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   """
 
   alias FavnOrchestrator.Redaction
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Commands.AdvanceRunnerExecution
+  alias FavnOrchestrator.Persistence.Commands.RecordRunnerDispatch
+  alias FavnOrchestrator.Persistence.Queries.PageActiveExecutions
+  alias FavnOrchestrator.Persistence.Results.CursorPage
+  alias FavnOrchestrator.Persistence.Results.RunnerExecution
+  alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Storage.JsonSafe
 
   @active_statuses [
     :dispatch_intent,
@@ -57,6 +64,7 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
 
   @type t :: %__MODULE__{
           ownership_id: String.t(),
+          workspace_id: String.t() | nil,
           run_id: String.t(),
           asset_step_id: String.t(),
           node_key: term(),
@@ -65,6 +73,9 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
           attempt: pos_integer() | nil,
           execution_pool: atom() | String.t() | nil,
           runner_execution_id: String.t() | nil,
+          owner_id: String.t() | nil,
+          fencing_token: pos_integer() | nil,
+          persistence_version: pos_integer() | nil,
           runner_ref: term(),
           dispatch_id: String.t(),
           deadline_at: DateTime.t() | nil,
@@ -81,6 +92,7 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   @enforce_keys [:ownership_id, :run_id, :asset_step_id, :inserted_at, :updated_at]
   defstruct [
     :ownership_id,
+    :workspace_id,
     :run_id,
     :asset_step_id,
     :node_key,
@@ -89,6 +101,9 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
     :attempt,
     :execution_pool,
     :runner_execution_id,
+    :owner_id,
+    :fencing_token,
+    :persistence_version,
     :runner_ref,
     :dispatch_id,
     :deadline_at,
@@ -104,7 +119,7 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
 
   @doc "Builds a dispatch-intent ownership record for one asset-step attempt."
   @spec new(RunState.t(), keyword()) :: t()
-  def new(%RunState{id: run_id}, attrs) when is_list(attrs) do
+  def new(%RunState{id: run_id} = run, attrs) when is_list(attrs) do
     asset_step_id = Keyword.fetch!(attrs, :asset_step_id)
     attempt = Keyword.get(attrs, :attempt)
     now = DateTime.utc_now()
@@ -113,6 +128,7 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
 
     %__MODULE__{
       ownership_id: ownership_id,
+      workspace_id: run.workspace_id,
       run_id: run_id,
       asset_step_id: asset_step_id,
       node_key: Keyword.get(attrs, :node_key),
@@ -122,6 +138,8 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
       execution_pool: Keyword.get(attrs, :execution_pool),
       runner_ref: Keyword.get(attrs, :runner_ref),
       dispatch_id: Keyword.get(attrs, :dispatch_id, ownership_id),
+      owner_id: run.storage_owner_id,
+      fencing_token: run.storage_fencing_token,
       deadline_at: Keyword.get(attrs, :deadline_at),
       inserted_at: now,
       updated_at: now
@@ -136,22 +154,33 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   @spec active_statuses() :: [status()]
   def active_statuses, do: @active_statuses
 
-  @doc "Fetches active ownership records, preserving storage read errors."
-  @spec fetch_active(String.t()) :: {:ok, [t()]} | {:error, term()}
-  def fetch_active(run_id) when is_binary(run_id),
-    do: Storage.list_active_execution_ownerships(run_id)
-
+  @doc "Fetches active ownership records under the run's workspace authority."
   @spec fetch_active(RunState.t()) :: {:ok, [t()]} | {:error, term()}
-  def fetch_active(%RunState{id: run_id}), do: fetch_active(run_id)
+  def fetch_active(%RunState{workspace_id: workspace_id} = run) when is_binary(workspace_id),
+    do: fetch_active_v2(run)
+
+  def fetch_active(%RunState{}), do: {:error, :workspace_id_required}
 
   @doc "Persists one ownership record in the durable storage ledger."
   @spec persist(t()) :: :ok | {:error, term()}
-  def persist(%__MODULE__{} = ownership), do: Storage.put_execution_ownership(touch(ownership))
+  def persist(%__MODULE__{workspace_id: workspace_id} = ownership)
+      when is_binary(workspace_id),
+      do: persist_v2(touch(ownership))
+
+  def persist(%__MODULE__{}), do: {:error, :workspace_id_required}
 
   @doc "Marks a storage-ledger ownership record as submitted."
   @spec submitted(t(), String.t()) :: t()
   def submitted(%__MODULE__{} = ownership, execution_id) when is_binary(execution_id) do
-    %{ownership | runner_execution_id: execution_id, status: :submitted, last_error: nil}
+    persistence_version = if ownership.workspace_id, do: 1, else: ownership.persistence_version
+
+    %{
+      ownership
+      | runner_execution_id: execution_id,
+        persistence_version: persistence_version,
+        status: :submitted,
+        last_error: nil
+    }
     |> touch()
   end
 
@@ -180,10 +209,10 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   end
 
   @doc "Marks matching pre-submit ownership records as failed."
-  @spec mark_dispatch_failed(String.t(), String.t(), term()) :: :ok | {:error, term()}
-  def mark_dispatch_failed(run_id, ownership_id, reason)
-      when is_binary(run_id) and is_binary(ownership_id) do
-    with {:ok, ownerships} <- fetch_active(run_id) do
+  @spec mark_dispatch_failed(RunState.t(), String.t(), term()) ::
+          :ok | {:error, term()}
+  def mark_dispatch_failed(run, ownership_id, reason) when is_binary(ownership_id) do
+    with {:ok, ownerships} <- fetch_active(run) do
       ownerships
       |> Enum.filter(&(&1.ownership_id == ownership_id))
       |> persist_all(&dispatch_failed(&1, reason))
@@ -201,10 +230,10 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   end
 
   @doc "Marks matching active storage-ledger ownership records as awaiting durable persistence."
-  @spec mark_finish_persist_pending(String.t(), String.t()) :: :ok | {:error, term()}
-  def mark_finish_persist_pending(run_id, execution_id)
-      when is_binary(run_id) and is_binary(execution_id) do
-    with {:ok, ownerships} <- fetch_active(run_id) do
+  @spec mark_finish_persist_pending(RunState.t(), String.t()) ::
+          :ok | {:error, term()}
+  def mark_finish_persist_pending(run, execution_id) when is_binary(execution_id) do
+    with {:ok, ownerships} <- fetch_active(run) do
       ownerships
       |> Enum.filter(&(&1.runner_execution_id == execution_id))
       |> persist_all(&finish_persist_pending/1)
@@ -212,10 +241,9 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   end
 
   @doc "Marks matching active storage-ledger ownership records as completed."
-  @spec complete_execution(String.t(), String.t()) :: :ok | {:error, term()}
-  def complete_execution(run_id, execution_id)
-      when is_binary(run_id) and is_binary(execution_id) do
-    with {:ok, ownerships} <- fetch_active(run_id) do
+  @spec complete_execution(RunState.t(), String.t()) :: :ok | {:error, term()}
+  def complete_execution(run, execution_id) when is_binary(execution_id) do
+    with {:ok, ownerships} <- fetch_active(run) do
       ownerships
       |> Enum.filter(&(&1.runner_execution_id == execution_id))
       |> persist_all(&completed/1)
@@ -223,9 +251,9 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   end
 
   @doc "Marks all active storage-ledger ownership records for a run as completed."
-  @spec complete_active(String.t()) :: :ok | {:error, term()}
-  def complete_active(run_id) when is_binary(run_id) do
-    with {:ok, ownerships} <- fetch_active(run_id) do
+  @spec complete_active(RunState.t()) :: :ok | {:error, term()}
+  def complete_active(run) do
+    with {:ok, ownerships} <- fetch_active(run) do
       ownerships
       |> Enum.filter(&(&1.status in [:submitted, :started, :finish_persist_pending]))
       |> persist_all(&completed/1)
@@ -233,10 +261,10 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   end
 
   @doc "Marks storage-ledger ownerships with cancellation outcomes."
-  @spec persist_cancel_outcomes(String.t(), [map()], term()) :: :ok | {:error, term()}
-  def persist_cancel_outcomes(run_id, results, reason)
-      when is_binary(run_id) and is_list(results) do
-    with {:ok, active} <- fetch_active(run_id) do
+  @spec persist_cancel_outcomes(RunState.t(), [map()], term()) ::
+          :ok | {:error, term()}
+  def persist_cancel_outcomes(run, results, reason) when is_list(results) do
+    with {:ok, active} <- fetch_active(run) do
       active_by_execution_id = Enum.group_by(active, & &1.runner_execution_id)
 
       results
@@ -256,9 +284,10 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   end
 
   @doc "Marks active storage-ledger ownerships without runner execution ids as unknown."
-  @spec persist_unknown_without_execution_id(String.t(), term()) :: :ok | {:error, term()}
-  def persist_unknown_without_execution_id(run_id, reason) when is_binary(run_id) do
-    with {:ok, ownerships} <- fetch_active(run_id) do
+  @spec persist_unknown_without_execution_id(RunState.t(), term()) ::
+          :ok | {:error, term()}
+  def persist_unknown_without_execution_id(run, reason) do
+    with {:ok, ownerships} <- fetch_active(run) do
       reason = safe_diagnostic(reason)
 
       ownerships
@@ -276,10 +305,6 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
       |> persist_all()
     end
   end
-
-  @doc "Fetches all durable ownership records for a run, preserving storage read errors."
-  @spec fetch_all(String.t()) :: {:ok, [t()]} | {:error, term()}
-  def fetch_all(run_id) when is_binary(run_id), do: Storage.list_execution_ownerships(run_id)
 
   @doc false
   @spec valid_status?(term()) :: boolean()
@@ -326,6 +351,190 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   def cancel_outcome_status(%{status: :not_found}), do: :unknown_runner_outcome
   def cancel_outcome_status(%{error: _error}), do: :best_effort_failed
   def cancel_outcome_status(_result), do: :cancel_dispatched
+
+  defp fetch_active_v2(%RunState{} = run) do
+    context = SystemContext.workspace(run.workspace_id, :runner_execution_recovery)
+    fetch_active_pages(context, run, nil, [])
+  end
+
+  defp fetch_active_pages(context, run, cursor, acc) do
+    query = %PageActiveExecutions{
+      workspace_context: context,
+      run_id: run.id,
+      after: cursor,
+      limit: 500
+    }
+
+    case Persistence.stores().run_ownership.page_active_executions(query) do
+      {:ok, %CursorPage{} = page} ->
+        ownerships = Enum.map(page.items, &from_runner_execution(&1, run))
+        acc = [ownerships | acc]
+
+        if page.has_more? do
+          fetch_active_pages(context, run, page.next_cursor, acc)
+        else
+          {:ok, acc |> Enum.reverse() |> List.flatten()}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp persist_v2(%__MODULE__{status: :dispatch_intent} = ownership) do
+    with :ok <- validate_v2_authority(ownership),
+         {:ok, _execution} <-
+           Persistence.stores().run_ownership.record_dispatch(%RecordRunnerDispatch{
+             workspace_context: context(ownership, :runner_dispatch),
+             command_id: command_id("dispatch", ownership.dispatch_id, 1),
+             run_id: ownership.run_id,
+             runner_execution_id: ownership.dispatch_id,
+             dispatch_id: ownership.dispatch_id,
+             owner_id: ownership.owner_id,
+             fencing_token: ownership.fencing_token,
+             payload: dispatch_payload(ownership),
+             occurred_at: ownership.updated_at
+           }) do
+      :ok
+    end
+  end
+
+  defp persist_v2(%__MODULE__{status: status})
+       when status in [:submitted, :finish_persist_pending],
+       do: :ok
+
+  defp persist_v2(%__MODULE__{} = ownership) do
+    with :ok <- validate_v2_authority(ownership),
+         {:ok, status, result, error} <- v2_transition(ownership),
+         {:ok, _execution} <-
+           Persistence.stores().run_ownership.advance_execution(%AdvanceRunnerExecution{
+             workspace_context: context(ownership, :runner_execution_transition),
+             command_id:
+               command_id(
+                 Atom.to_string(status),
+                 ownership.runner_execution_id || ownership.dispatch_id,
+                 ownership.persistence_version || 1
+               ),
+             run_id: ownership.run_id,
+             runner_execution_id: ownership.runner_execution_id || ownership.dispatch_id,
+             owner_id: ownership.owner_id,
+             fencing_token: ownership.fencing_token,
+             expected_version: ownership.persistence_version || 1,
+             status: status,
+             result: result,
+             error: error,
+             occurred_at: ownership.updated_at
+           }) do
+      :ok
+    end
+  end
+
+  defp validate_v2_authority(%__MODULE__{
+         workspace_id: workspace_id,
+         run_id: run_id,
+         dispatch_id: dispatch_id,
+         owner_id: owner_id,
+         fencing_token: fencing_token
+       })
+       when is_binary(workspace_id) and workspace_id != "" and is_binary(run_id) and run_id != "" and
+              is_binary(dispatch_id) and dispatch_id != "" and is_binary(owner_id) and
+              owner_id != "" and
+              is_integer(fencing_token) and fencing_token > 0,
+       do: :ok
+
+  defp validate_v2_authority(%__MODULE__{}),
+    do: {:error, {:invalid_runner_execution_authority, :missing_run_fence}}
+
+  defp v2_transition(%__MODULE__{status: :started}), do: {:ok, :running, nil, nil}
+
+  defp v2_transition(%__MODULE__{status: :completed}),
+    do: {:ok, :ok, %{"outcome" => "orchestrator_persisted"}, nil}
+
+  defp v2_transition(%__MODULE__{status: :already_completed}),
+    do: {:ok, :cancelled, nil, nil}
+
+  defp v2_transition(%__MODULE__{status: status})
+       when status in [:cancel_requested, :cancel_dispatched],
+       do: {:ok, :cancelling, nil, nil}
+
+  defp v2_transition(%__MODULE__{status: status})
+       when status in [:cancel_acknowledged],
+       do: {:ok, :cancelled, nil, nil}
+
+  defp v2_transition(%__MODULE__{status: status} = ownership)
+       when status in [:dispatch_failed, :best_effort_failed, :unknown_runner_outcome] do
+    {:ok, :error, nil, JsonSafe.error(ownership.last_error || ownership.cancel_reason || status)}
+  end
+
+  defp v2_transition(%__MODULE__{status: status}),
+    do: {:error, {:invalid_runner_execution_transition, status}}
+
+  defp dispatch_payload(%__MODULE__{} = ownership) do
+    JsonSafe.data(%{
+      ownership_id: ownership.ownership_id,
+      asset_step_id: ownership.asset_step_id,
+      node_key: ownership.node_key,
+      asset_ref: ownership.asset_ref,
+      stage: ownership.stage,
+      attempt: ownership.attempt,
+      execution_pool: ownership.execution_pool,
+      runner_ref: ownership.runner_ref,
+      deadline_at: ownership.deadline_at
+    })
+  end
+
+  defp from_runner_execution(%RunnerExecution{} = execution, %RunState{} = run) do
+    payload = execution.payload || %{}
+
+    %__MODULE__{
+      ownership_id: payload_value(payload, "ownership_id") || execution.dispatch_id,
+      workspace_id: execution.workspace_id,
+      run_id: execution.run_id,
+      asset_step_id: payload_value(payload, "asset_step_id") || execution.dispatch_id,
+      node_key: payload_value(payload, "node_key"),
+      asset_ref: payload_value(payload, "asset_ref"),
+      stage: payload_value(payload, "stage"),
+      attempt: payload_value(payload, "attempt"),
+      execution_pool: payload_value(payload, "execution_pool"),
+      runner_execution_id: execution.runner_execution_id,
+      runner_ref: payload_value(payload, "runner_ref"),
+      dispatch_id: execution.dispatch_id,
+      owner_id: run.storage_owner_id || execution.owner_id,
+      fencing_token: run.storage_fencing_token || execution.fencing_token,
+      persistence_version: execution.version,
+      deadline_at: parse_datetime(payload_value(payload, "deadline_at")),
+      status: legacy_status(execution.status),
+      inserted_at: execution.dispatched_at || DateTime.utc_now(),
+      updated_at: execution.terminal_at || execution.dispatched_at || DateTime.utc_now()
+    }
+  end
+
+  defp legacy_status(:dispatching), do: :submitted
+  defp legacy_status(:running), do: :started
+  defp legacy_status(:cancelling), do: :cancel_dispatched
+
+  defp payload_value(payload, key),
+    do: Map.get(payload, key, Map.get(payload, String.to_existing_atom(key)))
+
+  defp parse_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      _invalid -> nil
+    end
+  end
+
+  defp parse_datetime(_value), do: nil
+
+  defp context(%__MODULE__{} = ownership, purpose),
+    do: SystemContext.workspace(ownership.workspace_id, purpose)
+
+  defp command_id(operation, identity, version) do
+    digest =
+      :crypto.hash(:sha256, :erlang.term_to_binary({operation, identity, version}))
+      |> Base.url_encode64(padding: false)
+
+    "runner:#{operation}:#{digest}"
+  end
 
   defp cancelled(%__MODULE__{} = ownership, result, reason) do
     status = cancel_outcome_status(result)

@@ -1,8 +1,13 @@
 # Phase 6 Storage Adapter Plan
 
+> **Superseded:** This historical plan chose SQLite first and preserved the
+> mega-adapter contract. Do not implement it. The current direction is the
+> PostgreSQL-first Storage V2 architecture in
+> `docs/architecture/postgresql-control-plane-storage-v2.md`.
+
 ## Status
 
-Planned on branch `feature/phase-6-storage-plan`.
+Superseded historical plan from branch `feature/phase-6-storage-plan`.
 
 Phase 5 delivered the storage boundary that Phase 6 should build on:
 
@@ -480,4 +485,7 @@ Do not implement these as part of Phase 6:
 - a storage-service abstraction that bypasses the orchestrator-owned contract
 - forcing SQLite to match Postgres table-for-table when the current contract does not need it
 
-Phase 6 is successful when the scaffold storage apps are replaced with real SQLite and Postgres adapters that satisfy the orchestrator-owned storage contract, local persistence works through SQLite, production-oriented persistence works through Postgres, and the remaining SQL-centered follow-up work is clearly handed off to Phase 7 instead of inflating storage scope.
+The historical plan defined success as replacing the scaffold apps with parallel
+SQLite and PostgreSQL mega-adapter implementations. Storage V2 deliberately rejects
+that exit condition; its current production gates are defined in
+`docs/architecture/postgresql-control-plane-storage-v2.md`.

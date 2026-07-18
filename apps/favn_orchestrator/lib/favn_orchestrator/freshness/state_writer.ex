@@ -1,10 +1,10 @@
 defmodule FavnOrchestrator.Freshness.StateWriter do
   @moduledoc """
-  Builds and persists execution-time asset freshness state.
+  Builds execution-time asset freshness evidence for immutable materializations.
 
-    Successful materializations replace the freshness version, manifest identity,
-    and consumed input versions. Non-success attempts preserve those success-scoped
-    fields while updating latest-attempt metadata.
+  Successful materializations carry the freshness version, manifest identity,
+  and consumed input versions into the materialization ledger. PostgreSQL
+  outbox projections derive the current freshness read model from that ledger.
   """
 
   alias Favn.Freshness.Key, as: FreshnessKey
@@ -13,8 +13,6 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.Freshness.Staleness
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage
-  alias FavnOrchestrator.TargetStatus
 
   @type decision :: map()
   @type freshness_context :: %{
@@ -68,100 +66,6 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
     state
   end
 
-  @doc """
-  Builds and persists the freshness state for a successful planned node.
-  """
-  @spec put_success_state(
-          RunState.t(),
-          Version.t(),
-          Favn.Plan.node_key(),
-          decision(),
-          freshness_context()
-        ) :: {:ok, AssetFreshnessState.t()} | {:error, term()}
-  def put_success_state(run_state, version, node_key, decision, freshness_context) do
-    state = build_success_state(run_state, version, node_key, decision, freshness_context)
-
-    with :ok <- Storage.put_asset_freshness_state(state),
-         :ok <- TargetStatus.Projector.project_freshness_state(state) do
-      {:ok, state}
-    end
-  end
-
-  @doc """
-  Builds the freshness state for a non-success attempt, preserving prior success.
-  """
-  @spec build_attempt_state(
-          RunState.t(),
-          Version.t(),
-          Favn.Plan.node_key(),
-          atom(),
-          String.t(),
-          decision()
-        ) ::
-          AssetFreshnessState.t()
-  def build_attempt_state(
-        %RunState{} = run_state,
-        %Version{} = version,
-        node_key,
-        status,
-        freshness_key,
-        decision
-      )
-      when is_atom(status) and is_binary(freshness_key) and is_map(decision) do
-    node = Map.fetch!(run_state.plan.nodes, node_key)
-    {module, name} = node.ref
-    now = DateTime.utc_now()
-
-    previous =
-      case Storage.get_asset_freshness_state(module, name, freshness_key) do
-        {:ok, %AssetFreshnessState{} = state} -> state
-        _other -> nil
-      end
-
-    {:ok, state} =
-      AssetFreshnessState.new(%{
-        asset_ref_module: module,
-        asset_ref_name: name,
-        freshness_key: freshness_key,
-        status: status,
-        freshness_version: previous_freshness_version(previous),
-        latest_success_run_id: previous_latest_success_run_id(previous),
-        latest_success_node_key: previous_latest_success_node_key(previous),
-        latest_success_at: previous_latest_success_at(previous),
-        latest_attempt_run_id: run_state.id,
-        latest_attempt_status: status,
-        latest_attempt_at: now,
-        manifest_version_id: previous_manifest_version_id(previous),
-        manifest_content_hash: previous_manifest_content_hash(previous),
-        input_versions: previous_input_versions(previous),
-        metadata: attempt_freshness_metadata(previous, decision, version),
-        updated_at: now
-      })
-
-    state
-  end
-
-  @doc """
-  Builds and persists the freshness state for a non-success attempt.
-  """
-  @spec put_attempt_state(
-          RunState.t(),
-          Version.t(),
-          Favn.Plan.node_key(),
-          atom(),
-          String.t(),
-          decision()
-        ) ::
-          {:ok, AssetFreshnessState.t()} | {:error, term()}
-  def put_attempt_state(run_state, version, node_key, status, freshness_key, decision) do
-    state = build_attempt_state(run_state, version, node_key, status, freshness_key, decision)
-
-    with :ok <- Storage.put_asset_freshness_state(state),
-         :ok <- TargetStatus.Projector.project_freshness_state(state) do
-      {:ok, state}
-    end
-  end
-
   defp current_upstream_states(%{upstream: upstream}, freshness_context) do
     Map.new(upstream, fn upstream_node_key ->
       {upstream_node_key, Map.get(freshness_context.current_states, upstream_node_key)}
@@ -174,47 +78,4 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
 
   defp decision_freshness_key(decision),
     do: Map.get(decision, :freshness_key, FreshnessKey.latest())
-
-  defp previous_freshness_version(%AssetFreshnessState{} = state), do: state.freshness_version
-  defp previous_freshness_version(_state), do: nil
-
-  defp previous_latest_success_run_id(%AssetFreshnessState{} = state),
-    do: state.latest_success_run_id
-
-  defp previous_latest_success_run_id(_state), do: nil
-
-  defp previous_latest_success_node_key(%AssetFreshnessState{} = state),
-    do: state.latest_success_node_key
-
-  defp previous_latest_success_node_key(_state), do: nil
-
-  defp previous_latest_success_at(%AssetFreshnessState{} = state), do: state.latest_success_at
-  defp previous_latest_success_at(_state), do: nil
-
-  defp previous_input_versions(%AssetFreshnessState{} = state), do: state.input_versions
-  defp previous_input_versions(_state), do: %{}
-
-  defp previous_manifest_version_id(%AssetFreshnessState{} = state), do: state.manifest_version_id
-  defp previous_manifest_version_id(_state), do: nil
-
-  defp previous_manifest_content_hash(%AssetFreshnessState{} = state),
-    do: state.manifest_content_hash
-
-  defp previous_manifest_content_hash(_state), do: nil
-
-  defp attempt_freshness_metadata(%AssetFreshnessState{metadata: metadata}, decision, version)
-       when is_map(metadata) do
-    Map.merge(metadata, latest_attempt_metadata(decision, version))
-  end
-
-  defp attempt_freshness_metadata(_state, decision, version),
-    do: latest_attempt_metadata(decision, version)
-
-  defp latest_attempt_metadata(decision, %Version{} = version) do
-    %{
-      latest_attempt_reason: Map.get(decision, :reason),
-      latest_attempt_manifest_version_id: version.manifest_version_id,
-      latest_attempt_manifest_content_hash: version.content_hash
-    }
-  end
 end

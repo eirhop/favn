@@ -25,7 +25,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
     decoded = Jason.decode!(payload)
 
-    assert decoded["format"] == "favn.run_snapshot.storage.v1"
+    assert decoded["format"] == "favn.run_snapshot.storage.v2"
+    assert decoded["schema_version"] == 2
 
     assert decoded["asset_ref"] == %{
              "module" => Atom.to_string(__MODULE__.Asset),

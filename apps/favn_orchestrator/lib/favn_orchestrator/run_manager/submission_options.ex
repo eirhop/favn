@@ -16,7 +16,14 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
     :exact_windows,
     :lineage_depth
   ]
-  defstruct @enforce_keys ++ [:anchor_window, :parent_run_id, :root_run_id]
+  defstruct @enforce_keys ++
+              [
+                :anchor_window,
+                :parent_run_id,
+                :root_run_id,
+                :workspace_id,
+                :deployment_id
+              ]
 
   @type t :: %__MODULE__{
           run_id: String.t(),
@@ -30,7 +37,9 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
           exact_windows: map(),
           parent_run_id: String.t() | nil,
           root_run_id: String.t() | nil,
-          lineage_depth: non_neg_integer()
+          lineage_depth: non_neg_integer(),
+          workspace_id: String.t() | nil,
+          deployment_id: String.t() | nil
         }
 
   @spec new(keyword(), keyword()) :: {:ok, t()} | {:error, term()}
@@ -56,7 +65,9 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
         exact_windows: option(opts, defaults, :exact_windows, %{}),
         parent_run_id: option(opts, defaults, :parent_run_id, nil),
         root_run_id: option(opts, defaults, :root_run_id, nil),
-        lineage_depth: option(opts, defaults, :lineage_depth, 0)
+        lineage_depth: option(opts, defaults, :lineage_depth, 0),
+        workspace_id: Keyword.get(opts, :_workspace_id),
+        deployment_id: Keyword.get(opts, :_deployment_id)
       }
 
       with :ok <- non_empty_string(values.run_id, :invalid_run_id),
@@ -69,6 +80,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
            :ok <- map(values.exact_windows, :invalid_exact_windows),
            :ok <- optional_string(values.parent_run_id, :invalid_parent_run_id),
            :ok <- optional_string(values.root_run_id, :invalid_root_run_id),
+           :ok <- optional_string(values.workspace_id, :invalid_workspace_id),
+           :ok <- optional_string(values.deployment_id, :invalid_deployment_id),
            :ok <- non_negative_integer(values.lineage_depth, :invalid_lineage_depth) do
         {:ok, struct!(__MODULE__, values)}
       end

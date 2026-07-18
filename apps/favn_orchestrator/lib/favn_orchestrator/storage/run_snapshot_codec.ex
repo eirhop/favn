@@ -10,7 +10,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms
   alias FavnOrchestrator.Storage.RunStateCodec
 
-  @format "favn.run_snapshot.storage.v1"
+  @format "favn.run_snapshot.storage.v2"
   # Favn-owned run snapshot atoms are fixed here; consumer module/name atoms come only from
   # the associated manifest record.
   @internal_atom_strings [
@@ -34,6 +34,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "deps",
     "downstream",
     "duration_ms",
+    "deployment_id",
     "error",
     "exponential",
     "event_seq",
@@ -72,6 +73,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "pipeline",
     "pipeline_context",
     "pipeline_dependencies",
+    "pipeline_identity_ref",
     "pipeline_module",
     "pipeline_submit_ref",
     "pipeline_target_refs",
@@ -124,6 +126,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "updated_at",
     "upstream",
     "window",
+    "workspace_id",
     "jitter"
   ]
 
@@ -170,8 +173,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp run_to_dto(%RunState{} = run) do
     %{
       "format" => @format,
-      "schema_version" => 1,
+      "schema_version" => 2,
       "id" => run.id,
+      "workspace_id" => run.workspace_id,
+      "deployment_id" => run.deployment_id,
       "manifest_version_id" => run.manifest_version_id,
       "manifest_content_hash" => run.manifest_content_hash,
       "asset_ref" => JsonSafe.ref(run.asset_ref),
@@ -242,7 +247,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     end
   end
 
-  defp dto_to_run(%{"schema_version" => 1} = dto, allowed_atom_strings) do
+  defp dto_to_run(%{"schema_version" => 2} = dto, allowed_atom_strings) do
     with {:ok, asset_ref} <- ref_from_dto(Map.get(dto, "asset_ref"), allowed_atom_strings),
          {:ok, target_refs} <- refs_from_dto(Map.get(dto, "target_refs"), allowed_atom_strings),
          {:ok, plan} <- plan_from_dto(Map.get(dto, "plan"), allowed_atom_strings),
@@ -254,6 +259,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       {:ok,
        %RunState{
          id: Map.get(dto, "id"),
+         workspace_id: Map.get(dto, "workspace_id"),
+         deployment_id: Map.get(dto, "deployment_id"),
          manifest_version_id: Map.get(dto, "manifest_version_id"),
          manifest_content_hash: Map.get(dto, "manifest_content_hash"),
          asset_ref: asset_ref,
@@ -869,6 +876,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp normalize_metadata(%{} = metadata, allowed_atom_strings) do
     metadata
     |> promote_key("pipeline_context", :pipeline_context)
+    |> promote_key("pipeline_identity_ref", :pipeline_identity_ref)
     |> promote_key("pipeline_submit_ref", :pipeline_submit_ref)
     |> promote_key("pipeline_target_refs", :pipeline_target_refs)
     |> promote_key("pipeline_dependencies", :pipeline_dependencies)
@@ -878,6 +886,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> promote_key("replay_mode", :replay_mode)
     |> promote_key("retry_state", :retry_state)
     |> normalize_metadata_module(:pipeline_submit_ref, allowed_atom_strings)
+    |> normalize_metadata_ref(:pipeline_identity_ref, allowed_atom_strings)
     |> normalize_metadata_refs(:pipeline_target_refs, allowed_atom_strings)
     |> normalize_metadata_refs(:asset_dependencies, allowed_atom_strings)
     |> normalize_metadata_refs(:pipeline_dependencies, allowed_atom_strings)
@@ -947,6 +956,13 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
       :error ->
         metadata
+    end
+  end
+
+  defp normalize_metadata_ref(metadata, key, allowed_atom_strings) when is_map(metadata) do
+    case Map.fetch(metadata, key) do
+      {:ok, value} -> Map.put(metadata, key, ref_from_dto_value(value, allowed_atom_strings))
+      :error -> metadata
     end
   end
 

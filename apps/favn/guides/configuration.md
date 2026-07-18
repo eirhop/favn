@@ -54,12 +54,14 @@ project's `config/runtime.exs` in a fresh Mix process before it collects
 connection, execution-pool, and plugin configuration for the local runner.
 Environment-specific values from `.env` may therefore be read in runtime config.
 
-Minimal default:
+Minimal local configuration:
 
 ```elixir
 config :favn,
   local: [
-    storage: :memory
+    storage: :postgres,
+    workspace_id: "local-dev",
+    postgres: [url: System.fetch_env!("FAVN_DATABASE_URL")]
   ]
 ```
 
@@ -67,9 +69,9 @@ Common local options:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `:storage` | `:memory` | `:memory`, `:sqlite`, or `:postgres`. `mix favn.dev --sqlite` and `--postgres` override this. |
-| `:sqlite_path` | `.favn/data/orchestrator.sqlite3` | SQLite file when `storage: :sqlite`. |
-| `:postgres` | local defaults | Postgres options when `storage: :postgres`. |
+| `:storage` | `:postgres` | PostgreSQL is the only supported control-plane backend. |
+| `:workspace_id` | `"local-dev"` | Workspace selected by local CLI/UI requests. |
+| `:postgres` | local defaults or `FAVN_DATABASE_URL` | PostgreSQL URL or connection options. |
 | `:orchestrator_api_enabled` | `true` | Keep enabled for local commands. |
 | `:orchestrator_port` | `4101` | Local API port. |
 | `:web_port` | `4173` | Local UI port. |
@@ -83,6 +85,7 @@ Postgres local options:
 
 | Key | Default |
 | --- | --- |
+| `:url` | `FAVN_DATABASE_URL`, when set |
 | `:hostname` | `"127.0.0.1"` |
 | `:port` | `5432` |
 | `:username` | `"postgres"` |
@@ -90,6 +93,9 @@ Postgres local options:
 | `:database` | `"favn"` |
 | `:ssl` | `false` |
 | `:pool_size` | `10` |
+
+The memory and SQLite control-plane backends were removed. Production requires
+verified TLS; local development may explicitly disable TLS for a loopback database.
 
 ## SQL Connection Modules
 

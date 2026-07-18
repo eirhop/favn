@@ -1,20 +1,18 @@
-# Structure Docs
+# Application Structure
 
-This directory maps code and tests by product area. Use these files only when
-you need ownership or test-location guidance for a specific app.
+Use these pages to find ownership and test locations for an umbrella application.
 
-- `favn.md`: public package facade and public Mix tasks
-- `favn_authoring.md`: authoring DSL implementation and doc lookup internals
-- `favn_azure.md`: optional public Azure runner credential cache and token providers
-- `favn_core.md`: compiler, manifest, planning, windows, and shared contracts
-- `favn_local.md`: local developer tooling and packaging implementation
-- `favn_orchestrator.md`: control plane, HTTP API, runs, auth, storage contracts
-- `favn_runner.md`: execution runtime and runner-owned inspection
-- `favn_sql_runtime.md`: shared SQL connection/client/admission runtime
-- `favn_duckdb.md`: DuckDB adapter and runner plugin runtime
-- `favn_duckdb_adbc.md`: DuckDB ADBC adapter and runner plugin runtime
-- `favn_storage_sqlite.md`: SQLite storage adapter
-- `favn_storage_sqlite_database.md`: SQLite database model, ER diagram, indexes, and usage
-- `favn_storage_postgres.md`: Postgres storage adapter
+- `favn.md`: public DSL surface
+- `favn_core.md`: compiler, domain, and manifest logic
+- `favn_runner.md`: execution runtime
+- `favn_orchestrator.md`: control plane and persistence contracts
+- `favn_storage_postgres.md`: PostgreSQL control-plane implementation
+- `favn_local.md`: developer tooling and deployment builders
+- `favn_view.md`: Phoenix/LiveView boundary
+- `favn_sql_runtime.md`: SQL session and execution boundary
+- `favn_duckdb.md` and `favn_duckdb_adbc.md`: DuckDB integrations
 - `favn_test_support.md`: shared test fixtures and helpers
-- `favn_view.md`: Phoenix/LiveView UI boundary app
+
+The normative persistence design is
+`docs/architecture/postgresql-control-plane-storage-v2.md`. SQLite storage was
+removed during the Storage V2 reset and has no current application boundary.

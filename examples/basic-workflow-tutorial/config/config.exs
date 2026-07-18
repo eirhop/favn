@@ -11,9 +11,7 @@ config :favn,
   connections: [
     warehouse: [database: ".favn/data/reference_workload.duckdb", write_concurrency: 1]
   ],
-  local: [
-    storage: :memory
-  ],
+  local: [workspace_id: "local-dev"],
   runner_plugins: [
     {FavnDuckdb, execution_mode: :in_process}
   ]

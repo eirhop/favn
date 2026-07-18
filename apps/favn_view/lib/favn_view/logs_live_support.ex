@@ -12,11 +12,13 @@ defmodule FavnView.LogsLiveSupport do
 
   @initial_limit 200
   @fetch_limit 500
+  @poll_interval_ms 2_000
 
   def mount_logs(socket, attrs) do
     filter = Filter.normalize(Map.fetch!(attrs, :filter))
     scope = Map.fetch!(attrs, :scope)
-    load_result = load_initial_logs(filter)
+    operator_context = Map.fetch!(attrs, :operator_context)
+    load_result = load_initial_logs(operator_context, filter)
 
     socket =
       socket
@@ -28,11 +30,13 @@ defmodule FavnView.LogsLiveSupport do
       |> assign_visible_logs()
 
     if connected?(socket) and load_result.status != :error do
-      subscribe_and_replay(socket)
+      socket |> subscribe_and_replay() |> schedule_poll()
     else
       socket
     end
   end
+
+  def poll(socket), do: socket |> replay_gap() |> schedule_poll()
 
   def handle_filter(socket, params) do
     filters = Map.get(params, "filters", %{})
@@ -70,8 +74,8 @@ defmodule FavnView.LogsLiveSupport do
 
   def unsubscribe(_socket), do: :ok
 
-  def run_context(run_id) do
-    case FavnOrchestrator.get_run_detail(run_id) do
+  def run_context(operator_context, run_id) do
+    case FavnOrchestrator.get_run_detail(operator_context, run_id) do
       {:ok, %{summary: summary} = detail} ->
         run_context_from_public(summary, Map.get(detail, :steps, []))
 
@@ -89,10 +93,10 @@ defmodule FavnView.LogsLiveSupport do
     end
   end
 
-  def asset_context(run_id, asset_step_id) do
-    case FavnOrchestrator.get_asset_step_log_context(run_id, asset_step_id) do
+  def asset_context(operator_context, run_id, asset_step_id) do
+    case FavnOrchestrator.get_asset_step_log_context(operator_context, run_id, asset_step_id) do
       {:ok, context} -> asset_context_from_public(context)
-      {:error, _reason} -> missing_asset_context(run_id, asset_step_id)
+      {:error, _reason} -> missing_asset_context(operator_context, run_id, asset_step_id)
     end
   end
 
@@ -124,8 +128,8 @@ defmodule FavnView.LogsLiveSupport do
     }
   end
 
-  defp load_initial_logs(filter) do
-    case FavnOrchestrator.list_logs(filter, limit: @fetch_limit, order: :desc) do
+  defp load_initial_logs(operator_context, filter) do
+    case FavnOrchestrator.list_logs(operator_context, filter, limit: @fetch_limit) do
       {:ok, %{items: items}} ->
         %{status: :ready, logs: LogsViewModel.trim_latest(items, @initial_limit)}
 
@@ -135,7 +139,7 @@ defmodule FavnView.LogsLiveSupport do
   end
 
   defp subscribe_and_replay(socket) do
-    case subscribe_logs(socket.assigns.filter) do
+    case subscribe_logs(socket.assigns.operator_context, socket.assigns.filter) do
       {:ok, subscription} ->
         socket
         |> assign(:log_subscription, subscription)
@@ -155,7 +159,10 @@ defmodule FavnView.LogsLiveSupport do
 
   defp replay_gap(socket) do
     # Initial load happens before subscription; replay closes that small handoff gap.
-    case FavnOrchestrator.replay_logs(socket.assigns.next_cursor, socket.assigns.filter,
+    case FavnOrchestrator.replay_logs(
+           socket.assigns.operator_context,
+           socket.assigns.next_cursor,
+           socket.assigns.filter,
            limit: @initial_limit
          ) do
       {:ok, []} ->
@@ -180,10 +187,15 @@ defmodule FavnView.LogsLiveSupport do
     end
   end
 
-  defp subscribe_logs(filter) do
-    Application.get_env(:favn_view, :log_subscribe_fun, &FavnOrchestrator.subscribe_logs/1).(
-      filter
-    )
+  defp subscribe_logs(operator_context, filter) do
+    fun =
+      Application.get_env(
+        :favn_view,
+        :log_subscribe_fun,
+        &FavnOrchestrator.subscribe_logs/2
+      )
+
+    if is_function(fun, 2), do: fun.(operator_context, filter), else: fun.(filter)
   end
 
   defp assign_visible_logs(socket) do
@@ -236,9 +248,9 @@ defmodule FavnView.LogsLiveSupport do
     }
   end
 
-  defp missing_asset_context(run_id, asset_step_id) do
+  defp missing_asset_context(operator_context, run_id, asset_step_id) do
     %{
-      run: run_context(run_id),
+      run: run_context(operator_context, run_id),
       result: nil,
       title: "Asset logs",
       subtitle: "Run #{LogsViewModel.short_id(run_id)} · Asset step #{asset_step_id}",
@@ -281,4 +293,9 @@ defmodule FavnView.LogsLiveSupport do
 
   defp error_label(:not_found), do: "Run not found"
   defp error_label(_reason), do: "Unable to load run"
+
+  defp schedule_poll(socket) do
+    Process.send_after(self(), :poll_logs, @poll_interval_ms)
+    socket
+  end
 end

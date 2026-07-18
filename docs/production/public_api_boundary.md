@@ -42,8 +42,8 @@ The other umbrella apps are not ordinary user dependencies:
 - `favn_orchestrator` owns the private control plane and is not a public external
   API dependency.
 - `favn_runner` owns execution internals and runner plugin dispatch.
-- `favn_storage_sqlite` and `favn_storage_postgres` are control-plane storage
-  adapters selected by runtime/package tooling.
+- `favn_storage_postgres` is the internal control-plane persistence
+  implementation selected by runtime/package tooling.
 - `favn_local` owns local lifecycle and packaging implementation behind public
   `mix favn.*` tasks.
 - `favn_view` is the Phoenix/LiveView UI boundary app, not a dependency for authored business code.
@@ -110,8 +110,10 @@ external contract.
 
 ## Related Contracts
 
-- `docs/production/single_node_contract.md` defines the first production runtime
-  topology.
+- `docs/architecture/postgresql-control-plane-storage-v2.md` defines production
+  persistence and the multi-node runtime foundation.
+- `docs/production/single_node_contract.md` defines the PostgreSQL-backed
+  one-node developer and controlled-deployment topology.
 - `docs/FEATURES.md` tracks implemented behavior and maturity labels.
 - `docs/ROADMAP.md` tracks remaining implementation work to align code, tests,
   examples, and publishing with this boundary.

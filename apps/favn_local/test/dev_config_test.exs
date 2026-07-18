@@ -1,15 +1,28 @@
 defmodule Favn.Dev.ConfigTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Favn.Dev.Config
+
+  setup do
+    database_url = System.get_env("FAVN_DATABASE_URL")
+    System.delete_env("FAVN_DATABASE_URL")
+
+    on_exit(fn ->
+      if database_url,
+        do: System.put_env("FAVN_DATABASE_URL", database_url),
+        else: System.delete_env("FAVN_DATABASE_URL")
+    end)
+
+    :ok
+  end
 
   test "resolve/1 returns defaults" do
     config = Config.resolve([])
 
-    assert config.storage == :memory
-    assert config.sqlite_path == ".favn/data/orchestrator.sqlite3"
     assert config.postgres.hostname == "127.0.0.1"
     assert config.postgres.port == 5432
+    assert config.postgres.url == "ecto://postgres:postgres@127.0.0.1:5432/favn"
+    assert config.workspace_id == "local-dev"
     assert config.orchestrator_api_enabled == true
     assert config.orchestrator_port == 4101
     assert config.web_port == 4173
@@ -23,16 +36,14 @@ defmodule Favn.Dev.ConfigTest do
   test "resolve/1 applies runtime overrides" do
     config =
       Config.resolve(
-        storage: :sqlite,
-        sqlite_path: ".favn/data/dev.sqlite",
+        workspace_id: "customer-dev",
         orchestrator_port: 4201,
         web_port: 4273,
         scheduler: true,
         service_token: "dev-token"
       )
 
-    assert config.storage == :sqlite
-    assert config.sqlite_path == ".favn/data/dev.sqlite"
+    assert config.workspace_id == "customer-dev"
     assert config.orchestrator_port == 4201
     assert config.web_port == 4273
     assert config.orchestrator_base_url == "http://127.0.0.1:4201"
@@ -66,7 +77,6 @@ defmodule Favn.Dev.ConfigTest do
         ]
       )
 
-    assert config.storage == :postgres
     assert config.postgres.hostname == "db"
     assert config.postgres.port == 6543
     assert config.postgres.username == "u"
@@ -110,8 +120,8 @@ defmodule Favn.Dev.ConfigTest do
   end
 
   test "resolve/1 reads :local config and lets it override :dev" do
-    Application.put_env(:favn, :dev, storage: :memory, sqlite_path: "dev.sqlite")
-    Application.put_env(:favn, :local, storage: :sqlite, sqlite_path: "local.sqlite")
+    Application.put_env(:favn, :dev, workspace_id: "dev")
+    Application.put_env(:favn, :local, workspace_id: "local")
 
     on_exit(fn ->
       Application.delete_env(:favn, :dev)
@@ -119,7 +129,6 @@ defmodule Favn.Dev.ConfigTest do
     end)
 
     config = Config.resolve([])
-    assert config.storage == :sqlite
-    assert config.sqlite_path == "local.sqlite"
+    assert config.workspace_id == "local"
   end
 end

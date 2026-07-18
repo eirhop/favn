@@ -78,7 +78,9 @@ defmodule Favn.Run.PipelineContext do
 
   defp normalize_schedule(nil, _module, _name), do: nil
 
-  defp normalize_schedule(%Favn.Manifest.Schedule{} = schedule, _module, _name), do: schedule
+  defp normalize_schedule(%Favn.Manifest.Schedule{} = schedule, module, name)
+       when is_atom(module) and is_atom(name),
+       do: Favn.Manifest.Schedule.apply_identity(schedule, module, name)
 
   defp normalize_schedule(%Favn.Triggers.Schedule{} = schedule, module, name) do
     schedule_name = schedule.id || name

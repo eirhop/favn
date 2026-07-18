@@ -22,12 +22,15 @@ defmodule FavnOrchestrator.Auth.ServiceTokensTest do
     assert {:ok, [config]} = ServiceTokens.from_env_string("favn_web:#{@token_a}")
     assert config.service_identity == "favn_web"
     assert config.enabled == true
+    assert config.platform_roles == []
     assert config.token_hash == ServiceTokens.hash_token(@token_a)
     refute inspect(config) =~ @token_a
   end
 
   test "rejects token-only blank duplicate and weak service token entries" do
-    assert {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "identity:token"}} =
+    assert {:error,
+            {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
+             "identity[|platform_role+...]:token"}} =
              ServiceTokens.from_env_string(@token_a)
 
     assert {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :blank_identity}} =
@@ -52,8 +55,25 @@ defmodule FavnOrchestrator.Auth.ServiceTokensTest do
 
     assert {:ok, [%{service_identity: "favn_web"}]} = ServiceTokens.runtime_config()
 
-    assert {:ok, "favn_web"} =
+    assert {:ok, %{service_identity: "favn_web", platform_roles: []}} =
              ServiceTokens.authenticate(@token_a, ServiceTokens.configured_tokens())
+  end
+
+  test "platform authority is explicitly scoped per token" do
+    raw = "publisher|platform_reader+platform_operator:#{@token_a}"
+
+    assert {:ok, [config]} = ServiceTokens.from_env_string(raw)
+    assert config.platform_roles == [:platform_reader, :platform_operator]
+
+    assert {:ok,
+            %{
+              service_identity: "publisher",
+              platform_roles: [:platform_reader, :platform_operator]
+            }} = ServiceTokens.authenticate(@token_a, [config])
+
+    assert {:error,
+            {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :invalid_platform_roles}} =
+             ServiceTokens.from_env_string("publisher|workspace_admin:#{@token_a}")
   end
 
   test "runtime config rejects raw placeholder env values" do
@@ -71,7 +91,7 @@ defmodule FavnOrchestrator.Auth.ServiceTokensTest do
 
   test "raw application token config is validated consistently" do
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
-      [service_identity: "favn_web", token: @token_a, enabled: true]
+      [service_identity: "favn_web", token: @token_a, enabled: true, platform_roles: []]
     ])
 
     assert :ok = ServiceTokens.validate_runtime_config()

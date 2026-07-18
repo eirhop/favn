@@ -16,8 +16,17 @@ defmodule FavnOrchestrator.API.ActorsRouter do
 
   get "/" do
     case authorize_admin(conn) do
-      {:ok, _session, _actor} ->
-        Response.data(conn, 200, %{items: Enum.map(Auth.list_actors(), &DTO.actor/1)})
+      {:ok, _session, _actor, context} ->
+        case page_actors(context) do
+          {:ok, page} ->
+            Response.data(conn, 200, %{
+              items: Enum.map(page.items, &DTO.actor/1),
+              next_cursor: page.next_cursor
+            })
+
+          {:error, reason} ->
+            authentication_error(conn, reason)
+        end
 
       {:error, reason} ->
         authentication_error(conn, reason)
@@ -27,13 +36,14 @@ defmodule FavnOrchestrator.API.ActorsRouter do
   post "/" do
     params = conn.body_params
 
-    with {:ok, session, actor} <- authorize_admin(conn),
+    with {:ok, session, actor, context} <- authorize_admin(conn),
          {:ok, username} <- required_string(params, "username"),
          {:ok, password} <- required_string(params, "password"),
          {:ok, display_name} <- display_name(params, username),
          {:ok, roles} <- roles(Map.get(params, "roles", ["viewer"])),
-         {:ok, created_actor} <- Auth.create_actor(username, password, display_name, roles) do
-      audit_mutation(conn, "actor.create", created_actor.id, session, actor)
+         {:ok, created_actor} <-
+           create_actor(context, username, password, display_name, roles) do
+      audit_mutation(conn, context, "actor.create", created_actor.id, session, actor)
       Response.data(conn, 201, %{actor: DTO.actor(created_actor)})
     else
       {:error, {:missing_field, field}} ->
@@ -61,8 +71,8 @@ defmodule FavnOrchestrator.API.ActorsRouter do
   end
 
   get "/:actor_id" do
-    with {:ok, _session, _actor} <- authorize_admin(conn),
-         {:ok, actor} <- Auth.get_actor(actor_id) do
+    with {:ok, _session, _actor, context} <- authorize_admin(conn),
+         {:ok, actor} <- get_actor(context, actor_id) do
       Response.data(conn, 200, %{actor: DTO.actor(actor)})
     else
       {:error, :actor_not_found} ->
@@ -74,10 +84,10 @@ defmodule FavnOrchestrator.API.ActorsRouter do
   end
 
   put "/:actor_id/roles" do
-    with {:ok, session, actor} <- authorize_admin(conn),
+    with {:ok, session, actor, context} <- authorize_admin(conn),
          {:ok, role_values} <- required_roles(conn.body_params),
-         {:ok, updated_actor} <- Auth.update_actor_roles(actor_id, role_values) do
-      audit_mutation(conn, "actor.roles.update", actor_id, session, actor)
+         {:ok, updated_actor} <- update_actor_roles(context, actor_id, role_values) do
+      audit_mutation(conn, context, "actor.roles.update", actor_id, session, actor)
       Response.data(conn, 200, %{actor: DTO.actor(updated_actor)})
     else
       {:error, :actor_not_found} ->
@@ -98,10 +108,10 @@ defmodule FavnOrchestrator.API.ActorsRouter do
   end
 
   put "/:actor_id/password" do
-    with {:ok, session, actor} <- authorize_admin(conn),
+    with {:ok, session, actor, context} <- authorize_viewer(conn),
          {:ok, password} <- required_string(conn.body_params, "password"),
-         :ok <- Auth.set_actor_password(actor_id, password) do
-      audit_mutation(conn, "actor.password.set", actor_id, session, actor)
+         :ok <- set_actor_password(context, actor_id, password) do
+      audit_mutation(conn, context, "actor.password.set", actor_id, session, actor)
       Response.data(conn, 200, %{updated: true, actor_id: actor_id})
     else
       {:error, :actor_not_found} ->
@@ -128,12 +138,31 @@ defmodule FavnOrchestrator.API.ActorsRouter do
 
   defp authorize_admin(conn) do
     with :ok <- Authentication.ensure_service(conn) do
-      Authentication.actor_context(conn, :admin)
+      Authentication.workspace_context(conn, :admin)
     end
   end
 
-  defp audit_mutation(conn, action, resource_id, session, actor) do
-    Audit.put_best_effort(%{
+  defp authorize_viewer(conn) do
+    with :ok <- Authentication.ensure_service(conn) do
+      Authentication.workspace_context(conn, :viewer)
+    end
+  end
+
+  defp page_actors(context), do: Auth.page_actors(context, limit: 100)
+
+  defp create_actor(context, username, password, display_name, roles),
+    do: Auth.create_actor(context, username, password, display_name, roles)
+
+  defp get_actor(context, actor_id), do: Auth.get_actor(context, actor_id)
+
+  defp update_actor_roles(context, actor_id, roles),
+    do: Auth.update_actor_roles(context, actor_id, roles)
+
+  defp set_actor_password(context, actor_id, password),
+    do: Auth.set_actor_password(context, actor_id, password)
+
+  defp audit_mutation(conn, context, action, resource_id, session, actor) do
+    Audit.put_best_effort(context, %{
       action: action,
       actor_id: actor.id,
       session_id: session.id,

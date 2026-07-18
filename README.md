@@ -48,18 +48,18 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.runs`, `mix favn.logs`, `mix favn.inspect`, `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, explicit service wrapper pid/log-write failures, structured local API failure diagnostics, and normalized runner RPC dispatch failures at the orchestrator boundary
 - the old SvelteKit frontend has been removed; local dev now starts a single operator process that runs orchestrator plus the thin Phoenix/LiveView `apps/favn_view` shell on the standard local web port, `http://127.0.0.1:4173`
-- local development publishes one compact schema-8 manifest index plus immutable content-addressed SQL execution packages, then registers the same pinned index across runner and orchestrator so scheduled runs execute against the same identity without loading every generated SQL payload
+- local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - run snapshot, run event, and operational-backfill read-model persistence store explicit JSON-safe storage records, not BEAM terms or reconstructed exception structs; runner/backfill failures are normalized, bounded, and redacted before durable storage
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
 - stage-parallel pipeline runs drain each submitted stage before failing later work, so independent sibling assets are reported even when one sibling fails; manifest-persisted freshness policies can skip already-fresh nodes, force selected nodes, block failed dependencies, and dirty downstream nodes only when an upstream actually refreshes
 - run live updates expose documented global and run-scoped SSE streams with persisted cursors, Last-Event-ID replay, retry hints, and heartbeats from the orchestrator API
-- production mutating orchestrator command APIs require `Idempotency-Key` for run submit/rerun/cancel, manifest activation, backfill submit, and backfill-window rerun; duplicate retries replay the original logical result, conflicting input returns `409`, and SQLite persists only key/request fingerprints plus operation-versioned JSON-safe replay response DTOs
-- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and same-BEAM web readiness/public-origin/secret-key-base config, and the orchestrator exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler state evidence, runner availability, in-flight runs, and recent failed runs; the single-node operator runbook documents stopped-backend SQLite control-plane and separate DuckDB data-plane backup/restore procedures, while backup automation and fuller release packaging remain follow-up; see `docs/production/single_node_contract.md` and `docs/production/single_node_operator_runbook.md`
+- production mutating orchestrator command APIs require `Idempotency-Key` for run submit/rerun/cancel, manifest activation, backfill submit, and backfill-window rerun; PostgreSQL commits command identity, request fingerprint, domain change, audit, outbox event, and replay result atomically
+- PostgreSQL Storage V2 is the only control-plane persistence implementation; it uses explicit workspace authority, immutable deployment catalogs, fenced multi-node coordination, bounded keyset reads, a durable outbox, repairable projections, and mandatory live-PostgreSQL integration tests
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
-- single-node packaging now includes `mix favn.build.single` with a verified project-local backend-only SQLite launcher under `.favn/dist/single/<build_id>/`; it still depends on the installed runtime source root and is not a self-contained or relocatable release artifact (see `OPERATOR_NOTES.md` in each artifact)
-- backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates `manifest-index.json` and its sibling `execution-packages/`, uploads only missing packages with gzip, registers and activates the index by default, asks the orchestrator to register that persisted index with the local runner, and reports service-auth active-manifest verification status; it does not make browser login/session/audit durable
+- single-node packaging includes `mix favn.build.single` with a verified project-local backend-only PostgreSQL launcher under `.favn/dist/single/<build_id>/`; it still depends on the installed runtime source root and is not a self-contained or relocatable release artifact (see `OPERATOR_NOTES.md` in each artifact)
+- backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates a manifest JSON file, registers and activates the manifest by default, asks the orchestrator to register that persisted manifest with the local runner, and reports service-auth active-manifest verification status; it does not make browser login/session/audit durable
 - operational backfill foundations are implemented in the control plane for resolving ranges, dry-running plans, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; child pipeline backfills default to `refresh: :missing`, and operational backfill does not accept lookback-policy input until concrete runtime semantics exist
 - operational backfill read-model storage is derived projection state; the closeout migration to JSON-safe DTO storage rebuilds the durable backfill read-model tables, and operators can repopulate them with `mix favn.backfill repair --apply` from authoritative run snapshots/events when needed
 
@@ -152,13 +152,12 @@ config :favn, :duckdb_adbc,
 See DuckDB's ADBC client documentation for driver installation details:
 https://duckdb.org/docs/stable/clients/adbc.html
 
-Do not add internal runtime apps as ordinary consumer dependencies. Storage
-adapters such as `favn_storage_sqlite` and `favn_storage_postgres`, runtime apps
+Do not add internal runtime apps as ordinary consumer dependencies. The
+`favn_storage_postgres` control-plane backend, runtime apps
 such as `favn_orchestrator`, `favn_runner`, and `favn_local`, and the web app are
 owned by Favn's runtime/package tooling rather than by authored business code.
-Local SQLite control-plane storage is selected with `config :favn, :local` or
-`mix favn.dev --sqlite`, not by adding `:favn_storage_sqlite` to the consumer
-project.
+Local development uses PostgreSQL through `FAVN_DATABASE_URL` or explicit
+`config :favn, :local` PostgreSQL options.
 
 Multiple `git` dependencies with different `subdir` values from this monorepo
 are not the supported plugin-consumption model before Hex packaging because Mix
@@ -172,23 +171,16 @@ workaround only. It is not the intended consumer dependency model.
 
 ```elixir
 defmodule MyDataPlatform.Lakehouse do
-  use Favn.Namespace
-  relation connection: :important_lakehouse
+  use Favn.Namespace, relation: [connection: :important_lakehouse]
 end
 
 defmodule MyDataPlatform.Lakehouse.Raw do
-  use Favn.Namespace
-  relation catalog: "raw"
+  use Favn.Namespace, relation: [catalog: "raw"]
 end
 
 defmodule MyDataPlatform.Lakehouse.Raw.Sales do
-  use Favn.Namespace
-  relation schema: "sales"
+  use Favn.Namespace, relation: [schema: "sales"]
 end
-
-# Namespace modules may also share settings, metadata, runtime configuration,
-# runtime inputs, freshness, windows, SQL materialization, and session resources.
-# Descendant asset/source modules use only their own DSL.
 
 defmodule MyDataPlatform.Lakehouse.Raw.Sales.Orders do
   @moduledoc """
@@ -236,9 +228,9 @@ atoms or strings, but persisted manifests normalize them to strings so pipeline
 selectors behave the same before and after JSON persistence without creating
 atoms from stored label data.
 
-Elixir assets, generated multi-assets, and SQL assets declare runtime
-requirements with `runtime_config/1,2`, `env!/1,2`, and `secret_env!/1,2`.
-Reusable bundles live in ordinary authoring code:
+Assets and generated multi-assets declare runtime requirements with
+`runtime_config/1,2`, `env!/1,2`, and `secret_env!/1,2`. Reusable bundles live in
+ordinary authoring code:
 
 ```elixir
 defmodule MyDataPlatform.RuntimeConfigs do
@@ -254,17 +246,12 @@ end
 
 Select a bundle directly with
 `runtime_config MyDataPlatform.RuntimeConfigs.github()`, or select it for a
-namespace's descendant Elixir assets, generated multi-assets, and SQL assets
-with `runtime_config MyDataPlatform.RuntimeConfigs.github()` in a structural
-namespace module.
+namespace's descendant Elixir assets with
+`use Favn.Namespace, runtime_config: [MyDataPlatform.RuntimeConfigs.github()]`.
 Namespace selection follows module ancestry; it is not a global configuration
 registry. Unrelated assets can explicitly select the same bundle. A root
 namespace can select a bundle, but avoid placing secrets there unless every
-descendant executable asset genuinely requires them. A descendant SQL asset
-with non-empty effective runtime configuration must also have an effective
-`runtime_inputs ResolverModule`, declared on the leaf or a shared namespace;
-the resolver is the only consumer, and the values do not become automatic SQL
-parameters.
+descendant executable Elixir asset genuinely requires them.
 
 Manifests record environment keys and secret/required flags, but never resolved
 values. The runner resolves only the selected asset's manifest requirements and
@@ -309,13 +296,11 @@ orders asset followed by SQL transformations.
 
 ```elixir
 defmodule MyDataPlatform.Lakehouse.Mart do
-  use Favn.Namespace
-  relation catalog: "mart"
+  use Favn.Namespace, relation: [catalog: "mart"]
 end
 
 defmodule MyDataPlatform.Lakehouse.Mart.Sales do
-  use Favn.Namespace
-  relation schema: "sales"
+  use Favn.Namespace, relation: [schema: "sales"]
 end
 
 defmodule MyDataPlatform.Lakehouse.Mart.Sales.OrderSummary do
@@ -386,12 +371,12 @@ Declare it once before the query with
 `runtime_inputs MyDataPlatform.Lakehouse.Raw.Orders.Inputs`. Returned values use
 the normal `@name` SQL placeholder and adapter binding path, including through
 nested `defsql`; they cannot add SQL source. The resolver module reference is
-stored in the SQL asset's immutable execution package. Resolution is bounded to 30 seconds and by the remaining
+stored in the manifest. Resolution is bounded to 30 seconds and by the remaining
 node deadline, rejects collisions and reserved window names, and exposes only
 safe identity/lineage. Before SQL starts, the orchestrator atomically persists a
 run/node pin; automatic attempts and safe restart recovery reuse it. Mark
-secret-bearing names with `sensitive_params`; SQLite/Postgres require a valid
-`runtime_input_pin_key` for protected persistence and fail before materializing
+secret-bearing names with `sensitive_params`; PostgreSQL requires a valid
+`FAVN_RUNTIME_INPUT_PIN_KEY` for protected persistence and fails before materializing
 instead of storing sensitive parameters as plaintext.
 The declaration macro is the only supported form; anonymous functions,
 captures, MFA tuples, and inline resolver blocks are not accepted. Read
@@ -424,13 +409,6 @@ SQL table and incremental assets can publish a typed output contract alongside
 their query:
 
 ```elixir
-defmodule MyApp.Contracts.AuditMetadata do
-  use Favn.SQL.ContractFragment
-
-  column :processed_at, :datetime, null: false
-  column :favn_run_id, :string, null: false
-end
-
 contract do
   grain by: [:record_id], description: "one normalized record"
 
@@ -440,27 +418,20 @@ contract do
     via: :transformation
 
   column :payload, :json, from: [{"external.records", "payload"}]
-  include MyApp.Contracts.AuditMetadata
   unique [:record_id]
 
-  row_count equals: param(:expected_rows), on_violation: :fail
+  row_count min: 1,
+    when: :target_exists,
+    on_violation: :skip_materialization
 end
 ```
 
 Favn validates the staged candidate's ordered names and types before target
 mutation, generates checks for non-null columns, structured grain, unique keys,
-and exact or bounded row counts, and persists explicit column lineage. Included
-column-only fragments are flattened into the canonical contract while retaining
-separate composition provenance. `row_count` supports literal `equals`, `min`,
-`max`, or a runtime-bound exact `param/1`; typed contract parameters are checked
-before a SQL session opens. Contract-generated
+and minimum row count, and persists explicit column lineage. Contract-generated
 and custom checks use the same `on_violation: :fail | :warn |
 :skip_materialization` vocabulary and appear together in asset assurance. The
-query defines the `select` list; the contract validates and documents its
-output.
-
-SQL queries may bind the Favn-owned `@favn_run_id` and
-`@favn_run_started_at` runtime inputs for deterministic execution metadata.
+contract describes output; it does not generate the query's `select` list.
 
 Read [SQL Output Contracts](apps/favn/guides/sql-output-contracts.md) for the
 complete DSL, logical types, grain and lineage choices, automatic enforcement,
@@ -486,8 +457,8 @@ end
 Checks return one row with a native Boolean `passed` column and optional bounded
 scalar metrics. Failures roll back, warnings commit with durable quality
 metadata, and `:skip_materialization` is a successful no-op with
-`quality_status: :warning` that preserves an existing target. Use transactional
-checks with table or incremental materializations.
+`quality_status: :warning` that preserves an existing target. Checked views are
+intentionally unsupported.
 
 Read [Transactional SQL Asset Checks](apps/favn/guides/sql-asset-checks.md) for
 the complete DSL reference, transaction order, bootstrap behavior, metric
@@ -514,18 +485,8 @@ end
 ```
 
 Windowed pipelines support `:hourly`, `:daily`, `:monthly`, and `:yearly`
-policies. Manual local runs pass the concrete requested window. Scheduled
-windowed runs default to the previous complete period, while
-`anchor: :current_period` explicitly selects the possibly incomplete period
-containing the occurrence. Schedule cadence remains independent from window
-granularity, so a daily schedule can plan monthly windows.
-
-Asset `lookback` expands backward from that resolved anchor. A windowed asset
-with `refresh_from` keeps exact-window freshness while adding a calendar refresh
-cadence. For example, `Favn.Window.monthly(lookback: 1, refresh_from: :day)`
-under a current July anchor plans June and July, tracks today's success for each
-month independently, and skips a later same-day occurrence only after both have
-succeeded. Explicit `freshness :daily` remains asset-wide.
+policies. Manual local runs pass the concrete requested window, while scheduled
+windowed runs resolve the previous complete period in the schedule timezone.
 Invalid scheduled window policy data is isolated to that scheduler entry instead
 of crashing the scheduler runtime. Pipelines without a `window` clause run
 without an anchor window.
@@ -834,7 +795,7 @@ Add `Favn.SQL.Adapter.DuckDB.config_schema_fields/0` or
 `Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields/0` to DuckDB connection module
 schemas. Add `production_storage_schema_fields/0` when production local-file
 session databases should reject `:memory:`, relative paths, missing parents, and
-unwritable parents before opening DuckDB. SQLite control-plane backups do not
+unwritable parents before opening DuckDB. PostgreSQL control-plane backups do not
 include DuckDB data-plane files or DuckLake object storage. Secret runtime refs
 inside nested DuckDB config are resolved on the runner side and redacted from
 diagnostics. Typed DuckDB settings are validated after runtime refs resolve;
@@ -962,17 +923,6 @@ runner process that exits during startup is reported as a service exit with log
 guidance instead of only as an unreachable node. `--root-dir` remains an
 install/runtime-source override for split-root workflows.
 
-Manifest-index and execution-package publication accepts plain or gzip-compressed
-JSON. Local development queries missing package hashes, uploads only those
-packages in bounded batches, and then publishes the compact index; all three
-requests use gzip by default. The orchestrator bounds compressed requests (8
-MiB by default), expanded JSON (32 MiB by default), package count (100), package
-size (4 MiB), and missing-hash queries (10,000), while ordinary API requests
-retain their 1 MiB parser limit. The missing-hash response advertises the
-effective request budgets so the local publisher applies configured lower
-limits before upload. Production deployments can tune the body budgets with the
-environment keys documented in the single-node operator runbook.
-
 Local tooling HTTP calls are plain HTTP loopback calls to Favn-managed local
 services. They intentionally do not support remote or HTTPS URLs in the local
 developer loop. `mix favn.dev` starts the runner, orchestrator, and the Phoenix
@@ -1003,8 +953,9 @@ refuses startup if they are missing.
 Password login now uses Argon2id password hashes, returns an opaque session token
 once, and applies an explicit absolute session TTL. Passwords must be nonblank,
 15 to 1,024 characters, and are not subject to arbitrary composition rules.
-Clients must forward the session token to the private orchestrator API as
-`x-favn-session-token`. SQLite storage keeps only encoded Argon2 password hashes,
+Clients must forward the selected workspace and session token to the private
+orchestrator API as `x-favn-workspace-id` and `x-favn-session-token`. PostgreSQL
+keeps only encoded Argon2 password hashes,
 deterministic session-token hashes, revocation timestamps, actor metadata, and
 redacted audit entries, with auth roles, credential records, and audit entries
 stored as explicit JSON-safe DTO records rather than generic BEAM-term payloads;
@@ -1118,17 +1069,9 @@ maps top-level keys explicitly, validates transported module/local atoms before
 recreating them, normalizes relative connection database paths from the consumer
 project root, and redacts connection/plugin secrets from diagnostics.
 
-If you are upgrading from earlier pre-closeout local SQL storage state, run
-`mix favn.reset` once so local persisted payloads are recreated in the current
-canonical format.
-
-Pre-closeout SQL payload compatibility is intentionally not supported. Existing
-SQLite/Postgres rows that were persisted as BEAM term blobs must be reset or
-recreated before running with the closeout adapters.
-
-Pre-DTO SQLite auth rows are also intentionally unsupported. If a private-dev
-database contains auth roles, credentials, or audit entries persisted before the
-explicit auth DTO boundary, reset or recreate that SQLite control-plane state.
+Storage V2 is a reset migration for private pre-v1 environments. Old adapter
+tables and BEAM-term payloads are intentionally unsupported; create a fresh
+database or restore a Storage V2 backup before upgrading.
 
 ### favn_local configuration
 
@@ -1137,44 +1080,37 @@ explicit auth DTO boundary, reset or recreate that SQLite control-plane state.
 
 ```elixir
 config :favn, :local,
-  storage: :memory,
+  storage: :postgres,
   scheduler: false,
-  sqlite_path: ".favn/data/orchestrator.sqlite3",
   postgres: [
-    hostname: "127.0.0.1",
-    port: 5432,
-    username: "postgres",
-    password: "postgres",
-    database: "favn",
+    url: "ecto://postgres:postgres@127.0.0.1:5432/favn",
     ssl: false,
     pool_size: 10
-  ]
+  ],
+  workspace_id: "local-dev"
 ```
 
 Storage modes:
 
-- `mix favn.dev` uses configured storage (default `:memory`)
-- `mix favn.dev --sqlite` forces SQLite
-- `mix favn.dev --postgres` forces Postgres
+- `mix favn.dev` uses PostgreSQL; it is the only supported control-plane backend
 - `mix favn.dev --scheduler` enables local scheduled runs
 - `mix favn.dev --no-scheduler` disables local scheduled runs and overrides config
 
-Do not add `:favn_storage_sqlite` to a consumer `mix.exs` for local SQLite
-control-plane storage. The SQLite storage adapter is owned by Favn's local
-runtime/package setup under `.favn/`; consumer projects select it through the
-local config above or `mix favn.dev --sqlite`.
+Memory and SQLite control-plane backends were removed. SQLite may be reconsidered
+later as a smaller development convenience adapter, but it is not supported now.
 
-`mix favn.build.single` emits a verified project-local backend-only SQLite launcher under
+`mix favn.build.single` emits a verified project-local backend-only PostgreSQL launcher under
 `.favn/dist/single/<build_id>/`. Configure it by copying
 `env/backend.env.example` to `env/backend.env` or setting `FAVN_ENV_FILE`, then
 use the generated `bin/start` and `bin/stop` scripts. The launcher starts the
-runner, SQLite adapter, and orchestrator in one backend BEAM runtime. It remains
+runner, PostgreSQL backend, and orchestrator in one backend BEAM runtime. It remains
 project-local and non-relocatable because it depends on the installed runtime
-source root. Postgres production mode is not included, and the web service is
-still deployed as a separate explicit process.
+source root; the web service is still deployed as a separate explicit process.
 
 Production orchestrator service tokens are configured as comma-separated
-`service_identity:token` entries in `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`.
+`service_identity[|platform_role+...]:token` entries in
+`FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`. Tokens have no platform authority unless
+roles are explicitly listed; manifest publication requires `platform_operator`.
 Each token must be at least 32 characters and must not look like a placeholder,
 example, password, secret, test value, todo, or token-label string; identities
 must be nonblank and unique. Rotation is supported by configuring multiple active
@@ -1182,49 +1118,39 @@ identities. The orchestrator stores only token hashes from production runtime
 config and records the matched `service_identity` in audit logs, diagnostics, and
 bootstrap auth responses without exposing raw token values.
 
-The Phoenix/LiveView UI lives in `apps/favn_view`. For the first production
-target it runs as a separate OTP app in the same BEAM as the backend apps and
+The Phoenix/LiveView UI lives in `apps/favn_view`. In the current single-node
+prototype it runs as a separate OTP app in the same BEAM as the backend apps and
 uses the public orchestrator facade for readiness. Web health endpoints are
-available at `/api/web/v1/health/live` and `/api/web/v1/health/ready`.
+available at `/api/web/v1/health/live` and `/api/web/v1/health/ready`. The
+production topology will be finalized against PostgreSQL Storage V2.
 
 `mix favn.bootstrap.single` bootstraps the backend control-plane side of the
-single-node shape through orchestrator APIs. Required inputs can be passed as
-`--manifest`, `--orchestrator-url`, and `--service-token`, or by the supported
-environment defaults documented by the task. When activation is enabled, which
-is the default, `--operator-username` and `--operator-password` or their
-environment fallbacks are also required. Bootstrap uses
+single-node shape through orchestrator APIs. Required inputs include
+`--manifest`, `--orchestrator-url`, `--service-token`, `--workspace-id`,
+`--operator-username`, and `--operator-password`, with environment fallbacks
+documented by the task. Bootstrap uses
 `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN` or
 `FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN` for service auth, with
 `FAVN_ORCHESTRATOR_SERVICE_TOKEN` accepted only as a legacy fallback.
-The command verifies service-token auth, logs in the bootstrap operator when
-activation is enabled, reads and verifies the compact manifest index and exact
-sibling execution-package set, queries and uploads only missing packages,
-registers the index, activates it by default with operator actor context, and calls
+The command verifies service-token auth, logs in the workspace bootstrap operator,
+reads and verifies the manifest JSON, registers the
+manifest, activates it by default with operator actor context, and calls
 `/api/orchestrator/v1/manifests/:manifest_version_id/runner/register` so the
 orchestrator registers the persisted manifest with the local runner. Repeating
 the command with the same manifest and runner registration is safe and
 repeatable, and the command prints manifest registration, runner registration,
-and active-manifest verification status. Active-manifest verification uses the
-service-auth-only `/api/orchestrator/v1/bootstrap/active-manifest` endpoint. The
+and active-manifest verification status. Active-manifest verification is
+workspace/session authorized. The
 single-node acceptance path verifies first-admin login, manifest-pinned run
 submission, run history, auth/session state, diagnostics, and restart survival
-against the generated backend artifact with fresh SQLite storage. Built artifact
+against the generated backend artifact with a live PostgreSQL database. Built artifact
 contents under `dist_dir` are read-only after build; mutable runtime state is
 kept outside the artifact tree in runtime-home, database, log, and pid paths.
 
-Storage adapter startup reports recoverable configuration failures as
-`{:error, reason}`. Scheduler state keys are exact across built-in adapters:
-`{pipeline_module, nil}` addresses the nil schedule id and does not fall back to
-the latest concrete schedule id.
-
-SQLite adapter startup validates the configured database path and can classify
-the schema as empty, ready, missing, upgrade-required, newer than the running
-release, or inconsistent. Local/default SQLite startup still auto-runs
-migrations, while manual startup can reject non-ready existing databases and can
-initialize empty databases when explicitly enabled.
-SQLite is also the first durable backend for orchestrator auth/session/audit
-state, storing auth roles, credential records, and audit entries as explicit
-JSON-safe DTO records; Postgres auth persistence remains deferred.
+PostgreSQL startup validates connection/TLS configuration, runtime-input keys,
+the exact Storage V2 migration set, required columns, constraints, and critical
+indexes before the orchestrator accepts traffic. Runtime nodes never migrate the
+database implicitly.
 
 Detailed operator diagnostics are available through the private orchestrator
 HTTP endpoint `GET /api/orchestrator/v1/diagnostics` with service auth and the
@@ -1244,9 +1170,9 @@ expose them through the adapter boundary.
 - implementation is owned by `apps/favn_local`
 - `mix favn.build.runner` is rooted in the current Mix project; `--root-dir`
   must match the current project root
-- runner artifacts include `manifest-index.json`, immutable
-  `execution-packages/<sha256>.json`, and compiled beams from the current project
-  app so helper modules and connection modules are available at execution time
+- runner artifacts include the pinned manifest and compiled beams from the
+  current project app so helper modules and connection modules are available at
+  execution time
 - install now materializes a runnable runtime workspace under
   `.favn/install/runtime_root` and records runtime metadata in
   `.favn/install/runtime.json`
@@ -1266,7 +1192,6 @@ part of the stable `v1` contract unless they are documented here or in
 - `Favn.resolve_pipeline/2`
 - `Favn.generate_manifest/0,1`
 - `Favn.build_manifest/0,1`
-- `Favn.prepare_manifest_publication/1,2`
 - `Favn.plan_asset_run/2`
 - `Favn.SQLClient.connect/1,2`, `query/2,3`, `execute/2,3`, `transaction/2,3`,
   `capabilities/1`, `relation/2`, `columns/2`, `with_connection/2,3`, and
@@ -1336,9 +1261,13 @@ external BEAM lifecycle coverage. On Unix the umbrella fast runner uses native
   cancellation, logs, and schedule behavior
 - `docs/production/public_api_boundary.md` defines the intended package and
   stable public API boundary for `v1`
-- `docs/production/single_node_contract.md` defines the first `v1` production deployment contract
-- `docs/production/single_node_operator_runbook.md` documents the SQLite-first
-  single-node operator path
+- `docs/architecture/postgresql-control-plane-storage-v2.md` defines the
+  PostgreSQL production architecture and Storage V2 implementation contract
+- `docs/production/postgresql_operator_runbook.md` defines the PostgreSQL
+  deployment, migration, restore, maintenance, and incident procedures
+- `docs/production/single_node_contract.md` and
+  `docs/production/single_node_operator_runbook.md` document the project-local
+  PostgreSQL single-node launcher
 - `docs/structure/` maps current ownership, code layout, and test layout by app
 - `examples/basic-workflow-tutorial` is the first end-to-end tutorial project
 

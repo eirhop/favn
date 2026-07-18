@@ -52,15 +52,24 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec activate_manifest(String.t(), String.t(), String.t(), session_context() | nil) ::
+  @spec activate_manifest(String.t(), String.t(), String.t(), session_context()) ::
           {:ok, map()} | {:error, term()}
-  def activate_manifest(base_url, service_token, manifest_version_id, session_context \\ nil)
-      when is_binary(base_url) and is_binary(service_token) and is_binary(manifest_version_id) do
+  def activate_manifest(base_url, service_token, manifest_version_id, session_context)
+      when is_binary(base_url) and is_binary(service_token) and is_binary(manifest_version_id) and
+             is_map(session_context) do
     request_post(
       :activate_manifest,
       base_url <> "/api/orchestrator/v1/manifests/#{manifest_version_id}/activate",
       service_token,
-      %{},
+      %{
+        selection: %{
+          common_assets: "all",
+          common_pipelines: "all",
+          workspace_assets: [],
+          workspace_pipelines: []
+        },
+        configuration: %{}
+      },
       session_context,
       idempotency_key(:activate_manifest, session_context, %{
         manifest_version_id: manifest_version_id
@@ -68,9 +77,11 @@ defmodule Favn.Dev.OrchestratorClient do
     )
   end
 
-  @spec register_runner(String.t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
-  def register_runner(base_url, service_token, payload)
-      when is_binary(base_url) and is_binary(service_token) and is_map(payload) do
+  @spec register_runner(String.t(), String.t(), session_context(), map()) ::
+          {:ok, map()} | {:error, term()}
+  def register_runner(base_url, service_token, session_context, payload)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_map(payload) do
     manifest_version_id =
       Map.get(payload, :manifest_version_id) || Map.get(payload, "manifest_version_id")
 
@@ -80,19 +91,21 @@ defmodule Favn.Dev.OrchestratorClient do
         base_url <>
           "/api/orchestrator/v1/manifests/#{URI.encode(manifest_version_id)}/runner/register",
         service_token,
-        %{}
+        %{},
+        session_context
       )
     else
       {:error, operation_error(:register_runner, :post, base_url, :missing_manifest_version_id)}
     end
   end
 
-  @spec bootstrap_active_manifest(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def bootstrap_active_manifest(base_url, service_token)
-      when is_binary(base_url) and is_binary(service_token) do
+  @spec bootstrap_active_manifest(String.t(), String.t(), session_context()) ::
+          {:ok, map()} | {:error, term()}
+  def bootstrap_active_manifest(base_url, service_token, session_context)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) do
     url = base_url <> "/api/orchestrator/v1/bootstrap/active-manifest"
 
-    case request_get(:bootstrap_active_manifest, url, service_token) do
+    case request_get(:bootstrap_active_manifest, url, service_token, session_context) do
       {:ok, %{"data" => data}} when is_map(data) ->
         {:ok, data}
 
@@ -104,10 +117,11 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec cancel_run(String.t(), String.t(), String.t(), session_context() | nil) ::
+  @spec cancel_run(String.t(), String.t(), String.t(), session_context()) ::
           {:ok, map()} | {:error, term()}
-  def cancel_run(base_url, service_token, run_id, session_context \\ nil)
-      when is_binary(base_url) and is_binary(service_token) and is_binary(run_id) do
+  def cancel_run(base_url, service_token, run_id, session_context)
+      when is_binary(base_url) and is_binary(service_token) and is_binary(run_id) and
+             is_map(session_context) do
     url = base_url <> "/api/orchestrator/v1/runs/#{URI.encode(run_id)}/cancel"
 
     case request_post(
@@ -129,11 +143,11 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec password_login(String.t(), String.t(), String.t(), String.t()) ::
+  @spec password_login(String.t(), String.t(), String.t(), String.t(), String.t()) ::
           {:ok, session_context()} | {:error, term()}
-  def password_login(base_url, service_token, username, password)
-      when is_binary(base_url) and is_binary(service_token) and is_binary(username) and
-             is_binary(password) do
+  def password_login(base_url, service_token, workspace_id, username, password)
+      when is_binary(base_url) and is_binary(service_token) and is_binary(workspace_id) and
+             workspace_id != "" and is_binary(username) and is_binary(password) do
     url = base_url <> "/api/orchestrator/v1/auth/password/sessions"
 
     with {:ok,
@@ -144,15 +158,23 @@ defmodule Favn.Dev.OrchestratorClient do
               "actor" => %{"id" => actor_id}
             }
           }} <-
-           request_post(:password_login, url, service_token, %{
-             username: username,
-             password: password
-           }),
+           request_post(
+             :password_login,
+             url,
+             service_token,
+             %{username: username, password: password},
+             %{"workspace_id" => workspace_id}
+           ),
          true <- is_binary(session_id) and session_id != "",
          true <- is_binary(actor_id) and actor_id != "",
          true <- is_binary(session_token) and session_token != "" do
       {:ok,
-       %{"actor_id" => actor_id, "session_id" => session_id, "session_token" => session_token}}
+       %{
+         "workspace_id" => workspace_id,
+         "actor_id" => actor_id,
+         "session_id" => session_id,
+         "session_token" => session_token
+       }}
     else
       false -> {:error, operation_error(:password_login, :post, url, :invalid_response)}
       {:error, _reason} = error -> error
@@ -415,10 +437,10 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec in_flight_runs(String.t(), String.t(), session_context() | nil) ::
+  @spec in_flight_runs(String.t(), String.t(), session_context()) ::
           {:ok, [String.t()]} | {:error, term()}
-  def in_flight_runs(base_url, service_token, session_context \\ nil)
-      when is_binary(base_url) and is_binary(service_token) do
+  def in_flight_runs(base_url, service_token, session_context)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) do
     url = base_url <> "/api/orchestrator/v1/runs/in-flight"
 
     with {:ok, %{"data" => %{"run_ids" => run_ids}}} <-
@@ -474,7 +496,7 @@ defmodule Favn.Dev.OrchestratorClient do
          url,
          service_token,
          payload,
-         session_context \\ nil,
+         session_context,
          idempotency_key \\ nil
        ) do
     body = JSON.encode!(payload)
@@ -537,6 +559,7 @@ defmodule Favn.Dev.OrchestratorClient do
       ]
       |> add_authorization_header(service_token)
       |> add_session_headers(session_context)
+      |> add_workspace_header(session_context)
       |> add_idempotency_header(idempotency_key)
       |> Kernel.++(extra_headers)
 
@@ -563,6 +586,13 @@ defmodule Favn.Dev.OrchestratorClient do
   end
 
   defp add_session_headers(headers, _session_context), do: headers
+
+  defp add_workspace_header(headers, %{"workspace_id" => workspace_id})
+       when is_binary(workspace_id) and workspace_id != "" do
+    headers ++ [{"x-favn-workspace-id", workspace_id}]
+  end
+
+  defp add_workspace_header(headers, _session_context), do: headers
 
   defp add_idempotency_header(headers, key) when is_binary(key) and key != "" do
     headers ++ [{"idempotency-key", key}]
@@ -592,7 +622,7 @@ defmodule Favn.Dev.OrchestratorClient do
 
   defp idempotency_session_context(%{} = session_context) do
     session_context
-    |> Map.take(["actor_id", "session_id"])
+    |> Map.take(["actor_id"])
     |> Enum.reject(fn {_key, value} -> not is_binary(value) or value == "" end)
     |> Map.new()
   end

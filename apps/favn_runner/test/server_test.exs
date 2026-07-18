@@ -9,6 +9,59 @@ defmodule FavnRunner.ServerTest do
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
 
+  test "honors an orchestrator-allocated execution id and rejects reuse" do
+    server = start_runner_server()
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+
+    execution_id = unique_id("rx_control_plane")
+
+    work =
+      version
+      |> build_work(FavnRunner.ServerTest.SlowAsset)
+      |> Map.put(:execution_id, execution_id)
+
+    assert {:ok, ^execution_id} = FavnRunner.submit_work(work, server: server)
+
+    assert {:error,
+            %RunnerError{
+              type: :runner_execution_id_in_use,
+              retryable?: false,
+              outcome: :safe_failure
+            }} = FavnRunner.submit_work(work, server: server)
+
+    assert {:ok, %{status: :acknowledged}} =
+             FavnRunner.cancel_work(execution_id, %{reason: :test_cleanup}, server: server)
+  end
+
+  test "rejects an invalid orchestrator-allocated execution id" do
+    server = start_runner_server()
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.FastAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+
+    work =
+      version
+      |> build_work(FavnRunner.ServerTest.FastAsset)
+      |> Map.put(:execution_id, "")
+
+    assert {:error,
+            %RunnerError{
+              type: :invalid_runner_execution_id,
+              retryable?: false,
+              outcome: :safe_failure
+            }} = FavnRunner.submit_work(work, server: server)
+  end
+
   test "cancel_work marks running execution as cancelled" do
     {:ok, version} =
       Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),

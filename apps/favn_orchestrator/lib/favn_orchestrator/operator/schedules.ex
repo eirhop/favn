@@ -7,18 +7,15 @@ defmodule FavnOrchestrator.Operator.Schedules do
   operator-facing schedule operations here.
   """
 
-  alias Favn.Manifest.Index
-  alias Favn.Scheduler.State
   alias Favn.Window.Policy
   alias FavnOrchestrator.ManifestStore
-  alias FavnOrchestrator.Page
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Queries.PageSchedules
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.ScheduleListEntry
   alias FavnOrchestrator.ScheduleOccurrencePreview
   alias FavnOrchestrator.Scheduler.Cron
-  alias FavnOrchestrator.Scheduler.ManifestEntries
-  alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.SchedulerEntry
-  alias FavnOrchestrator.Storage
 
   @list_filter_keys [
     :search,
@@ -40,66 +37,60 @@ defmodule FavnOrchestrator.Operator.Schedules do
           queued: non_neg_integer()
         }
 
-  @doc "Lists schedule inspection entries, falling back to the active manifest."
-  @spec list_entries() :: {:ok, [SchedulerEntry.t()]} | {:error, term()}
-  def list_entries do
-    case scheduled_entries() do
-      entries when is_list(entries) -> {:ok, sort_entries(entries)}
-      {:error, :scheduler_not_running} -> list_schedule_entries_from_active_manifest()
-      {:error, _reason} = error -> error
-    end
-  end
-
-  @doc "Returns a bounded, filtered page of operator schedule entries."
-  @spec page_entries(keyword()) :: {:ok, Page.t(ScheduleListEntry.t())} | {:error, term()}
-  def page_entries(filters \\ []) when is_list(filters) do
+  @doc "Returns a bounded schedule page from the active PostgreSQL deployment."
+  @spec page_entries(WorkspaceContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def page_entries(%WorkspaceContext{} = context, filters) when is_list(filters) do
     with :ok <- validate_options(filters, @list_filter_keys, :invalid_schedule_list_filters),
-         {:ok, page_opts} <- Page.normalize_opts(filters),
-         {:ok, entries} <- list_entries() do
-      limit = Keyword.fetch!(page_opts, :limit)
-      offset = Keyword.fetch!(page_opts, :offset)
-
-      items =
-        entries
-        |> Enum.map(&ScheduleListEntry.from_scheduler_entry(entry_id(&1), &1))
+         {:ok, runtime} <- ManifestStore.get_runtime_state(context),
+         {:ok, page} <-
+           Persistence.stores().scheduler.page_schedules(%PageSchedules{
+             workspace_context: context,
+             limit: min(Keyword.get(filters, :limit, 100), 500)
+           }) do
+      entries =
+        page.items
+        |> Enum.map(fn schedule ->
+          entry = persisted_scheduler_entry(schedule, runtime)
+          ScheduleListEntry.from_scheduler_entry(persisted_entry_id(schedule), entry)
+        end)
         |> filter_schedule_list_entries(filters)
-        |> Enum.slice(offset, limit + 1)
 
-      {:ok, Page.from_fetched(items, page_opts)}
+      {:ok, %{page | items: entries}}
     end
   end
 
-  @doc "Returns one schedule inspection entry by its control-plane id."
-  @spec get_entry(String.t()) :: {:ok, SchedulerEntry.t()} | {:error, term()}
-  def get_entry(schedule_id) when is_binary(schedule_id) do
-    with {:ok, entries} <- list_entries() do
-      case Enum.find(entries, &(entry_id(&1) == schedule_id)) do
-        nil -> {:error, :schedule_not_found}
-        %SchedulerEntry{} = entry -> {:ok, entry}
-      end
+  @doc "Returns one exact active-deployment schedule under a workspace authority."
+  @spec get_entry(WorkspaceContext.t(), String.t()) ::
+          {:ok, SchedulerEntry.t()} | {:error, term()}
+  def get_entry(%WorkspaceContext{} = context, schedule_id) when is_binary(schedule_id) do
+    with {:ok, pipeline_target_id, persisted_schedule_id} <- parse_entry_id(schedule_id),
+         {:ok, runtime} <- ManifestStore.get_runtime_state(context),
+         {:ok, page} <-
+           Persistence.stores().scheduler.page_schedules(%PageSchedules{
+             workspace_context: context,
+             pipeline_target_id: pipeline_target_id,
+             schedule_id: persisted_schedule_id,
+             limit: 1
+           }),
+         [schedule] <- page.items do
+      {:ok, persisted_scheduler_entry(schedule, runtime)}
+    else
+      [] -> {:error, :schedule_not_found}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, :schedule_not_found}
     end
   end
 
-  @doc "Enables a schedule for future submissions."
-  @spec enable(String.t()) :: {:ok, SchedulerEntry.t()} | {:error, term()}
-  def enable(schedule_id) when is_binary(schedule_id),
-    do: update_schedule_activation(schedule_id, :enabled)
-
-  @doc "Disables a schedule for future submissions."
-  @spec disable(String.t()) :: {:ok, SchedulerEntry.t()} | {:error, term()}
-  def disable(schedule_id) when is_binary(schedule_id),
-    do: update_schedule_activation(schedule_id, :disabled)
-
-  @doc "Previews upcoming occurrences for a schedule."
-  @spec preview_occurrences(String.t(), keyword()) ::
+  @doc "Previews upcoming occurrences for one active workspace schedule."
+  @spec preview_occurrences(WorkspaceContext.t(), String.t(), keyword()) ::
           {:ok, [ScheduleOccurrencePreview.t()]} | {:error, term()}
-  def preview_occurrences(schedule_id, opts \\ [])
+  def preview_occurrences(%WorkspaceContext{} = context, schedule_id, opts)
       when is_binary(schedule_id) and is_list(opts) do
     with :ok <-
            validate_options(opts, [:limit, :now], :invalid_schedule_occurrence_preview_options),
          {:ok, limit} <- normalize_occurrence_preview_limit(opts),
          {:ok, now} <- normalize_occurrence_preview_now(opts),
-         {:ok, %SchedulerEntry{} = entry} <- get_entry(schedule_id),
+         {:ok, %SchedulerEntry{} = entry} <- get_entry(context, schedule_id),
          :ok <- validate_preview_schedule(entry) do
       occurrences =
         entry.cron
@@ -119,6 +110,108 @@ defmodule FavnOrchestrator.Operator.Schedules do
     "schedule:" <> Atom.to_string(pipeline_module) <> ":" <> Atom.to_string(schedule_name)
   end
 
+  defp persisted_scheduler_entry(schedule, runtime) do
+    definition = schedule.definition || %{}
+    cursor = schedule.cursor || %{}
+    in_flight_run_id = value(cursor, :in_flight_run_id)
+    queued_due_at = datetime_value(cursor, :queued_due_at)
+
+    %SchedulerEntry{
+      pipeline_module: existing_module(value(definition, :pipeline_module)),
+      schedule_id: existing_atom(value(definition, :schedule_name) || schedule.schedule_id),
+      cron: value(definition, :cron),
+      timezone: value(definition, :timezone),
+      overlap: existing_atom(value(definition, :overlap)),
+      missed: existing_atom(value(definition, :missed)),
+      active: true,
+      activation_state: :enabled,
+      effective_enabled?: true,
+      runtime_state: persisted_runtime_state(in_flight_run_id, queued_due_at),
+      window: persisted_window(value(definition, :window)),
+      schedule_fingerprint: schedule.schedule_fingerprint,
+      manifest_version_id: runtime.manifest_version_id,
+      manifest_content_hash: nil,
+      last_evaluated_at: datetime_value(cursor, :last_evaluated_at),
+      last_due_at: datetime_value(cursor, :last_due_at),
+      next_due_at: schedule.next_due_at,
+      last_submitted_due_at: datetime_value(cursor, :last_submitted_due_at),
+      in_flight_run_id: in_flight_run_id,
+      queued_due_at: queued_due_at,
+      last_scheduler_error: value(cursor, :last_scheduler_error),
+      updated_at: schedule.updated_at
+    }
+  end
+
+  defp persisted_entry_id(schedule) do
+    target = Base.url_encode64(schedule.pipeline_target_id, padding: false)
+    name = Base.url_encode64(schedule.schedule_id, padding: false)
+    "schedule-v2:" <> target <> ":" <> name
+  end
+
+  defp parse_entry_id("schedule-v2:" <> encoded) do
+    with [target, name] <- String.split(encoded, ":", parts: 2),
+         {:ok, target} <- Base.url_decode64(target, padding: false),
+         {:ok, name} <- Base.url_decode64(name, padding: false),
+         true <- target != "" and name != "" do
+      {:ok, target, name}
+    else
+      _invalid -> {:error, :schedule_not_found}
+    end
+  end
+
+  defp parse_entry_id(_schedule_id), do: {:error, :schedule_not_found}
+
+  defp existing_module(value) when is_binary(value) do
+    module = String.to_existing_atom(value)
+    if String.starts_with?(value, "Elixir."), do: module, else: nil
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp existing_module(_value), do: nil
+
+  defp existing_atom(value) when is_binary(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp existing_atom(value) when is_atom(value), do: value
+  defp existing_atom(_value), do: nil
+
+  defp persisted_runtime_state(run_id, _queued_due_at) when is_binary(run_id), do: :running
+  defp persisted_runtime_state(_run_id, %DateTime{}), do: :queued
+  defp persisted_runtime_state(_run_id, _queued_due_at), do: :idle
+
+  defp persisted_window(nil), do: nil
+
+  defp persisted_window(value) when is_map(value) do
+    case Policy.from_value(value) do
+      {:ok, policy} -> policy
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp persisted_window(_value), do: nil
+
+  defp datetime_value(map, key) do
+    case value(map, key) do
+      %DateTime{} = datetime -> datetime
+      encoded when is_binary(encoded) -> parse_datetime(encoded)
+      _value -> nil
+    end
+  end
+
+  defp parse_datetime(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      _error -> nil
+    end
+  end
+
+  defp value(map, key) when is_map(map),
+    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
   @doc "Summarizes operator schedule-list entries."
   @spec summary([ScheduleListEntry.t()]) :: summary()
   def summary(entries) when is_list(entries) do
@@ -131,207 +224,6 @@ defmodule FavnOrchestrator.Operator.Schedules do
       running: Enum.count(entries, &(&1.runtime_state == :running)),
       queued: Enum.count(entries, &(&1.runtime_state == :queued))
     }
-  end
-
-  defp list_schedule_entries_from_active_manifest do
-    with {:ok, manifest_version_id} <- ManifestStore.get_active_manifest(),
-         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
-         {:ok, runtime_entries} <- ManifestEntries.discover(version, index) do
-      now = DateTime.utc_now()
-
-      result =
-        runtime_entries
-        |> Map.values()
-        |> Enum.reduce_while({:ok, []}, fn runtime_entry, {:ok, acc} ->
-          case load_schedule_entry_state(runtime_entry, now) do
-            {:ok, state} ->
-              runtime_entry =
-                Map.put(runtime_entry, :next_due_at, next_schedule_due_at(runtime_entry, now))
-
-              {:cont, {:ok, [SchedulerEntry.from_runtime(runtime_entry, state) | acc]}}
-
-            {:error, reason} ->
-              {:halt, {:error, reason}}
-          end
-        end)
-
-      case result do
-        {:ok, entries} ->
-          {:ok, sort_entries(entries)}
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-    end
-  end
-
-  defp load_schedule_entry_state(entry, now) do
-    key = {entry.module, entry.schedule.name}
-
-    case Storage.get_scheduler_state(key) do
-      {:ok, nil} ->
-        state = %State{
-          pipeline_module: entry.module,
-          schedule_id: entry.schedule.name,
-          schedule_fingerprint: entry.schedule_fingerprint,
-          activation_state: :pending_activation,
-          updated_at: now,
-          version: 1
-        }
-
-        with :ok <- Storage.put_scheduler_state(key, state) do
-          {:ok, state}
-        end
-
-      {:ok, %State{} = state} ->
-        reconcile_schedule_entry_state(key, state, entry, now)
-
-      {:ok, state} when is_map(state) ->
-        reconcile_schedule_entry_state(key, struct(State, state), entry, now)
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp reconcile_schedule_entry_state(key, state, entry, now) do
-    next =
-      cond do
-        is_nil(state.activation_state) ->
-          %{
-            state
-            | activation_state: initial_schedule_activation_state(state, entry),
-              version: next_scheduler_version(state)
-          }
-
-        state.schedule_fingerprint != entry.schedule_fingerprint ->
-          %State{
-            pipeline_module: entry.module,
-            schedule_id: entry.schedule.name,
-            schedule_fingerprint: entry.schedule_fingerprint,
-            activation_state: :needs_review,
-            updated_at: now,
-            version: next_scheduler_version(state)
-          }
-
-        true ->
-          %{state | schedule_id: entry.schedule.name}
-      end
-
-    if next != state do
-      persisted = %{next | version: next.version || next_scheduler_version(state)}
-
-      with :ok <- Storage.put_scheduler_state(key, persisted) do
-        {:ok, persisted}
-      end
-    else
-      {:ok, next}
-    end
-  end
-
-  defp initial_schedule_activation_state(state, entry) do
-    has_runtime_cursor? =
-      not is_nil(state.last_due_at) or not is_nil(state.last_submitted_due_at) or
-        not is_nil(state.in_flight_run_id) or not is_nil(state.queued_due_at)
-
-    cond do
-      entry.schedule.active != true -> :disabled
-      has_runtime_cursor? -> :enabled
-      true -> :pending_activation
-    end
-  end
-
-  defp next_scheduler_version(%State{version: version})
-       when is_integer(version) and version > 0,
-       do: version + 1
-
-  defp next_scheduler_version(_state), do: 1
-
-  defp update_schedule_activation(schedule_id, activation_state)
-       when activation_state in [:enabled, :disabled] do
-    with {:ok, %SchedulerEntry{} = entry} <- get_entry(schedule_id),
-         :ok <- validate_activation_target(entry),
-         {:ok, state} <- current_schedule_state(entry),
-         :ok <- persist_schedule_activation(entry, state, activation_state),
-         :ok <- reload_scheduler_if_running() do
-      get_entry(schedule_id)
-    end
-  end
-
-  defp validate_activation_target(%SchedulerEntry{active: true}), do: :ok
-  defp validate_activation_target(%SchedulerEntry{}), do: {:error, :schedule_inactive_in_manifest}
-
-  defp current_schedule_state(%SchedulerEntry{} = entry) do
-    key = {entry.pipeline_module, entry.schedule_id}
-
-    case Storage.get_scheduler_state(key) do
-      {:ok, %State{} = state} -> {:ok, state}
-      {:ok, state} when is_map(state) -> {:ok, struct(State, state)}
-      {:ok, nil} -> {:ok, scheduler_state_from_entry(entry)}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp scheduler_state_from_entry(%SchedulerEntry{} = entry) do
-    %State{
-      pipeline_module: entry.pipeline_module,
-      schedule_id: entry.schedule_id,
-      schedule_fingerprint: entry.schedule_fingerprint,
-      activation_state: entry.activation_state,
-      last_evaluated_at: entry.last_evaluated_at,
-      last_due_at: entry.last_due_at,
-      last_submitted_due_at: entry.last_submitted_due_at,
-      in_flight_run_id: entry.in_flight_run_id,
-      queued_due_at: entry.queued_due_at,
-      last_scheduler_error: entry.last_scheduler_error,
-      updated_at: entry.updated_at,
-      version: 1
-    }
-  end
-
-  defp persist_schedule_activation(entry, state, :enabled) do
-    now = DateTime.utc_now()
-
-    next = %{
-      state
-      | activation_state: :enabled,
-        last_due_at: latest_schedule_due_at(entry, now) || state.last_due_at,
-        queued_due_at: nil,
-        last_scheduler_error: nil,
-        updated_at: now,
-        version: next_scheduler_version(state)
-    }
-
-    Storage.put_scheduler_state({entry.pipeline_module, entry.schedule_id}, next)
-  end
-
-  defp persist_schedule_activation(entry, state, :disabled) do
-    now = DateTime.utc_now()
-
-    next = %{
-      state
-      | activation_state: :disabled,
-        queued_due_at: nil,
-        updated_at: now,
-        version: next_scheduler_version(state)
-    }
-
-    Storage.put_scheduler_state({entry.pipeline_module, entry.schedule_id}, next)
-  end
-
-  defp latest_schedule_due_at(%SchedulerEntry{cron: cron, timezone: timezone}, now)
-       when is_binary(cron) and is_binary(timezone),
-       do: Cron.latest_due(cron, timezone, now)
-
-  defp latest_schedule_due_at(_entry, _now), do: nil
-
-  defp reload_scheduler_if_running do
-    case reload_scheduler() do
-      :ok -> :ok
-      {:error, :scheduler_not_running} -> :ok
-      {:error, _reason} = error -> error
-    end
   end
 
   defp normalize_occurrence_preview_limit(opts) do
@@ -451,12 +343,6 @@ defmodule FavnOrchestrator.Operator.Schedules do
   defp maybe_note(notes, true, note), do: [note | notes]
   defp maybe_note(notes, false, _note), do: notes
 
-  defp next_schedule_due_at(%{schedule: %{cron: cron, timezone: timezone}}, now)
-       when is_binary(cron) and is_binary(timezone),
-       do: Cron.next_due(cron, timezone, now)
-
-  defp next_schedule_due_at(_entry, _now), do: nil
-
   defp filter_schedule_list_entries(entries, filters) do
     Enum.filter(entries, fn entry ->
       schedule_matches_search?(entry, Keyword.get(filters, :search)) and
@@ -495,9 +381,6 @@ defmodule FavnOrchestrator.Operator.Schedules do
 
   defp schedule_matches_window?(%{window: window}, value), do: inspect(window) == to_string(value)
 
-  defp sort_entries(entries),
-    do: Enum.sort_by(entries, &{inspect(&1.pipeline_module), inspect(&1.schedule_id)})
-
   defp validate_options(opts, allowed_keys, error) do
     with true <- Keyword.keyword?(opts),
          [] <- Keyword.keys(opts) -- allowed_keys do
@@ -507,7 +390,4 @@ defmodule FavnOrchestrator.Operator.Schedules do
       unsupported_keys -> {:error, {error, Enum.uniq(unsupported_keys)}}
     end
   end
-
-  defp scheduled_entries, do: SchedulerRuntime.inspect_entries()
-  defp reload_scheduler, do: SchedulerRuntime.reload()
 end

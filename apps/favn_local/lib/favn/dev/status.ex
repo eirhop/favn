@@ -23,7 +23,7 @@ defmodule Favn.Dev.Status do
       {:error, :not_found} ->
         %{
           stack_status: :stopped,
-          storage: config.storage,
+          storage: :postgres,
           orchestrator_url: config.orchestrator_base_url,
           web_url: config.web_base_url,
           user_urls: user_urls(config.orchestrator_base_url, config.web_base_url),
@@ -36,7 +36,7 @@ defmodule Favn.Dev.Status do
       {:error, reason} ->
         %{
           stack_status: :unknown,
-          storage: config.storage,
+          storage: :postgres,
           orchestrator_url: config.orchestrator_base_url,
           web_url: config.web_base_url,
           user_urls: user_urls(config.orchestrator_base_url, config.web_base_url),
@@ -60,7 +60,7 @@ defmodule Favn.Dev.Status do
 
     %{
       stack_status: summarize_stack_status(services),
-      storage: runtime["storage"] || config.storage,
+      storage: runtime["storage"] || :postgres,
       orchestrator_url: runtime["orchestrator_base_url"] || config.orchestrator_base_url,
       web_url: runtime["web_base_url"] || config.web_base_url,
       user_urls:

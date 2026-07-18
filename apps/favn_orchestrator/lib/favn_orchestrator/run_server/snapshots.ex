@@ -7,7 +7,8 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
   """
 
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.Runs
 
   @doc "Builds a cancelled terminal snapshot with accumulated runner results."
   @spec cancelled_terminal(RunState.t(), [term()]) :: RunState.t()
@@ -35,12 +36,17 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
 
   @doc "Returns the stored cancellation snapshot, or builds a cancelled terminal snapshot."
   @spec cancelled_snapshot(RunState.t()) :: RunState.t()
-  def cancelled_snapshot(%RunState{} = run_state) do
-    case Storage.get_run(run_state.id) do
+  def cancelled_snapshot(%RunState{workspace_id: workspace_id} = run_state)
+      when is_binary(workspace_id) do
+    context = SystemContext.workspace(workspace_id, :run_worker)
+
+    case Runs.get(context, run_state.id) do
       {:ok, %RunState{status: :cancelled} = cancelled} -> cancelled
       _other -> cancelled_terminal(run_state, [])
     end
   end
+
+  def cancelled_snapshot(%RunState{} = run_state), do: cancelled_terminal(run_state, [])
 
   @doc "Updates a snapshot timestamp and hash without advancing its event sequence."
   @spec snapshot_update(RunState.t(), keyword()) :: RunState.t()

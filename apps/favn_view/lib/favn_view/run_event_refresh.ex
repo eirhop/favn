@@ -70,6 +70,9 @@ defmodule FavnView.RunEventRefresh do
 
   def handle_event(socket, _event, _opts), do: socket
 
+  @spec schedule_refresh(Phoenix.LiveView.Socket.t(), keyword()) :: Phoenix.LiveView.Socket.t()
+  def schedule_refresh(socket, opts), do: do_schedule_refresh(socket, opts)
+
   @spec mark_refreshed(Phoenix.LiveView.Socket.t(), sequence_map()) :: Phoenix.LiveView.Socket.t()
   def mark_refreshed(socket, sequence_by_run_id) when is_map(sequence_by_run_id) do
     socket
@@ -132,7 +135,7 @@ defmodule FavnView.RunEventRefresh do
     assign(socket, :run_event_sequences, merged)
   end
 
-  defp schedule_refresh(socket, opts) do
+  defp do_schedule_refresh(socket, opts) do
     LiveRefresh.schedule_once(
       socket,
       Keyword.fetch!(opts, :refresh_key),

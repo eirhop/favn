@@ -15,8 +15,14 @@ defmodule FavnOrchestrator.MaterializationClaims do
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.Freshness.Staleness
   alias FavnOrchestrator.MaterializationClaim.Identity
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Commands.ClaimMaterialization
+  alias FavnOrchestrator.Persistence.Commands.FinishMaterialization
+  alias FavnOrchestrator.Persistence.Results.MaterializationDecision
+  alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Storage.JsonSafe
 
   @materialization_claim_timeout_buffer_ms 60_000
 
@@ -51,6 +57,8 @@ defmodule FavnOrchestrator.MaterializationClaims do
     claim = %{
       claim_key:
         Identity.claim_key(node.ref, freshness_key, input_fingerprint, producer_identity),
+      workspace_id: run_state.workspace_id,
+      deployment_id: run_state.deployment_id,
       run_id: run_state.id,
       asset_step_id: work.asset_step_id,
       node_key: node_key,
@@ -61,19 +69,30 @@ defmodule FavnOrchestrator.MaterializationClaims do
       input_versions: input_versions,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
+      owner_id: run_state.storage_owner_id,
       status: :claimed,
       claimed_at: now,
       heartbeat_at: now,
       expires_at: DateTime.add(now, ttl_ms(run_state), :millisecond)
     }
 
-    case Storage.try_acquire_materialization_claim(claim) do
-      {:ok, claim} -> {:ok, claim}
-      {:already_succeeded, claim} -> {:already_succeeded, claim}
-      {:already_claimed, claim} -> {:already_claimed, claim}
-      {:error, {:already_succeeded, claim}} -> {:already_succeeded, claim}
-      {:error, {:already_claimed, claim}} -> {:already_claimed, claim}
-      {:error, reason} -> {:error, reason}
+    with :ok <- validate_authority(run_state),
+         {:ok, %MaterializationDecision{} = decision} <-
+           Persistence.stores().materialization.claim(%ClaimMaterialization{
+             workspace_context:
+               SystemContext.workspace(run_state.workspace_id, :materialization_claim),
+             command_id: command_id("claim", claim.claim_key, run_state.id),
+             claim_key: claim.claim_key,
+             deployment_id: run_state.deployment_id,
+             target_kind: :asset,
+             target_id: TargetIdentity.for_asset(node.ref),
+             partition_key: freshness_key,
+             run_id: run_state.id,
+             owner_id: run_state.storage_owner_id,
+             lease_duration_ms: ttl_ms(run_state),
+             occurred_at: now
+           }) do
+      classify_claim(decision, claim)
     end
   end
 
@@ -83,13 +102,26 @@ defmodule FavnOrchestrator.MaterializationClaims do
 
   def complete(claim, %RunnerResult{} = result, %AssetFreshnessState{} = freshness_state)
       when is_map(claim) do
-    case Storage.complete_materialization_claim(key(claim), %{
-           finished_at: DateTime.utc_now(),
-           freshness_version: freshness_state.freshness_version,
-           metadata: %{result_status: result.status}
-         }) do
-      :ok -> :ok
-      {:ok, _claim} -> :ok
+    complete_v2(claim, result, freshness_state)
+  end
+
+  defp complete_v2(claim, result, freshness_state) do
+    case finish(claim, :succeeded,
+           materialization_id: materialization_id(claim),
+           payload: %{
+             "freshness_version" => freshness_state.freshness_version,
+             "result_status" => Atom.to_string(result.status),
+             "asset_step_id" => field(claim, :asset_step_id),
+             "input_fingerprint" => field(claim, :input_fingerprint),
+             "input_versions" => input_versions_payload(field(claim, :input_versions)),
+             "node_key_fingerprint" =>
+               AssetStepIdentity.node_fingerprint(field(claim, :node_key)),
+             "run_id" => field(claim, :run_id),
+             "manifest_version_id" => field(claim, :manifest_version_id),
+             "manifest_content_hash" => field(claim, :manifest_content_hash)
+           }
+         ) do
+      {:ok, %MaterializationDecision{}} -> :ok
       {:error, reason} -> {:error, {:complete_materialization_claim_failed, reason}}
     end
   end
@@ -98,13 +130,14 @@ defmodule FavnOrchestrator.MaterializationClaims do
   def fail(nil, _reason), do: :ok
 
   def fail(claim, reason) when is_map(claim) do
-    case Storage.fail_materialization_claim(key(claim), %{
-           status: failure_status(reason),
-           finished_at: DateTime.utc_now(),
-           error: reason
-         }) do
-      :ok -> :ok
-      {:ok, _claim} -> :ok
+    fail_v2(claim, reason)
+  end
+
+  defp fail_v2(claim, reason) do
+    case finish(claim, :failed,
+           error: JsonSafe.error(%{status: failure_status(reason), reason: reason})
+         ) do
+      {:ok, %MaterializationDecision{}} -> :ok
       {:error, reason} -> {:error, {:fail_materialization_claim_failed, reason}}
     end
   end
@@ -137,6 +170,88 @@ defmodule FavnOrchestrator.MaterializationClaims do
 
   @spec key(claim()) :: String.t() | nil
   def key(claim) when is_map(claim), do: Map.get(claim, :claim_key) || Map.get(claim, "claim_key")
+
+  defp finish(claim, status, attrs) do
+    Persistence.stores().materialization.finish(%FinishMaterialization{
+      workspace_context:
+        SystemContext.workspace(field(claim, :workspace_id), :materialization_finish),
+      command_id: command_id("finish", key(claim), status),
+      claim_key: key(claim),
+      owner_id: field(claim, :owner_id),
+      fencing_token: field(claim, :fencing_token),
+      expected_version: field(claim, :version),
+      status: status,
+      materialization_id: Keyword.get(attrs, :materialization_id),
+      payload: Keyword.get(attrs, :payload),
+      error: Keyword.get(attrs, :error),
+      occurred_at: DateTime.utc_now()
+    })
+  end
+
+  defp classify_claim(
+         %MaterializationDecision{status: :claimed, claim: persisted},
+         requested
+       ),
+       do: {:ok, merge_claim(requested, persisted)}
+
+  defp classify_claim(
+         %MaterializationDecision{status: :competing, claim: persisted},
+         requested
+       ),
+       do: {:already_claimed, merge_claim(requested, persisted)}
+
+  defp classify_claim(%MaterializationDecision{status: :materialized}, requested),
+    do: {:already_succeeded, Map.put(requested, :status, :succeeded)}
+
+  defp classify_claim(%MaterializationDecision{status: status}, _requested),
+    do: {:error, {:unexpected_materialization_decision, status}}
+
+  defp merge_claim(requested, persisted) do
+    requested
+    |> Map.put(:workspace_id, persisted.workspace_id)
+    |> Map.put(:owner_id, persisted.owner_id)
+    |> Map.put(:fencing_token, persisted.fencing_token)
+    |> Map.put(:version, persisted.version)
+    |> Map.put(:status, persisted.status)
+    |> Map.put(:expires_at, persisted.expires_at)
+  end
+
+  defp validate_authority(%RunState{
+         workspace_id: workspace_id,
+         deployment_id: deployment_id,
+         storage_owner_id: owner_id
+       })
+       when is_binary(workspace_id) and workspace_id != "" and is_binary(deployment_id) and
+              deployment_id != "" and is_binary(owner_id) and owner_id != "",
+       do: :ok
+
+  defp validate_authority(%RunState{}),
+    do: {:error, :materialization_run_authority_required}
+
+  defp materialization_id(claim), do: "mat:" <> key(claim)
+
+  defp command_id(operation, first, second) do
+    digest =
+      :crypto.hash(:sha256, :erlang.term_to_binary({operation, first, second}))
+      |> Base.url_encode64(padding: false)
+
+    "materialization:#{operation}:#{digest}"
+  end
+
+  defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+  defp input_versions_payload(input_versions) when is_list(input_versions) do
+    Enum.map(input_versions, fn input_version ->
+      %{
+        "node_key_fingerprint" =>
+          input_version |> field(:upstream_node_key) |> AssetStepIdentity.node_fingerprint(),
+        "freshness_version" => field(input_version, :freshness_version),
+        "success_run_id" => field(input_version, :success_run_id)
+      }
+    end)
+  end
+
+  defp input_versions_payload(_input_versions), do: []
 
   defp reusable_reason?(reason) when reason in [:upstream_refreshed, :upstream_version_changed],
     do: true

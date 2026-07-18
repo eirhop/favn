@@ -52,15 +52,14 @@ defmodule Favn.Dev.Build.Single do
   end
 
   defp storage_mode(opts) do
-    case Keyword.get(opts, :storage, :sqlite) do
-      "sqlite" -> :sqlite
+    case Keyword.get(opts, :storage, :postgres) do
       "postgres" -> :postgres
       value -> value
     end
   end
 
-  defp validate_storage(:sqlite), do: :ok
-  defp validate_storage(:postgres), do: {:error, {:unsupported_storage, :postgres}}
+  defp validate_storage(:postgres), do: :ok
+  defp validate_storage(:sqlite), do: {:error, {:unsupported_storage, :sqlite}}
   defp validate_storage(other), do: {:error, {:invalid_storage, other}}
 
   defp copy_target_outputs(source_dir, target_dir) do
@@ -139,24 +138,22 @@ defmodule Favn.Dev.Build.Single do
       "scheduler_instances" => 1
     })
     |> Map.put("compatibility", %{
-      "scope" => "project-local backend-only SQLite launcher",
+      "scope" => "project-local backend-only PostgreSQL launcher",
       "runtime_dependency" => "recorded_orchestrator_source_root",
-      "storage_modes" => ["sqlite"],
+      "storage_modes" => ["postgres"],
       "unsupported" => [
         "self_contained_release_artifact",
-        "postgres_production_mode",
         "distributed_execution",
-        "shared_sqlite",
         "high_availability_orchestrators",
         "web_production_startup"
       ]
     })
     |> Map.put("required_env", [
       "FAVN_STORAGE",
-      "FAVN_SQLITE_PATH",
-      "FAVN_SQLITE_MIGRATION_MODE",
-      "FAVN_SQLITE_BUSY_TIMEOUT_MS",
-      "FAVN_SQLITE_POOL_SIZE",
+      "FAVN_DATABASE_URL",
+      "FAVN_DATABASE_SSL_CA_FILE",
+      "FAVN_RUNTIME_INPUT_PIN_KEY",
+      "FAVN_WORKSPACE_IDS",
       "FAVN_ORCHESTRATOR_API_BIND_HOST",
       "FAVN_ORCHESTRATOR_API_PORT",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
@@ -194,14 +191,14 @@ defmodule Favn.Dev.Build.Single do
   defp write_env_files(dist_dir) do
     backend = [
       "# Copy this file to env/backend.env or set FAVN_ENV_FILE before running bin/start.",
-      "FAVN_STORAGE=sqlite",
-      "FAVN_SQLITE_PATH=/var/lib/favn/control-plane.sqlite3",
-      "FAVN_SQLITE_MIGRATION_MODE=auto",
-      "FAVN_SQLITE_BUSY_TIMEOUT_MS=5000",
-      "FAVN_SQLITE_POOL_SIZE=1",
+      "FAVN_STORAGE=postgres",
+      "FAVN_DATABASE_URL=ecto://favn:replace-me@127.0.0.1/favn",
+      "FAVN_DATABASE_SSL_CA_FILE=/run/secrets/postgresql-ca.pem",
+      "FAVN_RUNTIME_INPUT_PIN_KEY=replace-with-64-hex-characters",
+      "FAVN_WORKSPACE_IDS=default",
       "FAVN_ORCHESTRATOR_API_BIND_HOST=127.0.0.1",
       "FAVN_ORCHESTRATOR_API_PORT=4101",
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_view:replace-with-32-plus-char-service-token",
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_view|platform_operator:replace-with-32-plus-char-service-token",
       "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN=replace-with-32-plus-char-service-token",
       "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin",
       "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=",
@@ -333,46 +330,8 @@ defmodule Favn.Dev.Build.Single do
     with {:ok, _runner} <- FavnRunner.ProductionRuntimeConfig.validate(env),
          {:ok, _orchestrator} <- FavnOrchestrator.ProductionRuntimeConfig.validate(env),
          {:ok, _} <- Application.ensure_all_started(:favn_runner),
-         {:ok, _} <- Application.ensure_all_started(:favn_storage_sqlite),
+         {:ok, _} <- Application.ensure_all_started(:favn_storage_postgres),
          {:ok, _} <- Application.ensure_all_started(:favn_orchestrator) do
-      manifest_path = Path.join([artifact_root, "runner", "manifest-index.json"])
-      packages_path = Path.join([artifact_root, "runner", "execution-packages", "*.json"])
-      metadata_path = Path.join([artifact_root, "runner", "metadata.json"])
-
-      if File.regular?(manifest_path) do
-        with {:ok, encoded} <- File.read(manifest_path),
-              {:ok, manifest} <- Favn.Manifest.Serializer.decode_manifest(encoded),
-              {:ok, metadata_encoded} <- File.read(metadata_path),
-              {:ok, %{"manifest" => manifest_metadata}} <- JSON.decode(metadata_encoded),
-              {:ok, version} <-
-                Favn.Manifest.Version.from_published(manifest,
-                  manifest_version_id: Map.fetch!(manifest_metadata, "manifest_version_id"),
-                  content_hash: Map.fetch!(manifest_metadata, "content_hash")
-                ),
-              {:ok, packages} <-
-                packages_path
-                |> Path.wildcard()
-                |> Enum.reduce_while({:ok, []}, fn path, {:ok, packages} ->
-                  with {:ok, package_encoded} <- File.read(path),
-                       {:ok, package_json} <-
-                         Favn.Manifest.Serializer.decode_manifest(package_encoded),
-                       {:ok, package} <-
-                         Favn.Manifest.ExecutionPackage.from_published(package_json) do
-                    {:cont, {:ok, [package | packages]}}
-                  else
-                    {:error, reason} -> {:halt, {:error, reason}}
-                  end
-                end),
-              :ok <- FavnOrchestrator.register_execution_packages(packages),
-              :ok <- FavnRunner.register_manifest(version),
-              :ok <- FavnOrchestrator.register_manifest(version) do
-          :ok
-        else
-          {:error, reason} -> raise "failed to register packaged manifest: #{inspect(reason)}"
-          other -> raise "failed to register packaged manifest: #{inspect(other)}"
-        end
-      end
-
       Process.sleep(:infinity)
     else
       {:error, reason} -> raise "invalid Favn backend production runtime config or startup: #{inspect(reason)}"
@@ -508,16 +467,16 @@ defmodule Favn.Dev.Build.Single do
     notes = [
       "# Favn Single Artifact Notes",
       "",
-      "This output is a verified project-local backend-only SQLite launcher,",
+      "This output is a verified project-local backend-only PostgreSQL launcher,",
       "not a self-contained or relocatable production release. It depends on",
       "the recorded orchestrator source/runtime root used by the install step.",
-      "The launcher starts one BEAM runtime containing the runner, SQLite storage",
-      "adapter, orchestrator API, and scheduler when FAVN_SCHEDULER_ENABLED allows it.",
+      "The launcher starts one BEAM runtime containing the runner, PostgreSQL control",
+      "plane, orchestrator API, and scheduler when FAVN_SCHEDULER_ENABLED allows it.",
       "",
       "Copy env/backend.env.example to env/backend.env or set FAVN_ENV_FILE before",
       "running bin/start. The example service token and blank first-admin",
-      "password must be replaced with real secrets. Web production startup, Postgres",
-      "production mode, distributed execution, shared SQLite, and HA orchestrators",
+      "password must be replaced with real secrets. Web production startup,",
+      "distributed execution, and HA orchestrators",
       "are not included.",
       ""
     ]

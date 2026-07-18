@@ -10,7 +10,6 @@ defmodule Favn.Dev.ConsumerCodePath do
                         "favn_orchestrator",
                         "favn_runner",
                         "favn_storage_postgres",
-                        "favn_storage_sqlite",
                         "favn_test_support"
                       ])
 

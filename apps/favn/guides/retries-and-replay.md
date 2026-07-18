@@ -165,9 +165,8 @@ external state.
 
 Raw parameters never belong in generic run metadata, events, logs, telemetry,
 or errors. Safe detail exposes identity, fingerprint, resolver, and source-pin
-lineage only. Pins with sensitive parameters require protected storage. For
-SQLite/Postgres configure a 32-byte key (or base64 encoding of 32 bytes) as
-`runtime_input_pin_key` in storage adapter options. Missing or invalid protection
+lineage only. Pins with sensitive parameters require protected storage. Configure
+`FAVN_RUNTIME_INPUT_PIN_KEY` as a 32-byte key. Missing or invalid protection
 fails before materialization; sensitive values are never silently stored in
 plaintext.
 

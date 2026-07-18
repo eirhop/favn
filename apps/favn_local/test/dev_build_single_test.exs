@@ -38,7 +38,7 @@ defmodule Favn.Dev.Build.SingleTest do
     %{root_dir: root_dir}
   end
 
-  test "build_single/1 writes assembled single-node bundle with sqlite default", %{
+  test "build_single/1 writes assembled single-node bundle with PostgreSQL default", %{
     root_dir: root_dir
   } do
     assert {:ok, :installed} =
@@ -72,7 +72,7 @@ defmodule Favn.Dev.Build.SingleTest do
     assert {:ok, stop_script} = File.read(Path.join(result.dist_dir, "bin/stop"))
     assert {:ok, env_example} = File.read(Path.join(result.dist_dir, "env/backend.env.example"))
 
-    assert {:ok, %{"storage" => %{"mode" => "sqlite"}, "services" => services}} =
+    assert {:ok, %{"storage" => %{"mode" => "postgres"}, "services" => services}} =
              JSON.decode(assembly_json)
 
     assert Map.has_key?(services, "orchestrator")
@@ -88,7 +88,7 @@ defmodule Favn.Dev.Build.SingleTest do
                 "relocatable" => false
              },
              "compatibility" => %{
-               "storage_modes" => ["sqlite"],
+               "storage_modes" => ["postgres"],
                "runtime_dependency" => "recorded_orchestrator_source_root",
                "unsupported" => unsupported
              },
@@ -101,11 +101,11 @@ defmodule Favn.Dev.Build.SingleTest do
              }
            } = metadata
 
-    assert "postgres_production_mode" in unsupported
     assert "self_contained_release_artifact" in unsupported
-    refute "postgres" in get_in(metadata, ["compatibility", "storage_modes"])
+    assert "postgres" in get_in(metadata, ["compatibility", "storage_modes"])
     assert "FAVN_STORAGE" in required_env
-    assert "FAVN_SQLITE_PATH" in required_env
+    assert "FAVN_DATABASE_URL" in required_env
+    assert "FAVN_RUNTIME_INPUT_PIN_KEY" in required_env
     assert "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" in required_env
     assert "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" in required_env
     assert "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" in required_env
@@ -115,7 +115,7 @@ defmodule Favn.Dev.Build.SingleTest do
     refute Enum.any?(required_env, &String.starts_with?(&1, "FAVN_DEV_"))
 
     assert start_script =~ "Application.ensure_all_started(:favn_runner)"
-    assert start_script =~ "Application.ensure_all_started(:favn_storage_sqlite)"
+    assert start_script =~ "Application.ensure_all_started(:favn_storage_postgres)"
     assert start_script =~ "Application.ensure_all_started(:favn_orchestrator)"
     assert start_script =~ "/api/orchestrator/v1/health/ready"
     assert start_script =~ "cat > \"$BOOT_FILE\" <<'EOF'\nartifact_root"
@@ -127,8 +127,9 @@ defmodule Favn.Dev.Build.SingleTest do
     refute stop_script =~ "No managed processes were started"
     refute env_example =~ "FAVN_DEV_"
     assert env_example =~
-             "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_view:replace-with-32-plus-char-service-token"
-    assert env_example =~ "FAVN_SQLITE_MIGRATION_MODE=auto"
+             "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_view|platform_operator:replace-with-32-plus-char-service-token"
+    assert env_example =~ "FAVN_STORAGE=postgres"
+    assert env_example =~ "FAVN_DATABASE_URL="
     assert env_example =~ "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin"
     assert env_example =~ "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD="
     assert env_example =~ "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME='Favn Admin'"
@@ -138,7 +139,7 @@ defmodule Favn.Dev.Build.SingleTest do
     refute metadata_json =~ "FAVN_DEV_"
   end
 
-  test "build_single/1 rejects postgres storage override", %{root_dir: root_dir} do
+  test "build_single/1 accepts explicit postgres storage", %{root_dir: root_dir} do
     assert {:ok, :installed} =
              Dev.install(
                root_dir: root_dir,
@@ -147,7 +148,7 @@ defmodule Favn.Dev.Build.SingleTest do
                skip_runtime_deps_install: true
              )
 
-    assert {:error, {:unsupported_storage, :postgres}} =
+    assert {:ok, _result} =
              Dev.build_single(
                root_dir: root_dir,
                storage: :postgres,
@@ -156,7 +157,7 @@ defmodule Favn.Dev.Build.SingleTest do
                skip_project_root_check: true
              )
 
-    assert {:error, {:unsupported_storage, :postgres}} =
+    assert {:ok, _result} =
              Dev.build_single(
                root_dir: root_dir,
                storage: "postgres",

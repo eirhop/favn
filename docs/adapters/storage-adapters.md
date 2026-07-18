@@ -1,138 +1,83 @@
-# Storage Adapters
+# Control-Plane Persistence
 
-Reader: adapter authors and Favn contributors working on orchestrator
-persistence.
+Reader: Favn contributors changing orchestrator persistence.
 
 Documentation type: reference.
 
-Storage adapters save the orchestrator's control-plane state. They are internal
-Favn infrastructure, not user-facing APIs.
+Favn has one production control-plane backend: PostgreSQL 18 in the
+`favn_storage_postgres` application. It is internal infrastructure. User code and
+`favn_view` call the public orchestrator facade and never call persistence modules.
 
-Do not use storage adapters for DuckDB asset tables, warehouse data, source
-credentials, SQL sessions, or UI state. Public application code should use the
-public `:favn` package, `Favn.SQLClient`, SQL assets, and supported runtime
-configuration instead.
+This boundary does not own DuckDB/DuckLake data, warehouse data, SQL sessions,
+customer blob storage, or secrets. Those remain runner/plugin/data-plane concerns.
 
-## Storage Adapter Or SQL Execution Adapter
+## Contract shape
 
-Favn has two adapter categories that are easy to confuse:
+The old 97-callback mega-adapter has been removed. The orchestrator defines eleven
+small capability contracts under `FavnOrchestrator.Persistence`:
 
-| Adapter kind | What it does | Examples | Who uses it |
-| --- | --- | --- | --- |
-| Storage adapter | Saves orchestrator state such as manifests, runs, schedules, logs, auth state, and idempotency records. | SQLite storage, Postgres storage | The orchestrator runtime. |
-| SQL execution adapter | Opens SQL backend sessions and runs SQL for assets or `Favn.SQLClient`. | DuckDB, DuckDB ADBC | The SQL runtime and runner. |
+- registry and immutable manifest/deployment catalog;
+- runs, authoritative snapshots, events, and publication outbox;
+- run ownership and fencing;
+- scheduler claims and cursors;
+- execution admission;
+- materialization claims;
+- backfills;
+- identity, sessions, membership, and audit;
+- logs;
+- bounded operator reads;
+- maintenance and projection lifecycle.
 
-Storage adapters do not execute user SQL. SQL execution adapters do not decide
-which manifest is active, when schedules fire, or how run state is stored.
+Contracts expose atomic domain commands and bounded queries, not table CRUD.
+Commands return consistent typed results. Queries require an explicit workspace or
+platform context and a finite limit/cursor where cardinality can grow.
 
-## What Storage Adapters Own
+`FavnOrchestrator.Persistence.Backend` is the composition boundary that supplies
+these stores. `FavnStoragePostgres.Backend` is the production implementation; no
+module implements all operations.
 
-Storage adapters own the database implementation for orchestrator state:
+## Correctness rules
 
-- Schema setup and migration readiness checks.
-- Saving and reading manifest versions.
-- Saving active manifest selection.
-- Saving run snapshots and run events.
-- Saving scheduler cursors and runtime settings.
-- Saving operator read models such as logs, execution groups, freshness, target
-  status, and backfill views.
-- Saving admission, materialization-claim, auth, session, audit, and idempotency
-  records.
-- Bounded reads for operator pages and runtime decisions.
+- Every tenant-owned row has a non-null workspace key. Related rows use composite
+  workspace foreign keys where PostgreSQL can enforce ownership.
+- Authoritative state and its outbox record commit in one transaction.
+- Projectors consume sequenced publications and update repairable read models.
+- Identity/sequence allocation is not treated as transaction commit order.
+- Ownership, scheduling, admission, and materialization coordination use expiring
+  claims and monotonically increasing fencing tokens.
+- Reads are index-backed and bounded. Elixir-side full-table filtering and
+  delimiter-encoded membership are forbidden.
+- Cache correctness cannot depend on PubSub or invalidation. PostgreSQL authority
+  and versioned persisted projections remain the source of truth.
+- Unknown write outcomes are resolved with the original command/idempotency
+  identity; callers must not manufacture a new identity.
 
-Storage adapters do not own:
+## Runtime and migrations
 
-- Scheduling rules.
-- Run lifecycle decisions.
-- Runner execution.
-- SQL backend sessions.
-- DuckDB or DuckLake catalogs.
-- User asset data.
-- Operator UI state.
+Runtime nodes own one Ecto repo and validate the exact `favn_control` schema at
+startup. They never migrate automatically. A separately authorized migration job
+runs `mix favn.postgres.migrate`, then grants the least-privilege runtime role.
 
-The orchestrator decides lifecycle behavior and calls storage when it needs to
-save or read control-plane state.
+Development and CI use live PostgreSQL too. There is no memory or SQLite fallback.
+See `docs/production/postgresql_operator_runbook.md` for setup, TLS, roles,
+connection budgets, backups, restore drills, retention, monitoring, and incidents.
 
-## SQLite Storage
+## Testing expectations
 
-SQLite storage is for local development and single-node durable control-plane
-storage.
+- Pure domain behavior: deterministic unit tests without a persistence backend.
+- Store behavior: PostgreSQL integration tests using SQL sandbox isolation where
+  possible.
+- Coordination: separate connections/processes and real competing transactions.
+- Scale: bounded query-count assertions plus `EXPLAIN` plan contracts at realistic
+  cardinality.
+- Operations: migration, runtime privilege, restore, missing-row projection backfill, and
+  multi-node/failure-injection coverage.
+- Tenancy: positive and negative cross-workspace tests for every public read and
+  mutation path.
 
-| Option | Required | Description |
-| --- | --- | --- |
-| `database` | yes | SQLite database path. Production paths should be absolute and outside build artifacts. |
-| `pool_size` | no | Ecto repo pool size. |
-| `busy_timeout` | no | How long SQLite waits for a busy database before failing. |
-| `migration_mode` | no | `:auto` or `:manual`; default is `:auto`. |
-| `initialize_empty?` | no | Allows initialization when manual migration mode sees an empty database. |
-| `require_absolute_path` | no | Requires absolute database paths when enabled. |
+## Related documents
 
-Readiness checks report states such as empty database, ready, missing schema,
-upgrade required, schema newer than this release, or inconsistent schema.
-
-Do not run multiple backend nodes against one SQLite database. Do not place the
-database on NFS, SMB, object-storage mounts, or distributed filesystems.
-
-## Postgres Storage
-
-Postgres storage is for deployments that need a PostgreSQL-backed
-control-plane database.
-
-| Option | Required | Description |
-| --- | --- | --- |
-| `repo_mode` | no | `:managed` or `:external`; default is `:managed`. |
-| `repo_config` | managed mode | Ecto repo config. Requires `:hostname`, `:database`, `:username`, and `:password`. |
-| `repo` | external mode | Existing Ecto Postgres repo module. |
-| `migration_mode` | no | `:manual` or `:auto` in managed mode. External mode requires `:manual`. |
-
-Managed mode starts a Favn-owned repo from `repo_config`.
-
-External mode uses a repo already started by the host application. In external
-mode, the host application must run migrations before it accepts orchestrator
-traffic.
-
-## Read Models And Repair
-
-Manifest rows, run snapshots, and run events are the core saved state.
-
-Some tables are read models. They exist so operator pages and runtime reads can
-stay bounded. Examples include execution-group summaries, target statuses,
-freshness views, and backfill views.
-
-When a projector supports it, the orchestrator may repair or rebuild a read
-model. The storage adapter provides the reads and writes. The orchestrator owns
-the decision to repair and the lifecycle rules around that repair.
-
-## Failure Modes
-
-| Area | Symptom | What to do |
-| --- | --- | --- |
-| SQLite config | Missing database path, invalid path rule, or invalid migration mode. | Fix adapter config before starting the runtime. |
-| SQLite readiness | Schema is missing, too old, too new, inconsistent, or the database is empty when that is not allowed. | Run the configured migration path or restore a compatible backup. |
-| SQLite placement | Locking errors, slow writes, or corrupt behavior on shared filesystems. | Use a local disk and one backend node. Use Postgres for multi-node deployments. |
-| Postgres config | Invalid repo mode, missing repo config fields, or invalid migration mode. | Fix repo configuration and migration ownership. |
-| Postgres readiness | Schema is not ready. | Apply migrations before accepting orchestrator traffic. |
-| Storage conflict | A manifest, run event, materialization claim, or cursor update loses a guarded write. | Let the orchestrator command or lifecycle code decide whether to retry, repair, or reject. |
-
-## Contributor Checklist
-
-Before changing storage adapter docs or behavior, check:
-
-- Is this about saving orchestrator state? If not, it may belong to a SQL
-  execution adapter, the runner, or the public `:favn` guide instead.
-- Does the text make clear that storage adapters are internal infrastructure?
-- Does the text avoid telling user code to call storage adapters directly?
-- Does the text leave scheduling, run lifecycle, admission decisions, and repair
-  decisions with the orchestrator?
-- Does the text keep DuckDB, DuckLake, and SQL session behavior with SQL
-  execution adapters and `Favn.SQLClient`?
-- Are failure modes described in terms an operator or contributor can act on?
-
-## Related Structure Docs
-
-- `docs/structure/favn_storage_sqlite.md`
-- `docs/structure/favn_storage_sqlite_database.md`
+- `docs/architecture/postgresql-control-plane-storage-v2.md`
 - `docs/structure/favn_storage_postgres.md`
-- `docs/structure/favn_sql_runtime.md`
-- `docs/structure/favn_duckdb.md`
-- `docs/structure/favn_duckdb_adbc.md`
+- `docs/production/postgresql_operator_runbook.md`
+- `docs/report/storage_architecture_data_model_quality_audit.md`
