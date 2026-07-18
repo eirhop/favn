@@ -18,13 +18,10 @@ defmodule FavnOrchestrator.MixProject do
   end
 
   def application do
-    application = [extra_applications: [:logger, :crypto, :ecto_sql]]
-
-    if Mix.env() == :test do
-      application
-    else
-      Keyword.put(application, :mod, {FavnOrchestrator.Application, []})
-    end
+    [
+      mod: {FavnOrchestrator.Application, []},
+      extra_applications: [:logger, :crypto, :ecto_sql]
+    ]
   end
 
   defp deps do

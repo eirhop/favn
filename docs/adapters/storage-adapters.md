@@ -59,7 +59,8 @@ startup. They never migrate automatically. A separately authorized migration job
 runs `mix favn.postgres.migrate`, then grants the least-privilege runtime role.
 
 Development and CI use live PostgreSQL too. There is no memory or SQLite fallback.
-See `docs/production/postgresql_operator_runbook.md` for setup, TLS, roles,
+See `docs/storage/postgresql/architecture.md` for the implementation model and
+`docs/production/postgresql_operator_runbook.md` for setup, TLS, roles,
 connection budgets, backups, restore drills, retention, monitoring, and incidents.
 
 ## Testing expectations
@@ -78,6 +79,9 @@ connection budgets, backups, restore drills, retention, monitoring, and incident
 ## Related documents
 
 - `docs/architecture/postgresql-control-plane-storage-v2.md`
+- `docs/storage/postgresql/architecture.md`
+- `docs/storage/postgresql/data-model.md`
+- `docs/storage/postgresql/testing.md`
 - `docs/structure/favn_storage_postgres.md`
 - `docs/production/postgresql_operator_runbook.md`
 - `docs/report/storage_architecture_data_model_quality_audit.md`

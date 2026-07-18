@@ -2,7 +2,8 @@
 
 This file records implemented behavior. Forward-looking work belongs in
 `docs/ROADMAP.md`; normative PostgreSQL decisions live in
-`docs/architecture/postgresql-control-plane-storage-v2.md`.
+`docs/architecture/postgresql-control-plane-storage-v2.md`, with the concise
+implementation reference under `docs/storage/postgresql/`.
 
 Maturity labels:
 
@@ -108,7 +109,9 @@ deprecated when a cleaner contract is accepted.
   connections, fencing, claim concurrency, query plans, restore checks, and facade
   use cases. **State: implemented.**
 
-See `docs/structure/favn_storage_postgres.md` for the code/data map and
+See `docs/storage/postgresql/architecture.md` for the implementation guide,
+`docs/storage/postgresql/data-model.md` for ER diagrams,
+`docs/structure/favn_storage_postgres.md` for the code/data map, and
 `docs/production/postgresql_operator_runbook.md` for operations.
 
 ## Local Development And Packaging

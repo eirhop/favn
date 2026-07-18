@@ -6,6 +6,10 @@ Drafted: 2026-07-16
 Reader: Favn contributors implementing or reviewing control-plane persistence
 Documentation type: normative architecture and implementation guide
 
+For a shorter guide to the implemented code, use
+`docs/storage/postgresql/architecture.md`. The table catalog and Mermaid ER
+diagrams are in `docs/storage/postgresql/data-model.md`.
+
 ## Purpose
 
 This document defines the implemented PostgreSQL Storage V2 baseline and the

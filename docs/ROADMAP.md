@@ -4,8 +4,10 @@ This file contains forward-looking work only. Shipped capabilities and current
 limitations live in `docs/FEATURES.md`.
 
 PostgreSQL Storage V2 is now the control-plane baseline. The architecture is
-defined in `docs/architecture/postgresql-control-plane-storage-v2.md`; production
-operations are defined in `docs/production/postgresql_operator_runbook.md`.
+summarized in `docs/storage/postgresql/architecture.md`, the detailed decision
+record is `docs/architecture/postgresql-control-plane-storage-v2.md`, and
+production operations are defined in
+`docs/production/postgresql_operator_runbook.md`.
 
 ## Planned Next
 

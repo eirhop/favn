@@ -1261,14 +1261,19 @@ external BEAM lifecycle coverage. On Unix the umbrella fast runner uses native
 
 ## Documentation
 
+- `docs/README.md` is the documentation map and recommended starting point
 - `docs/FEATURES.md` tracks the implemented feature set today
 - `docs/ROADMAP.md` tracks planned next work and later ideas
 - `docs/operators/runs-and-schedules.md` documents local run inspection,
   cancellation, logs, and schedule behavior
 - `docs/production/public_api_boundary.md` defines the intended package and
   stable public API boundary for `v1`
-- `docs/architecture/postgresql-control-plane-storage-v2.md` defines the
-  PostgreSQL production architecture and Storage V2 implementation contract
+- `docs/storage/postgresql/architecture.md` explains the implemented PostgreSQL
+  runtime, dependency boundaries, tenancy, and data paths
+- `docs/storage/postgresql/data-model.md` contains the complete table catalog and
+  Mermaid ER diagrams
+- `docs/architecture/postgresql-control-plane-storage-v2.md` preserves the
+  detailed normative design and decision record
 - `docs/production/postgresql_operator_runbook.md` defines the PostgreSQL
   deployment, migration, restore, maintenance, and incident procedures
 - `docs/production/single_node_contract.md` and

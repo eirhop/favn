@@ -22,6 +22,14 @@ defmodule FavnOrchestrator.Application do
 
   @impl true
   def start(_type, _args) do
+    if Application.get_env(:favn_orchestrator, :start_runtime, true) do
+      start_runtime()
+    else
+      Supervisor.start_link([], strategy: :one_for_one, name: FavnOrchestrator.Supervisor)
+    end
+  end
+
+  defp start_runtime do
     with :ok <- ProductionRuntimeConfig.apply_from_env_if_configured(),
          _timezone_database <- Favn.Timezone.database!(),
          :ok <- APIConfig.validate(),

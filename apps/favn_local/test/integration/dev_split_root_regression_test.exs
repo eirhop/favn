@@ -48,7 +48,9 @@ defmodule Favn.DevSplitRootRegressionTest do
 
     dev_task =
       Task.async(fn ->
-        run_mix!(project_dir, ["favn.dev" | root_arg], inetrc_path)
+        run_mix!(project_dir, ["favn.dev" | root_arg], inetrc_path,
+          failure_context: fn -> runtime_failure_context(repo_root) end
+        )
       end)
 
     try do
@@ -122,8 +124,22 @@ defmodule Favn.DevSplitRootRegressionTest do
         {output, status}
 
       {output, status} ->
-        flunk("mix #{Enum.join(args, " ")} failed (status=#{status}):\n#{output}")
+        context =
+          case Keyword.get(opts, :failure_context) do
+            fun when is_function(fun, 0) -> "\nFailure context:\n#{inspect(fun.(), pretty: true)}"
+            _other -> ""
+          end
+
+        flunk("mix #{Enum.join(args, " ")} failed (status=#{status}):\n#{output}#{context}")
     end
+  end
+
+  defp runtime_failure_context(root_dir) do
+    %{
+      runtime: State.read_runtime(root_dir: root_dir),
+      runner_log: log_tail(Paths.runner_log_path(root_dir)),
+      operator_log: log_tail(Paths.operator_log_path(root_dir))
+    }
   end
 
   defp write_loopback_inetrc! do

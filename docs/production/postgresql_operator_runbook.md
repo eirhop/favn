@@ -3,6 +3,10 @@
 Status: Storage V2 implementation runbook
 Scope: Favn-owned `favn_control` schema on PostgreSQL 18
 
+Implementation architecture and ER diagrams live in
+`docs/storage/postgresql/architecture.md` and
+`docs/storage/postgresql/data-model.md`.
+
 This runbook covers the shared Favn control plane. It does not back up or restore
 customer blob data, DuckLake PostgreSQL metadata databases, DuckDB files, Key
 Vault contents, or runner/plugin-owned data.

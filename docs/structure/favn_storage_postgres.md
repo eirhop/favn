@@ -70,6 +70,9 @@ maintenance, or database operations.
 
 See:
 
+- `docs/storage/postgresql/architecture.md`
+- `docs/storage/postgresql/data-model.md`
+- `docs/storage/postgresql/testing.md`
 - `docs/architecture/postgresql-control-plane-storage-v2.md`
 - `docs/adapters/storage-adapters.md`
 - `docs/production/postgresql_operator_runbook.md`
