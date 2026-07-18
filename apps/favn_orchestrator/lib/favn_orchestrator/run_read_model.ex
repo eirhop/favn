@@ -25,6 +25,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
   @backfill_failure_detail_limit 10
   @operator_step_event_limit 200
+  @operator_snapshot_run_limit 4
   @operator_event_default_limit 50
   @operator_event_max_limit 500
 
@@ -198,8 +199,9 @@ defmodule FavnOrchestrator.RunReadModel do
   def get_run_detail(%WorkspaceContext{} = context, run_id) when is_binary(run_id) do
     with {:ok, %RunState{} = run} <- Runs.get(context, run_id),
          {:ok, event_page} <- Runs.page_events(context, run_id, limit: 200),
+         events <- Enum.map(event_page.items, &RunEvent.from_map/1),
+         {:ok, events} <- ensure_retry_checkpoint_events(context, [run], events),
          {:ok, runtime_input_pins} <- Runs.get_runtime_inputs(context, run_id) do
-      events = Enum.map(event_page.items, &RunEvent.from_map/1)
       public_run = with_public_status(run)
 
       {:ok,
@@ -232,7 +234,11 @@ defmodule FavnOrchestrator.RunReadModel do
          root_run_id <- selected_run.root_run_id || selected_run.id,
          {:ok, root} <- load_root_run(context, selected_run, root_run_id),
          {:ok, group_page} <-
-           Runs.page(context, root_execution_group_id: root_run_id, limit: 200),
+           Runs.page(
+             context,
+             root_execution_group_id: root_run_id,
+             limit: @operator_snapshot_run_limit
+           ),
          {:ok, projection} <-
            Persistence.stores().operator_reads.get_execution_group(%GetExecutionGroup{
              workspace_context: context,
@@ -246,19 +252,28 @@ defmodule FavnOrchestrator.RunReadModel do
              limit: @operator_step_event_limit
            ) do
       children =
-        group_page.items
+        [selected_run | group_page.items]
+        |> Enum.uniq_by(& &1.id)
         |> Enum.reject(&(&1.id == root.id))
         |> Enum.sort_by(&run_started_sort_key/1)
 
       events = event_page.items |> Enum.map(&RunEvent.from_map/1) |> Enum.reverse()
 
-      operator_run_detail_v2(
-        %{id: root_run_id, root: root, children: children, runs: [root | children]},
-        projection,
-        backfill,
-        events,
-        event_opts
-      )
+      with {:ok, events} <- ensure_retry_checkpoint_events(context, [root | children], events) do
+        operator_run_detail_v2(
+          %{
+            id: root_run_id,
+            root: root,
+            children: children,
+            runs: [root | children],
+            runs_truncated?: group_page.has_more?
+          },
+          projection,
+          backfill,
+          events,
+          event_opts
+        )
+      end
     end
   end
 
@@ -371,6 +386,7 @@ defmodule FavnOrchestrator.RunReadModel do
       summary: summary,
       root_run: summary(group.root),
       child_runs: Enum.map(group.children, &summary/1),
+      child_run_details_truncated?: group.runs_truncated?,
       windows: windows,
       asset_attempts: attempts,
       timeline: timeline_entries(attempts),
@@ -394,6 +410,67 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp load_root_run(_context, %RunState{id: root_run_id} = run, root_run_id), do: {:ok, run}
   defp load_root_run(context, _selected_run, root_run_id), do: Runs.get(context, root_run_id)
+
+  defp ensure_retry_checkpoint_events(context, runs, events) do
+    runs
+    |> Enum.reduce_while({:ok, events}, fn run, {:ok, acc} ->
+      case retry_checkpoint_sequence(run) do
+        nil ->
+          {:cont, {:ok, acc}}
+
+        sequence ->
+          if Enum.any?(acc, &(&1.run_id == run.id and &1.sequence == sequence)) do
+            {:cont, {:ok, acc}}
+          else
+            case fetch_retry_checkpoint_event(context, run.id, sequence) do
+              {:ok, nil} -> {:cont, {:ok, acc}}
+              {:ok, event} -> {:cont, {:ok, merge_checkpoint_event(acc, event)}}
+              {:error, _reason} = error -> {:halt, error}
+            end
+          end
+      end
+    end)
+  end
+
+  defp retry_checkpoint_sequence(%RunState{plan: %Favn.Plan{}, metadata: metadata})
+       when is_map(metadata) do
+    retry_state = metadata_value(metadata, :retry_state)
+
+    if metadata_value(metadata, :retrying) == true and is_map(retry_state) and
+         metadata_value(retry_state, :kind) in [:pipeline, "pipeline"] do
+      case metadata_value(retry_state, :checkpoint_sequence) do
+        sequence when is_integer(sequence) and sequence > 0 -> sequence
+        _invalid -> nil
+      end
+    end
+  end
+
+  defp retry_checkpoint_sequence(%RunState{}), do: nil
+
+  defp fetch_retry_checkpoint_event(context, run_id, sequence) do
+    with {:ok, page} <-
+           Runs.page_events(context, run_id,
+             after_sequence: sequence - 1,
+             event_types: [:pipeline_retry_checkpointed],
+             limit: 1
+           ) do
+      case page.items do
+        [event] ->
+          decoded = RunEvent.from_map(event)
+          if decoded.sequence == sequence, do: {:ok, decoded}, else: {:ok, nil}
+
+        [] ->
+          {:ok, nil}
+      end
+    end
+  end
+
+  defp merge_checkpoint_event(events, checkpoint) do
+    events
+    |> Kernel.++([checkpoint])
+    |> Enum.uniq_by(&{&1.run_id, &1.sequence})
+    |> Enum.sort_by(&{&1.global_sequence || 0, &1.run_id, &1.sequence})
+  end
 
   defp persisted_backfill(context, root) do
     case metadata_value(root.metadata, :backfill_id) do

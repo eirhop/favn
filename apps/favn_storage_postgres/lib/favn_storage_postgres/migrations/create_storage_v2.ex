@@ -127,9 +127,21 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
         null: false,
         primary_key: true
       )
+
+      add(:asset_module, :text, null: false)
+      add(:asset_name, :text, null: false)
     end
 
     create(index(:manifest_execution_packages, [:package_hash], prefix: @prefix))
+
+    create(
+      unique_index(
+        :manifest_execution_packages,
+        [:manifest_version_id, :asset_module, :asset_name],
+        prefix: @prefix,
+        name: :manifest_execution_packages_asset_uidx
+      )
+    )
 
     create table(:workspace_deployments, prefix: @prefix, primary_key: false) do
       add(
@@ -294,10 +306,10 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
       add(:payload_version, :smallint, null: false)
       add(:payload, :map, null: false)
       add(:payload_hash, :binary, null: false)
-      add(:available_at, :timestamptz, null: false)
+      add(:occurred_at, :timestamptz, null: false)
       add(:publication_id, :bigint)
       add(:published_at, :timestamptz)
-      add(:inserted_at, :timestamptz, null: false)
+      add(:inserted_at, :timestamptz, null: false, default: fragment("clock_timestamp()"))
     end
 
     create(
@@ -323,7 +335,7 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
     )
 
     create(
-      index(:outbox_events, [:available_at, :outbox_event_id],
+      index(:outbox_events, [:outbox_event_id],
         prefix: @prefix,
         name: :outbox_events_unsequenced_idx,
         where: "publication_id IS NULL"
@@ -665,6 +677,19 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
       add(:run_id, :text, null: false, primary_key: true)
       add(:node_key_hash, :binary, null: false, primary_key: true)
       add(:payload_fingerprint, :binary, null: false)
+
+      add(
+        :execution_package_hash,
+        references(:execution_packages,
+          prefix: @prefix,
+          column: :content_hash,
+          type: :binary,
+          on_delete: :restrict
+        ),
+        null: false
+      )
+
+      add(:resolver_module, :text, null: false)
       add(:encryption_key_version, :integer, null: false)
       add(:payload, :binary, null: false)
       add(:inserted_at, :timestamptz, null: false)
@@ -684,6 +709,8 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
         check: "encryption_key_version > 0"
       )
     )
+
+    create(index(:runtime_input_pins, [:execution_package_hash], prefix: @prefix))
 
     create table(:run_ownerships, prefix: @prefix, primary_key: false) do
       add(:workspace_id, :text, null: false, primary_key: true)

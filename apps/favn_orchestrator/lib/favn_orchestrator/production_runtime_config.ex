@@ -16,17 +16,28 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @max_postgres_timeout_ms 120_000
   @max_scheduler_tick_ms 24 * 60 * 60 * 1_000
   @max_missed_occurrences 100_000
+  @max_runtime_input_pin_keys 32
+  @max_runtime_input_pin_keys_bytes 8 * 1_024
+  @default_active_run_plan_max_bytes 512 * 1_024 * 1_024
+  @min_active_run_plan_max_bytes 64 * 1_024 * 1_024
+  @max_active_run_plan_max_bytes 8 * 1_024 * 1_024 * 1_024
+
+  @type runtime_input_pin_config :: %{
+          keys: %{pos_integer() => binary()},
+          current_version: pos_integer()
+        }
 
   @type config :: %{
           storage: :postgres,
           postgres: keyword(),
-          runtime_input_pin: %{key: binary(), version: pos_integer()},
+          runtime_input_pin: runtime_input_pin_config(),
           api_server: keyword(),
           manifest_publication: keyword(),
           api_service_tokens: [ServiceTokens.token_config()],
           workspace_ids: [String.t()],
           auth_bootstrap: keyword(),
           auth_session_ttl_seconds: pos_integer(),
+          active_run_plan_max_bytes: pos_integer(),
           scheduler: keyword(),
           runner: map(),
           runner_client: module(),
@@ -67,13 +78,13 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       Application.put_env(
         :favn_storage_postgres,
         :runtime_input_pin_keys,
-        %{config.runtime_input_pin.version => config.runtime_input_pin.key}
+        config.runtime_input_pin.keys
       )
 
       Application.put_env(
         :favn_storage_postgres,
         :runtime_input_pin_current_key_version,
-        config.runtime_input_pin.version
+        config.runtime_input_pin.current_version
       )
 
       Application.put_env(:favn_orchestrator, :api_server, config.api_server)
@@ -120,6 +131,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         config.auth_session_ttl_seconds
       )
 
+      Application.put_env(
+        :favn_orchestrator,
+        :active_run_plan_max_bytes,
+        config.active_run_plan_max_bytes
+      )
+
       Application.put_env(:favn_orchestrator, :scheduler, config.scheduler)
       Application.put_env(:favn_orchestrator, :runner_client, config.runner_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, config.runner_client_opts)
@@ -147,6 +164,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, workspace_ids} <- workspace_ids(env),
          {:ok, auth_bootstrap} <- auth_bootstrap(env),
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
+         {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
          {:ok, scheduler} <- scheduler(env, workspace_ids),
          {:ok, runner} <- runner(env) do
       {:ok,
@@ -160,6 +178,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          workspace_ids: workspace_ids,
          auth_bootstrap: auth_bootstrap,
          auth_session_ttl_seconds: auth_session_ttl_seconds,
+         active_run_plan_max_bytes: active_run_plan_max_bytes,
          scheduler: scheduler,
          runner: runner,
          runner_client: FavnOrchestrator.RunnerClient.LocalNode,
@@ -194,6 +213,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       workspaces: %{configured_count: length(config.workspace_ids)},
       auth_bootstrap: %{username_configured?: true, password_configured?: true, redacted: true},
       auth_session: %{ttl_seconds: config.auth_session_ttl_seconds},
+      active_run_plan: %{max_bytes: config.active_run_plan_max_bytes},
+      runtime_input_pin: %{
+        current_version: config.runtime_input_pin.current_version,
+        retained_versions: config.runtime_input_pin.keys |> Map.keys() |> Enum.sort()
+      },
       scheduler: Map.new(config.scheduler),
       runner: config.runner
     }
@@ -214,7 +238,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   defp postgres(env) do
     with {:ok, url} <- required_secret(env, "FAVN_DATABASE_URL"),
          :ok <- postgres_url("FAVN_DATABASE_URL", url),
-         {:ok, tls_options} <- postgres_tls(env),
+         {:ok, tls_options} <- postgres_tls(env, url),
          {:ok, pool_size} <- int(env, "FAVN_DATABASE_POOL_SIZE", "15", 1, @max_postgres_pool_size),
          {:ok, queue_target} <-
            int(env, "FAVN_DATABASE_QUEUE_TARGET_MS", "50", 1, @max_postgres_timeout_ms),
@@ -222,10 +246,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
            int(env, "FAVN_DATABASE_QUEUE_INTERVAL_MS", "1000", 1, @max_postgres_timeout_ms),
          {:ok, timeout} <-
            int(env, "FAVN_DATABASE_TIMEOUT_MS", "15000", 1, @max_postgres_timeout_ms),
-         {:ok, pin_key} <- required_secret(env, "FAVN_RUNTIME_INPUT_PIN_KEY"),
-         {:ok, decoded_pin_key} <- runtime_input_pin_key(pin_key),
-         {:ok, pin_key_version} <-
-           int(env, "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "1", 1, nil) do
+         {:ok, runtime_input_pin} <- runtime_input_pin(env) do
       {:ok,
        {
          [
@@ -235,12 +256,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
            queue_interval: queue_interval,
            timeout: timeout
          ] ++ tls_options,
-         %{key: decoded_pin_key, version: pin_key_version}
+         runtime_input_pin
        }}
     end
   end
 
-  defp postgres_tls(env) do
+  defp postgres_tls(env, url) do
     case Map.get(env, "FAVN_DATABASE_SSL_MODE", "verify-full") do
       mode when mode in ["verify-full", "verify_full"] ->
         with {:ok, ca_file} <- required(env, "FAVN_DATABASE_SSL_CA_FILE"),
@@ -249,33 +270,104 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         end
 
       "disable" ->
-        case {Application.get_env(:favn_storage_postgres, :environment),
+        case {plaintext_loopback_database?(url),
               Map.get(env, "FAVN_UNSAFE_ALLOW_PLAINTEXT_DATABASE")} do
-          {environment, value}
-          when environment in [:dev, :test] and value in ["1", "true", "TRUE"] ->
+          {true, value} when value in ["1", "true", "TRUE"] ->
             {:ok, [ssl_mode: :disable, allow_insecure_database?: true]}
 
           _value ->
             {:error,
              {:invalid_env, "FAVN_DATABASE_SSL_MODE",
-              "verify-full or explicit development/test plaintext interlock"}}
+              "verify-full or explicit loopback plaintext interlock"}}
         end
 
       _value ->
         {:error,
          {:invalid_env, "FAVN_DATABASE_SSL_MODE",
-          "verify-full or explicit development/test plaintext interlock"}}
+          "verify-full or explicit loopback plaintext interlock"}}
     end
   end
 
-  defp runtime_input_pin_key(key) when byte_size(key) == 32, do: {:ok, key}
+  defp plaintext_loopback_database?(url) do
+    case URI.parse(url) do
+      %URI{host: host} when host in ["127.0.0.1", "localhost", "::1"] -> true
+      _url -> false
+    end
+  end
 
-  defp runtime_input_pin_key(encoded) do
+  defp runtime_input_pin(env) do
+    with {:ok, encoded_keys} <- required_secret(env, "FAVN_RUNTIME_INPUT_PIN_KEYS"),
+         {:ok, keys} <- runtime_input_pin_keys(encoded_keys),
+         {:ok, current_version} <-
+           int(env, "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "1", 1, nil),
+         true <- Map.has_key?(keys, current_version) do
+      {:ok, %{keys: keys, current_version: current_version}}
+    else
+      false ->
+        {:error,
+         {:invalid_env, "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", :redacted,
+          "version present in FAVN_RUNTIME_INPUT_PIN_KEYS"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp runtime_input_pin_keys(encoded_keys) do
+    if byte_size(encoded_keys) <= @max_runtime_input_pin_keys_bytes do
+      case Jason.decode(encoded_keys) do
+        {:ok, keys}
+        when is_map(keys) and map_size(keys) > 0 and
+               map_size(keys) <= @max_runtime_input_pin_keys ->
+          decode_runtime_input_pin_keys(keys)
+
+        _invalid ->
+          invalid_runtime_input_pin_keys(:invalid_keyring)
+      end
+    else
+      invalid_runtime_input_pin_keys(:invalid_keyring)
+    end
+  end
+
+  defp decode_runtime_input_pin_keys(keys) do
+    Enum.reduce_while(keys, {:ok, %{}}, fn {encoded_version, encoded_key}, {:ok, decoded} ->
+      with {:ok, version} <- runtime_input_pin_key_version(encoded_version),
+           {:ok, key} <- runtime_input_pin_key(encoded_key) do
+        {:cont, {:ok, Map.put(decoded, version, key)}}
+      else
+        {:error, reason} -> {:halt, invalid_runtime_input_pin_keys(reason)}
+      end
+    end)
+  end
+
+  defp runtime_input_pin_key_version(encoded_version) when is_binary(encoded_version) do
+    case Integer.parse(encoded_version) do
+      {version, ""} when version > 0 ->
+        if Integer.to_string(version) == encoded_version,
+          do: {:ok, version},
+          else: {:error, :invalid_version}
+
+      _invalid ->
+        {:error, :invalid_version}
+    end
+  end
+
+  defp runtime_input_pin_key_version(_encoded_version), do: {:error, :invalid_version}
+
+  defp runtime_input_pin_key(key) when is_binary(key) and byte_size(key) == 32,
+    do: {:ok, key}
+
+  defp runtime_input_pin_key(encoded) when is_binary(encoded) do
     case Base.decode64(encoded) do
       {:ok, key} when byte_size(key) == 32 -> {:ok, key}
-      _invalid -> {:error, {:invalid_secret_env, "FAVN_RUNTIME_INPUT_PIN_KEY", :invalid_key}}
+      _invalid -> {:error, :invalid_key}
     end
   end
+
+  defp runtime_input_pin_key(_encoded), do: {:error, :invalid_key}
+
+  defp invalid_runtime_input_pin_keys(reason),
+    do: {:error, {:invalid_secret_env, "FAVN_RUNTIME_INPUT_PIN_KEYS", reason}}
 
   defp api_server(env) do
     with {:ok, host} <- required_or_default(env, "FAVN_ORCHESTRATOR_API_BIND_HOST", "127.0.0.1"),
@@ -342,6 +434,16 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       "43200",
       1,
       @max_session_ttl_seconds
+    )
+  end
+
+  defp active_run_plan_max_bytes(env) do
+    int(
+      env,
+      "FAVN_ORCHESTRATOR_ACTIVE_RUN_PLAN_MAX_BYTES",
+      Integer.to_string(@default_active_run_plan_max_bytes),
+      @min_active_run_plan_max_bytes,
+      @max_active_run_plan_max_bytes
     )
   end
 

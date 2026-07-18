@@ -30,6 +30,43 @@ defmodule FavnOrchestrator.Freshness.DeciderTest do
              )
   end
 
+  test "force policy expands once and overrides fresh state without explicit forced keys" do
+    state = freshness_state(@raw_ref, @raw_key, Key.latest(), status: :ok)
+
+    decisions =
+      Decider.decide_many(plan(), [@raw_key, @stage_key],
+        assets_by_ref: %{
+          @raw_ref => %{freshness: Policy.from_value!(max_age: {:days, 1})},
+          @stage_ref => %{freshness: Policy.from_value!(max_age: {:days, 1})}
+        },
+        refresh_policy: :force,
+        prior_states: %{@raw_key => state},
+        now: @now
+      )
+
+    assert %{decision: :run, reason: :forced} = decisions[@raw_key]
+    assert %{decision: :run, reason: :forced} = decisions[@stage_key]
+  end
+
+  test "force_assets overrides freshness only for selected assets" do
+    raw_state = freshness_state(@raw_ref, @raw_key, Key.latest(), status: :ok)
+    stage_state = freshness_state(@stage_ref, @stage_key, Key.latest(), status: :ok)
+
+    decisions =
+      Decider.decide_many(plan(), [@raw_key, @stage_key],
+        assets_by_ref: %{
+          @raw_ref => %{freshness: Policy.from_value!(max_age: {:days, 1})},
+          @stage_ref => %{freshness: Policy.from_value!(max_age: {:days, 1})}
+        },
+        refresh_policy: {:force_assets, [@stage_ref]},
+        prior_states: %{@raw_key => raw_state, @stage_key => stage_state},
+        now: @now
+      )
+
+    assert %{decision: :skipped_fresh} = decisions[@raw_key]
+    assert %{decision: :run, reason: :forced} = decisions[@stage_key]
+  end
+
   test "upstream refreshed in same run causes downstream run" do
     assert %{decision: :run, reason: :upstream_refreshed} =
              Decider.decide(plan(), @stage_key,

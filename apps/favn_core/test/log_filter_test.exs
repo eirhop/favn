@@ -23,7 +23,7 @@ defmodule Favn.Log.FilterTest do
              run_id: "run_1",
              asset_step_id: "asset_step_1",
              node_key: "node-a",
-             asset_ref: {MyApp.Asset, :daily},
+             asset_ref: "asset:Elixir.MyApp.Asset:daily",
              levels: [:info, :error],
              sources: [:runner],
              since: since,

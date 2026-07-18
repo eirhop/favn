@@ -213,8 +213,8 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
 end
 
 defmodule FavnOrchestrator.Persistence.Results.RunSummary do
-  @moduledoc "Canonical run metadata and decoded snapshot for bounded operator pages."
-  @enforce_keys [:workspace_id, :run_id, :root_run_id, :status, :submitted_event_id, :run]
+  @moduledoc "Compact relational run history row; it never contains a run snapshot."
+  @enforce_keys [:workspace_id, :run_id, :status, :event_sequence, :inserted_at]
   defstruct [
     :workspace_id,
     :run_id,
@@ -227,15 +227,17 @@ defmodule FavnOrchestrator.Persistence.Results.RunSummary do
     :trigger_type,
     :submitted_event_id,
     :latest_event_id,
+    :event_sequence,
     :inserted_at,
     :updated_at,
-    :run
+    :terminal_at,
+    :rerun_of_run_id
   ]
 
   @type t :: %__MODULE__{
           workspace_id: String.t(),
           run_id: String.t(),
-          root_run_id: String.t(),
+          root_run_id: String.t() | nil,
           parent_run_id: String.t() | nil,
           deployment_id: String.t(),
           manifest_version_id: String.t(),
@@ -244,9 +246,11 @@ defmodule FavnOrchestrator.Persistence.Results.RunSummary do
           trigger_type: atom(),
           submitted_event_id: pos_integer(),
           latest_event_id: pos_integer(),
+          event_sequence: pos_integer(),
           inserted_at: DateTime.t(),
           updated_at: DateTime.t(),
-          run: FavnOrchestrator.RunState.t()
+          terminal_at: DateTime.t() | nil,
+          rerun_of_run_id: String.t() | nil
         }
 end
 

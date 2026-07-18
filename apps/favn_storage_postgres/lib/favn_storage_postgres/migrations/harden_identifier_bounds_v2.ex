@@ -8,7 +8,7 @@ defmodule FavnStoragePostgres.Migrations.HardenIdentifierBoundsV2 do
     workspaces: ~w(workspace_id slug),
     manifest_versions: ~w(manifest_version_id),
     execution_packages: ~w(asset_module asset_name),
-    manifest_execution_packages: ~w(manifest_version_id),
+    manifest_execution_packages: ~w(manifest_version_id asset_module asset_name),
     workspace_deployments:
       ~w(workspace_id deployment_id manifest_version_id deployed_by_actor_id),
     workspace_deployment_targets: ~w(workspace_id deployment_id target_id),
@@ -19,7 +19,7 @@ defmodule FavnStoragePostgres.Migrations.HardenIdentifierBoundsV2 do
     run_events: ~w(workspace_id run_id asset_step_id),
     run_targets:
       ~w(workspace_id run_id deployment_id manifest_version_id target_id target_module target_name),
-    runtime_input_pins: ~w(workspace_id run_id),
+    runtime_input_pins: ~w(workspace_id run_id resolver_module),
     run_ownerships: ~w(workspace_id run_id owner_id claim_command_id last_renewal_id),
     runner_executions:
       ~w(workspace_id runner_execution_id run_id dispatch_id last_command_id owner_id),

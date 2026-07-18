@@ -74,7 +74,8 @@ defmodule Favn.Dev.Build.Orchestrator do
     |> Map.put("required_env", [
       "FAVN_STORAGE",
       "FAVN_DATABASE_URL",
-      "FAVN_RUNTIME_INPUT_PIN_KEY",
+      "FAVN_RUNTIME_INPUT_PIN_KEYS",
+      "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION",
       "FAVN_WORKSPACE_IDS",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"
     ])

@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL
+  alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Persistence.CapacityIdentity
   alias FavnOrchestrator.Persistence.Commands.CommitRunTransition
   alias FavnOrchestrator.Persistence.Commands.CreateRun
@@ -21,6 +22,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnOrchestrator.Persistence.Queries.PageRuns
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RunCommitted
+  alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunCancellation
   alias FavnOrchestrator.RunState
@@ -36,11 +38,11 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnStoragePostgres.Runs.Decoder
   alias FavnStoragePostgres.RuntimeInputKeys
   alias FavnStoragePostgres.Schemas.CapacityScope
-  alias FavnStoragePostgres.Schemas.ManifestVersion
   alias FavnStoragePostgres.Schemas.OutboxEvent
   alias FavnStoragePostgres.Schemas.Run
   alias FavnStoragePostgres.Schemas.RunEvent
   alias FavnStoragePostgres.Schemas.RunOwnership
+  alias FavnStoragePostgres.Schemas.RunPlan
   alias FavnStoragePostgres.Schemas.RunTarget
   alias FavnStoragePostgres.Schemas.RuntimeInputPin
   alias FavnStoragePostgres.Schemas.WorkspaceDeployment
@@ -48,15 +50,17 @@ defmodule FavnStoragePostgres.Runs.Store do
   @max_targets 10_000
   @bulk_insert_size 500
   @max_snapshot_bytes 4 * 1_024 * 1_024
+  @max_plan_bytes 64 * 1_024 * 1_024
   @max_event_bytes 512 * 1_024
   @max_event_types 32
   @max_runtime_input_pins 1_000
+  @runtime_input_package_batch_size 500
   @max_cancel_reason_bytes 32 * 1_024
 
   @impl true
   def create_run(%CreateRun{} = command) do
     with :ok <- validate_create(command),
-         {:ok, encoded} <- encode_write(command.run, command.event),
+         {:ok, encoded} <- encode_write(command.run, command.event, persist_plan?: true),
          {:ok, result} <-
            Repo.transaction(fn ->
              IdempotencyTransaction.execute!(
@@ -123,9 +127,15 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   @impl true
   def get_run(%GetRun{workspace_context: context, run_id: run_id}) do
-    case Repo.get_by(Run, workspace_id: context.workspace_id, run_id: run_id) do
-      nil -> {:error, Error.new(:not_found, "run not found")}
-      %Run{} = row -> decode_run(row)
+    with :ok <- validate_workspace_read(context),
+         true <- valid_identity?(run_id) do
+      case Repo.get_by(Run, workspace_id: context.workspace_id, run_id: run_id) do
+        nil -> {:error, Error.new(:not_found, "run not found")}
+        %Run{} = row -> decode_run(row)
+      end
+    else
+      false -> {:error, Error.new(:invalid, "invalid run identity")}
+      {:error, %Error{} = error} -> {:error, error}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -136,19 +146,41 @@ defmodule FavnStoragePostgres.Runs.Store do
     with :ok <- validate_page_runs(query),
          ecto_query <- runs_query(query),
          rows <- Repo.all(ecto_query),
-         {:ok, runs} <- decode_runs(Enum.take(rows, query.limit)),
+         page_rows <- Enum.take(rows, query.limit),
+         {:ok, runs} <- Decoder.decode_many(page_rows),
          has_more? <- length(rows) > query.limit do
       {:ok,
        %CursorPage{
          items: runs,
          limit: query.limit,
          has_more?: has_more?,
-         next_cursor:
-           next_run_cursor(List.last(Enum.take(rows, query.limit)), query.scope, has_more?)
+         next_cursor: next_run_cursor(List.last(page_rows), query.scope, has_more?)
        }}
     else
       {:error, %Error{} = error} -> {:error, error}
       {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def page_run_summaries(%PageRuns{} = query) do
+    with :ok <- validate_page_runs(query),
+         ecto_query <- run_summaries_query(query),
+         rows <- Repo.all(ecto_query),
+         page_rows <- Enum.take(rows, query.limit),
+         runs <- Enum.map(page_rows, &run_summary/1),
+         has_more? <- length(rows) > query.limit do
+      {:ok,
+       %CursorPage{
+         items: runs,
+         limit: query.limit,
+         has_more?: has_more?,
+         next_cursor: next_run_cursor(List.last(page_rows), query.scope, has_more?)
+       }}
+    else
+      {:error, %Error{} = error} -> {:error, error}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -219,12 +251,11 @@ defmodule FavnStoragePostgres.Runs.Store do
   @impl true
   def get_runtime_inputs(%GetRuntimeInputs{} = query) do
     with :ok <- validate_runtime_input_query(query),
-         {:ok, {_run, manifest}} <- fetch_run_manifest(query.workspace_context, query.run_id),
-         allowed_resolvers <- runtime_input_resolvers(manifest.manifest),
+         {:ok, _run} <- fetch_run(query.workspace_context, query.run_id),
          {:ok, hashes} <- requested_node_hashes(query.node_keys),
          {:ok, rows} <-
            runtime_input_rows(query.workspace_context.workspace_id, query.run_id, hashes),
-         {:ok, pins} <- decode_runtime_input_rows(rows, allowed_resolvers) do
+         {:ok, pins} <- decode_runtime_input_rows(rows, stored_resolvers(rows)) do
       {:ok, pins}
     else
       {:error, %Error{} = error} -> {:error, error}
@@ -235,12 +266,20 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   defp persist_runtime_input_pins!(command, key_version, key) do
-    with {:ok, {_run, manifest}} <-
-           fetch_run_manifest(command.workspace_context, command.run_id),
-         allowed_resolvers <- runtime_input_resolvers(manifest.manifest),
-         :ok <- validate_pin_resolvers(command.pins, allowed_resolvers),
+    with {:ok, run} <- fetch_run(command.workspace_context, command.run_id),
+         {:ok, bindings} <-
+           runtime_input_bindings(
+             run,
+             Enum.map(command.pins, & &1.node_key)
+           ),
+         :ok <- validate_pin_resolvers(command.pins, bindings),
          {:ok, candidates} <-
-           encode_runtime_input_pins(command, key_version, key) do
+           encode_runtime_input_pins(command, key_version, key),
+         candidates <-
+           Enum.map(
+             candidates,
+             &Map.put(&1, :binding, Map.fetch!(bindings, pin_asset_ref(&1.pin)))
+           ) do
       now = DateTime.utc_now()
 
       rows =
@@ -250,16 +289,31 @@ defmodule FavnStoragePostgres.Runs.Store do
             run_id: command.run_id,
             node_key_hash: candidate.node_key_hash,
             payload_fingerprint: candidate.payload_fingerprint,
+            execution_package_hash: candidate.binding.package_hash,
+            resolver_module: candidate.binding.resolver_module,
             encryption_key_version: key_version,
             payload: candidate.payload,
             inserted_at: now
           }
         end)
 
-      Repo.insert_all(RuntimeInputPin, rows,
-        on_conflict: :nothing,
-        conflict_target: [:workspace_id, :run_id, :node_key_hash]
-      )
+      {inserted_count, _rows} =
+        Repo.insert_all(RuntimeInputPin, rows,
+          on_conflict: :nothing,
+          conflict_target: [:workspace_id, :run_id, :node_key_hash]
+        )
+
+      if inserted_count > 0 do
+        SQL.query!(
+          Repo,
+          """
+          INSERT INTO favn_control.runtime_input_key_versions (key_version, first_used_at)
+          VALUES ($1, clock_timestamp())
+          ON CONFLICT (key_version) DO NOTHING
+          """,
+          [key_version]
+        )
+      end
 
       hashes = Enum.map(candidates, & &1.node_key_hash)
 
@@ -270,7 +324,7 @@ defmodule FavnStoragePostgres.Runs.Store do
                hashes
              ) do
         persisted = Map.new(persisted_rows, &{&1.node_key_hash, &1})
-        verify_runtime_input_replay!(candidates, persisted, allowed_resolvers)
+        verify_runtime_input_replay!(candidates, persisted, stored_resolvers(persisted_rows))
       end
     else
       {:error, %Error{} = error} -> Repo.rollback(error)
@@ -302,10 +356,21 @@ defmodule FavnStoragePostgres.Runs.Store do
   defp verify_runtime_input_replay!(candidates, persisted, allowed_resolvers) do
     Enum.reduce_while(candidates, {:ok, []}, fn candidate, {:ok, acc} ->
       case Map.fetch(persisted, candidate.node_key_hash) do
-        {:ok, row} when row.payload_fingerprint == candidate.payload_fingerprint ->
+        {:ok, row}
+        when row.execution_package_hash == candidate.binding.package_hash and
+               row.resolver_module == candidate.binding.resolver_module ->
           case decode_runtime_input_row(row, allowed_resolvers) do
-            {:ok, pin} -> {:cont, {:ok, [pin | acc]}}
-            {:error, error} -> {:halt, {:error, error}}
+            {:ok, pin} ->
+              if runtime_input_pin_equivalent?(candidate.pin, pin) do
+                {:cont, {:ok, [pin | acc]}}
+              else
+                {:halt,
+                 {:error,
+                  Error.new(:conflict, "runtime input pin identity has different content")}}
+              end
+
+            {:error, error} ->
+              {:halt, {:error, error}}
           end
 
         {:ok, _conflicting_row} ->
@@ -321,6 +386,19 @@ defmodule FavnStoragePostgres.Runs.Store do
       {:error, %Error{} = error} -> Repo.rollback(error)
       {:error, reason} -> Repo.rollback(ErrorMapper.map(reason))
     end
+  end
+
+  defp runtime_input_pin_equivalent?(%Pin{} = candidate, %Pin{} = persisted) do
+    Pin.equivalent?(candidate, persisted) and
+      candidate.run_id == persisted.run_id and
+      candidate.node_key == persisted.node_key and
+      candidate.params == persisted.params and
+      candidate.metadata == persisted.metadata and
+      candidate.sensitive_params == persisted.sensitive_params and
+      candidate.source_run_id == persisted.source_run_id and
+      candidate.source_node_key == persisted.source_node_key and
+      candidate.source_payload_fingerprint == persisted.source_payload_fingerprint and
+      candidate.schema_version == persisted.schema_version
   end
 
   defp runtime_input_rows(workspace_id, run_id, nil) do
@@ -387,42 +465,153 @@ defmodule FavnStoragePostgres.Runs.Store do
     end
   end
 
-  defp fetch_run_manifest(context, run_id) do
+  defp fetch_run(context, run_id) do
     query =
       from(run in Run,
-        join: manifest in ManifestVersion,
-        on: manifest.manifest_version_id == run.manifest_version_id,
         where: run.workspace_id == ^context.workspace_id and run.run_id == ^run_id,
-        select: {run, manifest}
+        select: %{
+          workspace_id: run.workspace_id,
+          run_id: run.run_id,
+          manifest_version_id: run.manifest_version_id
+        }
       )
 
     case Repo.one(query) do
-      {%Run{} = run, %ManifestVersion{} = manifest} -> {:ok, {run, manifest}}
+      %{workspace_id: _, run_id: _, manifest_version_id: _} = run -> {:ok, run}
       nil -> {:error, Error.new(:not_found, "run not found")}
     end
   end
 
-  defp runtime_input_resolvers(%{"assets" => assets}) when is_list(assets) do
-    assets
-    |> Enum.flat_map(fn asset ->
-      case get_in(asset, ["sql_execution", "runtime_inputs", "module"]) do
-        resolver when is_binary(resolver) -> [resolver]
-        _missing -> []
-      end
-    end)
-    |> MapSet.new()
-  end
-
-  defp runtime_input_resolvers(_manifest), do: MapSet.new()
-
-  defp validate_pin_resolvers(pins, allowed_resolvers) do
-    if Enum.all?(pins, &MapSet.member?(allowed_resolvers, Atom.to_string(&1.resolver))) do
+  defp validate_pin_resolvers(pins, bindings) do
+    if Enum.all?(pins, fn pin ->
+         case Map.get(bindings, pin_asset_ref(pin)) do
+           %{resolver_module: resolver} -> resolver == Atom.to_string(pin.resolver)
+           nil -> false
+         end
+       end) do
       :ok
     else
       {:error,
        Error.new(:invalid, "runtime input pin resolver is not declared by the pinned manifest")}
     end
   end
+
+  defp runtime_input_bindings(
+         %{workspace_id: workspace_id, run_id: run_id, manifest_version_id: manifest_version_id},
+         node_keys
+       ) do
+    refs = Enum.map(node_keys, &node_asset_ref/1)
+
+    if Enum.all?(refs, &match?({module, name} when is_atom(module) and is_atom(name), &1)) do
+      refs = refs |> MapSet.new() |> Enum.sort()
+
+      refs
+      |> Enum.chunk_every(@runtime_input_package_batch_size)
+      |> Enum.reduce_while({:ok, %{}}, fn batch, {:ok, bindings} ->
+        case runtime_input_binding_batch(
+               workspace_id,
+               run_id,
+               manifest_version_id,
+               batch
+             ) do
+          {:ok, batch_bindings} -> {:cont, {:ok, Map.merge(bindings, batch_bindings)}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    else
+      {:error, Error.new(:invalid, "runtime input pin has an invalid node key")}
+    end
+  end
+
+  defp runtime_input_binding_batch(workspace_id, run_id, manifest_version_id, refs) do
+    modules = Enum.map(refs, &(&1 |> elem(0) |> Atom.to_string()))
+    names = Enum.map(refs, &(&1 |> elem(1) |> Atom.to_string()))
+    target_ids = Enum.map(refs, &FavnOrchestrator.Persistence.TargetIdentity.for_asset/1)
+
+    %{rows: rows} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT package_ref.asset_module,
+               package_ref.asset_name,
+               package_ref.package_hash,
+               package.runtime_input_resolver
+        FROM unnest($4::text[], $5::text[], $6::text[])
+          AS requested(asset_module, asset_name, target_id)
+        JOIN favn_control.manifest_execution_packages package_ref
+          ON package_ref.manifest_version_id = $3
+         AND package_ref.asset_module = requested.asset_module
+         AND package_ref.asset_name = requested.asset_name
+        JOIN favn_control.execution_packages package
+          ON package.content_hash = package_ref.package_hash
+        JOIN favn_control.run_targets target
+          ON target.workspace_id = $1
+         AND target.run_id = $2
+         AND target.manifest_version_id = $3
+         AND target.target_kind = 'asset'
+         AND target.target_id = requested.target_id
+        ORDER BY package_ref.asset_module, package_ref.asset_name
+        """,
+        [workspace_id, run_id, manifest_version_id, modules, names, target_ids]
+      )
+
+    if length(rows) <= length(refs) do
+      rows =
+        Enum.map(rows, fn [module, name, hash, resolver] -> {module, name, hash, resolver} end)
+
+      refs_by_identity =
+        Map.new(refs, fn {module, name} = ref ->
+          {{Atom.to_string(module), Atom.to_string(name)}, ref}
+        end)
+
+      decode_runtime_input_bindings(rows, refs_by_identity)
+    else
+      {:error, Error.new(:internal, "runtime input package query exceeded requested assets")}
+    end
+  end
+
+  defp decode_runtime_input_bindings(rows, refs_by_identity) do
+    expected_count = map_size(refs_by_identity)
+
+    rows
+    |> Enum.reduce_while({:ok, %{}}, fn {module, name, hash, resolver}, {:ok, bindings} ->
+      with {asset_module, asset_name} = asset_ref
+           when is_atom(asset_module) and is_atom(asset_name) <-
+             Map.get(refs_by_identity, {module, name}),
+           true <- is_binary(resolver) and resolver != "" do
+        {:cont,
+         {:ok,
+          Map.put(bindings, asset_ref, %{
+            package_hash: hash,
+            resolver_module: resolver
+          })}}
+      else
+        _invalid ->
+          {:halt, {:error, Error.new(:invalid, "runtime input package is invalid")}}
+      end
+    end)
+    |> case do
+      {:ok, bindings} ->
+        if map_size(bindings) == expected_count do
+          {:ok, bindings}
+        else
+          {:error,
+           Error.new(:invalid, "runtime input pin asset is not declared by the pinned manifest")}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp stored_resolvers(rows), do: MapSet.new(rows, & &1.resolver_module)
+
+  defp pin_asset_ref(pin), do: node_asset_ref(pin.node_key)
+
+  defp node_asset_ref({{module, name}, _window}) when is_atom(module) and is_atom(name),
+    do: {module, name}
+
+  defp node_asset_ref(_node_key), do: nil
 
   defp requested_node_hashes(nil), do: {:ok, nil}
 
@@ -480,8 +669,8 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   defp validate_runtime_input_query(%GetRuntimeInputs{} = query) do
     cond do
-      not match?(%WorkspaceContext{}, query.workspace_context) ->
-        {:error, Error.new(:forbidden, "workspace read context required")}
+      not workspace_reader?(query.workspace_context) ->
+        {:error, Error.new(:forbidden, "workspace read role required")}
 
       not valid_identity?(query.run_id) ->
         {:error, Error.new(:invalid, "invalid run identity")}
@@ -613,7 +802,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   defp validate_page_events(%PageRunEvents{} = query) do
-    if WorkspaceContext.valid?(query.workspace_context) and exactly_one_event_identity?(query) and
+    if workspace_reader?(query.workspace_context) and exactly_one_event_identity?(query) and
          valid_event_page_limit?(query.limit) and valid_event_cursors?(query) and
          valid_event_cursor_combination?(query) and query.order in [nil, :asc, :desc] and
          valid_event_types?(query.event_types),
@@ -713,6 +902,7 @@ defmodule FavnStoragePostgres.Runs.Store do
 
         run_row = run_row(command, encoded, event_id, creation_hash!(command, encoded))
         Repo.insert!(run_row)
+        insert_run_plan!(command.run, encoded)
         Repo.insert!(event_row(workspace_id, event_id, outbox.outbox_event_id, encoded))
         insert_targets!(command, event_id)
 
@@ -941,10 +1131,11 @@ defmodule FavnStoragePostgres.Runs.Store do
     end
   end
 
-  defp encode_write(%RunState{} = run, event) do
-    with {:ok, snapshot_json} <- RunSnapshotCodec.encode_run(run),
+  defp encode_write(%RunState{} = run, event, opts \\ []) do
+    with {:ok, snapshot_json} <- RunSnapshotCodec.encode_run(run, plan: :reference),
          :ok <- Payload.validate_encoded(snapshot_json, @max_snapshot_bytes),
          {:ok, snapshot} <- Jason.decode(snapshot_json),
+         {:ok, plan} <- encode_plan(run, Keyword.get(opts, :persist_plan?, false)),
          {:ok, normalized_event} <- RunEventCodec.normalize(run.id, event),
          {:ok, event_json} <- RunEventCodec.encode(normalized_event),
          :ok <- Payload.validate_encoded(event_json, @max_event_bytes),
@@ -955,11 +1146,23 @@ defmodule FavnStoragePostgres.Runs.Store do
        %{
          snapshot: snapshot,
          snapshot_hash: snapshot_hash,
+         plan: plan,
          event: normalized_event,
          event_payload: event_payload,
          event_hash: event_hash,
          occurred_at: normalized_event.occurred_at
        }}
+    end
+  end
+
+  defp encode_plan(%RunState{plan: nil}, _persist?), do: {:ok, nil}
+  defp encode_plan(%RunState{}, false), do: {:ok, nil}
+
+  defp encode_plan(%RunState{} = run, true) do
+    with {:ok, plan_json} <- RunSnapshotCodec.encode_plan(run.plan),
+         :ok <- Payload.validate_encoded(plan_json, @max_plan_bytes),
+         {:ok, plan} <- Jason.decode(plan_json) do
+      {:ok, plan}
     end
   end
 
@@ -988,6 +1191,24 @@ defmodule FavnStoragePostgres.Runs.Store do
       updated_at: run.updated_at || encoded.occurred_at,
       terminal_at: terminal_at(run, encoded.occurred_at)
     }
+  end
+
+  defp insert_run_plan!(%RunState{plan: nil}, _encoded), do: :ok
+
+  defp insert_run_plan!(%RunState{} = run, %{plan: plan}) when is_map(plan) do
+    plan_hash = run.plan_hash || RunState.plan_hash(run.plan)
+
+    Repo.insert!(%RunPlan{
+      workspace_id: run.workspace_id,
+      run_id: run.id,
+      manifest_version_id: run.manifest_version_id,
+      plan_version: 1,
+      plan_hash: Base.decode16!(plan_hash, case: :lower),
+      plan: plan,
+      inserted_at: run.inserted_at || DateTime.utc_now()
+    })
+
+    :ok
   end
 
   defp event_row(workspace_id, event_id, outbox_event_id, encoded) do
@@ -1115,6 +1336,29 @@ defmodule FavnStoragePostgres.Runs.Store do
     |> cursor_runs(query.after, query.scope)
     |> order_runs(query.scope)
     |> limit(^(query.limit + 1))
+  end
+
+  defp run_summaries_query(%PageRuns{} = query) do
+    query
+    |> runs_query()
+    |> select([run], %{
+      workspace_id: run.workspace_id,
+      run_id: run.run_id,
+      deployment_id: run.deployment_id,
+      manifest_version_id: run.manifest_version_id,
+      submit_kind: run.submit_kind,
+      trigger_type: run.trigger_type,
+      status: run.status,
+      event_sequence: run.event_sequence,
+      submitted_event_id: run.submitted_event_id,
+      latest_event_id: run.latest_event_id,
+      inserted_at: run.inserted_at,
+      updated_at: run.updated_at,
+      terminal_at: run.terminal_at,
+      parent_run_id: run.parent_run_id,
+      rerun_of_run_id: run.rerun_of_run_id,
+      root_execution_group_id: run.root_execution_group_id
+    })
   end
 
   defp scope_runs(query, %WorkspaceContext{workspace_id: workspace_id}),
@@ -1274,7 +1518,27 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   defp published_event_scope(query, %PlatformContext{}), do: query
 
-  defp decode_runs(rows), do: Decoder.decode_many(rows)
+  defp run_summary(row) do
+    %RunSummary{
+      workspace_id: row.workspace_id,
+      run_id: row.run_id,
+      manifest_version_id: row.manifest_version_id,
+      submit_kind: String.to_existing_atom(row.submit_kind),
+      status: String.to_existing_atom(row.status),
+      event_sequence: row.event_sequence,
+      inserted_at: row.inserted_at,
+      updated_at: row.updated_at,
+      terminal_at: row.terminal_at,
+      parent_run_id: row.parent_run_id,
+      rerun_of_run_id: row.rerun_of_run_id,
+      root_run_id: row.root_execution_group_id,
+      deployment_id: row.deployment_id,
+      trigger_type: String.to_existing_atom(row.trigger_type),
+      submitted_event_id: row.submitted_event_id,
+      latest_event_id: row.latest_event_id
+    }
+  end
+
   defp decode_run(%Run{} = row), do: Decoder.decode(row)
 
   defp decode_events(rows) do
@@ -1448,7 +1712,7 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   defp workspace_writer?(_context), do: false
 
-  defp valid_read_scope?(%WorkspaceContext{} = context), do: WorkspaceContext.valid?(context)
+  defp valid_read_scope?(%WorkspaceContext{} = context), do: workspace_reader?(context)
 
   defp valid_read_scope?(%PlatformContext{roles: roles} = context),
     do:
@@ -1456,6 +1720,22 @@ defmodule FavnStoragePostgres.Runs.Store do
         Enum.any?(roles, &(&1 in [:platform_reader, :platform_operator, :platform_admin]))
 
   defp valid_read_scope?(_scope), do: false
+
+  defp validate_workspace_read(context) do
+    if workspace_reader?(context),
+      do: :ok,
+      else: {:error, Error.new(:forbidden, "workspace read role required")}
+  end
+
+  defp workspace_reader?(%WorkspaceContext{roles: roles} = context),
+    do:
+      WorkspaceContext.valid?(context) and
+        Enum.any?(
+          roles,
+          &(&1 in [:customer_reader, :customer_operator, :workspace_admin, :platform_operator])
+        )
+
+  defp workspace_reader?(_context), do: false
 
   defp valid_identity?(value), do: is_binary(value) and value != "" and byte_size(value) <= 255
 

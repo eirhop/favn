@@ -46,7 +46,8 @@ defmodule FavnOrchestrator.Persistence.Commands.PurgePersistence do
             | :sessions
             | :idempotency
             | :materialization_claims
-            | :projection_failures,
+            | :projection_failures
+            | :execution_packages,
           workspace_id: String.t() | nil,
           cutoff: DateTime.t(),
           limit: 1..5_000

@@ -45,14 +45,15 @@ end
 defmodule FavnOrchestrator.Persistence.Commands.DeploymentTarget do
   @moduledoc "One exact target granted to an immutable workspace deployment."
 
-  @enforce_keys [:target_kind, :target_id, :selection_source, :customer_visible]
-  defstruct [:target_kind, :target_id, :selection_source, :customer_visible]
+  @enforce_keys [:target_kind, :target_id, :selection_source, :customer_visible, :descriptor]
+  defstruct [:target_kind, :target_id, :selection_source, :customer_visible, :descriptor]
 
   @type t :: %__MODULE__{
           target_kind: :asset | :pipeline,
           target_id: String.t(),
           selection_source: :common | :explicit | :dependency,
-          customer_visible: boolean()
+          customer_visible: boolean(),
+          descriptor: map()
         }
 end
 
@@ -61,9 +62,11 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
 
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Commands.DeploymentTarget
+  alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
   @enforce_keys [
+    :platform_context,
     :workspace_context,
     :deployment_id,
     :manifest_version_id,
@@ -72,6 +75,7 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
     :occurred_at
   ]
   defstruct [
+    :platform_context,
     :workspace_context,
     :deployment_id,
     :manifest_version_id,
@@ -85,6 +89,7 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
   ]
 
   @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
           workspace_context: WorkspaceContext.t(),
           deployment_id: String.t(),
           manifest_version_id: String.t(),
@@ -170,6 +175,36 @@ defmodule FavnOrchestrator.Persistence.Queries.GetRuntimeState do
   @type t :: %__MODULE__{workspace_context: WorkspaceContext.t()}
 end
 
+defmodule FavnOrchestrator.Persistence.Queries.GetDeploymentManifest do
+  @moduledoc "Fetches a manifest only through one exact workspace deployment."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [:workspace_context, :deployment_id, :manifest_version_id]
+  defstruct [:workspace_context, :deployment_id, :manifest_version_id]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          deployment_id: String.t(),
+          manifest_version_id: String.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.PageWorkspaces do
+  @moduledoc "Pages active workspace identities for platform-owned control-plane services."
+
+  alias FavnOrchestrator.Persistence.PlatformContext
+
+  @enforce_keys [:platform_context]
+  defstruct [:platform_context, :after, limit: 100]
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          after: String.t() | nil,
+          limit: pos_integer()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes do
   @moduledoc "Finds content hashes that are not present in the execution-package registry."
 
@@ -182,15 +217,24 @@ defmodule FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes do
 end
 
 defmodule FavnOrchestrator.Persistence.Queries.GetExecutionPackage do
-  @moduledoc "Fetches one execution package for an authorized workspace runtime."
+  @moduledoc "Fetches one deployment-authorized execution package for a workspace runtime."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
-  @enforce_keys [:workspace_context, :content_hash]
-  defstruct [:workspace_context, :content_hash]
+  @enforce_keys [
+    :workspace_context,
+    :deployment_id,
+    :manifest_version_id,
+    :asset_ref,
+    :content_hash
+  ]
+  defstruct [:workspace_context, :deployment_id, :manifest_version_id, :asset_ref, :content_hash]
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
+          deployment_id: String.t(),
+          manifest_version_id: String.t(),
+          asset_ref: Favn.Ref.t(),
           content_hash: String.t()
         }
 end
@@ -214,13 +258,31 @@ defmodule FavnOrchestrator.Persistence.Results.RuntimeState do
   @moduledoc "Committed active deployment state for one workspace."
 
   @enforce_keys [:workspace_id, :deployment_id, :manifest_version_id, :revision]
-  defstruct [:workspace_id, :deployment_id, :manifest_version_id, :revision, :activated_at]
+  defstruct [
+    :workspace_id,
+    :deployment_id,
+    :manifest_version_id,
+    :revision,
+    :activated_at,
+    :manifest_content_hash,
+    :schema_version,
+    :runner_contract_version,
+    :asset_count,
+    :pipeline_count,
+    :schedule_count
+  ]
 
   @type t :: %__MODULE__{
           workspace_id: String.t(),
           deployment_id: String.t(),
           manifest_version_id: String.t(),
           revision: non_neg_integer(),
-          activated_at: DateTime.t() | nil
+          activated_at: DateTime.t() | nil,
+          manifest_content_hash: String.t() | nil,
+          schema_version: pos_integer() | nil,
+          runner_contract_version: pos_integer() | nil,
+          asset_count: non_neg_integer() | nil,
+          pipeline_count: non_neg_integer() | nil,
+          schedule_count: non_neg_integer() | nil
         }
 end

@@ -6,7 +6,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
   alias Favn.Manifest
+  alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Graph
+  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
+  alias Favn.SQL.Template
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInput.Resolution
   alias FavnOrchestrator.Persistence.BackfillPlan
@@ -28,7 +32,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.DeploymentCapacityScope
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.PinRuntimeInputs
+  alias FavnOrchestrator.Persistence.Commands.PurgePersistence
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
+  alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
   alias FavnOrchestrator.Persistence.Commands.RecordRunnerDispatch
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
@@ -50,11 +56,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.RunTarget
   alias FavnOrchestrator.Persistence.Commands.AdmitExecution
   alias FavnOrchestrator.Persistence.Commands.CapacityRequest
-  alias FavnOrchestrator.Persistence.Commands.ClaimAdmissionWaiters
   alias FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease
   alias FavnOrchestrator.Persistence.Commands.RenewExecutionLease
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
+  alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
   alias FavnOrchestrator.Persistence.Queries.GetActor
   alias FavnOrchestrator.Persistence.Queries.GetSession
   alias FavnOrchestrator.Persistence.Queries.GetRun
@@ -63,6 +69,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetMaterializations
   alias FavnOrchestrator.Persistence.Queries.GetBackfill
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
+  alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageManifests
@@ -70,6 +77,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.PageLogs
   alias FavnOrchestrator.Persistence.Queries.PageRunEvents
   alias FavnOrchestrator.Persistence.Queries.PagePublishedRunEvents
+  alias FavnOrchestrator.Persistence.Queries.PageRunnerExecutions
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Queries.PageBackfillWindows
   alias FavnOrchestrator.Persistence.Queries.PageRuns
@@ -91,6 +99,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunOwnership
+  alias FavnOrchestrator.RunReadModel
+  alias FavnOrchestrator.RunServer
+  alias FavnOrchestrator.RunServer.Execution.PipelineRetryCheckpoint
   alias FavnOrchestrator.TargetStatus
   alias FavnOrchestrator.TransitionWriter
   alias FavnStoragePostgres.Config
@@ -106,6 +117,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.Maintenance.Store, as: MaintenanceStore
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.RuntimeInputKeyInventory
   alias FavnStoragePostgres.RunOwnership.Store, as: RunOwnershipStore
   alias FavnStoragePostgres.Runs.Store, as: RunStore
   alias FavnStoragePostgres.Schemas.RuntimeInputPin, as: RuntimeInputPinRow
@@ -229,6 +241,400 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
 
     assert {:error, %{kind: :conflict}} = RegistryStore.deploy_manifest(conflicting)
+
+    [first_target | remaining_targets] = fixture.deploy_command.targets
+
+    assert {:error, %{kind: :invalid}} =
+             RegistryStore.deploy_manifest(%{
+               fixture.deploy_command
+               | deployment_id: fixture.deployment_id <> "-bad-descriptor",
+                 targets: [
+                   %{first_target | descriptor: %{"target_id" => "wrong", "label" => "Wrong"}}
+                   | remaining_targets
+                 ]
+             })
+  end
+
+  test "rejects malformed workspace authority before every sensitive read", fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    roleless = %{fixture.workspace_context | roles: []}
+    malformed = %{fixture.workspace_context | principal_id: ""}
+    other = provision_deploy_fixture(fixture.version)
+
+    assert {:error, %{kind: :forbidden}} =
+             RegistryStore.get_runtime_state(%GetRuntimeState{workspace_context: roleless})
+
+    assert {:error, %{kind: :forbidden}} =
+             RunStore.get_run(%GetRun{workspace_context: malformed, run_id: run.id})
+
+    asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
+
+    package_query = %GetExecutionPackage{
+      workspace_context: roleless,
+      deployment_id: fixture.deployment_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      asset_ref: asset.ref,
+      content_hash: asset.execution_package_hash
+    }
+
+    assert {:error, %{kind: :forbidden}} = RegistryStore.get_execution_package(package_query)
+
+    assert {:error, %{kind: :forbidden}} =
+             RunStore.get_runtime_inputs(%GetRuntimeInputs{
+               workspace_context: roleless,
+               run_id: run.id
+             })
+
+    assert {:error, %{kind: :not_found}} =
+             RunStore.get_run(%GetRun{
+               workspace_context: other.workspace_context,
+               run_id: run.id
+             })
+
+    assert {:error, %{kind: :not_found}} =
+             RegistryStore.get_execution_package(%{
+               package_query
+               | workspace_context: other.workspace_context
+             })
+
+    assert {:error, %{kind: :not_found}} =
+             RunStore.get_runtime_inputs(%GetRuntimeInputs{
+               workspace_context: other.workspace_context,
+               run_id: run.id
+             })
+  end
+
+  test "registers content-addressed execution packages before compact manifests", fixture do
+    ref = {MyApp.PackagedAsset, :asset}
+    package = execution_package(ref)
+    package_hash = package.content_hash
+    version = packaged_manifest_version(ref, package_hash)
+
+    missing_query = %MissingExecutionPackageHashes{
+      platform_context: fixture.platform_context,
+      hashes: [package_hash, package_hash]
+    }
+
+    assert {:ok, [package_hash]} ==
+             RegistryStore.missing_execution_package_hashes(missing_query)
+
+    assert {:error,
+            %{
+              kind: :invalid,
+              details: %{
+                reason: :missing_execution_packages,
+                hashes: [^package_hash]
+              }
+            }} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: version
+             })
+
+    command = %RegisterExecutionPackages{
+      platform_context: fixture.platform_context,
+      packages: [package]
+    }
+
+    assert :ok = RegistryStore.register_execution_packages(command)
+    assert :ok = RegistryStore.register_execution_packages(command)
+    assert {:ok, []} = RegistryStore.missing_execution_package_hashes(missing_query)
+
+    {:ok, package_hash_bytes} = Base.decode16(package_hash, case: :lower)
+
+    batch_fingerprint =
+      :crypto.hash(:sha256, package_hash_bytes)
+      |> Base.encode16(case: :lower)
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.auth_platform_audit_entries WHERE action = 'execution_packages.registered' AND subject_id = $1",
+               [batch_fingerprint]
+             )
+
+    assert {:ok, ^version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: version
+             })
+
+    package_deployment_id = "deploy-package-#{System.unique_integer([:positive])}"
+
+    assert {:ok, _runtime} =
+             RegistryStore.deploy_manifest(%DeployManifest{
+               platform_context: fixture.platform_context,
+               workspace_context: fixture.workspace_context,
+               deployment_id: package_deployment_id,
+               manifest_version_id: version.manifest_version_id,
+               configuration: fixture.deploy_command.configuration,
+               targets: [
+                 %DeploymentTarget{
+                   target_kind: :asset,
+                   target_id: TargetStatus.target_id_for_asset(ref),
+                   selection_source: :explicit,
+                   customer_visible: false,
+                   descriptor: %{
+                     "target_id" => TargetStatus.target_id_for_asset(ref),
+                     "label" => inspect(ref)
+                   }
+                 }
+               ],
+               schedules: [],
+               capacity_scopes: [],
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert {:error, %{kind: :not_found}} =
+             RegistryStore.get_execution_package(%GetExecutionPackage{
+               workspace_context: fixture.workspace_context,
+               deployment_id: fixture.deployment_id,
+               manifest_version_id: version.manifest_version_id,
+               asset_ref: ref,
+               content_hash: package.content_hash
+             })
+
+    assert {:ok, ^package} =
+             RegistryStore.get_execution_package(%GetExecutionPackage{
+               workspace_context: fixture.workspace_context,
+               deployment_id: package_deployment_id,
+               manifest_version_id: version.manifest_version_id,
+               asset_ref: ref,
+               content_hash: package.content_hash
+             })
+
+    other_fixture = provision_deploy_fixture(fixture.version)
+
+    assert {:error, %{kind: :not_found}} =
+             RegistryStore.get_execution_package(%GetExecutionPackage{
+               workspace_context: other_fixture.workspace_context,
+               deployment_id: package_deployment_id,
+               manifest_version_id: version.manifest_version_id,
+               asset_ref: ref,
+               content_hash: package.content_hash
+             })
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.manifest_execution_packages WHERE manifest_version_id = $1",
+               [version.manifest_version_id]
+             )
+  end
+
+  @tag :slow
+  test "manifest package validation is payload-free and batch-bounded", fixture do
+    {version, packages} = packaged_manifest_version(501)
+
+    assert :ok =
+             RegistryStore.register_execution_packages(%RegisterExecutionPackages{
+               platform_context: fixture.platform_context,
+               packages: packages
+             })
+
+    {result, queries} =
+      capture_repo_queries(fn ->
+        RegistryStore.register_manifest(%RegisterManifest{
+          platform_context: fixture.platform_context,
+          version: version
+        })
+      end)
+
+    assert {:ok, ^version} = result
+
+    validation_queries =
+      Enum.filter(queries, fn query ->
+        String.contains?(query, ~s(FROM "favn_control"."execution_packages")) and
+          String.contains?(query, "FOR KEY SHARE")
+      end)
+
+    assert length(validation_queries) == 2
+    refute Enum.any?(validation_queries, &Regex.match?(~r/\bpayload\b/i, &1))
+  end
+
+  test "purges only old execution packages that no manifest references", fixture do
+    unlinked = execution_package({MyApp.OrphanedPackage, :asset})
+    linked = execution_package({MyApp.RetainedPackage, :asset})
+
+    assert :ok =
+             RegistryStore.register_execution_packages(%RegisterExecutionPackages{
+               platform_context: fixture.platform_context,
+               packages: [unlinked, linked]
+             })
+
+    linked_version = packaged_manifest_version(linked.asset_ref, linked.content_hash)
+
+    assert {:ok, ^linked_version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: linked_version
+             })
+
+    command = %PurgePersistence{
+      platform_context: fixture.platform_context,
+      job_id: "purge-execution-packages-#{System.unique_integer([:positive])}",
+      target: :execution_packages,
+      cutoff: DateTime.add(DateTime.utc_now(), 1, :second),
+      limit: 10
+    }
+
+    assert {:ok, %{status: :completed, batch_count: 1}} = MaintenanceStore.purge(command)
+
+    assert {:ok, [unlinked_hash]} =
+             RegistryStore.missing_execution_package_hashes(%MissingExecutionPackageHashes{
+               platform_context: fixture.platform_context,
+               hashes: [unlinked.content_hash, linked.content_hash]
+             })
+
+    assert unlinked_hash == unlinked.content_hash
+
+    assert {:error, %{kind: :invalid}} =
+             MaintenanceStore.purge(%{command | workspace_id: fixture.workspace_id})
+  end
+
+  test "rejects an execution-package command above the aggregate byte budget", fixture do
+    sql = "SELECT 1 AS id\n-- " <> String.duplicate("x", 1_150_000)
+
+    template =
+      Template.compile!(sql,
+        file: "test/storage_v2/package_batch_limit.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    unique = System.unique_integer([:positive])
+
+    packages =
+      Enum.map(1..10, fn index ->
+        ref = {MyApp.LargePackage, String.to_atom("batch_#{unique}_#{index}")}
+        {:ok, package} = ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+        package
+      end)
+
+    assert {:error, %{kind: :limit_exceeded}} =
+             RegistryStore.register_execution_packages(%RegisterExecutionPackages{
+               platform_context: fixture.platform_context,
+               packages: packages
+             })
+
+    assert {:ok, hashes} =
+             RegistryStore.missing_execution_package_hashes(%MissingExecutionPackageHashes{
+               platform_context: fixture.platform_context,
+               hashes: Enum.map(packages, & &1.content_hash)
+             })
+
+    assert length(hashes) == length(packages)
+  end
+
+  test "HTTP publication uploads missing packages before the compact manifest index" do
+    authorize_platform_service_token()
+
+    ref = {MyApp.HTTPPackagedAsset, :asset}
+    package = execution_package(ref)
+    version = packaged_manifest_version(ref, package.content_hash)
+
+    missing =
+      api_request(:post, "/api/orchestrator/v1/execution-packages/missing", %{
+        "hashes" => [package.content_hash]
+      })
+
+    assert missing.status == 200
+
+    assert %{"data" => %{"missing" => [hash]}} = JSON.decode!(missing.resp_body)
+    assert hash == package.content_hash
+
+    rejected = publish_manifest_request(version)
+    assert rejected.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "missing_execution_packages",
+               "details" => %{"hashes" => [^hash]}
+             }
+           } = JSON.decode!(rejected.resp_body)
+
+    upload =
+      api_request(:post, "/api/orchestrator/v1/execution-packages", %{
+        "packages" => [canonical_json(package)]
+      })
+
+    assert upload.status == 201
+    assert %{"data" => %{"stored" => 1}} = JSON.decode!(upload.resp_body)
+
+    published = publish_manifest_request(version)
+    assert published.status == 201
+  end
+
+  test "HTTP execution-package boundary rejects oversized and non-canonical batches", fixture do
+    authorize_platform_service_token()
+
+    too_many =
+      api_request(:post, "/api/orchestrator/v1/execution-packages", %{
+        "packages" => List.duplicate(%{}, 101)
+      })
+
+    assert too_many.status == 422
+    assert %{"error" => %{"code" => "validation_failed"}} = JSON.decode!(too_many.resp_body)
+
+    package = execution_package({MyApp.InvalidHTTPPackage, :asset})
+    invalid = Map.put(canonical_json(package), "unknown", true)
+
+    response =
+      api_request(:post, "/api/orchestrator/v1/execution-packages", %{
+        "packages" => [invalid]
+      })
+
+    assert response.status == 422
+
+    assert {:ok, [missing_hash]} =
+             RegistryStore.missing_execution_package_hashes(%MissingExecutionPackageHashes{
+               platform_context: fixture.platform_context,
+               hashes: [package.content_hash]
+             })
+
+    assert missing_hash == package.content_hash
+  end
+
+  test "HTTP execution-package discovery advertises effective upload limits" do
+    authorize_platform_service_token()
+
+    previous = Application.get_env(:favn_orchestrator, :manifest_publication)
+    on_exit(fn -> restore_app_env(:manifest_publication, previous) end)
+
+    Application.put_env(:favn_orchestrator, :manifest_publication,
+      compressed_limit_bytes: 4_096,
+      decompressed_limit_bytes: 16_384
+    )
+
+    response =
+      api_request(:post, "/api/orchestrator/v1/execution-packages/missing", %{"hashes" => []})
+
+    assert response.status == 200
+
+    assert %{
+             "data" => %{
+               "publication_limits" => %{
+                 "max_packages" => 100,
+                 "compressed_limit_bytes" => 4_096,
+                 "decompressed_limit_bytes" => 16_384
+               }
+             }
+           } = JSON.decode!(response.resp_body)
+  end
+
+  test "HTTP execution-package routes authenticate before reading compressed input" do
+    response =
+      Plug.Test.conn(:post, "/api/orchestrator/v1/execution-packages", "not-gzip")
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("content-encoding", "gzip")
+      |> Router.call(Router.init([]))
+
+    assert response.status == 401
+    assert %{"error" => %{"code" => "service_unauthorized"}} = JSON.decode!(response.resp_body)
   end
 
   test "active target lookup rejects targets hidden from the customer", fixture do
@@ -277,6 +683,26 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       |> MapSet.new()
 
     assert visible_ids == expected_ids
+  end
+
+  test "workspace deployment requires independent platform mutation authority", fixture do
+    {:ok, platform_reader} =
+      PlatformContext.new("read-only-consultant", "reader-grant", [:platform_reader])
+
+    assert {:error, :platform_operator_required} =
+             Manifests.deploy(
+               platform_reader,
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               %{"common_assets" => "all", "common_pipelines" => "all"}
+             )
+
+    assert {:error, %{kind: :forbidden}} =
+             RegistryStore.deploy_manifest(%{
+               fixture.deploy_command
+               | platform_context: platform_reader,
+                 deployment_id: "unauthorized-#{System.unique_integer([:positive])}"
+             })
   end
 
   test "pipeline backfill planning persists an exact resumable V2 plan", fixture do
@@ -380,6 +806,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert diagnostics.metadata.runtime_input_keys.configured?
   end
 
+  test "readiness rejects a referenced runtime-input key version that is not retained" do
+    SQL.query!(
+      Repo,
+      "INSERT INTO favn_control.runtime_input_key_versions (key_version, first_used_at) VALUES (99, clock_timestamp())",
+      []
+    )
+
+    assert {:ok, readiness} = Backend.readiness([])
+    refute readiness.ready?
+    assert readiness.status == :not_ready
+
+    assert readiness.checks.runtime_input_keys.missing_referenced_versions == [99]
+    assert 99 in readiness.checks.runtime_input_keys.referenced_versions
+  end
+
   test "schema diagnostics reject malformed and future schemas" do
     SQL.query!(Repo, "DROP INDEX favn_control.runs_recent_idx", [])
 
@@ -414,6 +855,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert "idempotency_records_payload_bounded" in diagnostics.missing_critical_constraints
 
     assert 20_260_717_999_999 in diagnostics.future_migration_versions
+    refute diagnostics.definition_fingerprint_matches?
+  end
+
+  test "schema diagnostics fingerprint every index in the storage schema" do
+    SQL.query!(Repo, "DROP INDEX favn_control.run_events_step_cursor_idx", [])
+
+    assert {:ok, diagnostics} = Migrations.diagnostics(Repo)
+    refute diagnostics.ready?
+    assert diagnostics.status == :upgrade_required
+    assert diagnostics.missing_critical_indexes == []
     refute diagnostics.definition_fingerprint_matches?
   end
 
@@ -480,7 +931,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             target_kind: :asset,
             target_id: "asset:Unknown.Asset:missing",
             selection_source: :explicit,
-            customer_visible: true
+            customer_visible: true,
+            descriptor: %{
+              "target_id" => "asset:Unknown.Asset:missing",
+              "label" => "Unknown asset"
+            }
           }
         ]
     }
@@ -595,7 +1050,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute response.resp_body =~ other_run.id
   end
 
-  test "operator run pages preserve decoded scope and metadata", fixture do
+  test "operator run pages return compact relational summaries", fixture do
     {command, run} = create_run_command(fixture)
 
     run =
@@ -619,15 +1074,49 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert [summary] = page.items
 
-    assert summary.run.params == %{
-             "window" => %{
-               "kind" => "day",
-               "value" => "2026-07-16",
-               "timezone" => "Etc/UTC"
-             }
-           }
+    assert summary.run_id == run.id
+    assert summary.status == :pending
+    assert summary.event_sequence == 1
+    refute Map.has_key?(summary, :run)
+  end
 
-    assert summary.run.metadata["request_source"] == "operator-test"
+  test "run history pages never select or decode authoritative snapshots", fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET snapshot = jsonb_build_object('garbage', repeat('x', 3000000)) WHERE workspace_id = $1 AND run_id = $2",
+      [fixture.workspace_id, run.id]
+    )
+
+    handler_id = {__MODULE__, self(), make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn_storage_postgres, :repo, :query],
+        fn _event, _measurements, metadata, pid ->
+          send(pid, {:run_page_query, metadata.query})
+        end,
+        self()
+      )
+
+    try do
+      assert {:ok, %{items: [%{run_id: run_id}]}} =
+               RunStore.page_run_summaries(%PageRuns{
+                 scope: fixture.workspace_context,
+                 limit: 1
+               })
+
+      assert run_id == run.id
+
+      queries = collect_run_page_queries([])
+      assert queries != []
+      refute Enum.any?(queries, &Regex.match?(~r/\bsnapshot\b/i, &1))
+    after
+      :telemetry.detach(handler_id)
+    end
   end
 
   test "projection backfill restores missing rows without overwriting existing state",
@@ -845,7 +1334,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           target_kind: :asset,
           target_id: private_target_id,
           selection_source: :explicit,
-          customer_visible: true
+          customer_visible: true,
+          descriptor: %{"target_id" => private_target_id, "label" => private_target_id}
         }
       ])
 
@@ -915,6 +1405,25 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert persisted == pin
     assert {:ok, [^persisted]} = RunStore.pin_runtime_inputs(pin_command)
 
+    previous_keys = Application.get_env(:favn_storage_postgres, :runtime_input_pin_keys)
+
+    previous_version =
+      Application.get_env(:favn_storage_postgres, :runtime_input_pin_current_key_version)
+
+    on_exit(fn ->
+      restore_env(:runtime_input_pin_keys, previous_keys)
+      restore_env(:runtime_input_pin_current_key_version, previous_version)
+    end)
+
+    Application.put_env(:favn_storage_postgres, :runtime_input_pin_keys, %{
+      1 => "0123456789abcdef0123456789abcdef",
+      2 => "abcdef0123456789abcdef0123456789"
+    })
+
+    Application.put_env(:favn_storage_postgres, :runtime_input_pin_current_key_version, 2)
+
+    assert {:ok, [^persisted]} = RunStore.pin_runtime_inputs(pin_command)
+
     assert {:ok, [fetched]} =
              RunStore.get_runtime_inputs(%GetRuntimeInputs{
                workspace_context: fixture.workspace_context,
@@ -929,6 +1438,50 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert byte_size(row.payload_fingerprint) == 32
     assert row.encryption_key_version == 1
 
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT key_version
+               FROM favn_control.runtime_input_key_versions
+               WHERE key_version IN (1, 2)
+               ORDER BY key_version
+               """,
+               []
+             )
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.runtime_input_key_versions (key_version, first_used_at)
+      VALUES (98, clock_timestamp())
+      """,
+      []
+    )
+
+    assert {:ok, [98]} = RuntimeInputKeyInventory.compact(Repo)
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT key_version
+               FROM favn_control.runtime_input_key_versions
+               WHERE key_version IN (1, 98)
+               ORDER BY key_version
+               """,
+               []
+             )
+
+    hidden_pin = Pin.new(run.id, {{MyApp.PrivateAsset, :private}, nil}, resolution)
+
+    assert {:error, %{kind: :invalid}} =
+             RunStore.pin_runtime_inputs(%{
+               pin_command
+               | command_id: "pin-hidden:" <> run.id,
+                 pins: [hidden_pin]
+             })
+
     conflicting =
       pin
       |> Map.put(:params, %{account_id: 43, token: "different"})
@@ -936,6 +1489,122 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:error, %{kind: :conflict}} =
              RunStore.pin_runtime_inputs(%{pin_command | pins: [conflicting]})
+  end
+
+  test "runtime input package lookup matches exact asset pairs", fixture do
+    requested_refs = [{MyApp.Asset, :asset}, {MyApp.PrivateAsset, :private}]
+
+    all_refs =
+      requested_refs ++ [{MyApp.Asset, :private}, {MyApp.PrivateAsset, :asset}]
+
+    packages = Enum.map(all_refs, &runtime_input_execution_package/1)
+
+    assets =
+      Enum.map(packages, fn package ->
+        {module, name} = package.asset_ref
+
+        %Favn.Manifest.Asset{
+          ref: package.asset_ref,
+          module: module,
+          name: name,
+          type: :sql,
+          execution_package_hash: package.content_hash
+        }
+      end)
+
+    {:ok, version} =
+      Version.new(
+        %Manifest{assets: assets, graph: %Graph{nodes: all_refs, topo_order: all_refs}},
+        manifest_version_id: "mv-crossed-#{System.unique_integer([:positive])}"
+      )
+
+    assert :ok =
+             RegistryStore.register_execution_packages(%RegisterExecutionPackages{
+               platform_context: fixture.platform_context,
+               packages: packages
+             })
+
+    assert {:ok, ^version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: version
+             })
+
+    deployment_id = "deploy-crossed-#{System.unique_integer([:positive])}"
+
+    targets =
+      Enum.map(requested_refs, fn ref ->
+        %DeploymentTarget{
+          target_kind: :asset,
+          target_id: TargetStatus.target_id_for_asset(ref),
+          selection_source: :explicit,
+          customer_visible: false,
+          descriptor: %{
+            "target_id" => TargetStatus.target_id_for_asset(ref),
+            "label" => inspect(ref)
+          }
+        }
+      end)
+
+    assert {:ok, _runtime} =
+             RegistryStore.deploy_manifest(%DeployManifest{
+               platform_context: fixture.platform_context,
+               workspace_context: fixture.workspace_context,
+               deployment_id: deployment_id,
+               manifest_version_id: version.manifest_version_id,
+               configuration: fixture.deploy_command.configuration,
+               targets: targets,
+               schedules: [],
+               capacity_scopes: [],
+               occurred_at: DateTime.utc_now()
+             })
+
+    scoped_fixture = %{
+      fixture
+      | deployment_id: deployment_id,
+        version: version,
+        target_id: TargetStatus.target_id_for_asset({MyApp.Asset, :asset})
+    }
+
+    {command, run} = create_run_command(scoped_fixture)
+
+    private_target = %RunTarget{
+      target_kind: :asset,
+      target_id: TargetStatus.target_id_for_asset({MyApp.PrivateAsset, :private}),
+      target_module: "MyApp.PrivateAsset",
+      target_name: "private",
+      is_primary: false
+    }
+
+    run = %{run | target_refs: requested_refs} |> RunState.with_snapshot_hash()
+
+    assert {:ok, _created} =
+             RunStore.create_run(%{
+               command
+               | run: run,
+                 targets: command.targets ++ [private_target]
+             })
+
+    {:ok, resolution} =
+      Resolution.new(
+        resolver: MyApp.RuntimeInputResolver,
+        params: %{account_id: 42},
+        input_identity: "crossed-input",
+        metadata: %{},
+        sensitive_params: []
+      )
+
+    pins = Enum.map(requested_refs, &Pin.new(run.id, {&1, nil}, resolution))
+
+    assert {:ok, persisted} =
+             RunStore.pin_runtime_inputs(%PinRuntimeInputs{
+               workspace_context: fixture.workspace_context,
+               command_id: "pin-crossed:" <> run.id,
+               run_id: run.id,
+               pins: pins
+             })
+
+    assert Enum.sort_by(persisted, & &1.node_key) == Enum.sort_by(pins, & &1.node_key)
   end
 
   test "fences run ownership and durable runner execution", fixture do
@@ -982,6 +1651,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert execution.status == :dispatching
     assert {:ok, ^execution} = RunOwnershipStore.record_dispatch(dispatch)
 
+    assert {:error, %{kind: :conflict}} =
+             RunOwnershipStore.record_dispatch(%{
+               dispatch
+               | occurred_at: DateTime.add(dispatch.occurred_at, 1, :microsecond)
+             })
+
     advance = %AdvanceRunnerExecution{
       workspace_context: fixture.workspace_context,
       command_id: "execution-running:" <> run.id,
@@ -1017,6 +1692,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
   end
 
+  test "historical runner execution pages require an exact run id", fixture do
+    assert {:error, %{kind: :invalid}} =
+             RunOwnershipStore.page_executions(%PageRunnerExecutions{
+               workspace_context: fixture.workspace_context,
+               active_only?: false
+             })
+  end
+
   test "orchestrator runner ledger uses preallocated ids and the current run fence", fixture do
     {command, run} = create_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(command)
@@ -1049,8 +1732,291 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert active.status == :started
     assert active.persistence_version == 2
 
-    assert :ok = RunExecutionOwnership.complete_execution(run, ledger.dispatch_id)
+    assert :ok = RunExecutionOwnership.complete_execution(active)
     assert {:ok, []} = RunExecutionOwnership.fetch_active(run)
+  end
+
+  test "recovery after runner restart terminalizes uncertain work without resubmitting",
+       fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    assert {:ok, authority} =
+             RunOwnership.claim(fixture.workspace_context, run.id, "recovery:" <> run.id,
+               command_id: "claim-recovery:" <> run.id
+             )
+
+    owned_run = RunState.with_storage_fence(run, authority.owner_id, authority.fencing_token)
+
+    ledger =
+      RunExecutionOwnership.new(owned_run,
+        asset_step_id: "step:" <> run.id,
+        asset_ref: run.asset_ref,
+        attempt: 1,
+        stage: 0
+      )
+
+    assert :ok = RunExecutionOwnership.persist(ledger)
+    assert :ok = ledger |> RunExecutionOwnership.started() |> RunExecutionOwnership.persist()
+
+    assert {:ok, %{active: [persisted_execution]}} =
+             RunExecutionOwnership.recovery_evidence(owned_run)
+
+    assert persisted_execution.status == :started
+
+    configure_restarted_runner_client!()
+
+    assert {:ok, pid} =
+             RunServer.start_link(%{
+               run_state: run,
+               version: fixture.version,
+               recovering?: true,
+               storage_ownership: authority
+             })
+
+    monitor = Process.monitor(pid)
+    assert_receive {:runner_cancelled_after_restart, execution_id}, 2_000
+    assert execution_id == ledger.dispatch_id
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 2_000
+    refute_receive {:runner_work_resubmitted, _work}, 100
+
+    assert {:ok, failed} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+
+    assert failed.status == :error
+    assert failed.error["type"] == "uncertain_runner_recovery"
+
+    assert %{rows: [["error"]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT status
+               FROM favn_control.runner_executions
+               WHERE workspace_id = $1 AND runner_execution_id = $2
+               """,
+               [fixture.workspace_id, ledger.dispatch_id]
+             )
+  end
+
+  test "corrupt pipeline retry checkpoints fail closed and release the runner manifest lease",
+       fixture do
+    {command, run} = pipeline_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    assert {:ok, authority} =
+             RunOwnership.claim(fixture.workspace_context, run.id, "recovery:" <> run.id,
+               command_id: "claim-corrupt-retry:" <> run.id
+             )
+
+    owned = RunState.with_storage_fence(run, authority.owner_id, authority.fencing_token)
+    running = RunState.transition(owned, status: :running)
+
+    assert :ok =
+             TransitionWriter.persist_transition(
+               fixture.workspace_context,
+               running,
+               :run_started,
+               %{status: :running}
+             )
+
+    checkpoint_sequence = running.event_seq + 1
+
+    retrying =
+      RunState.transition(running,
+        metadata:
+          Map.merge(running.metadata, %{
+            retrying: true,
+            next_attempt: 2,
+            next_retry_at: System.system_time(:millisecond),
+            retry_state: %{
+              kind: :pipeline,
+              checkpoint_sequence: checkpoint_sequence,
+              stage_index: 0,
+              next_attempt: 2,
+              stage: 0,
+              next_retry_at: System.system_time(:millisecond)
+            }
+          })
+      )
+
+    assert :ok =
+             TransitionWriter.persist_transition(
+               fixture.workspace_context,
+               retrying,
+               :pipeline_retry_checkpointed,
+               %{
+                 stage: 0,
+                 attempt: 1,
+                 retry_selection: %{
+                   encoding: "stage_bitset_v1",
+                   stage_size: 1,
+                   retry_count: 1,
+                   bits: ""
+                 }
+               }
+             )
+
+    configure_restarted_runner_client!()
+
+    assert {:ok, pid} =
+             RunServer.start_link(%{
+               run_state: retrying,
+               version: fixture.version,
+               recovering?: true,
+               storage_ownership: authority
+             })
+
+    monitor = Process.monitor(pid)
+    assert_receive {:runner_manifest_acquired, lease_id}, 2_000
+    assert_receive {:runner_manifest_released, ^lease_id}, 2_000
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 2_000
+
+    assert {:ok, failed} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+
+    assert failed.status == :error
+  end
+
+  test "cross-mode retry checkpoints terminalize recovery and release the manifest lease",
+       fixture do
+    configure_restarted_runner_client!()
+
+    cases = [
+      {:pipeline, &pipeline_run_command/1, &sequential_retry_checkpoint/1},
+      {:sequential, &create_run_command/1, &pipeline_retry_checkpoint/1}
+    ]
+
+    for {mode, build_run, build_checkpoint} <- cases do
+      {command, run} = build_run.(fixture)
+      assert {:ok, _created} = RunStore.create_run(command)
+
+      assert {:ok, authority} =
+               RunOwnership.claim(fixture.workspace_context, run.id, "recovery:" <> run.id,
+                 command_id: "claim-cross-mode-retry:" <> run.id
+               )
+
+      owned = RunState.with_storage_fence(run, authority.owner_id, authority.fencing_token)
+
+      retrying =
+        RunState.transition(owned,
+          status: :running,
+          metadata:
+            Map.merge(owned.metadata, %{
+              retrying: true,
+              next_attempt: 2,
+              retry_state: build_checkpoint.(owned)
+            })
+        )
+
+      assert :ok =
+               TransitionWriter.persist_transition(
+                 fixture.workspace_context,
+                 retrying,
+                 :run_started,
+                 %{status: :running}
+               )
+
+      assert {:ok, pid} =
+               RunServer.start_link(%{
+                 run_state: retrying,
+                 version: fixture.version,
+                 recovering?: true,
+                 storage_ownership: authority
+               })
+
+      monitor = Process.monitor(pid)
+      assert_receive {:runner_manifest_released, lease_id}, 2_000
+      assert is_binary(lease_id) and lease_id != ""
+      refute_receive {:runner_manifest_acquired, _lease_id}, 100
+      assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 2_000
+
+      assert {:ok, failed} =
+               RunStore.get_run(%GetRun{
+                 workspace_context: fixture.workspace_context,
+                 run_id: run.id
+               })
+
+      assert failed.status == :error
+      assert failed.error["type"] == "uncertain_runner_recovery"
+      assert failed.error["reason"] =~ "invalid_retry_checkpoint"
+      assert RunState.execution_mode(retrying) == mode
+    end
+  end
+
+  @tag :slow
+  test "run detail fetches an active retry checkpoint beyond the first event page", fixture do
+    {command, run} = pipeline_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+    node_key = {{MyApp.Asset, :asset}, nil}
+
+    noisy_run =
+      Enum.reduce(1..205, run, fn index, current ->
+        next =
+          RunState.transition(current,
+            status: :running,
+            metadata: Map.put(current.metadata, :projection_noise, index)
+          )
+
+        assert :ok =
+                 TransitionWriter.persist_transition(
+                   fixture.workspace_context,
+                   next,
+                   :step_queued,
+                   %{
+                     node_key: node_key,
+                     asset_ref: {MyApp.Asset, :asset},
+                     stage: 0,
+                     attempt: 1,
+                     queue_reason: :test
+                   }
+                 )
+
+        next
+      end)
+
+    checkpoint_sequence = noisy_run.event_seq + 1
+    {:ok, selection} = PipelineRetryCheckpoint.encode([node_key], [node_key])
+
+    retrying =
+      RunState.transition(noisy_run,
+        status: :running,
+        metadata:
+          Map.merge(noisy_run.metadata, %{
+            retrying: true,
+            next_attempt: 2,
+            retry_state: %{
+              kind: :pipeline,
+              checkpoint_sequence: checkpoint_sequence,
+              stage_index: 0,
+              next_attempt: 2,
+              stage: 0,
+              next_retry_at: System.system_time(:millisecond) + 30_000
+            }
+          })
+      )
+
+    assert :ok =
+             TransitionWriter.persist_transition(
+               fixture.workspace_context,
+               retrying,
+               :pipeline_retry_checkpointed,
+               %{
+                 stage: 0,
+                 attempt: 1,
+                 next_attempt: 2,
+                 retry_selection: selection
+               }
+             )
+
+    assert checkpoint_sequence > 200
+    assert {:ok, detail} = RunReadModel.get_run_detail(fixture.workspace_context, run.id)
+    assert [%{node_key: ^node_key, status: :retrying, attempt: 2}] = detail.steps
   end
 
   test "orchestrator admission uses the run-scoped PostgreSQL capacity counter", fixture do
@@ -1244,19 +2210,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert waiting.blocking_scope_id == fixture.capacity_scope_id
     assert {:ok, ^waiting} = AdmissionStore.admit(second)
 
-    assert {:ok, [claimed]} =
-             AdmissionStore.claim_waiters(%ClaimAdmissionWaiters{
-               workspace_context: fixture.workspace_context,
-               batch_id: "waiter-claim:" <> fixture.workspace_id,
-               scope_id: fixture.capacity_scope_id,
-               owner_id: "dispatcher-a",
-               lease_duration_ms: 30_000,
-               limit: 10
-             })
-
-    assert claimed.waiter_id == second.waiter_id
-    assert claimed.status == :claimed
-
     release = %ReleaseExecutionLease{
       workspace_context: fixture.workspace_context,
       lease_id: lease.lease_id,
@@ -1358,7 +2311,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       []
     )
 
-    assert {:ok, %{count: count}} = Projector.project_batch("projector:" <> run.id)
+    count = drain_projector("projector:" <> run.id)
     assert count > 0
 
     assert %{rows: [[persisted_node_key_hash]]} =
@@ -1406,8 +2359,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, page} =
              LogStore.page(%PageLogs{
                workspace_context: fixture.workspace_context,
-               filter_kind: :level,
-               filter_value: :error,
+               filter: %Favn.Log.Filter{levels: [:error]} |> Map.from_struct(),
                limit: 10
              })
 
@@ -1614,6 +2566,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   test "HTTP manifest activation is idempotent and writes one durable audit record", fixture do
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      %{
+        service_identity: "http-boundary",
+        token: @service_token,
+        enabled: true,
+        platform_roles: [:platform_operator]
+      }
+    ])
+
     identity = api_identity(fixture, [:admin])
 
     body = %{
@@ -1649,6 +2610,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert first.status == 200
     assert replay.status == 200
     assert replay.resp_body == first.resp_body
+
+    assert {:ok, %{targets: targets}} = Manifests.active(fixture.workspace_context)
+
+    assert Enum.all?(targets.assets ++ targets.pipelines, fn target ->
+             is_binary(target.label) and is_binary(target.target_id)
+           end)
 
     assert {:ok, audit_page} = Identity.page_audit(fixture.workspace_context, limit: 20)
 
@@ -1812,6 +2779,68 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert first_actor.id == second_actor.id
   end
 
+  test "commits a projected batch after its lease deadline while retaining the cursor lock",
+       fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert publications != []
+
+    run_publication_id =
+      publications
+      |> Enum.find(&(&1.aggregate_id == run.id))
+      |> Map.fetch!(:publication_id)
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.projection_cursors
+        (projector_name, shard_id, last_publication_id, fencing_token, version, updated_at)
+      VALUES ('control_plane_v1', 0, $1, 0, 1, clock_timestamp())
+      ON CONFLICT (projector_name, shard_id) DO UPDATE
+      SET last_publication_id = EXCLUDED.last_publication_id,
+          owner_id = NULL,
+          claim_expires_at = NULL,
+          updated_at = EXCLUDED.updated_at
+      """,
+      [run_publication_id - 1]
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      CREATE FUNCTION favn_control.test_delay_target_status_projection()
+      RETURNS trigger AS $$
+      BEGIN
+        PERFORM pg_sleep(0.025);
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+      """,
+      []
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      CREATE TRIGGER test_delay_target_status_projection
+      BEFORE INSERT OR UPDATE ON favn_control.target_statuses
+      FOR EACH ROW
+      EXECUTE FUNCTION favn_control.test_delay_target_status_projection()
+      """,
+      []
+    )
+
+    assert {:ok, %{count: count, last_publication_id: last_publication_id}} =
+             Projector.project_batch("short-lease:" <> run.id,
+               limit: 250,
+               lease_duration_ms: 1
+             )
+
+    assert count >= 1
+    assert last_publication_id >= run_publication_id
+  end
+
   test "projects ordered compact operator read models without group scans", fixture do
     {command, run} = create_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(command)
@@ -1835,6 +2864,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:ok, publications} = Sequencer.sequence_batch()
     assert publications != []
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
+      []
+    )
+
     assert drain_projector("node-a") >= length(publications)
 
     assert {:ok, group_page} =
@@ -1871,6 +2907,54 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert target_status.status == :running
     assert target_status.run_id == run.id
 
+    %{rows: [[status_publication_id]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT source_publication_id
+        FROM favn_control.target_statuses
+        WHERE workspace_id = $1 AND deployment_id = $2
+          AND target_kind = 'asset' AND target_id = $3
+        """,
+        [fixture.workspace_id, fixture.deployment_id, fixture.target_id]
+      )
+
+    progressed =
+      RunState.transition(running,
+        metadata: Map.put(running.metadata, :projected_step, true)
+      )
+
+    assert {:ok, _committed} =
+             RunStore.commit_transition(%CommitRunTransition{
+               workspace_context: fixture.workspace_context,
+               command_id: "project-step:" <> run.id,
+               expected_sequence: 2,
+               run: progressed,
+               event: %{
+                 run_id: run.id,
+                 sequence: 3,
+                 event_type: :step_started,
+                 status: :running,
+                 data: %{asset_step_id: "step:" <> run.id},
+                 occurred_at: DateTime.utc_now()
+               }
+             })
+
+    assert {:ok, [_publication]} = Sequencer.sequence_batch()
+    assert drain_projector("node-a") >= 1
+
+    %{rows: [[^status_publication_id]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT source_publication_id
+        FROM favn_control.target_statuses
+        WHERE workspace_id = $1 AND deployment_id = $2
+          AND target_kind = 'asset' AND target_id = $3
+        """,
+        [fixture.workspace_id, fixture.deployment_id, fixture.target_id]
+      )
+
     assert {:ok, target_runs} =
              OperatorReadStore.page_target_runs(%PageTargetRuns{
                workspace_context: fixture.workspace_context,
@@ -1896,6 +2980,93 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              manifests.items,
              &(&1.manifest_version_id == fixture.version.manifest_version_id)
            )
+  end
+
+  test "outbox publication preserves run causality when business clocks move backwards",
+       fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    future = DateTime.add(DateTime.utc_now(), 3_600, :second)
+    past = DateTime.add(future, -7_200, :second)
+    running = RunState.transition(run, [status: :running], future)
+
+    assert {:ok, _committed} =
+             RunStore.commit_transition(%CommitRunTransition{
+               workspace_context: fixture.workspace_context,
+               command_id: "clock-skew-running:" <> run.id,
+               expected_sequence: 1,
+               run: running,
+               event: %{
+                 run_id: run.id,
+                 sequence: 2,
+                 event_type: :run_started,
+                 status: :running,
+                 occurred_at: future
+               }
+             })
+
+    finished =
+      RunState.transition(
+        running,
+        [status: :ok, metadata: Map.put(running.metadata, :terminal_event_type, :run_finished)],
+        past
+      )
+
+    assert {:ok, _committed} =
+             RunStore.commit_transition(%CommitRunTransition{
+               workspace_context: fixture.workspace_context,
+               command_id: "clock-skew-finished:" <> run.id,
+               expected_sequence: 2,
+               run: finished,
+               event: %{
+                 run_id: run.id,
+                 sequence: 3,
+                 event_type: :run_finished,
+                 status: :ok,
+                 occurred_at: past
+               }
+             })
+
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert publications != []
+
+    assert %{rows: [[1, first], [2, second], [3, third]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT aggregate_version, publication_id
+               FROM favn_control.outbox_events
+               WHERE workspace_id = $1 AND aggregate_kind = 'run' AND aggregate_id = $2
+               ORDER BY publication_id
+               """,
+               [fixture.workspace_id, run.id]
+             )
+
+    assert first < second and second < third
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.projection_cursors
+      SET owner_id = NULL, claim_expires_at = NULL
+      WHERE projector_name = 'control_plane_v1' AND shard_id = 0
+      """,
+      []
+    )
+
+    assert drain_projector("clock-skew-projector") >= length(publications)
+
+    assert {:ok, [target_status]} =
+             OperatorReadStore.get_target_statuses(%GetTargetStatuses{
+               workspace_context: fixture.workspace_context,
+               manifest_version_id: fixture.version.manifest_version_id,
+               target_kind: :asset,
+               target_ids: [fixture.target_id]
+             })
+
+    assert target_status.status == :ok
+    assert target_status.run_id == run.id
   end
 
   test "builds, verifies, claims, and transitions a resumable backfill plan", fixture do
@@ -2082,10 +3253,18 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         occurred_at: now
       })
 
-    version = version || manifest_version("mv_#{unique}")
+    {version, packages} =
+      case version do
+        nil -> manifest_publication("mv_#{unique}")
+        %Version{} = supplied -> {supplied, []}
+      end
 
-    if is_nil(version) do
-      raise "manifest version is required"
+    if packages != [] do
+      assert :ok =
+               RegistryStore.register_execution_packages(%RegisterExecutionPackages{
+                 platform_context: platform_context,
+                 packages: packages
+               })
     end
 
     unless match?(
@@ -2110,6 +3289,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     pipeline_target_id = TargetStatus.target_id_for_pipeline({MyApp.Pipeline, :daily})
 
     deploy_command = %DeployManifest{
+      platform_context: platform_context,
       workspace_context: workspace_context,
       deployment_id: deployment_id,
       manifest_version_id: version.manifest_version_id,
@@ -2123,13 +3303,18 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             target_kind: :asset,
             target_id: target_id,
             selection_source: :common,
-            customer_visible: true
+            customer_visible: true,
+            descriptor: %{"target_id" => target_id, "label" => target_id}
           },
           %DeploymentTarget{
             target_kind: :pipeline,
             target_id: pipeline_target_id,
             selection_source: :common,
-            customer_visible: true
+            customer_visible: true,
+            descriptor: %{
+              "target_id" => pipeline_target_id,
+              "label" => pipeline_target_id
+            }
           }
         ] ++ extra_targets,
       schedules: [
@@ -2233,25 +3418,94 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {command, run}
   end
 
-  defp manifest_version(manifest_version_id) do
+  defp pipeline_run_command(fixture) do
+    run_id = "pipeline-run-#{System.unique_integer([:positive])}"
+    ref = {MyApp.Asset, :asset}
+    node_key = {ref, nil}
+
+    plan = %Favn.Plan{
+      target_refs: [ref],
+      target_node_keys: [node_key],
+      dependencies: :all,
+      nodes: %{
+        node_key => %{
+          ref: ref,
+          node_key: node_key,
+          window: nil,
+          upstream: [],
+          downstream: [],
+          stage: 0,
+          execution_pool: nil,
+          action: :run,
+          retry_policy: Favn.Retry.Policy.default(),
+          retry_policy_source: :default
+        }
+      },
+      topo_order: [ref],
+      stages: [[ref]],
+      node_stages: [[node_key]]
+    }
+
+    run =
+      RunState.new(
+        id: run_id,
+        workspace_id: fixture.workspace_id,
+        deployment_id: fixture.deployment_id,
+        manifest_version_id: fixture.version.manifest_version_id,
+        manifest_content_hash: fixture.version.content_hash,
+        asset_ref: ref,
+        target_refs: [ref],
+        submit_kind: :pipeline,
+        plan: plan
+      )
+
+    command = %CreateRun{
+      workspace_context: fixture.workspace_context,
+      command_id: "create:" <> run_id,
+      deployment_id: fixture.deployment_id,
+      run: run,
+      targets: [
+        %RunTarget{
+          target_kind: :asset,
+          target_id: fixture.target_id,
+          target_module: "MyApp.Asset",
+          target_name: "asset",
+          is_primary: true
+        }
+      ],
+      event: %{
+        run_id: run_id,
+        sequence: 1,
+        event_type: :run_submitted,
+        status: :pending,
+        occurred_at: run.inserted_at
+      }
+    }
+
+    {command, run}
+  end
+
+  defp manifest_publication(manifest_version_id) do
+    ref = {MyApp.Asset, :asset}
+    package = runtime_input_execution_package(ref)
+    private_ref = {MyApp.PrivateAsset, :private}
+    private_package = runtime_input_execution_package(private_ref)
+
     manifest = %Manifest{
       assets: [
         %Favn.Manifest.Asset{
-          ref: {MyApp.Asset, :asset},
+          ref: ref,
           module: MyApp.Asset,
           name: :asset,
-          sql_execution: %Favn.Manifest.SQLExecution{
-            sql: "select 1",
-            template: nil,
-            runtime_inputs: %Favn.RuntimeInputResolver.Ref{
-              module: MyApp.RuntimeInputResolver
-            }
-          }
+          type: :sql,
+          execution_package_hash: package.content_hash
         },
         %Favn.Manifest.Asset{
-          ref: {MyApp.PrivateAsset, :private},
+          ref: private_ref,
           module: MyApp.PrivateAsset,
-          name: :private
+          name: :private,
+          type: :sql,
+          execution_package_hash: private_package.content_hash
         }
       ],
       pipelines: [
@@ -2268,7 +3522,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         manifest_version_id: manifest_version_id
       )
 
-    version
+    {version, [package, private_package]}
   end
 
   defp drain_projector(owner_id, total \\ 0) do
@@ -2296,6 +3550,132 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:ok, session} = Identity.issue_session(login_context, actor.id)
     %{actor: actor, session: session}
+  end
+
+  defp execution_package(ref) do
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/storage_v2/core_authority_test.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    {:ok, package} = ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+    package
+  end
+
+  defp runtime_input_execution_package(ref) do
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/storage_v2/runtime_input_package.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    {:ok, package} =
+      ExecutionPackage.new(ref, %SQLExecution{
+        sql: sql,
+        template: template,
+        runtime_inputs: %Favn.RuntimeInputResolver.Ref{module: MyApp.RuntimeInputResolver}
+      })
+
+    package
+  end
+
+  defp packaged_manifest_version(ref, package_hash) do
+    asset = %Favn.Manifest.Asset{
+      ref: ref,
+      module: elem(ref, 0),
+      name: elem(ref, 1),
+      type: :sql,
+      execution_package_hash: package_hash
+    }
+
+    {:ok, version} =
+      Version.new(
+        %Manifest{assets: [asset], graph: %Graph{nodes: [ref], topo_order: [ref]}},
+        manifest_version_id: "mv-packaged-#{System.unique_integer([:positive])}"
+      )
+
+    version
+  end
+
+  defp packaged_manifest_version(count) when is_integer(count) and count > 0 do
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/storage_v2/package_validation_batch.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    packages =
+      Enum.map(1..count, fn index ->
+        ref = {MyApp.PackageValidationAsset, String.to_atom("asset_#{index}")}
+        {:ok, package} = ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+        package
+      end)
+
+    assets =
+      Enum.map(packages, fn package ->
+        {module, name} = package.asset_ref
+
+        %Favn.Manifest.Asset{
+          ref: package.asset_ref,
+          module: module,
+          name: name,
+          type: :sql,
+          execution_package_hash: package.content_hash
+        }
+      end)
+
+    refs = Enum.map(assets, & &1.ref)
+
+    {:ok, version} =
+      Version.new(%Manifest{assets: assets, graph: %Graph{nodes: refs, topo_order: refs}},
+        manifest_version_id: "mv-package-batch-#{System.unique_integer([:positive])}"
+      )
+
+    {version, packages}
+  end
+
+  defp publish_manifest_request(version) do
+    api_request(:post, "/api/orchestrator/v1/manifests", %{
+      "manifest_version_id" => version.manifest_version_id,
+      "content_hash" => version.content_hash,
+      "schema_version" => version.schema_version,
+      "runner_contract_version" => version.runner_contract_version,
+      "serialization_format" => version.serialization_format,
+      "manifest" => canonical_json(version.manifest)
+    })
+  end
+
+  defp canonical_json(value) do
+    value
+    |> Favn.Manifest.Serializer.encode_manifest!()
+    |> JSON.decode!()
+  end
+
+  defp authorize_platform_service_token do
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      %{
+        service_identity: "http-boundary",
+        token: @service_token,
+        enabled: true,
+        platform_roles: [:platform_operator]
+      }
+    ])
   end
 
   defp api_request(method, path, body, opts \\ []) do
@@ -2338,6 +3718,139 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   defp restore_env(key, nil), do: Application.delete_env(:favn_storage_postgres, key)
   defp restore_env(key, value), do: Application.put_env(:favn_storage_postgres, key, value)
 
+  defp collect_run_page_queries(acc) do
+    receive do
+      {:run_page_query, query} -> collect_run_page_queries([query | acc])
+    after
+      10 -> Enum.reverse(acc)
+    end
+  end
+
+  defp capture_repo_queries(function) do
+    handler_id = {__MODULE__, self(), make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn_storage_postgres, :repo, :query],
+        fn _event, _measurements, metadata, pid ->
+          send(pid, {:captured_repo_query, metadata.query})
+        end,
+        self()
+      )
+
+    try do
+      result = function.()
+      {result, collect_repo_queries([])}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  defp collect_repo_queries(queries) do
+    receive do
+      {:captured_repo_query, query} -> collect_repo_queries([query | queries])
+    after
+      10 -> Enum.reverse(queries)
+    end
+  end
+
+  defp configure_restarted_runner_client! do
+    env_keys = [:runtime_config_dynamic_env?, :runner_client, :runner_client_opts]
+    previous = Map.new(env_keys, &{&1, Application.get_env(:favn_orchestrator, &1)})
+    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_app_env(key, value) end) end)
+
+    Application.put_env(:favn_orchestrator, :runtime_config_dynamic_env?, true)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :runner_client,
+      FavnStoragePostgres.TestRestartedRunnerClient
+    )
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts, test_pid: self())
+    Sandbox.mode(Repo, {:shared, self()})
+    on_exit(fn -> Sandbox.mode(Repo, :manual) end)
+  end
+
+  defp sequential_retry_checkpoint(%RunState{} = run) do
+    %{
+      kind: :sequential,
+      sequential_index: 0,
+      next_retry_at: System.system_time(:millisecond),
+      retry: %{
+        asset_ref: run.asset_ref,
+        node_key: {run.asset_ref, nil},
+        asset_step_id: "cross-mode-step:" <> run.id,
+        stage: 0,
+        next_attempt: 2,
+        retry_after_ms: 0
+      }
+    }
+  end
+
+  defp pipeline_retry_checkpoint(%RunState{} = run) do
+    %{
+      kind: :pipeline,
+      checkpoint_sequence: run.event_seq + 1,
+      stage_index: 0,
+      next_attempt: 2,
+      stage: 0,
+      next_retry_at: System.system_time(:millisecond)
+    }
+  end
+
   defp restore_app_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
   defp restore_app_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)
+end
+
+defmodule FavnStoragePostgres.TestRestartedRunnerClient do
+  @behaviour Favn.Contracts.RunnerClient
+
+  alias Favn.Contracts.RunnerCancellation
+
+  @impl true
+  def register_manifest(_version, _opts), do: :ok
+
+  @impl true
+  def ensure_manifest(_manifest_version_id, _content_hash, _opts), do: :ok
+
+  @impl true
+  def acquire_manifest(_version, lease_id, _expires_at, _planned_asset_refs, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:runner_manifest_acquired, lease_id})
+    :ok
+  end
+
+  @impl true
+  def renew_manifest(_lease_id, _expires_at, _opts), do: :ok
+
+  @impl true
+  def release_manifest(lease_id, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:runner_manifest_released, lease_id})
+    :ok
+  end
+
+  @impl true
+  def submit_work(work, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:runner_work_resubmitted, work})
+    {:error, :unexpected_resubmission}
+  end
+
+  @impl true
+  def await_result(_execution_id, _timeout, _opts), do: {:error, :execution_not_found}
+
+  @impl true
+  def cancel_work(execution_id, _reason, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:runner_cancelled_after_restart, execution_id})
+
+    {:ok,
+     RunnerCancellation.outcome(:not_found,
+       execution_id: execution_id,
+       runner_status: :not_found,
+       native_status: :native_cancel_unknown
+     )}
+  end
+
+  @impl true
+  def inspect_relation(_request, _opts), do: {:error, :unsupported}
 end

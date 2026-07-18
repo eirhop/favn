@@ -3,10 +3,10 @@ defmodule Favn.Log.Entry do
   Shared log entry contract for backend log streaming and persistence.
 
   Runners provide producer identity and ordering for idempotency. Storage and
-  orchestrator layers assign the authoritative `global_sequence`.
+  orchestrator layers assign the authoritative commit-safe `global_sequence`.
   """
 
-  alias Favn.Ref
+  alias Favn.Log.Identity
 
   @schema_version 1
   @levels [:debug, :info, :warning, :error]
@@ -24,8 +24,8 @@ defmodule Favn.Log.Entry do
           global_sequence: non_neg_integer() | nil,
           run_id: String.t() | nil,
           asset_step_id: String.t() | nil,
-          node_key: term() | nil,
-          asset_ref: Ref.t() | nil,
+          node_key: String.t() | nil,
+          asset_ref: String.t() | nil,
           runner_execution_id: String.t() | nil,
           attempt: pos_integer() | nil,
           producer_id: String.t() | nil,
@@ -77,8 +77,8 @@ defmodule Favn.Log.Entry do
       global_sequence: Map.get(attrs, :global_sequence),
       run_id: Map.get(attrs, :run_id),
       asset_step_id: Map.get(attrs, :asset_step_id),
-      node_key: Map.get(attrs, :node_key),
-      asset_ref: Map.get(attrs, :asset_ref),
+      node_key: normalize_identity(Map.get(attrs, :node_key), &Identity.node_key/1),
+      asset_ref: normalize_identity(Map.get(attrs, :asset_ref), &Identity.asset_ref/1),
       runner_execution_id: Map.get(attrs, :runner_execution_id),
       attempt: Map.get(attrs, :attempt),
       producer_id: Map.get(attrs, :producer_id),
@@ -172,6 +172,15 @@ defmodule Favn.Log.Entry do
       prefix
     else
       valid_prefix(value, size - 1)
+    end
+  end
+
+  defp normalize_identity(nil, _normalizer), do: nil
+
+  defp normalize_identity(value, normalizer) do
+    case normalizer.(value) do
+      {:ok, identity} -> identity
+      {:error, reason} -> raise ArgumentError, "invalid log identity: #{inspect(reason)}"
     end
   end
 end

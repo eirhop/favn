@@ -13,7 +13,7 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
   alias FavnOrchestrator.Persistence.Commands.RenewRunOwnership
   alias FavnOrchestrator.Persistence.Error
-  alias FavnOrchestrator.Persistence.Queries.PageActiveExecutions
+  alias FavnOrchestrator.Persistence.Queries.PageRunnerExecutions
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RunnerExecution, as: RunnerExecutionResult
   alias FavnOrchestrator.Persistence.Results.RunOwnership, as: RunOwnershipResult
@@ -107,23 +107,23 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
   end
 
   @impl true
-  def page_active_executions(%PageActiveExecutions{} = page) do
+  def page_executions(%PageRunnerExecutions{} = page) do
     case validate_page(page) do
-      :ok -> page_active_executions!(page)
+      :ok -> page_executions!(page)
       {:error, reason} -> {:error, ErrorMapper.map(reason)}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
   end
 
-  defp page_active_executions!(page) do
+  defp page_executions!(page) do
     query =
       RunnerExecution
       |> where(
         [execution],
-        execution.workspace_id == ^page.workspace_context.workspace_id and
-          is_nil(execution.terminal_at)
+        execution.workspace_id == ^page.workspace_context.workspace_id
       )
+      |> maybe_filter_active(page.active_only?)
       |> optional_filter(:run_id, page.run_id)
       |> optional_filter(:owner_id, page.owner_id)
       |> then(fn query ->
@@ -356,7 +356,10 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
 
         if existing.dispatch_id == command.dispatch_id and
              existing.last_command_id == command.command_id and
-             existing.run_id == command.run_id do
+             existing.run_id == command.run_id and existing.owner_id == command.owner_id and
+             existing.run_fencing_token == command.fencing_token and
+             existing.dispatch_payload == command.payload and
+             same_datetime?(existing.dispatched_at, command.occurred_at) do
           execution_result(existing)
         else
           Repo.rollback(Error.new(:conflict, "runner dispatch identity has different content"))
@@ -374,8 +377,12 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
       execution.run_id != command.run_id ->
         Repo.rollback(Error.new(:conflict, "runner execution belongs to another run"))
 
-      execution.last_command_id == command.command_id ->
+      execution.last_command_id == command.command_id and
+          replayed_transition_matches?(execution, command) ->
         execution_result(execution)
+
+      execution.last_command_id == command.command_id ->
+        Repo.rollback(Error.new(:conflict, "runner execution replay has different content"))
 
       execution.version != command.expected_version ->
         Repo.rollback(Error.new(:conflict, "runner execution version changed"))
@@ -551,6 +558,20 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
 
   defp valid_execution_transition?(_status, _next), do: false
 
+  defp replayed_transition_matches?(execution, command) do
+    status = Atom.to_string(command.status)
+
+    expected_terminal_at =
+      if status in @terminal_execution_statuses, do: command.occurred_at
+
+    execution.run_id == command.run_id and execution.owner_id == command.owner_id and
+      execution.run_fencing_token == command.fencing_token and
+      execution.version == command.expected_version + 1 and execution.status == status and
+      execution.result == command.result and execution.error == command.error and
+      same_datetime?(execution.updated_at, command.occurred_at) and
+      same_datetime?(execution.terminal_at, expected_terminal_at)
+  end
+
   defp validate_claim(command),
     do:
       validate_owner_command(
@@ -650,11 +671,21 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
   defp validate_page(page) do
     if workspace_context?(page.workspace_context) and is_integer(page.limit) and page.limit >= 1 and
          page.limit <= 500 and
+         is_boolean(page.active_only?) and
+         (is_nil(page.run_id) or valid_id?(page.run_id)) and
+         (is_nil(page.owner_id) or valid_id?(page.owner_id)) and
+         (page.active_only? or valid_id?(page.run_id)) and
          (is_nil(page.after) or
-            match?(%{runner_execution_id: id} when is_binary(id), page.after)),
+            (match?(%{runner_execution_id: _id}, page.after) and
+               valid_id?(page.after.runner_execution_id))),
        do: :ok,
        else: {:error, :invalid}
   end
+
+  defp maybe_filter_active(query, true),
+    do: where(query, [execution], is_nil(execution.terminal_at))
+
+  defp maybe_filter_active(query, false), do: query
 
   defp validate_owner_command(context, command_id, run_id, owner_id, duration) do
     if workspace_context?(context) and Enum.all?([command_id, run_id, owner_id], &valid_id?/1) and
@@ -669,5 +700,11 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
         Enum.any?(roles, &(&1 in [:customer_operator, :workspace_admin, :platform_operator]))
 
   defp workspace_context?(_context), do: false
+  defp same_datetime?(nil, nil), do: true
+
+  defp same_datetime?(%DateTime{} = left, %DateTime{} = right),
+    do: DateTime.compare(left, right) == :eq
+
+  defp same_datetime?(_left, _right), do: false
   defp valid_id?(value), do: is_binary(value) and value != "" and byte_size(value) <= 255
 end

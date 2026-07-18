@@ -15,6 +15,7 @@ defmodule FavnStoragePostgres.Logs.Store do
   alias FavnOrchestrator.Persistence.Results.LogEntry, as: LogEntryResult
   alias FavnOrchestrator.Persistence.Results.PurgeResult
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias Favn.Log.Identity
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnStoragePostgres.CanonicalJSON
@@ -24,15 +25,19 @@ defmodule FavnStoragePostgres.Logs.Store do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.LogBatch
   alias FavnStoragePostgres.Schemas.LogEntry
+  alias FavnStoragePostgres.Schemas.OutboxEvent
 
   @max_entries 1_000
   @levels [:debug, :info, :warning, :error]
+  @sources [:orchestrator, :runner, :sql_runtime, :adapter, :user_code, :system]
+  @streams [:stdout, :stderr, :system]
+  @filter_keys ~w(run_id asset_step_id runner_execution_id node_key asset_ref stream levels sources since until)a
 
   @impl true
   def append_batch(%AppendLogBatch{} = command) do
     with :ok <- validate_append(command),
          normalized <- Enum.map(command.entries, &normalize_entry/1),
-         {:ok, batch_hash} <- CanonicalJSON.hash(normalized),
+         {:ok, batch_hash} <- CanonicalJSON.hash(Enum.map(normalized, &hashable_entry/1)),
          {:ok, rows} <-
            Repo.transaction(fn -> append_or_replay!(command, normalized, batch_hash) end) do
       {:ok, rows}
@@ -45,32 +50,53 @@ defmodule FavnStoragePostgres.Logs.Store do
   end
 
   @impl true
-  def page(%PageLogs{} = page) do
-    with :ok <- validate_page(page) do
+  def page(%PageLogs{direction: :newer} = page) do
+    with :ok <- validate_page(page),
+         {:ok, filter} <- prepare_filter(page.filter) do
       query =
-        LogEntry
-        |> where([entry], entry.workspace_id == ^page.workspace_context.workspace_id)
-        |> filter(page.filter_kind, page.filter_value)
-        |> after_cursor(page.after, page.direction)
-        |> page_order(page.direction)
+        from(entry in LogEntry,
+          join: batch in LogBatch,
+          on: batch.workspace_id == entry.workspace_id and batch.batch_id == entry.batch_id,
+          join: event in OutboxEvent,
+          on:
+            event.workspace_id == batch.workspace_id and
+              event.outbox_event_id == batch.outbox_event_id,
+          where:
+            entry.workspace_id == ^page.workspace_context.workspace_id and
+              not is_nil(event.publication_id),
+          order_by: [asc: event.publication_id, asc: entry.position],
+          select: {entry, event.publication_id},
+          limit: ^(page.limit + 1)
+        )
+        |> filter(filter)
+        |> after_publication(page.after)
+
+      result_page(Repo.all(query), page.limit, :newer)
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  def page(%PageLogs{} = page) do
+    with :ok <- validate_page(page),
+         {:ok, filter} <- prepare_filter(page.filter) do
+      query =
+        from(entry in LogEntry,
+          left_join: batch in LogBatch,
+          on: batch.workspace_id == entry.workspace_id and batch.batch_id == entry.batch_id,
+          left_join: event in OutboxEvent,
+          on:
+            event.workspace_id == batch.workspace_id and
+              event.outbox_event_id == batch.outbox_event_id,
+          where: entry.workspace_id == ^page.workspace_context.workspace_id,
+          select: {entry, event.publication_id}
+        )
+        |> filter(filter)
+        |> after_historical_cursor(page.after)
+        |> order_by([entry], desc: entry.occurred_at, desc: entry.log_id)
         |> limit(^(page.limit + 1))
 
-      rows = Repo.all(query)
-      page_rows = Enum.take(rows, page.limit)
-      items = Enum.map(page_rows, &entry_result/1)
-      has_more? = length(rows) > page.limit
-      last = List.last(page_rows)
-
-      {:ok,
-       %CursorPage{
-         items: items,
-         limit: page.limit,
-         has_more?: has_more?,
-         next_cursor:
-           if(has_more? and last,
-             do: %{occurred_at: last.occurred_at, log_id: last.log_id}
-           )
-       }}
+      result_page(Repo.all(query), page.limit, :older)
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -218,22 +244,46 @@ defmodule FavnStoragePostgres.Logs.Store do
         metadata: entry.metadata
       })
 
+    metadata =
+      redacted.metadata
+      |> normalize_log_identity(:node_key, &Identity.node_key/1)
+      |> normalize_log_identity(:asset_ref, &Identity.asset_ref/1)
+      |> JsonSafe.data()
+
+    {:ok, node_key_hash} = optional_filter_hash(Map.get(metadata, "node_key"))
+    {:ok, asset_ref_hash} = optional_filter_hash(Map.get(metadata, "asset_ref"))
+
     %{
       run_id: entry.run_id,
+      asset_step_id: optional_string(Map.get(metadata, "asset_step_id")),
+      runner_execution_id: optional_string(Map.get(metadata, "runner_execution_id")),
+      node_key_hash: node_key_hash,
+      asset_ref_hash: asset_ref_hash,
+      stream: optional_string(Map.get(metadata, "stream")),
       source: String.slice(entry.source, 0, 100),
       level: Atom.to_string(entry.level),
       message: redacted.message |> to_string() |> String.slice(0, 8_192),
-      metadata: JsonSafe.data(redacted.metadata),
+      metadata: metadata,
       occurred_at: entry.occurred_at
     }
   end
 
-  defp entry_result(entry) do
+  defp hashable_entry(entry) do
+    entry
+    |> Map.update!(:node_key_hash, &encode_optional_hash/1)
+    |> Map.update!(:asset_ref_hash, &encode_optional_hash/1)
+  end
+
+  defp encode_optional_hash(nil), do: nil
+  defp encode_optional_hash(hash), do: Base.encode16(hash, case: :lower)
+
+  defp entry_result(entry, publication_id \\ nil) do
     %LogEntryResult{
       log_id: entry.log_id,
       workspace_id: entry.workspace_id,
       batch_id: entry.batch_id,
       position: entry.position,
+      publication_id: publication_id,
       run_id: entry.run_id,
       source: entry.source,
       level: String.to_existing_atom(entry.level),
@@ -248,18 +298,35 @@ defmodule FavnStoragePostgres.Logs.Store do
       batch.batch_hash == hash and batch.entry_count == count
   end
 
-  defp filter(query, nil, nil), do: query
-  defp filter(query, :run, run_id), do: where(query, [entry], entry.run_id == ^run_id)
+  defp filter(query, filter) do
+    query
+    |> maybe_equal(:run_id, filter.run_id)
+    |> maybe_equal(:asset_step_id, filter.asset_step_id)
+    |> maybe_equal(:runner_execution_id, filter.runner_execution_id)
+    |> maybe_equal(:node_key_hash, filter.node_key_hash)
+    |> maybe_equal(:asset_ref_hash, filter.asset_ref_hash)
+    |> maybe_equal(:stream, atom_string(filter.stream))
+    |> maybe_in(:level, Enum.map(filter.levels, &Atom.to_string/1))
+    |> maybe_in(:source, Enum.map(filter.sources, &Atom.to_string/1))
+    |> maybe_since(filter.since)
+    |> maybe_until(filter.until)
+  end
 
-  defp filter(query, :level, level),
-    do: where(query, [entry], entry.level == ^Atom.to_string(level))
+  defp maybe_equal(query, _field, nil), do: query
+  defp maybe_equal(query, field, value), do: where(query, [entry], field(entry, ^field) == ^value)
 
-  defp after_cursor(query, nil, _direction), do: query
+  defp maybe_in(query, _field, []), do: query
+  defp maybe_in(query, field, values), do: where(query, [entry], field(entry, ^field) in ^values)
 
-  defp after_cursor(query, %{log_id: log_id}, :newer) when is_integer(log_id),
-    do: where(query, [entry], entry.log_id > ^log_id)
+  defp maybe_since(query, nil), do: query
+  defp maybe_since(query, since), do: where(query, [entry], entry.occurred_at >= ^since)
 
-  defp after_cursor(query, %{occurred_at: occurred_at, log_id: log_id}, :older) do
+  defp maybe_until(query, nil), do: query
+  defp maybe_until(query, until), do: where(query, [entry], entry.occurred_at <= ^until)
+
+  defp after_historical_cursor(query, nil), do: query
+
+  defp after_historical_cursor(query, %{occurred_at: occurred_at, log_id: log_id}) do
     where(
       query,
       [entry],
@@ -268,14 +335,42 @@ defmodule FavnStoragePostgres.Logs.Store do
     )
   end
 
-  defp after_cursor(query, %{occurred_at: _occurred_at, log_id: log_id}, :newer),
-    do: where(query, [entry], entry.log_id > ^log_id)
+  defp after_publication(query, nil), do: query
 
-  defp page_order(query, :newer),
-    do: order_by(query, [entry], asc: entry.log_id)
+  defp after_publication(query, %{publication_id: publication_id, batch_offset: batch_offset}) do
+    where(
+      query,
+      [entry, _batch, event],
+      event.publication_id > ^publication_id or
+        (event.publication_id == ^publication_id and entry.position > ^batch_offset)
+    )
+  end
 
-  defp page_order(query, :older),
-    do: order_by(query, [entry], desc: entry.occurred_at, desc: entry.log_id)
+  defp result_page(rows, limit, direction) do
+    page_rows = Enum.take(rows, limit)
+
+    items =
+      Enum.map(page_rows, fn {entry, publication_id} -> entry_result(entry, publication_id) end)
+
+    has_more? = length(rows) > limit
+
+    {:ok,
+     %CursorPage{
+       items: items,
+       limit: limit,
+       has_more?: has_more?,
+       next_cursor: next_cursor(List.last(page_rows), has_more?, direction)
+     }}
+  end
+
+  defp next_cursor(nil, _has_more?, _direction), do: nil
+  defp next_cursor(_last, false, _direction), do: nil
+
+  defp next_cursor({entry, publication_id}, true, :newer),
+    do: %{publication_id: publication_id, batch_offset: entry.position}
+
+  defp next_cursor({entry, _publication_id}, true, :older),
+    do: %{occurred_at: entry.occurred_at, log_id: entry.log_id}
 
   defp validate_append(command) do
     entries = command.entries
@@ -289,7 +384,7 @@ defmodule FavnStoragePostgres.Logs.Store do
   end
 
   defp validate_page(page) do
-    if workspace_context?(page.workspace_context) and valid_log_filter?(page) and
+    if workspace_context?(page.workspace_context) and is_map(page.filter) and
          valid_log_cursor?(page.after, page.direction) and
          page.direction in [:older, :newer] and
          valid_bound?(page.limit, 1, 500),
@@ -297,17 +392,69 @@ defmodule FavnStoragePostgres.Logs.Store do
        else: {:error, ErrorMapper.map(:invalid)}
   end
 
-  defp valid_log_filter?(%{filter_kind: nil, filter_value: nil}), do: true
-  defp valid_log_filter?(%{filter_kind: :run, filter_value: value}), do: valid_id?(value)
-  defp valid_log_filter?(%{filter_kind: :level, filter_value: value}), do: value in @levels
-  defp valid_log_filter?(_page), do: false
+  defp prepare_filter(filter) do
+    with [] <- Map.keys(filter) -- @filter_keys,
+         true <- optional_id?(filter.run_id),
+         true <- optional_id?(filter.asset_step_id),
+         true <- optional_id?(filter.runner_execution_id),
+         true <- is_nil(filter.node_key) or is_binary(filter.node_key),
+         true <- is_nil(filter.asset_ref) or is_binary(filter.asset_ref),
+         true <- is_nil(filter.stream) or filter.stream in @streams,
+         true <- is_list(filter.levels) and Enum.all?(filter.levels, &(&1 in @levels)),
+         true <- is_list(filter.sources) and Enum.all?(filter.sources, &(&1 in @sources)),
+         true <- is_nil(filter.since) or match?(%DateTime{}, filter.since),
+         true <- is_nil(filter.until) or match?(%DateTime{}, filter.until),
+         {:ok, node_key_hash} <- optional_filter_hash(filter.node_key),
+         {:ok, asset_ref_hash} <- optional_filter_hash(filter.asset_ref) do
+      {:ok,
+       filter
+       |> Map.put(:node_key_hash, node_key_hash)
+       |> Map.put(:asset_ref_hash, asset_ref_hash)}
+    else
+      _invalid -> {:error, ErrorMapper.map(:invalid)}
+    end
+  end
+
+  defp optional_filter_hash(nil), do: {:ok, nil}
+  defp optional_filter_hash(value), do: CanonicalJSON.hash(value)
+
+  defp normalize_log_identity(metadata, key, normalizer) when is_map(metadata) do
+    string_key = Atom.to_string(key)
+    value = Map.get(metadata, key, Map.get(metadata, string_key))
+    metadata = Map.drop(metadata, [key, string_key])
+
+    case value do
+      nil ->
+        metadata
+
+      value ->
+        case normalizer.(value) do
+          {:ok, identity} -> Map.put(metadata, key, identity)
+          {:error, _reason} -> metadata
+        end
+    end
+  end
+
+  defp optional_id?(nil), do: true
+  defp optional_id?(value), do: valid_id?(value)
+  defp optional_string(value) when is_binary(value), do: value
+  defp optional_string(_value), do: nil
+  defp atom_string(nil), do: nil
+  defp atom_string(value) when is_atom(value), do: Atom.to_string(value)
 
   defp valid_log_cursor?(nil, _direction), do: true
 
-  defp valid_log_cursor?(%{occurred_at: %DateTime{}, log_id: id}, _direction),
+  defp valid_log_cursor?(%{occurred_at: %DateTime{}, log_id: id}, :older),
     do: is_integer(id)
 
-  defp valid_log_cursor?(%{log_id: id}, :newer), do: is_integer(id) and id >= 0
+  defp valid_log_cursor?(
+         %{publication_id: publication_id, batch_offset: batch_offset},
+         :newer
+       ),
+       do:
+         is_integer(publication_id) and publication_id >= 0 and is_integer(batch_offset) and
+           batch_offset >= 0 and batch_offset < @max_entries
+
   defp valid_log_cursor?(_cursor, _direction), do: false
 
   defp validate_purge(command) do

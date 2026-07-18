@@ -8,10 +8,13 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
+  alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
   alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
+  alias FavnOrchestrator.Persistence.Queries.PageWorkspaces
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector
+  alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RuntimeState
 
   @callback provision_workspace(ProvisionWorkspace.t()) :: :ok | {:error, Error.t()}
@@ -23,6 +26,10 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
   @callback get_execution_package(GetExecutionPackage.t()) ::
               {:ok, Favn.Manifest.ExecutionPackage.t()} | {:error, Error.t()}
   @callback get_manifest(ManifestSelector.t()) :: {:ok, Version.t()} | {:error, Error.t()}
+  @callback get_deployment_manifest(GetDeploymentManifest.t()) ::
+              {:ok, Version.t()} | {:error, Error.t()}
+  @callback page_workspaces(PageWorkspaces.t()) ::
+              {:ok, CursorPage.t(String.t())} | {:error, Error.t()}
   @callback deploy_manifest(DeployManifest.t()) :: {:ok, RuntimeState.t()} | {:error, Error.t()}
   @callback get_runtime_state(GetRuntimeState.t()) ::
               {:ok, RuntimeState.t()} | {:error, Error.t()}

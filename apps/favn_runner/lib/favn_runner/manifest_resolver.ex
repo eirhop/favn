@@ -6,6 +6,8 @@ defmodule FavnRunner.ManifestResolver do
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
+  alias FavnRunner.ManifestHandle
+  alias FavnRunner.ManifestStore
 
   @type resolve_target_error ::
           :missing_asset_target | :invalid_asset_target | :multiple_asset_targets
@@ -38,6 +40,14 @@ defmodule FavnRunner.ManifestResolver do
   end
 
   def resolve_asset(%Version{}, _asset_ref), do: {:error, :asset_not_found}
+
+  @spec resolve_asset(ManifestHandle.t(), Favn.Ref.t()) ::
+          {:ok, Asset.t()} | {:error, :asset_not_found | ManifestStore.fetch_error()}
+  def resolve_asset(%ManifestHandle{} = handle, asset_ref) when is_tuple(asset_ref) do
+    ManifestStore.fetch_asset(handle, asset_ref)
+  end
+
+  def resolve_asset(%ManifestHandle{}, _asset_ref), do: {:error, :asset_not_found}
 
   defp normalize_refs(asset_ref, asset_refs) when is_list(asset_refs) do
     candidate_refs =

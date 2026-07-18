@@ -13,7 +13,7 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.AdvanceRunnerExecution
   alias FavnOrchestrator.Persistence.Commands.RecordRunnerDispatch
-  alias FavnOrchestrator.Persistence.Queries.PageActiveExecutions
+  alias FavnOrchestrator.Persistence.Queries.PageRunnerExecutions
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RunnerExecution
   alias FavnOrchestrator.Persistence.SystemContext
@@ -157,9 +157,30 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   @doc "Fetches active ownership records under the run's workspace authority."
   @spec fetch_active(RunState.t()) :: {:ok, [t()]} | {:error, term()}
   def fetch_active(%RunState{workspace_id: workspace_id} = run) when is_binary(workspace_id),
-    do: fetch_active_v2(run)
+    do: fetch_pages(run, true)
 
   def fetch_active(%RunState{}), do: {:error, :workspace_id_required}
+
+  @doc "Returns the bounded ledger evidence needed for fail-closed run recovery."
+  @spec recovery_evidence(RunState.t()) ::
+          {:ok, %{active: [t()], active_truncated?: boolean(), any?: boolean()}}
+          | {:error, term()}
+  def recovery_evidence(%RunState{workspace_id: workspace_id} = run)
+      when is_binary(workspace_id) do
+    with {:ok, %CursorPage{} = active_page} <- page(run, true, 50) do
+      active = Enum.map(active_page.items, &from_runner_execution(&1, run))
+
+      if active == [] do
+        with {:ok, %CursorPage{} = any_page} <- page(run, false, 1) do
+          {:ok, %{active: [], active_truncated?: false, any?: any_page.items != []}}
+        end
+      else
+        {:ok, %{active: active, active_truncated?: active_page.has_more?, any?: true}}
+      end
+    end
+  end
+
+  def recovery_evidence(%RunState{}), do: {:error, :workspace_id_required}
 
   @doc "Persists one ownership record in the durable storage ledger."
   @spec persist(t()) :: :ok | {:error, term()}
@@ -208,15 +229,12 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
     %{ownership | status: :dispatch_failed, last_error: safe_diagnostic(reason)} |> touch()
   end
 
-  @doc "Marks matching pre-submit ownership records as failed."
-  @spec mark_dispatch_failed(RunState.t(), String.t(), term()) ::
-          :ok | {:error, term()}
-  def mark_dispatch_failed(run, ownership_id, reason) when is_binary(ownership_id) do
-    with {:ok, ownerships} <- fetch_active(run) do
-      ownerships
-      |> Enum.filter(&(&1.ownership_id == ownership_id))
-      |> persist_all(&dispatch_failed(&1, reason))
-    end
+  @doc "Directly fails one exact dispatch ownership without scanning the run ledger."
+  @spec fail_dispatch(t(), term()) :: :ok | {:error, term()}
+  def fail_dispatch(%__MODULE__{} = ownership, reason) do
+    ownership
+    |> dispatch_failed(reason)
+    |> persist()
   end
 
   @doc "Persists a terminal outcome for work whose submitted ownership write failed."
@@ -229,26 +247,19 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
     |> persist()
   end
 
-  @doc "Marks matching active storage-ledger ownership records as awaiting durable persistence."
-  @spec mark_finish_persist_pending(RunState.t(), String.t()) ::
-          :ok | {:error, term()}
-  def mark_finish_persist_pending(run, execution_id) when is_binary(execution_id) do
-    with {:ok, ownerships} <- fetch_active(run) do
-      ownerships
-      |> Enum.filter(&(&1.runner_execution_id == execution_id))
-      |> persist_all(&finish_persist_pending/1)
-    end
+  @doc "Completes one exact ownership generation without paging sibling executions."
+  @spec complete_execution(t()) :: :ok | {:error, term()}
+  def complete_execution(%__MODULE__{} = ownership) do
+    ownership
+    |> completed()
+    |> persist()
   end
 
-  @doc "Marks matching active storage-ledger ownership records as completed."
-  @spec complete_execution(RunState.t(), String.t()) :: :ok | {:error, term()}
-  def complete_execution(run, execution_id) when is_binary(execution_id) do
-    with {:ok, ownerships} <- fetch_active(run) do
-      ownerships
-      |> Enum.filter(&(&1.runner_execution_id == execution_id))
-      |> persist_all(&completed/1)
-    end
-  end
+  @doc false
+  @spec advance_local_version(t()) :: t()
+  def advance_local_version(%__MODULE__{persistence_version: version} = ownership)
+      when is_integer(version),
+      do: %{ownership | persistence_version: version + 1}
 
   @doc "Marks all active storage-ledger ownership records for a run as completed."
   @spec complete_active(RunState.t()) :: :ok | {:error, term()}
@@ -352,26 +363,36 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   def cancel_outcome_status(%{error: _error}), do: :best_effort_failed
   def cancel_outcome_status(_result), do: :cancel_dispatched
 
-  defp fetch_active_v2(%RunState{} = run) do
+  defp fetch_pages(%RunState{} = run, active_only?) do
     context = SystemContext.workspace(run.workspace_id, :runner_execution_recovery)
-    fetch_active_pages(context, run, nil, [])
+    fetch_pages(context, run, active_only?, nil, [])
   end
 
-  defp fetch_active_pages(context, run, cursor, acc) do
-    query = %PageActiveExecutions{
+  defp page(%RunState{} = run, active_only?, limit) do
+    Persistence.stores().run_ownership.page_executions(%PageRunnerExecutions{
+      workspace_context: SystemContext.workspace(run.workspace_id, :runner_execution_recovery),
+      run_id: run.id,
+      active_only?: active_only?,
+      limit: limit
+    })
+  end
+
+  defp fetch_pages(context, run, active_only?, cursor, acc) do
+    query = %PageRunnerExecutions{
       workspace_context: context,
       run_id: run.id,
+      active_only?: active_only?,
       after: cursor,
       limit: 500
     }
 
-    case Persistence.stores().run_ownership.page_active_executions(query) do
+    case Persistence.stores().run_ownership.page_executions(query) do
       {:ok, %CursorPage{} = page} ->
         ownerships = Enum.map(page.items, &from_runner_execution(&1, run))
         acc = [ownerships | acc]
 
         if page.has_more? do
-          fetch_active_pages(context, run, page.next_cursor, acc)
+          fetch_pages(context, run, active_only?, page.next_cursor, acc)
         else
           {:ok, acc |> Enum.reverse() |> List.flatten()}
         end
@@ -512,6 +533,10 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   defp legacy_status(:dispatching), do: :submitted
   defp legacy_status(:running), do: :started
   defp legacy_status(:cancelling), do: :cancel_dispatched
+  defp legacy_status(:ok), do: :completed
+  defp legacy_status(:error), do: :dispatch_failed
+  defp legacy_status(:timed_out), do: :dispatch_failed
+  defp legacy_status(:cancelled), do: :cancel_acknowledged
 
   defp payload_value(payload, key),
     do: Map.get(payload, key, Map.get(payload, String.to_existing_atom(key)))

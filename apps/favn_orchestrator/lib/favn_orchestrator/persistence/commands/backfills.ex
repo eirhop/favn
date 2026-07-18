@@ -274,28 +274,6 @@ defmodule FavnOrchestrator.Persistence.Queries.PageBackfillWindows do
         }
 end
 
-defmodule FavnOrchestrator.Persistence.Queries.PageAssetWindows do
-  @moduledoc "Keyset-pages exact manifest/asset/window history."
-
-  alias FavnOrchestrator.Persistence.WorkspaceContext
-  @enforce_keys [:workspace_context, :manifest_version_id, :target_id]
-  defstruct [
-    :workspace_context,
-    :manifest_version_id,
-    :target_id,
-    :after,
-    limit: 100
-  ]
-
-  @type t :: %__MODULE__{
-          workspace_context: WorkspaceContext.t(),
-          manifest_version_id: String.t(),
-          target_id: String.t(),
-          after: %{window_start: DateTime.t(), window_id: String.t()} | nil,
-          limit: 1..500
-        }
-end
-
 defmodule FavnOrchestrator.Persistence.Results.Backfill do
   @moduledoc "Authoritative resumable backfill header with compact projected progress."
 

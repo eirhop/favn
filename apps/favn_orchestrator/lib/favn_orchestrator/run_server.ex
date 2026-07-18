@@ -17,10 +17,12 @@ defmodule FavnOrchestrator.RunServer do
   alias FavnOrchestrator.RunExecutionCleanup
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunOwnership
+  alias FavnOrchestrator.RunnerManifestRegistration
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.PersistenceRetry
+  alias FavnOrchestrator.RunServer.Recovery
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
@@ -47,6 +49,7 @@ defmodule FavnOrchestrator.RunServer do
   @impl true
   def handle_continue(:execute, %{run_state: run_state, version: version} = state) do
     if RunState.finalized?(run_state) do
+      :ok = Execution.release_manifest_lease(run_state)
       :ok = RunExecutionCleanup.release_admission(run_state)
       {:stop, :normal, state |> Map.put(:run_state, run_state) |> Map.put(:execution_state, nil)}
     else
@@ -59,12 +62,48 @@ defmodule FavnOrchestrator.RunServer do
   end
 
   defp continue_start(%{recovering?: true} = state, %RunState{} = run_state, %Version{} = version) do
-    start_execution(state, run_state, version)
+    case Recovery.disposition(run_state) do
+      {:ok, :resume} when run_state.status == :pending ->
+        running = RunState.transition(run_state, status: :running)
+        persist_run_start(state, running, version)
+
+      {:ok, :resume} ->
+        start_execution(state, run_state, version)
+
+      {:ok, {:uncertain, details}} ->
+        :ok = Execution.release_manifest_lease(run_state)
+        terminalize_uncertain_recovery(state, run_state, details)
+
+      {:error, reason} ->
+        {:stop, {:shutdown, {:runner_execution_recovery_unavailable, reason}}, state}
+    end
   end
 
   defp continue_start(state, %RunState{} = run_state, %Version{} = version) do
     running = RunState.transition(run_state, status: :running)
     persist_run_start(state, running, version)
+  end
+
+  defp terminalize_uncertain_recovery(state, %RunState{} = run_state, details) do
+    cleanup =
+      RunExecutionCleanup.cancel_active(run_state, %{
+        kind: :uncertain_runner_recovery,
+        details: details
+      })
+
+    terminal =
+      Snapshots.snapshot_update(run_state,
+        status: :error,
+        runner_execution_id: nil,
+        error: %{
+          "kind" => "uncertain_runner_recovery",
+          "type" => "uncertain_runner_recovery",
+          "message" => "runner execution outcome is uncertain after recovery",
+          "reason" => %{details: details, runner_cleanup: cleanup}
+        }
+      )
+
+    finalize_terminal(state, terminal)
   end
 
   @impl true
@@ -76,7 +115,22 @@ defmodule FavnOrchestrator.RunServer do
       ) do
     case RunOwnership.renew(context, ownership) do
       {:ok, renewed} ->
-        {:noreply, state |> Map.put(:storage_ownership, renewed) |> schedule_ownership_renewal()}
+        state = Map.put(state, :storage_ownership, renewed)
+
+        case renew_manifest_lease(state) do
+          :ok ->
+            {:noreply, schedule_ownership_renewal(state)}
+
+          {:error, reason} ->
+            OperationalEvents.emit(
+              :runner_manifest_lease_renewal_failed,
+              %{},
+              %{workspace_id: context.workspace_id, run_id: ownership.run_id, reason: reason},
+              level: :error
+            )
+
+            {:stop, {:shutdown, :runner_manifest_lease_renewal_failed}, state}
+        end
 
       {:error, reason} ->
         OperationalEvents.emit(
@@ -198,11 +252,13 @@ defmodule FavnOrchestrator.RunServer do
     case Execution.start_state(running, version) do
       {:ok, execution_state} ->
         state
+        |> Map.delete(:version)
         |> Map.put(:run_state, running)
         |> Map.put(:execution_state, execution_state)
         |> continue_execution()
 
       {:terminal, terminal} ->
+        :ok = Execution.release_manifest_lease(running)
         finalize_terminal(state, terminal)
     end
   end
@@ -550,9 +606,31 @@ defmodule FavnOrchestrator.RunServer do
   defp release_storage_ownership(_state), do: :ok
 
   defp stop_normally(state, %RunState{} = run) do
+    :ok = release_manifest_lease(state)
     :ok = release_storage_ownership(state)
     {:stop, :normal, state |> Map.put(:run_state, run) |> Map.put(:execution_state, nil)}
   end
+
+  defp release_manifest_lease(%{execution_state: %RunExecutionState{} = execution_state}) do
+    RunnerManifestRegistration.release(
+      execution_state.runner_client,
+      execution_state.manifest_lease_id,
+      execution_state.runner_opts
+    )
+  end
+
+  defp release_manifest_lease(_state), do: :ok
+
+  defp renew_manifest_lease(%{execution_state: %RunExecutionState{} = execution_state}) do
+    RunnerManifestRegistration.renew(
+      execution_state.runner_client,
+      execution_state.manifest_lease_id,
+      Execution.manifest_lease_expires_at(execution_state.run),
+      execution_state.runner_opts
+    )
+  end
+
+  defp renew_manifest_lease(_state), do: :ok
 
   defp copy_storage_fence(%RunState{} = run, %RunState{} = authority) do
     case {authority.storage_owner_id, authority.storage_fencing_token} do
@@ -566,6 +644,7 @@ defmodule FavnOrchestrator.RunServer do
 
   @impl true
   def terminate(_reason, state) do
+    release_manifest_lease(state)
     release_storage_ownership(state)
   end
 end

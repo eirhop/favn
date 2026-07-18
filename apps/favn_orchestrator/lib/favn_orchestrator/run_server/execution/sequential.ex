@@ -41,11 +41,12 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
          status: :ok,
          error: nil,
          runner_execution_id: nil,
-         result: %{
-           status: :ok,
-           asset_results: ResultBuilder.sort_asset_results(state.run, state.accumulated_results),
-           metadata: state.run.metadata
-         }
+         result:
+           ResultBuilder.pipeline_result(
+             state.run,
+             :ok,
+             ResultBuilder.sort_asset_results(state.run, state.accumulated_results)
+           )
        )}
     else
       {asset_ref, node_key, stage} = Enum.at(state.sequential_refs, state.sequential_index)
@@ -184,7 +185,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   @doc false
   @spec resume_persisted(RunExecutionState.t(), map()) :: directive()
   def resume_persisted(%RunExecutionState{} = state, %{kind: :step_result} = resume) do
-    _ = RunExecutionOwnership.complete_execution(state.run, resume.entry.execution_id)
+    _ = RunExecutionOwnership.complete_execution(resume.entry.ownership)
     state = %{state | run: resume.run}
 
     cond do
@@ -192,7 +193,10 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
         continue(%{
           state
           | sequential_index: state.sequential_index + 1,
-            accumulated_results: Enum.reverse(resume.asset_results, state.accumulated_results)
+            accumulated_results:
+              resume.asset_results
+              |> Enum.reverse(state.accumulated_results)
+              |> ResultBuilder.retain_asset_results()
         })
 
       resume.retryable? ->
@@ -213,6 +217,24 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
   def resume_persisted(%RunExecutionState{} = state, %{kind: :schedule_retry} = resume) do
     schedule_retry_timer(%{state | run: resume.run}, resume.retry)
+  end
+
+  def resume_persisted(%RunExecutionState{} = state, %{kind: :pre_submit_failure} = resume) do
+    state = %{state | run: resume.run}
+
+    if resume.retryable? do
+      maybe_schedule_retry(
+        state,
+        resume.asset_ref,
+        resume.node_key,
+        resume.stage,
+        resume.attempt,
+        [],
+        resume.reason
+      )
+    else
+      terminalize_error(state, [])
+    end
   end
 
   @doc "Resubmits a sequential attempt after its retry timer fires."
@@ -252,15 +274,24 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
   defp submit_attempt(%RunExecutionState{} = state, asset_ref, node_key, stage, attempt) do
     with :ok <- RunnerClientValidator.validate(state.runner_client),
-         :ok <- state.runner_client.register_manifest(state.version, state.runner_opts),
          {:ok, %{work: work} = lifecycle} <-
            state.run
            |> StepAttemptLifecycle.new(state.version, node_key, stage, attempt)
            |> StepAttemptLifecycle.build_work(),
-         work <- StepAttemptLifecycle.attach_deadline(work, state.run),
+         work <-
+           work
+           |> StepAttemptLifecycle.attach_deadline(state.run)
+           |> Map.put(:manifest_lease_id, state.manifest_lease_id),
          package_context <-
            SystemContext.workspace(state.run.workspace_id, :execution_package_fetch),
-         {:ok, work} <- ExecutionPackages.attach(package_context, work, state.version),
+         {:ok, work} <-
+           ExecutionPackages.attach(
+             package_context,
+             state.run.deployment_id,
+             work,
+             state.version,
+             state.manifest_index
+           ),
          {:ok, work} <-
            RuntimeInputPins.prepare(
              state.run,
@@ -304,8 +335,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
         end
 
       {:error, reason} ->
-        _ =
-          RunExecutionOwnership.mark_dispatch_failed(state.run, ownership.ownership_id, reason)
+        _ = RunExecutionOwnership.fail_dispatch(ownership, reason)
 
         persist_pre_submit_failure(
           state,
@@ -336,7 +366,11 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       {:terminal, Snapshots.cancelled_snapshot(state.run)}
     else
       {:terminal,
-       RunState.transition(state.run, status: :error, runner_execution_id: nil, error: reason)}
+       Snapshots.snapshot_update(state.run,
+         status: :error,
+         runner_execution_id: nil,
+         error: reason
+       )}
     end
   end
 
@@ -352,45 +386,46 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     failed =
       RunState.transition(state.run, status: :error, runner_execution_id: nil, error: reason)
 
-    case Persistence.persist_run_step(failed, :step_failed, %{
-           asset_ref: asset_ref,
-           error: reason,
-           node_key: node_key,
-           asset_step_id:
-             asset_step_id || AssetStepIdentity.asset_step_id(state.run.id, node_key, asset_ref),
-           stage: stage,
-           attempt: attempt,
-           max_attempts: StepAttemptLifecycle.retry_policy(state.run, node_key).max_attempts
-         }) do
-      :ok ->
-        if safe_retryable?(reason) do
-          maybe_schedule_retry(
-            %{state | run: failed},
-            asset_ref,
-            node_key,
-            stage,
-            attempt,
-            [],
-            reason
-          )
-        else
-          terminalize_error(%{state | run: failed}, [])
-        end
+    data = %{
+      asset_ref: asset_ref,
+      error: reason,
+      node_key: node_key,
+      asset_step_id:
+        asset_step_id || AssetStepIdentity.asset_step_id(state.run.id, node_key, asset_ref),
+      stage: stage,
+      attempt: attempt,
+      max_attempts: StepAttemptLifecycle.retry_policy(state.run, node_key).max_attempts
+    }
 
-      {:error, :external_cancel} ->
-        {:terminal, Snapshots.cancelled_snapshot(failed)}
+    resume = %{
+      kind: :pre_submit_failure,
+      run: failed,
+      asset_ref: asset_ref,
+      node_key: node_key,
+      stage: stage,
+      attempt: attempt,
+      reason: reason,
+      retryable?: safe_retryable?(reason)
+    }
 
-      {:error, _persist_reason} ->
-        {:terminal, failed}
-    end
+    persist_or_retry(state, failed, :step_failed, data, resume)
   end
 
   defp start_submitted_attempt(state, lifecycle, work, ownership, execution_id) do
-    entry = sequential_entry(state, lifecycle, work, execution_id)
+    persisted_run = state.run
     started_ownership = RunExecutionOwnership.started(ownership)
 
     case RunExecutionOwnership.persist(started_ownership) do
       :ok ->
+        entry =
+          sequential_entry(
+            state,
+            lifecycle,
+            work,
+            execution_id,
+            RunExecutionOwnership.advance_local_version(started_ownership)
+          )
+
         running =
           RunState.transition(state.run,
             runner_execution_id: execution_id,
@@ -432,10 +467,11 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
               })
 
             {:terminal,
-             RunState.transition(state.run,
+             Snapshots.snapshot_update(persisted_run,
                status: :error,
                runner_execution_id: nil,
-               error: reason
+               error: reason,
+               metadata: state.run.metadata
              )}
         end
 
@@ -447,11 +483,15 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
           })
 
         {:terminal,
-         RunState.transition(state.run, status: :error, runner_execution_id: nil, error: reason)}
+         Snapshots.snapshot_update(state.run,
+           status: :error,
+           runner_execution_id: nil,
+           error: reason
+         )}
     end
   end
 
-  defp sequential_entry(state, lifecycle, work, execution_id) do
+  defp sequential_entry(state, lifecycle, work, execution_id, ownership) do
     %{
       run_id: state.run.id,
       asset_step_id: work.asset_step_id,
@@ -459,6 +499,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       node_key: lifecycle.node_key,
       execution_id: execution_id,
       runner_execution_id: execution_id,
+      ownership: ownership,
       stage: lifecycle.stage,
       attempt: lifecycle.attempt,
       execution_pool: RunnerWork.execution_pool(work)
@@ -551,17 +592,16 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     all_results =
       state.run
       |> ResultBuilder.sort_asset_results(
-        ResultSanitizer.sanitize_asset_results(step_results) ++ state.accumulated_results
+        step_results
+        |> ResultSanitizer.sanitize_asset_results()
+        |> Kernel.++(state.accumulated_results)
+        |> ResultBuilder.retain_asset_results()
       )
 
     {:terminal,
      Snapshots.snapshot_update(state.run,
        runner_execution_id: nil,
-       result: %{
-         status: state.run.status,
-         asset_results: all_results,
-         metadata: state.run.metadata
-       }
+       result: ResultBuilder.pipeline_result(state.run, state.run.status, all_results)
      )}
   end
 

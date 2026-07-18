@@ -54,6 +54,9 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlannerTest do
 
     assert %{selection_source: :explicit, customer_visible: true} =
              by_id[TargetIdentity.for_pipeline({MyApp.CustomerPipeline, :daily})]
+
+    assert Enum.all?(targets, &is_binary(&1.descriptor["target_id"]))
+    assert Enum.all?(targets, &is_binary(&1.descriptor["label"]))
   end
 
   test "rejects ambiguous common and workspace-specific selections" do

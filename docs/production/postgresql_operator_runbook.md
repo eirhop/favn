@@ -29,18 +29,27 @@ Runtime nodes require:
 ```text
 FAVN_DATABASE_URL=ecto://favn_runtime:<secret>@<host>/<database>
 FAVN_DATABASE_SSL_CA_FILE=/run/secrets/postgresql-ca.pem
-FAVN_RUNTIME_INPUT_PIN_KEY=<base64-or-raw-32-byte-key>
-FAVN_RUNTIME_INPUT_PIN_KEY_VERSION=<positive-integer>
+FAVN_RUNTIME_INPUT_PIN_KEYS='{"1":"<base64-32-byte-key>","2":"<base64-32-byte-key>"}'
+FAVN_RUNTIME_INPUT_PIN_KEY_VERSION=<current-positive-integer>
 FAVN_INSTANCE_ID=<stable-node-or-replica-identity>
+FAVN_WORKSPACE_IDS=<comma-separated-workspaces-enabled-for-scheduling-and-bootstrap>
 ```
 
 Migration jobs use a separate URL for the migrator role. Never put database URLs
 or runtime-input keys in application manifests, logs, support bundles, or command
-history. Retain every runtime-input key version referenced by an existing pin until
-the corresponding rows have expired or been re-encrypted.
+history. `FAVN_RUNTIME_INPUT_PIN_KEYS` is a JSON object containing at most 32
+version-to-key entries; the current version must be present. Retain every version
+reported as referenced by readiness until the corresponding pins have been purged
+or re-encrypted. Readiness fails closed when PostgreSQL references a version absent
+from the configured keyring.
 
 Production rejects disabled TLS. The configured CA file must be a regular file and
 certificate hostname verification must succeed.
+
+`FAVN_WORKSPACE_IDS` configures scheduler and explicit bootstrap scope; it is not a
+run-recovery authority boundary. Recovery pages active workspace identities directly
+from PostgreSQL so a provisioned workspace cannot lose orphan recovery merely because
+one node's environment list is stale.
 
 ## Connection budget
 
@@ -110,13 +119,33 @@ Runtime nodes never migrate at boot.
 6. Roll out remaining nodes gradually.
 
 Readiness rejects PostgreSQL majors other than 18, a mismatched catalog-definition
-fingerprint (column types/nullability/defaults plus critical constraint/index
-definitions), missing or unexpected columns, missing migration versions, unknown
+fingerprint (column types/nullability/defaults plus every constraint and index on
+owned tables), missing or unexpected columns, missing migration versions, unknown
 future migration versions, a missing/blocked projector cursor, and—under production
 configuration—an overprivileged runtime role. Projection lag is reported separately.
-Do not bypass readiness. Rollback after a destructive migration is restore of the
-matching backup plus the previous application release, not an unreviewed
-down-migration.
+It also rejects a runtime-input keyring missing any version recorded in the compact
+pin-key inventory. Do not bypass readiness. Rollback after a destructive migration
+is restore of the matching backup plus the previous application release, not an
+unreviewed down-migration.
+
+### Retiring a runtime-input key
+
+Do not remove a key version merely because a newer version is current. A persisted
+pin remains encrypted with the version recorded on its row, and exact command replay
+returns that canonical pin without rewriting it.
+
+After the retention workflow has purged or re-encrypted every pin using the old
+version, compact the inventory with the migrator identity:
+
+```bash
+FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
+  mix favn.postgres.compact_runtime_input_keys
+```
+
+The task briefly locks runtime-input pin writes while it removes only inventory
+versions with no referencing pin. Confirm readiness remains healthy, then remove
+the retired version from `FAVN_RUNTIME_INPUT_PIN_KEYS`. The task reports version
+numbers only and never reads or prints key material.
 
 ## Runtime privileges
 
@@ -196,6 +225,10 @@ mix favn.postgres.maintenance reconcile \
 mix favn.postgres.maintenance purge \
   --job-id expired-sessions-20260717 --target sessions \
   --workspace salmon-one --cutoff 2026-07-10T00:00:00Z --limit 1000
+
+mix favn.postgres.maintenance purge \
+  --job-id orphaned-execution-packages-20260717 --target execution-packages \
+  --cutoff 2026-07-10T00:00:00Z --limit 1000
 ```
 
 The command identity includes its full configuration. Reusing a job id with changed
@@ -205,6 +238,8 @@ scope, cutoff, target, or limit is rejected.
 - expired/revoked sessions: retain for the approved audit window;
 - terminal claims and projection failures: bounded policy-driven retention;
 - logs: purge in bounded batches after the approved audit window;
+- unreferenced execution packages: purge at platform scope after a publication grace
+  window; packages linked to any manifest are protected by the query and foreign key;
 - canonical runs, run events, backfills, manifests, audit records, and published
   outbox rows are retained indefinitely in the initial production release. Monitor
   their growth and introduce deletion only with explicit referential and SSE replay

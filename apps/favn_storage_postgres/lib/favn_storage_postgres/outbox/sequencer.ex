@@ -52,10 +52,10 @@ defmodule FavnStoragePostgres.Outbox.Sequencer do
           """
           SELECT outbox_event_id
           FROM favn_control.outbox_events
-          WHERE publication_id IS NULL AND available_at <= clock_timestamp()
-          ORDER BY available_at, outbox_event_id
+          WHERE publication_id IS NULL
+          ORDER BY outbox_event_id
           LIMIT $1
-          FOR UPDATE SKIP LOCKED
+          FOR UPDATE
           """,
           [limit]
         )

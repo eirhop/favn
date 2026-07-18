@@ -14,7 +14,7 @@ defmodule FavnStoragePostgres.Schemas.OutboxEvent do
     field(:payload_version, :integer)
     field(:payload, :map)
     field(:payload_hash, :binary)
-    field(:available_at, :utc_datetime_usec)
+    field(:occurred_at, :utc_datetime_usec)
     field(:publication_id, :integer)
     field(:published_at, :utc_datetime_usec)
     field(:inserted_at, :utc_datetime_usec)
@@ -77,6 +77,23 @@ defmodule FavnStoragePostgres.Schemas.RunEvent do
   end
 end
 
+defmodule FavnStoragePostgres.Schemas.RunPlan do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "run_plans" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:run_id, :string, primary_key: true)
+    field(:manifest_version_id, :string)
+    field(:plan_version, :integer)
+    field(:plan_hash, :binary)
+    field(:plan, :map)
+    field(:inserted_at, :utc_datetime_usec)
+  end
+end
+
 defmodule FavnStoragePostgres.Schemas.RunTarget do
   @moduledoc false
   use Ecto.Schema
@@ -128,6 +145,8 @@ defmodule FavnStoragePostgres.Schemas.RuntimeInputPin do
     field(:run_id, :string, primary_key: true)
     field(:node_key_hash, :binary, primary_key: true)
     field(:payload_fingerprint, :binary)
+    field(:execution_package_hash, :binary)
+    field(:resolver_module, :string)
     field(:encryption_key_version, :integer)
     field(:payload, :binary)
     field(:inserted_at, :utc_datetime_usec)

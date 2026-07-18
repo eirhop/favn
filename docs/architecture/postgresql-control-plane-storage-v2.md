@@ -40,9 +40,11 @@ findings.
    company is one customer workspace initially; the model supports more than one
    workspace per company later without adding an organization hierarchy now.
 5. One project repository produces a platform-global immutable manifest release
-   containing the complete asset/pipeline catalog. Each workspace deployment
-   materializes the exact common, explicitly selected, and dependency targets that
-   workspace may execute and the subset customer users may see.
+   containing a compact asset/pipeline catalog. Large SQL execution trees are
+   immutable, content-addressed execution packages stored separately in PostgreSQL.
+   Each workspace deployment materializes the exact common, explicitly selected,
+   and dependency targets that workspace may execute and the subset customer users
+   may see.
 6. Customer analytics data is physically separated outside Favn: each workspace has
    a dedicated blob-storage account and DuckLake PostgreSQL metadata store. Shared
    Favn PostgreSQL contains control-plane state only.
@@ -77,6 +79,23 @@ findings.
     must adapt to the accepted semantics; it must not weaken this design.
 19. The full memory storage backend is removed after tests have moved to pure unit
     tests, focused fakes, and PostgreSQL integration tests.
+20. Execution packages are uploaded before the compact manifest index that references
+    them. Runtime fetches only the selected asset's package by its SHA-256 primary key;
+    catalogue and planning reads never load generated SQL for unrelated assets.
+21. One immutable execution plan is stored in `run_plans` when a run is submitted.
+    Mutable run snapshots keep only its hash and never rewrite or re-hash the full plan
+    during transitions.
+22. An active run holds a runner-local manifest lease. Cache eviction skips leased
+    releases. Lease acquisition preflights the complete planned SQL scope exactly once;
+    per-work preparation obtains only its handle, selected asset, and package relations
+    in one atomic cache call and never rescans the plan.
+23. `RunManager` is a small in-memory coordinator only. Submission persistence,
+    cancellation writes, recovery reads, manifest loads, and crash terminalization run
+    in caller or supervised worker processes so PostgreSQL latency cannot serialize the
+    node-wide manager mailbox.
+24. Pipeline retry recovery uses one compact stage bitset checkpoint event. Mutable
+    snapshots contain only scalar checkpoint identity/timing; the checkpoint is the
+    authoritative replacement for per-node pipeline retry-scheduled events.
 
 ## Superseded direction
 
@@ -109,6 +128,7 @@ SaaS billing, plan, or generalized provisioning abstractions.
 | No automatic production migration | Safe controlled rollout with a least-privilege runtime role | Deployment must run and observe a separate migration job. |
 | Customer-workspace model in one shared database/schema | Fits a small consultant-operated fleet and avoids a dangerous ownership-key/FK/index retrofit | Application scoping, composite constraints, and negative isolation tests are required; database/schema-per-customer is not the baseline. |
 | Global immutable manifest releases plus workspace deployments | One analytics model can be rolled out to several companies without copying manifest content | Customer-specific configuration must be modeled at deployment boundaries and cannot mutate the shared release. |
+| Compact manifest indexes plus content-addressed execution packages | Very large generated SQL no longer inflates every catalogue, planning, cache, or runtime registration read | Publication has an explicit package-first protocol and runtime execution requires one indexed package fetch. |
 | Exact immutable deployment target catalog | Common and customer-specific assets coexist in one repository without runtime ambiguity or code-level customer IDs | A new common asset appears only after a new workspace deployment; deployment must resolve and validate dependency closure. |
 | Hard-separated customer data planes | Blob data and DuckLake metadata cannot mix even though Favn monitoring is shared | Each workspace needs dedicated infrastructure and credential rotation. |
 | Logical credential names plus one secret-store endpoint per workspace | The same authored code runs everywhere and secret rotation does not rebuild manifests | Runner resource/session caches must include workspace and resolved endpoint identity. |
@@ -211,7 +231,7 @@ Hard query/work budgets:
 - Internal cursor scans permit at most 500 records per batch.
 - Log ingestion uses bulk inserts in chunks of 100–1,000 rows; it must not allocate
   a sequence and issue an insert per entry.
-- Projection workers process configurable batches, initially 200 events, with
+- Projection workers process configurable batches, initially 250 events, with
   transactions short enough to remain below the lock timeout.
 - The outbox sequencer processes committed rows in batches, initially up to 1,000,
   and must sustain at least twice the measured peak authoritative mutation rate.
@@ -441,6 +461,11 @@ and transitive dependencies into exact immutable rows in
 `workspace_deployment_targets`. It validates every reference and dependency before
 opening the transaction, then bulk-inserts the resolved catalog. A missing target,
 invalid pipeline, or incomplete dependency closure rejects the entire deployment.
+Each row also stores a bounded JSONB presentation descriptor derived during that
+same planning pass. Catalogue and active-release reads therefore use the indexed,
+immutable deployment rows and never fetch or decode a large manifest merely to
+render target labels and capabilities. The descriptor is fingerprinted as part of
+the target catalog and is not an execution authority by itself.
 
 Row existence means the target may participate in execution. Each row separately
 records whether it is customer-visible. A dependency may therefore execute without
@@ -499,6 +524,11 @@ Customer actors receive only workspace memberships. All customer catalog, run,
 event, log, freshness, and backfill APIs construct `WorkspaceContext` from the
 authenticated membership; request parameters cannot choose a broader scope. A
 workspace-scoped cursor is rejected under every other workspace.
+
+Activating a workspace deployment requires both workspace-admin authority and an
+independent `platform_operator` or `platform_admin` grant. A customer administrator
+cannot switch the platform-authored manifest release alone, while a platform grant
+cannot omit the target workspace context.
 
 Favn consultants who need fleet monitoring receive an explicit active grant in
 `auth_platform_grants`. That grant resolves to `PlatformContext` and permits only
@@ -591,8 +621,8 @@ validates it once. There are no optional product-critical callbacks and no
 
 The initial and only backend is `FavnStoragePostgres.Backend`.
 
-The operation inventory below currently names 67 functions across 11 cohesive
-capabilities. That is intentionally visible review surface, not one adapter with 67
+The operation inventory below currently names 72 functions across 11 cohesive
+capabilities. That is intentionally visible review surface, not one adapter with 72
 callbacks. Collapsing them behind generic `execute/1`, `query/1`, or CRUD functions
 would reduce the apparent count while hiding types and invariants, so it is not an
 acceptable optimization. Each capability can be implemented, tested, and changed
@@ -629,8 +659,11 @@ be added without documenting its invariant here.
 
 | Operation | Contract |
 | --- | --- |
+| `register_execution_packages/1` | Platform-authorized, bounded, idempotent insertion of verified immutable packages by SHA-256 content hash plus a deduplicated batch audit; the same hash with different canonical content is a conflict. |
+| `missing_execution_package_hashes/1` | Return the missing subset of one bounded, deduplicated platform-authorized hash batch with one indexed query. |
 | `register_manifest/1` | Idempotently insert a platform-global immutable canonical manifest release by ID and content hash; reject either identity with different content. |
 | `get_manifest/1` | Fetch a global release by typed selector `ById` or `ByContentHash`; return a decoded manifest or `:not_found`. |
+| `get_execution_package/1` | Fetch and verify one immutable package by SHA-256 primary key for a workspace-authorized runtime path. It must not scan a manifest or package collection. |
 | `deploy_manifest/1` | Resolve and validate common/selected/dependency targets, then atomically create an immutable workspace deployment and exact target catalog, activate it, increment workspace runtime revision, synchronize authorized schedule cursors, append audit/outbox events, and return runtime state. |
 | `get_runtime_state/1` | Return active deployment, manifest identity, and runtime revision for the command workspace. |
 | `get_deployment_targets/1` | Return the exact immutable target catalog for one workspace deployment, optionally restricted to customer-visible grants. |
@@ -645,7 +678,8 @@ Manifest listing is an operator read-store query, not registry mutation API.
 | `commit_transition/1` | Lock/guard the run, validate owner fence and expected sequence, insert the event, update the snapshot, append outbox, and return the fully persisted event/global IDs. |
 | `request_cancellation/1` | Lock the run and atomically persist an operator cancellation request, canonical event, outbox event, and API idempotency result before external runner cancellation. |
 | `get_run/1` | Fetch one canonical run snapshot. |
-| `page_runs/1` | Execute one bounded keyset run query through an explicit workspace or platform scope. Customer callers cannot construct platform scope. |
+| `page_runs/1` | Load a bounded authoritative run-snapshot page only for internal detail reconstruction. Customer callers cannot construct platform scope. |
+| `page_run_summaries/1` | Return compact relational run summaries through a bounded workspace/platform keyset query; authoritative snapshots are never selected. |
 | `page_events/1` | Page workspace run/group events or platform-wide events through an explicit typed scope and event cursor. |
 | `pin_runtime_inputs/1` | Bulk insert immutable protected input pins; exact duplicates replay and conflicts reject the whole command. |
 | `get_runtime_inputs/1` | Batch-fetch exact run/node keys or all pins for one bounded run. |
@@ -663,7 +697,7 @@ snapshot replacement. A future import tool must use a separate offline contract.
 | `release_run/1` | Idempotently release only the matching ownership generation. |
 | `record_dispatch/1` | Persist runner dispatch intent before the external call, with a unique dispatch identity. |
 | `advance_execution/1` | Apply a guarded runner-execution lifecycle transition, including cancellation outcome. |
-| `page_active_executions/1` | Bounded recovery/diagnostic query by run or owner. |
+| `page_executions/1` | Bounded active recovery pages by run, owner, or workspace; historical pages require an exact `run_id`. |
 
 Every active run transition issued by a run worker carries the run ownership fencing
 token. A stale process receives `:fenced`, even if its BEAM process is still alive.
@@ -688,7 +722,6 @@ and atomic cursor/occurrence persistence.
 | `renew_lease/1` | Renew only the matching active lease identity and owner generation. |
 | `release_lease/1` | Idempotently release one lease and decrement capacity counters exactly once. |
 | `release_run_leases/1` | Release matching active leases for one run in a bounded transaction and return freed scopes. |
-| `claim_waiters/1` | Claim a bounded, priority-ordered set of waiters for a freed scope using `SKIP LOCKED`. |
 | `expire/1` | Claim and expire bounded batches of overdue leases/waiters, preserving exact counter updates. |
 
 #### Materialization store
@@ -714,7 +747,6 @@ ledger and remain repair authority after claims are purged.
 | `transition_window/1` | Guard window version/fence, update one window, and append outbox; no group/window-wide aggregation. |
 | `get_backfill/1` | Fetch the authoritative header plus compact projected progress watermark. |
 | `page_windows/1` | Keyset-page windows by backfill/status/range. |
-| `page_asset_windows/1` | Keyset-page exact manifest/asset/window history. |
 
 Backfill completion and progress are driven by an ordered projector/finalizer. Child
 workers never lock or rebuild a common full-group summary.
@@ -777,7 +809,6 @@ effects and never keeps a database transaction open around a network call.
 | `backfill_missing_projection/1` | Replay one scoped, bounded publication batch to fill missing projection rows without overwriting rows at an equal or newer publication. |
 | `reconcile/1` | Check and repair explicitly named authoritative/derived invariants in bounded batches. |
 | `purge/1` | Execute one configured retention batch. |
-| `schema_diagnostics/0` | Return exact migration, table, column, constraint, and critical-index compatibility. |
 
 Maintenance operations never run implicitly from interactive reads.
 
@@ -887,7 +918,7 @@ listed row classes, it uses this capability order:
 | Backfill planning | Backfill header, then batch receipt, then deterministic window rows |
 | Window transition | Exact window only; it never locks overview/header rows |
 | Projection batch | Projector cursor, then projection rows by primary key |
-| Outbox sequencing | Publication singleton, then eligible outbox rows by `(available_at, outbox_event_id)` |
+| Outbox sequencing | Publication singleton, then currently visible outbox rows by `outbox_event_id` |
 | Identity mutation | Actor, membership by workspace, credential, then sessions by session ID |
 
 No command may acquire these in reverse merely because an Ecto pipeline makes it
@@ -970,14 +1001,17 @@ Database defaults are limited to mechanical values such as identity columns and
 | Table | Purpose and key |
 | --- | --- |
 | `workspaces` | Root customer-company/control-plane ownership identity. PK `workspace_id`; unique normalized slug. |
-| `manifest_versions` | Platform-global immutable analytics releases. PK `manifest_version_id`; unique `content_hash`. |
+| `manifest_versions` | Platform-global immutable compact analytics indexes. PK `manifest_version_id`; unique `content_hash`. |
+| `execution_packages` | Platform-global immutable SQL execution artifacts. SHA-256 `content_hash` PK plus verified asset identity and canonical payload. |
+| `manifest_execution_packages` | Exact manifest-index/package association and asset identity. PK `(manifest_version_id, package_hash)`; unique `(manifest_version_id, asset_module, asset_name)`. |
 | `workspace_deployments` | Immutable binding of a workspace, manifest release, and workspace configuration fingerprint. PK `(workspace_id, deployment_id)`. |
 | `workspace_deployment_targets` | Exact immutable target catalog authorized for a deployment, including customer visibility and selection source. Composite PK. |
 | `workspace_runtime_state` | One row per workspace containing active deployment and monotonic runtime revision. |
 | `runs` | Workspace-owned current authoritative run snapshot. PK `(workspace_id, run_id)`. |
 | `run_targets` | Normalized immutable run/asset/pipeline memberships. Composite PK. |
 | `run_events` | Append-only canonical run events with globally unique `event_id` and per-run sequence. |
-| `runtime_input_pins` | Immutable protected runtime input decisions per run/node key. |
+| `runtime_input_pins` | Immutable protected runtime input decisions per run/node key; key-version lookup is indexed for readiness-safe retirement. |
+| `runtime_input_key_versions` | Compact inventory of key versions referenced by persisted pins; never stores key material. Unreferenced versions are removed only through the guarded operator compaction. |
 | `run_ownerships` | Current expiring owner and fencing generation for active runs. |
 | `runner_executions` | Durable runner dispatch/attempt/cancellation lifecycle. |
 
@@ -1043,7 +1077,8 @@ Required columns:
 - `schema_version integer NOT NULL CHECK (schema_version > 0)`;
 - `runner_contract_version integer NOT NULL CHECK (runner_contract_version > 0)`;
 - `payload_version smallint NOT NULL CHECK (payload_version > 0)`;
-- `manifest jsonb NOT NULL`;
+- `manifest jsonb NOT NULL`, containing the compact manifest index rather than SQL
+  execution trees;
 - `inserted_at timestamptz(6) NOT NULL`.
 
 Unique `content_hash` supports idempotent registration.
@@ -1051,7 +1086,73 @@ Unique `content_hash` supports idempotent registration.
 Registration canonicalizes and validates before opening a transaction. Reusing the
 same ID or content hash with different canonical bytes is a conflict. Manifest rows
 are never updated. A manifest contains no workspace credentials, secret references,
-or mutable customer configuration.
+or mutable customer configuration. Every SQL asset contains only its verified
+execution-package hash. Registration rejects a manifest unless every referenced
+package already exists and matches the indexed asset identity, then writes the
+manifest and all package associations in one transaction.
+
+### `execution_packages`
+
+Required columns:
+
+- `content_hash bytea PRIMARY KEY`, exactly 32 bytes of SHA-256 content identity;
+- `asset_module text NOT NULL`;
+- `asset_name text NOT NULL`;
+- `runtime_input_resolver text`, when the package declares one;
+- `payload jsonb NOT NULL` containing the canonical execution-package document;
+- `first_linked_at timestamptz(6)`, set once when a manifest first references the
+  package;
+- `inserted_at timestamptz(6) NOT NULL`.
+
+The application verifies schema version, canonical serialization, asset identity,
+and content hash before insertion. A package is at most 4 MiB encoded and one command
+is at most 32 MiB aggregate encoded content. Public upload requests contain at most
+100 packages; the store accepts at most 1,000 packages within that byte budget for
+trusted internal batching and inserts in chunks of 100. `ON CONFLICT DO NOTHING` is
+followed by verification of every addressed row, so an exact replay succeeds and a
+hash/content mismatch fails the transaction. Packages are immutable and global
+because authored execution code is shared platform release content, never customer
+data or credentials.
+
+Package-first publication can leave an unreferenced row when a client uploads and
+never completes manifest registration. Manifest publication validates identities in
+bounded, payload-free `FOR KEY SHARE` batches before inserting links, closing the
+retention race without loading generated SQL. Platform maintenance scans the partial
+`(inserted_at, content_hash) WHERE first_linked_at IS NULL` index and deletes only
+packages older than an explicit grace-period cutoff that still have no
+`manifest_execution_packages` row, in bounded locked batches. A manifest link and
+its foreign key therefore protect every reachable package; workspace-scoped package
+purge is forbidden because packages are platform-global and may be shared.
+
+### `manifest_execution_packages`
+
+Required columns:
+
+- `manifest_version_id text NOT NULL REFERENCES manifest_versions`;
+- `package_hash bytea NOT NULL REFERENCES execution_packages(content_hash)`;
+- `asset_module text NOT NULL`;
+- `asset_name text NOT NULL`.
+
+The primary key is `(manifest_version_id, package_hash)`. A unique index on
+`(manifest_version_id, asset_module, asset_name)` prevents one indexed asset from
+resolving to several packages; an index on `package_hash` supports reverse integrity
+and retention work. This normalized association is also the bounded authority used
+when runtime-input pins validate the exact selected asset package and resolver.
+Association insertion is chunked to stay below PostgreSQL bind-parameter limits and
+the transaction verifies the persisted link count before commit.
+
+### Publication and runtime read path
+
+Publication first asks for missing hashes, uploads only missing packages, and then
+registers the compact manifest index. The manifest transaction fails closed if a
+referenced package is absent or belongs to a different asset. A runtime work item is
+pinned to a deployment, manifest, and asset; the orchestrator resolves the asset's
+hash through a prebuilt compact index and performs one package-primary-key read joined
+to the exact workspace deployment and authorized target before handing work to the
+runner. Wide stages attach packages only after admission, one work item at a time,
+rather than retaining every stage package in one process. The runner re-verifies the
+package hash and asset identity. No execution-package collection is loaded into the
+manifest cache, operator catalogue, or run snapshot.
 
 ### `workspace_deployments`
 
@@ -1091,13 +1192,16 @@ Required columns:
 - `selection_source text NOT NULL CHECK (selection_source IN
   ('common', 'explicit', 'dependency'))`;
 - `customer_visible boolean NOT NULL`;
+- `descriptor jsonb NOT NULL`, constrained to a JSON object no larger than 256 KiB;
 - `inserted_at timestamptz(6) NOT NULL`.
 
 The primary key is `(workspace_id, deployment_id, target_kind, target_id)`, with a
 composite deployment foreign key. Deployment planning bulk-inserts this exact set in
 the deployment transaction. Pipeline rows are allowed only when all resolved asset
 members and dependencies have asset rows. Run targets and schedule cursors reference
-the appropriate deployment-target identity. The customer catalog index is:
+the appropriate deployment-target identity. `descriptor` contains only bounded,
+browser-safe presentation data; the authoritative target identity remains the row
+key. The customer catalog index is:
 
 ```sql
 CREATE INDEX workspace_deployment_targets_customer_idx
@@ -1177,6 +1281,14 @@ CREATE INDEX runs_active_idx
   ON favn_control.runs (workspace_id, status, run_id)
   WHERE status IN ('pending', 'running');
 
+CREATE INDEX runs_workspace_status_recent_idx
+  ON favn_control.runs
+  (workspace_id, status, latest_event_id DESC, run_id DESC);
+
+CREATE INDEX runs_platform_status_recent_idx
+  ON favn_control.runs
+  (status, latest_event_id DESC, workspace_id, run_id DESC);
+
 CREATE INDEX runs_parent_idx ON favn_control.runs (workspace_id, parent_run_id)
   WHERE parent_run_id IS NOT NULL;
 ```
@@ -1184,6 +1296,9 @@ CREATE INDEX runs_parent_idx ON favn_control.runs (workspace_id, parent_run_id)
 `runs_recent_idx` serves customer/workspace history. `runs_platform_recent_idx`
 serves the bounded cross-workspace consultant overview; customer query plans must
 never select it through an unscoped query contract.
+The two status/recent indexes serve the same keyset ordering when `PageRuns` includes
+a status filter. `runs_active_idx` remains the smaller operational lookup for active
+run coordination and is not a history-page index.
 
 The circular run/event constraints are added after both tables exist and are
 deferrable. Root rows set `root_execution_group_id = run_id`; the root reference is
@@ -1208,9 +1323,15 @@ Required columns:
   DEFERRED`;
 - PK `(workspace_id, run_id, target_kind, target_id)`.
 
+Asset memberships include every node in the immutable execution plan, not only the
+asset refs selected by the submitter. The run snapshot retains the submitted
+`target_refs`, while `is_primary` marks its primary asset. This distinction lets
+upstream dependencies participate in materialization lineage and runtime-input
+pinning without making them customer-selected assets.
+
 `(workspace_id, deployment_id, target_kind, target_id)` has a composite foreign key
 to `workspace_deployment_targets`. This is the database-level guard that prevents a
-run from targeting unavailable customer assets.
+run from executing an asset outside the workspace's pinned deployment catalog.
 
 Target history index:
 
@@ -1296,11 +1417,17 @@ or target status directly.
 
 ### `runtime_input_pins`
 
-Key `(workspace_id, run_id, node_key_hash)`. Store `payload_fingerprint`,
-`encryption_key_version`, protected `payload bytea`, and timestamps. Bulk pinning is
-all-or-conflict. Encryption keys live outside PostgreSQL and support rotation by key
-version. A fingerprint over protected or low-entropy input is a versioned keyed
-HMAC, not a plain dictionary-attackable hash.
+Key `(workspace_id, run_id, node_key_hash)`. Store `payload_fingerprint`, the exact
+`execution_package_hash` foreign key, `resolver_module`, `encryption_key_version`,
+protected `payload bytea`, and timestamps. The run's selected asset must be linked to
+that package by `manifest_execution_packages`, and the package must declare the same
+resolver. Exact replay compares the package and resolver as well as the payload
+fingerprint, so a changed SQL package cannot silently reuse an old resolution. Bulk
+pinning is all-or-conflict. Encryption keys live outside PostgreSQL and support
+rotation by key version. PostgreSQL retains only a compact used-version inventory;
+readiness fails when the external keyring omits a referenced version. A fingerprint
+over protected or low-entropy input is a
+versioned keyed HMAC, not a plain dictionary-attackable hash.
 
 ## Multi-node execution ownership
 
@@ -1343,6 +1470,20 @@ timestamps. Runner metadata is canonical bounded JSONB.
 Persist dispatch intent before calling the runner. A crash between runner acceptance
 and the acknowledgement update is an explicit uncertain execution recovered by
 dispatch identity; it is not silently resubmitted.
+
+Automatic run recovery is fail-closed. A fresh run with no execution-ledger row and
+a run at an explicit durable retry checkpoint may resume. If an execution may have
+been accepted, or completed history exists without a durable continuation position,
+recovery attempts bounded cleanup and terminalizes the run as
+`uncertain_runner_recovery`; it never submits the work again merely because a
+restarted runner reports that the execution ID is absent.
+
+Default run-specific recovery pages filter `terminal_at IS NULL` and use the partial
+`runner_executions_run_active_page_idx` on
+`(workspace_id, run_id, runner_execution_id)`. Explicit history pages use the full
+`runner_executions_run_page_idx`; owner and workspace active pages have corresponding
+partial keyset indexes. Performance contracts capture the actual Ecto page queries
+and require PostgreSQL to select these indexes with mostly-terminal history.
 
 ## Distributed scheduler
 
@@ -1539,7 +1680,7 @@ races and makes a committed transition depend on expensive projection work.
   after the creating transaction is visible;
 - `topic`, `event_type`, aggregate type/id;
 - `payload_version`, bounded `payload jsonb`;
-- `occurred_at`, `inserted_at`, and non-null `available_at`;
+- business `occurred_at` plus database-generated `inserted_at`;
 - correlation/command IDs with no secrets.
 
 Required unique `(workspace_id, outbox_event_id)` supports workspace-preserving child
@@ -1551,7 +1692,7 @@ rows.
 
 ```sql
 CREATE INDEX outbox_unsequenced_idx
-  ON favn_control.outbox_events (available_at, outbox_event_id)
+  ON favn_control.outbox_events (outbox_event_id)
   WHERE publication_id IS NULL;
 
 CREATE UNIQUE INDEX outbox_publication_idx
@@ -1581,19 +1722,22 @@ rows indefinitely, so it does not expose a retained-history watermark or
 expired-cursor state yet. A sequencing batch:
 
 1. locks this singleton row and validates the worker generation;
-2. selects up to 1,000 currently visible unsequenced outbox rows in
-   `(available_at, outbox_event_id)` order and locks them;
+2. selects and locks up to 1,000 currently visible unsequenced outbox rows in
+   `outbox_event_id` order;
 3. assigns a contiguous range of `publication_id` values while advancing the
    ordinary row-backed counter;
 4. commits row assignments, counter, and lease renewal together;
 5. publishes wake-ups only after commit.
 
 Only already committed input rows are visible to the sequencing transaction. The
-counter update is transactional rather than a PostgreSQL sequence, so rollback
-publishes neither IDs nor a cursor advance. A row whose creating transaction commits
-late simply receives a later publication ID. The singleton is a batched publication
-serialization point, not a lock in authoritative run transactions; its throughput
-and lag are explicit production gates.
+identity orders rows that are visible together; it is not itself exposed as a replay
+cursor. Mutations of one aggregate serialize before inserting their outbox rows, so
+their identities preserve aggregate-version order even when application business
+timestamps move backwards. The counter update is transactional rather than a
+PostgreSQL sequence, so rollback publishes neither IDs nor a cursor advance. A row
+whose creating transaction commits late simply receives a later publication ID. The
+singleton is a batched publication serialization point, not a lock in authoritative
+run transactions; its throughput and lag are explicit production gates.
 
 The sequencer may use one lease owner at a time. `SKIP LOCKED` is unnecessary for
 publication ordering and must not be used to let multiple sequencers assign ranges
@@ -1690,8 +1834,9 @@ It is repairable from `backfill_windows`.
 ### `target_statuses`
 
 Natural key `(workspace_id, deployment_id, target_kind, target_id)`. Store current
-status, latest run/success/failure identities and times, in-flight identity,
-freshness summary, and globally comparable `source_publication_id`.
+run lifecycle status, latest run/event identity and time, and globally comparable
+`source_publication_id`. Detailed success, failure, materialization, and freshness
+facts remain in their owning authoritative tables and dedicated projections.
 
 Upserts use:
 
@@ -1701,11 +1846,10 @@ SET ...
 WHERE target_statuses.source_publication_id < EXCLUDED.source_publication_id
 ```
 
-The projector processes run events in publication order and bulk-loads/bulk-upserts
-all affected targets. Reducers define how a later publication affects independent
-facts such as latest submission, latest success, failure, and in-flight work; they do
-not replace the whole row with a less complete status. There is no per-target
-get-plus-put loop.
+The projector processes run events in publication order and batch-loads run/event
+context. It bulk-upserts a run's affected targets only when the run lifecycle status
+changes; step events that leave the run status unchanged do not rewrite every target.
+Lifecycle fan-out is one set-based statement, with no per-target get-plus-put loop.
 
 ## Query and pagination rules
 
@@ -1753,8 +1897,9 @@ use ordinary keyset indexes. Required indexes initially include:
 Producer deduplication uses a unique partial key when both producer identity and
 sequence are present. Bulk append uses `insert_all`/parameterized bulk SQL.
 
-Live log replay uses the batch outbox `publication_id` plus `batch_offset`. It never
-uses `log_id` as a durable tail cursor, so concurrent batches cannot create a late
+Live log replay uses the batch outbox `publication_id` plus `batch_offset`, encoded
+as one order-preserving public `global_sequence`. It never uses `log_id` as a durable
+tail cursor, so concurrent batches cannot create a late
 commit hole. Outbox replay retention therefore defines the maximum reconnect age;
 an older cursor receives an explicit cursor-expired response and the client resumes
 with a bounded historical query.
@@ -1854,17 +1999,77 @@ A cleanup worker purges all expired terminal records, not only keys that are reu
 4. Node-local ETS for explicitly safe versioned objects.
 5. A distributed cache only after production evidence justifies its failure modes.
 
-### Initial ETS caches
+### Initial immutable-manifest caches
 
-The first allowed cache is a supervised bounded manifest cache:
+The implementation has three explicitly bounded node-local caches with distinct
+ownership:
 
-- decoded immutable manifest by `version_id`;
-- manifest ID by `content_hash`;
-- compiled manifest index by `(version_id, codec/index version)`.
+- PostgreSQL storage caches decoded immutable compact releases by version ID and
+  content hash, bounded by entry and estimated decoded-term bytes.
+- The orchestrator caches compiled `Favn.Manifest.Index` values by version ID,
+  content hash, and index-format version, bounded by entry and byte budgets. A value
+  larger than the budget is compiled and served without retention.
+- Each runner compiles a registered release once into exact asset and SQL-relation
+  lookup maps. Per-work preparation receives a small manifest handle, one selected
+  asset, and only the relation metadata referenced by that execution package. A
+  pipeline therefore does not scan or copy the complete manifest for every asset.
+  Active runs acquire expiring, idempotent leases; eviction skips leased entries and
+  rejects new registration when every cache slot is protected.
 
-Immutable content needs no invalidation. Capacity is bounded with access timestamps or
-an explicit maximum; a manifest registry with unbounded versions must not create
-unbounded BEAM memory.
+Immutable content needs no invalidation. All three caches expose bounds and pressure
+counters; the runner and orchestrator caches additionally emit eviction/oversize
+telemetry. A manifest registry with unbounded versions must not create unbounded BEAM
+memory.
+
+Execution packages are deliberately not in this cache. Runtime loads one package by
+primary key for the selected SQL asset and attaches it only to that work item. A
+package cache may be considered later only from measured repeated-fetch evidence and
+must have a byte budget, content-hash identity, and telemetry; it must never turn
+package collections back into per-manifest resident memory.
+
+Completed runner executions retain only a deterministic work fingerprint for exact
+submission replay. They do not retain `RunnerWork`, its execution package, or the
+full manifest. This makes completed-execution retention independent of SQL package
+size. Completed results, events, and logs are bounded per execution and by an
+aggregate byte budget as well as count. Oversized results are compacted in the worker
+before they enter the central runner mailbox, compacted again at the retention
+boundary, reported in diagnostics, and old completed executions are evicted
+oldest-first. Exact replay lookup occurs before manifest resolution, so retained
+completed work remains replayable after its lease is released and its manifest is
+later evicted. Active leased entries cannot be evicted.
+
+The mutable `runs.snapshot` payload is capped at 4 MiB. A run's immutable plan is
+written once to `run_plans` with its SHA-256 identity and a 64 MiB bound, then joined
+only by execution/detail reads that require it. Transitions update the compact
+snapshot without serializing the plan, so transition write cost and snapshot size do
+not grow with plan size.
+
+Each orchestrator node also applies a conservative byte budget to decoded plans held
+by active `RunServer` processes. The default is 512 MiB and
+`FAVN_ORCHESTRATOR_ACTIVE_RUN_PLAN_MAX_BYTES` may set 64 MiB through 8 GiB. The
+estimator charges four times the external-term size to account for decoded BEAM term
+overhead. A newly submitted run is durable before capacity admission; when the node
+budget is occupied it remains `pending`, emits pressure telemetry, and the bounded
+recovery loop retries it. A single plan larger than the node budget is rejected
+before persistence, avoiding a run that can never execute. Capacity is released when
+the monitored run process exits, including crashes.
+
+Persisted run snapshots retain at most 128 detailed node and asset results and carry
+exact node counts plus an explicit truncation marker. Per-stage success/failure state
+is tracked separately while executing, so bounding operator detail cannot change
+dependency or freshness correctness. Automatic remaining-work retry is rejected for
+a truncated historical result because a partial success list is not safe retry
+evidence.
+
+A wide-stage retry writes one authoritative `pipeline_retry_checkpointed` event in
+place of per-node retry-scheduled events. Its bitset identifies retry nodes by
+position in the pinned plan stage, using roughly one bit per planned node. The run
+snapshot stores only the checkpoint sequence, stage, next attempt, and absolute retry
+time. Recovery reads the single exact checkpoint event through the bounded run-event
+keyset query, validates it against the pinned stage, reconstructs the retry set in
+memory, and fails closed when the event is missing or corrupt. Persistence is one
+transaction per retry decision while in-memory encoding remains linear in the retry
+set.
 
 The active-deployment pointer may use a very short versioned cache keyed by workspace.
 Reads include the workspace runtime revision, and deployment publishes invalidation
@@ -1933,16 +2138,19 @@ Storage V2 starts from one canonical PostgreSQL baseline migration. Existing cus
 migration lists and historical `create_if_not_exists` migrations are removed after
 the reset cutover.
 
-Use normal Ecto migration files under the PostgreSQL app's `priv/repo/migrations`.
-The schema owner runs them as a deployment step. The runtime role has no DDL
-privileges and never auto-migrates on application startup.
+Versioned `Ecto.Migration` modules live under
+`apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/` and are applied
+in order by `FavnStoragePostgres.StorageV2.Migrations`. The schema owner runs them
+as a deployment step. The runtime role has no DDL privileges and never
+auto-migrates on application startup.
 
-Development provides explicit commands such as:
+Development uses the repository scripts for container lifecycle and the migration
+task for an existing PostgreSQL service:
 
 ```text
-mix favn.postgres.setup
+scripts/postgres/setup
 mix favn.postgres.migrate
-mix favn.postgres.reset   # development/test only, explicit confirmation
+scripts/postgres/reset   # development/test only, explicit confirmation
 ```
 
 ### Migration rules
@@ -2057,7 +2265,9 @@ Runtime input pins use application-level authenticated encryption when they may
 contain protected values. Hashes, encrypted bytes, and key version are stored;
 encryption keys are not. Each record uses a unique nonce and associated data binding
 the run, node key, payload version, and key version; decryption fails closed on any
-mismatch. Rotation and retirement are explicit maintenance operations.
+mismatch. Rotation adds a new current key while retaining historical keys. Retirement
+is allowed only after readiness no longer reports the version as referenced, following
+an explicit pin purge or re-encryption operation.
 
 No generic SQL console is exposed through the orchestrator. Operational queries use
 curated diagnostics/views with bounded outputs.
@@ -2126,11 +2336,12 @@ Developers may supply `FAVN_DATABASE_URL` for an existing local PostgreSQL 18
 instance. The repository also provides a pinned container definition and setup task
 so local installation is optional and every contributor can reproduce CI.
 
-Tests use a separate `FAVN_TEST_DATABASE_URL` (and partition-specific database names
-when CI partitions). Test setup refuses a production runtime environment and never
-falls back from a missing test URL to `FAVN_DATABASE_URL`. Setup/migration credentials
-may create the ephemeral database; store tests execute with the restricted runtime
-role except when explicitly verifying migrator behavior.
+Tests require `FAVN_DATABASE_URL`. Local runs must point it at a disposable test
+database; CI supplies a job-local PostgreSQL service container and never a production
+URL. The production acceptance harness separately creates a temporary least-privilege
+runtime role, grants the exact runtime privileges, and starts the compiled production
+artifact with that role. Migration and privilege tests intentionally retain migrator
+credentials where their subject requires them.
 
 Normal pull-request CI does **not** use a cloud database or repository secret. On a
 Linux GitHub-hosted runner it starts the official PostgreSQL service container,
@@ -2148,9 +2359,10 @@ CI is divided by evidence, not by backend:
 3. Concurrency/unknown-outcome tests use multiple actual pool connections and
    committed isolated fixtures or a dedicated non-sandbox database slice. They must
    not fake contention through one shared sandbox connection.
-4. Three-node acceptance starts three BEAM nodes on the runner against the same
-   service container and exercises fencing, scheduling, admission, projection, and
-   crash recovery.
+4. The PostgreSQL slow slice starts three separate BEAM VMs, each with its own pool,
+   against the same service container. It exercises recovery and schedule partitioning,
+   admission and materialization exclusion, publication sequencing, projector
+   failover, node loss, lease takeover, and stale-write fencing.
 5. Scale/`EXPLAIN (ANALYZE, BUFFERS)` tests run in a scheduled or explicit heavy CI
    slice with fixed seed cardinalities and recorded runner characteristics.
 
@@ -2232,6 +2444,13 @@ Run at least three orchestrator BEAM nodes against one PostgreSQL primary and ve
 - local UI notification recovery from persisted cursors;
 - node crash during dispatch/commit/projector batch;
 - restart recovery without global unbounded scans.
+
+The storage-authority portion is automated by
+`apps/favn_storage_postgres/test/storage_v2/concurrency_authority_test.exs` in the
+`:slow` CI slice using three OTP peer nodes and independent repository pools. Full
+release-topology notification and dispatch crash testing remains a pre-release
+deployment gate because it requires runnable split release artifacts and real runner
+integrations rather than storage-only peers.
 
 ### Migration and restore tests
 
@@ -2335,12 +2554,13 @@ is written.
 - Add Favn-owned repo, configuration, error type, telemetry, canonical baseline
   migration, exact readiness, and diagnostics.
 - Implement workspaces/context resolution, composite workspace constraints, global
-  manifests, immutable workspace deployments/target catalogs/resource bindings, and
-  per-workspace runtime state.
+  compact manifests, content-addressed execution packages, immutable workspace
+  deployments/target catalogs/resource bindings, and per-workspace runtime state.
 - Implement run creation/transition/events/targets/pins and outbox.
 - Implement commit-safe outbox publication sequencing before any projector or live
   stream consumes a global cursor.
-- Add bounded run/event queries and manifest ETS cache.
+- Add bounded run/event queries and a byte-bounded compact-manifest ETS cache;
+  execution packages remain database-on-demand.
 
 Exit: run commits are atomic, fenced contract inputs exist, no projection work is in
 the transition, and PostgreSQL tests are mandatory.
@@ -2350,7 +2570,8 @@ the transition, and PostgreSQL tests are mandatory.
 - Implement run ownership fencing and runner-execution ledger.
 - Refactor run workers/recovery to use fences.
 - Implement schedule cursor claims and occurrence intents.
-- Add three-node scheduling/ownership crash tests.
+- Maintain the three-node scheduling, ownership, admission, materialization,
+  sequencing, projection-failover, and crash test in the PostgreSQL slow slice.
 
 Exit: stale nodes cannot write and scheduled runs are exactly-once authoritative
 effects under retries/crashes.

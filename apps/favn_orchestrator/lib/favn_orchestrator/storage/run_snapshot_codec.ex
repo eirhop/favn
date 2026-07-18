@@ -28,6 +28,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "backfill_range",
     "backoff",
     "cancelled",
+    "checkpoint_sequence",
     "blocked",
     "config",
     "dependencies",
@@ -77,6 +78,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "pipeline_module",
     "pipeline_submit_ref",
     "pipeline_target_refs",
+    "plan_hash",
     "plan",
     "ref",
     "relation",
@@ -141,13 +143,33 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
           required(:manifest_index_json) => String.t()
         }
 
-  @spec encode_run(RunState.t()) :: {:ok, String.t()} | {:error, term()}
-  def encode_run(%RunState{} = run_state) do
+  @spec encode_run(RunState.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def encode_run(%RunState{} = run_state, opts \\ []) when is_list(opts) do
     with {:ok, normalized} <- RunStateCodec.normalize(run_state) do
-      {:ok, Jason.encode!(run_to_dto(normalized))}
+      snapshot =
+        case Keyword.get(opts, :plan, :inline) do
+          :inline ->
+            normalized
+
+          :reference when not is_nil(normalized.plan) ->
+            %{normalized | plan: nil, target_refs: []}
+
+          :reference ->
+            normalized
+        end
+
+      {:ok, Jason.encode!(run_to_dto(snapshot))}
     end
   rescue
     error -> {:error, {:run_snapshot_encode_failed, error}}
+  end
+
+  @doc false
+  @spec encode_plan(Plan.t() | nil) :: {:ok, String.t()} | {:error, term()}
+  def encode_plan(plan) do
+    {:ok, Jason.encode!(plan_to_dto(plan))}
+  rescue
+    error -> {:error, {:run_plan_encode_failed, error}}
   end
 
   @spec decode_run(run_record(), manifest_record() | nil) ::
@@ -182,6 +204,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "asset_ref" => JsonSafe.ref(run.asset_ref),
       "target_refs" => Enum.map(run.target_refs, &JsonSafe.ref/1),
       "plan" => plan_to_dto(run.plan),
+      "plan_hash" => run.plan_hash,
       "status" => Atom.to_string(run.status),
       "event_seq" => run.event_seq,
       "snapshot_hash" => run.snapshot_hash,
@@ -249,8 +272,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp dto_to_run(%{"schema_version" => 2} = dto, allowed_atom_strings) do
     with {:ok, asset_ref} <- ref_from_dto(Map.get(dto, "asset_ref"), allowed_atom_strings),
-         {:ok, target_refs} <- refs_from_dto(Map.get(dto, "target_refs"), allowed_atom_strings),
+         {:ok, encoded_target_refs} <-
+           refs_from_dto(Map.get(dto, "target_refs"), allowed_atom_strings),
          {:ok, plan} <- plan_from_dto(Map.get(dto, "plan"), allowed_atom_strings),
+         {:ok, plan_hash} <- plan_hash_from_dto(Map.get(dto, "plan_hash"), plan),
          {:ok, status} <- status_from_dto(Map.get(dto, "status")),
          {:ok, submit_kind} <- submit_kind_from_dto(Map.get(dto, "submit_kind")),
          {:ok, inserted_at} <- datetime_from_dto(Map.get(dto, "inserted_at")),
@@ -264,8 +289,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          manifest_version_id: Map.get(dto, "manifest_version_id"),
          manifest_content_hash: Map.get(dto, "manifest_content_hash"),
          asset_ref: asset_ref,
-         target_refs: target_refs,
+         target_refs: decoded_target_refs(encoded_target_refs, plan),
          plan: plan,
+         plan_hash: plan_hash,
          status: status,
          event_seq: Map.get(dto, "event_seq"),
          snapshot_hash: Map.get(dto, "snapshot_hash"),
@@ -410,6 +436,19 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   defp plan_from_dto(value, _allowed_atom_strings), do: {:error, {:invalid_plan_dto, value}}
+
+  defp plan_hash_from_dto(nil, plan), do: {:ok, RunState.plan_hash(plan)}
+
+  defp plan_hash_from_dto(hash, plan) when is_binary(hash) and byte_size(hash) == 64 do
+    if hash == RunState.plan_hash(plan),
+      do: {:ok, hash},
+      else: {:error, :run_plan_hash_mismatch}
+  end
+
+  defp plan_hash_from_dto(value, _plan), do: {:error, {:invalid_run_plan_hash, value}}
+
+  defp decoded_target_refs([], %Plan{target_refs: refs}), do: refs
+  defp decoded_target_refs(refs, _plan), do: refs
 
   defp nodes_from_dto(nodes, allowed_atom_strings) when is_list(nodes) do
     Enum.reduce_while(nodes, {:ok, %{}}, fn node, {:ok, acc} ->

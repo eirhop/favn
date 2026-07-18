@@ -339,7 +339,7 @@ defmodule Favn.Dev.LifecycleTest do
   test "dev/1 returns explicit postgres misconfiguration diagnostics", %{root_dir: root_dir} do
     root_dir = root_with_free_distribution_ports(root_dir)
 
-    assert {:error, {:postgres_misconfigured, :url}} =
+    assert {:error, {:postgres_misconfigured, :hostname}} =
              Dev.dev(
                root_dir: root_dir,
                orchestrator_port: free_port(),

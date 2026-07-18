@@ -8,7 +8,6 @@ defmodule FavnStoragePostgres.Admission.Store do
   alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Commands.AdmitExecution
   alias FavnOrchestrator.Persistence.Commands.CapacityRequest
-  alias FavnOrchestrator.Persistence.Commands.ClaimAdmissionWaiters
   alias FavnOrchestrator.Persistence.Commands.ExpireAdmission
   alias FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunLeases
@@ -55,13 +54,6 @@ defmodule FavnStoragePostgres.Admission.Store do
   def release_run_leases(%ReleaseRunLeases{} = command) do
     with :ok <- validate_release_run(command) do
       transaction(fn -> release_run_leases!(command) end)
-    end
-  end
-
-  @impl true
-  def claim_waiters(%ClaimAdmissionWaiters{} = command) do
-    with :ok <- validate_claim_waiters(command) do
-      transaction(fn -> claim_waiters!(command) end)
     end
   end
 
@@ -384,79 +376,6 @@ defmodule FavnStoragePostgres.Admission.Store do
     result
   end
 
-  defp claim_waiters!(command) do
-    workspace_id = command.workspace_context.workspace_id
-
-    replay =
-      from(waiter in AdmissionWaiter,
-        where:
-          waiter.workspace_id == ^workspace_id and
-            waiter.claim_command_id == ^command.batch_id and
-            waiter.blocking_scope_id == ^command.scope_id,
-        order_by: [desc: waiter.priority, asc: waiter.inserted_at, asc: waiter.waiter_id]
-      )
-      |> Repo.all()
-
-    if replay == [] do
-      %{rows: rows} =
-        SQL.query!(
-          Repo,
-          """
-          WITH candidates AS (
-            SELECT workspace_id, waiter_id
-            FROM favn_control.admission_waiters
-            WHERE workspace_id = $1 AND blocking_scope_id = $2
-              AND status = 'waiting' AND available_at <= clock_timestamp()
-              AND expires_at > clock_timestamp()
-            ORDER BY priority DESC, inserted_at, waiter_id
-            LIMIT $3
-            FOR UPDATE SKIP LOCKED
-          )
-          UPDATE favn_control.admission_waiters waiter
-          SET status = 'claimed', claim_owner = $4,
-              claim_generation = waiter.claim_generation + 1,
-              claim_command_id = $5,
-              claim_expires_at = clock_timestamp() + ($6 * interval '1 millisecond'),
-              updated_at = clock_timestamp()
-          FROM candidates
-          WHERE waiter.workspace_id = candidates.workspace_id
-            AND waiter.waiter_id = candidates.waiter_id
-          RETURNING waiter.workspace_id, waiter.waiter_id, waiter.run_id, waiter.step_id,
-                    waiter.blocking_scope_id, waiter.status, waiter.priority,
-                    waiter.expires_at, waiter.claim_owner, waiter.claim_generation,
-                    waiter.claim_expires_at, waiter.requested_scopes
-          """,
-          [
-            workspace_id,
-            command.scope_id,
-            command.limit,
-            command.owner_id,
-            command.batch_id,
-            command.lease_duration_ms
-          ]
-        )
-
-      rows |> Enum.map(&waiter_result/1) |> sort_waiters()
-    else
-      unless live_waiter_replay?(replay, command) do
-        Repo.rollback(Error.new(:fenced, "admission waiter claim batch is no longer live"))
-      end
-
-      Enum.map(replay, &waiter_result/1)
-    end
-  end
-
-  defp live_waiter_replay?(waiters, command) do
-    now = database_now!()
-
-    Enum.all?(waiters, fn waiter ->
-      waiter.status == "claimed" and waiter.claim_owner == command.owner_id and
-        match?(%DateTime{}, waiter.claim_expires_at) and
-        DateTime.compare(waiter.claim_expires_at, now) == :gt and
-        DateTime.compare(waiter.expires_at, now) == :gt
-    end)
-  end
-
   defp expire!(command) do
     workspace_id = command.workspace_context.workspace_id
 
@@ -763,36 +682,6 @@ defmodule FavnStoragePostgres.Admission.Store do
     }
   end
 
-  defp waiter_result([
-         workspace_id,
-         waiter_id,
-         run_id,
-         step_id,
-         blocking_scope_id,
-         status,
-         priority,
-         expires_at,
-         claim_owner,
-         claim_generation,
-         claim_expires_at,
-         requests
-       ]) do
-    %AdmissionWaiterResult{
-      workspace_id: workspace_id,
-      waiter_id: waiter_id,
-      run_id: run_id,
-      step_id: step_id,
-      blocking_scope_id: blocking_scope_id,
-      status: String.to_existing_atom(status),
-      priority: priority,
-      expires_at: expires_at,
-      claim_owner: claim_owner,
-      claim_generation: claim_generation,
-      claim_expires_at: claim_expires_at,
-      requests: requests
-    }
-  end
-
   defp exact_lease_replay?(lease, command, request_hash) do
     lease.command_id == command.command_id and lease.lease_id == command.lease_id and
       lease.run_id == command.run_id and lease.step_id == command.step_id and
@@ -871,9 +760,6 @@ defmodule FavnStoragePostgres.Admission.Store do
     |> Base.url_encode64(padding: false)
   end
 
-  defp sort_waiters(waiters),
-    do: Enum.sort_by(waiters, &{-&1.priority, &1.waiter_id})
-
   defp transaction(fun) do
     case Repo.transaction(fun) do
       {:ok, result} -> {:ok, result}
@@ -937,14 +823,6 @@ defmodule FavnStoragePostgres.Admission.Store do
   defp validate_release_run(command) do
     if workspace_context?(command.workspace_context) and valid_id?(command.run_id) and
          valid_limit?(command.limit),
-       do: :ok,
-       else: {:error, ErrorMapper.map(:invalid)}
-  end
-
-  defp validate_claim_waiters(command) do
-    if workspace_context?(command.workspace_context) and
-         Enum.all?([command.batch_id, command.scope_id, command.owner_id], &valid_id?/1) and
-         valid_duration?(command.lease_duration_ms) and valid_limit?(command.limit),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
   end

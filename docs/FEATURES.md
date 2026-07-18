@@ -31,6 +31,9 @@ deprecated when a cleaner contract is accepted.
   retry, settings, and runtime-config DSLs are implemented. **State: solid.**
 - Discovery and explicit module lists compile business code into a deterministic,
   versioned manifest with graph metadata and runner contract identity. **State: solid.**
+- Manifest publication separates compact catalogue/planning indexes from immutable,
+  content-addressed SQL execution packages. Large generated SQL stays in PostgreSQL
+  and only the selected asset package is fetched at runtime. **State: solid.**
 - Typed references, relation catalogs, resource requirements, and explicit
   connection modules cross the manifest/runtime boundary; arbitrary functions and
   generic config bags do not. **State: solid.**
@@ -43,7 +46,8 @@ deprecated when a cleaner contract is accepted.
 - Asset and pipeline target planning supports dependency selection, refresh modes,
   windowed execution, stages, retries, replay input modes, and bounded execution
   admission. **State: prototype.**
-- Runner work is pinned to a manifest version and explicit execution identity.
+- Runner work is pinned to a manifest version and explicit execution identity, with
+  the selected SQL asset's verified execution package attached before preflight.
   Ownership and fencing tokens prevent a stale orchestrator from committing after
   losing a lease. **State: solid internal contract.**
 - DuckDB and DuckDB ADBC adapters support bounded queries, typed configuration,
@@ -79,6 +83,10 @@ deprecated when a cleaner contract is accepted.
 - The `favn_control` schema stores platform manifest releases and hard-separated
   workspace state. Customer access always carries an explicit workspace context;
   platform operations require a distinct platform context. **State: implemented.**
+- Compact manifests reference immutable SHA-256 execution packages through normalized
+  manifest/asset associations. Package-first publication, one-query missing-hash
+  negotiation, primary-key runtime reads, and package-bound encrypted input pins
+  avoid full-manifest SQL loading and unbounded package scans. **State: implemented.**
 - Workspace deployments materialize an exact immutable target catalog containing
   common targets plus customer-specific grants and dependency closure. Customer
   reads expose only customer-visible targets. **State: implemented.**
@@ -114,9 +122,10 @@ See `docs/structure/favn_storage_postgres.md` for the code/data map and
   `build.orchestrator` remain metadata-oriented. `build.single` creates an
   operational, project-local, non-relocatable PostgreSQL backend launcher.
   **State: prototype.**
-- `mix favn.bootstrap.single` publishes a manifest, logs into an explicit workspace,
-  deploys the selected release, registers it with the runner, and verifies the
-  workspace active manifest. **State: prototype.**
+- `mix favn.bootstrap.single` publishes missing execution packages followed by the
+  compact manifest index, logs into an explicit workspace, deploys the selected
+  release, registers it with the runner, and verifies the workspace active manifest.
+  **State: prototype.**
 
 ## Web Shell
 
@@ -143,4 +152,6 @@ See `docs/structure/favn_storage_postgres.md` for the code/data map and
 
 The root fast, acceptance, and slow suites are explicit CI tiers. PostgreSQL tests
 require `FAVN_DATABASE_URL`; CI starts an ephemeral PostgreSQL service rather than
-using a shared cloud database. Security advisories are checked with `mix hex.audit`.
+using a shared cloud database. The slow PostgreSQL tier starts three independent
+BEAM VMs and repository pools to verify database-authoritative partitioning,
+failover, and fencing. Security advisories are checked with `mix hex.audit`.

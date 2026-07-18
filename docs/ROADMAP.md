@@ -32,6 +32,9 @@ operations are defined in `docs/production/postgresql_operator_runbook.md`.
 ### 3. Stabilize the v1 product boundary
 
 - Validate manifest schema and runner contract 6 against real customer projects.
+- Measure execution-package fetch latency and reuse under production-sized SQL
+  projects. Add a package cache only if evidence justifies it; any cache must be
+  byte-bounded and content-addressed rather than retaining whole manifest packages.
 - Align all public moduledocs, examples, and package exports with
   `docs/production/public_api_boundary.md`.
 - Complete the remaining operator UI flows through the public orchestrator facade.

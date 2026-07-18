@@ -39,6 +39,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.RunnerManifestRegistration
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
@@ -219,7 +220,7 @@ defmodule FavnOrchestrator do
     with :ok <- validate_runner_client(runner_client) do
       content_hash = version.content_hash
 
-      case runner_client.register_manifest(version, runner_opts) do
+      case RunnerManifestRegistration.ensure(runner_client, version, runner_opts) do
         :ok ->
           {:ok, runner_manifest_registration(version, runner_client, :accepted)}
 
@@ -513,7 +514,12 @@ defmodule FavnOrchestrator do
     with manifest_version_id <- version.manifest_version_id,
          {:ok, asset_ref} <- ManifestTarget.resolve_asset_ref(version, target_id),
          :ok <- validate_runner_client(configured_runner_client()),
-         :ok <- configured_runner_client().register_manifest(version, configured_runner_opts()) do
+         :ok <-
+           RunnerManifestRegistration.ensure(
+             configured_runner_client(),
+             version,
+             configured_runner_opts()
+           ) do
       request = %RelationInspectionRequest{
         manifest_version_id: manifest_version_id,
         manifest_content_hash: version.content_hash,
@@ -791,10 +797,10 @@ defmodule FavnOrchestrator do
   end
 
   @doc "Returns one bounded keyset page of runs in the authorized workspace."
-  @spec list_runs(WorkspaceContext.t(), keyword()) :: {:ok, [Favn.Run.t()]} | {:error, term()}
+  @spec list_runs(WorkspaceContext.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
   def list_runs(%WorkspaceContext{} = context, opts) when is_list(opts) do
-    case Runs.page(context, opts) do
-      {:ok, page} -> {:ok, Projector.project_runs(page.items)}
+    case Runs.page_summaries(context, opts) do
+      {:ok, page} -> {:ok, Enum.map(page.items, &Projector.project_run_summary/1)}
       {:error, _reason} = error -> error
     end
   end

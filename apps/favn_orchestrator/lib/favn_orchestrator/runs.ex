@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.Runs do
   alias FavnOrchestrator.Persistence.Commands.PinRuntimeInputs
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Commands.RunTarget
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetRun
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeInputs
   alias FavnOrchestrator.Persistence.Queries.PagePublishedRunEvents
@@ -101,7 +102,9 @@ defmodule FavnOrchestrator.Runs do
   @spec get(WorkspaceContext.t(), String.t()) ::
           {:ok, RunState.t()} | {:error, FavnOrchestrator.Persistence.Error.t()}
   def get(%WorkspaceContext{} = context, run_id) when is_binary(run_id) do
-    Persistence.stores().runs.get_run(%GetRun{workspace_context: context, run_id: run_id})
+    with :ok <- validate_workspace_read(context) do
+      Persistence.stores().runs.get_run(%GetRun{workspace_context: context, run_id: run_id})
+    end
   end
 
   @doc "Returns one bounded keyset page of workspace runs."
@@ -109,7 +112,8 @@ defmodule FavnOrchestrator.Runs do
           {:ok, FavnOrchestrator.Persistence.Results.CursorPage.t(RunState.t())}
           | {:error, term()}
   def page(%WorkspaceContext{} = context, opts \\ []) when is_list(opts) do
-    with :ok <-
+    with :ok <- validate_workspace_read(context),
+         :ok <-
            validate_opts(opts, [
              :after,
              :manifest_version_id,
@@ -128,12 +132,41 @@ defmodule FavnOrchestrator.Runs do
     end
   end
 
+  @doc "Returns one bounded keyset page of compact relational run summaries."
+  @spec page_summaries(WorkspaceContext.t(), keyword()) ::
+          {:ok,
+           FavnOrchestrator.Persistence.Results.CursorPage.t(
+             FavnOrchestrator.Persistence.Results.RunSummary.t()
+           )}
+          | {:error, term()}
+  def page_summaries(%WorkspaceContext{} = context, opts \\ []) when is_list(opts) do
+    with :ok <- validate_workspace_read(context),
+         :ok <-
+           validate_opts(opts, [
+             :after,
+             :manifest_version_id,
+             :root_execution_group_id,
+             :status,
+             :limit
+           ]) do
+      Persistence.stores().runs.page_run_summaries(%PageRuns{
+        scope: context,
+        after: Keyword.get(opts, :after),
+        manifest_version_id: Keyword.get(opts, :manifest_version_id),
+        root_execution_group_id: Keyword.get(opts, :root_execution_group_id),
+        status: Keyword.get(opts, :status),
+        limit: Keyword.get(opts, :limit, 50)
+      })
+    end
+  end
+
   @doc "Returns one event-id ordered page for all runs in an execution group."
   @spec page_group_events(WorkspaceContext.t(), String.t(), keyword()) ::
           {:ok, FavnOrchestrator.Persistence.Results.CursorPage.t(map())} | {:error, term()}
   def page_group_events(%WorkspaceContext{} = context, root_run_id, opts \\ [])
       when is_binary(root_run_id) and is_list(opts) do
-    with :ok <-
+    with :ok <- validate_workspace_read(context),
+         :ok <-
            validate_opts(opts, [:after_event_id, :before_event_id, :event_types, :limit, :order]) do
       Persistence.stores().runs.page_events(%PageRunEvents{
         workspace_context: context,
@@ -152,7 +185,8 @@ defmodule FavnOrchestrator.Runs do
           {:ok, FavnOrchestrator.Persistence.Results.CursorPage.t(map())} | {:error, term()}
   def page_events(%WorkspaceContext{} = context, run_id, opts \\ [])
       when is_binary(run_id) and is_list(opts) do
-    with :ok <- validate_opts(opts, [:after_sequence, :event_types, :limit]) do
+    with :ok <- validate_workspace_read(context),
+         :ok <- validate_opts(opts, [:after_sequence, :event_types, :limit]) do
       Persistence.stores().runs.page_events(%PageRunEvents{
         workspace_context: context,
         run_id: run_id,
@@ -199,16 +233,18 @@ defmodule FavnOrchestrator.Runs do
           {:ok, [Pin.t()]} | {:error, term()}
   def get_runtime_inputs(%WorkspaceContext{} = context, run_id, node_keys \\ nil)
       when is_binary(run_id) and (is_list(node_keys) or is_nil(node_keys)) do
-    Persistence.stores().runs.get_runtime_inputs(%GetRuntimeInputs{
-      workspace_context: context,
-      run_id: run_id,
-      node_keys: node_keys
-    })
+    with :ok <- validate_workspace_read(context) do
+      Persistence.stores().runs.get_runtime_inputs(%GetRuntimeInputs{
+        workspace_context: context,
+        run_id: run_id,
+        node_keys: node_keys
+      })
+    end
   end
 
   defp run_targets(%RunState{} = run, pipeline_refs) when is_list(pipeline_refs) do
     asset_targets =
-      Enum.map(run.target_refs, fn {module, name} = ref ->
+      Enum.map(planned_asset_refs(run), fn {module, name} = ref ->
         %RunTarget{
           target_kind: :asset,
           target_id: TargetIdentity.for_asset(ref),
@@ -241,6 +277,19 @@ defmodule FavnOrchestrator.Runs do
     _error -> {:error, :invalid_run_targets}
   end
 
+  defp planned_asset_refs(%RunState{target_refs: selected, plan: %Favn.Plan{nodes: nodes}})
+       when is_list(selected) and is_map(nodes) do
+    planned = Enum.map(Map.values(nodes), & &1.ref)
+
+    selected
+    |> Kernel.++(planned)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp planned_asset_refs(%RunState{target_refs: selected}) when is_list(selected),
+    do: selected
+
   defp event_map(%RunEvent{} = event), do: {:ok, RunEvent.to_map(event)}
   defp event_map(event) when is_map(event), do: {:ok, event}
   defp event_map(_event), do: {:error, :invalid_run_event}
@@ -254,6 +303,16 @@ defmodule FavnOrchestrator.Runs do
     else
       {:error, :invalid_options}
     end
+  end
+
+  defp validate_workspace_read(%WorkspaceContext{} = context) do
+    if WorkspaceContext.valid?(context) and
+         Enum.any?(
+           context.roles,
+           &(&1 in [:customer_reader, :customer_operator, :workspace_admin, :platform_operator])
+         ),
+       do: :ok,
+       else: {:error, Error.new(:forbidden, "workspace read role required")}
   end
 
   defp command_id(operation, run) do

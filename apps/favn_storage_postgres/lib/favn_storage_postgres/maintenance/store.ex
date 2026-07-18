@@ -16,7 +16,6 @@ defmodule FavnStoragePostgres.Maintenance.Store do
   alias FavnStoragePostgres.Projections.MissingRowBackfiller
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.MaintenanceJob
-  alias FavnStoragePostgres.StorageV2.Migrations
 
   @projections [:execution_groups, :backfills, :target_statuses, :freshness]
   @purge_targets [
@@ -24,7 +23,8 @@ defmodule FavnStoragePostgres.Maintenance.Store do
     :sessions,
     :idempotency,
     :materialization_claims,
-    :projection_failures
+    :projection_failures,
+    :execution_packages
   ]
 
   @impl true
@@ -111,16 +111,6 @@ defmodule FavnStoragePostgres.Maintenance.Store do
         end
       end)
     end
-  end
-
-  @impl true
-  def schema_diagnostics do
-    case Migrations.diagnostics(Repo) do
-      {:ok, diagnostics} -> {:ok, diagnostics}
-      {:error, reason} -> {:error, ErrorMapper.map(reason)}
-    end
-  rescue
-    error -> {:error, ErrorMapper.map(error)}
   end
 
   defp prepare_job!(command, job_kind, configuration) do
@@ -374,6 +364,31 @@ defmodule FavnStoragePostgres.Maintenance.Store do
     )
   end
 
+  defp purge_batch!(%{target: :execution_packages} = command) do
+    delete_count(
+      """
+      WITH candidates AS (
+        SELECT package.content_hash
+        FROM favn_control.execution_packages package
+        WHERE $1::text IS NULL
+          AND package.first_linked_at IS NULL
+          AND package.inserted_at < $2
+          AND NOT EXISTS (
+            SELECT 1
+            FROM favn_control.manifest_execution_packages manifest_package
+            WHERE manifest_package.package_hash = package.content_hash
+          )
+        ORDER BY package.inserted_at, package.content_hash
+        LIMIT $3
+        FOR UPDATE OF package SKIP LOCKED
+      )
+      DELETE FROM favn_control.execution_packages package USING candidates
+      WHERE package.content_hash = candidates.content_hash
+      """,
+      command
+    )
+  end
+
   defp delete_count(sql, command) do
     %{num_rows: count} =
       SQL.query!(Repo, sql, [command.workspace_id, command.cutoff, command.limit])
@@ -436,6 +451,7 @@ defmodule FavnStoragePostgres.Maintenance.Store do
     if maintenance_operator?(command.platform_context) and valid_id?(command.job_id) and
          command.target in @purge_targets and
          (is_nil(command.workspace_id) or valid_id?(command.workspace_id)) and
+         (command.target != :execution_packages or is_nil(command.workspace_id)) and
          match?(%DateTime{}, command.cutoff) and valid_bound?(command.limit, 1, 5_000),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}

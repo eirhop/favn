@@ -16,6 +16,9 @@ Code:
   loopback and EPMD preflight
 - `apps/favn_local/lib/favn/dev/local_context.ex` for the shared trusted local-dev
   API context used by local CLI commands
+- local orchestrator startup provisions each configured development workspace
+  idempotently after the PostgreSQL backend starts and before auth/API children;
+  this is local-only and never creates the database or applies migrations
 - `apps/favn_local/lib/favn/dev/run.ex`, `apps/favn_local/lib/favn/dev/runs.ex`,
   and `apps/favn_local/lib/favn/dev/backfill.ex` for local operator run/backfill
   payloads and run operations, including target-aware dependency scope,

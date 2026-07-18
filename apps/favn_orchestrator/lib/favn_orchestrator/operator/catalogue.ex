@@ -7,7 +7,6 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   must continue to call the facade rather than this implementation module.
   """
 
-  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias Favn.Window.Key, as: WindowKey
   alias FavnOrchestrator.AssetFreshnessState
@@ -24,6 +23,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: PersistenceTargetStatus
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Projector
 
   @type manifest_summary :: %{
           required(:manifest_version_id) => String.t(),
@@ -172,13 +172,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   def active_asset_catalogue(%WorkspaceContext{} = context) do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         granted <- granted_ids(grants, :asset),
-         targets <-
-           version.manifest.assets
-           |> List.wrap()
-           |> Enum.map(&Targets.asset/1)
-           |> Enum.filter(&MapSet.member?(granted, &1.target_id)),
+         {:ok, targets} <- deployment_target_descriptors(grants, :asset),
          {:ok, statuses} <- target_statuses(context, runtime, :asset, targets) do
       {:ok, catalogue_entries(targets, statuses)}
     end
@@ -190,14 +184,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   def active_pipeline_catalogue(%WorkspaceContext{} = context) do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
-         granted <- granted_ids(grants, :pipeline),
-         targets <-
-           version.manifest.pipelines
-           |> List.wrap()
-           |> Enum.map(&Targets.pipeline(index, &1))
-           |> Enum.filter(&MapSet.member?(granted, &1.target_id)),
+         {:ok, targets} <- deployment_target_descriptors(grants, :pipeline),
          {:ok, statuses} <- target_statuses(context, runtime, :pipeline, targets) do
       {:ok, catalogue_entries(targets, statuses)}
     end
@@ -210,21 +197,19 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       when is_binary(target_id) do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
-         true <- MapSet.member?(granted_ids(grants, :pipeline), target_id),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
-         {:ok, pipeline} <- pipeline_for_target(version, target_id),
+         {:ok, target} <- deployment_target_descriptor(grants, :pipeline, target_id),
          {:ok, status} <- target_status(context, runtime, :pipeline, target_id),
          {:ok, page} <- target_runs(context, runtime, :pipeline, target_id),
-         target <- Targets.pipeline(index, pipeline),
          detail <-
            target
-           |> Map.put(:manifest_version_id, version.manifest_version_id)
+           |> Map.put(:manifest_version_id, runtime.manifest_version_id)
            |> Status.put(status || unknown_status(context, runtime, :pipeline, target_id))
-           |> Map.put(:runs, Enum.map(page.items, &RunHistory.entry(&1.run))) do
+           |> Map.put(
+             :runs,
+             Enum.map(page.items, &(Projector.project_run_summary(&1) |> RunHistory.entry()))
+           ) do
       {:ok, detail}
     else
-      false -> {:error, :not_found}
       {:error, _reason} = error -> error
     end
   end
@@ -247,7 +232,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
            catalogue_freshness_states(projection_state.freshness_states, asset),
          {:ok, window_states} <-
            catalogue_window_states(projection_state.window_states, asset, version) do
-      runs = Enum.map(page.items, & &1.run)
+      runs = Enum.map(page.items, &Projector.project_run_summary/1)
 
       {:ok,
        asset_detail_entry(
@@ -450,13 +435,42 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> MapSet.new(& &1.target_id)
   end
 
-  defp pipeline_for_target(%Version{} = version, target_id) do
-    version.manifest.pipelines
-    |> List.wrap()
-    |> Enum.find(&(Targets.pipeline(&1).target_id == target_id))
+  defp deployment_target_descriptors(grants, target_kind) do
+    grants
+    |> Enum.filter(&(&1.target_kind == target_kind and &1.customer_visible))
+    |> Enum.reduce_while({:ok, []}, fn grant, {:ok, acc} ->
+      case restore_deployment_target(grant) do
+        {:ok, target} -> {:cont, {:ok, [target | acc]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, targets} -> {:ok, Enum.reverse(targets)}
+      error -> error
+    end)
+  end
+
+  defp deployment_target_descriptor(grants, target_kind, target_id) do
+    grants
+    |> Enum.find(
+      &(&1.target_kind == target_kind and &1.target_id == target_id and &1.customer_visible)
+    )
     |> case do
       nil -> {:error, :not_found}
-      pipeline -> {:ok, pipeline}
+      grant -> restore_deployment_target(grant)
+    end
+  end
+
+  defp restore_deployment_target(grant) do
+    target =
+      grant.descriptor
+      |> Targets.restore_descriptor()
+      |> Map.put(:target_id, grant.target_id)
+
+    if is_binary(target[:label]) do
+      {:ok, target}
+    else
+      {:error, :deployment_target_descriptor_missing}
     end
   end
 
@@ -519,11 +533,11 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Map.put(:can_run_asset?, true)
   end
 
-  defp assurance_detail(%{sql_execution: nil}, _latest_run), do: nil
+  defp assurance_detail(%{assurance: nil}, _latest_run), do: nil
 
-  defp assurance_detail(%{sql_execution: execution, ref: asset_ref}, latest_run) do
-    contract = Map.get(execution, :contract)
-    checks = List.wrap(Map.get(execution, :checks))
+  defp assurance_detail(%{assurance: assurance, ref: asset_ref}, latest_run) do
+    contract = Map.get(assurance, :contract)
+    checks = List.wrap(Map.get(assurance, :checks))
 
     if is_nil(contract) and checks == [] do
       nil
@@ -601,13 +615,13 @@ defmodule FavnOrchestrator.Operator.Catalogue do
 
   defp check_detail(check, latest_result) do
     %{
-      name: check.name,
-      origin: check.origin,
-      claim_id: check.claim_id,
-      phase: check.at,
-      when: check.when,
-      on_violation: check.on_violation,
-      message: check.message,
+      name: field(check, :name),
+      origin: field(check, :origin),
+      claim_id: field(check, :claim_id),
+      phase: field(check, :at),
+      when: field(check, :when),
+      on_violation: field(check, :on_violation),
+      message: field(check, :message),
       latest_result: check_result_detail(latest_result)
     }
   end

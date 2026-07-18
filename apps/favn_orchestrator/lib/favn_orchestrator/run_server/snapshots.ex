@@ -10,6 +10,8 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Runs
 
+  @max_terminal_results 128
+
   @doc "Builds a cancelled terminal snapshot with accumulated runner results."
   @spec cancelled_terminal(RunState.t(), [term()]) :: RunState.t()
   def cancelled_terminal(%RunState{} = run_state, acc_results) do
@@ -17,7 +19,11 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
       status: :cancelled,
       runner_execution_id: nil,
       error: cancelled_error(run_state),
-      result: %{status: :cancelled, asset_results: acc_results, metadata: run_state.metadata}
+      result: %{
+        status: :cancelled,
+        asset_results: Enum.take(acc_results, @max_terminal_results),
+        metadata: run_state.metadata
+      }
     )
   end
 
@@ -28,7 +34,7 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
       runner_execution_id: nil,
       result: %{
         status: failed_run.status,
-        asset_results: all_results,
+        asset_results: Enum.take(all_results, @max_terminal_results),
         metadata: failed_run.metadata
       }
     )
@@ -47,6 +53,23 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
   end
 
   def cancelled_snapshot(%RunState{} = run_state), do: cancelled_terminal(run_state, [])
+
+  @doc "Removes completed in-flight execution IDs without advancing the durable event sequence."
+  @spec clear_inflight_executions(RunState.t(), [String.t()]) :: RunState.t()
+  def clear_inflight_executions(%RunState{} = run_state, execution_ids)
+      when is_list(execution_ids) do
+    removed = Enum.filter(execution_ids, &is_binary/1)
+
+    ids =
+      run_state.metadata
+      |> Map.get(:in_flight_execution_ids, [])
+      |> normalize_execution_ids()
+      |> Kernel.--(removed)
+
+    snapshot_update(run_state,
+      metadata: Map.put(run_state.metadata, :in_flight_execution_ids, ids)
+    )
+  end
 
   @doc "Updates a snapshot timestamp and hash without advancing its event sequence."
   @spec snapshot_update(RunState.t(), keyword()) :: RunState.t()
@@ -71,4 +94,7 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
   end
 
   defp cancelled_error(%RunState{}), do: {:cancelled, %{reason: :external_cancel_request}}
+
+  defp normalize_execution_ids(ids) when is_list(ids), do: Enum.filter(ids, &is_binary/1)
+  defp normalize_execution_ids(_ids), do: []
 end

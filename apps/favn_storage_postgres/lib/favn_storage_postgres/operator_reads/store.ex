@@ -31,7 +31,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
-  alias FavnStoragePostgres.Runs.Decoder
   alias FavnStoragePostgres.Schemas.Backfill
   alias FavnStoragePostgres.Schemas.BackfillWindow
   alias FavnStoragePostgres.Schemas.AssetFreshnessState
@@ -45,6 +44,24 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   @max_batch 500
   @group_statuses [:pending, :running, :succeeded, :failed]
+  @run_summary_fields [
+    :workspace_id,
+    :run_id,
+    :root_execution_group_id,
+    :parent_run_id,
+    :rerun_of_run_id,
+    :deployment_id,
+    :manifest_version_id,
+    :status,
+    :submit_kind,
+    :trigger_type,
+    :event_sequence,
+    :submitted_event_id,
+    :latest_event_id,
+    :inserted_at,
+    :updated_at,
+    :terminal_at
+  ]
 
   @impl true
   def page_manifests(%PageManifests{} = page) do
@@ -54,6 +71,13 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         |> after_manifest(page.after)
         |> order_by([manifest], desc: manifest.inserted_at, desc: manifest.manifest_version_id)
         |> limit(^(page.limit + 1))
+        |> select([manifest], %ManifestVersion{
+          manifest_version_id: manifest.manifest_version_id,
+          content_hash: manifest.content_hash,
+          schema_version: manifest.schema_version,
+          runner_contract_version: manifest.runner_contract_version,
+          inserted_at: manifest.inserted_at
+        })
 
       rows = Repo.all(query)
       {:ok, cursor_page(rows, page.limit, &manifest_result/1, &manifest_cursor/1)}
@@ -135,6 +159,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         )
         |> after_group_run(page.after)
         |> order_by([run], desc: run.submitted_event_id, desc: run.run_id)
+        |> select([run], struct(run, ^@run_summary_fields))
         |> limit(^(page.limit + 1))
 
       rows = Repo.all(query)
@@ -218,7 +243,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
               target.target_kind == ^target_kind and target.target_id == ^page.target_id,
           order_by: [desc: target.submitted_event_id, desc: target.run_id],
           limit: ^(page.limit + 1),
-          select: run
+          select: struct(run, ^@run_summary_fields)
         )
         |> after_target_run(page.after)
 
@@ -320,7 +345,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
             run.root_execution_group_id == ^root_run_id and
             run.status in ["error", "cancelled", "timed_out"],
         order_by: [desc: run.latest_event_id, desc: run.run_id],
-        limit: ^(limit + 1)
+        limit: ^(limit + 1),
+        select: struct(run, ^@run_summary_fields)
       )
       |> Repo.all()
 
@@ -329,18 +355,15 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   defp run_page(rows, limit) do
     page_rows = Enum.take(rows, limit)
+    has_more? = length(rows) > limit
 
-    with {:ok, runs} <- Decoder.decode_many(page_rows) do
-      has_more? = length(rows) > limit
-
-      {:ok,
-       %CursorPage{
-         items: Enum.zip_with(page_rows, runs, &run_result/2),
-         limit: limit,
-         has_more?: has_more?,
-         next_cursor: if(has_more? and page_rows != [], do: run_cursor(List.last(page_rows)))
-       }}
-    end
+    {:ok,
+     %CursorPage{
+       items: Enum.map(page_rows, &run_result/1),
+       limit: limit,
+       has_more?: has_more?,
+       next_cursor: if(has_more? and page_rows != [], do: run_cursor(List.last(page_rows)))
+     }}
   end
 
   defp cursor_page(rows, limit, mapper, cursor) do
@@ -382,7 +405,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
-  defp run_result(row, run) do
+  defp run_result(row) do
     %RunSummary{
       workspace_id: row.workspace_id,
       run_id: row.run_id,
@@ -390,14 +413,16 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       parent_run_id: row.parent_run_id,
       deployment_id: row.deployment_id,
       manifest_version_id: row.manifest_version_id,
-      status: run.status,
-      submit_kind: run.submit_kind,
+      status: String.to_existing_atom(row.status),
+      submit_kind: String.to_existing_atom(row.submit_kind),
       trigger_type: String.to_existing_atom(row.trigger_type),
       submitted_event_id: row.submitted_event_id,
       latest_event_id: row.latest_event_id,
+      event_sequence: row.event_sequence,
       inserted_at: row.inserted_at,
       updated_at: row.updated_at,
-      run: run
+      terminal_at: row.terminal_at,
+      rerun_of_run_id: row.rerun_of_run_id
     }
   end
 

@@ -15,7 +15,6 @@ defmodule FavnStoragePostgres.Backfills.Store do
   alias FavnOrchestrator.Persistence.Commands.TransitionBackfillWindow
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetBackfill
-  alias FavnOrchestrator.Persistence.Queries.PageAssetWindows
   alias FavnOrchestrator.Persistence.Queries.PageBackfillWindows
   alias FavnOrchestrator.Persistence.Results.Backfill, as: BackfillResult
   alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: BackfillWindowResult
@@ -112,33 +111,6 @@ defmodule FavnStoragePostgres.Backfills.Store do
         |> limit(^(page.limit + 1))
 
       {:ok, window_page(Repo.all(query), page.limit, :forward)}
-    end
-  rescue
-    error -> {:error, ErrorMapper.map(error)}
-  end
-
-  @impl true
-  def page_asset_windows(%PageAssetWindows{} = page) do
-    with :ok <- validate_asset_window_page(page) do
-      workspace_id = page.workspace_context.workspace_id
-
-      query =
-        from(window in BackfillWindow,
-          join: backfill in Backfill,
-          on:
-            backfill.workspace_id == window.workspace_id and
-              backfill.backfill_id == window.backfill_id,
-          where:
-            backfill.workspace_id == ^workspace_id and
-              backfill.manifest_version_id == ^page.manifest_version_id and
-              backfill.target_kind == "asset" and backfill.target_id == ^page.target_id,
-          order_by: [desc: window.window_start, desc: window.window_id],
-          limit: ^(page.limit + 1),
-          select: window
-        )
-        |> after_asset_window(page.after)
-
-      {:ok, window_page(Repo.all(query), page.limit, :reverse)}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -789,17 +761,6 @@ defmodule FavnStoragePostgres.Backfills.Store do
     )
   end
 
-  defp after_asset_window(query, nil), do: query
-
-  defp after_asset_window(query, %{window_start: started_at, window_id: id}) do
-    where(
-      query,
-      [window, _backfill],
-      window.window_start < ^started_at or
-        (window.window_start == ^started_at and window.window_id < ^id)
-    )
-  end
-
   defp maybe_backfill(query, nil), do: query
 
   defp maybe_backfill(query, backfill_id),
@@ -944,20 +905,6 @@ defmodule FavnStoragePostgres.Backfills.Store do
     if workspace_context?(page.workspace_context) and valid_id?(page.backfill_id) and
          (is_nil(page.status) or Atom.to_string(page.status) in @window_statuses) and
          cursor? and valid_limit?(page.limit),
-       do: :ok,
-       else: {:error, ErrorMapper.map(:invalid)}
-  end
-
-  defp validate_asset_window_page(page) do
-    cursor? =
-      is_nil(page.after) or
-        match?(
-          %{window_start: %DateTime{}, window_id: id} when is_binary(id),
-          page.after
-        )
-
-    if workspace_context?(page.workspace_context) and valid_id?(page.manifest_version_id) and
-         valid_id?(page.target_id) and cursor? and valid_limit?(page.limit),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
   end

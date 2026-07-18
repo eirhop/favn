@@ -20,11 +20,14 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     ensure_executable!("curl")
     ensure_executable!("env")
 
-    database_url =
+    migrator_database_url =
       System.get_env("FAVN_DATABASE_URL") ||
         raise "FAVN_DATABASE_URL is required for PostgreSQL acceptance tests"
 
-    migrate_database!(database_url)
+    migrate_database!(migrator_database_url)
+    {database_url, runtime_role} = provision_runtime_role!(migrator_database_url)
+
+    on_exit(fn -> drop_runtime_role!(migrator_database_url, runtime_role) end)
 
     artifact = shared_fixture_artifact!()
 
@@ -492,11 +495,83 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
     assert status == 0, output
   end
 
+  defp provision_runtime_role!(database_url) do
+    suffix = System.unique_integer([:positive])
+    role = "favn_acceptance_#{suffix}"
+    password = "acceptance_runtime_#{suffix}_credential"
+
+    run_postgres_admin_script!(
+      database_url,
+      %{
+        "FAVN_ACCEPTANCE_RUNTIME_ROLE" => role,
+        "FAVN_ACCEPTANCE_RUNTIME_PASSWORD" => password
+      },
+      """
+      {:ok, _} = Application.ensure_all_started(:ecto_sql)
+      {:ok, _} = Application.ensure_all_started(:postgrex)
+      role = System.fetch_env!("FAVN_ACCEPTANCE_RUNTIME_ROLE")
+      password = System.fetch_env!("FAVN_ACCEPTANCE_RUNTIME_PASSWORD")
+      quoted_role = FavnStoragePostgres.Privileges.quote_identifier!(role)
+      {:ok, options} = FavnStoragePostgres.Config.repo_options(
+        url: System.fetch_env!("FAVN_DATABASE_URL"), ssl_mode: :disable, pool_size: 1
+      )
+      {:ok, repo} = FavnStoragePostgres.Repo.start_link(options)
+      Ecto.Adapters.SQL.query!(
+        FavnStoragePostgres.Repo,
+        "CREATE ROLE " <> quoted_role <> " LOGIN PASSWORD '" <> password <> "'",
+        []
+      )
+      :ok = FavnStoragePostgres.Privileges.grant_runtime!(FavnStoragePostgres.Repo, role)
+      GenServer.stop(repo)
+      """
+    )
+
+    {database_url_with_credentials(database_url, role, password), role}
+  end
+
+  defp drop_runtime_role!(database_url, role) do
+    run_postgres_admin_script!(database_url, %{"FAVN_ACCEPTANCE_RUNTIME_ROLE" => role}, """
+    {:ok, _} = Application.ensure_all_started(:ecto_sql)
+    {:ok, _} = Application.ensure_all_started(:postgrex)
+    role = System.fetch_env!("FAVN_ACCEPTANCE_RUNTIME_ROLE")
+    quoted_role = FavnStoragePostgres.Privileges.quote_identifier!(role)
+    {:ok, options} = FavnStoragePostgres.Config.repo_options(
+      url: System.fetch_env!("FAVN_DATABASE_URL"), ssl_mode: :disable, pool_size: 1
+    )
+    {:ok, repo} = FavnStoragePostgres.Repo.start_link(options)
+    Ecto.Adapters.SQL.query!(FavnStoragePostgres.Repo, "DROP OWNED BY " <> quoted_role, [])
+    Ecto.Adapters.SQL.query!(FavnStoragePostgres.Repo, "DROP ROLE " <> quoted_role, [])
+    GenServer.stop(repo)
+    """)
+  end
+
+  defp run_postgres_admin_script!(database_url, extra_env, script) do
+    {output, status} =
+      System.cmd(
+        System.find_executable("mix") || "mix",
+        ["run", "--no-start", "-e", script],
+        cd: @repo_root,
+        stderr_to_stdout: true,
+        env: Map.merge(postgres_task_env(database_url), extra_env)
+      )
+
+    assert status == 0, output
+  end
+
+  defp database_url_with_credentials(database_url, role, password) do
+    database_url
+    |> URI.parse()
+    |> Map.put(:userinfo, role <> ":" <> password)
+    |> URI.to_string()
+  end
+
   defp postgres_task_env(database_url) do
     %{
       "MIX_ENV" => "test",
       "FAVN_DATABASE_URL" => database_url,
-      "FAVN_RUNTIME_INPUT_PIN_KEY" => "0123456789abcdef0123456789abcdef"
+      "FAVN_RUNTIME_INPUT_PIN_KEYS" =>
+        Jason.encode!(%{"1" => "0123456789abcdef0123456789abcdef"}),
+      "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION" => "1"
     }
   end
 

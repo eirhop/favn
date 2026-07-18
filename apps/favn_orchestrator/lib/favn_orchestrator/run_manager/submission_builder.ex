@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RetryPolicyResolver
@@ -188,7 +189,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
            |> Map.put(:runtime_input_mode, input_mode),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- get_manifest(opts, manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, _asset} <- Index.fetch_asset(index, asset_ref),
          {:ok, plan} <-
            Planner.plan(asset_ref,
@@ -222,7 +223,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
            }),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- get_manifest(opts, manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          input <- %{input | metadata: metadata},
          {:ok, run_state} <-
            build_pipeline_run_state(target_refs, input, version, index, nil) do
@@ -240,7 +241,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
            normalize_pipeline_window_request(input.anchor_window, window_request),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- get_manifest(opts, manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, pipeline} <- fetch_pipeline_by_module(index, pipeline_module),
          {:ok, resolved_anchor_window} <-
            resolve_pipeline_anchor_window(pipeline, input.anchor_window, request),
@@ -291,7 +292,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          {:ok, request} <- normalize_pipeline_window_request(input.anchor_window, window_request),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- get_manifest(opts, manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, %Pipeline{} = pipeline} <- Index.fetch_pipeline(index, pipeline_ref),
          {:ok, resolved_anchor_window} <-
            resolve_pipeline_anchor_window(pipeline, input.anchor_window, request),
@@ -413,8 +414,9 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
            ),
          {:ok, refresh_policy} <- refresh_policy_metadata(opts, input.dependencies),
          :ok <- validate_rerun_manifest_pin(opts, source_run),
-         {:ok, version} <- get_manifest(opts, source_run.manifest_version_id),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, version} <-
+           get_manifest(opts, source_run.manifest_version_id, source_run.deployment_id),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, _asset} <- Index.fetch_asset(index, rerun_asset_ref),
          :ok <- ensure_assets_exist(index, rerun_targets),
          {:ok, plan} <-
@@ -848,10 +850,17 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     end
   end
 
-  defp get_manifest(opts, manifest_version_id) do
+  defp get_manifest(opts, manifest_version_id, deployment_id \\ nil) do
     case Keyword.get(opts, :_workspace_context) do
-      %WorkspaceContext{} = context -> ManifestStore.get_manifest(context, manifest_version_id)
-      nil -> {:error, :workspace_context_required}
+      %WorkspaceContext{} = context ->
+        ManifestStore.get_deployment_manifest(
+          context,
+          deployment_id || Keyword.get(opts, :_deployment_id),
+          manifest_version_id
+        )
+
+      nil ->
+        {:error, :workspace_context_required}
     end
   end
 

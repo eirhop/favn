@@ -24,22 +24,18 @@ defmodule FavnOrchestrator.Logs do
          {:ok, page} <-
            Persistence.stores().logs.page(%PageLogs{
              workspace_context: context,
-             filter_kind: indexed_filter_kind(normalized_filter),
-             filter_value: indexed_filter_value(normalized_filter),
+             filter: normalized_filter,
              after: Keyword.get(opts, :after),
              direction: Keyword.get(opts, :direction, :older),
              limit: Keyword.get(opts, :limit, 200)
            }) do
-      entries =
-        page.items
-        |> Enum.map(&public_entry/1)
-        |> Enum.filter(&matches_filter?(&1, normalized_filter))
+      entries = Enum.map(page.items, &public_entry/1)
 
       {:ok, %{page | items: entries}}
     end
   end
 
-  @doc "Replays committed logs newer than the authoritative PostgreSQL log id cursor."
+  @doc "Replays logs newer than a commit-safe publication-and-batch-offset cursor."
   @spec replay(
           WorkspaceContext.t(),
           Cursor.t() | non_neg_integer(),
@@ -48,12 +44,12 @@ defmodule FavnOrchestrator.Logs do
         ) ::
           {:ok, [Entry.t()]} | {:error, term()}
   def replay(%WorkspaceContext{} = context, cursor, filter, opts \\ []) when is_list(opts) do
-    with {:ok, log_id} <- cursor_log_id(cursor),
+    with {:ok, publication_cursor} <- publication_cursor(cursor),
          {:ok, page} <-
            page(
              context,
              filter,
-             after: %{log_id: log_id},
+             after: publication_cursor,
              direction: :newer,
              limit: Keyword.get(opts, :limit, 200)
            ) do
@@ -236,6 +232,8 @@ defmodule FavnOrchestrator.Logs do
     with :ok <- validate_optional_binary(normalized, :run_id),
          :ok <- validate_optional_binary(normalized, :asset_step_id),
          :ok <- validate_optional_binary(normalized, :runner_execution_id),
+         :ok <- validate_optional_binary(normalized, :node_key),
+         :ok <- validate_optional_binary(normalized, :asset_ref),
          :ok <- validate_optional_datetime(normalized, :since),
          :ok <- validate_optional_datetime(normalized, :until),
          :ok <- validate_datetime_order(normalized) do
@@ -300,27 +298,28 @@ defmodule FavnOrchestrator.Logs do
     end
   end
 
-  defp indexed_filter_kind(%{run_id: run_id}) when is_binary(run_id) and run_id != "", do: :run
-  defp indexed_filter_kind(%{levels: [_level]}), do: :level
-  defp indexed_filter_kind(_filter), do: nil
+  defp publication_cursor(%Cursor{global_sequence: sequence}), do: publication_cursor(sequence)
 
-  defp indexed_filter_value(%{run_id: run_id}) when is_binary(run_id) and run_id != "", do: run_id
-  defp indexed_filter_value(%{levels: [level]}), do: level
-  defp indexed_filter_value(_filter), do: nil
+  defp publication_cursor(0), do: {:ok, %{publication_id: 0, batch_offset: 0}}
 
-  defp cursor_log_id(%Cursor{global_sequence: sequence})
-       when is_integer(sequence) and sequence >= 0,
-       do: {:ok, sequence}
+  defp publication_cursor(sequence) when is_integer(sequence) and sequence > 0 do
+    zero_based = sequence - 1
 
-  defp cursor_log_id(sequence) when is_integer(sequence) and sequence >= 0, do: {:ok, sequence}
-  defp cursor_log_id(_cursor), do: {:error, :invalid_cursor}
+    {:ok,
+     %{
+       publication_id: div(zero_based, 1_000) + 1,
+       batch_offset: rem(zero_based, 1_000)
+     }}
+  end
+
+  defp publication_cursor(_cursor), do: {:error, :invalid_cursor}
 
   defp public_entry(%PersistedLogEntry{} = entry) do
     metadata = entry.metadata || %{}
 
     Entry.normalize(%{
       id: "#{entry.workspace_id}:#{entry.log_id}",
-      global_sequence: entry.log_id,
+      global_sequence: global_sequence(entry.publication_id, entry.position),
       run_id: entry.run_id,
       asset_step_id: metadata_value(metadata, :asset_step_id),
       node_key: metadata_value(metadata, :node_key),
@@ -338,6 +337,12 @@ defmodule FavnOrchestrator.Logs do
       truncated: metadata_value(metadata, :truncated) == true
     })
   end
+
+  defp global_sequence(publication_id, batch_offset)
+       when is_integer(publication_id) and publication_id > 0 and is_integer(batch_offset),
+       do: (publication_id - 1) * 1_000 + batch_offset + 1
+
+  defp global_sequence(_publication_id, _batch_offset), do: nil
 
   defp known_source(value) when is_binary(value) do
     Enum.find(Entry.sources(), :system, &(Atom.to_string(&1) == value))

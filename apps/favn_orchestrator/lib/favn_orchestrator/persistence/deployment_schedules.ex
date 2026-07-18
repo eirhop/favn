@@ -1,8 +1,8 @@
 defmodule FavnOrchestrator.Persistence.DeploymentSchedules do
   @moduledoc "Plans durable schedule cursors for an exact workspace deployment."
 
-  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Persistence.Commands.DeploymentSchedule
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Scheduler.Cron
@@ -17,7 +17,7 @@ defmodule FavnOrchestrator.Persistence.DeploymentSchedules do
       |> Enum.filter(&(&1.target_kind == :pipeline))
       |> MapSet.new(& &1.target_id)
 
-    with {:ok, index} <- Index.build_from_version(version),
+    with {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, entries} <- ManifestEntries.discover_all(version, index) do
       entries
       |> Enum.filter(fn entry ->

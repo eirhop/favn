@@ -9,6 +9,8 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.BackfillDispatcher
   alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.ExecutionAdmission.Coordinator, as: AdmissionCoordinator
+  alias FavnOrchestrator.LocalDevBootstrap
+  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
@@ -40,11 +42,14 @@ defmodule FavnOrchestrator.Application do
         [{RuntimeConfig, runtime_config}] ++
           [{PersistenceRuntime, persistence_runtime}] ++
           persistence_children ++
+          [{ManifestIndexCache, []}] ++
+          local_dev_bootstrap_children() ++
           [
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},
             {AdmissionCoordinator, []},
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
+            {Task.Supervisor, name: FavnOrchestrator.RunManagerTaskSupervisor},
             {RunManager, []}
           ] ++
           [{BackfillDispatcher, []}] ++
@@ -69,6 +74,14 @@ defmodule FavnOrchestrator.Application do
       [{PersistenceSchedulerRuntime, scheduler_opts}]
     else
       OperationalEvents.emit(:scheduler_disabled, %{}, %{})
+      []
+    end
+  end
+
+  defp local_dev_bootstrap_children do
+    if Application.get_env(:favn_orchestrator, :local_dev_mode, false) do
+      [{LocalDevBootstrap, []}]
+    else
       []
     end
   end

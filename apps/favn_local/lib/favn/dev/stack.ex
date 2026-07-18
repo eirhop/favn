@@ -25,6 +25,7 @@ defmodule Favn.Dev.Stack do
   alias Favn.Dev.State
 
   @runtime_schema_version 1
+  @runner_node_poll_interval_ms 100
   @type root_opt :: [root_dir: Path.t()]
 
   @spec start_foreground(root_opt()) :: :ok | {:error, term()}
@@ -200,7 +201,7 @@ defmodule Favn.Dev.Stack do
 
   defp ensure_startup_prerequisites(config, opts) do
     case ensure_ports_available(config, opts) do
-      :ok -> ensure_storage_ready(config)
+      :ok -> ensure_storage_ready(config, opts)
       {:error, _reason} = error -> error
     end
   end
@@ -241,29 +242,52 @@ defmodule Favn.Dev.Stack do
     end
   end
 
-  defp ensure_storage_ready(%{postgres: postgres}) when is_map(postgres) do
+  defp ensure_storage_ready(%{postgres: postgres}, opts)
+       when is_map(postgres) and is_list(opts) do
     case validate_postgres_config(postgres) do
-      :ok -> verify_postgres_connectivity(postgres)
-      {:error, _reason} = error -> error
+      :ok ->
+        timeout_ms = postgres_connect_timeout(opts)
+        verify_postgres_connectivity(postgres, timeout_ms)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp postgres_connect_timeout(opts) do
+    case Keyword.get(opts, :postgres_connect_timeout_ms, 1_500) do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms >= 0 -> timeout_ms
+      _other -> 1_500
     end
   end
 
   defp validate_postgres_config(postgres) do
-    case URI.parse(postgres.url) do
-      %URI{scheme: scheme, host: host}
-      when scheme in ["ecto", "postgres", "postgresql"] and is_binary(host) and host != "" ->
-        :ok
+    required = [
+      hostname: :hostname,
+      username: :username,
+      password: :password,
+      database: :database
+    ]
 
-      _invalid ->
-        {:error, {:postgres_misconfigured, :url}}
+    case Enum.find(required, fn {_field, key} ->
+           postgres[key] |> to_string() |> String.trim() == ""
+         end) do
+      {field, _key} -> {:error, {:postgres_misconfigured, field}}
+      nil -> :ok
     end
   end
 
-  defp verify_postgres_connectivity(postgres) do
+  defp verify_postgres_connectivity(postgres, timeout_ms)
+       when is_integer(timeout_ms) and timeout_ms >= 0 do
     host = postgres.hostname |> to_string()
     port = postgres.port
 
-    case :gen_tcp.connect(String.to_charlist(host), port, [:binary, {:active, false}], 1_500) do
+    case :gen_tcp.connect(
+           String.to_charlist(host),
+           port,
+           [:binary, {:active, false}],
+           timeout_ms
+         ) do
       {:ok, socket} ->
         :ok = :gen_tcp.close(socket)
         :ok
@@ -409,6 +433,7 @@ defmodule Favn.Dev.Stack do
 
       case DevProcess.start_service(spec) do
         {:ok, info} ->
+          notify_service_started(info, opts)
           {:cont, {:ok, Map.put(acc, info.name, info)}}
 
         {:error, reason} ->
@@ -416,6 +441,13 @@ defmodule Favn.Dev.Stack do
           {:halt, {:error, {:start_failed, spec.name, reason}}}
       end
     end)
+  end
+
+  defp notify_service_started(info, opts) do
+    case Keyword.get(opts, :service_started_observer) do
+      observer when is_function(observer, 1) -> observer.(info)
+      _other -> :ok
+    end
   end
 
   defp wait_runner_node_ready(runner_full, timeout_ms)
@@ -428,27 +460,66 @@ defmodule Favn.Dev.Stack do
   end
 
   defp do_wait_runner_node_ready(runner_node, deadline_ms) when is_atom(runner_node) do
-    case :net_adm.ping(runner_node) do
-      :pong ->
-        case receive_runner_service_exit(0) do
-          nil -> :ok
-          reason -> {:error, reason}
-        end
+    remaining_ms = max(deadline_ms - System.monotonic_time(:millisecond), 0)
 
-      :pang ->
-        remaining_ms = max(deadline_ms - System.monotonic_time(:millisecond), 0)
+    if remaining_ms == 0 do
+      {:error, {:runner_node_unreachable, runner_node}}
+    else
+      poll_deadline_ms =
+        System.monotonic_time(:millisecond) + min(remaining_ms, @runner_node_poll_interval_ms)
 
-        case receive_runner_service_exit(min(remaining_ms, 100)) do
-          nil when remaining_ms == 0 ->
-            {:error, {:runner_node_unreachable, runner_node}}
+      case bounded_runner_ping(runner_node, poll_deadline_ms) do
+        :pong ->
+          case receive_runner_service_exit(0) do
+            nil -> :ok
+            reason -> {:error, reason}
+          end
 
-          nil ->
-            do_wait_runner_node_ready(runner_node, deadline_ms)
+        :pang ->
+          poll_remaining_ms = max(poll_deadline_ms - System.monotonic_time(:millisecond), 0)
 
-          reason ->
-            {:error, reason}
-        end
+          case receive_runner_service_exit(poll_remaining_ms) do
+            nil -> do_wait_runner_node_ready(runner_node, deadline_ms)
+            reason -> {:error, reason}
+          end
+
+        reason ->
+          {:error, reason}
+      end
     end
+  end
+
+  defp bounded_runner_ping(runner_node, deadline_ms) do
+    caller = self()
+    result_ref = make_ref()
+
+    {ping_pid, monitor_ref} =
+      spawn_monitor(fn -> send(caller, {result_ref, :net_adm.ping(runner_node)}) end)
+
+    timeout_ms = max(deadline_ms - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^result_ref, result} when result in [:pong, :pang] ->
+        Process.demonitor(monitor_ref, [:flush])
+        result
+
+      {:service_exit, "runner", status} ->
+        stop_runner_ping(ping_pid, monitor_ref)
+        {:service_exit, "runner", status}
+
+      {:DOWN, ^monitor_ref, :process, ^ping_pid, _reason} ->
+        :pang
+    after
+      timeout_ms ->
+        stop_runner_ping(ping_pid, monitor_ref)
+        :pang
+    end
+  end
+
+  defp stop_runner_ping(ping_pid, monitor_ref) do
+    Process.exit(ping_pid, :kill)
+    Process.demonitor(monitor_ref, [:flush])
+    :ok
   end
 
   defp receive_runner_service_exit(timeout_ms) when is_integer(timeout_ms) and timeout_ms >= 0 do
@@ -532,7 +603,8 @@ defmodule Favn.Dev.Stack do
     progress(opts, "building manifest")
 
     with {:ok, build} <- FavnAuthoring.build_manifest(),
-         {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
+         {:ok, publication} <- FavnAuthoring.prepare_manifest_publication(build),
+         version <- publication.version,
          :ok <-
            progress_step(opts, "waiting for orchestrator API", fn ->
              wait_orchestrator_health(
@@ -545,14 +617,7 @@ defmodule Favn.Dev.Stack do
            OrchestratorClient.publish_manifest(
              config.orchestrator_base_url,
              "",
-             %{
-               manifest_version_id: version.manifest_version_id,
-               content_hash: version.content_hash,
-               schema_version: version.schema_version,
-               runner_contract_version: version.runner_contract_version,
-               serialization_format: version.serialization_format,
-               manifest: version.manifest
-             },
+             publication,
              LocalContext.session_context()
            ),
          canonical_manifest_version_id <- canonical_manifest_version_id(published, version),

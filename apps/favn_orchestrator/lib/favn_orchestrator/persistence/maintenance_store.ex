@@ -13,5 +13,4 @@ defmodule FavnOrchestrator.Persistence.MaintenanceStore do
               {:ok, MaintenanceOutcome.t()} | {:error, Error.t()}
   @callback purge(PurgePersistence.t()) ::
               {:ok, MaintenanceOutcome.t()} | {:error, Error.t()}
-  @callback schema_diagnostics() :: {:ok, map()} | {:error, Error.t()}
 end

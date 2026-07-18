@@ -7,7 +7,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestCacheTest do
   alias FavnStoragePostgres.Registry.ManifestCache
 
   test "bounds immutable manifest releases while indexing both stable identities" do
-    start_supervised!({ManifestCache, max_entries: 2})
+    start_supervised!({ManifestCache, max_entries: 2, max_bytes: 1_000_000})
     first = version("first")
     second = version("second")
     third = version("third")
@@ -30,7 +30,31 @@ defmodule FavnStoragePostgres.StorageV2.ManifestCacheTest do
     assert {:ok, ^third} =
              ManifestCache.get(%ById{manifest_version_id: third.manifest_version_id})
 
-    assert ManifestCache.diagnostics() == %{running?: true, entries: 2, max_entries: 2}
+    assert %{
+             running?: true,
+             entries: 2,
+             bytes: bytes,
+             max_entries: 2,
+             max_bytes: 1_000_000,
+             oversized_skips: 0
+           } = ManifestCache.diagnostics()
+
+    assert bytes > 0
+  end
+
+  test "does not cache a compact manifest index larger than the byte budget" do
+    start_supervised!({ManifestCache, max_entries: 2, max_bytes: 1})
+    version = version("oversized")
+
+    assert :ok = ManifestCache.put(version)
+    assert :miss = ManifestCache.get(%ById{manifest_version_id: version.manifest_version_id})
+
+    assert %{
+             entries: 0,
+             bytes: 0,
+             max_bytes: 1,
+             oversized_skips: 1
+           } = ManifestCache.diagnostics()
   end
 
   defp version(identity) do

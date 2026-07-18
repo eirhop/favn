@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Redaction
 
   plug(:match)
@@ -103,6 +104,40 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           %{hash: hash}
         )
 
+      {:error,
+       %Error{
+         kind: :invalid,
+         details: %{reason: :missing_execution_packages, hashes: missing}
+       }} ->
+        Response.error(
+          conn,
+          422,
+          "missing_execution_packages",
+          "Manifest index references execution packages that have not been uploaded",
+          %{hashes: missing}
+        )
+
+      {:error,
+       %Error{
+         kind: :invalid,
+         details: %{reason: :execution_package_asset_mismatch, hash: hash}
+       }} ->
+        Response.error(
+          conn,
+          422,
+          "execution_package_asset_mismatch",
+          "Manifest index assigns an execution package to the wrong asset",
+          %{hash: hash}
+        )
+
+      {:error, %Error{kind: :conflict}} ->
+        Response.error(
+          conn,
+          409,
+          "manifest_conflict",
+          "Manifest version id already exists with different content"
+        )
+
       {:error, :service_unauthorized} ->
         authentication_error(conn, :service_unauthorized)
 
@@ -189,8 +224,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   post "/:manifest_version_id/activate" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, session, actor, context} <- activation_context(conn) do
-      run_activation(conn, manifest_version_id, session, actor, context)
+         {:ok, session, actor, context} <- activation_context(conn),
+         {:ok, platform_context} <- Authentication.platform_context(conn, :platform_operator) do
+      run_activation(conn, manifest_version_id, session, actor, platform_context, context)
     else
       {:error, reason} -> authentication_error(conn, reason)
     end
@@ -235,8 +271,16 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     Response.error(conn, 404, "not_found", "Route was not found")
   end
 
-  defp activate(conn, manifest_version_id, session, actor, context, idempotency) do
-    case activate_manifest(conn, context, manifest_version_id, idempotency) do
+  defp activate(
+         conn,
+         manifest_version_id,
+         session,
+         actor,
+         platform_context,
+         context,
+         idempotency
+       ) do
+    case activate_manifest(conn, platform_context, context, manifest_version_id, idempotency) do
       {:ok, runtime} ->
         %{
           action: "manifest.activate",
@@ -351,7 +395,14 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   defp activation_context(conn), do: Authentication.workspace_context(conn, :admin)
 
-  defp run_activation(conn, manifest_version_id, session, actor, context) do
+  defp run_activation(
+         conn,
+         manifest_version_id,
+         session,
+         actor,
+         platform_context,
+         context
+       ) do
     request = %{
       manifest_version_id: manifest_version_id,
       selection: Map.get(conn.body_params, "selection"),
@@ -359,7 +410,15 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     }
 
     execute = fn idempotency ->
-      activate(conn, manifest_version_id, session, actor, context, idempotency)
+      activate(
+        conn,
+        manifest_version_id,
+        session,
+        actor,
+        platform_context,
+        context,
+        idempotency
+      )
     end
 
     IdempotentCommand.run(
@@ -373,10 +432,10 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     )
   end
 
-  defp activate_manifest(conn, context, manifest_version_id, idempotency) do
+  defp activate_manifest(conn, platform_context, context, manifest_version_id, idempotency) do
     with %{} = selection <- Map.get(conn.body_params, "selection"),
          %{} = configuration <- Map.get(conn.body_params, "configuration", %{}) do
-      Manifests.deploy(context, manifest_version_id, selection,
+      Manifests.deploy(platform_context, context, manifest_version_id, selection,
         deployment_id: "deployment:" <> idempotency.key_hash,
         configuration: configuration,
         idempotency: idempotency.command_idempotency

@@ -4,8 +4,10 @@ defmodule Favn.Contracts.RunnerWork do
 
   `execution_id` may be allocated by the orchestrator before submission. This
   lets a durable dispatch intent name the external work before the runner call
-  is attempted. Runners must either honor the supplied identity or reject the
-  submission; they must never silently replace it.
+  is attempted. Runners idempotently return an existing queued, running, or retained
+  completed execution when both the supplied identity and normalized work are exact;
+  reusing an identity for different work is rejected. A runner must never silently
+  replace the supplied identity.
 
   `node_identity` carries the manifest/planning identity for the current planned
   node. Attempt, retry, admission, and cancellation fields are explicit runner
@@ -23,6 +25,7 @@ defmodule Favn.Contracts.RunnerWork do
           run_started_at: DateTime.t() | nil,
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
+          manifest_lease_id: String.t() | nil,
           node_identity: NodeIdentity.t() | nil,
           asset_ref: Ref.t() | nil,
           asset_refs: [Ref.t()],
@@ -45,6 +48,7 @@ defmodule Favn.Contracts.RunnerWork do
             run_started_at: nil,
             manifest_version_id: nil,
             manifest_content_hash: nil,
+            manifest_lease_id: nil,
             node_identity: nil,
             asset_ref: nil,
             asset_refs: [],
@@ -132,4 +136,23 @@ defmodule Favn.Contracts.RunnerWork do
     |> Map.put(:execution_pool, execution_pool(work))
     |> Map.put(:deadline_at, work.deadline_at)
   end
+
+  @doc "Returns a fixed-size fingerprint for exact deterministic execution-ID replay."
+  @spec replay_fingerprint(t()) :: <<_::256>>
+  def replay_fingerprint(%__MODULE__{} = work) do
+    work
+    |> Map.from_struct()
+    |> Map.update!(:execution_package, &execution_package_identity/1)
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
+  end
+
+  defp execution_package_identity(nil), do: nil
+
+  defp execution_package_identity(%{content_hash: content_hash, asset_ref: asset_ref})
+       when is_binary(content_hash) do
+    %{content_hash: content_hash, asset_ref: asset_ref}
+  end
+
+  defp execution_package_identity(package), do: package
 end

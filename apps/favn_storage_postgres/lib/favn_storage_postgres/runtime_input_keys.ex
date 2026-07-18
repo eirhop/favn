@@ -28,10 +28,15 @@ defmodule FavnStoragePostgres.RuntimeInputKeys do
 
   @spec diagnostics() :: map()
   def diagnostics do
+    retained_versions = configured_keys() |> Map.keys() |> Enum.sort()
+    current_version = configured_current_version()
+    invalid_versions = Enum.reject(retained_versions, &match?({:ok, _}, fetch(&1)))
+
     %{
-      configured?: configured_keys() != %{},
-      current_version: configured_current_version(),
-      retained_versions: configured_keys() |> Map.keys() |> Enum.sort()
+      configured?: retained_versions != [] and match?({:ok, _}, fetch(current_version)),
+      current_version: current_version,
+      retained_versions: retained_versions,
+      invalid_versions: invalid_versions
     }
   end
 

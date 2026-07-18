@@ -6,8 +6,8 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
   initialized once per run, then advanced only after a stage has fully drained.
   """
 
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
-  alias Favn.Run.NodeResult
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Freshness.Decider
   alias FavnOrchestrator.Freshness.StateWriter
@@ -17,7 +17,6 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
   alias FavnOrchestrator.Persistence.Queries.GetFreshnessMany
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.TargetIdentity
-  alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunState
 
   @status_by_name %{
@@ -35,6 +34,7 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
   @type t :: %{
           assets_by_ref: map(),
           refresh_policy: RefreshPolicy.t(),
+          forced_node_keys: MapSet.t(Favn.Plan.node_key()),
           prior_states: map(),
           current_states: map(),
           completed_node_keys: MapSet.t(Favn.Plan.node_key()),
@@ -44,10 +44,10 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
         }
 
   @doc "Loads the persisted freshness evidence required by a pipeline plan."
-  @spec initialize(RunState.t(), Version.t()) ::
+  @spec initialize(RunState.t(), Index.t() | Version.t()) ::
           {:ok, t()} | {:error, {:freshness_state_lookup_failed, term()}}
-  def initialize(%RunState{} = run_state, %Version{} = version) do
-    assets_by_ref = assets_by_ref(version)
+  def initialize(%RunState{} = run_state, manifest) do
+    assets_by_ref = assets_by_ref(manifest)
     refresh_policy = refresh_policy_from_metadata(run_state.metadata)
     now = DateTime.utc_now()
 
@@ -57,6 +57,7 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
        %{
          assets_by_ref: assets_by_ref,
          refresh_policy: refresh_policy,
+         forced_node_keys: RefreshPolicy.expand_force_set(refresh_policy, run_state.plan),
          prior_states: prior_states,
          current_states: prior_states,
          completed_node_keys: MapSet.new(),
@@ -71,20 +72,20 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
   @spec record_successes(
           RunState.t(),
           Version.t(),
-          [Favn.Plan.node_key()],
+          %{optional(Favn.Plan.node_key()) => atom()},
           map(),
           t()
         ) :: {t(), RunState.t()}
   def record_successes(
         %RunState{} = run_state,
         %Version{} = version,
-        node_keys,
+        node_statuses,
         decisions,
         freshness_context
       )
-      when is_list(node_keys) and is_map(decisions) and is_map(freshness_context) do
-    run_state
-    |> successful_node_keys(node_keys)
+      when is_map(node_statuses) and is_map(decisions) and is_map(freshness_context) do
+    node_statuses
+    |> successful_node_keys()
     |> Enum.reduce({freshness_context, run_state}, fn node_key, {context, current_run} ->
       state =
         StateWriter.build_success_state(
@@ -120,34 +121,33 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
   @spec record_completed_after_failure(
           RunState.t(),
           Version.t(),
-          [Favn.Plan.node_key()],
+          %{optional(Favn.Plan.node_key()) => atom()},
           map(),
           t()
         ) :: {t(), RunState.t()}
   def record_completed_after_failure(
         %RunState{} = run_state,
         %Version{} = version,
-        node_keys,
+        node_statuses,
         decisions,
         freshness_context
       )
-      when is_list(node_keys) and is_map(decisions) and is_map(freshness_context) do
-    successful = MapSet.new(successful_node_keys(run_state, node_keys))
+      when is_map(node_statuses) and is_map(decisions) and is_map(freshness_context) do
+    successful = MapSet.new(successful_node_keys(node_statuses))
 
     {context, next_run} =
-      record_successes(run_state, version, node_keys, decisions, freshness_context)
+      record_successes(run_state, version, node_statuses, decisions, freshness_context)
 
     next_context =
-      Enum.reduce(node_keys, context, fn node_key, acc ->
+      Enum.reduce(node_statuses, context, fn {node_key, status}, acc ->
         if MapSet.member?(successful, node_key) do
           acc
         else
-          status = latest_node_result_status(next_run, node_key) || run_state.status
-
           %{
             acc
             | completed_node_keys: MapSet.put(acc.completed_node_keys, node_key),
-              upstream_statuses: Map.put(acc.upstream_statuses, node_key, status)
+              upstream_statuses:
+                Map.put(acc.upstream_statuses, node_key, status || run_state.status)
           }
         end
       end)
@@ -206,10 +206,12 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
   end
 
   defp freshness_states(results, requested, plan) do
+    node_keys_by_fingerprint = node_keys_by_fingerprint(plan)
+
     Enum.reduce_while(results, {:ok, []}, fn result, {:ok, acc} ->
       key = Map.get(requested, {result.target_id, result.freshness_key})
 
-      case persisted_freshness_state(result, key, plan) do
+      case persisted_freshness_state(result, key, node_keys_by_fingerprint) do
         {:ok, state} -> {:cont, {:ok, [state | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -220,7 +222,11 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
     end)
   end
 
-  defp persisted_freshness_state(result, {module, name, freshness_key}, plan) do
+  defp persisted_freshness_state(
+         result,
+         {module, name, freshness_key},
+         node_keys_by_fingerprint
+       ) do
     payload = result.payload || %{}
 
     AssetFreshnessState.new(%{
@@ -231,14 +237,14 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
       freshness_version: field(payload, :freshness_version),
       latest_success_run_id: field(payload, :run_id),
       latest_success_node_key:
-        node_key_by_fingerprint(plan, field(payload, :node_key_fingerprint)),
+        node_key_by_fingerprint(node_keys_by_fingerprint, field(payload, :node_key_fingerprint)),
       latest_success_at: result.updated_at,
       latest_attempt_run_id: field(payload, :run_id),
       latest_attempt_status: freshness_status(result.status),
       latest_attempt_at: result.updated_at,
       manifest_version_id: field(payload, :manifest_version_id),
       manifest_content_hash: field(payload, :manifest_content_hash),
-      input_versions: input_versions(payload, plan),
+      input_versions: input_versions(payload, node_keys_by_fingerprint),
       metadata: %{"input_fingerprint" => field(payload, :input_fingerprint)},
       updated_at: result.updated_at
     })
@@ -247,12 +253,15 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
   defp persisted_freshness_state(_result, nil, _plan),
     do: {:error, :unexpected_freshness_identity}
 
-  defp input_versions(payload, plan) do
+  defp input_versions(payload, node_keys_by_fingerprint) do
     payload
     |> field(:input_versions)
     |> List.wrap()
     |> Enum.reduce([], fn encoded, acc ->
-      case node_key_by_fingerprint(plan, field(encoded, :node_key_fingerprint)) do
+      case node_key_by_fingerprint(
+             node_keys_by_fingerprint,
+             field(encoded, :node_key_fingerprint)
+           ) do
         nil ->
           acc
 
@@ -271,13 +280,18 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
     |> Enum.reverse()
   end
 
-  defp node_key_by_fingerprint(%Favn.Plan{} = plan, fingerprint) when is_binary(fingerprint) do
-    Enum.find(Map.keys(plan.nodes), fn node_key ->
-      FavnOrchestrator.AssetStepIdentity.node_fingerprint(node_key) == fingerprint
+  defp node_keys_by_fingerprint(%Favn.Plan{} = plan) do
+    Map.new(plan.nodes, fn {node_key, _node} ->
+      {FavnOrchestrator.AssetStepIdentity.node_fingerprint(node_key), node_key}
     end)
   end
 
-  defp node_key_by_fingerprint(_plan, _fingerprint), do: nil
+  defp node_keys_by_fingerprint(_plan), do: %{}
+
+  defp node_key_by_fingerprint(index, fingerprint) when is_map(index) and is_binary(fingerprint),
+    do: Map.get(index, fingerprint)
+
+  defp node_key_by_fingerprint(_index, _fingerprint), do: nil
 
   defp freshness_status(:fresh), do: :ok
   defp freshness_status(:stale), do: :error
@@ -310,6 +324,7 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
   defp assets_by_ref(%Version{manifest: %{assets: assets}}) when is_list(assets),
     do: Map.new(assets, fn asset -> {asset.ref, asset} end)
 
+  defp assets_by_ref(%Index{assets_by_ref: assets_by_ref}), do: assets_by_ref
   defp assets_by_ref(%Version{}), do: %{}
 
   defp refresh_policy_from_metadata(metadata) when is_map(metadata) do
@@ -325,38 +340,10 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
     end
   end
 
-  defp successful_node_keys(%RunState{} = run_state, node_keys) do
-    stage_node_keys = MapSet.new(node_keys)
-
-    run_state
-    |> ResultBuilder.node_results()
-    |> Enum.filter(fn result ->
-      MapSet.member?(stage_node_keys, node_result_node_key(result)) and
-        node_result_status(result) == :ok
-    end)
-    |> Enum.map(&node_result_node_key/1)
-    |> Enum.uniq()
-  end
-
-  defp node_result_node_key(%NodeResult{node_key: node_key}), do: node_key
-  defp node_result_node_key(%{node_key: node_key}), do: node_key
-  defp node_result_node_key(%{"node_key" => node_key}), do: node_key
-  defp node_result_node_key(_result), do: nil
-
-  defp node_result_status(%NodeResult{status: status}), do: normalize_status(status)
-  defp node_result_status(%{status: status}), do: normalize_status(status)
-  defp node_result_status(%{"status" => status}), do: normalize_status(status)
-  defp node_result_status(_result), do: nil
-
-  defp normalize_status(status) when status in @statuses, do: status
-  defp normalize_status(status) when is_binary(status), do: Map.get(@status_by_name, status)
-  defp normalize_status(_status), do: nil
-
-  defp latest_node_result_status(%RunState{} = run_state, node_key) do
-    run_state
-    |> ResultBuilder.node_results()
-    |> Enum.find(&(node_result_node_key(&1) == node_key))
-    |> node_result_status()
+  defp successful_node_keys(node_statuses) do
+    node_statuses
+    |> Enum.filter(fn {_node_key, status} -> status == :ok end)
+    |> Enum.map(&elem(&1, 0))
   end
 
   defp state_asset_ref(%AssetFreshnessState{} = state),

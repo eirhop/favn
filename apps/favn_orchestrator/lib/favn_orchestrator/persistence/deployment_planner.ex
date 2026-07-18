@@ -13,6 +13,8 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlanner do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Persistence.Commands.DeploymentTarget
   alias FavnOrchestrator.Persistence.TargetIdentity
 
@@ -34,7 +36,7 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlanner do
   @spec plan(Version.t(), t()) :: {:ok, [DeploymentTarget.t()]} | {:error, term()}
   def plan(%Version{} = version, %__MODULE__{} = selection) do
     with :ok <- validate_selection(selection),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          :ok <- validate_disjoint(selection.common_assets, selection.workspace_assets, :asset),
          :ok <-
            validate_disjoint(
@@ -48,7 +50,9 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlanner do
            dependency_closure(index, Map.keys(selected_assets) ++ pipeline_assets) do
       targets =
         selected_assets
-        |> Map.merge(dependency_targets(dependency_assets), fn _ref, selected, _dependency ->
+        |> Map.merge(dependency_targets(index, dependency_assets), fn _ref,
+                                                                      selected,
+                                                                      _dependency ->
           selected
         end)
         |> Map.values()
@@ -82,7 +86,8 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlanner do
             target_kind: :asset,
             target_id: TargetIdentity.for_asset(asset.ref),
             selection_source: source,
-            customer_visible: true
+            customer_visible: true,
+            descriptor: asset |> Targets.asset() |> Targets.serialize_descriptor()
           }
 
           {:cont, {:ok, Map.put(acc, asset.ref, target)}}
@@ -121,7 +126,8 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlanner do
           target_kind: :pipeline,
           target_id: TargetIdentity.for_pipeline(ref),
           selection_source: source,
-          customer_visible: true
+          customer_visible: true,
+          descriptor: index |> Targets.pipeline(pipeline) |> Targets.serialize_descriptor()
         }
 
         {:cont, {:ok, Map.put(acc, ref, target), resolution.target_refs ++ asset_acc}}
@@ -170,14 +176,17 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlanner do
     end
   end
 
-  defp dependency_targets(refs) do
+  defp dependency_targets(index, refs) do
     Map.new(refs, fn ref ->
+      {:ok, asset} = Index.fetch_asset(index, ref)
+
       {ref,
        %DeploymentTarget{
          target_kind: :asset,
          target_id: TargetIdentity.for_asset(ref),
          selection_source: :dependency,
-         customer_visible: false
+         customer_visible: false,
+         descriptor: asset |> Targets.asset() |> Targets.serialize_descriptor()
        }}
     end)
   end

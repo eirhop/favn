@@ -35,11 +35,10 @@ defmodule FavnOrchestrator.Persistence.Queries.PageLogs do
   @moduledoc "Keyset-pages one explicit indexed operational-log filter."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  @enforce_keys [:workspace_context]
+  @enforce_keys [:workspace_context, :filter]
   defstruct [
     :workspace_context,
-    :filter_kind,
-    :filter_value,
+    :filter,
     :after,
     direction: :older,
     limit: 100
@@ -47,11 +46,10 @@ defmodule FavnOrchestrator.Persistence.Queries.PageLogs do
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
-          filter_kind: :run | :level | nil,
-          filter_value: String.t() | atom() | nil,
+          filter: map(),
           after:
             %{occurred_at: DateTime.t(), log_id: pos_integer()}
-            | %{log_id: pos_integer()}
+            | %{publication_id: non_neg_integer(), batch_offset: non_neg_integer()}
             | nil,
           direction: :older | :newer,
           limit: 1..500
@@ -79,6 +77,7 @@ defmodule FavnOrchestrator.Persistence.Results.LogEntry do
     :workspace_id,
     :batch_id,
     :position,
+    :publication_id,
     :source,
     :level,
     :message,
@@ -89,6 +88,7 @@ defmodule FavnOrchestrator.Persistence.Results.LogEntry do
     :workspace_id,
     :batch_id,
     :position,
+    :publication_id,
     :run_id,
     :source,
     :level,
@@ -102,6 +102,7 @@ defmodule FavnOrchestrator.Persistence.Results.LogEntry do
           workspace_id: String.t(),
           batch_id: String.t(),
           position: non_neg_integer(),
+          publication_id: pos_integer() | nil,
           run_id: String.t() | nil,
           source: String.t(),
           level: :debug | :info | :warning | :error,

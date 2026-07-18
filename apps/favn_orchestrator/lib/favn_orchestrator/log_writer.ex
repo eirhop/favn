@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.LogWriter do
 
   alias FavnOrchestrator.Logs
   alias Favn.Log.Entry, as: PublicLogEntry
+  alias Favn.Log.Identity
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.AppendLogBatch
   alias FavnOrchestrator.Persistence.Commands.LogEntry
@@ -75,6 +76,8 @@ defmodule FavnOrchestrator.LogWriter do
             :truncated
           ])
         )
+        |> normalize_log_identity(:node_key, &Identity.node_key/1)
+        |> normalize_log_identity(:asset_ref, &Identity.asset_ref/1)
 
       {:ok,
        %LogEntry{
@@ -106,6 +109,23 @@ defmodule FavnOrchestrator.LogWriter do
     do: Enum.any?(PublicLogEntry.sources(), &(Atom.to_string(&1) == source))
 
   defp known_source?(_source), do: false
+
+  defp normalize_log_identity(metadata, key, normalizer) do
+    string_key = Atom.to_string(key)
+    value = Map.get(metadata, key, Map.get(metadata, string_key))
+    metadata = Map.drop(metadata, [key, string_key])
+
+    case value do
+      nil ->
+        metadata
+
+      value ->
+        case normalizer.(value) do
+          {:ok, identity} -> Map.put(metadata, key, identity)
+          {:error, _reason} -> metadata
+        end
+    end
+  end
 
   defp validate_opts(opts) do
     if Keyword.keyword?(opts) do

@@ -123,37 +123,6 @@ defmodule FavnOrchestrator.Persistence.Commands.ReleaseRunLeases do
         }
 end
 
-defmodule FavnOrchestrator.Persistence.Commands.ClaimAdmissionWaiters do
-  @moduledoc "Claims a bounded priority queue of waiters for one freed capacity scope."
-
-  alias FavnOrchestrator.Persistence.WorkspaceContext
-
-  @enforce_keys [
-    :workspace_context,
-    :batch_id,
-    :scope_id,
-    :owner_id,
-    :lease_duration_ms
-  ]
-  defstruct [
-    :workspace_context,
-    :batch_id,
-    :scope_id,
-    :owner_id,
-    :lease_duration_ms,
-    limit: 100
-  ]
-
-  @type t :: %__MODULE__{
-          workspace_context: WorkspaceContext.t(),
-          batch_id: String.t(),
-          scope_id: String.t(),
-          owner_id: String.t(),
-          lease_duration_ms: pos_integer(),
-          limit: 1..500
-        }
-end
-
 defmodule FavnOrchestrator.Persistence.Commands.ExpireAdmission do
   @moduledoc "Expires bounded batches of overdue leases and waiters."
 

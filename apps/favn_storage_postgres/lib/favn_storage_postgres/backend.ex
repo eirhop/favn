@@ -7,6 +7,7 @@ defmodule FavnStoragePostgres.Backend do
 
   @behaviour FavnOrchestrator.Persistence.Backend
 
+  alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Diagnostics
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Readiness
@@ -51,15 +52,18 @@ defmodule FavnStoragePostgres.Backend do
   def readiness(_options) do
     case Migrations.diagnostics(Repo) do
       {:ok, diagnostics} ->
+        runtime_input_keys = runtime_input_key_diagnostics(diagnostics)
+        ready? = diagnostics.ready? and runtime_input_keys.ready?
+
         {:ok,
          %Readiness{
-           status: diagnostics.status,
-           ready?: diagnostics.ready?,
+           status: if(ready?, do: :ready, else: readiness_status(diagnostics)),
+           ready?: ready?,
            backend: __MODULE__,
            checks: %{
              engine: diagnostics.engine,
              schema: schema_summary(diagnostics),
-             runtime_input_keys: RuntimeInputKeys.diagnostics()
+             runtime_input_keys: runtime_input_keys
            }
          }}
 
@@ -74,6 +78,8 @@ defmodule FavnStoragePostgres.Backend do
   def diagnostics(options) when is_list(options) do
     with {:ok, repo_options} <- Config.repo_options(options),
          {:ok, schema} <- Migrations.diagnostics(Repo) do
+      runtime_input_keys = runtime_input_key_diagnostics(schema)
+
       {:ok,
        %Diagnostics{
          backend: __MODULE__,
@@ -88,7 +94,7 @@ defmodule FavnStoragePostgres.Backend do
            encrypted_runtime_inputs: true
          },
          metadata: %{
-           runtime_input_keys: RuntimeInputKeys.diagnostics(),
+           runtime_input_keys: runtime_input_keys,
            manifest_cache: ManifestCache.diagnostics()
          }
        }}
@@ -119,6 +125,41 @@ defmodule FavnStoragePostgres.Backend do
       :runtime_role
     ])
   end
+
+  defp runtime_input_key_diagnostics(schema) do
+    configured = RuntimeInputKeys.diagnostics()
+
+    if "runtime_input_key_versions" in schema.missing_tables do
+      Map.merge(configured, %{
+        ready?: false,
+        inventory_available?: false,
+        referenced_versions: [],
+        missing_referenced_versions: []
+      })
+    else
+      %{rows: rows} =
+        SQL.query!(
+          Repo,
+          "SELECT key_version FROM favn_control.runtime_input_key_versions ORDER BY key_version",
+          []
+        )
+
+      referenced_versions = Enum.map(rows, fn [version] -> version end)
+      missing_versions = referenced_versions -- configured.retained_versions
+
+      Map.merge(configured, %{
+        ready?:
+          configured.configured? and configured.invalid_versions == [] and
+            missing_versions == [],
+        inventory_available?: true,
+        referenced_versions: referenced_versions,
+        missing_referenced_versions: missing_versions
+      })
+    end
+  end
+
+  defp readiness_status(%{ready?: false, status: status}), do: status
+  defp readiness_status(_diagnostics), do: :not_ready
 
   defp configuration_error(reason) do
     Error.new(:invalid, "invalid PostgreSQL persistence configuration",

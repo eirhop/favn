@@ -84,8 +84,8 @@ defmodule Favn.Dev.Build.SingleTest do
     assert %{
              "artifact" => %{
                "kind" => "project_local_backend_launcher",
-                "operational" => true,
-                "relocatable" => false
+               "operational" => true,
+               "relocatable" => false
              },
              "compatibility" => %{
                "storage_modes" => ["postgres"],
@@ -105,7 +105,8 @@ defmodule Favn.Dev.Build.SingleTest do
     assert "postgres" in get_in(metadata, ["compatibility", "storage_modes"])
     assert "FAVN_STORAGE" in required_env
     assert "FAVN_DATABASE_URL" in required_env
-    assert "FAVN_RUNTIME_INPUT_PIN_KEY" in required_env
+    assert "FAVN_RUNTIME_INPUT_PIN_KEYS" in required_env
+    assert "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION" in required_env
     assert "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" in required_env
     assert "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" in required_env
     assert "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" in required_env
@@ -126,8 +127,10 @@ defmodule Favn.Dev.Build.SingleTest do
     refute start_script =~ "No operational runtime launch wiring"
     refute stop_script =~ "No managed processes were started"
     refute env_example =~ "FAVN_DEV_"
+
     assert env_example =~
              "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_view|platform_operator:replace-with-32-plus-char-service-token"
+
     assert env_example =~ "FAVN_STORAGE=postgres"
     assert env_example =~ "FAVN_DATABASE_URL="
     assert env_example =~ "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin"

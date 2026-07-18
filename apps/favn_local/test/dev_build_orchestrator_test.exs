@@ -67,7 +67,8 @@ defmodule Favn.Dev.Build.OrchestratorTest do
              JSON.decode(metadata_json)
 
     assert "FAVN_DATABASE_URL" in required_env
-    assert "FAVN_RUNTIME_INPUT_PIN_KEY" in required_env
+    assert "FAVN_RUNTIME_INPUT_PIN_KEYS" in required_env
+    assert "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION" in required_env
     assert "FAVN_WORKSPACE_IDS" in required_env
     assert "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" in required_env
   end

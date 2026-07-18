@@ -157,17 +157,23 @@ defmodule FavnOrchestrator.Persistence.Commands.AdvanceRunnerExecution do
         }
 end
 
-defmodule FavnOrchestrator.Persistence.Queries.PageActiveExecutions do
-  @moduledoc "Bounded active runner-execution query for recovery and diagnostics."
+defmodule FavnOrchestrator.Persistence.Queries.PageRunnerExecutions do
+  @moduledoc """
+  Bounded runner-execution query for recovery and diagnostics.
+
+  Historical pages (`active_only?: false`) require an exact `run_id`; broad
+  workspace or owner history is intentionally not part of the storage contract.
+  """
   alias FavnOrchestrator.Persistence.WorkspaceContext
   @enforce_keys [:workspace_context]
-  defstruct [:workspace_context, :run_id, :owner_id, :after, limit: 100]
+  defstruct [:workspace_context, :run_id, :owner_id, :after, active_only?: true, limit: 100]
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
           run_id: String.t() | nil,
           owner_id: String.t() | nil,
           after: %{runner_execution_id: String.t()} | nil,
+          active_only?: boolean(),
           limit: 1..500
         }
 end

@@ -4,10 +4,15 @@ defmodule FavnRunner.ExecutionLifecycle do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias FavnRunner.ExecutionLifecycle.Execution
+  alias FavnRunner.ResultRetention
 
   @default_max_completed_executions 1_000
+  @default_max_completed_bytes 64 * 1_024 * 1_024
+  @default_max_completed_execution_bytes 1 * 1_024 * 1_024
   @default_max_logs_per_execution 500
   @default_max_events_per_execution 500
+  @default_max_log_bytes_per_execution 1 * 1_024 * 1_024
+  @default_max_event_bytes_per_execution 1 * 1_024 * 1_024
 
   @type execution_id :: String.t()
 
@@ -19,12 +24,18 @@ defmodule FavnRunner.ExecutionLifecycle do
 
   @type retention_policy :: %{
           required(:max_completed_executions) => non_neg_integer(),
+          required(:max_completed_bytes) => non_neg_integer(),
+          required(:max_completed_execution_bytes) => non_neg_integer(),
           required(:max_logs_per_execution) => non_neg_integer(),
-          required(:max_events_per_execution) => non_neg_integer()
+          required(:max_events_per_execution) => non_neg_integer(),
+          required(:max_log_bytes_per_execution) => non_neg_integer(),
+          required(:max_event_bytes_per_execution) => non_neg_integer()
         }
 
   @type counters :: %{
           required(:evicted_completed_executions) => non_neg_integer(),
+          required(:evicted_completed_bytes) => non_neg_integer(),
+          required(:truncated_completed_executions) => non_neg_integer(),
           required(:dropped_logs) => non_neg_integer(),
           required(:dropped_events) => non_neg_integer()
         }
@@ -39,6 +50,7 @@ defmodule FavnRunner.ExecutionLifecycle do
           subscriber_monitor_to_pid: %{optional(reference()) => pid()},
           subscriber_executions: %{optional(pid()) => MapSet.t(execution_id())},
           completed_order: :queue.queue(execution_id()),
+          completed_bytes: non_neg_integer(),
           retention: retention_policy(),
           counters: counters()
         }
@@ -52,17 +64,33 @@ defmodule FavnRunner.ExecutionLifecycle do
             subscriber_monitor_to_pid: %{},
             subscriber_executions: %{},
             completed_order: :queue.new(),
+            completed_bytes: 0,
             retention: %{
               max_completed_executions: @default_max_completed_executions,
+              max_completed_bytes: @default_max_completed_bytes,
+              max_completed_execution_bytes: @default_max_completed_execution_bytes,
               max_logs_per_execution: @default_max_logs_per_execution,
-              max_events_per_execution: @default_max_events_per_execution
+              max_events_per_execution: @default_max_events_per_execution,
+              max_log_bytes_per_execution: @default_max_log_bytes_per_execution,
+              max_event_bytes_per_execution: @default_max_event_bytes_per_execution
             },
-            counters: %{evicted_completed_executions: 0, dropped_logs: 0, dropped_events: 0}
+            counters: %{
+              evicted_completed_executions: 0,
+              evicted_completed_bytes: 0,
+              truncated_completed_executions: 0,
+              dropped_logs: 0,
+              dropped_events: 0
+            }
 
   @spec new(keyword()) :: t()
   def new(opts \\ []) when is_list(opts) do
     %__MODULE__{retention: retention_policy(opts)}
   end
+
+  @doc false
+  @spec worker_result_budget(t()) :: non_neg_integer()
+  def worker_result_budget(%__MODULE__{} = lifecycle),
+    do: div(lifecycle.retention.max_completed_execution_bytes * 3, 4)
 
   @spec fetch_execution(t(), execution_id()) :: {:ok, Execution.t()} | :error
   def fetch_execution(%__MODULE__{} = lifecycle, execution_id) when is_binary(execution_id) do
@@ -99,9 +127,23 @@ defmodule FavnRunner.ExecutionLifecycle do
         %RunnerResult{} = result
       )
       when is_binary(execution_id) do
-    execution = Execution.completed(execution_id, work, result, DateTime.utc_now())
+    {result, retained_bytes, truncated?} = compact_result(lifecycle, result)
+
+    execution =
+      Execution.completed(
+        execution_id,
+        work,
+        result,
+        DateTime.utc_now(),
+        retained_bytes,
+        truncated?
+      )
+
+    {execution, dropped_logs, dropped_events} = bound_completed_execution(lifecycle, execution)
 
     lifecycle
+    |> count_truncation(truncated?)
+    |> count_buffer_drops(dropped_logs, dropped_events)
     |> put_completed_execution(execution_id, execution)
     |> prune_completed()
   end
@@ -206,7 +248,12 @@ defmodule FavnRunner.ExecutionLifecycle do
     lifecycle =
       update_execution(lifecycle, execution_id, fn execution ->
         {logs, dropped} =
-          bounded_prepend(execution.logs, entry, lifecycle.retention.max_logs_per_execution)
+          bounded_prepend(
+            execution.logs,
+            entry,
+            lifecycle.retention.max_logs_per_execution,
+            lifecycle.retention.max_log_bytes_per_execution
+          )
 
         {%{execution | logs: logs, dropped_log_count: execution.dropped_log_count + dropped},
          :dropped_logs, dropped}
@@ -219,7 +266,12 @@ defmodule FavnRunner.ExecutionLifecycle do
   def append_event(%__MODULE__{} = lifecycle, execution_id, event) when is_binary(execution_id) do
     update_execution(lifecycle, execution_id, fn execution ->
       {events, dropped} =
-        bounded_prepend(execution.events, event, lifecycle.retention.max_events_per_execution)
+        bounded_prepend(
+          execution.events,
+          event,
+          lifecycle.retention.max_events_per_execution,
+          lifecycle.retention.max_event_bytes_per_execution
+        )
 
       {%{
          execution
@@ -234,7 +286,20 @@ defmodule FavnRunner.ExecutionLifecycle do
       when is_binary(execution_id) do
     case Map.fetch(lifecycle.executions, execution_id) do
       {:ok, %Execution{status: :running} = execution} ->
-        completed = Execution.complete(execution, result, DateTime.utc_now())
+        {result, retained_bytes, truncated?} = compact_result(lifecycle, result)
+
+        completed =
+          Execution.complete(
+            execution,
+            result,
+            DateTime.utc_now(),
+            retained_bytes,
+            truncated?
+          )
+
+        {completed, dropped_logs, dropped_events} =
+          bound_completed_execution(lifecycle, completed)
+
         {waiters, lifecycle} = pop_all_waiters(lifecycle, execution_id)
 
         {subscriber_monitor_refs, lifecycle} =
@@ -246,6 +311,8 @@ defmodule FavnRunner.ExecutionLifecycle do
             | monitor_to_execution:
                 Map.delete(lifecycle.monitor_to_execution, execution.monitor_ref)
           }
+          |> count_truncation(truncated?)
+          |> count_buffer_drops(dropped_logs, dropped_events)
           |> put_completed_execution(execution_id, completed)
           |> prune_completed()
 
@@ -278,7 +345,10 @@ defmodule FavnRunner.ExecutionLifecycle do
         lifecycle.log_subscribers
         |> Map.values()
         |> Enum.reduce(0, &(MapSet.size(&1) + &2)),
-      retention: Map.merge(lifecycle.retention, lifecycle.counters)
+      retention:
+        lifecycle.retention
+        |> Map.merge(lifecycle.counters)
+        |> Map.put(:completed_bytes, lifecycle.completed_bytes)
     }
   end
 
@@ -289,10 +359,30 @@ defmodule FavnRunner.ExecutionLifecycle do
       %{
         max_completed_executions:
           retention_value(retention, :max_completed_executions, @default_max_completed_executions),
+        max_completed_bytes:
+          retention_value(retention, :max_completed_bytes, @default_max_completed_bytes),
+        max_completed_execution_bytes:
+          retention_value(
+            retention,
+            :max_completed_execution_bytes,
+            @default_max_completed_execution_bytes
+          ),
         max_logs_per_execution:
           retention_value(retention, :max_logs_per_execution, @default_max_logs_per_execution),
         max_events_per_execution:
-          retention_value(retention, :max_events_per_execution, @default_max_events_per_execution)
+          retention_value(retention, :max_events_per_execution, @default_max_events_per_execution),
+        max_log_bytes_per_execution:
+          retention_value(
+            retention,
+            :max_log_bytes_per_execution,
+            @default_max_log_bytes_per_execution
+          ),
+        max_event_bytes_per_execution:
+          retention_value(
+            retention,
+            :max_event_bytes_per_execution,
+            @default_max_event_bytes_per_execution
+          )
       }
     end)
   end
@@ -317,15 +407,23 @@ defmodule FavnRunner.ExecutionLifecycle do
   defp normalize_non_negative_integer(_value, default), do: default
 
   defp put_completed_execution(lifecycle, execution_id, execution) do
+    previous_bytes =
+      case Map.get(lifecycle.executions, execution_id) do
+        %Execution{status: :completed, retained_bytes: bytes} -> bytes
+        _execution -> 0
+      end
+
     %{
       lifecycle
       | executions: Map.put(lifecycle.executions, execution_id, execution),
-        completed_order: :queue.in(execution_id, lifecycle.completed_order)
+        completed_order: :queue.in(execution_id, lifecycle.completed_order),
+        completed_bytes: lifecycle.completed_bytes - previous_bytes + execution.retained_bytes
     }
   end
 
   defp prune_completed(%__MODULE__{} = lifecycle) do
-    if completed_count(lifecycle) > lifecycle.retention.max_completed_executions do
+    if completed_count(lifecycle) > lifecycle.retention.max_completed_executions or
+         lifecycle.completed_bytes > lifecycle.retention.max_completed_bytes do
       case :queue.out(lifecycle.completed_order) do
         {{:value, execution_id}, completed_order} ->
           lifecycle = %{lifecycle | completed_order: completed_order}
@@ -353,12 +451,49 @@ defmodule FavnRunner.ExecutionLifecycle do
   end
 
   defp evict_completed_execution(%__MODULE__{} = lifecycle, execution_id) do
+    retained_bytes =
+      case Map.get(lifecycle.executions, execution_id) do
+        %Execution{retained_bytes: bytes} -> bytes
+        _execution -> 0
+      end
+
     %{
       lifecycle
       | executions: Map.delete(lifecycle.executions, execution_id),
+        completed_bytes: max(lifecycle.completed_bytes - retained_bytes, 0),
         waiters: Map.delete(lifecycle.waiters, execution_id),
         log_subscribers: Map.delete(lifecycle.log_subscribers, execution_id),
-        counters: Map.update!(lifecycle.counters, :evicted_completed_executions, &(&1 + 1))
+        counters:
+          lifecycle.counters
+          |> Map.update!(:evicted_completed_executions, &(&1 + 1))
+          |> Map.update!(:evicted_completed_bytes, &(&1 + retained_bytes))
+    }
+  end
+
+  defp compact_result(lifecycle, result) do
+    ResultRetention.compact(result, worker_result_budget(lifecycle))
+  end
+
+  defp bound_completed_execution(lifecycle, execution) do
+    Execution.bound_retained(execution, lifecycle.retention.max_completed_execution_bytes)
+  end
+
+  defp count_truncation(lifecycle, true) do
+    %{
+      lifecycle
+      | counters: Map.update!(lifecycle.counters, :truncated_completed_executions, &(&1 + 1))
+    }
+  end
+
+  defp count_truncation(lifecycle, false), do: lifecycle
+
+  defp count_buffer_drops(lifecycle, dropped_logs, dropped_events) do
+    %{
+      lifecycle
+      | counters:
+          lifecycle.counters
+          |> Map.update!(:dropped_logs, &(&1 + dropped_logs))
+          |> Map.update!(:dropped_events, &(&1 + dropped_events))
     }
   end
 
@@ -545,7 +680,7 @@ defmodule FavnRunner.ExecutionLifecycle do
     end
   end
 
-  defp bounded_prepend(entries, entry, max_entries) do
+  defp bounded_prepend(entries, entry, max_entries, max_bytes) do
     entries = [entry | entries]
 
     case max_entries do
@@ -554,10 +689,20 @@ defmodule FavnRunner.ExecutionLifecycle do
 
       max_entries when length(entries) > max_entries ->
         {kept, dropped} = Enum.split(entries, max_entries)
-        {kept, length(dropped)}
+        drop_until_within_bytes(kept, max_bytes, length(dropped))
 
       _max_entries ->
-        {entries, 0}
+        drop_until_within_bytes(entries, max_bytes, 0)
+    end
+  end
+
+  defp drop_until_within_bytes(entries, max_bytes, dropped) do
+    if entries != [] and :erlang.external_size(entries) > max_bytes do
+      entries
+      |> Enum.drop(-1)
+      |> drop_until_within_bytes(max_bytes, dropped + 1)
+    else
+      {entries, dropped}
     end
   end
 end

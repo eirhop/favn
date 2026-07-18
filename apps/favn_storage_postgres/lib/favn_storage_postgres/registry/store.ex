@@ -20,14 +20,18 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
+  alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
+  alias FavnOrchestrator.Persistence.Queries.PageWorkspaces
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ById
   alias FavnOrchestrator.Persistence.Results.RuntimeState
+  alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.DeploymentConfig
   alias FavnStoragePostgres.ErrorMapper
@@ -47,9 +51,13 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   @max_manifest_bytes 256 * 1_024 * 1_024
   @max_execution_package_bytes 4 * 1_024 * 1_024
+  @max_execution_package_batch_bytes 32 * 1_024 * 1_024
   @max_execution_packages_per_command 1_000
   @execution_package_insert_size 100
+  @execution_package_validation_batch_size 500
   @max_deployment_targets 10_000
+  @max_deployment_target_descriptor_bytes 256 * 1_024
+  @max_deployment_target_catalog_bytes 32 * 1_024 * 1_024
   @max_deployment_schedules 2_000
   @max_capacity_scopes 1_000
   @bulk_insert_size 500
@@ -112,6 +120,52 @@ defmodule FavnStoragePostgres.Registry.Store do
     error -> {:error, ErrorMapper.map(error)}
   end
 
+  @impl true
+  def page_workspaces(%PageWorkspaces{} = query) do
+    with :ok <- validate_workspace_page(query) do
+      rows =
+        Workspace
+        |> where([workspace], workspace.status == "active")
+        |> workspace_after(query.after)
+        |> order_by([workspace], asc: workspace.workspace_id)
+        |> limit(^(query.limit + 1))
+        |> select([workspace], workspace.workspace_id)
+        |> Repo.all()
+
+      items = Enum.take(rows, query.limit)
+      has_more? = length(rows) > query.limit
+
+      {:ok,
+       %CursorPage{
+         items: items,
+         limit: query.limit,
+         has_more?: has_more?,
+         next_cursor: if(has_more?, do: List.last(items))
+       }}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  defp validate_workspace_page(%PageWorkspaces{} = query) do
+    if PlatformContext.valid?(query.platform_context) and
+         Enum.any?(
+           query.platform_context.roles,
+           &(&1 in [:platform_reader, :platform_operator, :platform_admin])
+         ) and
+         is_integer(query.limit) and query.limit in 1..500 and
+         (is_nil(query.after) or valid_id?(query.after)) do
+      :ok
+    else
+      {:error, Error.new(:forbidden, "valid platform workspace-read authority required")}
+    end
+  end
+
+  defp workspace_after(query, nil), do: query
+
+  defp workspace_after(query, cursor),
+    do: where(query, [workspace], workspace.workspace_id > ^cursor)
+
   defp replay_workspace_provision!(command) do
     workspace = Repo.get(Workspace, command.workspace_id)
     runtime_state = Repo.get(WorkspaceRuntimeState, command.workspace_id)
@@ -134,16 +188,22 @@ defmodule FavnStoragePostgres.Registry.Store do
          {:ok, manifest_json} <- Serializer.encode_manifest(verified.manifest),
          :ok <- validate_manifest_size(manifest_json),
          {:ok, manifest} <- Jason.decode(manifest_json),
+         {:ok, atom_strings} <-
+           ManifestAtoms.extract(%{
+             content_hash: verified.content_hash,
+             manifest_index_json: manifest_json
+           }),
          {:ok, hash} <- decode_hash(verified.content_hash),
          {:ok, stored} <-
            Repo.transaction(fn ->
              required_refs = Publication.required_package_refs(verified)
 
              with :ok <- validate_execution_package_refs!(required_refs),
-                  {:ok, stored} <- insert_or_replay_manifest(verified, hash, manifest),
+                  {:ok, stored} <-
+                    insert_or_replay_manifest(verified, hash, manifest, atom_strings),
                   :ok <- link_manifest_execution_packages!(stored, required_refs) do
-                 insert_manifest_audit!(command.platform_context, stored)
-                 stored
+               insert_manifest_audit!(command.platform_context, stored)
+               stored
              else
                {:error, error} -> Repo.rollback(error)
              end
@@ -170,16 +230,22 @@ defmodule FavnStoragePostgres.Registry.Store do
            Repo.transaction(fn ->
              with :ok <- insert_execution_packages(records),
                   :ok <- verify_execution_packages(records) do
-               :ok
+               insert_execution_package_audit!(command.platform_context, records)
              else
                {:error, error} -> Repo.rollback(error)
              end
            end) do
       :ok
     else
-      {:error, %Error{} = error} -> {:error, error}
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, :execution_package_batch_too_large} ->
+        {:error, Error.new(:limit_exceeded, "execution package batch exceeds the 32 MiB limit")}
+
       {:error, reason} ->
-        {:error, Error.new(:invalid, "invalid execution packages", details: %{reason: inspect(reason)})}
+        {:error,
+         Error.new(:invalid, "invalid execution packages", details: %{reason: inspect(reason)})}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -197,10 +263,20 @@ defmodule FavnStoragePostgres.Registry.Store do
         |> MapSet.new()
 
       {:ok,
-       for {encoded, decoded} <- hashes, not MapSet.member?(present, decoded), do: encoded}
+       for(
+         {encoded, decoded} <- hashes,
+         not MapSet.member?(present, decoded),
+         do: encoded
+       )}
     else
-      {:error, %Error{} = error} -> {:error, error}
-      {:error, reason} -> {:error, Error.new(:invalid, "invalid execution package hashes", details: %{reason: inspect(reason)})}
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error,
+         Error.new(:invalid, "invalid execution package hashes",
+           details: %{reason: inspect(reason)}
+         )}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -209,19 +285,72 @@ defmodule FavnStoragePostgres.Registry.Store do
   @impl true
   def get_execution_package(%GetExecutionPackage{} = query) do
     with :ok <- validate_workspace_package_read(query.workspace_context),
+         :ok <- validate_execution_package_query(query),
          {:ok, hash} <- decode_hash(query.content_hash),
-         %ExecutionPackageRecord{} = row <- Repo.get(ExecutionPackageRecord, hash),
+         %ExecutionPackageRecord{} = row <- authorized_execution_package(query, hash),
          {:ok, package} <- ExecutionPackage.from_published(row.payload),
          :ok <- validate_stored_package_identity(row, package) do
       {:ok, package}
     else
-      nil -> {:error, Error.new(:not_found, "execution package not found")}
-      {:error, %Error{} = error} -> {:error, error}
+      nil ->
+        {:error, Error.new(:not_found, "execution package not found")}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
       {:error, reason} ->
-        {:error, Error.new(:internal, "persisted execution package is invalid", details: %{reason: inspect(reason)})}
+        {:error,
+         Error.new(:internal, "persisted execution package is invalid",
+           details: %{reason: inspect(reason)}
+         )}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
+  end
+
+  defp authorized_execution_package(query, hash) do
+    {module, name} = query.asset_ref
+    target_id = TargetIdentity.for_asset(query.asset_ref)
+    workspace_id = query.workspace_context.workspace_id
+
+    ExecutionPackageRecord
+    |> join(:inner, [package], link in ManifestExecutionPackage,
+      on: link.package_hash == package.content_hash
+    )
+    |> join(:inner, [_package, link], deployment in WorkspaceDeployment,
+      on:
+        deployment.workspace_id == ^workspace_id and
+          deployment.deployment_id == ^query.deployment_id and
+          deployment.manifest_version_id == link.manifest_version_id
+    )
+    |> join(:inner, [_package, _link, deployment], target in WorkspaceDeploymentTarget,
+      on:
+        target.workspace_id == deployment.workspace_id and
+          target.deployment_id == deployment.deployment_id and target.target_kind == "asset" and
+          target.target_id == ^target_id
+    )
+    |> where(
+      [package, link],
+      package.content_hash == ^hash and
+        link.manifest_version_id == ^query.manifest_version_id and
+        link.asset_module == ^Atom.to_string(module) and link.asset_name == ^Atom.to_string(name)
+    )
+    |> select([package], package)
+    |> Repo.one()
+  end
+
+  defp validate_execution_package_query(%GetExecutionPackage{} = query) do
+    with deployment_id when is_binary(deployment_id) and byte_size(deployment_id) in 1..255 <-
+           query.deployment_id,
+         manifest_version_id
+         when is_binary(manifest_version_id) and byte_size(manifest_version_id) in 1..255 <-
+           query.manifest_version_id,
+         {module, name} when is_atom(module) and is_atom(name) <- query.asset_ref,
+         true <- canonical_hash?(query.content_hash) do
+      :ok
+    else
+      _invalid -> {:error, Error.new(:invalid, "invalid execution package query")}
+    end
   end
 
   defp validate_platform_manifest_write(context) do
@@ -257,6 +386,40 @@ defmodule FavnStoragePostgres.Registry.Store do
     :ok
   end
 
+  defp insert_execution_package_audit!(_context, []), do: :ok
+
+  defp insert_execution_package_audit!(context, records) do
+    fingerprint =
+      records
+      |> Enum.map(& &1.content_hash)
+      |> Enum.sort()
+      |> IO.iodata_to_binary()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    now = DateTime.utc_now()
+
+    Repo.insert_all(
+      AuthPlatformAuditEntry,
+      [
+        %{
+          command_id: "execution_packages.register:" <> fingerprint,
+          principal_id: context.principal_id,
+          action: "execution_packages.registered",
+          subject_kind: "execution_package_batch",
+          subject_id: fingerprint,
+          detail: %{"count" => length(records), "fingerprint" => fingerprint},
+          occurred_at: now,
+          inserted_at: now
+        }
+      ],
+      on_conflict: :nothing,
+      conflict_target: [:command_id, :action]
+    )
+
+    :ok
+  end
+
   @impl true
   def get_manifest(%ById{manifest_version_id: id}) when byte_size(id) in 1..255 do
     selector = %ById{manifest_version_id: id}
@@ -277,6 +440,29 @@ defmodule FavnStoragePostgres.Registry.Store do
     case ManifestCache.get(selector) do
       {:ok, version} -> {:ok, version}
       :miss -> selector |> load_manifest() |> cache_manifest()
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_deployment_manifest(%GetDeploymentManifest{} = query) do
+    context = query.workspace_context
+
+    with true <- WorkspaceContext.valid?(context),
+         true <- valid_id?(query.deployment_id) and valid_id?(query.manifest_version_id),
+         true <-
+           Repo.exists?(
+             from(deployment in WorkspaceDeployment,
+               where:
+                 deployment.workspace_id == ^context.workspace_id and
+                   deployment.deployment_id == ^query.deployment_id and
+                   deployment.manifest_version_id == ^query.manifest_version_id
+             )
+           ) do
+      get_manifest(%ById{manifest_version_id: query.manifest_version_id})
+    else
+      false -> {:error, Error.new(:not_found, "workspace deployment manifest not found")}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -335,7 +521,8 @@ defmodule FavnStoragePostgres.Registry.Store do
                    configuration,
                    configuration_fingerprint,
                    target_fingerprint,
-                   targets
+                   targets,
+                   manifest_summary(manifest)
                  )
                end,
                &encode_idempotent_deployment/1,
@@ -371,7 +558,8 @@ defmodule FavnStoragePostgres.Registry.Store do
            target_kind: String.to_existing_atom(row.target_kind),
            target_id: row.target_id,
            selection_source: String.to_existing_atom(row.selection_source),
-           customer_visible: row.customer_visible
+           customer_visible: row.customer_visible,
+           descriptor: row.descriptor || %{}
          }
        end)}
     end
@@ -396,7 +584,8 @@ defmodule FavnStoragePostgres.Registry.Store do
          configuration,
          configuration_fingerprint,
          target_fingerprint,
-         targets
+         targets,
+         manifest_summary
        ) do
     locked_runtime_state = lock_runtime_state!(command.workspace_context.workspace_id)
 
@@ -441,27 +630,43 @@ defmodule FavnStoragePostgres.Registry.Store do
       })
     end
 
-    runtime_result(runtime_state, command.manifest_version_id)
+    runtime_result(runtime_state, command.manifest_version_id, manifest_summary)
   end
 
   @impl true
   def get_runtime_state(%GetRuntimeState{workspace_context: context}) do
-    query =
-      from(state in WorkspaceRuntimeState,
-        join: deployment in WorkspaceDeployment,
-        on:
-          deployment.workspace_id == state.workspace_id and
-            deployment.deployment_id == state.active_deployment_id,
-        where: state.workspace_id == ^context.workspace_id,
-        select: {state, deployment.manifest_version_id}
-      )
+    with :ok <- validate_workspace_read(context) do
+      query =
+        from(state in WorkspaceRuntimeState,
+          join: deployment in WorkspaceDeployment,
+          on:
+            deployment.workspace_id == state.workspace_id and
+              deployment.deployment_id == state.active_deployment_id,
+          join: manifest in ManifestVersion,
+          on: manifest.manifest_version_id == deployment.manifest_version_id,
+          where: state.workspace_id == ^context.workspace_id,
+          select:
+            {state, deployment.manifest_version_id, manifest.content_hash,
+             manifest.schema_version, manifest.runner_contract_version, manifest.asset_count,
+             manifest.pipeline_count, manifest.schedule_count}
+        )
 
-    case Repo.one(query) do
-      {%WorkspaceRuntimeState{} = state, manifest_version_id} ->
-        {:ok, runtime_result(state, manifest_version_id)}
+      case Repo.one(query) do
+        {%WorkspaceRuntimeState{} = state, manifest_version_id, content_hash, schema_version,
+         runner_contract_version, asset_count, pipeline_count, schedule_count} ->
+          {:ok,
+           runtime_result(state, manifest_version_id, %{
+             content_hash: content_hash,
+             schema_version: schema_version,
+             runner_contract_version: runner_contract_version,
+             asset_count: asset_count,
+             pipeline_count: pipeline_count,
+             schedule_count: schedule_count
+           })}
 
-      nil ->
-        {:error, Error.new(:not_found, "workspace has no active deployment")}
+        nil ->
+          {:error, Error.new(:not_found, "workspace has no active deployment")}
+      end
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -493,15 +698,26 @@ defmodule FavnStoragePostgres.Registry.Store do
   end
 
   defp validate_deploy_command(%DeployManifest{} = command) do
-    if valid_deploy_context?(command.workspace_context) and valid_deploy_identity?(command) and
-         valid_deploy_collections?(command) and valid_deploy_contents?(command),
-       do: :ok,
-       else: {:error, :invalid}
+    with :ok <- validate_deploy_context(command.platform_context, command.workspace_context),
+         true <- valid_deploy_identity?(command),
+         true <- valid_deploy_collections?(command),
+         true <- valid_deploy_contents?(command) do
+      :ok
+    else
+      false -> {:error, :invalid}
+      {:error, %Error{} = error} -> {:error, error}
+    end
   end
 
-  defp valid_deploy_context?(context) do
-    WorkspaceContext.valid?(context) and
-      Enum.any?(context.roles, &(&1 in [:workspace_admin, :platform_operator]))
+  defp validate_deploy_context(platform_context, workspace_context) do
+    if PlatformContext.valid?(platform_context) and
+         Enum.any?(platform_context.roles, &(&1 in [:platform_operator, :platform_admin])) and
+         WorkspaceContext.valid?(workspace_context) and
+         Enum.any?(workspace_context.roles, &(&1 in [:workspace_admin, :platform_operator])) do
+      :ok
+    else
+      {:error, Error.new(:forbidden, "platform and workspace deployment roles required")}
+    end
   end
 
   defp valid_deploy_identity?(command) do
@@ -518,7 +734,17 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp valid_deploy_contents?(command) do
     valid_schedules?(command.schedules, command.targets) and
-      valid_capacities?(command.capacity_scopes)
+      valid_capacities?(command.capacity_scopes) and bounded_target_catalog?(command.targets)
+  end
+
+  defp bounded_target_catalog?(targets) do
+    targets
+    |> Enum.map(& &1.descriptor)
+    |> Jason.encode_to_iodata!()
+    |> IO.iodata_length()
+    |> Kernel.<=(@max_deployment_target_catalog_bytes)
+  rescue
+    _error -> false
   end
 
   defp bounded_list?(value, maximum), do: is_list(value) and length(value) <= maximum
@@ -550,13 +776,17 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
-  defp insert_or_replay_manifest(version, hash, manifest) do
+  defp insert_or_replay_manifest(version, hash, manifest, atom_strings) do
     row = %{
       manifest_version_id: version.manifest_version_id,
       content_hash: hash,
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
       payload_version: 1,
+      asset_count: length(List.wrap(version.manifest.assets)),
+      pipeline_count: length(List.wrap(version.manifest.pipelines)),
+      schedule_count: length(List.wrap(version.manifest.schedules)),
+      atom_strings: atom_strings |> MapSet.to_list() |> Enum.sort(),
       manifest: manifest,
       inserted_at: version.inserted_at || DateTime.utc_now()
     }
@@ -646,8 +876,17 @@ defmodule FavnStoragePostgres.Registry.Store do
   defp valid_target?(%DeploymentTarget{} = target) do
     target.target_kind in [:asset, :pipeline] and valid_id?(target.target_id) and
       target.selection_source in [:common, :explicit, :dependency] and
-      is_boolean(target.customer_visible)
+      is_boolean(target.customer_visible) and is_map(target.descriptor) and
+      descriptor_value(target.descriptor, :target_id) == target.target_id and
+      valid_descriptor_label?(descriptor_value(target.descriptor, :label)) and
+      bounded_json?(target.descriptor, @max_deployment_target_descriptor_bytes)
   end
+
+  defp descriptor_value(descriptor, key),
+    do: Map.get(descriptor, key, Map.get(descriptor, Atom.to_string(key)))
+
+  defp valid_descriptor_label?(label),
+    do: is_binary(label) and label != "" and byte_size(label) <= 1_024
 
   defp normalize_targets(targets) do
     targets
@@ -656,7 +895,8 @@ defmodule FavnStoragePostgres.Registry.Store do
         "target_kind" => Atom.to_string(target.target_kind),
         "target_id" => target.target_id,
         "selection_source" => Atom.to_string(target.selection_source),
-        "customer_visible" => target.customer_visible
+        "customer_visible" => target.customer_visible,
+        "descriptor" => target.descriptor
       }
     end)
     |> Enum.sort_by(&{&1["target_kind"], &1["target_id"]})
@@ -784,6 +1024,7 @@ defmodule FavnStoragePostgres.Registry.Store do
           target_id: target["target_id"],
           selection_source: target["selection_source"],
           customer_visible: target["customer_visible"],
+          descriptor: target["descriptor"],
           inserted_at: command.occurred_at
         }
       end)
@@ -923,13 +1164,41 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
-  defp runtime_result(state, manifest_version_id) do
+  defp runtime_result(state, manifest_version_id, manifest_summary) do
     %RuntimeState{
       workspace_id: state.workspace_id,
       deployment_id: state.active_deployment_id,
       manifest_version_id: manifest_version_id,
       revision: state.revision,
-      activated_at: state.activated_at
+      activated_at: state.activated_at,
+      manifest_content_hash: manifest_summary_value(manifest_summary, :content_hash),
+      schema_version: manifest_summary_value(manifest_summary, :schema_version),
+      runner_contract_version: manifest_summary_value(manifest_summary, :runner_contract_version),
+      asset_count: manifest_summary_value(manifest_summary, :asset_count),
+      pipeline_count: manifest_summary_value(manifest_summary, :pipeline_count),
+      schedule_count: manifest_summary_value(manifest_summary, :schedule_count)
+    }
+  end
+
+  defp manifest_summary_value(nil, _key), do: nil
+
+  defp manifest_summary_value(summary, :content_hash) do
+    case Map.fetch!(summary, :content_hash) do
+      hash when is_binary(hash) and byte_size(hash) == 32 -> Base.encode16(hash, case: :lower)
+      hash when is_binary(hash) -> hash
+    end
+  end
+
+  defp manifest_summary_value(summary, key), do: Map.fetch!(summary, key)
+
+  defp manifest_summary(%Version{} = version) do
+    %{
+      content_hash: version.content_hash,
+      schema_version: version.schema_version,
+      runner_contract_version: version.runner_contract_version,
+      asset_count: length(List.wrap(version.manifest.assets)),
+      pipeline_count: length(List.wrap(version.manifest.pipelines)),
+      schedule_count: length(List.wrap(version.manifest.schedules))
     }
   end
 
@@ -941,7 +1210,13 @@ defmodule FavnStoragePostgres.Registry.Store do
          "deployment_id" => result.deployment_id,
          "manifest_version_id" => result.manifest_version_id,
          "revision" => result.revision,
-         "activated_at" => result.activated_at && DateTime.to_iso8601(result.activated_at)
+         "activated_at" => result.activated_at && DateTime.to_iso8601(result.activated_at),
+         "manifest_content_hash" => result.manifest_content_hash,
+         "schema_version" => result.schema_version,
+         "runner_contract_version" => result.runner_contract_version,
+         "asset_count" => result.asset_count,
+         "pipeline_count" => result.pipeline_count,
+         "schedule_count" => result.schedule_count
        },
        response_status: 200,
        resource_kind: "workspace_deployment",
@@ -962,7 +1237,13 @@ defmodule FavnStoragePostgres.Registry.Store do
          deployment_id: deployment_id,
          manifest_version_id: manifest_version_id,
          revision: revision,
-         activated_at: activated_at
+         activated_at: activated_at,
+         manifest_content_hash: Map.get(response, "manifest_content_hash"),
+         schema_version: Map.get(response, "schema_version"),
+         runner_contract_version: Map.get(response, "runner_contract_version"),
+         asset_count: Map.get(response, "asset_count"),
+         pipeline_count: Map.get(response, "pipeline_count"),
+         schedule_count: Map.get(response, "schedule_count")
        }}
     else
       _other -> {:error, Error.new(:internal, "idempotent deployment replay record is invalid")}
@@ -993,12 +1274,13 @@ defmodule FavnStoragePostgres.Registry.Store do
   defp encode_execution_packages(packages)
        when is_list(packages) and length(packages) <= @max_execution_packages_per_command do
     packages
-    |> Enum.reduce_while({:ok, [], MapSet.new()}, fn package, {:ok, records, hashes} ->
+    |> Enum.reduce_while({:ok, [], MapSet.new(), 0}, fn package,
+                                                        {:ok, records, hashes, total_bytes} ->
       with %ExecutionPackage{} <- package,
            {:ok, canonical} <- ExecutionPackage.verify(package),
            false <- MapSet.member?(hashes, canonical.content_hash),
            {:ok, encoded} <- Serializer.encode_manifest(canonical),
-           true <- byte_size(encoded) <= @max_execution_package_bytes,
+           :ok <- validate_execution_package_size(encoded, total_bytes),
            {:ok, payload} <- Jason.decode(encoded),
            {:ok, hash} <- decode_hash(canonical.content_hash) do
         {module, name} = canonical.asset_ref
@@ -1007,24 +1289,48 @@ defmodule FavnStoragePostgres.Registry.Store do
           content_hash: hash,
           asset_module: Atom.to_string(module),
           asset_name: Atom.to_string(name),
+          runtime_input_resolver: runtime_input_resolver(canonical),
           payload: payload,
           inserted_at: DateTime.utc_now()
         }
 
-        {:cont, {:ok, [record | records], MapSet.put(hashes, canonical.content_hash)}}
+        {:cont,
+         {:ok, [record | records], MapSet.put(hashes, canonical.content_hash),
+          total_bytes + byte_size(encoded)}}
       else
         true -> {:halt, {:error, :duplicate_execution_package}}
-        false -> {:halt, {:error, :execution_package_too_large}}
+        {:error, reason} -> {:halt, {:error, reason}}
         _invalid -> {:halt, {:error, :invalid_execution_package}}
       end
     end)
     |> case do
-      {:ok, records, _hashes} -> {:ok, Enum.reverse(records)}
+      {:ok, records, _hashes, _total_bytes} -> {:ok, Enum.reverse(records)}
       {:error, _reason} = error -> error
     end
   end
 
   defp encode_execution_packages(_packages), do: {:error, :too_many_execution_packages}
+
+  defp validate_execution_package_size(encoded, total_bytes) do
+    cond do
+      byte_size(encoded) > @max_execution_package_bytes ->
+        {:error, :execution_package_too_large}
+
+      total_bytes + byte_size(encoded) > @max_execution_package_batch_bytes ->
+        {:error, :execution_package_batch_too_large}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp runtime_input_resolver(%ExecutionPackage{
+         sql_execution: %{runtime_inputs: %{module: module}}
+       })
+       when is_atom(module),
+       do: Atom.to_string(module)
+
+  defp runtime_input_resolver(%ExecutionPackage{}), do: nil
 
   defp insert_execution_packages(records) do
     records
@@ -1049,6 +1355,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          case Map.get(stored, record.content_hash) do
            %ExecutionPackageRecord{} = row ->
              row.asset_module == record.asset_module and row.asset_name == record.asset_name and
+               row.runtime_input_resolver == record.runtime_input_resolver and
                row.payload == record.payload
 
            nil ->
@@ -1097,24 +1404,42 @@ defmodule FavnStoragePostgres.Registry.Store do
 
     with {:ok, decoded} <- decoded do
       rows =
-        ExecutionPackageRecord
-        |> where([package], package.content_hash in ^Enum.map(decoded, &elem(&1, 0)))
-        |> Repo.all()
-        |> Map.new(&{&1.content_hash, &1})
+        decoded
+        |> Enum.map(&elem(&1, 0))
+        |> Enum.chunk_every(@execution_package_validation_batch_size)
+        |> Enum.flat_map(fn hashes ->
+          ExecutionPackageRecord
+          |> where([package], package.content_hash in ^hashes)
+          |> select(
+            [package],
+            {package.content_hash, package.asset_module, package.asset_name}
+          )
+          |> lock("FOR KEY SHARE")
+          |> Repo.all()
+        end)
+        |> Map.new(fn {hash, module, name} -> {hash, {module, name}} end)
 
       Enum.reduce_while(decoded, :ok, fn {hash, {module, name} = expected, encoded}, :ok ->
         case Map.get(rows, hash) do
           nil ->
-            {:halt, {:error, Error.new(:invalid, "manifest references missing execution packages", details: %{hashes: [encoded]})}}
+            {:halt,
+             {:error,
+              Error.new(:invalid, "manifest references missing execution packages",
+                details: %{reason: :missing_execution_packages, hashes: [encoded]}
+              )}}
 
-          %ExecutionPackageRecord{asset_module: stored_module, asset_name: stored_name} ->
+          {stored_module, stored_name} ->
             if stored_module == Atom.to_string(module) and stored_name == Atom.to_string(name) do
               {:cont, :ok}
             else
               {:halt,
                {:error,
                 Error.new(:invalid, "execution package asset does not match manifest",
-                  details: %{hash: encoded, expected: inspect(expected)}
+                  details: %{
+                    reason: :execution_package_asset_mismatch,
+                    hash: encoded,
+                    expected: inspect(expected)
+                  }
                 )}}
             end
         end
@@ -1126,13 +1451,45 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp link_manifest_execution_packages!(version, refs) do
     rows =
-      Enum.map(refs, fn {hash, _ref} ->
+      Enum.map(refs, fn {hash, {module, name}} ->
         {:ok, decoded} = decode_hash(hash)
-        %{manifest_version_id: version.manifest_version_id, package_hash: decoded}
+
+        %{
+          manifest_version_id: version.manifest_version_id,
+          package_hash: decoded,
+          asset_module: Atom.to_string(module),
+          asset_name: Atom.to_string(name)
+        }
       end)
 
-    Repo.insert_all(ManifestExecutionPackage, rows, on_conflict: :nothing)
-    :ok
+    rows
+    |> Enum.chunk_every(@bulk_insert_size)
+    |> Enum.each(&Repo.insert_all(ManifestExecutionPackage, &1, on_conflict: :nothing))
+
+    linked_at = DateTime.utc_now()
+
+    rows
+    |> Enum.map(& &1.package_hash)
+    |> Enum.chunk_every(@bulk_insert_size)
+    |> Enum.each(fn hashes ->
+      ExecutionPackageRecord
+      |> where(
+        [package],
+        package.content_hash in ^hashes and is_nil(package.first_linked_at)
+      )
+      |> Repo.update_all(set: [first_linked_at: linked_at])
+    end)
+
+    persisted_count =
+      ManifestExecutionPackage
+      |> where([link], link.manifest_version_id == ^version.manifest_version_id)
+      |> Repo.aggregate(:count)
+
+    if persisted_count == length(rows) do
+      :ok
+    else
+      {:error, Error.new(:conflict, "manifest execution-package links differ from content")}
+    end
   end
 
   defp validate_stored_package_identity(row, package) do
@@ -1149,7 +1506,10 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp validate_platform_read(%PlatformContext{} = context) do
     if PlatformContext.valid?(context) and
-         Enum.any?(context.roles, &(&1 in [:platform_reader, :platform_operator, :platform_admin])) do
+         Enum.any?(
+           context.roles,
+           &(&1 in [:platform_reader, :platform_operator, :platform_admin])
+         ) do
       :ok
     else
       {:error, Error.new(:forbidden, "platform execution-package read role required")}
@@ -1160,13 +1520,24 @@ defmodule FavnStoragePostgres.Registry.Store do
     do: {:error, Error.new(:forbidden, "platform execution-package read role required")}
 
   defp validate_workspace_package_read(%WorkspaceContext{} = context) do
-    if WorkspaceContext.valid?(context),
-      do: :ok,
-      else: {:error, Error.new(:forbidden, "valid workspace context required")}
+    validate_workspace_read(context)
   end
 
   defp validate_workspace_package_read(_context),
     do: {:error, Error.new(:forbidden, "valid workspace context required")}
+
+  defp validate_workspace_read(%WorkspaceContext{} = context) do
+    if WorkspaceContext.valid?(context) and
+         Enum.any?(
+           context.roles,
+           &(&1 in [:customer_reader, :customer_operator, :workspace_admin, :platform_operator])
+         ),
+       do: :ok,
+       else: {:error, Error.new(:forbidden, "workspace read role required")}
+  end
+
+  defp validate_workspace_read(_context),
+    do: {:error, Error.new(:forbidden, "workspace read role required")}
 
   defp database_datetime(%DateTime{} = datetime),
     do: DateTime.add(datetime, 0, :microsecond)

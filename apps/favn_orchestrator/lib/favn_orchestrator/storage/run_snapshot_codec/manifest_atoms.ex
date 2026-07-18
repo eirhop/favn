@@ -19,6 +19,19 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
     end
   end
 
+  def extract(%{content_hash: content_hash, atom_strings: atom_strings})
+      when is_binary(content_hash) and is_list(atom_strings) do
+    atoms = MapSet.new(atom_strings)
+
+    with true <- byte_size(content_hash) == 64,
+         true <- Enum.all?(atoms, &valid_persisted_atom?/1),
+         :ok <- validate_count(atoms) do
+      {:ok, atoms}
+    else
+      _invalid -> {:error, :invalid_manifest_atom_inventory}
+    end
+  end
+
   def extract(record), do: {:error, {:invalid_manifest_record, record}}
 
   defp decode_manifest(manifest_index_json) do
@@ -211,4 +224,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
       do: :ok,
       else: {:error, :manifest_atom_limit_exceeded}
   end
+
+  defp valid_persisted_atom?(value) when is_binary(value),
+    do: byte_size(value) in 1..@max_module_length
+
+  defp valid_persisted_atom?(_value), do: false
 end

@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   blocking execution call stack.
   """
 
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
   alias FavnOrchestrator.RunServer.Execution.StageAttemptState
@@ -15,6 +16,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   @type mode :: :sequential | :pipeline
   @type status ::
           :starting
+          | :classifying
           | :submitting
           | :awaiting
           | :retry_wait
@@ -37,10 +39,12 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   @type t :: %__MODULE__{
           run: RunState.t(),
           version: Version.t(),
+          manifest_index: Index.t(),
           mode: mode(),
           status: status(),
           runner_client: module() | nil,
           runner_opts: keyword(),
+          manifest_lease_id: String.t() | nil,
           work_set: RunWorkSet.t(),
           awaits: %{optional(String.t()) => await()},
           await_monitors: %{optional(reference()) => String.t()},
@@ -59,15 +63,18 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           stage_decisions: map(),
           stage_freshness_context: map() | nil,
           freshness_context: map() | nil,
-          terminal_failure: map() | nil
+          terminal_failure: map() | nil,
+          pipeline_continuation: map() | nil
         }
 
   defstruct run: nil,
             version: nil,
+            manifest_index: nil,
             mode: :sequential,
             status: :starting,
             runner_client: nil,
             runner_opts: [],
+            manifest_lease_id: nil,
             work_set: nil,
             awaits: %{},
             await_monitors: %{},
@@ -86,17 +93,22 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             stage_decisions: %{},
             stage_freshness_context: nil,
             freshness_context: nil,
-            terminal_failure: nil
+            terminal_failure: nil,
+            pipeline_continuation: nil
 
   @doc "Creates base execution state for a run."
   @spec new(RunState.t(), Version.t(), keyword()) :: t()
   def new(%RunState{} = run, %Version{} = version, opts) when is_list(opts) do
+    manifest_index = Keyword.fetch!(opts, :manifest_index)
+
     %__MODULE__{
       run: run,
       version: version,
+      manifest_index: manifest_index,
       mode: Keyword.fetch!(opts, :mode),
       runner_client: Keyword.get(opts, :runner_client),
       runner_opts: Keyword.get(opts, :runner_opts, []),
+      manifest_lease_id: Keyword.fetch!(opts, :manifest_lease_id),
       work_set: RunWorkSet.new(run),
       sequential_refs: Keyword.get(opts, :sequential_refs, []),
       stage_groups: Keyword.get(opts, :stage_groups, []),

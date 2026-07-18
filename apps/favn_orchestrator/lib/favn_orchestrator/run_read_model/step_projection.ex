@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.ExecutionStatus
   alias FavnOrchestrator.RunEvent
+  alias FavnOrchestrator.RunServer.Execution.PipelineRetryCheckpoint
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.RunQuery
@@ -49,6 +50,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
   @typep context :: %{
            run: RunState.t(),
            nodes: map(),
+           nodes_by_step_id: map(),
            nodes_by_unique_ref: map(),
            default_execution_pool: atom() | String.t() | nil
          }
@@ -58,12 +60,13 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
   def build(%RunState{} = run, events) when is_list(events) do
     context = context(run)
     persisted_steps = persisted(run, context)
-    event_steps = event_steps(run, events)
+    event_steps = run |> event_steps(events) |> canonicalize_event_steps(context)
     settling? = incomplete?(run, persisted_steps)
 
     persisted_steps
     |> merge_event_steps(event_steps, run, settling?)
     |> append_waiting_steps(context, event_steps, settling?)
+    |> apply_pipeline_retry_checkpoint(run, events)
     |> normalize_timings()
     |> mark_cascade_failures(events)
     |> Enum.sort_by(&{&1.stage || 999_999, &1.asset_ref})
@@ -228,6 +231,66 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
   end
 
   defp append_waiting_steps(steps, _context, _event_steps, _settling?), do: steps
+
+  defp apply_pipeline_retry_checkpoint(
+         steps,
+         %RunState{plan: %Plan{} = plan, metadata: metadata} = run,
+         events
+       )
+       when is_map(metadata) do
+    retry_state = value(metadata, :retry_state, %{})
+
+    with true <- value(metadata, :retrying) == true,
+         kind when kind in [:pipeline, "pipeline"] <- value(retry_state, :kind),
+         checkpoint_sequence when is_integer(checkpoint_sequence) and checkpoint_sequence > 0 <-
+           value(retry_state, :checkpoint_sequence),
+         stage_index when is_integer(stage_index) and stage_index >= 0 <-
+           value(retry_state, :stage_index),
+         stage_node_keys when is_list(stage_node_keys) <- Enum.at(plan.node_stages, stage_index),
+         %RunEvent{} = checkpoint <-
+           Enum.find(events, fn event ->
+             event.sequence == checkpoint_sequence and
+               event_type?(event, :pipeline_retry_checkpointed)
+           end),
+         selection when is_map(selection) <- value(checkpoint.data || %{}, :retry_selection),
+         {:ok, retry_node_keys} <- PipelineRetryCheckpoint.decode(selection, stage_node_keys) do
+      retry_node_set = MapSet.new(retry_node_keys)
+      retry_step_ids = retry_step_ids(run.id, retry_node_keys, plan.nodes)
+      next_attempt = value(retry_state, :next_attempt)
+
+      Enum.map(steps, fn step ->
+        if MapSet.member?(retry_node_set, step.node_key) or
+             MapSet.member?(retry_step_ids, step.id) do
+          %{
+            step
+            | status: :retrying,
+              attempt: next_attempt,
+              error: nil,
+              finished_at: nil,
+              duration_ms: nil,
+              explanation: "Retry has been scheduled for this asset."
+          }
+        else
+          step
+        end
+      end)
+    else
+      _missing_or_invalid_checkpoint -> steps
+    end
+  end
+
+  defp apply_pipeline_retry_checkpoint(steps, _run, _events), do: steps
+
+  defp retry_step_ids(run_id, node_keys, nodes) do
+    node_keys
+    |> Enum.flat_map(fn node_key ->
+      case Map.fetch(nodes, node_key) do
+        {:ok, %{ref: ref}} -> [AssetStepIdentity.asset_step_id(run_id, node_key, ref)]
+        :error -> []
+      end
+    end)
+    |> MapSet.new()
+  end
 
   defp known_identities(steps, event_steps) do
     all_steps = steps ++ event_steps
@@ -436,6 +499,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
     %{
       run: run,
       nodes: nodes,
+      nodes_by_step_id: nodes_by_step_id(run.id, nodes),
       nodes_by_unique_ref: unique_nodes_by_ref(nodes),
       default_execution_pool: default_execution_pool(run)
     }
@@ -449,6 +513,24 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
       {nil, _nodes}, acc -> acc
       {ref, [node]}, acc -> Map.put(acc, ref, node)
       {_ref, _nodes}, acc -> acc
+    end)
+  end
+
+  defp nodes_by_step_id(run_id, nodes) do
+    Map.new(nodes, fn {node_key, node} ->
+      {AssetStepIdentity.asset_step_id(run_id, node_key, Map.get(node, :ref)), {node_key, node}}
+    end)
+  end
+
+  defp canonicalize_event_steps(steps, context) do
+    Enum.map(steps, fn step ->
+      case Map.fetch(context.nodes_by_step_id, step.id) do
+        {:ok, {node_key, node}} ->
+          %{step | node_key: node_key, canonical_asset_ref: Map.get(node, :ref)}
+
+        :error ->
+          step
+      end
     end)
   end
 

@@ -7,6 +7,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   alias FavnOrchestrator.Persistence.BackfillPlan
   alias FavnOrchestrator.Persistence.Commands.ActivateBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.AdmitExecution
+  alias FavnOrchestrator.Persistence.Commands.AppendLogBatch
   alias FavnOrchestrator.Persistence.Commands.AppendBackfillPlanBatch
   alias FavnOrchestrator.Persistence.Commands.BackfillPlanWindow
   alias FavnOrchestrator.Persistence.Commands.CapacityRequest
@@ -14,6 +15,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.ClaimBackfillWindows
   alias FavnOrchestrator.Persistence.Commands.ClaimMaterialization
   alias FavnOrchestrator.Persistence.Commands.ClaimRecoveryBatch
+  alias FavnOrchestrator.Persistence.Commands.ClaimRun
   alias FavnOrchestrator.Persistence.Commands.CommitRunTransition
   alias FavnOrchestrator.Persistence.Commands.CreateRun
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
@@ -22,6 +24,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.DeploymentTarget
   alias FavnOrchestrator.Persistence.Commands.ExpireAdmission
   alias FavnOrchestrator.Persistence.Commands.FinishMaterialization
+  alias FavnOrchestrator.Persistence.Commands.LogEntry
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease
@@ -33,12 +36,15 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Logs
+  alias FavnOrchestrator.LogWriter
   alias FavnOrchestrator.TargetStatus
   alias FavnStoragePostgres.Admission.Store, as: AdmissionStore
   alias FavnStoragePostgres.Backfills.Store, as: BackfillStore
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Idempotency.Transaction, as: IdempotencyTransaction
   alias FavnStoragePostgres.Materialization.Store, as: MaterializationStore
+  alias FavnStoragePostgres.Logs.Store, as: LogStore
   alias FavnStoragePostgres.Outbox.Sequencer
   alias FavnStoragePostgres.Outbox.Writer, as: OutboxWriter
   alias FavnStoragePostgres.Projections.Projector
@@ -48,6 +54,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   alias FavnStoragePostgres.Runs.Store, as: RunStore
   alias FavnStoragePostgres.Scheduler.Store, as: SchedulerStore
   alias FavnStoragePostgres.StorageV2.Migrations
+  alias FavnStoragePostgres.Schemas.OutboxEvent
 
   @node_ids ~w(node-a node-b node-c)
 
@@ -225,6 +232,258 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
                  occurred_at: DateTime.utc_now()
                }
              })
+  end
+
+  @tag :slow
+  test "three BEAM nodes partition PostgreSQL work and fence a crashed owner", fixture do
+    peers = start_postgres_peers!(3)
+
+    on_exit(fn ->
+      Enum.each(peers, &stop_peer/1)
+    end)
+
+    admission_runs = Enum.map(1..3, fn _index -> create_run!(fixture) end)
+
+    admissions =
+      peers
+      |> Enum.zip(admission_runs)
+      |> Task.async_stream(
+        fn {peer, run} ->
+          command = %{admit_command(fixture, run.id) | owner_id: peer.owner_id}
+          peer_call(peer, AdmissionStore, :admit, [command])
+        end,
+        max_concurrency: 3,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn {:ok, {:ok, decision}} -> decision end)
+
+    assert Enum.count(admissions, &(&1.status == :admitted)) == 1
+    assert Enum.count(admissions, &(&1.status == :waiting)) == 2
+
+    materializations =
+      peers
+      |> Enum.zip(admission_runs)
+      |> Task.async_stream(
+        fn {peer, run} ->
+          peer_call(peer, MaterializationStore, :claim, [
+            %ClaimMaterialization{
+              workspace_context: fixture.workspace_context,
+              command_id: "multi-node-materialization:#{run.id}",
+              claim_key: "multi-node-shared-materialization:#{fixture.workspace_id}",
+              deployment_id: fixture.deployment_id,
+              target_kind: :asset,
+              target_id: fixture.target_id,
+              partition_key: "2026-07-18",
+              run_id: run.id,
+              owner_id: peer.owner_id,
+              lease_duration_ms: 60_000,
+              occurred_at: DateTime.utc_now()
+            }
+          ])
+        end,
+        max_concurrency: 3,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn {:ok, {:ok, decision}} -> decision end)
+
+    assert Enum.count(materializations, &(&1.status == :claimed)) == 1
+    assert Enum.count(materializations, &(&1.status == :competing)) == 2
+
+    release_projector_claim!()
+    drain_outbox()
+    drain_projector()
+    release_projector_claim!()
+
+    runs = Enum.map(1..36, fn _index -> create_run!(fixture) end)
+
+    run_claims =
+      peers
+      |> Task.async_stream(
+        fn peer ->
+          peer_call(peer, RunOwnershipStore, :claim_recovery_batch, [
+            %ClaimRecoveryBatch{
+              workspace_context: fixture.workspace_context,
+              batch_id: "multi-node-recovery:#{fixture.workspace_id}:#{peer.owner_id}",
+              owner_id: peer.owner_id,
+              lease_duration_ms: 60_000,
+              limit: 20
+            }
+          ])
+        end,
+        max_concurrency: 3,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.flat_map(fn {:ok, {:ok, claims}} -> claims end)
+
+    recoverable_runs = admission_runs ++ runs
+
+    assert length(run_claims) == length(recoverable_runs)
+
+    assert run_claims |> Enum.map(& &1.run_id) |> Enum.uniq() |> length() ==
+             length(recoverable_runs)
+
+    assert Enum.all?(run_claims, &(&1.owner_id in Enum.map(peers, fn peer -> peer.owner_id end)))
+
+    assert Enum.all?(recoverable_runs, fn run ->
+             Enum.any?(run_claims, &(&1.run_id == run.id))
+           end)
+
+    schedule_claims =
+      peers
+      |> Task.async_stream(
+        fn peer ->
+          peer_call(peer, SchedulerStore, :claim_due_schedules, [
+            %ClaimDueSchedules{
+              workspace_context: fixture.workspace_context,
+              batch_id: "multi-node-schedules:#{fixture.workspace_id}:#{peer.owner_id}",
+              owner_id: peer.owner_id,
+              lease_duration_ms: 60_000,
+              limit: 20
+            }
+          ])
+        end,
+        max_concurrency: 3,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.flat_map(fn {:ok, {:ok, claims}} -> claims end)
+
+    assert length(schedule_claims) == 36
+    assert schedule_claims |> Enum.map(& &1.schedule_id) |> Enum.uniq() |> length() == 36
+
+    publications =
+      peers
+      |> Task.async_stream(
+        fn peer -> peer_call(peer, Sequencer, :sequence_batch, [20]) end,
+        max_concurrency: 3,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.flat_map(fn {:ok, {:ok, batch}} -> batch end)
+
+    assert length(publications) == 36
+    assert publications |> Enum.map(& &1.outbox_event_id) |> Enum.uniq() |> length() == 36
+    assert publications |> Enum.map(& &1.publication_id) |> Enum.uniq() |> length() == 36
+
+    projector_results =
+      peers
+      |> Task.async_stream(
+        fn peer ->
+          result =
+            peer_call(peer, Projector, :project_batch, [
+              peer.owner_id,
+              [limit: 12, lease_duration_ms: 1_000]
+            ])
+
+          {peer, result}
+        end,
+        max_concurrency: 3,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert [{projector_peer, %{count: 12}}] =
+             for(
+               {peer, {:ok, projection}} <- projector_results,
+               do: {peer, projection}
+             )
+
+    assert projector_results
+           |> Enum.count(fn {_peer, result} -> match?({:error, %{kind: :conflict}}, result) end) ==
+             2
+
+    crash_run = create_run!(fixture)
+    remaining_peers = Enum.reject(peers, &(&1.control == projector_peer.control))
+    [takeover_peer, stale_writer_peer] = remaining_peers
+
+    assert {:ok, stale_ownership} =
+             peer_call(projector_peer, RunOwnershipStore, :claim_run, [
+               %ClaimRun{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "multi-node-initial-claim:#{crash_run.id}",
+                 run_id: crash_run.id,
+                 owner_id: projector_peer.owner_id,
+                 lease_duration_ms: 1_000
+               }
+             ])
+
+    :ok = :peer.stop(projector_peer.control)
+    await_ownership_expiry!(fixture.workspace_id, crash_run.id, 5_000)
+    await_projector_expiry!(5_000)
+
+    assert {:ok, current_ownership} =
+             peer_call(takeover_peer, RunOwnershipStore, :claim_run, [
+               %ClaimRun{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "multi-node-takeover:#{crash_run.id}",
+                 run_id: crash_run.id,
+                 owner_id: takeover_peer.owner_id,
+                 lease_duration_ms: 60_000
+               }
+             ])
+
+    assert current_ownership.fencing_token == stale_ownership.fencing_token + 1
+
+    running = RunState.transition(crash_run, status: :running)
+
+    transition = fn owner_id, fencing_token, suffix ->
+      %CommitRunTransition{
+        workspace_context: fixture.workspace_context,
+        command_id: "multi-node-transition:#{crash_run.id}:#{suffix}",
+        expected_sequence: 1,
+        owner_id: owner_id,
+        fencing_token: fencing_token,
+        run: running,
+        event: %{
+          run_id: crash_run.id,
+          sequence: 2,
+          event_type: :run_started,
+          status: :running,
+          occurred_at: DateTime.utc_now()
+        }
+      }
+    end
+
+    assert {:error, %{kind: :fenced}} =
+             peer_call(stale_writer_peer, RunStore, :commit_transition, [
+               transition.(
+                 stale_ownership.owner_id,
+                 stale_ownership.fencing_token,
+                 "stale"
+               )
+             ])
+
+    assert {:ok, %{run: %{status: :running}}} =
+             peer_call(takeover_peer, RunStore, :commit_transition, [
+               transition.(
+                 current_ownership.owner_id,
+                 current_ownership.fencing_token,
+                 "current"
+               )
+             ])
+
+    assert {:ok, %{count: 24, last_publication_id: projected_through}} =
+             peer_call(takeover_peer, Projector, :project_batch, [
+               takeover_peer.owner_id,
+               [limit: 250, lease_duration_ms: 60_000]
+             ])
+
+    %{rows: [[last_publication_id]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT last_publication_id
+        FROM favn_control.outbox_publication_state
+        WHERE singleton_id = 1
+        """,
+        []
+      )
+
+    assert projected_through == last_publication_id
   end
 
   test "run identity and expected sequence serialize conflicting writers", fixture do
@@ -691,8 +950,160 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     assert late_publication == early_publication + 1
   end
 
+  test "log replay cannot skip a batch that commits after a later log identity", fixture do
+    drain_outbox()
+    parent = self()
+    suffix = random_id()
+    late_command = log_batch_command(fixture, "late-" <> suffix)
+    early_command = log_batch_command(fixture, "early-" <> suffix)
+
+    late =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          assert {:ok, [entry]} = LogStore.append_batch(late_command)
+          send(parent, {:late_log_inserted, entry.log_id})
+
+          receive do
+            :commit -> entry.log_id
+          after
+            10_000 -> Repo.rollback(:commit_signal_timeout)
+          end
+        end)
+      end)
+
+    assert_receive {:late_log_inserted, late_log_id}, 5_000
+    assert {:ok, [early_entry]} = LogStore.append_batch(early_command)
+    assert late_log_id < early_entry.log_id
+
+    assert {:ok, [_early_publication]} = Sequencer.sequence_batch(10)
+    assert {:ok, [early_replay]} = Logs.replay(fixture.workspace_context, 0, %{}, limit: 10)
+    assert early_replay.message == early_command.entries |> hd() |> Map.fetch!(:message)
+
+    send(late.pid, :commit)
+    assert {:ok, ^late_log_id} = Task.await(late, 10_000)
+    assert {:ok, [_late_publication]} = Sequencer.sequence_batch(10)
+
+    assert {:ok, [late_replay]} =
+             Logs.replay(
+               fixture.workspace_context,
+               early_replay.global_sequence,
+               %{},
+               limit: 10
+             )
+
+    assert late_replay.message == late_command.entries |> hd() |> Map.fetch!(:message)
+    assert late_replay.global_sequence > early_replay.global_sequence
+  end
+
+  test "canonical node and asset identities match historical, replay, and live logs", fixture do
+    {:ok, _started} = Application.ensure_all_started(:phoenix_pubsub)
+
+    if is_nil(Process.whereis(FavnOrchestrator.PubSub)) do
+      start_supervised!({Phoenix.PubSub, name: FavnOrchestrator.PubSub})
+    end
+
+    drain_outbox()
+    suffix = random_id()
+    run_id = "identity-run:" <> suffix
+    node_key = {{MyApp.ConcurrentAsset, :asset}, nil}
+    asset_ref = {MyApp.ConcurrentAsset, :asset}
+    filter = %Favn.Log.Filter{run_id: run_id, node_key: node_key, asset_ref: asset_ref}
+
+    assert {:ok, subscription} = Logs.subscribe_logs(fixture.workspace_context, filter)
+
+    on_exit(fn ->
+      _ = Logs.unsubscribe_logs(subscription)
+    end)
+
+    assert {:ok, [_persisted]} =
+             LogWriter.write(
+               fixture.workspace_context,
+               %Favn.Log.Entry{
+                 source: :runner,
+                 level: :info,
+                 message: "canonical identity",
+                 run_id: run_id,
+                 node_key: node_key,
+                 asset_ref: asset_ref,
+                 occurred_at: DateTime.utc_now()
+               },
+               batch_id: "identity-log-batch:" <> suffix,
+               command_id: "identity-log-command:" <> suffix
+             )
+
+    assert_receive {:favn_log_entry, live}, 5_000
+    assert String.starts_with?(live.metadata["node_key"], "node:")
+    assert live.metadata["asset_ref"] == "asset:Elixir.MyApp.ConcurrentAsset:asset"
+
+    assert {:ok, historical} =
+             Logs.page(fixture.workspace_context, filter, direction: :older, limit: 10)
+
+    assert Enum.map(historical.items, & &1.message) == ["canonical identity"]
+
+    assert {:ok, [_publication]} = Sequencer.sequence_batch(10)
+
+    assert {:ok, [replayed]} =
+             Logs.replay(fixture.workspace_context, 0, filter, limit: 10)
+
+    assert replayed.node_key == live.metadata["node_key"]
+    assert replayed.asset_ref == live.metadata["asset_ref"]
+  end
+
+  test "log replay applies asset filters before its bounded publication page", fixture do
+    drain_outbox()
+    suffix = random_id()
+    now = DateTime.utc_now()
+    run_id = "filtered-run:" <> suffix
+    target_step = "target-step:" <> suffix
+
+    entries =
+      Enum.map(1..200, fn index ->
+        %LogEntry{
+          source: "runner",
+          level: :info,
+          message: "unrelated #{index}",
+          run_id: run_id,
+          occurred_at: now,
+          metadata: %{"asset_step_id" => "other-step:" <> Integer.to_string(index)}
+        }
+      end) ++
+        [
+          %LogEntry{
+            source: "runner",
+            level: :info,
+            message: "matching log",
+            run_id: run_id,
+            occurred_at: now,
+            metadata: %{"asset_step_id" => target_step}
+          }
+        ]
+
+    assert {:ok, persisted} =
+             LogStore.append_batch(%AppendLogBatch{
+               workspace_context: fixture.workspace_context,
+               command_id: "filtered-log-command:" <> suffix,
+               batch_id: "filtered-log-batch:" <> suffix,
+               occurred_at: now,
+               entries: entries
+             })
+
+    assert length(persisted) == 201
+    assert {:ok, [_publication]} = Sequencer.sequence_batch(10)
+
+    assert {:ok, [matching]} =
+             Logs.replay(
+               fixture.workspace_context,
+               0,
+               %Favn.Log.Filter{run_id: run_id, asset_step_id: target_step},
+               limit: 200
+             )
+
+    assert matching.message == "matching log"
+  end
+
   test "competing projectors advance one durable ordered cursor", fixture do
     drain_outbox()
+    release_projector_claim!()
     drain_projector()
     Enum.each(1..30, fn _index -> create_run!(fixture) end)
     drain_outbox()
@@ -730,6 +1141,85 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
       )
 
     assert projected_publication_id == last_publication_id
+    release_projector_claim!()
+  end
+
+  test "late failure recording cannot block readiness after projector takeover" do
+    release_projector_claim!()
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.projection_cursors
+        (projector_name, shard_id, last_publication_id, fencing_token, version, updated_at)
+      VALUES ('control_plane_v1', 0, 0, 0, 1, clock_timestamp())
+      ON CONFLICT (projector_name, shard_id) DO UPDATE
+      SET last_publication_id = 0, owner_id = NULL, claim_expires_at = NULL,
+          updated_at = clock_timestamp()
+      """,
+      []
+    )
+
+    parent = self()
+
+    takeover =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          SQL.query!(
+            Repo,
+            """
+            SELECT last_publication_id
+            FROM favn_control.projection_cursors
+            WHERE projector_name = 'control_plane_v1' AND shard_id = 0
+            FOR UPDATE
+            """,
+            []
+          )
+
+          send(parent, :cursor_locked)
+
+          receive do
+            :commit_takeover -> :ok
+          end
+
+          SQL.query!(
+            Repo,
+            """
+            UPDATE favn_control.projection_cursors
+            SET last_publication_id = 42, updated_at = clock_timestamp()
+            WHERE projector_name = 'control_plane_v1' AND shard_id = 0
+            """,
+            []
+          )
+        end)
+      end)
+
+    assert_receive :cursor_locked, 5_000
+
+    event = %OutboxEvent{
+      publication_id: 42,
+      workspace_id: "takeover-workspace",
+      event_kind: "run.submitted"
+    }
+
+    recorder = Task.async(fn -> Projector.record_failure_if_unprojected(event, :unexpected) end)
+    send(takeover.pid, :commit_takeover)
+
+    assert {:ok, _transaction_result} = Task.await(takeover, 5_000)
+    assert :already_projected = Task.await(recorder, 5_000)
+
+    %{rows: [[failure_count]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT count(*)
+        FROM favn_control.projection_failures
+        WHERE projector_name = 'control_plane_v1' AND shard_id = 0 AND publication_id = 42
+        """,
+        []
+      )
+
+    assert failure_count == 0
   end
 
   defp provision_fixture(schedule_count, version) do
@@ -763,6 +1253,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
 
     assert {:ok, _runtime} =
              RegistryStore.deploy_manifest(%DeployManifest{
+               platform_context: platform_context,
                workspace_context: workspace_context,
                deployment_id: deployment_id,
                manifest_version_id: version.manifest_version_id,
@@ -772,13 +1263,18 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
                    target_kind: :asset,
                    target_id: target_id,
                    selection_source: :common,
-                   customer_visible: true
+                   customer_visible: true,
+                   descriptor: %{"target_id" => target_id, "label" => target_id}
                  },
                  %DeploymentTarget{
                    target_kind: :pipeline,
                    target_id: pipeline_target_id,
                    selection_source: :common,
-                   customer_visible: true
+                   customer_visible: true,
+                   descriptor: %{
+                     "target_id" => pipeline_target_id,
+                     "label" => pipeline_target_id
+                   }
                  }
                ],
                schedules:
@@ -929,10 +1425,148 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     end
   end
 
+  defp log_batch_command(fixture, suffix) do
+    now = DateTime.utc_now()
+
+    %AppendLogBatch{
+      workspace_context: fixture.workspace_context,
+      command_id: "log-command:" <> suffix,
+      batch_id: "log-batch:" <> suffix,
+      occurred_at: now,
+      entries: [
+        %LogEntry{
+          source: "runner",
+          level: :info,
+          message: "log " <> suffix,
+          occurred_at: now
+        }
+      ]
+    }
+  end
+
   defp drain_projector(owner_id \\ "node-a") do
     case Projector.project_batch(owner_id, limit: 250, lease_duration_ms: 30_000) do
       {:ok, %{count: 250}} -> drain_projector(owner_id)
       {:ok, _result} -> :ok
+    end
+  end
+
+  defp release_projector_claim! do
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.projection_cursors
+      SET owner_id = NULL, claim_expires_at = NULL
+      WHERE projector_name = 'control_plane_v1' AND shard_id = 0
+      """,
+      []
+    )
+
+    :ok
+  end
+
+  defp start_postgres_peers!(count) do
+    url = System.fetch_env!("FAVN_DATABASE_URL")
+    code_paths = :code.get_path()
+    unique = random_id()
+
+    {:ok, repo_options} =
+      Config.repo_options(url: url, ssl_mode: :disable, pool_size: 4)
+
+    repo_child = Supervisor.child_spec({Repo, repo_options}, id: Repo)
+
+    Enum.map(1..count, fn index ->
+      {:ok, control, node} =
+        :peer.start_link(%{
+          name: "favn_storage_#{index}_#{unique}",
+          connection: :standard_io,
+          wait_boot: 30_000
+        })
+
+      :ok = :peer.call(control, :code, :add_paths, [code_paths], 30_000)
+      {:ok, _started} = :peer.call(control, Application, :ensure_all_started, [:ecto_sql], 30_000)
+      :ok = :peer.call(control, Logger, :configure, [[level: :warning]], 30_000)
+
+      {:ok, _repo} =
+        :peer.call(control, Supervisor, :start_child, [:kernel_sup, repo_child], 30_000)
+
+      %{control: control, node: node, owner_id: Atom.to_string(node)}
+    end)
+  end
+
+  defp peer_call(peer, module, function, arguments) do
+    :peer.call(peer.control, module, function, arguments, 30_000)
+  end
+
+  defp stop_peer(peer) do
+    if Process.alive?(peer.control) do
+      try do
+        :peer.stop(peer.control)
+      catch
+        :exit, _reason -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  defp await_ownership_expiry!(workspace_id, run_id, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_await_ownership_expiry!(workspace_id, run_id, deadline)
+  end
+
+  defp await_projector_expiry!(timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_await_projector_expiry!(deadline)
+  end
+
+  defp do_await_ownership_expiry!(workspace_id, run_id, deadline) do
+    %{rows: [[expired?]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT expires_at <= clock_timestamp()
+        FROM favn_control.run_ownerships
+        WHERE workspace_id = $1 AND run_id = $2
+        """,
+        [workspace_id, run_id]
+      )
+
+    cond do
+      expired? ->
+        :ok
+
+      System.monotonic_time(:millisecond) < deadline ->
+        Process.sleep(25)
+        do_await_ownership_expiry!(workspace_id, run_id, deadline)
+
+      true ->
+        flunk("run ownership did not expire before the multi-node test deadline")
+    end
+  end
+
+  defp do_await_projector_expiry!(deadline) do
+    %{rows: [[expired?]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT claim_expires_at <= clock_timestamp()
+        FROM favn_control.projection_cursors
+        WHERE projector_name = 'control_plane_v1' AND shard_id = 0
+        """,
+        []
+      )
+
+    cond do
+      expired? ->
+        :ok
+
+      System.monotonic_time(:millisecond) < deadline ->
+        Process.sleep(25)
+        do_await_projector_expiry!(deadline)
+
+      true ->
+        flunk("projection ownership did not expire before the multi-node test deadline")
     end
   end
 

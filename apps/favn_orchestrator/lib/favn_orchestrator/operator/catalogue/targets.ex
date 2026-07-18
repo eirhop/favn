@@ -17,6 +17,12 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.ManifestTarget
 
+  @descriptor_keys ~w(
+    target_id label asset_ref type relation metadata execution_pool runtime_config
+    depends_on materialization window max_concurrency can_run_without_window?
+    can_backfill? name selected_assets dependencies
+  )a
+
   @doc "Returns sorted asset targets for a manifest version."
   @spec assets(Version.t()) :: [map()]
   def assets(%Version{} = version) do
@@ -81,6 +87,32 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
     |> Map.put(:dependencies, pipeline_dependencies(pipeline))
   end
 
+  @doc "Restores the fixed top-level keys of a descriptor read from JSONB."
+  @spec restore_descriptor(map()) :: map()
+  def restore_descriptor(descriptor) when is_map(descriptor) do
+    restored =
+      Enum.reduce(@descriptor_keys, %{}, fn key, acc ->
+        case fetch_descriptor_value(descriptor, key) do
+          {:ok, value} -> Map.put(acc, key, value)
+          :error -> acc
+        end
+      end)
+
+    case Map.get(restored, :dependencies) do
+      value when value in ["all", "none", "unknown"] ->
+        Map.put(restored, :dependencies, String.to_existing_atom(value))
+
+      _other ->
+        restored
+    end
+  end
+
+  @doc "Serializes a target descriptor into its JSONB-safe persistence form."
+  @spec serialize_descriptor(map()) :: %{optional(String.t()) => term()}
+  def serialize_descriptor(descriptor) when is_map(descriptor) do
+    Map.new(descriptor, fn {key, value} -> {to_string(key), normalize_data(value)} end)
+  end
+
   @doc "Resolves a pipeline's selected asset refs with a safe raw-selector fallback."
   @spec selected_refs(Index.t(), Pipeline.t()) :: [Favn.Ref.t()]
   def selected_refs(%Index{} = index, %Pipeline{} = pipeline) do
@@ -97,6 +129,13 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
   end
 
   def ref_string(value), do: inspect(value)
+
+  defp fetch_descriptor_value(descriptor, key) do
+    case Map.fetch(descriptor, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(descriptor, Atom.to_string(key))
+    end
+  end
 
   defp raw_selector_refs(%Index{} = index, pipeline) do
     pipeline.selectors

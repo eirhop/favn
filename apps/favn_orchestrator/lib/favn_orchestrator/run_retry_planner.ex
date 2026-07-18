@@ -72,12 +72,30 @@ defmodule FavnOrchestrator.RunRetryPlanner do
     end
   end
 
-  defp ensure_retryable_run(%RunState{status: status})
-       when status in @terminal_retryable_statuses,
-       do: :ok
+  defp ensure_retryable_run(%RunState{status: status} = run)
+       when status in @terminal_retryable_statuses do
+    if truncated_result?(run) do
+      {:error, :run_result_truncated}
+    else
+      :ok
+    end
+  end
 
   defp ensure_retryable_run(%RunState{status: status}),
     do: {:error, {:run_not_retryable, status}}
+
+  defp truncated_result?(%RunState{} = run) do
+    run.result
+    |> result_metadata()
+    |> field(:result_retention, %{})
+    |> field(:truncated, false)
+  end
+
+  defp result_metadata(result) when is_map(result), do: field(result, :metadata, %{})
+  defp result_metadata(_result), do: %{}
+
+  defp field(value, key, default) when is_map(value),
+    do: Map.get(value, key, Map.get(value, Atom.to_string(key), default))
 
   defp remaining_node_keys(%RunState{plan: %Plan{} = plan, result: result}) do
     planned = planned_node_keys(plan)

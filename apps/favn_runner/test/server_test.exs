@@ -9,7 +9,7 @@ defmodule FavnRunner.ServerTest do
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
 
-  test "honors an orchestrator-allocated execution id and rejects reuse" do
+  test "replays an orchestrator execution id only for the exact same work" do
     server = start_runner_server()
 
     {:ok, version} =
@@ -27,16 +27,94 @@ defmodule FavnRunner.ServerTest do
       |> Map.put(:execution_id, execution_id)
 
     assert {:ok, ^execution_id} = FavnRunner.submit_work(work, server: server)
+    assert {:ok, ^execution_id} = FavnRunner.submit_work(work, server: server)
+
+    changed_work = %{work | params: %{different: true}}
 
     assert {:error,
             %RunnerError{
               type: :runner_execution_id_in_use,
               retryable?: false,
               outcome: :safe_failure
-            }} = FavnRunner.submit_work(work, server: server)
+            }} = FavnRunner.submit_work(changed_work, server: server)
 
     assert {:ok, %{status: :acknowledged}} =
              FavnRunner.cancel_work(execution_id, %{reason: :test_cleanup}, server: server)
+
+    assert {:ok, _result} = FavnRunner.await_result(execution_id, 1_000, server: server)
+    assert {:ok, ^execution_id} = FavnRunner.submit_work(work, server: server)
+
+    assert {:error, %RunnerError{type: :runner_execution_id_in_use}} =
+             FavnRunner.submit_work(changed_work, server: server)
+  end
+
+  test "exact replay remains available after its manifest cache entry is evicted" do
+    {:ok, manifest_store} =
+      start_supervised({FavnRunner.ManifestStore, name: nil, max_entries: 1})
+
+    server = start_runner_server(manifest_store: manifest_store)
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv_replay")
+      )
+
+    assert :ok =
+             FavnRunner.register_manifest(version,
+               server: server,
+               manifest_store: manifest_store
+             )
+
+    execution_id = unique_id("rx_evicted_replay")
+
+    work =
+      version
+      |> build_work(FavnRunner.ServerTest.SlowAsset, manifest_store: manifest_store)
+      |> Map.put(:execution_id, execution_id)
+
+    submit_opts = [server: server, manifest_store: manifest_store]
+    assert {:ok, ^execution_id} = FavnRunner.submit_work(work, submit_opts)
+
+    assert :ok =
+             FavnRunner.release_manifest(work.manifest_lease_id, manifest_store: manifest_store)
+
+    {:ok, replacement} =
+      Version.new(build_manifest(FavnRunner.ServerTest.FastAsset),
+        manifest_version_id: unique_id("mv_replacement")
+      )
+
+    assert :ok = FavnRunner.register_manifest(replacement, manifest_store: manifest_store)
+
+    assert {:error, :manifest_not_found} =
+             FavnRunner.ManifestStore.fetch(
+               version.manifest_version_id,
+               version.content_hash,
+               server: manifest_store
+             )
+
+    assert {:ok, ^execution_id} = FavnRunner.submit_work(work, submit_opts)
+
+    assert {:ok, %{status: :acknowledged}} =
+             FavnRunner.cancel_work(execution_id, %{reason: :test_cleanup}, server: server)
+
+    assert {:ok, _result} = FavnRunner.await_result(execution_id, 1_000, server: server)
+    assert {:ok, ^execution_id} = FavnRunner.submit_work(work, submit_opts)
+  end
+
+  test "runtime input resolution honors a configured manifest store" do
+    {:ok, manifest_store} = start_supervised({FavnRunner.ManifestStore, name: nil})
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.FastAsset),
+        manifest_version_id: unique_id("mv_custom_resolver_store")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, manifest_store: manifest_store)
+
+    work = build_work(version, FavnRunner.ServerTest.FastAsset, manifest_store: manifest_store)
+
+    assert {:ok, nil} =
+             FavnRunner.resolve_runtime_inputs(work, manifest_store: manifest_store)
   end
 
   test "rejects an invalid orchestrator-allocated execution id" do
@@ -70,13 +148,7 @@ defmodule FavnRunner.ServerTest do
 
     assert :ok = FavnRunner.register_manifest(version)
 
-    work =
-      %RunnerWork{
-        run_id: unique_id("run"),
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
-        asset_ref: {FavnRunner.ServerTest.SlowAsset, :asset}
-      }
+    work = build_work(version, FavnRunner.ServerTest.SlowAsset)
 
     assert {:ok, execution_id} = FavnRunner.submit_work(work)
 
@@ -95,13 +167,7 @@ defmodule FavnRunner.ServerTest do
 
     assert :ok = FavnRunner.register_manifest(version)
 
-    work =
-      %RunnerWork{
-        run_id: unique_id("run"),
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
-        asset_ref: {FavnRunner.ServerTest.SlowAsset, :asset}
-      }
+    work = build_work(version, FavnRunner.ServerTest.SlowAsset)
 
     assert {:ok, execution_id} = FavnRunner.submit_work(work)
 
@@ -134,13 +200,7 @@ defmodule FavnRunner.ServerTest do
 
     assert :ok = FavnRunner.register_manifest(version)
 
-    work =
-      %RunnerWork{
-        run_id: unique_id("run"),
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
-        asset_ref: {FavnRunner.ServerTest.SlowAsset, :asset}
-      }
+    work = build_work(version, FavnRunner.ServerTest.SlowAsset)
 
     assert {:ok, execution_id} = FavnRunner.submit_work(work)
 
@@ -163,13 +223,7 @@ defmodule FavnRunner.ServerTest do
 
     assert :ok = FavnRunner.register_manifest(version)
 
-    work =
-      %RunnerWork{
-        run_id: unique_id("run"),
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
-        asset_ref: {FavnRunner.ServerTest.SlowAsset, :asset}
-      }
+    work = build_work(version, FavnRunner.ServerTest.SlowAsset)
 
     assert {:ok, execution_id} = FavnRunner.submit_work(work)
     assert {:error, :timeout} = FavnRunner.await_result(execution_id, 10)
@@ -218,7 +272,7 @@ defmodule FavnRunner.ServerTest do
   end
 
   test "submit_work rejects overload when active worker capacity is exhausted" do
-    server = start_runner_server(admission: [max_active_workers: 1, max_queue_size: 0])
+    server = start_runner_server(admission: [max_active_workers: 1])
 
     {:ok, version} =
       Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
@@ -245,20 +299,15 @@ defmodule FavnRunner.ServerTest do
 
     assert {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
     assert diagnostics.admission.active_worker_count == 1
-    assert diagnostics.admission.queued_worker_count == 0
     assert diagnostics.admission.rejected_overload_count == 1
     assert diagnostics.admission.max_active_workers == 1
-    assert diagnostics.admission.max_queue_size == 0
 
     assert {:ok, %{status: :acknowledged}} =
              FavnRunner.cancel_work(execution_id, %{}, server: server)
   end
 
   test "submit_work rejects instead of blocking when bounded capacity is exhausted" do
-    server =
-      start_runner_server(
-        admission: [max_active_workers: 1, max_queue_size: 1, queue_timeout_ms: 1_000]
-      )
+    server = start_runner_server(admission: [max_active_workers: 1])
 
     {:ok, version} =
       Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
@@ -283,15 +332,12 @@ defmodule FavnRunner.ServerTest do
                server: server
              )
 
-    assert {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
-    assert diagnostics.admission.queued_worker_count == 0
-
     assert {:ok, %{status: :acknowledged}} =
              FavnRunner.cancel_work(first_execution_id, %{}, server: server)
   end
 
   test "submit_work accepts new work after a worker completes" do
-    server = start_runner_server(admission: [max_active_workers: 1, max_queue_size: 0])
+    server = start_runner_server(admission: [max_active_workers: 1])
 
     {:ok, version} =
       Version.new(build_manifest(FavnRunner.ServerTest.FastAsset),
@@ -317,16 +363,36 @@ defmodule FavnRunner.ServerTest do
              FavnRunner.await_result(second_execution_id, 1_000, server: server)
   end
 
-  test "invalid admission config normalizes to safe defaults" do
+  test "worker compacts oversized metadata before sending it to the central server" do
     server =
       start_runner_server(
-        admission: [max_active_workers: 0, max_queue_size: -1, queue_timeout_ms: :bad]
+        retention: [
+          max_completed_execution_bytes: 20_000,
+          max_completed_bytes: 100_000
+        ]
       )
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.LargeMetadataAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    work = build_work(version, FavnRunner.ServerTest.LargeMetadataAsset)
+
+    assert {:ok, execution_id} = FavnRunner.submit_work(work, server: server)
+    assert {:ok, result} = FavnRunner.await_result(execution_id, 1_000, server: server)
+
+    assert :erlang.external_size(result) <= 15_000
+    assert result.metadata.retention.truncated
+    assert result.metadata.retention.original_bytes > 1_000_000
+  end
+
+  test "invalid admission config normalizes to safe defaults" do
+    server =
+      start_runner_server(admission: [max_active_workers: 0])
 
     assert {:ok, diagnostics} = FavnRunner.diagnostics(server: server)
     assert diagnostics.admission.max_active_workers == System.schedulers_online()
-    assert diagnostics.admission.max_queue_size == System.schedulers_online() * 2
-    assert diagnostics.admission.queue_timeout_ms == 30_000
   end
 
   test "log replay is bounded to newest entries in chronological order" do
@@ -471,11 +537,35 @@ defmodule FavnRunner.ServerTest do
   defp unique_id(prefix),
     do: prefix <> "_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
-  defp build_work(%Version{} = version, asset_module) do
+  defp build_work(%Version{} = version, asset_module, opts \\ []) do
+    lease_id = unique_id("manifest_lease")
+    expires_at = DateTime.add(DateTime.utc_now(), 3_600, :second)
+    manifest_opts = Keyword.take(opts, [:manifest_store])
+
+    planned_asset_refs = Enum.map(version.manifest.assets, & &1.ref)
+
+    assert :ok =
+             FavnRunner.acquire_manifest(
+               version,
+               lease_id,
+               expires_at,
+               planned_asset_refs,
+               manifest_opts
+             )
+
+    on_exit(fn ->
+      try do
+        FavnRunner.release_manifest(lease_id, manifest_opts)
+      catch
+        :exit, _reason -> :ok
+      end
+    end)
+
     %RunnerWork{
       run_id: unique_id("run"),
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
+      manifest_lease_id: lease_id,
       asset_ref: {asset_module, :asset}
     }
   end
@@ -484,7 +574,7 @@ defmodule FavnRunner.ServerTest do
     server = String.to_atom(unique_id("runner_server"))
 
     server_opts =
-      if Keyword.has_key?(opts, :admission) or Keyword.has_key?(opts, :retention) do
+      if Enum.any?([:admission, :retention, :manifest_store], &Keyword.has_key?(opts, &1)) do
         opts
       else
         [retention: opts]
@@ -519,4 +609,9 @@ defmodule FavnRunner.ServerTest.SlowAsset do
     Process.sleep(5_000)
     :ok
   end
+end
+
+defmodule FavnRunner.ServerTest.LargeMetadataAsset do
+  @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
+  def asset(_ctx), do: {:ok, %{payload: String.duplicate("x", 2 * 1_024 * 1_024)}}
 end

@@ -5,6 +5,10 @@ defmodule FavnOrchestrator.RunnerClientValidatorTest do
 
   defmodule CompleteClient do
     def register_manifest(_, _), do: :ok
+    def ensure_manifest(_, _, _), do: :ok
+    def acquire_manifest(_, _, _, _, _), do: :ok
+    def renew_manifest(_, _, _), do: :ok
+    def release_manifest(_, _), do: :ok
     def submit_work(_, _), do: {:ok, "exec_1"}
     def await_result(_, _, _), do: {:error, :not_started}
     def cancel_work(_, _, _), do: :ok

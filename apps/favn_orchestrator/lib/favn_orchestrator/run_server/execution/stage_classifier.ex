@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
   alias Favn.Retry.Policy, as: RetryPolicy
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.Freshness.Decider
+  alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunServer.Execution.ExecutionPool
   alias FavnOrchestrator.RunServer.Execution.FreshnessContext
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
@@ -23,8 +24,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
 
   @type result ::
           {:ok, RunState.t(), [Favn.Plan.node_key()], map(), FreshnessContext.t(),
-           terminal_failure() | nil}
+           terminal_failure() | nil, [Favn.Plan.node_key()]}
           | {:error, RunState.t()}
+
+  @max_batch_nodes 4
+  @max_batch_ms 25
 
   @doc "Returns runnable nodes and persists non-running stage decisions."
   @spec classify(
@@ -43,14 +47,16 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
         freshness_context,
         terminal_failure
       ) do
-    decisions = decisions(run_state, node_keys, freshness_context)
+    {batch, remaining} = take_batch(node_keys)
+    decisions = decisions(run_state, batch, freshness_context)
 
-    node_keys
+    batch
     |> Enum.reduce_while(
       {:ok, run_state, [], decisions, freshness_context, terminal_failure},
       &classify_node(&1, &2, version, stage)
     )
     |> restore_runnable_order()
+    |> append_remaining(remaining)
   end
 
   @doc false
@@ -59,7 +65,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
     Decider.decide_many(run_state.plan, node_keys,
       assets_by_ref: freshness_context.assets_by_ref,
       refresh_policy: freshness_context.refresh_policy,
-      forced_node_keys: Keyword.get(opts, :forced_node_keys, []),
+      forced_node_keys: forced_node_keys(run_state, freshness_context, opts),
       prior_states: freshness_context.prior_states,
       current_states: freshness_context.current_states,
       completed_node_keys: freshness_context.completed_node_keys,
@@ -123,7 +129,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
         {:halt, {:error, Snapshots.cancelled_snapshot(ctx.run)}}
 
       {:error, reason} ->
-        {:halt, {:error, RunState.transition(ctx.run, status: :error, error: reason)}}
+        {:halt, {:error, Snapshots.snapshot_update(ctx.run, status: :error, error: reason)}}
     end
   end
 
@@ -131,6 +137,37 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
     do: {:ok, run, Enum.reverse(runnable), decisions, context, failure}
 
   defp restore_runnable_order({:error, %RunState{}} = error), do: error
+
+  defp append_remaining({:ok, run, runnable, decisions, context, failure}, remaining),
+    do: {:ok, run, runnable, decisions, context, failure, remaining}
+
+  defp append_remaining({:error, %RunState{}} = error, _remaining), do: error
+
+  defp take_batch(node_keys) do
+    started_at = System.monotonic_time(:millisecond)
+
+    Enum.reduce_while(node_keys, {[], node_keys, 0}, fn node_key, {batch, remaining, count} ->
+      if count >= @max_batch_nodes or
+           (count > 0 and System.monotonic_time(:millisecond) - started_at >= @max_batch_ms) do
+        {:halt, {Enum.reverse(batch), remaining, count}}
+      else
+        {:cont, {[node_key | batch], tl(remaining), count + 1}}
+      end
+    end)
+    |> then(fn {batch, remaining, _count} -> {batch, remaining} end)
+  end
+
+  defp forced_node_keys(run_state, freshness_context, opts) do
+    case Keyword.fetch(opts, :forced_node_keys) do
+      {:ok, forced} ->
+        forced
+
+      :error ->
+        Map.get_lazy(freshness_context, :forced_node_keys, fn ->
+          RefreshPolicy.expand_force_set(freshness_context.refresh_policy, run_state.plan)
+        end)
+    end
+  end
 
   @doc "Persists one already-classified fresh or blocked node decision."
   @spec persist_decision(

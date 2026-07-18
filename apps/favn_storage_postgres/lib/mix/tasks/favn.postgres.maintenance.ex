@@ -128,6 +128,7 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
       "idempotency" -> :idempotency
       "materialization-claims" -> :materialization_claims
       "projection-failures" -> :projection_failures
+      "execution-packages" -> :execution_packages
       _invalid -> usage!()
     end
   end
@@ -171,7 +172,7 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
       mix favn.postgres.maintenance reconcile --job-id ID \\
         --invariant capacity-counters [--workspace ID] [--repair] [--limit N]
       mix favn.postgres.maintenance purge --job-id ID \\
-        --target logs|sessions|idempotency|materialization-claims|projection-failures \\
+        --target logs|sessions|idempotency|materialization-claims|projection-failures|execution-packages \\
         --cutoff ISO8601 [--workspace ID] [--limit N]
     """)
   end

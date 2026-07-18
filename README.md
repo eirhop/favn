@@ -48,7 +48,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.runs`, `mix favn.logs`, `mix favn.inspect`, `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, explicit service wrapper pid/log-write failures, structured local API failure diagnostics, and normalized runner RPC dispatch failures at the orchestrator boundary
 - the old SvelteKit frontend has been removed; local dev now starts a single operator process that runs orchestrator plus the thin Phoenix/LiveView `apps/favn_view` shell on the standard local web port, `http://127.0.0.1:4173`
-- local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
+- local development publishes immutable SQL execution packages before one pinned compact manifest index, then uses that same manifest identity across runner and orchestrator; runtime fetches only the selected asset package
 - run snapshot, run event, and operational-backfill read-model persistence store explicit JSON-safe storage records, not BEAM terms or reconstructed exception structs; runner/backfill failures are normalized, bounded, and redacted before durable storage
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
 - stage-parallel pipeline runs drain each submitted stage before failing later work, so independent sibling assets are reported even when one sibling fails; manifest-persisted freshness policies can skip already-fresh nodes, force selected nodes, block failed dependencies, and dirty downstream nodes only when an upstream actually refreshes
@@ -59,7 +59,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
 - single-node packaging includes `mix favn.build.single` with a verified project-local backend-only PostgreSQL launcher under `.favn/dist/single/<build_id>/`; it still depends on the installed runtime source root and is not a self-contained or relocatable release artifact (see `OPERATOR_NOTES.md` in each artifact)
-- backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates a manifest JSON file, registers and activates the manifest by default, asks the orchestrator to register that persisted manifest with the local runner, and reports service-auth active-manifest verification status; it does not make browser login/session/audit durable
+- backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates the compact manifest plus its content-addressed execution-package directory, uploads only missing packages, registers and activates the manifest by default, asks the orchestrator to register that persisted manifest with the local runner, and reports service-auth active-manifest verification status; it does not make browser login/session/audit durable
 - operational backfill foundations are implemented in the control plane for resolving ranges, dry-running plans, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; child pipeline backfills default to `refresh: :missing`, and operational backfill does not accept lookback-policy input until concrete runtime semantics exist
 - operational backfill read-model storage is derived projection state; the closeout migration to JSON-safe DTO storage rebuilds the durable backfill read-model tables, and operators can repopulate them with `mix favn.backfill repair --apply` from authoritative run snapshots/events when needed
 
@@ -375,9 +375,11 @@ stored in the manifest. Resolution is bounded to 30 seconds and by the remaining
 node deadline, rejects collisions and reserved window names, and exposes only
 safe identity/lineage. Before SQL starts, the orchestrator atomically persists a
 run/node pin; automatic attempts and safe restart recovery reuse it. Mark
-secret-bearing names with `sensitive_params`; PostgreSQL requires a valid
-`FAVN_RUNTIME_INPUT_PIN_KEY` for protected persistence and fails before materializing
-instead of storing sensitive parameters as plaintext.
+secret-bearing names with `sensitive_params`; PostgreSQL requires a valid key for
+protected persistence and fails before materializing instead of storing sensitive
+parameters as plaintext. Local development may use `FAVN_RUNTIME_INPUT_PIN_KEY`;
+production uses the versioned `FAVN_RUNTIME_INPUT_PIN_KEYS` JSON keyring and retains
+every version still reported as referenced by readiness.
 The declaration macro is the only supported form; anonymous functions,
 captures, MFA tuples, and inline resolver blocks are not accepted. Read
 [Runtime Inputs For SQL Assets](apps/favn/guides/sql-runtime-inputs.md) for the
@@ -1093,6 +1095,9 @@ config :favn, :local,
 Storage modes:
 
 - `mix favn.dev` uses PostgreSQL; it is the only supported control-plane backend
+- local startup idempotently provisions the configured development workspace
+  after PostgreSQL is ready and before auth/API children start; it does not
+  create the database or apply migrations
 - `mix favn.dev --scheduler` enables local scheduled runs
 - `mix favn.dev --no-scheduler` disables local scheduled runs and overrides config
 
@@ -1133,8 +1138,9 @@ documented by the task. Bootstrap uses
 `FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN` for service auth, with
 `FAVN_ORCHESTRATOR_SERVICE_TOKEN` accepted only as a legacy fallback.
 The command verifies service-token auth, logs in the workspace bootstrap operator,
-reads and verifies the manifest JSON, registers the
-manifest, activates it by default with operator actor context, and calls
+reads and verifies the compact manifest JSON and sibling `execution-packages/*.json`
+artifacts, uploads only packages PostgreSQL reports missing, registers the compact
+manifest index, activates it by default with operator actor context, and calls
 `/api/orchestrator/v1/manifests/:manifest_version_id/runner/register` so the
 orchestrator registers the persisted manifest with the local runner. Repeating
 the command with the same manifest and runner registration is safe and
@@ -1170,9 +1176,9 @@ expose them through the adapter boundary.
 - implementation is owned by `apps/favn_local`
 - `mix favn.build.runner` is rooted in the current Mix project; `--root-dir`
   must match the current project root
-- runner artifacts include the pinned manifest and compiled beams from the
-  current project app so helper modules and connection modules are available at
-  execution time
+- runner artifacts include the pinned compact manifest, content-addressed
+  `execution-packages/`, and compiled beams from the current project app so helper
+  modules and connection modules are available at execution time
 - install now materializes a runnable runtime workspace under
   `.favn/install/runtime_root` and records runtime metadata in
   `.favn/install/runtime.json`

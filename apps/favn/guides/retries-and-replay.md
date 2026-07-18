@@ -166,9 +166,10 @@ external state.
 Raw parameters never belong in generic run metadata, events, logs, telemetry,
 or errors. Safe detail exposes identity, fingerprint, resolver, and source-pin
 lineage only. Pins with sensitive parameters require protected storage. Configure
-`FAVN_RUNTIME_INPUT_PIN_KEY` as a 32-byte key. Missing or invalid protection
-fails before materialization; sensitive values are never silently stored in
-plaintext.
+a 32-byte key (`FAVN_RUNTIME_INPUT_PIN_KEY` locally, or the versioned
+`FAVN_RUNTIME_INPUT_PIN_KEYS` JSON keyring in production). Missing or invalid
+protection fails before materialization; sensitive values are never silently
+stored in plaintext.
 
 ## New Runs And Replay Input Modes
 
@@ -228,6 +229,11 @@ is dispatched. A persisted safe retry wait contains the current attempt,
 effective policy, normalized failure state, pin identity, and absolute
 `next_retry_at`. An orchestrator restart resumes a future wait or dispatches a
 due retry without incrementing the attempt early.
+
+For a pipeline stage, Favn persists one compact retry checkpoint before the
+individual retry-scheduled events. Recovery validates that exact checkpoint against
+the pinned plan; a missing or corrupt checkpoint fails closed instead of guessing
+which successful work may be repeated.
 
 Active ownership with an unconfirmed outcome is different. Recovery reconciles
 ownership/cancellation evidence and does not dispatch replacement work when the

@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Manifests do
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Persistence.DeploymentPlanner
   alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Persistence.Results.RuntimeState
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
@@ -24,18 +25,29 @@ defmodule FavnOrchestrator.Manifests do
   end
 
   @doc "Creates and activates one exact workspace deployment."
-  @spec deploy(WorkspaceContext.t(), String.t(), map(), keyword()) ::
+  @spec deploy(PlatformContext.t(), WorkspaceContext.t(), String.t(), map(), keyword()) ::
           {:ok, FavnOrchestrator.Persistence.Results.RuntimeState.t()} | {:error, term()}
-  def deploy(%WorkspaceContext{} = context, manifest_version_id, selection, opts \\ [])
+  def deploy(
+        %PlatformContext{} = platform_context,
+        %WorkspaceContext{} = context,
+        manifest_version_id,
+        selection,
+        opts \\ []
+      )
       when is_binary(manifest_version_id) and is_map(selection) and is_list(opts) do
-    with {:ok, version} <- ManifestStore.get_manifest(context, manifest_version_id),
+    with true <- platform_deployer?(platform_context),
+         {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
          {:ok, planner} <- deployment_selection(version, selection) do
       ManifestStore.deploy_manifest(
+        platform_context,
         context,
         manifest_version_id,
         planner,
         Keyword.put_new(opts, :configuration, %{})
       )
+    else
+      false -> {:error, :platform_operator_required}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -43,9 +55,8 @@ defmodule FavnOrchestrator.Manifests do
   @spec active(WorkspaceContext.t()) :: {:ok, details()} | {:error, term()}
   def active(%WorkspaceContext{} = context) do
     with {:ok, {runtime, grants}} <-
-           ManifestStore.get_active_deployment(context, customer_visible_only: true),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id) do
-      {:ok, details(version, grants)}
+           ManifestStore.get_active_deployment(context, customer_visible_only: true) do
+      {:ok, details(runtime, grants)}
     end
   end
 
@@ -84,8 +95,8 @@ defmodule FavnOrchestrator.Manifests do
     end
   end
 
-  @doc "Returns stable summary data without another storage query."
-  @spec summary(Version.t()) :: map()
+  @doc "Returns stable manifest summary data without another storage query."
+  @spec summary(Version.t() | RuntimeState.t()) :: map()
   def summary(%Version{} = version) do
     %{
       manifest_version_id: version.manifest_version_id,
@@ -98,42 +109,41 @@ defmodule FavnOrchestrator.Manifests do
     }
   end
 
-  defp details(version, grants) do
-    allowed = MapSet.new(grants, &{&1.target_kind, &1.target_id})
+  def summary(%RuntimeState{} = runtime) do
+    %{
+      manifest_version_id: runtime.manifest_version_id,
+      content_hash: runtime.manifest_content_hash,
+      schema_version: runtime.schema_version,
+      runner_contract_version: runtime.runner_contract_version,
+      asset_count: runtime.asset_count,
+      pipeline_count: runtime.pipeline_count,
+      schedule_count: runtime.schedule_count
+    }
+  end
 
-    assets =
-      version.manifest.assets
-      |> List.wrap()
-      |> Enum.filter(&MapSet.member?(allowed, {:asset, TargetIdentity.for_asset(&1.ref)}))
-      |> Enum.map(fn asset ->
-        asset
-        |> Targets.asset()
-        |> Map.put(:target_id, TargetIdentity.for_asset(asset.ref))
-      end)
-
-    pipelines =
-      version.manifest.pipelines
-      |> List.wrap()
-      |> Enum.filter(fn pipeline ->
-        MapSet.member?(allowed, {
-          :pipeline,
-          TargetIdentity.for_pipeline({pipeline.module, pipeline.name})
-        })
-      end)
-      |> Enum.map(fn pipeline ->
-        pipeline
-        |> Targets.pipeline()
-        |> Map.put(:target_id, TargetIdentity.for_pipeline({pipeline.module, pipeline.name}))
-      end)
+  defp details(%RuntimeState{} = runtime, grants) do
+    assets = target_descriptors(grants, :asset)
+    pipelines = target_descriptors(grants, :pipeline)
 
     %{
-      manifest: summary(version),
+      manifest: summary(runtime),
       targets: %{
-        manifest_version_id: version.manifest_version_id,
+        manifest_version_id: runtime.manifest_version_id,
         assets: assets,
         pipelines: pipelines
       }
     }
+  end
+
+  defp target_descriptors(grants, target_kind) do
+    grants
+    |> Enum.filter(&(&1.target_kind == target_kind))
+    |> Enum.map(fn grant ->
+      grant.descriptor
+      |> Targets.restore_descriptor()
+      |> Map.put(:target_id, grant.target_id)
+    end)
+    |> Enum.sort_by(& &1.target_id)
   end
 
   defp deployment_selection(version, selection) do
@@ -187,4 +197,9 @@ defmodule FavnOrchestrator.Manifests do
 
   defp target_ref(asset, :asset), do: asset.ref
   defp target_ref(pipeline, :pipeline), do: {pipeline.module, pipeline.name}
+
+  defp platform_deployer?(%PlatformContext{} = context) do
+    PlatformContext.valid?(context) and
+      Enum.any?(context.roles, &(&1 in [:platform_operator, :platform_admin]))
+  end
 end

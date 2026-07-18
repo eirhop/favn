@@ -15,22 +15,35 @@ Code:
   rejection, and redacted errors
 - `apps/favn_runner/lib/favn_runner/extension_supervisor.ex` owns the dedicated
   plugin child subtree that starts before connection and execution services
-- `apps/favn_runner/lib/favn_runner/sql_runtime_preflight.ex` validates planned SQL
-  connection runtime config from explicit runner work planned scope before worker
-  execution begins
+- `apps/favn_runner/lib/favn_runner/sql_runtime_preflight.ex` validates the complete
+  planned SQL connection scope once when an orchestrated run acquires its manifest
+  lease. Individual work submissions carry only their own asset identity and never
+  rescan the plan. Direct standalone `FavnRunner.run/2` calls preflight their explicit
+  work scope before execution.
 - `apps/favn_runner/lib/favn_runner/execution_lifecycle.ex` owns runner execution
   lifecycle state, worker/waiter/subscriber monitor bookkeeping, bounded
   completed-execution retention, bounded log/event buffers, and lifecycle
-  diagnostics counts. Production retention is configured with
+  diagnostics counts. Completed entries retain a deterministic replay fingerprint,
+  not the execution package or full work item. Retention enforces per-result,
+  per-log/event-buffer, and aggregate completed-execution byte budgets in addition
+  to count limits. Workers compact oversized results before sending them to the
+  central runner process. Production retention is configured with
   `config :favn_runner, :execution_retention, ...`.
+- `apps/favn_runner/lib/favn_runner/manifest_store.ex` owns the immutable pinned
+  manifest cache. It is bounded by both entry count and estimated BEAM bytes,
+  rejects a manifest larger than its byte budget, and evicts only unleased entries.
+  Active runs acquire expiring leases, and execution resolves the handle, selected
+  asset, and package relation map in one atomic cache operation. The store fails
+  closed when all capacity is protected and exposes active-lease and cache-pressure
+  diagnostics and telemetry. Production limits are
+  configured with `config :favn_runner, :manifest_cache, ...`.
 - `apps/favn_runner/lib/favn_runner/runtime_config_diagnostic.ex` normalizes
   runner runtime-config failures into stable redacted run diagnostics
 - `apps/favn_runner/lib/favn_runner/execution_admission.ex` owns runner-local
-  active-worker admission, bounded submit queue configuration, queue timeout,
-  and overload diagnostics. The runner either queues within `max_queue_size` or
-  rejects exhausted capacity with a typed retryable `:runner_overloaded` boundary
-  error instead of growing unbounded worker processes. Submit and cancel calls
-  are bounded and normalize call timeouts into typed runner boundary errors.
+  active-worker admission and overload diagnostics. Durable queueing remains an
+  orchestrator concern; the runner rejects exhausted capacity with a typed,
+  retryable `:runner_overloaded` boundary error. Submit and cancel calls are
+  bounded and normalize call timeouts into typed runner boundary errors.
 - Runner cancellation outcomes distinguish BEAM worker acknowledgement from
   native data-plane certainty. A stopped BEAM worker reports
   `native_status: :native_cancel_unknown` unless an adapter-specific native
@@ -62,11 +75,18 @@ submitted values as `ctx.params`, and resolved environment values/secrets as
 `ctx.runtime_config`. `RunnerWork` carries the typed pipeline context and
 absolute deadline explicitly rather than duplicating them inside metadata.
 
-Runner registration stores only the compact pinned manifest index. Before one
+Runner registration stores immutable pinned manifests only in the bounded runner
+manifest cache. Before one
 selected SQL asset is admitted, the orchestrator loads that asset's immutable
 execution package and attaches it to `%Favn.Contracts.RunnerWork{}`. The runner
 verifies both package hash and asset ref before resolving runtime inputs or
 opening a SQL session. It has no inline-SQL or compiled-module fallback.
+Exact execution-id replay is checked before manifest resolution. An active run's
+lease prevents eviction; after release, retained completed work remains replayable
+even if the manifest is later evicted.
+Manifest acquire, renew, and release are mandatory runner-client callbacks. The
+orchestrator rejects clients that cannot uphold this lease contract; there is no
+unleased registration fallback.
 
 Consumer and integration packages implement `Favn.Runner.Plugin` from
 `favn_core`; they never depend on this internal app merely to extend the runner

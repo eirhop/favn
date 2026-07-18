@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.Persistence.RunStore do
   alias FavnOrchestrator.Persistence.Queries.PageRuns
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RunCommitted
+  alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.RunState
 
   @callback create_run(CreateRun.t()) :: {:ok, RunCommitted.t()} | {:error, Error.t()}
@@ -23,6 +24,8 @@ defmodule FavnOrchestrator.Persistence.RunStore do
               {:ok, RunCommitted.t()} | {:error, Error.t()}
   @callback get_run(GetRun.t()) :: {:ok, RunState.t()} | {:error, Error.t()}
   @callback page_runs(PageRuns.t()) :: {:ok, CursorPage.t(RunState.t())} | {:error, Error.t()}
+  @callback page_run_summaries(PageRuns.t()) ::
+              {:ok, CursorPage.t(RunSummary.t())} | {:error, Error.t()}
   @callback page_events(PageRunEvents.t() | PagePublishedRunEvents.t()) ::
               {:ok, CursorPage.t(map())} | {:error, Error.t()}
   @callback pin_runtime_inputs(PinRuntimeInputs.t()) :: {:ok, [Pin.t()]} | {:error, Error.t()}

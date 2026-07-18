@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.RunRecovery do
   use GenServer
 
   alias FavnOrchestrator.OperationalEvents
+  alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunManager
@@ -51,7 +52,7 @@ defmodule FavnOrchestrator.RunRecovery do
   end
 
   defp reconcile_workspaces(batch_size \\ @default_batch_size) do
-    workspace_ids()
+    authoritative_workspace_ids()
     |> Enum.each(&recover_workspace(&1, batch_size))
 
     :ok
@@ -76,15 +77,35 @@ defmodule FavnOrchestrator.RunRecovery do
   defp recover_claimed(%WorkspaceContext{} = context, ownership) do
     case RunManager.recover_claimed_run(context, ownership) do
       {:ok, _run_id} -> :ok
+      {:error, {:run_plan_capacity_exhausted, _details}} -> :ok
       {:error, reason} -> emit_failure(ownership.run_id, {:run_recovery_failed, reason})
     end
   end
 
-  defp workspace_ids do
-    :favn_orchestrator
-    |> Application.get_env(:workspace_ids, [])
-    |> Enum.filter(&(is_binary(&1) and &1 != ""))
-    |> Enum.uniq()
+  defp authoritative_workspace_ids do
+    context = SystemContext.platform(:run_recovery_workspace_discovery)
+
+    case page_workspace_ids(context, nil, []) do
+      {:ok, workspace_ids} ->
+        workspace_ids
+
+      {:error, reason} ->
+        emit_failure(nil, {:workspace_discovery_failed, reason})
+        []
+    end
+  end
+
+  defp page_workspace_ids(context, cursor, acc) do
+    case ManifestStore.page_workspaces(context, after: cursor, limit: 500) do
+      {:ok, page} when page.has_more? ->
+        page_workspace_ids(context, page.next_cursor, [page.items | acc])
+
+      {:ok, page} ->
+        {:ok, acc |> Enum.reverse() |> List.flatten() |> Kernel.++(page.items)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp recovery_owner_id(workspace_id) do

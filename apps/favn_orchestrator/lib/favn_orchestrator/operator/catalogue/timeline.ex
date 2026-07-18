@@ -8,13 +8,13 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   """
 
   alias Favn.Manifest.Asset
-  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias Favn.TimePeriod
   alias Favn.Timezone
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Operator.Catalogue.AssetFreshness
   alias FavnOrchestrator.Operator.Catalogue.Status
@@ -212,7 +212,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   end
 
   defp pipeline_selecting_asset(%Version{} = version, asset_ref) do
-    case Index.build_from_version(version) do
+    case ManifestIndexCache.fetch(version) do
       {:ok, index} ->
         version.manifest.pipelines
         |> List.wrap()

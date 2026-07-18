@@ -59,10 +59,11 @@ end
 
 defmodule FavnOrchestrator.Persistence.PlatformContext do
   @moduledoc """
-  Explicit consultant authority for bounded cross-workspace reads.
+  Explicit consultant authority for platform-global reads and mutations.
 
-  Platform mutations still resolve a `WorkspaceContext`; this context is only for
-  use cases that intentionally read across workspaces.
+  Workspace-scoped mutations also require a `WorkspaceContext`; destructive
+  deployment authority is therefore explicit at both the platform and tenant
+  boundaries.
   """
 
   @enforce_keys [:principal_id, :grant_id, :roles]

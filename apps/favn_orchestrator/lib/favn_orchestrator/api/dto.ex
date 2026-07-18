@@ -122,11 +122,7 @@ defmodule FavnOrchestrator.API.DTO do
       manifest_version_id: run.manifest_version_id,
       event_seq: run.event_seq,
       started_at: datetime(run.started_at),
-      finished_at: datetime(run.finished_at),
-      max_concurrency: Map.get(run, :max_concurrency),
-      target_refs: Enum.map(List.wrap(run.target_refs), &ref_to_string/1),
-      asset_results: asset_results(run.asset_results),
-      error: error_payload(run.error)
+      finished_at: datetime(run.finished_at)
     }
   end
 

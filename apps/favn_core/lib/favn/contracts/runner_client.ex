@@ -20,6 +20,22 @@ defmodule Favn.Contracts.RunnerClient do
 
   @callback register_manifest(Version.t(), keyword()) :: :ok | {:error, term()}
 
+  @callback ensure_manifest(String.t(), String.t(), keyword()) ::
+              :ok | :missing | {:error, term()}
+
+  @callback acquire_manifest(
+              Version.t(),
+              String.t(),
+              DateTime.t(),
+              [Favn.Ref.t()],
+              keyword()
+            ) ::
+              :ok | {:error, term()}
+
+  @callback renew_manifest(String.t(), DateTime.t(), keyword()) :: :ok | {:error, term()}
+
+  @callback release_manifest(String.t(), keyword()) :: :ok
+
   @callback submit_work(RunnerWork.t(), keyword()) :: {:ok, execution_id()} | {:error, term()}
 
   @callback resolve_runtime_inputs(RunnerWork.t(), keyword()) ::

@@ -9,13 +9,13 @@ defmodule FavnOrchestrator.Backfills do
   """
 
   alias Favn.Backfill.RangeResolver
-  alias Favn.Manifest.Index
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
   alias Favn.Retry.Policy
   alias Favn.Window.Key
   alias FavnOrchestrator.Backfills.Submission
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.ManifestTarget
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.BackfillPlan
@@ -231,7 +231,7 @@ defmodule FavnOrchestrator.Backfills do
   end
 
   defp resolve_pipeline(version, pipeline, first_anchor) do
-    with {:ok, index} <- Index.build_from_version(version) do
+    with {:ok, index} <- ManifestIndexCache.fetch(version) do
       PipelineResolver.resolve(index, pipeline,
         trigger: %{kind: :backfill, phase: :parent},
         params: %{},

@@ -21,7 +21,12 @@ defmodule FavnRunner.Application do
         {ConnectionRegistry, name: FavnRunner.ConnectionRegistry, connections: connections},
         {Registry, keys: :unique, name: FavnRunner.ExecutionRegistry},
         {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.WorkerSupervisor},
-        {FavnRunner.ManifestStore, name: FavnRunner.ManifestStore},
+        {FavnRunner.ManifestStore,
+         Keyword.put(
+           Application.get_env(:favn_runner, :manifest_cache, []),
+           :name,
+           FavnRunner.ManifestStore
+         )},
         {FavnRunner.Server,
          name: FavnRunner.Server,
          admission: Application.get_env(:favn_runner, :admission, []),

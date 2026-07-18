@@ -13,16 +13,18 @@ defmodule FavnOrchestrator.RunServer.Execution do
   """
 
   alias Favn.Manifest.Version
-  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.ExecutionAdmission
+  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunExecutionCleanup
-  alias FavnOrchestrator.RunExecutionOwnership
+  alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunnerClientValidator
+  alias FavnOrchestrator.RunnerManifestRegistration
   alias FavnOrchestrator.RunnerLogBridge
   alias FavnOrchestrator.RunServer.Cancellation
-  alias FavnOrchestrator.RunServer.Execution.ExecutionPool
   alias FavnOrchestrator.RunServer.Execution.FreshnessContext
+  alias FavnOrchestrator.RunServer.Execution.PipelineRetryCheckpoint
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
@@ -34,8 +36,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.PersistenceRetry
+  alias FavnOrchestrator.RunServer.RetryCheckpoint
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RuntimeConfig
 
   @stage_admission_timeout_buffer_ms 2_000
@@ -69,35 +73,71 @@ defmodule FavnOrchestrator.RunServer.Execution do
     runner_client = configured_runner_client()
     runner_opts = configured_runner_opts()
 
-    case execution_mode(run_state) do
+    case RunState.execution_mode(run_state) do
       :pipeline ->
         with :ok <- RunnerClientValidator.validate(runner_client),
-             :ok <- runner_client.register_manifest(version, runner_opts),
-             {:ok, freshness_context} <- FreshnessContext.initialize(run_state, version) do
+             {:ok, manifest_index} <- ManifestIndexCache.fetch(version),
+             execution_index <- execution_index(run_state, manifest_index),
+             {:ok, freshness_context} <- FreshnessContext.initialize(run_state, execution_index),
+             lease_id <- manifest_lease_id(run_state),
+             :ok <-
+               RunnerManifestRegistration.acquire(
+                 runner_client,
+                 version,
+                 lease_id,
+                 manifest_lease_expires_at(run_state),
+                 planned_asset_refs(run_state),
+                 runner_opts
+               ) do
           state =
-            RunExecutionState.new(run_state, version,
+            RunExecutionState.new(run_state, manifest_identity(version),
               mode: :pipeline,
+              manifest_index: execution_index,
               runner_client: runner_client,
               runner_opts: runner_opts,
+              manifest_lease_id: lease_id,
               stage_groups: pipeline_stage_groups(run_state),
               freshness_context: freshness_context
             )
 
-          {:ok, restore_retry_wait(state)}
+          case restore_retry_wait(state) do
+            {:ok, restored} -> {:ok, restored}
+            {:error, reason} -> pipeline_start_failure(run_state, reason)
+          end
         else
           {:error, reason} -> pipeline_start_failure(run_state, reason)
         end
 
       :sequential ->
-        state =
-          RunExecutionState.new(run_state, version,
-            mode: :sequential,
-            runner_client: runner_client,
-            runner_opts: runner_opts,
-            sequential_refs: Sequential.refs(run_state)
-          )
+        with :ok <- RunnerClientValidator.validate(runner_client),
+             {:ok, manifest_index} <- ManifestIndexCache.fetch(version),
+             lease_id <- manifest_lease_id(run_state),
+             :ok <-
+               RunnerManifestRegistration.acquire(
+                 runner_client,
+                 version,
+                 lease_id,
+                 manifest_lease_expires_at(run_state),
+                 planned_asset_refs(run_state),
+                 runner_opts
+               ) do
+          state =
+            RunExecutionState.new(run_state, manifest_identity(version),
+              mode: :sequential,
+              manifest_index: execution_index(run_state, manifest_index),
+              runner_client: runner_client,
+              runner_opts: runner_opts,
+              manifest_lease_id: lease_id,
+              sequential_refs: Sequential.refs(run_state)
+            )
 
-        {:ok, restore_retry_wait(state)}
+          case restore_retry_wait(state) do
+            {:ok, restored} -> {:ok, restored}
+            {:error, reason} -> pipeline_start_failure(run_state, reason)
+          end
+        else
+          {:error, reason} -> pipeline_start_failure(run_state, reason)
+        end
     end
   end
 
@@ -247,7 +287,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       true ->
         failed =
-          RunState.transition(run_state,
+          Snapshots.snapshot_update(run_state,
             status: :error,
             runner_execution_id: nil,
             error: %{type: :runner_cancel_unconfirmed, outcomes: outcomes}
@@ -267,14 +307,66 @@ defmodule FavnOrchestrator.RunServer.Execution do
      )}
   end
 
-  defp execution_mode(%RunState{submit_kind: :pipeline}), do: :pipeline
+  defp manifest_identity(%Version{} = version), do: %{version | manifest: nil}
 
-  defp execution_mode(%RunState{submit_kind: :rerun, metadata: %{replay_submit_kind: :pipeline}}),
-    do: :pipeline
+  @doc false
+  @spec release_manifest_lease(RunState.t()) :: :ok
+  def release_manifest_lease(%RunState{} = run) do
+    RunnerManifestRegistration.release(
+      configured_runner_client(),
+      manifest_lease_id(run),
+      configured_runner_opts()
+    )
+  end
 
-  defp execution_mode(%RunState{}), do: :sequential
+  defp manifest_lease_id(%RunState{} = run) do
+    digest =
+      :crypto.hash(:sha256, :erlang.term_to_binary({run.workspace_id, run.id}, [:deterministic]))
+
+    "run:" <> Base.url_encode64(digest, padding: false)
+  end
+
+  defp planned_asset_refs(%RunState{plan: %Favn.Plan{topo_order: refs}})
+       when is_list(refs) and refs != [],
+       do: refs
+
+  defp planned_asset_refs(%RunState{target_refs: refs}) when is_list(refs) and refs != [],
+    do: refs
+
+  defp planned_asset_refs(%RunState{asset_ref: ref}) when is_tuple(ref), do: [ref]
+  defp planned_asset_refs(%RunState{}), do: []
+
+  @doc false
+  @spec manifest_lease_expires_at(RunState.t()) :: DateTime.t()
+  def manifest_lease_expires_at(%RunState{}) do
+    lease_ms = max(RunOwnership.default_lease_duration_ms() * 2, 60_000)
+    DateTime.add(DateTime.utc_now(), div(lease_ms + 999, 1_000), :second)
+  end
+
+  defp execution_index(%RunState{} = run, manifest_index) do
+    refs =
+      case run.plan do
+        %Favn.Plan{nodes: nodes} ->
+          nodes |> Map.values() |> Enum.map(& &1.ref) |> MapSet.new()
+
+        nil ->
+          MapSet.new([run.asset_ref])
+      end
+
+    %Favn.Manifest.Index{
+      planning_index: nil,
+      assets_by_ref: Map.take(manifest_index.assets_by_ref, MapSet.to_list(refs)),
+      pipelines_by_ref: %{},
+      schedules_by_ref: %{}
+    }
+  end
 
   defp continue_state(%RunExecutionState{status: :retry_wait} = state), do: {:cont, state}
+
+  defp continue_state(
+         %RunExecutionState{pipeline_continuation: %{kind: :stage_classification}} = state
+       ),
+       do: continue_stage_classification(state)
 
   defp continue_state(%RunExecutionState{mode: :sequential} = state),
     do: state |> Sequential.continue() |> handle_sequential_directive()
@@ -307,19 +399,35 @@ defmodule FavnOrchestrator.RunServer.Execution do
     |> handle_pipeline_settlement(state)
   end
 
-  defp resume_persisted(%RunExecutionState{} = state, {:pipeline_retry, resume}) do
-    state = %{state | run: resume.run}
-
-    persist_pipeline_retry_events(
-      state,
-      resume.run,
-      resume.remaining_node_keys,
-      resume.all_node_keys,
+  defp resume_persisted(%RunExecutionState{} = state, {:pipeline_retry_checkpoint, resume}) do
+    schedule_pipeline_retry_timer(
+      %{state | run: resume.run},
+      resume.node_keys,
       resume.stage,
       resume.attempt,
-      resume.retry_delays,
       resume.next_retry_at
     )
+  end
+
+  defp resume_persisted(
+         %RunExecutionState{stage_state: nil} = state,
+         {:stage_admission, attempt, {:partial_retry, _, _, _, _, _, _, _} = result}
+       ) do
+    handle_initial_stage_partial_retry(state, attempt, result)
+  end
+
+  defp resume_persisted(
+         %RunExecutionState{stage_state: %StageAttemptState{}} = state,
+         {:stage_admission, _attempt, {:partial_retry, _, _, _, _, _, _, _} = result}
+       ) do
+    handle_refill_stage_partial_retry(state, result)
+  end
+
+  defp resume_persisted(
+         %RunExecutionState{} = state,
+         {:stage_admission, _attempt, {:error, failed_run, step_results, _attempted_node_keys}}
+       ) do
+    terminalize_stage_admission_failure(state, failed_run, step_results)
   end
 
   defp start_await(%RunExecutionState{} = state, entry, kind) do
@@ -366,7 +474,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp process_await_result(%RunExecutionState{} = state, entry, result, :sequential) do
     state = elem(RunExecutionState.complete_work(state, entry.execution_id), 1)
-    _ = RunExecutionOwnership.mark_finish_persist_pending(state.run, entry.execution_id)
 
     state
     |> Sequential.handle_result(entry, result)
@@ -374,7 +481,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp process_await_result(%RunExecutionState{} = state, entry, result, :pipeline) do
-    _ = RunExecutionOwnership.mark_finish_persist_pending(state.run, entry.execution_id)
     handle_pipeline_await_result(state, entry, result)
   end
 
@@ -406,41 +512,89 @@ defmodule FavnOrchestrator.RunServer.Execution do
       if Persistence.externally_cancelled?(state.run) do
         {:terminal, Snapshots.cancelled_terminal(state.run, state.accumulated_results)}
       else
-        case StageClassifier.classify(
-               state.run,
-               state.version,
-               stage,
-               node_keys,
-               state.freshness_context,
-               state.terminal_failure
-             ) do
-          {:ok, classified_run, runnable_node_keys, decisions, classified_context,
-           next_terminal_failure} ->
-            state = %{
-              state
-              | run: classified_run,
-                stage_decisions: decisions,
-                stage_freshness_context: classified_context,
-                terminal_failure: next_terminal_failure || state.terminal_failure,
-                status: :submitting
-            }
-
-            if runnable_node_keys == [] do
-              continue_pipeline(%{
-                state
-                | stage_index: state.stage_index + 1,
-                  freshness_context: classified_context
-              })
-            else
-              submit_pipeline_stage_attempt(state, runnable_node_keys, 1)
-            end
-
-          {:error, failed_run} ->
-            all_results = ResultBuilder.sort_asset_results(failed_run, state.accumulated_results)
-            {:terminal, terminalize_pipeline_failed_run(failed_run, all_results)}
-        end
+        state
+        |> Map.put(:stage_decisions, %{})
+        |> Map.put(:stage_freshness_context, state.freshness_context)
+        |> Map.put(:pipeline_continuation, %{
+          kind: :stage_classification,
+          stage: stage,
+          remaining_node_keys: node_keys,
+          runnable_node_keys_rev: []
+        })
+        |> Map.put(:status, :classifying)
+        |> continue_stage_classification()
       end
     end
+  end
+
+  defp continue_stage_classification(
+         %RunExecutionState{
+           pipeline_continuation: %{
+             kind: :stage_classification,
+             stage: stage,
+             remaining_node_keys: node_keys,
+             runnable_node_keys_rev: runnable_rev
+           }
+         } = state
+       ) do
+    case StageClassifier.classify(
+           state.run,
+           state.version,
+           stage,
+           node_keys,
+           state.stage_freshness_context,
+           state.terminal_failure
+         ) do
+      {:ok, classified_run, runnable_node_keys, decisions, classified_context,
+       next_terminal_failure, remaining_node_keys} ->
+        runnable_rev = Enum.reduce(runnable_node_keys, runnable_rev, &[&1 | &2])
+
+        state = %{
+          state
+          | run: classified_run,
+            stage_decisions: Map.merge(state.stage_decisions, decisions),
+            stage_freshness_context: classified_context,
+            terminal_failure: next_terminal_failure || state.terminal_failure
+        }
+
+        if remaining_node_keys == [] do
+          finish_stage_classification(state, Enum.reverse(runnable_rev))
+        else
+          state
+          |> Map.put(:pipeline_continuation, %{
+            kind: :stage_classification,
+            stage: stage,
+            remaining_node_keys: remaining_node_keys,
+            runnable_node_keys_rev: runnable_rev
+          })
+          |> defer_pipeline_continue()
+        end
+
+      {:error, failed_run} ->
+        all_results = ResultBuilder.sort_asset_results(failed_run, state.accumulated_results)
+        {:terminal, terminalize_pipeline_failed_run(failed_run, all_results)}
+    end
+  end
+
+  defp finish_stage_classification(state, []) do
+    state
+    |> Map.put(:freshness_context, state.stage_freshness_context)
+    |> Map.put(:stage_index, state.stage_index + 1)
+    |> Map.put(:pipeline_continuation, nil)
+    |> Map.put(:status, :starting)
+    |> defer_pipeline_continue()
+  end
+
+  defp finish_stage_classification(state, runnable_node_keys) do
+    state
+    |> Map.put(:pipeline_continuation, nil)
+    |> Map.put(:status, :submitting)
+    |> submit_pipeline_stage_attempt(runnable_node_keys, 1)
+  end
+
+  defp defer_pipeline_continue(%RunExecutionState{} = state) do
+    send(self(), :continue_execution)
+    {:cont, state}
   end
 
   defp submit_pipeline_stage_attempt(%RunExecutionState{} = state, node_keys, attempt) do
@@ -471,48 +625,25 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {:partial_retry, retry_run, entries, deferred_node_keys, retry_node_key, failure,
        queued_steps, waiters} ->
-        stage_state =
-          retry_run
-          |> StageAttemptState.new(
-            state.accumulated_results,
-            entries,
-            deferred_node_keys,
-            queued_steps
-          )
-          |> add_admission_retry(retry_run, retry_node_key, attempt, failure)
-
-        state =
-          %{
-            state
-            | run: retry_run,
-              stage_state: stage_state,
-              stage_attempt: attempt,
-              stage_admission_deadline_ms: stage_admission_deadline(retry_run.timeout_ms)
-          }
-          |> RunExecutionState.put_admission_waiters(waiters)
-
-        state
-        |> start_pipeline_awaits(entries)
-        |> after_starting_pipeline_awaits(entries)
+        handle_initial_stage_partial_retry(
+          state,
+          attempt,
+          {:partial_retry, retry_run, entries, deferred_node_keys, retry_node_key, failure,
+           queued_steps, waiters}
+        )
 
       {:error, failed_run, step_results, _attempted_node_keys} ->
-        {:terminal,
-         terminalize_pipeline_failed_run(
-           failed_run,
-           ResultBuilder.sort_asset_results(
-             failed_run,
-             state.accumulated_results ++ step_results
-           ),
-           %{status: failed_run.status, error: failed_run.error}
-         )}
+        terminalize_stage_admission_failure(state, failed_run, step_results)
 
       {:retry, retry_run, retry_node_keys, attempted_node_keys} ->
-        attempted_node_keys = MapSet.new(attempted_node_keys)
+        attempted_node_key_set = MapSet.new(attempted_node_keys)
 
         retry_delays =
           Map.new(retry_node_keys, fn node_key ->
             failure =
-              if MapSet.member?(attempted_node_keys, node_key), do: retry_run.error, else: nil
+              if MapSet.member?(attempted_node_key_set, node_key),
+                do: retry_run.error,
+                else: nil
 
             {node_key, StepAttemptLifecycle.retry_delay_ms(retry_run, node_key, attempt, failure)}
           end)
@@ -521,8 +652,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
           run: retry_run,
           results: Enum.reverse(state.accumulated_results),
           retry_refs: Enum.reverse(retry_node_keys),
+          retry_ref_set: MapSet.new(retry_node_keys),
           retry_delays: retry_delays,
-          attempted_node_keys: MapSet.to_list(attempted_node_keys)
+          attempted_node_keys: Enum.reverse(attempted_node_keys),
+          attempted_node_key_set: attempted_node_key_set
         }
 
         schedule_pipeline_retry(%{
@@ -531,7 +664,41 @@ defmodule FavnOrchestrator.RunServer.Execution do
             stage_state: stage_state,
             stage_attempt: attempt
         })
+
+      {:persist_retry, %PersistenceRetry{} = retry, reason} ->
+        {:persist_retry, state, retry, reason}
     end
+  end
+
+  defp handle_initial_stage_partial_retry(
+         state,
+         attempt,
+         {:partial_retry, retry_run, entries, deferred_node_keys, retry_node_key, failure,
+          queued_steps, waiters}
+       ) do
+    stage_state =
+      retry_run
+      |> StageAttemptState.new(
+        state.accumulated_results,
+        entries,
+        deferred_node_keys,
+        queued_steps
+      )
+      |> add_admission_retry(retry_run, retry_node_key, attempt, failure)
+
+    state =
+      %{
+        state
+        | run: retry_run,
+          stage_state: stage_state,
+          stage_attempt: attempt,
+          stage_admission_deadline_ms: stage_admission_deadline(retry_run.timeout_ms)
+      }
+      |> RunExecutionState.put_admission_waiters(waiters)
+
+    state
+    |> start_pipeline_awaits(entries)
+    |> after_starting_pipeline_awaits(entries)
   end
 
   defp start_pipeline_awaits(%RunExecutionState{} = state, entries) when is_list(entries) do
@@ -663,20 +830,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {:partial_retry, retry_run, entries, next_deferred_node_keys, retry_node_key, failure,
        next_queued_steps, waiters} ->
-        stage_state =
-          state.stage_state
-          |> StageAttemptState.add_entries(
-            entries,
-            retry_run,
-            next_deferred_node_keys,
-            next_queued_steps
-          )
-          |> add_admission_retry(retry_run, retry_node_key, state.stage_attempt, failure)
-
-        %{state | run: retry_run, stage_state: stage_state}
-        |> RunExecutionState.put_admission_waiters(waiters)
-        |> start_pipeline_awaits(entries)
-        |> after_starting_pipeline_awaits(entries)
+        handle_refill_stage_partial_retry(
+          state,
+          {:partial_retry, retry_run, entries, next_deferred_node_keys, retry_node_key, failure,
+           next_queued_steps, waiters}
+        )
 
       {:retry, retry_run, retry_node_keys, attempted_node_keys} ->
         attempted_node_keys = MapSet.new(attempted_node_keys)
@@ -700,16 +858,45 @@ defmodule FavnOrchestrator.RunServer.Execution do
         |> after_pipeline_progress()
 
       {:error, failed_run, step_results, _attempted_node_keys} ->
-        {:terminal,
-         terminalize_pipeline_failed_run(
-           failed_run,
-           ResultBuilder.sort_asset_results(
-             failed_run,
-             state.accumulated_results ++ step_results
-           ),
-           %{status: failed_run.status, error: failed_run.error}
-         )}
+        terminalize_stage_admission_failure(state, failed_run, step_results)
+
+      {:persist_retry, %PersistenceRetry{} = retry, reason} ->
+        {:persist_retry, state, retry, reason}
     end
+  end
+
+  defp handle_refill_stage_partial_retry(
+         state,
+         {:partial_retry, retry_run, entries, next_deferred_node_keys, retry_node_key, failure,
+          next_queued_steps, waiters}
+       ) do
+    stage_state =
+      state.stage_state
+      |> StageAttemptState.add_entries(
+        entries,
+        retry_run,
+        next_deferred_node_keys,
+        next_queued_steps
+      )
+      |> add_admission_retry(retry_run, retry_node_key, state.stage_attempt, failure)
+
+    %{state | run: retry_run, stage_state: stage_state}
+    |> RunExecutionState.put_admission_waiters(waiters)
+    |> start_pipeline_awaits(entries)
+    |> after_starting_pipeline_awaits(entries)
+  end
+
+  defp terminalize_stage_admission_failure(state, failed_run, step_results) do
+    {:terminal,
+     terminalize_pipeline_failed_run(
+       failed_run,
+       ResultBuilder.sort_asset_results(
+         failed_run,
+         (state.accumulated_results ++ step_results)
+         |> ResultBuilder.retain_asset_results()
+       ),
+       %{status: failed_run.status, error: failed_run.error}
+     )}
   end
 
   defp add_admission_retry(stage_state, run_state, node_key, attempt, failure) do
@@ -721,7 +908,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp after_starting_pipeline_awaits(%RunExecutionState{} = state, [_ | _]) do
     if state.stage_state.deferred_node_keys != [] and map_size(state.awaits) > 0 do
-      {:cont, %{state | status: :awaiting}}
+      schedule_deferred_retry(state)
     else
       after_pipeline_progress(state)
     end
@@ -798,39 +985,86 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp schedule_pipeline_retry(%RunExecutionState{} = state) do
-    {stage, _stage_node_keys} = Enum.at(state.stage_groups, state.stage_index)
+    {stage, stage_node_keys} = Enum.at(state.stage_groups, state.stage_index)
     node_keys = StageAttemptState.retry_node_keys(state.stage_state)
-
-    retry_delays =
-      pipeline_retry_delays(state.stage_state, state.run, node_keys, state.stage_attempt)
-
-    retry_after_ms = retry_delays |> Map.values() |> Enum.max(fn -> 0 end)
+    retry_after_ms = pipeline_retry_after_ms(state, node_keys)
     next_retry_at = System.system_time(:millisecond) + retry_after_ms
 
-    persist_pipeline_retry_events(
+    persist_pipeline_retry_checkpoint(
       state,
       state.stage_state.run,
-      node_keys,
+      stage_node_keys,
       node_keys,
       stage,
       state.stage_attempt,
-      retry_delays,
+      retry_after_ms,
       next_retry_at
     )
   end
 
-  defp persist_pipeline_retry_events(
+  defp persist_pipeline_retry_checkpoint(
          state,
          retry_run,
-         [],
-         all_node_keys,
+         stage_node_keys,
+         node_keys,
          stage,
-         _attempt,
-         _retry_delays,
+         attempt,
+         retry_after_ms,
          next_retry_at
        ) do
-    timer_token = make_ref()
+    with {:ok, selection} <- PipelineRetryCheckpoint.encode(stage_node_keys, node_keys) do
+      {checkpointed, data} =
+        pipeline_retry_checkpoint_transition(
+          retry_run,
+          selection,
+          stage,
+          attempt,
+          state.stage_index,
+          retry_after_ms,
+          next_retry_at
+        )
 
+      resume =
+        {:pipeline_retry_checkpoint,
+         %{
+           run: checkpointed,
+           node_keys: node_keys,
+           stage: stage,
+           attempt: attempt,
+           retry_after_ms: retry_after_ms,
+           next_retry_at: next_retry_at
+         }}
+
+      retry = PersistenceRetry.new(checkpointed, :pipeline_retry_checkpointed, data, resume)
+
+      case PersistenceRetry.persist(retry) do
+        :ok ->
+          schedule_pipeline_retry_timer(
+            %{state | run: checkpointed},
+            node_keys,
+            stage,
+            attempt,
+            next_retry_at
+          )
+
+        {:error, :external_cancel} ->
+          {:terminal, Snapshots.cancelled_snapshot(checkpointed)}
+
+        {:error, reason} ->
+          {:persist_retry, %{state | pipeline_continuation: nil}, retry, reason}
+      end
+    else
+      {:error, reason} ->
+        {:terminal,
+         Snapshots.snapshot_update(retry_run,
+           status: :error,
+           error: %{type: :invalid_pipeline_retry_checkpoint, reason: reason}
+         )}
+    end
+  end
+
+  defp schedule_pipeline_retry_timer(state, node_keys, stage, attempt, next_retry_at) do
+    timer_token = make_ref()
     retry_after_ms = retry_remaining_ms(next_retry_at)
 
     timer_ref =
@@ -841,83 +1075,26 @@ defmodule FavnOrchestrator.RunServer.Execution do
       )
 
     retry = %{
-      node_keys: all_node_keys,
-      next_attempt: state.stage_attempt + 1,
+      node_keys: node_keys,
+      next_attempt: attempt + 1,
       stage: stage
     }
 
     {:cont,
      state
-     |> Map.put(:run, retry_run)
-     |> Map.put(:stage_state, %{state.stage_state | run: retry_run, retry_refs: []})
+     |> Map.put(:pipeline_continuation, nil)
+     |> Map.put(:stage_state, %{state.stage_state | run: state.run, retry_refs: []})
      |> RunExecutionState.put_retry_timer(timer_token, timer_ref, retry)}
-  end
-
-  defp persist_pipeline_retry_events(
-         state,
-         run_state,
-         [node_key | remaining_node_keys],
-         all_node_keys,
-         stage,
-         attempt,
-         retry_delays,
-         next_retry_at
-       ) do
-    {retrying, data} =
-      pipeline_retry_transition(
-        run_state,
-        node_key,
-        all_node_keys,
-        stage,
-        attempt,
-        state.stage_index,
-        retry_delays,
-        next_retry_at
-      )
-
-    resume =
-      {:pipeline_retry,
-       %{
-         run: retrying,
-         remaining_node_keys: remaining_node_keys,
-         all_node_keys: all_node_keys,
-         stage: stage,
-         attempt: attempt,
-         retry_delays: retry_delays,
-         next_retry_at: next_retry_at
-       }}
-
-    retry = PersistenceRetry.new(retrying, :step_retry_scheduled, data, resume)
-
-    case PersistenceRetry.persist(retry) do
-      :ok ->
-        persist_pipeline_retry_events(
-          %{state | run: retrying},
-          retrying,
-          remaining_node_keys,
-          all_node_keys,
-          stage,
-          attempt,
-          retry_delays,
-          next_retry_at
-        )
-
-      {:error, :external_cancel} ->
-        {:terminal, Snapshots.cancelled_snapshot(retrying)}
-
-      {:error, reason} ->
-        {:persist_retry, state, retry, reason}
-    end
   end
 
   defp finalize_pipeline_stage(%RunExecutionState{} = state) do
     case StageResult.finalize(state.stage_state) do
-      {:ok, next_run, next_results, [], attempted_node_keys} ->
+      {:ok, next_run, next_results, [], _attempted_node_keys, node_statuses} ->
         {next_context, persisted_run} =
           FreshnessContext.record_successes(
             next_run,
             state.version,
-            attempted_node_keys,
+            node_statuses,
             state.stage_decisions,
             state.stage_freshness_context
           )
@@ -932,15 +1109,15 @@ defmodule FavnOrchestrator.RunServer.Execution do
             terminal_failure: state.terminal_failure
         })
 
-      {:ok, _next_run, _next_results, _retry_refs, _attempted_node_keys} ->
+      {:ok, _next_run, _next_results, _retry_refs, _attempted_node_keys, _node_statuses} ->
         schedule_pipeline_retry(state)
 
-      {:error, failed_run, next_results, attempted_node_keys} ->
+      {:error, failed_run, next_results, _attempted_node_keys, node_statuses} ->
         {next_context, persisted_run} =
           FreshnessContext.record_completed_after_failure(
             failed_run,
             state.version,
-            attempted_node_keys,
+            node_statuses,
             state.stage_decisions,
             state.stage_freshness_context
           )
@@ -1018,29 +1195,27 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end)
   end
 
-  defp pipeline_retry_transition(
+  defp pipeline_retry_checkpoint_transition(
          %RunState{} = run_state,
-         node_key,
-         all_node_keys,
+         selection,
          stage,
          attempt,
          stage_index,
-         retry_delays,
+         retry_after_ms,
          next_retry_at
        ) do
-    asset_ref = node_asset_ref(run_state, node_key)
-    asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
-
-    retry_after_ms = retry_delays |> Map.values() |> Enum.max(fn -> 0 end)
+    checkpoint_sequence = run_state.event_seq + 1
 
     retry_state = %{
       kind: :pipeline,
-      retry: %{node_keys: all_node_keys, next_attempt: attempt + 1, stage: stage},
+      checkpoint_sequence: checkpoint_sequence,
       stage_index: stage_index,
+      next_attempt: attempt + 1,
+      stage: stage,
       next_retry_at: next_retry_at
     }
 
-    retrying =
+    checkpointed =
       RunState.transition(run_state,
         status: :running,
         error: nil,
@@ -1054,35 +1229,28 @@ defmodule FavnOrchestrator.RunServer.Execution do
           })
       )
 
-    policy = StepAttemptLifecycle.retry_policy(run_state, node_key)
-
     data = %{
-      asset_ref: asset_ref,
-      node_key: node_key,
-      asset_step_id: asset_step_id,
-      window: node_window(run_state, node_key),
       stage: stage,
       attempt: attempt,
-      max_attempts: policy.max_attempts,
-      execution_pool: ExecutionPool.for_node(run_state, node_key),
       next_attempt: attempt + 1,
       retry_backoff_ms: retry_after_ms,
-      retry_policy: policy,
-      retry_policy_source: get_in(run_state.plan.nodes, [node_key, :retry_policy_source]),
-      next_retry_at: next_retry_at
+      next_retry_at: next_retry_at,
+      retry_selection: selection
     }
 
-    {retrying, data}
+    {checkpointed, data}
   end
 
-  defp pipeline_retry_delays(stage_state, run_state, node_keys, attempt) do
-    existing = StageAttemptState.retry_delays(stage_state)
+  defp pipeline_retry_after_ms(%RunExecutionState{} = state, node_keys) do
+    existing = StageAttemptState.retry_delays(state.stage_state)
 
-    Map.new(node_keys, fn node_key ->
-      {node_key,
-       Map.get_lazy(existing, node_key, fn ->
-         StepAttemptLifecycle.retry_delay_ms(run_state, node_key, attempt)
-       end)}
+    Enum.reduce(node_keys, 0, fn node_key, maximum ->
+      delay =
+        Map.get_lazy(existing, node_key, fn ->
+          StepAttemptLifecycle.retry_delay_ms(state.run, node_key, state.stage_attempt)
+        end)
+
+      max(maximum, delay)
     end)
   end
 
@@ -1093,27 +1261,48 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp restore_retry_wait(%RunExecutionState{} = state) do
-    case metadata_field(state.run.metadata, :retry_state) do
-      %{kind: kind, retry: retry} = retry_state when kind in [:sequential, :pipeline] ->
+    case RetryCheckpoint.validate(state.run.metadata, state.mode) do
+      {:ok, {:sequential, retry_state}} ->
+        retry = metadata_field(retry_state, :retry)
         token = make_ref()
-        remaining_ms = retry_remaining_ms(Map.get(retry_state, :next_retry_at))
+        remaining_ms = retry_remaining_ms(metadata_field(retry_state, :next_retry_at))
         timer_ref = Process.send_after(self(), {:retry_attempt, token}, remaining_ms)
 
-        state
-        |> restore_retry_position(retry_state)
-        |> RunExecutionState.put_retry_timer(token, timer_ref, retry)
+        restored = restore_retry_position(state, retry_state, retry)
+        {:ok, RunExecutionState.put_retry_timer(restored, token, timer_ref, retry)}
 
-      _missing ->
-        state
+      {:ok, {:pipeline, retry_state}} ->
+        with {:ok, retry} <- load_pipeline_retry(state, retry_state) do
+          token = make_ref()
+          remaining_ms = retry_remaining_ms(metadata_field(retry_state, :next_retry_at))
+          timer_ref = Process.send_after(self(), {:retry_attempt, token}, remaining_ms)
+
+          restored = restore_retry_position(state, retry_state, retry)
+          {:ok, RunExecutionState.put_retry_timer(restored, token, timer_ref, retry)}
+        end
+
+      {:ok, :none} ->
+        {:ok, state}
+
+      {:error, :invalid_retry_checkpoint} = error ->
+        error
     end
   end
 
-  defp restore_retry_position(%RunExecutionState{mode: :sequential} = state, retry_state) do
+  defp restore_retry_position(
+         %RunExecutionState{mode: :sequential} = state,
+         retry_state,
+         _retry
+       ) do
     %{state | sequential_index: Map.get(retry_state, :sequential_index, 0)}
   end
 
-  defp restore_retry_position(%RunExecutionState{mode: :pipeline} = state, retry_state) do
-    node_keys = get_in(retry_state, [:retry, :node_keys]) || []
+  defp restore_retry_position(
+         %RunExecutionState{mode: :pipeline} = state,
+         retry_state,
+         retry
+       ) do
+    node_keys = Map.fetch!(retry, :node_keys)
 
     decisions =
       StageClassifier.decisions(state.run, node_keys, state.freshness_context,
@@ -1123,11 +1312,39 @@ defmodule FavnOrchestrator.RunServer.Execution do
     %{
       state
       | stage_index: Map.get(retry_state, :stage_index, 0),
-        stage_attempt: get_in(retry_state, [:retry, :next_attempt]) || 1,
+        stage_attempt: Map.get(retry, :next_attempt, 1),
         accumulated_results: persisted_node_results(state.run),
         stage_decisions: decisions,
         stage_freshness_context: state.freshness_context
     }
+  end
+
+  defp load_pipeline_retry(%RunExecutionState{} = state, retry_state) do
+    with checkpoint_sequence when is_integer(checkpoint_sequence) and checkpoint_sequence > 0 <-
+           Map.get(retry_state, :checkpoint_sequence),
+         stage_index when is_integer(stage_index) and stage_index >= 0 <-
+           Map.get(retry_state, :stage_index),
+         {stage, stage_node_keys} <- Enum.at(state.stage_groups, stage_index),
+         context <- SystemContext.workspace(state.run.workspace_id, :run_worker),
+         {:ok, %{items: [event]}} <-
+           Runs.page_events(context, state.run.id,
+             after_sequence: checkpoint_sequence - 1,
+             event_types: [:pipeline_retry_checkpointed],
+             limit: 1
+           ),
+         ^checkpoint_sequence <- Map.get(event, :sequence),
+         selection when is_map(selection) <-
+           event |> Map.get(:data, %{}) |> metadata_field(:retry_selection),
+         {:ok, node_keys} <- PipelineRetryCheckpoint.decode(selection, stage_node_keys) do
+      {:ok,
+       %{
+         node_keys: node_keys,
+         next_attempt: Map.get(retry_state, :next_attempt, 1),
+         stage: stage
+       }}
+    else
+      _invalid -> {:error, :pipeline_retry_checkpoint_unavailable}
+    end
   end
 
   defp retry_remaining_ms(timestamp) when is_integer(timestamp),
@@ -1141,7 +1358,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp persisted_node_results(%RunState{}), do: []
 
-  defp metadata_field(metadata, key),
+  defp metadata_field(metadata, key) when is_map(metadata),
     do: Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
 
   defp submit_stage_entries(
@@ -1156,6 +1373,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     StageAdmission.submit(%{
       run: run_state,
       version: state.version,
+      manifest_index: state.manifest_index,
       stage: stage,
       node_keys: node_keys,
       decisions: state.stage_decisions,
@@ -1163,6 +1381,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       attempt: attempt,
       runner_client: state.runner_client,
       runner_opts: state.runner_opts,
+      manifest_lease_id: state.manifest_lease_id,
       queued_steps: queued_steps
     })
   end
@@ -1192,23 +1411,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp stage_admission_deadline(timeout_ms),
     do: System.monotonic_time(:millisecond) + timeout_ms + @stage_admission_timeout_buffer_ms
-
-  defp node_asset_ref(%Favn.Plan{nodes: nodes}, node_key) do
-    case Map.fetch(nodes, node_key) do
-      {:ok, node} -> node.ref
-      :error -> elem(node_key, 0)
-    end
-  end
-
-  defp node_asset_ref(%RunState{plan: %Favn.Plan{} = plan}, node_key),
-    do: node_asset_ref(plan, node_key)
-
-  defp node_window(%RunState{plan: %Favn.Plan{nodes: nodes}}, node_key) do
-    case Map.fetch(nodes, node_key) do
-      {:ok, node} -> node.window
-      :error -> nil
-    end
-  end
 
   defp pipeline_stage_groups(%RunState{plan: %Favn.Plan{} = plan}) do
     plan.node_stages

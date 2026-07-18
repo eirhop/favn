@@ -8,7 +8,7 @@ defmodule FavnOrchestrator.Persistence.RunOwnershipStore do
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
   alias FavnOrchestrator.Persistence.Commands.RenewRunOwnership
   alias FavnOrchestrator.Persistence.Error
-  alias FavnOrchestrator.Persistence.Queries.PageActiveExecutions
+  alias FavnOrchestrator.Persistence.Queries.PageRunnerExecutions
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RunnerExecution
   alias FavnOrchestrator.Persistence.Results.RunOwnership
@@ -22,6 +22,6 @@ defmodule FavnOrchestrator.Persistence.RunOwnershipStore do
               {:ok, RunnerExecution.t()} | {:error, Error.t()}
   @callback advance_execution(AdvanceRunnerExecution.t()) ::
               {:ok, RunnerExecution.t()} | {:error, Error.t()}
-  @callback page_active_executions(PageActiveExecutions.t()) ::
+  @callback page_executions(PageRunnerExecutions.t()) ::
               {:ok, CursorPage.t(RunnerExecution.t())} | {:error, Error.t()}
 end

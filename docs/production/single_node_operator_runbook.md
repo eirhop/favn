@@ -15,7 +15,8 @@ mix favn.install
 mix favn.build.single
 ```
 
-The command prints the generated `dist` path. Review its `metadata.json`,
+The command prints the generated `dist` path. Review its `metadata.json`, compact
+`runner/manifest.json`, content-addressed `runner/execution-packages/`,
 `config/assembly.json`, `OPERATOR_NOTES.md`, and `env/backend.env.example`.
 
 ## Configure
@@ -27,7 +28,8 @@ placeholder. At minimum configure:
 FAVN_STORAGE=postgres
 FAVN_DATABASE_URL=ecto://favn_runtime:<secret>@<host>/<database>
 FAVN_DATABASE_SSL_CA_FILE=/run/secrets/postgresql-ca.pem
-FAVN_RUNTIME_INPUT_PIN_KEY=<32-byte-raw-or-base64-key>
+FAVN_RUNTIME_INPUT_PIN_KEYS='{"1":"<base64-32-byte-key>"}'
+FAVN_RUNTIME_INPUT_PIN_KEY_VERSION=1
 FAVN_WORKSPACE_IDS=<explicit-comma-separated-workspace-ids>
 FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=<bootstrap-id>|platform_operator:<secret>,<view-id>:<different-secret>
 FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=<operator>
@@ -52,8 +54,11 @@ mix favn.bootstrap.single \
   --operator-password <password>
 ```
 
-Require readiness to pass before bootstrap or traffic. Repeat bootstrap safely to
-confirm the manifest and runner registrations are idempotent.
+Require readiness to pass before bootstrap or traffic. Bootstrap verifies package
+coverage, asks PostgreSQL which hashes are missing, uploads those packages in bounded
+batches, and registers the compact manifest index only after package success. Repeat
+bootstrap safely to confirm package, manifest, and runner registration are
+idempotent.
 
 ## Stop and restart
 

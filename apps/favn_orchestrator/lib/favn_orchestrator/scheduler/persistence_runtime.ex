@@ -11,10 +11,10 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
 
   require Logger
 
-  alias Favn.Manifest.Index
   alias Favn.Window.Policy
   alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.ClaimDueSchedules
   alias FavnOrchestrator.Persistence.Commands.ClaimScheduleOccurrences
@@ -150,7 +150,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
 
   defp workspace_entries(context) do
     with {:ok, version} <- ManifestStore.get_active_manifest(context),
-         {:ok, index} <- Index.build_from_version(version),
+         {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, entries} <- ManifestEntries.discover_all(version, index) do
       {:ok,
        Map.new(entries, fn entry ->

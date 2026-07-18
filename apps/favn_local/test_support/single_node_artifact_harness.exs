@@ -84,13 +84,14 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
       "FAVN_DATABASE_SSL_MODE" => "disable",
       "FAVN_UNSAFE_ALLOW_PLAINTEXT_DATABASE" => "true",
       "FAVN_DATABASE_POOL_SIZE" => "3",
-      "FAVN_RUNTIME_INPUT_PIN_KEY" => "0123456789abcdef0123456789abcdef",
+      "FAVN_RUNTIME_INPUT_PIN_KEYS" =>
+        Jason.encode!(%{"1" => "0123456789abcdef0123456789abcdef"}),
+      "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION" => "1",
       "FAVN_WORKSPACE_IDS" => workspace_id,
       "FAVN_BOOTSTRAP_WORKSPACE_ID" => workspace_id,
       "FAVN_ORCHESTRATOR_API_BIND_HOST" => "127.0.0.1",
       "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(port),
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
-        "favn_view|platform_operator:#{service_token}",
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "favn_view|platform_operator:#{service_token}",
       "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN" => service_token,
       "FAVN_SCHEDULER_ENABLED" => "true",
       "FAVN_SCHEDULER_TICK_MS" => "1000",

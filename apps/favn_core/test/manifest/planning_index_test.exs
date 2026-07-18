@@ -6,7 +6,7 @@ defmodule Favn.Manifest.PlanningIndexTest do
   alias Favn.Manifest.Graph
   alias Favn.Manifest.PlanningIndex
 
-  test "builds manifest-derived adjacency, transitive closures, and topo ranks" do
+  test "builds manifest-derived adjacency and topo ranks with on-demand closure" do
     assert {:ok, graph} = Graph.build(sample_assets())
     manifest = %Manifest{assets: sample_assets(), graph: graph}
 
@@ -23,11 +23,38 @@ defmodule Favn.Manifest.PlanningIndexTest do
     assert index.upstream[{MyApp.Gold, :asset}] == MapSet.new([{MyApp.Stage, :asset}])
     assert index.downstream[{MyApp.Raw, :asset}] == MapSet.new([{MyApp.Stage, :asset}])
 
-    assert index.transitive_upstream[{MyApp.Gold, :asset}] ==
+    assert {:ok, upstream} =
+             PlanningIndex.transitive_upstream_of(index, {MyApp.Gold, :asset})
+
+    assert upstream ==
              MapSet.new([{MyApp.Raw, :asset}, {MyApp.Stage, :asset}])
 
-    assert index.transitive_downstream[{MyApp.Raw, :asset}] ==
+    assert {:ok, downstream} =
+             PlanningIndex.transitive_downstream_of(index, {MyApp.Raw, :asset})
+
+    assert downstream ==
              MapSet.new([{MyApp.Stage, :asset}, {MyApp.Gold, :asset}])
+  end
+
+  test "keeps a long-chain planning index linear in retained size" do
+    assets =
+      Enum.map(1..2_000, fn index ->
+        ref = {LongChain, String.to_atom("node_#{index}")}
+
+        depends_on =
+          if index == 1, do: [], else: [{LongChain, String.to_atom("node_#{index - 1}")}]
+
+        %Asset{ref: ref, depends_on: depends_on}
+      end)
+
+    assert {:ok, graph} = Graph.build(assets)
+    assert {:ok, index} = PlanningIndex.build(%Manifest{assets: assets, graph: graph})
+    assert :erlang.external_size(index) < 20_000_000
+
+    assert {:ok, upstream} =
+             PlanningIndex.transitive_upstream_of(index, {LongChain, :node_2000})
+
+    assert MapSet.size(upstream) == 1_999
   end
 
   test "fails when manifest graph nodes differ from manifest assets" do

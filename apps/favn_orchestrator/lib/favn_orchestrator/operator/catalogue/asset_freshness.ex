@@ -11,12 +11,12 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
   alias Favn.Freshness.Key, as: FreshnessKey
   alias Favn.Freshness.Policy, as: FreshnessPolicy
   alias Favn.Manifest.Asset
-  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias Favn.TimePeriod
   alias Favn.Window.Anchor
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Freshness.Decider, as: FreshnessDecider
   alias FavnOrchestrator.Operator.Catalogue.Targets
 
@@ -165,7 +165,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
     do: insufficient_state_detail(policy)
 
   defp freshness_plan(asset, version, now) do
-    with {:ok, index} <- Index.build_from_version(version) do
+    with {:ok, index} <- ManifestIndexCache.fetch(version) do
       opts = [dependencies: :all, planning_index: index.planning_index]
 
       opts =

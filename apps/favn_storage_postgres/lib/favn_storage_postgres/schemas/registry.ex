@@ -34,6 +34,10 @@ defmodule FavnStoragePostgres.Schemas.ManifestVersion do
     field(:schema_version, :integer)
     field(:runner_contract_version, :integer)
     field(:payload_version, :integer)
+    field(:asset_count, :integer)
+    field(:pipeline_count, :integer)
+    field(:schedule_count, :integer)
+    field(:atom_strings, {:array, :string})
     field(:manifest, :map)
     field(:inserted_at, :utc_datetime_usec)
   end
@@ -48,7 +52,9 @@ defmodule FavnStoragePostgres.Schemas.ExecutionPackage do
   schema "execution_packages" do
     field(:asset_module, :string)
     field(:asset_name, :string)
+    field(:runtime_input_resolver, :string)
     field(:payload, :map)
+    field(:first_linked_at, :utc_datetime_usec)
     field(:inserted_at, :utc_datetime_usec)
   end
 end
@@ -62,6 +68,8 @@ defmodule FavnStoragePostgres.Schemas.ManifestExecutionPackage do
   schema "manifest_execution_packages" do
     field(:manifest_version_id, :string, primary_key: true)
     field(:package_hash, :binary, primary_key: true)
+    field(:asset_module, :string)
+    field(:asset_name, :string)
   end
 end
 
@@ -97,6 +105,7 @@ defmodule FavnStoragePostgres.Schemas.WorkspaceDeploymentTarget do
     field(:target_id, :string, primary_key: true)
     field(:selection_source, :string)
     field(:customer_visible, :boolean)
+    field(:descriptor, :map)
     field(:inserted_at, :utc_datetime_usec)
   end
 end

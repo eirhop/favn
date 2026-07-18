@@ -19,13 +19,18 @@ defmodule FavnRunner.Worker do
   alias FavnRunner.ContextBuilder
   alias FavnRunner.EventSink
   alias FavnRunner.LogSink
+  alias FavnRunner.ManifestHandle
   alias FavnRunner.RuntimeConfigDiagnostic
+  alias FavnRunner.ResultRetention
 
   @type init_arg :: %{
           required(:server) => pid(),
           required(:execution_id) => String.t(),
           required(:work) => RunnerWork.t(),
-          required(:version) => Version.t(),
+          optional(:version) => Version.t(),
+          optional(:manifest) => ManifestHandle.t(),
+          optional(:relation_by_module) => %{optional(module()) => RelationRef.t()},
+          optional(:result_max_bytes) => non_neg_integer(),
           required(:asset) => Asset.t()
         }
 
@@ -40,17 +45,24 @@ defmodule FavnRunner.Worker do
   @impl true
   def handle_continue(:execute, %{server: server, execution_id: execution_id} = state) do
     result = execute(state)
+
+    {result, _bytes, _truncated?} =
+      ResultRetention.compact(result, Map.get(state, :result_max_bytes, 768 * 1_024))
+
     send(server, {:runner_result, execution_id, result})
     {:stop, :normal, state}
   end
 
-  defp execute(%{
-         server: server,
-         execution_id: execution_id,
-         work: %RunnerWork{} = work,
-         version: %Version{} = version,
-         asset: %Asset{} = asset
-       }) do
+  defp execute(
+         %{
+           server: server,
+           execution_id: execution_id,
+           work: %RunnerWork{} = work,
+           asset: %Asset{} = asset
+         } = state
+       ) do
+    manifest = Map.get(state, :manifest) || Map.fetch!(state, :version)
+    relation_by_module = Map.get(state, :relation_by_module)
     started_at = DateTime.utc_now()
 
     emit_event(server, execution_id, work, :asset_started, %{asset_ref: asset.ref})
@@ -77,7 +89,7 @@ defmodule FavnRunner.Worker do
           end
 
         :sql ->
-          execute_sql_asset(asset, version, work, execution_id)
+          execute_sql_asset(asset, manifest, relation_by_module, work, execution_id)
 
         _ ->
           {:error,
@@ -96,7 +108,7 @@ defmodule FavnRunner.Worker do
 
         build_runner_result(
           work,
-          version,
+          manifest,
           [asset_result(work, asset, started_at, finished_at, :ok, meta, nil)],
           status: :ok
         )
@@ -113,7 +125,7 @@ defmodule FavnRunner.Worker do
 
         build_runner_result(
           work,
-          version,
+          manifest,
           [asset_result(work, asset, started_at, finished_at, :error, %{}, error)],
           status: :error,
           error: error
@@ -132,7 +144,7 @@ defmodule FavnRunner.Worker do
 
         build_runner_result(
           work,
-          version,
+          manifest,
           [asset_result(work, asset, started_at, finished_at, :error, meta, error)],
           status: :error,
           error: error
@@ -245,12 +257,17 @@ defmodule FavnRunner.Worker do
     :exit, reason -> {:error, RunnerError.exception(:exit, reason, __STACKTRACE__)}
   end
 
-  defp build_runner_result(%RunnerWork{} = work, %Version{} = version, asset_results, opts)
+  defp build_runner_result(
+         %RunnerWork{} = work,
+         %{manifest_version_id: manifest_version_id, content_hash: content_hash},
+         asset_results,
+         opts
+       )
        when is_list(asset_results) and is_list(opts) do
     %RunnerResult{
       run_id: work.run_id,
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
+      manifest_version_id: manifest_version_id,
+      manifest_content_hash: content_hash,
       status: Keyword.get(opts, :status, :ok),
       asset_results: asset_results,
       error: normalize_error(Keyword.get(opts, :error)),
@@ -373,6 +390,7 @@ defmodule FavnRunner.Worker do
   defp execute_sql_asset(
          %Asset{} = asset,
          %Version{} = version,
+         _relation_by_module,
          %RunnerWork{} = work,
          execution_id
        ) do
@@ -380,6 +398,38 @@ defmodule FavnRunner.Worker do
       {:ok, context} ->
         asset
         |> SQLAssetRuntime.run_manifest(work.execution_package, version, work, context)
+        |> redact_execution_result(asset, context)
+
+      {:error, error} ->
+        {:error,
+         RunnerError.normalize(
+           RuntimeConfigDiagnostic.asset_resolution_failed(error, asset),
+           retryable?: false
+         )}
+    end
+  rescue
+    error ->
+      {:error, RunnerError.exception(:error, error, __STACKTRACE__)}
+  end
+
+  defp execute_sql_asset(
+         %Asset{} = asset,
+         %ManifestHandle{} = manifest,
+         relation_by_module,
+         %RunnerWork{} = work,
+         execution_id
+       )
+       when is_map(relation_by_module) do
+    case ContextBuilder.build(work, asset, execution_id) do
+      {:ok, context} ->
+        SQLAssetRuntime.run_manifest(
+          asset,
+          work.execution_package,
+          manifest,
+          relation_by_module,
+          work,
+          context
+        )
         |> redact_execution_result(asset, context)
 
       {:error, error} ->

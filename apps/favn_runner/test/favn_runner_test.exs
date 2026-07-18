@@ -199,13 +199,17 @@ defmodule FavnRunnerTest do
 
     assert :ok = FavnRunner.register_manifest(fixture_version)
 
-    work = %RunnerWork{
-      run_id: "run_log_forward",
-      manifest_version_id: fixture_version.manifest_version_id,
-      manifest_content_hash: fixture_version.content_hash,
-      asset_ref: fixture_ref,
-      metadata: %{attempt: 1}
-    }
+    work =
+      leased_work(
+        %RunnerWork{
+          run_id: "run_log_forward",
+          manifest_version_id: fixture_version.manifest_version_id,
+          manifest_content_hash: fixture_version.content_hash,
+          asset_ref: fixture_ref,
+          metadata: %{attempt: 1}
+        },
+        fixture_version
+      )
 
     assert {:ok, execution_id} = FavnRunner.submit_work(work)
     assert :ok = FavnRunner.subscribe_execution_logs(execution_id, self())
@@ -277,12 +281,16 @@ defmodule FavnRunnerTest do
 
     assert :ok = FavnRunner.register_manifest(fixture_version)
 
-    work = %RunnerWork{
-      run_id: "run_cancel",
-      manifest_version_id: fixture_version.manifest_version_id,
-      manifest_content_hash: fixture_version.content_hash,
-      asset_ref: fixture_ref
-    }
+    work =
+      leased_work(
+        %RunnerWork{
+          run_id: "run_cancel",
+          manifest_version_id: fixture_version.manifest_version_id,
+          manifest_content_hash: fixture_version.content_hash,
+          asset_ref: fixture_ref
+        },
+        fixture_version
+      )
 
     assert {:ok, execution_id} = FavnRunner.submit_work(work)
 
@@ -294,7 +302,7 @@ defmodule FavnRunnerTest do
     assert %RunnerError{kind: :cancelled, retryable?: false} = result.error
   end
 
-  test "rejects unknown manifest version" do
+  test "rejects direct submission without an active manifest lease" do
     work =
       %RunnerWork{
         run_id: "run_missing",
@@ -303,7 +311,7 @@ defmodule FavnRunnerTest do
         asset_ref: {FavnRunnerTest.ElixirAsset, :asset}
       }
 
-    assert {:error, :manifest_not_found} = FavnRunner.submit_work(work)
+    assert {:error, :manifest_lease_not_found} = FavnRunner.submit_work(work)
   end
 
   defp receive_runner_log(execution_id, timeout \\ 1_000) do
@@ -330,6 +338,15 @@ defmodule FavnRunnerTest do
       graph: %Graph{nodes: refs, edges: [], topo_order: refs},
       metadata: %{}
     }
+  end
+
+  defp leased_work(%RunnerWork{} = work, %Version{} = version) do
+    lease_id = "test:" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+    expires_at = DateTime.add(DateTime.utc_now(), 60, :second)
+    planned_asset_refs = Enum.map(version.manifest.assets, & &1.ref)
+    assert :ok = FavnRunner.acquire_manifest(version, lease_id, expires_at, planned_asset_refs)
+    on_exit(fn -> FavnRunner.release_manifest(lease_id) end)
+    %{work | manifest_lease_id: lease_id}
   end
 end
 

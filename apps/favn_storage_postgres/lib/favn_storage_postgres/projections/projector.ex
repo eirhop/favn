@@ -58,7 +58,7 @@ defmodule FavnStoragePostgres.Projections.Projector do
         {:ok, outcome}
 
       {:error, {:projection_failed, event, error_kind}} ->
-        record_failure(event, error_kind)
+        _ = record_failure_if_unprojected(event, error_kind)
 
         {:error,
          Error.new(:internal, "projection event failed",
@@ -87,15 +87,18 @@ defmodule FavnStoragePostgres.Projections.Projector do
       )
       |> Repo.all()
 
+    run_contexts = load_run_projection_contexts!(events)
+
     Enum.each(events, fn event ->
       try do
-        project_event!(event)
-        clear_failure!(event.publication_id)
+        project_event!(event, run_contexts)
       rescue
         error ->
           Repo.rollback({:projection_failed, event, error_kind(error)})
       end
     end)
+
+    clear_failures!(events)
 
     next_publication_id =
       case List.last(events) do
@@ -113,7 +116,7 @@ defmodule FavnStoragePostgres.Projections.Projector do
             version = version + 1,
             updated_at = clock_timestamp()
         WHERE projector_name = $1 AND shard_id = $2 AND owner_id = $3
-          AND fencing_token = $6 AND claim_expires_at > clock_timestamp()
+          AND fencing_token = $6
         """,
         [
           @projector_name,
@@ -171,10 +174,10 @@ defmodule FavnStoragePostgres.Projections.Projector do
   @doc false
   @spec rebuild_event!(atom(), OutboxEvent.t()) :: :ok
   def rebuild_event!(:execution_groups, %OutboxEvent{event_kind: "run." <> _} = event),
-    do: project_execution_group!(event)
+    do: event |> run_projection_context!() |> project_execution_group!(event)
 
   def rebuild_event!(:target_statuses, %OutboxEvent{event_kind: "run." <> _} = event),
-    do: project_target_statuses!(event)
+    do: event |> run_projection_context!() |> project_target_statuses!(event)
 
   def rebuild_event!(:backfills, %OutboxEvent{event_kind: "backfill.plan.activated"} = event),
     do: project_backfill_activation!(event)
@@ -187,26 +190,65 @@ defmodule FavnStoragePostgres.Projections.Projector do
 
   def rebuild_event!(_projection, %OutboxEvent{}), do: :ok
 
-  defp project_event!(%OutboxEvent{event_kind: "run." <> _event_type} = event),
-    do: project_run!(event)
+  defp project_event!(%OutboxEvent{event_kind: "run." <> _event_type} = event, contexts),
+    do: project_run!(event, Map.fetch!(contexts, event.outbox_event_id))
 
-  defp project_event!(%OutboxEvent{event_kind: "backfill.plan.activated"} = event),
+  defp project_event!(%OutboxEvent{event_kind: "backfill.plan.activated"} = event, _contexts),
     do: project_backfill_activation!(event)
 
-  defp project_event!(%OutboxEvent{event_kind: "backfill.window." <> _status} = event),
+  defp project_event!(%OutboxEvent{event_kind: "backfill.window." <> _status} = event, _contexts),
     do: project_backfill_window!(event)
 
-  defp project_event!(%OutboxEvent{event_kind: "materialization.succeeded"} = event),
+  defp project_event!(%OutboxEvent{event_kind: "materialization.succeeded"} = event, _contexts),
     do: project_materialization!(event)
 
-  defp project_event!(_event), do: :ok
+  defp project_event!(_event, _contexts), do: :ok
 
-  defp project_run!(event) do
-    project_execution_group!(event)
-    project_target_statuses!(event)
+  defp project_run!(event, context) do
+    project_execution_group!(context, event)
+    project_target_statuses!(context, event)
   end
 
-  defp project_execution_group!(event) do
+  defp load_run_projection_contexts!(events) do
+    run_events = Enum.filter(events, &match?(%OutboxEvent{event_kind: "run." <> _}, &1))
+
+    if run_events == [] do
+      %{}
+    else
+      run_keys =
+        run_events
+        |> Enum.map(&%{workspace_id: &1.workspace_id, run_id: &1.aggregate_id})
+        |> Enum.uniq()
+
+      key_types = %{workspace_id: :string, run_id: :string}
+
+      runs =
+        from(run in Run,
+          join: key in values(run_keys, key_types),
+          on: run.workspace_id == key.workspace_id and run.run_id == key.run_id
+        )
+        |> Repo.all()
+        |> Map.new(&{{&1.workspace_id, &1.run_id}, &1})
+
+      outbox_event_ids = Enum.map(run_events, & &1.outbox_event_id)
+
+      persisted_events =
+        from(event in RunEvent, where: event.outbox_event_id in ^outbox_event_ids)
+        |> Repo.all()
+        |> Map.new(&{&1.outbox_event_id, &1})
+
+      Map.new(run_events, fn event ->
+        run = Map.fetch!(runs, {event.workspace_id, event.aggregate_id})
+        run_event = Map.fetch!(persisted_events, event.outbox_event_id)
+        previous_status = event.payload["previous_status"]
+        new_status = event.payload["status"] || run_event.status || run.status
+
+        {event.outbox_event_id, {run, run_event, previous_status, new_status}}
+      end)
+    end
+  end
+
+  defp run_projection_context!(event) do
     run =
       Repo.get_by!(Run,
         workspace_id: event.workspace_id,
@@ -214,10 +256,13 @@ defmodule FavnStoragePostgres.Projections.Projector do
       )
 
     run_event = Repo.get_by!(RunEvent, outbox_event_id: event.outbox_event_id)
-
     previous_status = event.payload["previous_status"]
-
     new_status = event.payload["status"] || run_event.status || run.status
+
+    {run, run_event, previous_status, new_status}
+  end
+
+  defp project_execution_group!({run, run_event, previous_status, new_status}, event) do
     old_bucket = status_bucket(previous_status)
     new_bucket = status_bucket(new_status)
     delta = counter_delta(old_bucket, new_bucket)
@@ -265,16 +310,9 @@ defmodule FavnStoragePostgres.Projections.Projector do
     )
   end
 
-  defp project_target_statuses!(event) do
-    run =
-      Repo.get_by!(Run,
-        workspace_id: event.workspace_id,
-        run_id: event.aggregate_id
-      )
+  defp project_target_statuses!({_run, _run_event, status, status}, _event), do: :ok
 
-    run_event = Repo.get_by!(RunEvent, outbox_event_id: event.outbox_event_id)
-    new_status = event.payload["status"] || run_event.status || run.status
-
+  defp project_target_statuses!({run, run_event, _previous_status, new_status}, event) do
     SQL.query!(
       Repo,
       """
@@ -606,44 +644,60 @@ defmodule FavnStoragePostgres.Projections.Projector do
     zero |> decrement(old) |> increment(new)
   end
 
-  defp record_failure(event, error_kind) do
+  @doc false
+  @spec record_failure_if_unprojected(OutboxEvent.t(), atom()) ::
+          :recorded | :already_projected | {:error, term()}
+  def record_failure_if_unprojected(%OutboxEvent{} = event, error_kind)
+      when is_atom(error_kind) do
     now = DateTime.utc_now()
 
-    SQL.query(
-      Repo,
-      """
-      INSERT INTO favn_control.projection_failures
-        (projector_name, shard_id, publication_id, workspace_id, event_kind,
-         error_kind, error_detail, attempt_count, inserted_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb, 1, $7, $7)
-      ON CONFLICT (projector_name, shard_id, publication_id) DO UPDATE
-      SET error_kind = EXCLUDED.error_kind,
-          attempt_count = projection_failures.attempt_count + 1,
-          updated_at = EXCLUDED.updated_at
-      """,
-      [
-        @projector_name,
-        @shard_id,
-        event.publication_id,
-        event.workspace_id,
-        event.event_kind,
-        Atom.to_string(error_kind),
-        now
-      ]
-    )
-
-    :ok
+    case SQL.query(
+           Repo,
+           """
+           WITH serialized_cursor AS (
+             SELECT last_publication_id
+             FROM favn_control.projection_cursors
+             WHERE projector_name = $1 AND shard_id = $2
+             FOR UPDATE
+           )
+           INSERT INTO favn_control.projection_failures
+             (projector_name, shard_id, publication_id, workspace_id, event_kind,
+              error_kind, error_detail, attempt_count, inserted_at, updated_at)
+           SELECT $1, $2, $3, $4, $5, $6, '{}'::jsonb, 1, $7, $7
+           FROM serialized_cursor
+           WHERE last_publication_id < $3
+           ON CONFLICT (projector_name, shard_id, publication_id) DO UPDATE
+           SET error_kind = EXCLUDED.error_kind,
+               attempt_count = projection_failures.attempt_count + 1,
+               updated_at = EXCLUDED.updated_at
+           """,
+           [
+             @projector_name,
+             @shard_id,
+             event.publication_id,
+             event.workspace_id,
+             event.event_kind,
+             Atom.to_string(error_kind),
+             now
+           ]
+         ) do
+      {:ok, %{num_rows: 1}} -> :recorded
+      {:ok, %{num_rows: 0}} -> :already_projected
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp clear_failure!(publication_id) do
-    SQL.query!(
-      Repo,
-      """
-      DELETE FROM favn_control.projection_failures
-      WHERE projector_name = $1 AND shard_id = $2 AND publication_id = $3
-      """,
-      [@projector_name, @shard_id, publication_id]
+  defp clear_failures!([]), do: :ok
+
+  defp clear_failures!(events) do
+    publication_ids = Enum.map(events, & &1.publication_id)
+
+    from(failure in "projection_failures",
+      where:
+        failure.projector_name == ^@projector_name and failure.shard_id == ^@shard_id and
+          failure.publication_id in ^publication_ids
     )
+    |> Repo.delete_all(prefix: "favn_control")
 
     :ok
   end

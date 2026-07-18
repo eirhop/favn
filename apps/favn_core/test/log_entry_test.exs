@@ -44,7 +44,7 @@ defmodule Favn.Log.EntryTest do
 
     assert %Entry{} = entry
     assert entry.run_id == "run_1"
-    assert entry.asset_ref == {MyApp.Asset, :daily}
+    assert entry.asset_ref == "asset:Elixir.MyApp.Asset:daily"
     assert entry.attempt == 2
     assert entry.level == :info
     assert entry.source == :user_code

@@ -28,6 +28,7 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.Window.Runtime
   alias FavnRunner.RuntimeInputResolver
   alias FavnRunner.RuntimeInputResolver.Resolution, as: RuntimeInputResolution
+  alias FavnRunner.ManifestHandle
   alias FavnRunner.SQL.MaterializationPlanner
 
   @runner_registry FavnRunner.ConnectionRegistry
@@ -54,15 +55,43 @@ defmodule Favn.SQLAsset.Runtime do
         %RunnerWork{} = work,
         %Context{} = context
       ) do
+    run_manifest(asset, package, version, relation_map(version), work, context)
+  end
+
+  @spec run_manifest(
+          Asset.t(),
+          ExecutionPackage.t(),
+          Version.t() | ManifestHandle.t(),
+          %{optional(module()) => RelationRef.t()},
+          RunnerWork.t(),
+          Context.t()
+        ) ::
+          {:ok, map()} | {:error, Error.t()} | {:error, Error.t(), map()}
+  def run_manifest(
+        %Asset{} = asset,
+        %ExecutionPackage{} = package,
+        manifest_identity,
+        relation_by_module,
+        %RunnerWork{} = work,
+        %Context{} = context
+      )
+      when is_struct(manifest_identity, Version) or is_struct(manifest_identity, ManifestHandle) do
     with {:ok, %Definition{} = definition, %Context{} = final_context, final_opts} <-
-           prepare_manifest_execution(asset, package, version, work, context),
+           prepare_manifest_execution(
+             asset,
+             package,
+             manifest_identity,
+             relation_by_module,
+             work,
+             context
+           ),
          {:ok, %Render{} = rendered, %CheckedMaterialization{} = materialization, resolution} <-
            execute_finalized_definition(definition, final_context, final_opts) do
       output =
         definition
         |> runtime_output(rendered, materialization, resolution)
-        |> Map.put(:manifest_version_id, version.manifest_version_id)
-        |> Map.put(:manifest_content_hash, version.content_hash)
+        |> Map.put(:manifest_version_id, manifest_identity.manifest_version_id)
+        |> Map.put(:manifest_content_hash, manifest_identity.content_hash)
 
       {:ok, output}
     else
@@ -87,9 +116,33 @@ defmodule Favn.SQLAsset.Runtime do
         %RunnerWork{} = work,
         %Context{} = context
       ) do
+    prepare_manifest_execution(asset, package, version, relation_map(version), work, context)
+  end
+
+  @doc false
+  @spec prepare_manifest_execution(
+          Asset.t(),
+          ExecutionPackage.t(),
+          Version.t() | ManifestHandle.t(),
+          %{optional(module()) => RelationRef.t()},
+          RunnerWork.t(),
+          Context.t()
+        ) ::
+          {:ok, Definition.t(), Context.t(), keyword()} | {:error, Error.t()}
+  def prepare_manifest_execution(
+        %Asset{} = asset,
+        %ExecutionPackage{} = package,
+        manifest_identity,
+        relation_by_module,
+        %RunnerWork{} = work,
+        %Context{} = context
+      )
+      when (is_struct(manifest_identity, Version) or
+              is_struct(manifest_identity, ManifestHandle)) and is_map(relation_by_module) do
     opts = context |> run_opts() |> Keyword.merge(runner_runtime_opts(work))
 
-    with {:ok, %Definition{} = definition} <- manifest_definition(asset, package, version),
+    with {:ok, %Definition{} = definition} <-
+           manifest_definition(asset, package, relation_by_module),
          {:ok, final_context, final_opts} <-
            finalize_execution_window(definition, context, opts) do
       {:ok, definition, final_context, final_opts}
@@ -1625,7 +1678,7 @@ defmodule Favn.SQLAsset.Runtime do
   defp manifest_definition(
          %Asset{type: :sql} = asset,
          %ExecutionPackage{sql_execution: %SQLExecution{} = payload},
-         %Version{} = version
+         relation_by_module
        ) do
     asset_stub = %{
       module: asset.module,
@@ -1658,13 +1711,13 @@ defmodule Favn.SQLAsset.Runtime do
        runtime_inputs: payload.runtime_inputs,
        session_requirements: asset.session_requirements,
        raw_asset: %{
-         manifest_relation_by_module: relation_map(version),
+         manifest_relation_by_module: relation_by_module,
          deferred_resolution: :manifest_only
        }
      }}
   end
 
-  defp manifest_definition(%Asset{} = asset, _package, _version) do
+  defp manifest_definition(%Asset{} = asset, _package, _relation_by_module) do
     {:error,
      %Error{
        type: :invalid_sql_asset_definition,

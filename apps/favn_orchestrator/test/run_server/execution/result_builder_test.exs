@@ -93,6 +93,25 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilderTest do
            } = ResultBuilder.pipeline_result(run, :ok, [%{ref: @first_ref}])
   end
 
+  test "large runs retain bounded detail and exact node counts" do
+    run =
+      Enum.reduce(1..2_000, run_state(), fn index, run ->
+        ref = {__MODULE__.Generated, :asset}
+        result = NodeResult.new(%{node_key: {ref, index}, ref: ref, status: :ok})
+        ResultBuilder.append_node_result(run, result)
+      end)
+
+    assert length(ResultBuilder.node_results(run)) == 128
+    assert ResultBuilder.node_result_count(run) == 2_000
+    assert ResultBuilder.results_truncated?(run)
+    assert :erlang.external_size(run.result) < 250_000
+
+    aggregate = ResultBuilder.pipeline_result(run, :ok, Enum.to_list(1..2_000))
+    assert length(aggregate.asset_results) == 128
+    assert aggregate.metadata.result_retention.truncated
+    assert aggregate.metadata.result_retention.node_result_count == 2_000
+  end
+
   defp run_state do
     first_key = {@first_ref, nil}
     second_key = {@second_ref, nil}

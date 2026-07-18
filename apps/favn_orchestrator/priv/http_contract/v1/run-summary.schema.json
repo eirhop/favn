@@ -10,32 +10,9 @@
     "manifest_version_id",
     "event_seq",
     "started_at",
-    "finished_at",
-    "target_refs",
-    "asset_results",
-    "error"
+    "finished_at"
   ],
   "additionalProperties": false,
-  "$defs": {
-    "assetResult": {
-      "type": "object",
-      "additionalProperties": true,
-      "properties": {
-        "asset_ref": { "type": ["string", "null"] },
-        "stage": { "type": ["integer", "null"], "minimum": 0 },
-        "status": { "type": ["string", "null"] },
-        "started_at": { "type": ["string", "null"] },
-        "finished_at": { "type": ["string", "null"] },
-        "duration_ms": { "type": ["integer", "null"], "minimum": 0 },
-        "meta": {},
-        "error": {},
-        "attempt_count": { "type": ["integer", "null"], "minimum": 0 },
-        "max_attempts": { "type": ["integer", "null"], "minimum": 0 },
-        "attempts": {},
-        "next_retry_at": { "type": ["string", "null"] }
-      }
-    }
-  },
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "status": { "type": "string", "minLength": 1 },
@@ -43,9 +20,6 @@
     "manifest_version_id": { "type": "string", "minLength": 1 },
     "event_seq": { "type": "integer", "minimum": 1 },
     "started_at": { "type": ["string", "null"] },
-    "finished_at": { "type": ["string", "null"] },
-    "target_refs": { "type": "array", "items": { "type": "string" } },
-    "asset_results": { "type": "array", "items": { "$ref": "#/$defs/assetResult" } },
-    "error": {}
+    "finished_at": { "type": ["string", "null"] }
   }
 }
