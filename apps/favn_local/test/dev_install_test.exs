@@ -34,6 +34,12 @@ defmodule Favn.Dev.InstallTest do
     )
 
     File.write!(Path.join(root_dir, "apps/favn_view/mix.exs"), "defmodule View.MixProject do end")
+    File.mkdir_p!(Path.join(root_dir, "apps/favn_view/asset_installer"))
+
+    File.write!(
+      Path.join(root_dir, "apps/favn_view/asset_installer/mix.exs"),
+      "defmodule View.AssetInstaller.MixProject do end"
+    )
 
     on_exit(fn ->
       File.rm_rf(root_dir)
@@ -223,10 +229,15 @@ defmodule Favn.Dev.InstallTest do
                web_install_command_runner: runner
              )
 
-    assert_received {:web_install, mix, ["do", "--app", "favn_view", "assets.setup"], opts}
+    assert_received {:web_install, mix, ["assets.setup"], opts}
     assert String.starts_with?(Path.basename(mix), "mix")
-    assert opts[:cd] == Path.join(root_dir, ".favn/install/runtime_root")
+
+    assert opts[:cd] ==
+             Path.join(root_dir, ".favn/install/runtime_root/apps/favn_view/asset_installer")
+
     assert opts[:stderr_to_stdout]
+    assert opts[:env]["MIX_ENV"] == "prod"
+    refute opts[:cd] == Path.join(root_dir, ".favn/install/runtime_root")
   end
 
   test "run/1 preserves web asset installation failures", %{root_dir: root_dir} do
@@ -241,5 +252,38 @@ defmodule Favn.Dev.InstallTest do
              )
 
     assert {:error, :install_required} = Install.ensure_ready(root_dir: root_dir)
+  end
+
+  test "cold run reports dependency and web-asset phases", %{root_dir: root_dir} do
+    caller = self()
+    File.write!(Path.join(root_dir, "mix.exs"), "defmodule Root.MixProject do end")
+
+    runner = fn _mix, _args, _opts -> {"", 0} end
+    progress_writer = fn message -> send(caller, {:install_progress, message}) end
+
+    assert {:ok, :installed} =
+             Install.run(
+               root_dir: root_dir,
+               skip_tool_checks: true,
+               runtime_deps_command_runner: runner,
+               web_install_command_runner: runner,
+               install_progress_writer: progress_writer
+             )
+
+    assert_received {:install_progress, "Favn install: resolving runtime dependencies"}
+    assert_received {:install_progress, "Favn install: installing web asset binaries"}
+  end
+
+  test "run/1 reports a bounded web asset installation timeout", %{root_dir: root_dir} do
+    runner = fn _mix, _args, _opts -> {"last child output", :timeout} end
+
+    assert {:error, {:web_install_failed, :timeout, "last child output"}} =
+             Install.run(
+               root_dir: root_dir,
+               skip_tool_checks: true,
+               skip_runtime_deps_install: true,
+               web_install_command_runner: runner,
+               install_progress_writer: fn _message -> :ok end
+             )
   end
 end

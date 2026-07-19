@@ -4,12 +4,15 @@ defmodule Favn.Dev.Install do
   """
 
   alias Favn.Dev.ChildEnvironment
+  alias Favn.Dev.Command
   alias Favn.Dev.Paths
   alias Favn.Dev.RuntimeSource
   alias Favn.Dev.RuntimeWorkspace
   alias Favn.Dev.State
 
   @schema_version 3
+  @runtime_deps_timeout_ms 600_000
+  @web_install_timeout_ms 300_000
 
   @type root_opt :: [root_dir: Path.t()]
 
@@ -126,7 +129,9 @@ defmodule Favn.Dev.Install do
 
       if File.exists?(runtime_mix_exs) do
         mix_exec = System.find_executable("mix") || "mix"
-        runner = Keyword.get(opts, :runtime_deps_command_runner, &System.cmd/3)
+        runner = command_runner(opts, :runtime_deps_command_runner, @runtime_deps_timeout_ms)
+
+        :ok = report_phase(opts, "Favn install: resolving runtime dependencies")
 
         case runner.(mix_exec, ["deps.get"], cd: runtime_root, stderr_to_stdout: true) do
           {_output, 0} ->
@@ -145,20 +150,22 @@ defmodule Favn.Dev.Install do
     if Keyword.get(opts, :skip_web_install, false) do
       :ok
     else
-      runtime_root = runtime["materialized_root"]
-      web_mix_exs = runtime |> Map.fetch!("web_root") |> Path.join("mix.exs")
+      installer_root = runtime |> Map.fetch!("web_root") |> Path.join("asset_installer")
+      installer_mix_exs = Path.join(installer_root, "mix.exs")
 
-      if File.exists?(web_mix_exs) do
+      if File.exists?(installer_mix_exs) do
         mix_exec = System.find_executable("mix") || "mix"
-        runner = Keyword.get(opts, :web_install_command_runner, &System.cmd/3)
+        runner = command_runner(opts, :web_install_command_runner, @web_install_timeout_ms)
 
         command_opts = [
-          cd: runtime_root,
+          cd: installer_root,
           stderr_to_stdout: true,
-          env: ChildEnvironment.empty_proxy_overrides()
+          env: Map.put(ChildEnvironment.empty_proxy_overrides(), "MIX_ENV", "prod")
         ]
 
-        case runner.(mix_exec, ["do", "--app", "favn_view", "assets.setup"], command_opts) do
+        :ok = report_phase(opts, "Favn install: installing web asset binaries")
+
+        case runner.(mix_exec, ["assets.setup"], command_opts) do
           {_output, 0} -> :ok
           {output, status} -> {:error, {:web_install_failed, status, String.trim(output)}}
         end
@@ -166,6 +173,31 @@ defmodule Favn.Dev.Install do
         :ok
       end
     end
+  end
+
+  defp command_runner(opts, runner_key, default_timeout_ms) do
+    case Keyword.fetch(opts, runner_key) do
+      {:ok, runner} ->
+        runner
+
+      :error ->
+        timeout_ms = Keyword.get(opts, :install_command_timeout_ms, default_timeout_ms)
+        output_writer = Keyword.get(opts, :install_output_writer, &IO.binwrite/1)
+
+        fn executable, args, command_opts ->
+          Command.run(
+            executable,
+            args,
+            Keyword.merge(command_opts, timeout_ms: timeout_ms, output_writer: output_writer)
+          )
+        end
+    end
+  end
+
+  defp report_phase(opts, message) do
+    writer = Keyword.get(opts, :install_progress_writer, &IO.puts/1)
+    writer.(message)
+    :ok
   end
 
   defp write_install_state(fingerprint, toolchain, source, runtime, opts) do
