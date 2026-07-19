@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.TargetsTest do
 
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Pipeline
+  alias Favn.Window.Policy
   alias FavnOrchestrator.Operator.Catalogue.Targets
 
   test "projects stable asset target ids and normalizes nested manifest values" do
@@ -59,6 +60,25 @@ defmodule FavnOrchestrator.Operator.Catalogue.TargetsTest do
     assert restored.label == "false"
   end
 
+  test "required-window pipeline capability booleans survive persistence" do
+    pipeline = %Pipeline{
+      module: MyApp.Pipelines.Orders,
+      name: :orders,
+      selectors: [],
+      window: Policy.new!(:monthly)
+    }
+
+    restored =
+      pipeline
+      |> Targets.pipeline()
+      |> Targets.serialize_descriptor()
+      |> Targets.restore_descriptor()
+
+    assert restored.can_run_without_window? == false
+    assert restored.can_backfill? == true
+    assert restored.window["allow_full_load"] == false
+  end
+
   test "descriptor restoration repairs only known legacy boolean fields" do
     restored =
       Targets.restore_descriptor(%{
@@ -69,7 +89,17 @@ defmodule FavnOrchestrator.Operator.Catalogue.TargetsTest do
           "required" => "true",
           "label" => "true"
         },
-        "runtime_config" => %{"secret" => "true", "required" => "false"},
+        "runtime_config" => %{
+          "required" => "false",
+          "refs" => [
+            %{
+              "provider" => "env",
+              "key" => "TOKEN",
+              "secret" => "true",
+              "required" => "false"
+            }
+          ]
+        },
         "label" => "false",
         "metadata" => %{"enabled" => "true"}
       })
@@ -83,7 +113,18 @@ defmodule FavnOrchestrator.Operator.Catalogue.TargetsTest do
              "label" => "true"
            }
 
-    assert restored.runtime_config == %{"secret" => true, "required" => false}
+    assert restored.runtime_config == %{
+             "required" => "false",
+             "refs" => [
+               %{
+                 "provider" => "env",
+                 "key" => "TOKEN",
+                 "secret" => true,
+                 "required" => false
+               }
+             ]
+           }
+
     assert restored.label == "false"
     assert restored.metadata == %{"enabled" => "true"}
   end
