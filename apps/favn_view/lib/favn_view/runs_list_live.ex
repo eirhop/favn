@@ -527,6 +527,7 @@ defmodule FavnView.RunsListLive do
 
   defp duration_label(group), do: LogsViewModel.duration_ms_label(Map.get(group, :duration_ms))
 
+  defp targets([], nil), do: ["No target"]
   defp targets([], asset_ref), do: targets(List.wrap(asset_ref), nil)
 
   defp targets(refs, _asset_ref) do

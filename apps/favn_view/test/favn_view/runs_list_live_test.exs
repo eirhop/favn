@@ -1,6 +1,8 @@
 defmodule FavnView.RunsListLiveTest do
   use ExUnit.Case, async: false
 
+  import Phoenix.LiveViewTest
+
   alias FavnView.RunsListLive
 
   setup do
@@ -25,6 +27,22 @@ defmodule FavnView.RunsListLiveTest do
 
     assert [%{id: "run-1", status: :running, health: %{status: :active}}] =
              socket.assigns.groups
+  end
+
+  test "renders an execution group without target assets" do
+    Application.put_env(:favn_view, :page_execution_groups_fun, fn _context, _filters ->
+      {:ok, %{items: [%{execution_group() | target_assets: []}]}}
+    end)
+
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        current_scope: %{operator_context: :operator_context}
+      }
+    }
+
+    assert {:ok, socket} = RunsListLive.mount(%{}, %{}, socket)
+    assert render_component(&RunsListLive.render/1, socket.assigns) =~ "No target"
   end
 
   defp execution_group do
