@@ -142,6 +142,7 @@ defmodule FavnView.Components.RunDetailPage do
   defdelegate sample_completed_timeline_run(), to: Samples
   defdelegate sample_admission_failed_backfill(), to: Samples
   defdelegate not_found_run(), to: Samples
+  defdelegate unavailable_run(), to: Samples
   defdelegate sample_execution_group(status \\ :running), to: Samples
 
   defp selected_attempt(%{attempts: attempts}, attempt_id) when is_binary(attempt_id),

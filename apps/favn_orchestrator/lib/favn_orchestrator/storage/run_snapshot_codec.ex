@@ -5,7 +5,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias Favn.Retry.Policy, as: RetryPolicy
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
+  alias Favn.Window.Key, as: WindowKey
+  alias Favn.Window.Runtime, as: WindowRuntime
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage.ExactDateTimeCodec
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms
   alias FavnOrchestrator.Storage.RunStateCodec
@@ -336,7 +339,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     %{
       "ref" => JsonSafe.ref(Map.get(node, :ref)),
       "node_key" => node_key_to_dto(Map.get(node, :node_key)),
-      "window" => JsonSafe.data(Map.get(node, :window)),
+      "window" => window_to_dto(Map.get(node, :window)),
       "upstream" => Enum.map(List.wrap(Map.get(node, :upstream)), &node_key_to_dto/1),
       "downstream" => Enum.map(List.wrap(Map.get(node, :downstream)), &node_key_to_dto/1),
       "stage" => Map.get(node, :stage),
@@ -348,7 +351,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   defp node_key_to_dto({ref, identity}) do
-    %{"ref" => JsonSafe.ref(ref), "identity" => JsonSafe.data(identity)}
+    %{"ref" => JsonSafe.ref(ref), "identity" => node_identity_to_dto(identity)}
   end
 
   defp node_key_to_dto(_value), do: nil
@@ -378,7 +381,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     %{
       "node_key" => node_key_to_dto(result.node_key),
       "ref" => JsonSafe.ref(result.ref),
-      "window" => JsonSafe.data(result.window),
+      "window" => window_to_dto(result.window),
       "stage" => result.stage,
       "execution_pool" => atom_to_string(result.execution_pool),
       "status" => atom_to_string(result.status),
@@ -405,6 +408,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       node_key_to_dto(Map.get(result, :node_key) || Map.get(result, "node_key"))
     )
     |> Map.put(:ref, JsonSafe.ref(Map.get(result, :ref) || Map.get(result, "ref")))
+    |> Map.put(:window, window_to_dto(Map.get(result, :window) || Map.get(result, "window")))
     |> JsonSafe.data()
   end
 
@@ -436,8 +440,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   defp plan_from_dto(value, _allowed_atom_strings), do: {:error, {:invalid_plan_dto, value}}
-
-  defp plan_hash_from_dto(nil, plan), do: {:ok, RunState.plan_hash(plan)}
 
   defp plan_hash_from_dto(hash, plan) when is_binary(hash) and byte_size(hash) == 64 do
     if hash == RunState.plan_hash(plan),
@@ -475,12 +477,13 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, action} <- action_from_dto(Map.get(node, "action")),
          {:ok, retry_policy} <- retry_policy_from_dto(Map.get(node, "retry_policy")),
          {:ok, retry_policy_source} <-
-           retry_policy_source_from_dto(Map.get(node, "retry_policy_source")) do
+           retry_policy_source_from_dto(Map.get(node, "retry_policy_source")),
+         {:ok, window} <- plan_window_from_dto(Map.get(node, "window")) do
       {:ok,
        %{
          ref: ref,
          node_key: node_key,
-         window: data_from_dto(Map.get(node, "window"), allowed_atom_strings),
+         window: window,
          upstream: upstream,
          downstream: downstream,
          stage: Map.get(node, "stage", 0),
@@ -531,12 +534,144 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp node_key_from_dto(nil, _allowed_atom_strings), do: {:ok, nil}
 
   defp node_key_from_dto(%{"ref" => ref, "identity" => identity}, allowed_atom_strings) do
-    with {:ok, decoded_ref} <- ref_from_dto(ref, allowed_atom_strings) do
-      {:ok, {decoded_ref, data_from_dto(identity, allowed_atom_strings)}}
+    with {:ok, decoded_ref} <- ref_from_dto(ref, allowed_atom_strings),
+         {:ok, decoded_identity} <-
+           node_identity_from_dto(identity, allowed_atom_strings) do
+      {:ok, {decoded_ref, decoded_identity}}
     end
   end
 
   defp node_key_from_dto(value, _allowed_atom_strings), do: {:error, {:invalid_node_key, value}}
+
+  defp node_identity_to_dto(identity) do
+    case WindowKey.validate(identity) do
+      :ok -> window_key_to_dto(identity)
+      {:error, _reason} -> JsonSafe.data(identity)
+    end
+  end
+
+  defp node_identity_from_dto(nil, _allowed_atom_strings), do: {:ok, nil}
+
+  defp node_identity_from_dto(%{"__type__" => "window_key"} = dto, _allowed_atom_strings),
+    do: window_key_from_dto(dto)
+
+  defp node_identity_from_dto(value, allowed_atom_strings),
+    do: {:ok, data_from_dto(value, allowed_atom_strings)}
+
+  defp window_to_dto(nil), do: nil
+
+  defp window_to_dto(%WindowRuntime{} = window) do
+    %{
+      "__type__" => "window_runtime",
+      "kind" => Atom.to_string(window.kind),
+      "start_at" => ExactDateTimeCodec.encode(window.start_at),
+      "end_at" => ExactDateTimeCodec.encode(window.end_at),
+      "timezone" => window.timezone,
+      "key" => window_key_to_dto(window.key),
+      "anchor_key" => window_key_to_dto(window.anchor_key)
+    }
+  end
+
+  defp window_to_dto(window), do: JsonSafe.data(window)
+
+  defp window_from_dto(nil, _allowed_atom_strings), do: {:ok, nil}
+
+  defp window_from_dto(%{"__type__" => "window_runtime"} = dto, _allowed_atom_strings),
+    do: window_runtime_from_dto(dto)
+
+  defp window_from_dto(value, allowed_atom_strings),
+    do: {:ok, data_from_dto(value, allowed_atom_strings)}
+
+  defp plan_window_from_dto(nil), do: {:ok, nil}
+
+  defp plan_window_from_dto(%{"__type__" => "window_runtime"} = dto),
+    do: window_runtime_from_dto(dto)
+
+  defp plan_window_from_dto(value), do: {:error, {:invalid_window_runtime_dto, value}}
+
+  defp window_runtime_from_dto(dto) do
+    timezone = field(dto, :timezone)
+
+    with {:ok, kind} <- window_kind_from_dto(field(dto, :kind)),
+         true <- valid_persisted_timezone?(timezone),
+         {:ok, start_at} <- window_datetime_from_dto(field(dto, :start_at), timezone),
+         {:ok, end_at} <- window_datetime_from_dto(field(dto, :end_at), timezone),
+         {:ok, key} <- window_key_from_dto(field(dto, :key)),
+         {:ok, anchor_key} <- window_key_from_dto(field(dto, :anchor_key)),
+         :lt <- DateTime.compare(start_at, end_at),
+         true <- key == persisted_window_key(kind, start_at, timezone) do
+      window = %WindowRuntime{
+        kind: kind,
+        start_at: start_at,
+        end_at: end_at,
+        timezone: timezone,
+        key: key,
+        anchor_key: anchor_key
+      }
+
+      {:ok, window}
+    else
+      false ->
+        {:error, {:invalid_window_runtime_dto, dto}}
+
+      comparison when comparison in [:eq, :gt] ->
+        {:error, {:invalid_window_runtime_dto, :invalid_window_bounds}}
+
+      {:error, reason} ->
+        {:error, {:invalid_window_runtime_dto, reason}}
+    end
+  end
+
+  defp window_key_to_dto(key) do
+    %{"__type__" => "window_key", "value" => WindowKey.encode(key)}
+  end
+
+  defp window_key_from_dto(%{"__type__" => "window_key", "value" => value}) do
+    decode_persisted_window_key(value)
+  end
+
+  defp window_key_from_dto(value), do: {:error, {:invalid_window_key_dto, value}}
+
+  defp window_kind_from_dto(kind) when kind in [:hour, "hour"], do: {:ok, :hour}
+  defp window_kind_from_dto(kind) when kind in [:day, "day"], do: {:ok, :day}
+  defp window_kind_from_dto(kind) when kind in [:month, "month"], do: {:ok, :month}
+  defp window_kind_from_dto(kind) when kind in [:year, "year"], do: {:ok, :year}
+  defp window_kind_from_dto(kind), do: {:error, {:invalid_window_kind, kind}}
+
+  defp window_datetime_from_dto(%{} = value, _timezone),
+    do: ExactDateTimeCodec.decode(value)
+
+  defp window_datetime_from_dto(value, _timezone),
+    do: {:error, {:invalid_window_datetime, value}}
+
+  defp decode_persisted_window_key(value) when is_binary(value) do
+    case String.split(value, ":", parts: 3) do
+      [kind, timezone, datetime] ->
+        with {:ok, kind} <- window_kind_from_dto(kind),
+             true <- valid_persisted_timezone?(timezone),
+             {:ok, datetime, _offset} <- DateTime.from_iso8601(datetime) do
+          {:ok, persisted_window_key(kind, datetime, timezone)}
+        else
+          _ -> {:error, {:invalid_window_key_dto, value}}
+        end
+
+      _other ->
+        {:error, {:invalid_window_key_dto, value}}
+    end
+  end
+
+  defp decode_persisted_window_key(value), do: {:error, {:invalid_window_key_dto, value}}
+
+  defp persisted_window_key(kind, datetime, timezone) do
+    %{kind: kind, start_at_us: DateTime.to_unix(datetime, :microsecond), timezone: timezone}
+  end
+
+  defp valid_persisted_timezone?(timezone) when is_binary(timezone) do
+    timezone != "" and not String.contains?(timezone, "..") and
+      not String.starts_with?(timezone, "/")
+  end
+
+  defp valid_persisted_timezone?(_timezone), do: false
 
   defp stages_from_dto(stages, allowed_atom_strings) when is_list(stages) do
     collect_values(stages, &refs_from_dto(&1, allowed_atom_strings))
@@ -711,7 +846,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
              :node_results,
              :duration_ms
            ),
-         {:ok, window} <- result_optional_map(field(result, :window), :node_results, :window),
+         {:ok, window_dto} <-
+           result_optional_map(field(result, :window), :node_results, :window),
+         {:ok, window} <- window_from_dto(window_dto, allowed_atom_strings),
          {:ok, freshness_key} <-
            result_optional_string(field(result, :freshness_key), :node_results, :freshness_key),
          {:ok, input_versions} <-
@@ -737,7 +874,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
        %NodeResult{
          node_key: node_key,
          ref: ref,
-         window: data_from_dto(window, allowed_atom_strings),
+         window: window,
          stage: stage,
          execution_pool: execution_pool,
          status: status,

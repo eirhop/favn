@@ -1,5 +1,5 @@
 defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -298,6 +298,111 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored.plan.node_stages == [Enum.map(refs, &{&1, nil})]
 
     assert Enum.all?(restored.plan.nodes, fn {_key, node} -> node.execution_pool == :warehouse end)
+  end
+
+  test "round-trips named-zone windowed plans without timezone lookup and rejects corruption" do
+    version = manifest_version("mv_run_snapshot_windowed_plan", __MODULE__.Asset)
+    timezone = "Europe/Oslo"
+
+    start_at =
+      DateTime.new!(~D[2026-07-01], ~T[00:00:00], timezone, Favn.Timezone.database!())
+
+    end_at =
+      DateTime.new!(~D[2026-08-01], ~T[00:00:00], timezone, Favn.Timezone.database!())
+
+    anchor_key = Favn.Window.Key.new!(:month, start_at, timezone)
+
+    window =
+      Favn.Window.Runtime.new!(:month, start_at, end_at, anchor_key, timezone: timezone)
+
+    ref = {__MODULE__.Asset, :asset}
+    node_key = {ref, window.key}
+
+    plan = %Plan{
+      target_refs: [ref],
+      target_node_keys: [node_key],
+      dependencies: :all,
+      nodes: %{
+        node_key => %{
+          ref: ref,
+          node_key: node_key,
+          window: window,
+          upstream: [],
+          downstream: [],
+          stage: 0,
+          execution_pool: :warehouse,
+          action: :run,
+          retry_policy: Policy.default(),
+          retry_policy_source: :default
+        }
+      },
+      topo_order: [ref],
+      stages: [[ref]],
+      node_stages: [[node_key]]
+    }
+
+    node_result =
+      NodeResult.new(%{
+        node_key: node_key,
+        ref: ref,
+        window: window,
+        execution_pool: :warehouse,
+        status: :error,
+        started_at: start_at,
+        finished_at: start_at,
+        duration_ms: 0,
+        attempt_count: 1,
+        max_attempts: 1,
+        error: %{type: :runtime_input_persistence_failed}
+      })
+
+    run =
+      RunState.new(
+        id: "run_snapshot_windowed_plan",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref,
+        target_refs: [ref],
+        plan: plan
+      )
+      |> RunState.transition(
+        status: :error,
+        error: %{type: :runtime_input_persistence_failed},
+        result: %{status: :error, node_results: [node_result]}
+      )
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    without_timezone_database(fn ->
+      assert {:ok, restored} =
+               RunSnapshotCodec.decode_run(
+                 %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+                 manifest_record
+               )
+
+      assert restored.plan == plan
+      assert restored.plan_hash == run.plan_hash
+      assert [%NodeResult{window: ^window, status: :error}] = restored.result.node_results
+    end)
+
+    assert {:error, :run_plan_hash_mismatch} =
+             RunSnapshotCodec.decode_run(
+               %{
+                 run_blob: tamper_plan_stage(payload),
+                 manifest_version_id: version.manifest_version_id
+               },
+               manifest_record
+             )
+
+    assert {:error, {:invalid_run_plan_hash, nil}} =
+             RunSnapshotCodec.decode_run(
+               %{
+                 run_blob: delete_plan_hash(payload),
+                 manifest_version_id: version.manifest_version_id
+               },
+               manifest_record
+             )
   end
 
   test "normalizes unexpected exception structs before persistence" do
@@ -948,5 +1053,35 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
       asset_ref: {module, :asset},
       target_refs: [{module, :asset}]
     )
+  end
+
+  defp tamper_plan_stage(payload) do
+    payload
+    |> Jason.decode!()
+    |> update_in(["plan", "nodes"], fn nodes ->
+      Enum.map(nodes, &Map.update!(&1, "stage", fn stage -> stage + 1 end))
+    end)
+    |> Jason.encode!()
+  end
+
+  defp delete_plan_hash(payload) do
+    payload
+    |> Jason.decode!()
+    |> Map.delete("plan_hash")
+    |> Jason.encode!()
+  end
+
+  defp without_timezone_database(function) do
+    previous = Application.fetch_env(:favn_core, :time_zone_database)
+    Application.put_env(:favn_core, :time_zone_database, __MODULE__.UnavailableTimezoneDatabase)
+
+    try do
+      function.()
+    after
+      case previous do
+        {:ok, database} -> Application.put_env(:favn_core, :time_zone_database, database)
+        :error -> Application.delete_env(:favn_core, :time_zone_database)
+      end
+    end
   end
 end

@@ -81,7 +81,8 @@ defmodule FavnOrchestrator.API.RunsRouter do
         authentication_error(conn, reason)
 
       {:error, _reason} ->
-        Response.error(conn, 400, "bad_request", "Request failed")
+        Logger.error("persisted run detail is unavailable", run_id: run_id)
+        Response.error(conn, 500, "run_unavailable", "Run could not be loaded")
     end
   end
 

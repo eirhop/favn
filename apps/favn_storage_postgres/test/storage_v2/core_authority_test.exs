@@ -1386,7 +1386,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {:ok, resolution} =
       Resolution.new(
         resolver: MyApp.RuntimeInputResolver,
-        params: %{account_id: 42, token: "must-remain-encrypted"},
+        params: %{
+          account_id: 42,
+          token: "must-remain-encrypted",
+          date: ~D[2026-07-01],
+          time: ~T[12:34:56.123456],
+          naive_datetime: ~N[2026-07-01 12:34:56.123456],
+          datetime: ~U[2026-07-01 12:34:56.123456Z],
+          decimal: Decimal.new(-1, 12_340, -3)
+        },
         input_identity: "input-42",
         metadata: %{source: :integration_test},
         sensitive_params: [:token]
@@ -2665,6 +2673,36 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert stream.status == 200
     assert stream.resp_body =~ first_run.id
     refute stream.resp_body =~ other_run.id
+  end
+
+  test "HTTP run detail distinguishes missing runs from unreadable snapshots", fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+    identity = api_identity(fixture, [:viewer])
+
+    missing =
+      api_request(:get, "/api/orchestrator/v1/runs/run_missing", nil,
+        fixture: fixture,
+        identity: identity
+      )
+
+    assert missing.status == 404
+    assert %{"error" => %{"code" => "not_found"}} = JSON.decode!(missing.resp_body)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET snapshot = jsonb_build_object('garbage', true) WHERE workspace_id = $1 AND run_id = $2",
+      [fixture.workspace_id, run.id]
+    )
+
+    unreadable =
+      api_request(:get, "/api/orchestrator/v1/runs/#{run.id}", nil,
+        fixture: fixture,
+        identity: identity
+      )
+
+    assert unreadable.status == 500
+    assert %{"error" => %{"code" => "run_unavailable"}} = JSON.decode!(unreadable.resp_body)
   end
 
   test "HTTP boundaries reject hidden targets and unscoped platform service tokens", fixture do

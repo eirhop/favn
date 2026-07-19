@@ -6,6 +6,8 @@ defmodule Favn.SQLAsset.RuntimeInputs.Result do
   external input selection. `metadata` is bounded JSON-safe lineage data.
   `sensitive_params` lists parameter names whose values must be redacted from
   inspection, errors, logs, events, telemetry, and result metadata.
+  Temporal parameter values must use `Calendar.ISO`; custom calendar structs
+  are rejected because persistence must preserve bind values exactly.
 
   Read `Favn.AI`, `Favn.SQLAsset`, and `Favn.SQLAsset.RuntimeInputs` first.
   Authors return this struct from `Favn.SQLAsset.RuntimeInputs.resolve/1`; they
@@ -16,15 +18,19 @@ defmodule Favn.SQLAsset.RuntimeInputs.Result do
   defstruct params: %{}, identity: nil, metadata: %{}, sensitive_params: []
 
   @type param_name :: atom() | String.t()
+  @type iso_date :: %Date{calendar: Calendar.ISO}
+  @type iso_time :: %Time{calendar: Calendar.ISO}
+  @type iso_naive_datetime :: %NaiveDateTime{calendar: Calendar.ISO}
+  @type iso_datetime :: %DateTime{calendar: Calendar.ISO}
   @type param_value ::
           nil
           | boolean()
           | number()
           | String.t()
-          | Date.t()
-          | Time.t()
-          | NaiveDateTime.t()
-          | DateTime.t()
+          | iso_date()
+          | iso_time()
+          | iso_naive_datetime()
+          | iso_datetime()
           | Decimal.t()
   @type json_value ::
           nil

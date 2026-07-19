@@ -210,8 +210,10 @@ Return only `{:ok, %Favn.SQLAsset.RuntimeInputs.Result{}}` or
 | `sensitive_params` | Names in `params` whose values must be redacted. |
 
 Supported parameter values are `nil`, booleans, numbers, strings, `Date`,
-`Time`, `NaiveDateTime`, `DateTime`, and `Decimal`. Encode collections into an
-adapter-supported scalar representation such as JSON before returning them.
+`Time`, `NaiveDateTime`, `DateTime`, and `Decimal`. Temporal structs must use
+`Calendar.ISO`; custom calendars are rejected so persisted bind values can be
+restored exactly. Encode collections into an adapter-supported scalar
+representation such as JSON before returning them.
 
 Submitted parameters, resolved parameters, and referenced settings may not use
 the same normalized name. `window_start`, `window_end`, `favn_run_id`, and

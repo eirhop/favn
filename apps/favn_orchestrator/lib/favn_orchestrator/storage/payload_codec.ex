@@ -1,6 +1,8 @@
 defmodule FavnOrchestrator.Storage.PayloadCodec do
   @moduledoc false
 
+  alias FavnOrchestrator.Storage.ExactDateTimeCodec
+
   @format "json-v1"
   @allowed_struct_modules %{
     "Elixir.Favn.Backfill.RangeRequest" => :"Elixir.Favn.Backfill.RangeRequest",
@@ -90,7 +92,30 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
   end
 
   defp encode_term(%DateTime{} = datetime) do
-    %{"__type__" => "datetime", "value" => DateTime.to_iso8601(datetime)}
+    datetime
+    |> ExactDateTimeCodec.encode()
+    |> Map.put("__type__", "datetime")
+  end
+
+  defp encode_term(%Date{} = date) do
+    %{"__type__" => "date", "value" => Date.to_iso8601(date)}
+  end
+
+  defp encode_term(%Time{} = time) do
+    %{"__type__" => "time", "value" => Time.to_iso8601(time)}
+  end
+
+  defp encode_term(%NaiveDateTime{} = datetime) do
+    %{"__type__" => "naive_datetime", "value" => NaiveDateTime.to_iso8601(datetime)}
+  end
+
+  defp encode_term(%Decimal{} = decimal) do
+    %{
+      "__type__" => "decimal",
+      "sign" => decimal.sign,
+      "coefficient" => decimal_coefficient_to_string(decimal.coef),
+      "exponent" => decimal.exp
+    }
   end
 
   defp encode_term(%_{} = struct) do
@@ -130,11 +155,42 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     %{"__type__" => "atom", "value" => Atom.to_string(atom)}
   end
 
-  defp decode_term(%{"__type__" => "datetime", "value" => value})
+  defp decode_term(
+         %{
+           "__type__" => "datetime",
+           "value" => _value,
+           "wall" => _wall,
+           "timezone" => _timezone,
+           "zone_abbr" => _zone_abbr,
+           "utc_offset" => _utc_offset,
+           "std_offset" => _std_offset
+         } = dto
+       ) do
+    ExactDateTimeCodec.decode(Map.delete(dto, "__type__"))
+  end
+
+  defp decode_term(%{"__type__" => "date", "value" => value}) when is_binary(value) do
+    decode_iso8601(Date, value, :invalid_date)
+  end
+
+  defp decode_term(%{"__type__" => "time", "value" => value}) when is_binary(value) do
+    decode_iso8601(Time, value, :invalid_time)
+  end
+
+  defp decode_term(%{"__type__" => "naive_datetime", "value" => value})
        when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, datetime, _offset} -> {:ok, datetime}
-      _ -> {:error, {:invalid_datetime, value}}
+    decode_iso8601(NaiveDateTime, value, :invalid_naive_datetime)
+  end
+
+  defp decode_term(%{
+         "__type__" => "decimal",
+         "sign" => sign,
+         "coefficient" => coefficient,
+         "exponent" => exponent
+       })
+       when sign in [1, -1] and is_binary(coefficient) and is_integer(exponent) do
+    with {:ok, coefficient} <- decimal_coefficient_from_string(coefficient) do
+      {:ok, Decimal.new(sign, coefficient, exponent)}
     end
   end
 
@@ -234,6 +290,27 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
 
       _other ->
         {:error, {:invalid_struct_module, raw_module}}
+    end
+  end
+
+  defp decode_iso8601(module, value, error_tag) do
+    case module.from_iso8601(value) do
+      {:ok, decoded} -> {:ok, decoded}
+      _ -> {:error, {error_tag, value}}
+    end
+  end
+
+  defp decimal_coefficient_to_string(:NaN), do: "NaN"
+  defp decimal_coefficient_to_string(:inf), do: "Infinity"
+  defp decimal_coefficient_to_string(coefficient), do: Integer.to_string(coefficient)
+
+  defp decimal_coefficient_from_string("NaN"), do: {:ok, :NaN}
+  defp decimal_coefficient_from_string("Infinity"), do: {:ok, :inf}
+
+  defp decimal_coefficient_from_string(coefficient) do
+    case Integer.parse(coefficient) do
+      {value, ""} when value >= 0 -> {:ok, value}
+      _ -> {:error, {:invalid_decimal_coefficient, coefficient}}
     end
   end
 end
