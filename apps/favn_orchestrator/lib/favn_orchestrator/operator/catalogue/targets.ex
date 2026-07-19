@@ -23,6 +23,15 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
     can_backfill? name selected_assets dependencies
   )a
 
+  @descriptor_boolean_paths [
+    [:can_run_without_window?],
+    [:can_backfill?],
+    [:window, :allow_full_load],
+    [:window, :required],
+    [:runtime_config, :secret],
+    [:runtime_config, :required]
+  ]
+
   @doc "Returns sorted asset targets for a manifest version."
   @spec assets(Version.t()) :: [map()]
   def assets(%Version{} = version) do
@@ -98,13 +107,17 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
         end
       end)
 
-    case Map.get(restored, :dependencies) do
-      value when value in ["all", "none", "unknown"] ->
-        Map.put(restored, :dependencies, String.to_existing_atom(value))
+    restored
+    |> restore_descriptor_booleans()
+    |> then(fn restored ->
+      case Map.get(restored, :dependencies) do
+        value when value in ["all", "none", "unknown"] ->
+          Map.put(restored, :dependencies, String.to_existing_atom(value))
 
-      _other ->
-        restored
-    end
+        _other ->
+          restored
+      end
+    end)
   end
 
   @doc "Serializes a target descriptor into its JSONB-safe persistence form."
@@ -136,6 +149,50 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
       :error -> Map.fetch(descriptor, Atom.to_string(key))
     end
   end
+
+  defp restore_descriptor_booleans(descriptor) do
+    Enum.reduce(@descriptor_boolean_paths, descriptor, &restore_descriptor_boolean/2)
+  end
+
+  defp restore_descriptor_boolean(path, descriptor) do
+    update_descriptor_path(descriptor, path, &restore_boolean/1)
+  end
+
+  defp update_descriptor_path(descriptor, [key], updater) when is_map(descriptor) do
+    case fetch_descriptor_entry(descriptor, key) do
+      {:ok, actual_key, value} -> Map.put(descriptor, actual_key, updater.(value))
+      :error -> descriptor
+    end
+  end
+
+  defp update_descriptor_path(descriptor, [key | path], updater) when is_map(descriptor) do
+    case fetch_descriptor_entry(descriptor, key) do
+      {:ok, actual_key, value} when is_map(value) ->
+        Map.put(descriptor, actual_key, update_descriptor_path(value, path, updater))
+
+      _other ->
+        descriptor
+    end
+  end
+
+  defp fetch_descriptor_entry(descriptor, key) do
+    case Map.fetch(descriptor, key) do
+      {:ok, value} ->
+        {:ok, key, value}
+
+      :error ->
+        string_key = Atom.to_string(key)
+
+        case Map.fetch(descriptor, string_key) do
+          {:ok, value} -> {:ok, string_key, value}
+          :error -> :error
+        end
+    end
+  end
+
+  defp restore_boolean("true"), do: true
+  defp restore_boolean("false"), do: false
+  defp restore_boolean(value), do: value
 
   defp raw_selector_refs(%Index{} = index, pipeline) do
     pipeline.selectors
@@ -246,6 +303,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
 
   defp normalize_data(value) when is_list(value), do: Enum.map(value, &normalize_data/1)
   defp normalize_data({module, name}), do: ref_string({module, name})
+  defp normalize_data(value) when is_boolean(value), do: value
   defp normalize_data(value) when is_atom(value), do: atom_name(value)
   defp normalize_data(value), do: value
 
