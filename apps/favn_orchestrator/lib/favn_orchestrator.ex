@@ -1071,36 +1071,7 @@ defmodule FavnOrchestrator do
     end
   end
 
-  defp execution_group_summary(group) do
-    %{
-      id: group.root_run_id,
-      root_run_id: group.root_run_id,
-      status: group.status,
-      started_at: group.updated_at,
-      trigger_type: nil,
-      target_assets: [],
-      child_run_ids: [],
-      currently_running_asset_attempts: [],
-      total_windows: 0,
-      completed_windows: 0,
-      failed_windows: 0,
-      total_asset_attempts: group.run_count,
-      completed_asset_attempts: group.succeeded_count,
-      failed_asset_attempts: group.failed_count,
-      running_asset_attempts: group.running_count,
-      queued_asset_attempts: group.pending_count,
-      summary_totals: %{
-        windows: %{total: 0, completed: 0},
-        asset_attempts: %{
-          total: group.run_count,
-          completed: group.succeeded_count,
-          failed: group.failed_count,
-          running: group.running_count,
-          queued: group.pending_count
-        }
-      }
-    }
-  end
+  defp execution_group_summary(group), do: RunReadModel.from_execution_group_overview(group)
 
   defp execution_group_run(run) do
     %{

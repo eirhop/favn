@@ -15,6 +15,10 @@ defmodule FavnOrchestrator.RunReadModel do
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Results.Backfill, as: PersistedBackfill
   alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: PersistedBackfillWindow
+
+  alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview,
+    as: PersistedExecutionGroupOverview
+
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunReadModel.StepProjection
@@ -192,6 +196,63 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:fallback?) => boolean(),
           required(:note) => String.t() | nil
         }
+
+  @doc """
+  Expands a compact persisted execution-group overview into the public summary shape.
+
+  Fields that are not part of the compact projection remain empty or `nil`; callers
+  still receive the complete, stable public contract.
+  """
+  @spec from_execution_group_overview(PersistedExecutionGroupOverview.t()) ::
+          execution_group_summary()
+  def from_execution_group_overview(%PersistedExecutionGroupOverview{} = group) do
+    status = public_overview_status(group.status)
+    completed = group.succeeded_count + group.failed_count
+
+    attempt_counts = %{
+      total: group.run_count,
+      completed: completed,
+      failed: group.failed_count,
+      running: group.running_count,
+      queued: group.pending_count
+    }
+
+    active? =
+      status in [:pending, :running] or group.running_count > 0 or group.pending_count > 0
+
+    failure_count = group.failed_count
+
+    %{
+      id: group.root_run_id,
+      root_execution_group_id: group.root_run_id,
+      status: status,
+      health: execution_group_health(status, failure_count, active?),
+      active?: active?,
+      trigger_type: nil,
+      target_assets: [],
+      root_status: status,
+      started_at: group.updated_at,
+      finished_at: if(active?, do: nil, else: group.updated_at),
+      duration_ms: nil,
+      total_windows: 0,
+      completed_windows: 0,
+      failed_windows: 0,
+      total_asset_attempts: group.run_count,
+      completed_asset_attempts: completed,
+      failed_asset_attempts: group.failed_count,
+      running_asset_attempts: group.running_count,
+      queued_asset_attempts: group.pending_count,
+      failure_count: failure_count,
+      progress: execution_group_progress(attempt_counts),
+      summary_totals: %{
+        windows: %{total: 0, completed: 0, failed: 0},
+        asset_attempts: attempt_counts
+      },
+      last_activity_at: group.updated_at,
+      currently_running_asset_attempts: [],
+      child_run_ids: []
+    }
+  end
 
   @doc "Returns one public run detail under an explicit workspace authority."
   @spec get_run_detail(WorkspaceContext.t(), String.t()) ::
@@ -746,6 +807,10 @@ defmodule FavnOrchestrator.RunReadModel do
       counts: attempt_counts
     }
   end
+
+  defp public_overview_status(:succeeded), do: :ok
+  defp public_overview_status(:failed), do: :error
+  defp public_overview_status(status), do: status
 
   defp target_assets(%RunState{target_refs: refs}) when is_list(refs) and refs != [],
     do: Enum.map(refs, &RunQuery.public_ref/1)
