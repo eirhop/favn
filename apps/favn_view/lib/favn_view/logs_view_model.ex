@@ -140,10 +140,11 @@ defmodule FavnView.LogsViewModel do
   def duration_ms_label(value) when is_integer(value), do: "#{Float.round(value / 1_000, 1)} s"
   def duration_ms_label(_value), do: "-"
 
-  def display_name(asset_ref) when is_binary(asset_ref),
-    do: asset_ref |> String.split(".") |> List.last()
-
-  def display_name(_asset_ref), do: nil
+  def display_name(asset_ref) do
+    asset_ref
+    |> ref_label()
+    |> display_name_from_label()
+  end
 
   def ref_label({module, name}), do: "#{module_label(module)}.#{name}"
   def ref_label(%{module: module, name: name}), do: "#{module_label(module)}.#{name}"
@@ -231,6 +232,26 @@ defmodule FavnView.LogsViewModel do
 
   defp strip_elixir_prefix("Elixir." <> module), do: module
   defp strip_elixir_prefix(module), do: module
+
+  defp display_name_from_label(nil), do: nil
+
+  defp display_name_from_label(label) when is_binary(label) do
+    case String.split(label, ":", parts: 2) do
+      [module, "asset"] -> module_name(module)
+      [_module, name] -> name
+      [value] -> dotted_display_name(value)
+    end
+  end
+
+  defp dotted_display_name(value) do
+    case value |> String.split(".") |> Enum.reverse() do
+      ["asset", module | _rest] -> module
+      [name | _rest] -> name
+      [] -> nil
+    end
+  end
+
+  defp module_name(module), do: module |> String.split(".") |> List.last()
 
   defp attempt_label(nil), do: nil
   defp attempt_label(attempt), do: "##{attempt}"
