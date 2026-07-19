@@ -27,9 +27,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
     [:can_run_without_window?],
     [:can_backfill?],
     [:window, :allow_full_load],
-    [:window, :required],
-    [:runtime_config, :secret],
-    [:runtime_config, :required]
+    [:window, :required]
   ]
 
   @doc "Returns sorted asset targets for a manifest version."
@@ -151,7 +149,15 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
   end
 
   defp restore_descriptor_booleans(descriptor) do
-    Enum.reduce(@descriptor_boolean_paths, descriptor, &restore_descriptor_boolean/2)
+    descriptor = Enum.reduce(@descriptor_boolean_paths, descriptor, &restore_descriptor_boolean/2)
+
+    case fetch_descriptor_entry(descriptor, :runtime_config) do
+      {:ok, actual_key, value} ->
+        Map.put(descriptor, actual_key, restore_runtime_config_refs(value))
+
+      :error ->
+        descriptor
+    end
   end
 
   defp restore_descriptor_boolean(path, descriptor) do
@@ -188,6 +194,33 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
           :error -> :error
         end
     end
+  end
+
+  defp restore_runtime_config_refs(value) when is_map(value) do
+    restored =
+      Map.new(value, fn {key, nested_value} ->
+        {key, restore_runtime_config_refs(nested_value)}
+      end)
+
+    if runtime_config_ref?(restored) do
+      restored
+      |> update_descriptor_path([:secret], &restore_boolean/1)
+      |> update_descriptor_path([:required], &restore_boolean/1)
+    else
+      restored
+    end
+  end
+
+  defp restore_runtime_config_refs(value) when is_list(value) do
+    Enum.map(value, &restore_runtime_config_refs/1)
+  end
+
+  defp restore_runtime_config_refs(value), do: value
+
+  defp runtime_config_ref?(value) do
+    Enum.all?([:provider, :key], fn key ->
+      match?({:ok, _actual_key, _value}, fetch_descriptor_entry(value, key))
+    end)
   end
 
   defp restore_boolean("true"), do: true
