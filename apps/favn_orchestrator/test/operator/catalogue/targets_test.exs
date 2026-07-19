@@ -30,4 +30,61 @@ defmodule FavnOrchestrator.Operator.Catalogue.TargetsTest do
 
     assert Targets.pipeline(pipeline).window == %{"unexpected" => "value"}
   end
+
+  test "descriptor serialization preserves booleans at every nesting level" do
+    descriptor = %{
+      can_run_without_window?: false,
+      can_backfill?: true,
+      window: %{allow_full_load: false, nested: [%{enabled: true}]},
+      label: "false"
+    }
+
+    serialized = Targets.serialize_descriptor(descriptor)
+    restored = Targets.restore_descriptor(serialized)
+
+    assert serialized == %{
+             "can_run_without_window?" => false,
+             "can_backfill?" => true,
+             "window" => %{
+               "allow_full_load" => false,
+               "nested" => [%{"enabled" => true}]
+             },
+             "label" => "false"
+           }
+
+    assert restored.can_run_without_window? == false
+    assert restored.can_backfill? == true
+    assert restored.window["allow_full_load"] == false
+    assert restored.window["nested"] == [%{"enabled" => true}]
+    assert restored.label == "false"
+  end
+
+  test "descriptor restoration repairs only known legacy boolean fields" do
+    restored =
+      Targets.restore_descriptor(%{
+        "can_run_without_window?" => "false",
+        "can_backfill?" => "true",
+        "window" => %{
+          "allow_full_load" => "false",
+          "required" => "true",
+          "label" => "true"
+        },
+        "runtime_config" => %{"secret" => "true", "required" => "false"},
+        "label" => "false",
+        "metadata" => %{"enabled" => "true"}
+      })
+
+    assert restored.can_run_without_window? == false
+    assert restored.can_backfill? == true
+
+    assert restored.window == %{
+             "allow_full_load" => false,
+             "required" => true,
+             "label" => "true"
+           }
+
+    assert restored.runtime_config == %{"secret" => true, "required" => false}
+    assert restored.label == "false"
+    assert restored.metadata == %{"enabled" => "true"}
+  end
 end
