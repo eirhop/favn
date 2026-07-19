@@ -9,7 +9,11 @@ defmodule FavnView.Components.RunDetailPage.NotFound do
       <GlassPanel.glass_panel class="p-8 text-center" data-testid="run-not-found-state">
         <h2 class="text-xl font-medium">{@run.error || "Run not found"}</h2>
         <p class="mt-2 text-sm text-base-content/60">
-          No persisted run snapshot matches <span class="font-mono">{@run.id}</span>.
+          <%= if @run[:not_found?] do %>
+            No persisted run snapshot matches <span class="font-mono">{@run.id}</span>.
+          <% else %>
+            The persisted run snapshot could not be loaded. Try again later.
+          <% end %>
         </p>
         <.link navigate={~p"/assets"} class="btn btn-primary btn-soft mt-6">Back to assets</.link>
       </GlassPanel.glass_panel>

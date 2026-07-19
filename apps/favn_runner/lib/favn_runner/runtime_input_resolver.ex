@@ -596,10 +596,10 @@ defmodule FavnRunner.RuntimeInputResolver do
        when is_nil(value) or is_boolean(value) or is_number(value) or is_binary(value),
        do: true
 
-  defp supported_param_value?(%Date{}), do: true
-  defp supported_param_value?(%Time{}), do: true
-  defp supported_param_value?(%NaiveDateTime{}), do: true
-  defp supported_param_value?(%DateTime{}), do: true
+  defp supported_param_value?(%Date{calendar: Calendar.ISO}), do: true
+  defp supported_param_value?(%Time{calendar: Calendar.ISO}), do: true
+  defp supported_param_value?(%NaiveDateTime{calendar: Calendar.ISO}), do: true
+  defp supported_param_value?(%DateTime{calendar: Calendar.ISO}), do: true
   defp supported_param_value?(%Decimal{}), do: true
   defp supported_param_value?(_value), do: false
 

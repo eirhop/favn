@@ -1,5 +1,5 @@
 defmodule FavnOrchestrator.Storage.PayloadCodecTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Favn.Contracts.RunnerAssetResult
   alias Favn.Contracts.RunnerError
@@ -40,6 +40,37 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
 
     assert {:ok, decoded} = PayloadCodec.decode(encoded)
     assert decoded == payload
+  end
+
+  test "round-trips every supported temporal and decimal runtime input value" do
+    oslo_datetime =
+      DateTime.new!(
+        ~D[2026-07-01],
+        ~T[12:34:56.123456],
+        "Europe/Oslo",
+        Favn.Timezone.database!()
+      )
+      |> Map.put(:zone_abbr, "LEGACY_SUMMER_TIME")
+
+    values = [
+      ~D[2026-07-01],
+      ~T[12:34:56.123456],
+      ~N[2026-07-01 12:34:56.123456],
+      oslo_datetime,
+      Decimal.new(-1, 12_340, -3)
+    ]
+
+    encoded_values =
+      Enum.map(values, fn value ->
+        assert {:ok, encoded} = PayloadCodec.encode(%{value: value})
+        {value, encoded}
+      end)
+
+    without_timezone_database(fn ->
+      for {value, encoded} <- encoded_values do
+        assert {:ok, %{value: ^value}} = PayloadCodec.decode(encoded)
+      end
+    end)
   end
 
   test "round-trips compact manifest versions with package hashes" do
@@ -231,4 +262,18 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
   end
 
   defp replace_atom_value_in_term(value, _from, _to), do: value
+
+  defp without_timezone_database(function) do
+    previous = Application.fetch_env(:favn_core, :time_zone_database)
+    Application.put_env(:favn_core, :time_zone_database, __MODULE__.UnavailableTimezoneDatabase)
+
+    try do
+      function.()
+    after
+      case previous do
+        {:ok, database} -> Application.put_env(:favn_core, :time_zone_database, database)
+        :error -> Application.delete_env(:favn_core, :time_zone_database)
+      end
+    end
+  end
 end

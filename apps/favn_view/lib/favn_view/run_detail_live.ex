@@ -282,7 +282,12 @@ defmodule FavnView.RunDetailLive do
         )
 
       {:error, reason} ->
-        %{id: run_id, found?: false, error: error_label(reason)}
+        %{
+          id: run_id,
+          found?: false,
+          not_found?: reason == :not_found,
+          error: error_label(reason)
+        }
     end
   end
 

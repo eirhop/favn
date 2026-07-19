@@ -174,6 +174,19 @@ defmodule FavnRunner.RuntimeInputResolverTest do
     assert {:error, %{type: :runtime_inputs_invalid_result}} =
              resolve_result(%Result{params: %{bad: self()}, identity: "bad"}, context)
 
+    non_iso_date = %Date{
+      year: 2026,
+      month: 7,
+      day: 1,
+      calendar: __MODULE__.NonISOCalendar
+    }
+
+    assert {:error, %{type: :runtime_inputs_invalid_result}} =
+             resolve_result(
+               %Result{params: %{date: non_iso_date}, identity: "non-iso-calendar"},
+               context
+             )
+
     assert {:error, %{type: :runtime_inputs_invalid_result}} =
              resolve_result(
                %Result{

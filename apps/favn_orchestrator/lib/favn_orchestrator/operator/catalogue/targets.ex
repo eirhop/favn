@@ -246,6 +246,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
 
   defp normalize_data(value) when is_list(value), do: Enum.map(value, &normalize_data/1)
   defp normalize_data({module, name}), do: ref_string({module, name})
+  defp normalize_data(value) when is_boolean(value), do: value
   defp normalize_data(value) when is_atom(value), do: atom_name(value)
   defp normalize_data(value), do: value
 

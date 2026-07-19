@@ -57,6 +57,14 @@ defmodule FavnView.Storybook.Components.RunDetailPage do
           run_id: "run_missing",
           nav_items: RunDetailPage.sample_nav_items()
         }
+      },
+      %Variation{
+        id: :snapshot_unavailable,
+        attributes: %{
+          run: RunDetailPage.unavailable_run(),
+          run_id: "run_unreadable",
+          nav_items: RunDetailPage.sample_nav_items()
+        }
       }
     ]
   end

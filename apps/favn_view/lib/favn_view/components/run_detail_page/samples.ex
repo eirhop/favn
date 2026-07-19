@@ -524,8 +524,20 @@ defmodule FavnView.Components.RunDetailPage.Samples do
   def not_found_run do
     %{
       found?: false,
+      not_found?: true,
       id: "run_missing",
       error: "Run not found",
+      status: nil,
+      status_tone: :neutral
+    }
+  end
+
+  def unavailable_run do
+    %{
+      found?: false,
+      not_found?: false,
+      id: "run_unreadable",
+      error: "Backend unavailable. Try again later.",
       status: nil,
       status_tone: :neutral
     }
