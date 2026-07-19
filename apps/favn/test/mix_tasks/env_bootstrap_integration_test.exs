@@ -7,6 +7,7 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
   @repo_root Path.expand("../../../..", __DIR__)
   @mode_env "FAVN_ENV_BOOTSTRAP_INTEGRATION_MODE"
   @capture_env "FAVN_ENV_BOOTSTRAP_INTEGRATION_CAPTURE"
+  @start_capture_env "FAVN_ENV_BOOTSTRAP_INTEGRATION_APP_START_CAPTURE"
 
   setup do
     consumer_dir =
@@ -16,6 +17,7 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
       )
 
     capture_path = Path.join(consumer_dir, "runtime_config.capture")
+    app_start_capture_path = Path.join(consumer_dir, "application_started.capture")
     previous_mode = System.get_env(@mode_env)
 
     System.delete_env(@mode_env)
@@ -32,7 +34,37 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
       end
     end)
 
-    %{capture_path: capture_path, consumer_dir: consumer_dir}
+    %{
+      app_start_capture_path: app_start_capture_path,
+      capture_path: capture_path,
+      consumer_dir: consumer_dir
+    }
+  end
+
+  @tag timeout: 120_000
+  test "query evaluates runtime config with .env without starting the consumer app", context do
+    %{
+      app_start_capture_path: app_start_capture_path,
+      capture_path: capture_path,
+      consumer_dir: consumer_dir
+    } = context
+
+    File.write!(Path.join(consumer_dir, ".env"), "#{@mode_env}=cloud\n")
+
+    {output, 1} =
+      run_mix(
+        consumer_dir,
+        ["favn.query", "select 1", "--root-dir", consumer_dir],
+        capture_path,
+        app_start_capture_path
+      )
+
+    assert output =~ "runtime connection :ducklake has no matching provider definition"
+
+    assert %{database: "cloud.duckdb", evaluation_count: 1, mode: "cloud"} =
+             read_capture!(capture_path)
+
+    refute File.exists?(app_start_capture_path)
   end
 
   @tag timeout: 120_000
@@ -82,7 +114,26 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
           ]
         end
 
-        def application, do: []
+        def application do
+          [mod: {FavnEnvBootstrapIntegrationConsumer.Application, []}]
+        end
+      end
+      """
+    )
+
+    File.mkdir_p!(Path.join(consumer_dir, "lib"))
+
+    File.write!(
+      Path.join(consumer_dir, "lib/application.ex"),
+      """
+      defmodule FavnEnvBootstrapIntegrationConsumer.Application do
+        use Application
+
+        @impl true
+        def start(_type, _args) do
+          File.write!(System.fetch_env!(#{inspect(@start_capture_env)}), "started")
+          Supervisor.start_link([], strategy: :one_for_one)
+        end
       end
       """
     )
@@ -124,15 +175,24 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
     )
   end
 
-  defp run_mix(consumer_dir, args, capture_path) do
+  defp run_mix(consumer_dir, args, capture_path, app_start_capture_path \\ nil) do
     mix = System.find_executable("mix") || "mix"
+
+    env =
+      %{"MIX_ENV" => "test", @capture_env => capture_path}
+      |> maybe_put_app_start_capture(app_start_capture_path)
 
     System.cmd(mix, args,
       cd: consumer_dir,
-      env: %{"MIX_ENV" => "test", @capture_env => capture_path},
+      env: env,
       stderr_to_stdout: true
     )
   end
+
+  defp maybe_put_app_start_capture(env, nil), do: env
+
+  defp maybe_put_app_start_capture(env, path),
+    do: Map.put(env, @start_capture_env, path)
 
   defp read_capture!(capture_path) do
     capture_path |> File.read!() |> :erlang.binary_to_term([:safe])

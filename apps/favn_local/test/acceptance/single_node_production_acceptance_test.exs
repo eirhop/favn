@@ -14,6 +14,11 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
   @admin_password "admin-password-long"
   @pipeline_id "pipeline:Elixir.FavnIssue262Sample.Pipelines.ProductionSmoke:production_smoke"
   @missing_secret_asset_id "asset:Elixir.FavnIssue262Sample.Assets.MissingSecret:asset"
+  @expected_pipeline_asset_refs [
+    "Elixir.FavnIssue262Sample.Assets.SourceCheck:asset",
+    "Elixir.FavnIssue262Sample.Lakehouse.Mart.Sales.OrderSummary:asset",
+    "Elixir.FavnIssue262Sample.Lakehouse.Raw.Sales.Orders:asset"
+  ]
   @repo_root Path.expand("../../../..", __DIR__)
 
   setup_all do
@@ -114,6 +119,9 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
 
     assert terminal_run["manifest_version_id"] ==
              active_manifest_metadata["manifest_version_id"]
+
+    assert_pipeline_results!(terminal_run)
+    assert_run_finished_event!(base_url, session_context, terminal_run)
 
     assert {:ok, diagnostics} = OrchestratorClient.diagnostics(base_url, @service_token)
     assert diagnostics["status"] == "ok"
@@ -405,6 +413,55 @@ defmodule Favn.Local.SingleNodeProductionAcceptanceTest do
             "backend log:\n#{backend_log(runtime_home)}"
         )
     end
+  end
+
+  defp assert_pipeline_results!(terminal_run) do
+    node_results = Map.fetch!(terminal_run, "node_results")
+
+    node_outcomes =
+      node_results
+      |> Enum.map(fn result ->
+        node_result = Map.fetch!(result, "result")
+        {Map.fetch!(node_result, "asset_ref"), Map.fetch!(node_result, "status")}
+      end)
+      |> Enum.sort()
+
+    assert node_outcomes == Enum.map(@expected_pipeline_asset_refs, &{&1, "ok"})
+
+    asset_results = Map.fetch!(terminal_run, "asset_results")
+
+    asset_outcomes =
+      asset_results
+      |> Enum.map(&{Map.fetch!(&1, "asset_ref"), Map.fetch!(&1, "status")})
+      |> Enum.sort()
+
+    assert asset_outcomes == Enum.map(@expected_pipeline_asset_refs, &{&1, "ok"})
+
+    summary =
+      Enum.find(asset_results, fn result ->
+        result["asset_ref"] ==
+          "Elixir.FavnIssue262Sample.Lakehouse.Mart.Sales.OrderSummary:asset"
+      end)
+
+    assert get_in(summary, ["output_metadata", "materialized", "schema"]) == "mart"
+    assert get_in(summary, ["output_metadata", "materialized", "name"]) == "order_summary"
+  end
+
+  defp assert_run_finished_event!(base_url, session_context, terminal_run) do
+    assert {:ok, events} =
+             OrchestratorClient.list_run_events(
+               base_url,
+               @service_token,
+               session_context,
+               terminal_run["id"],
+               limit: 100
+             )
+
+    terminal_event = Enum.max_by(events, &Map.fetch!(&1, "sequence"))
+
+    assert terminal_event["sequence"] == terminal_run["event_seq"]
+    assert terminal_event["event_type"] == "run_finished"
+    assert terminal_event["status"] == "ok"
   end
 
   defp assert_diagnostic!(diagnostics, check, status) do

@@ -88,8 +88,9 @@ single-node bootstrap, operator diagnostics, local run/data inspection, local ru
 cancellation, local run/backfill admission options, or local packaging outputs.
 
 Breadcrumbs:
-- `Mix.Tasks.Favn.Inspect` and `Mix.Tasks.Favn.Query` own CLI app startup for
-  direct local SQL inspection before delegating to `Favn.Dev.DataInspection`.
+- `Mix.Tasks.Favn.Inspect` and `Mix.Tasks.Favn.Query` own the guarded `.env`
+  bootstrap for direct local SQL inspection before delegating to
+  `Favn.Dev.DataInspection`; they do not start the consumer application.
 - `Favn.Dev.DataInspection` owns relation parsing, connection resolution, and the
   read-only SQL guardrail used by `mix favn.inspect` and `mix favn.query`. It
   must start `:favn_sql_runtime` before opening SQL client sessions so

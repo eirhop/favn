@@ -95,9 +95,9 @@ mix favn.stop
 ```
 
 `mix favn.inspect ...` and `mix favn.query "select ..."` are safe to run
-directly from a consumer project. The tasks start the current Mix app and
-`:favn_sql_runtime` before connecting, so the SQL session pool is supervised
-without requiring `mix do app.start + ...`.
+directly from a consumer project. The tasks load `.env` before consumer runtime
+config and start only `:favn_sql_runtime` before connecting, so the SQL session
+pool is supervised without starting the consumer app or its plugins.
 
 `mix favn.runs cancel RUN_ID` requests cancellation through the local
 orchestrator HTTP API using the trusted local-dev context. Add `--wait` when the
@@ -169,7 +169,8 @@ trimming whitespace. Malformed strings fall back to the documented defaults.
 
 Local env files:
 
-- `mix favn.dev` and `mix favn.reload` load `<project-root>/.env`, then use a
+- `mix favn.dev`, `mix favn.reload`, `mix favn.inspect`, and `mix favn.query`
+  load `<project-root>/.env`, then use a
   fresh Mix process to evaluate `config/runtime.exs` before compiling the
   project, building manifests, or launching/restarting services
 - each command reads its env file once; a later `mix favn.reload` starts a new
@@ -218,6 +219,8 @@ overrides are used at runtime and are not copied into Favn state files.
 - resolves a runnable Favn runtime workspace under `.favn/install/runtime_root`
 - records runtime source/materialization metadata in `.favn/install/runtime.json`
 - installs runtime-root Mix deps for orchestrator/runner/storage apps
+- installs the Phoenix esbuild and Tailwind binaries used by local endpoint
+  watchers unless `--skip-web-install` is passed
 
 `mix favn.dev` and build tasks validate install freshness before running. When
 the source-tree hash changes, rerunning `mix favn.install` refreshes the
@@ -320,8 +323,9 @@ is out of sync.
   SQL connections are configured
 - `mix favn.query "select ..."` uses a best-effort read-only guardrail by
   default; this is not a SQL sandbox or security boundary. Pass `--allow-write`
-  only for deliberate local mutation. The SQL inspection commands start the Mix
-  app and SQL runtime before connecting, including `Favn.SQL.SessionPool`
+  only for deliberate local mutation. The SQL inspection commands load `.env`
+  before `config/runtime.exs`, then start only the SQL runtime before connecting,
+  including `Favn.SQL.SessionPool`
 - `mix favn.reset` removes `.favn/` after verifying no managed services are
   still running
 

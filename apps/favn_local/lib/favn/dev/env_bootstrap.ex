@@ -11,12 +11,19 @@ defmodule Favn.Dev.EnvBootstrap do
   @max_loaded_keys 512
   @max_key_bytes 256
   @key_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*$/
-  @configured_tasks %{dev: "favn.dev.configured", reload: "favn.reload.configured"}
+  @commands [:dev, :inspect, :query, :reload]
+  @command_names Enum.map(@commands, &Atom.to_string/1)
+  @configured_tasks %{
+    dev: "favn.dev.configured",
+    inspect: "favn.inspect.configured",
+    query: "favn.query.configured",
+    reload: "favn.reload.configured"
+  }
   @bootstrap_control_env [@token_env, "FAVN_ENV_FILE", "MIX_ENV"]
 
   defstruct [:env_file_path, loaded: %{}]
 
-  @type command :: :dev | :reload
+  @type command :: :dev | :inspect | :query | :reload
   @type t :: %__MODULE__{
           env_file_path: Path.t(),
           loaded: %{optional(String.t()) => String.t()}
@@ -25,7 +32,7 @@ defmodule Favn.Dev.EnvBootstrap do
   @spec exec(command(), [String.t()], keyword()) ::
           {:ok, non_neg_integer()} | {:error, term()}
   def exec(command, args, opts)
-      when command in [:dev, :reload] and is_list(args) and is_list(opts) do
+      when command in @commands and is_list(args) and is_list(opts) do
     command_runner =
       Keyword.get(opts, :env_bootstrap_command_runner, &System.cmd/3)
 
@@ -41,7 +48,7 @@ defmodule Favn.Dev.EnvBootstrap do
   @doc false
   @spec install_for_current_process(command(), keyword()) :: :ok | {:error, term()}
   def install_for_current_process(command, opts)
-      when command in [:dev, :reload] and is_list(opts) do
+      when command in @commands and is_list(opts) do
     System.delete_env(@token_env)
 
     with {:ok, token} <- prepare_token(command, opts) do
@@ -51,7 +58,7 @@ defmodule Favn.Dev.EnvBootstrap do
   end
 
   @spec consume(command(), keyword()) :: {:ok, keyword()} | {:error, term()}
-  def consume(command, opts) when command in [:dev, :reload] and is_list(opts) do
+  def consume(command, opts) when command in @commands and is_list(opts) do
     token = System.get_env(@token_env)
     System.delete_env(@token_env)
 
@@ -214,7 +221,7 @@ defmodule Favn.Dev.EnvBootstrap do
            "loaded_keys" => loaded_keys
          } = payload
        )
-       when map_size(payload) == 5 and command in ["dev", "reload"] and
+       when map_size(payload) == 5 and command in @command_names and
               is_binary(root_dir) and byte_size(root_dir) <= @max_path_bytes and
               is_binary(env_file_path) and byte_size(env_file_path) <= @max_path_bytes and
               is_list(loaded_keys) and length(loaded_keys) <= @max_loaded_keys do

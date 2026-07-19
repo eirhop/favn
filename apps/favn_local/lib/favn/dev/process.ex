@@ -7,7 +7,7 @@ defmodule Favn.Dev.Process do
           required(:args) => [String.t()],
           required(:cwd) => Path.t(),
           required(:log_path) => Path.t(),
-          optional(:env) => %{optional(String.t()) => String.t()}
+          optional(:env) => %{optional(String.t()) => String.t() | nil}
         }
 
   @spec start_service(service_spec()) :: {:ok, map()} | {:error, term()}
@@ -215,7 +215,10 @@ defmodule Favn.Dev.Process do
 
   defp encode_env(env_map) when is_map(env_map) do
     Enum.map(env_map, fn {key, value} ->
-      {String.to_charlist(key), String.to_charlist(value)}
+      {String.to_charlist(key), encode_env_value(value)}
     end)
   end
+
+  defp encode_env_value(nil), do: false
+  defp encode_env_value(value) when is_binary(value), do: String.to_charlist(value)
 end

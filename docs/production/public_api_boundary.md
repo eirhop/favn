@@ -76,8 +76,8 @@ The stable `v1` API should focus on the parts users build authored projects on:
   `mix favn.read_doc`
 
 `mix favn.inspect` and `mix favn.query` are direct local command boundaries: they
-start the current Mix app and SQL runtime before connecting, instead of requiring
-callers to compose them with manual `app.start`.
+load `.env` before consumer runtime config and start only the SQL runtime before
+connecting. They do not start the consumer app or configured plugins.
 
 Packaging commands such as `mix favn.build.runner`, `mix favn.build.web`,
 `mix favn.build.orchestrator`, and `mix favn.build.single` are public command

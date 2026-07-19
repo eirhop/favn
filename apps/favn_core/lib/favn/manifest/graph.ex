@@ -132,10 +132,7 @@ defmodule Favn.Manifest.Graph do
     |> Enum.flat_map(fn {to, dependencies} ->
       Enum.map(dependencies, fn from -> %{from: from, to: to} end)
     end)
-    |> Enum.sort(fn left, right ->
-      compare_refs(left.from, right.from) ||
-        (left.from == right.from && compare_refs(left.to, right.to))
-    end)
+    |> Enum.sort_by(fn edge -> {ref_sort_key(edge.from), ref_sort_key(edge.to)} end)
   end
 
   defp normalized_depends_on(asset) do

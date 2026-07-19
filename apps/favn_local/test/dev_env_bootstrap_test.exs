@@ -112,6 +112,26 @@ defmodule Favn.Dev.EnvBootstrapTest do
     assert System.get_env(@token_env) == nil
   end
 
+  test "query uses its guarded configured task", %{root_dir: root_dir} do
+    command_runner = fn _mix, args, command_opts ->
+      assert args == ["favn.query.configured", "select 1", "--root-dir", root_dir]
+
+      command_env = Map.new(command_opts[:env])
+      Enum.each(command_env, fn {key, value} -> System.put_env(key, value) end)
+
+      assert {:ok, _opts} = EnvBootstrap.consume(:query, root_dir: root_dir)
+      {"", 0}
+    end
+
+    assert {:ok, 0} =
+             EnvBootstrap.exec(
+               :query,
+               ["select 1", "--root-dir", root_dir],
+               root_dir: root_dir,
+               env_bootstrap_command_runner: command_runner
+             )
+  end
+
   test "consume rejects a different configured task and consumes the token", %{root_dir: root_dir} do
     assert :ok = EnvBootstrap.install_for_current_process(:dev, root_dir: root_dir)
 

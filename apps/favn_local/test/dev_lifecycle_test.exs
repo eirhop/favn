@@ -443,10 +443,12 @@ defmodule Favn.Dev.LifecycleTest do
                  skip_install_check: true,
                  skip_bootstrap: true,
                  skip_readiness: true,
+                 progress_fun: &send(self(), {:progress, &1}),
                  service_specs_override: specs
                )
     end)
 
+    assert_received {:progress, "Favn dev: ready"}
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
   after
     _ = Dev.stop(root_dir: root_dir)

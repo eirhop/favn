@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
+  alias FavnOrchestrator.RunServer.Execution.StageEntry
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.PersistenceRetry
@@ -32,7 +33,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @max_batch_ms 25
 
   @type node_key :: Favn.Plan.node_key()
-  @type entry :: map()
+  @type entry :: StageEntry.t()
   @type result ::
           {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()]}
           | {:retry, RunState.t(), [node_key()], [node_key()]}
@@ -572,23 +573,26 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
            runtime_input_lineage: Map.get(ctx.work.metadata, :runtime_input_lineage)
          }) do
       :ok ->
-        entry = %{
-          run_id: ctx.current_run.id,
-          asset_step_id: asset_step_id,
-          asset_ref: asset_ref,
-          node_key: ctx.node_key,
-          window: RunnerWork.window(ctx.work),
-          execution_id: execution_id,
-          runner_execution_id: execution_id,
-          ownership: ownership,
-          decision: Map.get(ctx.decisions, ctx.node_key, %{}),
-          attempt: ctx.attempt,
-          stage: ctx.stage,
-          lease: ctx.lease,
-          materialization_claim: ctx.materialization_claim,
-          execution_pool: RunnerWork.execution_pool(ctx.work),
-          freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
-        }
+        entry =
+          StageEntry.new!(%{
+            run_id: ctx.current_run.id,
+            asset_step_id: asset_step_id,
+            asset_ref: asset_ref,
+            node_key: ctx.node_key,
+            window: RunnerWork.window(ctx.work),
+            execution_id: execution_id,
+            runner_execution_id: execution_id,
+            ownership: ownership,
+            decision: Map.get(ctx.decisions, ctx.node_key, %{}),
+            attempt: ctx.attempt,
+            stage: ctx.stage,
+            lease: ctx.lease,
+            materialization_claim: ctx.materialization_claim,
+            execution_pool: RunnerWork.execution_pool(ctx.work),
+            freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key),
+            version: ctx.version,
+            freshness_context: ctx.freshness_context
+          })
 
         do_submit(ctx.rest, %{
           ctx

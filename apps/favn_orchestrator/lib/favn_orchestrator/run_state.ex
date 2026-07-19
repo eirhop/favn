@@ -159,6 +159,19 @@ defmodule FavnOrchestrator.RunState do
   def terminal_event_type("error"), do: :run_failed
   def terminal_event_type(_status), do: nil
 
+  @doc false
+  @spec for_step_persistence(t()) :: t()
+  def for_step_persistence(%__MODULE__{} = run) do
+    if finalized?(run) do
+      run
+    else
+      run
+      |> Map.put(:status, :running)
+      |> Map.put(:result, nil)
+      |> with_snapshot_hash()
+    end
+  end
+
   defp finalized_metadata?(metadata) when is_map(metadata) do
     terminal_event_type =
       Map.get(metadata, :terminal_event_type) || Map.get(metadata, "terminal_event_type")
