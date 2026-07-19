@@ -525,8 +525,8 @@ defmodule FavnOrchestrator.RunManager do
   defp terminalize_active_run({workspace_id, run_id}, error) when is_map(error) do
     context = SystemContext.workspace(workspace_id, :run_recovery)
 
-    with {:ok, %RunState{status: status} = run} when status in [:pending, :running] <-
-           Runs.get(context, run_id),
+    with {:ok, %RunState{} = run} <- Runs.get(context, run_id),
+         false <- RunState.finalized?(run),
          owner_id = RunOwnership.owner_id(run_id),
          {:ok, ownership} <- RunOwnership.claim(context, run_id, owner_id),
          owned_run <-
@@ -538,7 +538,7 @@ defmodule FavnOrchestrator.RunManager do
       _release = RunOwnership.release(context, ownership)
       result
     else
-      {:ok, %RunState{}} ->
+      true ->
         :ok
 
       {:error, reason} ->

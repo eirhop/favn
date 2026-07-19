@@ -15,7 +15,7 @@ defmodule FavnOrchestrator.RunServer.Persistence do
   @doc "Persists one run snapshot and its matching event atomically."
   @spec persist_run_step(RunState.t(), atom(), map()) :: :ok | {:error, term()}
   def persist_run_step(%RunState{} = run_state, event_type, data) do
-    durable_run = durable_snapshot(run_state)
+    durable_run = RunState.for_step_persistence(run_state)
 
     case persist_transition(durable_run, event_type, data) do
       :ok ->
@@ -35,14 +35,6 @@ defmodule FavnOrchestrator.RunServer.Persistence do
 
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  defp durable_snapshot(%RunState{} = run_state) do
-    if RunState.finalized?(run_state) or is_nil(run_state.result) do
-      run_state
-    else
-      run_state |> Map.put(:result, nil) |> RunState.with_snapshot_hash()
     end
   end
 

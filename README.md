@@ -910,13 +910,16 @@ structured run metadata for inspection.
 `mix favn.install` resolves and materializes a runtime workspace under
 `.favn/install/runtime_root`. The install fingerprint includes a deterministic
 hash of the copied runtime source tree, excluding generated dependency/build
-directories, so source-only Favn updates refresh the installed runtime. `mix
+directories, so source-only Favn updates refresh the installed runtime. Install
+also materializes the Phoenix esbuild and Tailwind binaries used by endpoint
+watchers; `--skip-web-install` is available for controlled environments. `mix
 favn.dev` validates that fingerprint and compiles the installed runtime
 workspace before startup so live runner/orchestrator processes do not boot stale
 internal runtime beams. During foreground startup it prints concise terminal
 progress lines before slow phases such as runtime compile, project compile,
-service startup, manifest publication, and HTTP readiness checks. For both
-`mix favn.dev` and `mix favn.reload`, a lightweight bootstrap loads the project
+service startup, manifest publication, and HTTP readiness checks, followed by
+an explicit `Favn dev: ready` line. For `mix favn.dev`, `mix favn.reload`, `mix
+favn.inspect`, and `mix favn.query`, a lightweight bootstrap loads the project
 `.env` and then starts a fresh Mix process that evaluates the consumer project's
 `config/runtime.exs`. This makes `.env` values available to runtime config before
 connection and plugin configuration is collected; existing shell values still
@@ -1053,10 +1056,10 @@ active-run counts and recent failed run ids when the local stack is running.
 provide local SQL inspection without ad-hoc `mix run -e` snippets. `mix
 favn.query` uses a best-effort read-only guardrail by default; it is not a SQL
 sandbox or security boundary. Pass `--connection NAME` when multiple SQL
-connections are configured. `mix favn.inspect` and `mix favn.query` start the
-current Mix app and SQL runtime themselves, including `Favn.SQL.SessionPool`;
-users should run them directly rather than wrapping them in `mix do app.start +
-...`.
+connections are configured. `mix favn.inspect` and `mix favn.query` load `.env`
+before evaluating `config/runtime.exs`, then start only the SQL runtime,
+including `Favn.SQL.SessionPool`; they do not start the consumer application or
+configured plugins.
 
 DuckDB and DuckDB ADBC bootstrap now accept run-scoped catalog requirements.
 SQL asset execution and relation inspection pass the rendered relation catalogs

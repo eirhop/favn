@@ -1,6 +1,7 @@
 defmodule Favn.Dev.RuntimeLaunch do
   @moduledoc false
 
+  alias Favn.Dev.ChildEnvironment
   alias Favn.Dev.Config
   alias Favn.Dev.ConsumerCodePath
   alias Favn.Dev.ConsumerConfigTransport
@@ -236,6 +237,7 @@ defmodule Favn.Dev.RuntimeLaunch do
       "MIX_OS_CONCURRENCY_LOCK" => "0",
       "ERL_EPMD_ADDRESS" => distribution.bind_ip
     })
+    |> ChildEnvironment.sanitize_proxy_variables()
   end
 
   defp distributed_erlang_args(service, opts, distribution) do

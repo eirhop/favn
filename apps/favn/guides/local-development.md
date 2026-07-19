@@ -31,7 +31,7 @@ mix favn.stop
 | --- | --- | --- |
 | `mix favn.init --duckdb --sample` | Generate local Favn files and a sample DuckDB pipeline. | `--duckdb`, `--sample` |
 | `mix favn.doctor` | Check local configuration before running. | `--skip-compile` |
-| `mix favn.install` | Prepare `.favn/install`. | `--force`, `--skip-runtime-deps-install`, `--root-dir PATH` |
+| `mix favn.install` | Prepare `.favn/install`, including Phoenix asset binaries. | `--force`, `--skip-runtime-deps-install`, `--skip-web-install`, `--root-dir PATH` |
 | `mix favn.dev` | Start PostgreSQL-backed local runtime processes and the UI. | `--scheduler`, `--root-dir PATH` |
 
 `mix favn.dev` stays in the foreground. It prints service logs and URLs. Stop it
@@ -45,9 +45,10 @@ they do not serialize startup on Mix's build lock.
 
 Before startup, `mix favn.dev` loads the project `.env` and starts a fresh Mix
 process that evaluates `config/runtime.exs`. This means runtime config can branch
-on env-file values. Existing shell values take precedence. `mix favn.reload`
-repeats the same bootstrap, so changes to `.env` or `config/runtime.exs` are
-picked up together.
+on env-file values. Existing shell values take precedence. `mix favn.reload`,
+`mix favn.inspect`, and `mix favn.query` repeat the same bootstrap, so changes to
+`.env` or `config/runtime.exs` are picked up together. The inspection commands
+start only `:favn_sql_runtime`, not the consumer application or its plugins.
 
 ## Runtime Commands
 

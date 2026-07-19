@@ -3,6 +3,7 @@ defmodule Favn.Dev.Install do
   Project-local install and install-state validation for Favn dev tooling.
   """
 
+  alias Favn.Dev.ChildEnvironment
   alias Favn.Dev.Paths
   alias Favn.Dev.RuntimeSource
   alias Favn.Dev.RuntimeWorkspace
@@ -95,11 +96,12 @@ defmodule Favn.Dev.Install do
 
   defp maybe_install(:install, current_fingerprint, source, opts) do
     with {:ok, toolchain} <- build_toolchain(opts),
-          :ok <- State.clear_install(opts),
-          {:ok, runtime} <- RuntimeWorkspace.materialize(source, opts),
-          :ok <- install_runtime_dependencies(runtime, opts) do
+         :ok <- State.clear_install(opts),
+         {:ok, runtime} <- RuntimeWorkspace.materialize(source, opts),
+         :ok <- install_runtime_dependencies(runtime, opts),
+         :ok <- install_web_assets(runtime, opts) do
       with :ok <- write_install_state(current_fingerprint, toolchain, source, runtime, opts),
-            do: {:ok, :installed}
+           do: {:ok, :installed}
     end
   end
 
@@ -139,6 +141,33 @@ defmodule Favn.Dev.Install do
     end
   end
 
+  defp install_web_assets(runtime, opts) do
+    if Keyword.get(opts, :skip_web_install, false) do
+      :ok
+    else
+      runtime_root = runtime["materialized_root"]
+      web_mix_exs = runtime |> Map.fetch!("web_root") |> Path.join("mix.exs")
+
+      if File.exists?(web_mix_exs) do
+        mix_exec = System.find_executable("mix") || "mix"
+        runner = Keyword.get(opts, :web_install_command_runner, &System.cmd/3)
+
+        command_opts = [
+          cd: runtime_root,
+          stderr_to_stdout: true,
+          env: ChildEnvironment.empty_proxy_overrides()
+        ]
+
+        case runner.(mix_exec, ["do", "--app", "favn_view", "assets.setup"], command_opts) do
+          {_output, 0} -> :ok
+          {output, status} -> {:error, {:web_install_failed, status, String.trim(output)}}
+        end
+      else
+        :ok
+      end
+    end
+  end
+
   defp write_install_state(fingerprint, toolchain, source, runtime, opts) do
     install = %{
       "schema_version" => @schema_version,
@@ -165,12 +194,12 @@ defmodule Favn.Dev.Install do
 
       {:ok,
        %{
-          "schema_version" => @schema_version,
-          "elixir_version" => System.version(),
-          "otp_release" => otp_release(),
-          "consumer_mix_lock_sha256" => file_sha256(Path.join(root_dir, "mix.lock")),
-          "runtime_source" => runtime_fingerprint
-        }}
+         "schema_version" => @schema_version,
+         "elixir_version" => System.version(),
+         "otp_release" => otp_release(),
+         "consumer_mix_lock_sha256" => file_sha256(Path.join(root_dir, "mix.lock")),
+         "runtime_source" => runtime_fingerprint
+       }}
     end
   end
 

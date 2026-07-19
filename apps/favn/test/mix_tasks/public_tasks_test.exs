@@ -1186,13 +1186,20 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert invalid_message == "invalid option for mix favn.query"
   end
 
-  test "mix favn.query starts the SQL runtime before connecting" do
+  test "mix favn.query starts the SQL runtime before connecting", %{root_dir: root_dir} do
     configure_query_connection!()
     stop_sql_runtime!()
+    :ok = EnvBootstrap.install_for_current_process(:query, root_dir: root_dir)
 
     output =
       capture_io(fn ->
-        QueryTask.run(["select 1", "--connection", "query_test"])
+        QueryTask.run_configured([
+          "select 1",
+          "--connection",
+          "query_test",
+          "--root-dir",
+          root_dir
+        ])
       end)
 
     assert Process.whereis(Favn.SQL.SessionPool)
@@ -1200,13 +1207,23 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "select 1"
   end
 
-  test "mix favn.inspect relation starts the SQL runtime before connecting" do
+  test "mix favn.inspect relation starts the SQL runtime before connecting", %{
+    root_dir: root_dir
+  } do
     configure_query_connection!()
     stop_sql_runtime!()
+    :ok = EnvBootstrap.install_for_current_process(:inspect, root_dir: root_dir)
 
     output =
       capture_io(fn ->
-        InspectTask.run(["relation", "raw.sales.orders", "--connection", "query_test"])
+        InspectTask.run_configured([
+          "relation",
+          "raw.sales.orders",
+          "--connection",
+          "query_test",
+          "--root-dir",
+          root_dir
+        ])
       end)
 
     assert Process.whereis(Favn.SQL.SessionPool)
@@ -1215,13 +1232,23 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "id\tinteger"
   end
 
-  test "mix favn.inspect partitions starts the SQL runtime before connecting" do
+  test "mix favn.inspect partitions starts the SQL runtime before connecting", %{
+    root_dir: root_dir
+  } do
     configure_query_connection!()
     stop_sql_runtime!()
+    :ok = EnvBootstrap.install_for_current_process(:inspect, root_dir: root_dir)
 
     output =
       capture_io(fn ->
-        InspectTask.run(["partitions", "raw.sales.orders", "--connection", "query_test"])
+        InspectTask.run_configured([
+          "partitions",
+          "raw.sales.orders",
+          "--connection",
+          "query_test",
+          "--root-dir",
+          root_dir
+        ])
       end)
 
     assert Process.whereis(Favn.SQL.SessionPool)

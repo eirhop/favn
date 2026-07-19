@@ -440,14 +440,18 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     end
   end
 
-  defp record_freshness(%RunState{} = run_state, entry, :ok) do
+  defp record_freshness(
+         %RunState{} = run_state,
+         %{version: version, node_key: node_key, freshness_context: freshness_context} = entry,
+         :ok
+       ) do
     {:ok,
      StateWriter.build_success_state(
        run_state,
-       Map.fetch!(entry, :version),
-       Map.fetch!(entry, :node_key),
-       Map.get(entry, :decision, %{}),
-       Map.fetch!(entry, :freshness_context)
+       version,
+       node_key,
+       entry.decision,
+       freshness_context
      )}
   end
 

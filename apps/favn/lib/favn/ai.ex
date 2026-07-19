@@ -204,10 +204,10 @@ defmodule Favn.AI do
     `Mix.Tasks.Favn.Logs`, `Mix.Tasks.Favn.Inspect`, and `Mix.Tasks.Favn.Query`.
     `mix favn.runs cancel RUN_ID` requests cancellation through the local
     orchestrator HTTP boundary; add `--wait` to poll the run until it is
-    terminal. `mix favn.inspect ...` and `mix favn.query
-    "select ..."` are direct local operator entrypoints: their Mix tasks start
-    the app, and `Favn.Dev.DataInspection` starts `:favn_sql_runtime` before
-    connecting, so users do not need `mix do app.start + ...`.
+    terminal. `mix favn.inspect ...` and `mix favn.query "select ..."` are direct
+    local operator entrypoints: their Mix tasks load `.env` before consumer
+    runtime config without starting the consumer app, and
+    `Favn.Dev.DataInspection` starts `:favn_sql_runtime` before connecting.
   - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
     The public local command surface is `mix favn.install`, `mix favn.init`,
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
@@ -464,9 +464,9 @@ defmodule Favn.AI do
     `Favn.Dev.Runs` for `mix favn.runs` list/show/cancel behavior and
     `mix favn.logs RUN_ID`. Read
     `Favn.Dev.DataInspection` for `mix favn.inspect` and `mix favn.query`.
-    `Mix.Tasks.Favn.Inspect` and `Mix.Tasks.Favn.Query` own CLI app startup for
-    local SQL inspection; `Favn.Dev.DataInspection` owns SQL runtime startup
-    before opening client sessions.
+    `Mix.Tasks.Favn.Inspect` and `Mix.Tasks.Favn.Query` own guarded `.env`
+    bootstrap for local SQL inspection without consumer app startup;
+    `Favn.Dev.DataInspection` owns SQL runtime startup before opening sessions.
 
   ## Related docs outside BEAM docs
 

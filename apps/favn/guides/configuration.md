@@ -49,9 +49,10 @@ Explicit module keys:
 ## Local Runtime Config
 
 Local dev reads `config :favn, :local`. Task flags override config values.
-`mix favn.dev` first loads the project's `.env`, then evaluates the consumer
-project's `config/runtime.exs` in a fresh Mix process before it collects
-connection, execution-pool, and plugin configuration for the local runner.
+`mix favn.dev`, `mix favn.reload`, `mix favn.inspect`, and `mix favn.query` first
+load the project's `.env`, then evaluate the consumer project's
+`config/runtime.exs` in a fresh Mix process. Dev collects connection,
+execution-pool, and plugin configuration for the local runner.
 Environment-specific values from `.env` may therefore be read in runtime config.
 
 Minimal local configuration:
@@ -414,9 +415,10 @@ options for raw writes.
 
 ## `.env` Files
 
-`mix favn.dev` and `mix favn.reload` load `.env` from the project root before
-`config/runtime.exs`, compile, or runtime startup. Each command reads the file
-once and evaluates runtime config in a fresh Mix process.
+`mix favn.dev`, `mix favn.reload`, `mix favn.inspect`, and `mix favn.query` load
+`.env` from the project root before `config/runtime.exs`, compile, or runtime
+startup. Each command reads the file once and evaluates runtime config in a
+fresh Mix process.
 
 Rules:
 

@@ -694,6 +694,7 @@ defmodule Favn.Dev.Stack do
 
     case wait_ready(config, opts) do
       :ok ->
+        progress(opts, "ready")
         monitor_refs = monitor_services(services)
         wait_for_service_exit(startup, opts, monitor_refs)
 

@@ -13,21 +13,43 @@ defmodule Mix.Tasks.Favn.Query do
   boundary. Pass `--allow-write` for deliberate local mutation and `--connection
   NAME` when more than one SQL connection is configured.
 
-  The task starts the current Mix app before connecting, and the local data
-  inspection boundary starts `:favn_sql_runtime`, including the supervised SQL
-  session pool. Users do not need to wrap it in
-  `mix do app.start + favn.query ...`.
+  The project's `.env` is loaded before `config/runtime.exs` is evaluated. The
+  task starts only `:favn_sql_runtime`, including the supervised SQL session
+  pool; it does not start the consumer application or configured plugins.
   """
 
   alias Favn.Dev
+  alias Favn.Dev.EnvBootstrap
 
-  @switches [connection: :string, allow_write: :boolean, limit: :integer]
+  @switches [connection: :string, allow_write: :boolean, limit: :integer, root_dir: :string]
+
+  @requirements ["loadpaths"]
 
   @impl Mix.Task
   def run(args) do
     case parse_args(args) do
-      {:ok, {sql, opts}} -> run_query(sql, opts)
+      {:ok, {_sql, opts}} -> run_bootstrapped(args, opts)
       {:error, message} -> Mix.raise(message)
+    end
+  end
+
+  @doc false
+  @spec run_configured([String.t()]) :: :ok | no_return()
+  def run_configured(args) do
+    with {:ok, {sql, opts}} <- parse_args(args),
+         {:ok, opts} <- EnvBootstrap.consume(:query, opts) do
+      run_query(sql, inspection_opts(opts))
+    else
+      {:error, message} when is_binary(message) ->
+        Mix.raise(message)
+
+      {:error, :env_bootstrap_required} ->
+        Mix.raise("favn.query.configured is an internal task; run mix favn.query")
+
+      {:error, reason} ->
+        Mix.raise(
+          "invalid favn.query environment bootstrap: #{inspect(reason)}; run mix favn.query"
+        )
     end
   end
 
@@ -74,8 +96,6 @@ defmodule Mix.Tasks.Favn.Query do
   end
 
   defp run_query(sql, opts) do
-    :ok = ensure_app_started()
-
     case Dev.query(sql, opts) do
       {:ok, %{result: %Favn.SQL.Result{} = result, displayed_rows: rows, display_limit: limit}} ->
         print_result(result, rows, limit)
@@ -88,10 +108,16 @@ defmodule Mix.Tasks.Favn.Query do
     end
   end
 
-  defp ensure_app_started do
-    Mix.Task.run("app.start")
-    :ok
+  defp run_bootstrapped(args, opts) do
+    case EnvBootstrap.exec(:query, args, opts) do
+      {:ok, 0} -> :ok
+      {:ok, status} -> System.halt(status)
+      {:error, reason} -> Mix.raise("query environment bootstrap failed: #{inspect(reason)}")
+    end
   end
+
+  defp inspection_opts(opts),
+    do: Keyword.drop(opts, [:env_bootstrap, :env_file_loaded, :root_dir])
 
   defp format_cell(nil), do: "NULL"
   defp format_cell(value) when is_binary(value), do: value

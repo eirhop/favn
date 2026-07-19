@@ -1,5 +1,5 @@
 defmodule Favn.Dev.ProcessTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Favn.Dev.Process
 
@@ -33,6 +33,32 @@ defmodule Favn.Dev.ProcessTest do
     assert Process.alive?(info.pid)
 
     assert :ok = Process.stop_pid(info.pid)
+    refute Process.alive?(info.pid)
+  end
+
+  test "nil environment values remove inherited variables", %{root_dir: root_dir} do
+    log_path = Path.join(root_dir, "unset-env.log")
+    previous = System.get_env("FAVN_DEV_PROCESS_UNSET_TEST")
+    System.put_env("FAVN_DEV_PROCESS_UNSET_TEST", "inherited")
+
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("FAVN_DEV_PROCESS_UNSET_TEST", previous),
+        else: System.delete_env("FAVN_DEV_PROCESS_UNSET_TEST")
+    end)
+
+    spec = %{
+      name: "fixture",
+      exec: System.find_executable("bash") || "/bin/bash",
+      args: ["-lc", "if [ -z \"${FAVN_DEV_PROCESS_UNSET_TEST+x}\" ]; then echo unset; fi"],
+      cwd: root_dir,
+      log_path: log_path,
+      env: %{"FAVN_DEV_PROCESS_UNSET_TEST" => nil}
+    }
+
+    assert {:ok, info} = Process.start_service(spec)
+    assert_receive {:service_exit, "fixture", 0}, 2_000
+    assert File.read!(log_path) == "unset\n"
     refute Process.alive?(info.pid)
   end
 

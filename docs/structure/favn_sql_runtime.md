@@ -105,5 +105,6 @@ uncertainty instead of claiming data-plane cancellation certainty.
 
 Local `mix favn.query` read-only validation is a best-effort operator guardrail,
 not a SQL sandbox or security boundary. `mix favn.inspect` and `mix favn.query`
-start `:favn_sql_runtime` before connecting so `Favn.SQL.SessionPool` is
-available for direct CLI inspection.
+load `.env` before consumer runtime config and start only `:favn_sql_runtime`
+before connecting, so `Favn.SQL.SessionPool` is available without starting the
+consumer application or plugins.

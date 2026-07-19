@@ -6,6 +6,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
   alias Favn.Dev.ConsumerConfigTransport
   alias Favn.Dev.RuntimeLaunch
 
+  @proxy_keys ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]
+
   test "runner and operator specs target installed runtime roots" do
     runtime = %{
       "materialized_root" => "/tmp/favn_runtime",
@@ -50,6 +52,26 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert operator.env["FAVN_VIEW_PUBLIC_ORIGIN"] == config.web_base_url
     assert operator.env["FAVN_VIEW_SECRET_KEY_BASE"] == String.duplicate("s", 64)
     assert operator.env["FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH"] == "1"
+  end
+
+  test "runtime specs unset inherited empty proxy variables" do
+    previous = Map.new(@proxy_keys, &{&1, System.get_env(&1)})
+    Enum.each(@proxy_keys, &System.put_env(&1, ""))
+
+    on_exit(fn ->
+      Enum.each(previous, fn
+        {key, nil} -> System.delete_env(key)
+        {key, value} -> System.put_env(key, value)
+      end)
+    end)
+
+    runtime = %{"runner_root" => "/tmp/favn_runtime"}
+    node_names = %{runner_short: "favn_runner_proxy_test"}
+    secrets = %{"rpc_cookie" => "cookie"}
+
+    runner = RuntimeLaunch.runner_spec(runtime, distribution_opts(), node_names, secrets)
+
+    assert Enum.all?(@proxy_keys, &(Map.fetch!(runner.env, &1) == nil))
   end
 
   test "runtime specs bind local HTTP and distributed Erlang to loopback" do

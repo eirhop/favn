@@ -204,4 +204,42 @@ defmodule Favn.Dev.InstallTest do
 
     assert {:error, :install_required} = Install.ensure_ready(root_dir: root_dir)
   end
+
+  test "run/1 installs Phoenix asset binaries in the materialized runtime", %{
+    root_dir: root_dir
+  } do
+    caller = self()
+
+    runner = fn mix, args, opts ->
+      send(caller, {:web_install, mix, args, opts})
+      {"installed", 0}
+    end
+
+    assert {:ok, :installed} =
+             Install.run(
+               root_dir: root_dir,
+               skip_tool_checks: true,
+               skip_runtime_deps_install: true,
+               web_install_command_runner: runner
+             )
+
+    assert_received {:web_install, mix, ["do", "--app", "favn_view", "assets.setup"], opts}
+    assert String.starts_with?(Path.basename(mix), "mix")
+    assert opts[:cd] == Path.join(root_dir, ".favn/install/runtime_root")
+    assert opts[:stderr_to_stdout]
+  end
+
+  test "run/1 preserves web asset installation failures", %{root_dir: root_dir} do
+    runner = fn _mix, _args, _opts -> {"asset install failed", 9} end
+
+    assert {:error, {:web_install_failed, 9, "asset install failed"}} =
+             Install.run(
+               root_dir: root_dir,
+               skip_tool_checks: true,
+               skip_runtime_deps_install: true,
+               web_install_command_runner: runner
+             )
+
+    assert {:error, :install_required} = Install.ensure_ready(root_dir: root_dir)
+  end
 end
