@@ -17,7 +17,7 @@ defmodule FavnStoragePostgres.Maintenance.Store do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.MaintenanceJob
 
-  @projections [:execution_groups, :backfills, :target_statuses, :freshness]
+  @projections [:execution_groups, :backfills, :target_statuses, :asset_attempts, :freshness]
   @purge_targets [
     :logs,
     :sessions,

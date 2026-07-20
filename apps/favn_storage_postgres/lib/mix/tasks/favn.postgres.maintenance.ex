@@ -109,6 +109,7 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
       "execution-groups" -> :execution_groups
       "backfills" -> :backfills
       "target-statuses" -> :target_statuses
+      "asset-attempts" -> :asset_attempts
       "freshness" -> :freshness
       _invalid -> usage!()
     end

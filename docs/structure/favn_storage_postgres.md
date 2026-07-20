@@ -24,6 +24,10 @@ Favn's PostgreSQL 18 control-plane persistence.
 - `run_plans` stores one bounded immutable plan per planned run. `runs.snapshot`
   stores only mutable state plus the plan hash, keeping every transition below its
   independent 4 MiB boundary.
+- `asset_attempt_overviews` projects exact run, asset-step, and effective runtime
+  window identities from authoritative run events. It supports bounded operator
+  overview reads without loading run snapshots, plans, or event payloads and is
+  repairable through projection maintenance.
 - Immutable deployment-target rows include bounded, fingerprinted JSONB catalogue
   descriptors. Customer catalogue reads use those indexed rows and do not decode a
   full manifest.

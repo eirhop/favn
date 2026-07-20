@@ -9,9 +9,9 @@ defmodule FavnOrchestrator.Operator.Catalogue do
 
   alias Favn.Manifest.Version
   alias Favn.Window.Key, as: WindowKey
-  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Freshness.StateLoader
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Operator.Catalogue.AssetFreshness
   alias FavnOrchestrator.Operator.Catalogue.RunHistory
@@ -19,7 +19,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Operator.Catalogue.Timeline
   alias FavnOrchestrator.Persistence
-  alias FavnOrchestrator.Persistence.Queries.GetAssetDetailState
+  alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: PersistenceTargetStatus
@@ -236,14 +236,28 @@ defmodule FavnOrchestrator.Operator.Catalogue do
          {:ok, asset} <- asset_for_target(version, target_id),
          {:ok, run_context_selection} <-
            AssetRunContext.select(version, asset, Keyword.get(opts, :run_context_id)),
+         now <- Keyword.get(opts, :now) || DateTime.utc_now(),
+         freshness_opts <- freshness_opts(opts, run_context_selection),
+         {:ok, freshness_plan} <- AssetFreshness.plan(asset, version, now, freshness_opts),
+         {:ok, loaded_freshness} <-
+           StateLoader.load(
+             context,
+             runtime.deployment_id,
+             freshness_plan,
+             assets_by_ref(version),
+             now: now
+           ),
          {:ok, status} <- target_status(context, runtime, :asset, target_id),
          {:ok, page} <- target_runs(context, runtime, :asset, target_id),
-         {:ok, projection_state} <- asset_projection_state(context, runtime, target_id),
-         {:ok, freshness_states} <-
-           catalogue_freshness_states(projection_state.freshness_states, asset),
+         {:ok, projected_window_states} <- asset_window_states(context, runtime, target_id),
          {:ok, window_states} <-
-           catalogue_window_states(projection_state.window_states, asset, version) do
+           catalogue_window_states(projected_window_states, asset, version) do
       runs = Enum.map(page.items, &Projector.project_run_summary/1)
+
+      detail_opts =
+        opts
+        |> Keyword.put(:now, now)
+        |> Keyword.put(:freshness_plan, freshness_plan)
 
       {:ok,
        asset_detail_entry(
@@ -251,10 +265,10 @@ defmodule FavnOrchestrator.Operator.Catalogue do
          asset,
          target_id,
          status || unknown_status(context, runtime, :asset, target_id),
-         freshness_states,
+         loaded_freshness.states,
          window_states,
          runs,
-         opts,
+         detail_opts,
          run_context_selection
        )}
     else
@@ -357,40 +371,14 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     })
   end
 
-  defp asset_projection_state(context, runtime, target_id) do
-    Persistence.stores().operator_reads.get_asset_detail_state(%GetAssetDetailState{
+  defp asset_window_states(context, runtime, target_id) do
+    Persistence.stores().operator_reads.get_asset_window_states(%GetAssetWindowStates{
       workspace_context: context,
       deployment_id: runtime.deployment_id,
       manifest_version_id: runtime.manifest_version_id,
       target_id: target_id,
       limit: 200
     })
-  end
-
-  defp catalogue_freshness_states(states, asset) do
-    map_validated(states, fn state ->
-      payload = state.payload || %{}
-      {module, name} = asset.ref
-
-      AssetFreshnessState.new(%{
-        asset_ref_module: module,
-        asset_ref_name: name,
-        freshness_key: state.freshness_key,
-        status: catalogue_freshness_status(state.status),
-        freshness_version: field(payload, :freshness_version),
-        latest_success_run_id: field(payload, :run_id),
-        latest_success_node_key: nil,
-        latest_success_at: state.updated_at,
-        latest_attempt_run_id: field(payload, :run_id),
-        latest_attempt_status: catalogue_freshness_status(state.status),
-        latest_attempt_at: state.updated_at,
-        manifest_version_id: field(payload, :manifest_version_id),
-        manifest_content_hash: field(payload, :manifest_content_hash),
-        input_versions: [],
-        metadata: %{"input_fingerprint" => field(payload, :input_fingerprint)},
-        updated_at: state.updated_at
-      })
-    end)
   end
 
   defp catalogue_window_states(states, asset, version) do
@@ -438,11 +426,6 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       error -> error
     end)
   end
-
-  defp catalogue_freshness_status(:fresh), do: :ok
-  defp catalogue_freshness_status(:stale), do: :error
-  defp catalogue_freshness_status(:failed), do: :error
-  defp catalogue_freshness_status(status), do: status
 
   defp catalogue_window_status(:succeeded), do: :ok
   defp catalogue_window_status(:failed), do: :error
@@ -565,6 +548,17 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Map.put(:run_context_status, run_context_selection.status)
     |> Map.put(:can_run_asset?, run_context_selection.status != :ambiguous)
   end
+
+  defp freshness_opts(opts, run_context_selection) do
+    opts
+    |> Keyword.put(:asset_run_context, run_context_selection.selected)
+    |> Keyword.put(:run_context_status, run_context_selection.status)
+  end
+
+  defp assets_by_ref(%Version{manifest: %{assets: assets}}) when is_list(assets),
+    do: Map.new(assets, &{&1.ref, &1})
+
+  defp assets_by_ref(%Version{}), do: %{}
 
   defp assurance_detail(%{assurance: nil}, _latest_run), do: nil
 

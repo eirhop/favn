@@ -21,9 +21,9 @@ defmodule FavnOrchestrator.Operator.Catalogue.Status do
 
   def put(target, %PersistenceTargetStatus{} = status) when is_map(target) do
     target
-    |> Map.put(:status, status.status)
+    |> Map.put(:status, TargetStatus.status_from_run(status.status))
     |> Map.put(:latest_run_id, status.run_id)
-    |> Map.put(:latest_run_status, run_status(status.status))
+    |> Map.put(:latest_run_status, status.status)
     |> Map.put(:latest_run_at, status.updated_at)
     |> Map.put(:latest_run_duration_ms, nil)
   end
@@ -72,17 +72,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Status do
   def latest_run_at(_freshness, run) when is_map(run), do: RunHistory.time_key(run)
   def latest_run_at(_freshness, _run), do: nil
 
-  defp run_status(nil), do: :unknown
-  defp run_status(%{status: status}) when status in [:pending, :running], do: :running
-  defp run_status(%{status: :ok}), do: :healthy
-
-  defp run_status(%{status: status})
-       when status in [:partial, :error, :cancelled, :timed_out],
-       do: :failed
-
-  defp run_status(:healthy), do: :ok
-  defp run_status(:running), do: :running
-  defp run_status(:failed), do: :error
-  defp run_status(:unknown), do: nil
+  defp run_status(%{status: status}), do: TargetStatus.status_from_run(status)
   defp run_status(_run), do: :unknown
 end

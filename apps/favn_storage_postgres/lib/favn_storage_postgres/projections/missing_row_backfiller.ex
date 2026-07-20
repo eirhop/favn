@@ -10,7 +10,13 @@ defmodule FavnStoragePostgres.Projections.MissingRowBackfiller do
   @spec backfill(atom(), String.t(), map() | nil, pos_integer()) ::
           %{count: non_neg_integer(), cursor: map() | nil}
   def backfill(projection, workspace_id, cursor, limit)
-      when projection in [:execution_groups, :backfills, :target_statuses, :freshness] do
+      when projection in [
+             :execution_groups,
+             :backfills,
+             :target_statuses,
+             :asset_attempts,
+             :freshness
+           ] do
     after_publication_id = cursor_value(cursor)
 
     events =
@@ -33,8 +39,9 @@ defmodule FavnStoragePostgres.Projections.MissingRowBackfiller do
     }
   end
 
-  defp event_scope(query, projection) when projection in [:execution_groups, :target_statuses],
-    do: where(query, [event], like(event.event_kind, "run.%"))
+  defp event_scope(query, projection)
+       when projection in [:execution_groups, :target_statuses, :asset_attempts],
+       do: where(query, [event], like(event.event_kind, "run.%"))
 
   defp event_scope(query, :backfills),
     do:

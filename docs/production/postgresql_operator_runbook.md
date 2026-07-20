@@ -222,6 +222,10 @@ mix favn.postgres.maintenance backfill-missing \
   --job-id projection-backfill-salmon-one-20260717 \
   --workspace salmon-one --projection freshness --limit 250
 
+mix favn.postgres.maintenance backfill-missing \
+  --job-id asset-attempt-backfill-salmon-one-20260720 \
+  --workspace salmon-one --projection asset-attempts --limit 250
+
 mix favn.postgres.maintenance reconcile \
   --job-id capacity-audit-20260717 --invariant capacity-counters \
   --workspace salmon-one --repair --limit 500
@@ -237,6 +241,9 @@ mix favn.postgres.maintenance purge \
 
 The command identity includes its full configuration. Reusing a job id with changed
 scope, cutoff, target, or limit is rejected.
+
+Run the `asset-attempts` backfill for each existing workspace after introducing or
+recreating that disposable projection so historical run detail is available.
 
 - completed idempotency records: purge after seven days;
 - expired/revoked sessions: retain for the approved audit window;

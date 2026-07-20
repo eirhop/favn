@@ -9,13 +9,20 @@ defmodule FavnView.Components.RunDetailPage.Stats do
     ~H"""
     <section data-testid="execution-group-header" class="space-y-3">
       <span class="sr-only" data-testid="execution-group-id">{@run.id}</span>
-      <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-6" data-testid="execution-group-stat-cards">
+      <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-7" data-testid="execution-group-stat-cards">
         <.stat_card
           icon="hero-table-cells"
-          label="Windows"
+          label="Requested windows"
           value={@run.completed_windows}
           suffix={"/ #{@run.total_windows}"}
-          detail="completed"
+          detail="anchors complete"
+          tone={:info}
+        />
+        <.stat_card
+          icon="hero-calendar-days"
+          label="Effective windows"
+          value={@run.effective_window_count}
+          detail="asset runtime windows"
           tone={:info}
         />
         <.stat_card

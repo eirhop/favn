@@ -20,6 +20,15 @@ defmodule FavnView.Components.RunDetailPage.Overview do
   def asset_window_matrix(assigns) do
     ~H"""
     <section class="min-w-0" data-testid="asset-window-matrix">
+      <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-medium">Effective asset windows</h2>
+          <p class="text-xs text-base-content/50">
+            Concrete runtime windows after each asset's lookback expansion.
+          </p>
+        </div>
+        <span class="badge badge-ghost">{@run.effective_window_count} windows</span>
+      </div>
       <div data-testid="run-asset-results" class="sr-only">
         <span :if={@run.attempts == []} data-testid="run-asset-results-empty">
           Run failed before asset results were persisted. Run accepted. Waiting for asset execution results...
@@ -151,6 +160,13 @@ defmodule FavnView.Components.RunDetailPage.Overview do
         <.icon name={status_icon(@cell.status_tone)} class="size-4" /> {@cell.status}
       </span>
       <span class="mt-1 block text-xs text-base-content/65">{@cell.duration}</span>
+      <span :if={Map.get(@cell, :other_attempt_count, 0) > 0} class="mt-1 block text-xs">
+        +{Map.get(@cell, :other_attempt_count)} earlier {if(
+          Map.get(@cell, :other_attempt_count) == 1,
+          do: "attempt",
+          else: "attempts"
+        )}
+      </span>
       <span class="sr-only">{@cell.window_label}</span>
     </button>
     """

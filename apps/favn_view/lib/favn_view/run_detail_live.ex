@@ -20,7 +20,7 @@ defmodule FavnView.RunDetailLive do
 
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
-    run = load_run(operator_context(socket), run_id)
+    run = load_run(operator_context(socket), run_id, nil, :overview)
 
     socket =
       assign(socket,
@@ -81,7 +81,8 @@ defmodule FavnView.RunDetailLive do
       load_run(
         operator_context(socket),
         socket.assigns.run_id,
-        socket.assigns.run[:back_asset_href]
+        socket.assigns.run[:back_asset_href],
+        socket.assigns.active_mode
       )
 
     socket
@@ -243,16 +244,30 @@ defmodule FavnView.RunDetailLive do
   @impl true
   def handle_params(params, _uri, socket) do
     active_mode = active_mode_from_params(params, socket.assigns.active_mode)
-    timeline_state = timeline_state_from_params(params, socket.assigns.run)
+
+    run =
+      if active_mode == socket.assigns.active_mode do
+        socket.assigns.run
+      else
+        load_run(
+          operator_context(socket),
+          socket.assigns.run_id,
+          socket.assigns.run[:back_asset_href],
+          active_mode
+        )
+      end
+
+    timeline_state = timeline_state_from_params(params, run)
 
     selected_child_run_id =
-      selected_child_run_id_from_params(params, socket.assigns.run, socket.assigns.run_id)
+      selected_child_run_id_from_params(params, run, socket.assigns.run_id)
 
     active_mode =
       if selected_child_run_id && active_mode == :overview, do: :windows, else: active_mode
 
     {:noreply,
      assign(socket,
+       run: run,
        active_mode: active_mode,
        timeline_state: timeline_state,
        selected_child_run_id: selected_child_run_id
@@ -268,17 +283,18 @@ defmodule FavnView.RunDetailLive do
     :ok
   end
 
-  defp load_run(operator_context, run_id, existing_back_asset_href \\ nil) do
-    case get_operator_run_detail(operator_context, run_id,
-           include: [:events],
-           event_limit: 200
-         ) do
+  defp load_run(operator_context, run_id, existing_back_asset_href, active_mode) do
+    opts = [view: active_mode, limit: 200]
+    opts = if active_mode == :events, do: Keyword.put(opts, :include, [:events]), else: opts
+
+    case get_operator_run_detail(operator_context, run_id, opts) do
       {:ok, detail} ->
         detail_from_execution_group(
           detail,
           operator_context,
           run_id,
-          existing_back_asset_href
+          existing_back_asset_href,
+          active_mode
         )
 
       {:error, reason} ->
@@ -295,15 +311,27 @@ defmodule FavnView.RunDetailLive do
          %{summary: summary, root_run: root_run} = detail,
          operator_context,
          run_id,
-         existing_back_asset_href
+         existing_back_asset_href,
+         active_mode
        ) do
     attempts = Enum.map(Map.get(detail, :asset_attempts, []), &attempt_from_public/1)
     legacy_asset_results = Enum.map(Map.get(detail, :steps, []), &legacy_step_from_public/1)
     windows = Enum.map(Map.get(detail, :windows, []), &window_from_public/1)
-    events = Map.get(detail, :events, [])
+
+    requested_windows =
+      Enum.map(Map.get(detail, :requested_windows, []), &window_from_public/1)
+
+    events = if active_mode == :events, do: Map.get(detail, :events, []), else: []
     child_runs = child_runs_from_public(Map.get(detail, :child_runs, []), attempts, windows)
     cancel_target = cancel_target(summary, root_run, child_runs, run_id)
-    timeline = Enum.map(Map.get(detail, :timeline, []), &timeline_from_public(&1, attempts))
+
+    timeline =
+      if active_mode == :timeline do
+        Enum.map(Map.get(detail, :timeline, []), &timeline_from_public(&1, attempts))
+      else
+        []
+      end
+
     matrix = matrix(attempts, windows)
     failures = Enum.filter(attempts, &(&1.status_tone == :error))
 
@@ -341,6 +369,13 @@ defmodule FavnView.RunDetailLive do
       total_windows: summary.total_windows,
       completed_windows: summary.completed_windows,
       failed_windows: summary.failed_windows,
+      requested_window_counts:
+        Map.get(summary, :requested_window_counts, %{
+          total: summary.total_windows,
+          completed: summary.completed_windows,
+          failed: summary.failed_windows
+        }),
+      effective_window_count: Map.get(summary, :effective_window_count, length(windows)),
       total_asset_attempts: summary.total_asset_attempts,
       completed_asset_attempts: summary.completed_asset_attempts,
       succeeded_asset_attempts:
@@ -349,17 +384,22 @@ defmodule FavnView.RunDetailLive do
       running_asset_attempts: summary.running_asset_attempts,
       queued_asset_attempts: summary.queued_asset_attempts,
       progress_label:
-        progress_label(summary.completed_asset_attempts, summary.total_asset_attempts),
+        get_in(summary, [:progress, :label]) ||
+          progress_label(summary.completed_asset_attempts, summary.total_asset_attempts),
       matrix: matrix,
       assets: matrix.assets,
       windows: matrix.windows,
+      requested_windows: requested_windows,
+      requested_windows_truncated?: Map.get(detail, :requested_windows_truncated?, false),
       attempts: attempts,
+      asset_attempts_truncated?: Map.get(detail, :asset_attempts_truncated?, false),
       legacy_asset_results: legacy_asset_results,
       legacy_asset_text: legacy_asset_text(legacy_asset_results),
       failures: failures,
       backfill_failures: backfill_failures,
       backfill_failure_count: Map.get(detail, :backfill_failure_count, length(backfill_failures)),
       child_runs: child_runs,
+      child_runs_truncated?: Map.get(detail, :child_run_details_truncated?, false),
       timeline: timeline,
       events: Enum.map(events, &event_from_public/1),
       latest_event_summary: latest_event_summary(detail, events),
@@ -370,8 +410,8 @@ defmodule FavnView.RunDetailLive do
       back_asset_href:
         existing_back_asset_href ||
           back_asset_href(operator_context, List.first(summary.target_assets)),
-      raw_run: inspect(detail, pretty: true, limit: 50, printable_limit: 2_000),
-      raw_events: inspect(events, pretty: true, limit: 50, printable_limit: 2_000),
+      raw_run: nil,
+      raw_events: nil,
       root_event_sequence: Map.get(detail, :root_event_sequence),
       run_event_sequences: run_event_sequences_from_public(root_run, child_runs, events, detail)
     }
@@ -638,6 +678,7 @@ defmodule FavnView.RunDetailLive do
   defp attempt_from_public(attempt) do
     %{
       id: attempt.id,
+      asset_step_id: Map.get(attempt, :asset_step_id, attempt.id),
       root_execution_group_id: attempt.root_execution_group_id,
       child_run_id: attempt.child_run_id,
       run_id: attempt.run_id,
@@ -663,7 +704,8 @@ defmodule FavnView.RunDetailLive do
       window: window_from_public(attempt.window),
       window_id: window_identity(attempt.window),
       window_label: window_label(attempt.window) || "No window",
-      logs_href: ~p"/runs/#{attempt.run_id}/assets/#{attempt.id}/logs"
+      logs_href:
+        ~p"/runs/#{attempt.run_id}/assets/#{Map.get(attempt, :asset_step_id, attempt.id)}/logs"
     }
   end
 
@@ -767,10 +809,14 @@ defmodule FavnView.RunDetailLive do
     }
   end
 
-  defp matrix(attempts, []),
-    do: matrix(attempts, [%{id: "none", label: "No window", range_label: nil}])
-
   defp matrix(attempts, windows) do
+    windows =
+      if windows == [] or Enum.any?(attempts, &is_nil(&1.window)) do
+        windows ++ [%{id: "none", label: "No window", range_label: nil}]
+      else
+        windows
+      end
+
     assets =
       attempts
       |> Enum.uniq_by(& &1.asset_key)
@@ -779,15 +825,14 @@ defmodule FavnView.RunDetailLive do
       end)
       |> Enum.sort_by(& &1.name)
 
-    attempts_by_window_id = Map.new(attempts, &{{&1.asset_key, &1.window_id || "none"}, &1})
-    attempts_by_child_run_id = Map.new(attempts, &{{&1.asset_key, &1.child_run_id}, &1})
+    attempts_by_window_id =
+      Enum.group_by(attempts, &{&1.asset_key, &1.window_id || "none"})
 
     rows =
       Enum.map(assets, fn asset ->
         cells =
           Enum.map(windows, fn window ->
-            Map.get(attempts_by_window_id, {asset.key, window.id}) ||
-              Map.get(attempts_by_child_run_id, {asset.key, Map.get(window, :child_run_id)}) ||
+            matrix_attempt_cell(Map.get(attempts_by_window_id, {asset.key, window.id}, [])) ||
               pending_cell(asset, window)
           end)
 
@@ -795,6 +840,18 @@ defmodule FavnView.RunDetailLive do
       end)
 
     %{assets: assets, windows: windows, rows: rows}
+  end
+
+  defp matrix_attempt_cell([]), do: nil
+
+  defp matrix_attempt_cell(attempts) do
+    latest =
+      Enum.max_by(attempts, fn attempt ->
+        {attempt.finished_at_raw || attempt.started_at_raw || ~U[1970-01-01 00:00:00Z],
+         attempt.attempt_number || 0, attempt.id}
+      end)
+
+    Map.put(latest, :other_attempt_count, length(attempts) - 1)
   end
 
   defp pending_cell(asset, window) do

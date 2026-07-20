@@ -102,6 +102,17 @@ defmodule FavnView.Components.RunDetailPage do
     <div class="mx-auto flex w-full max-w-[120rem] flex-col gap-3" data-testid="run-detail-page">
       <Stats.execution_group_stats run={@run} />
 
+      <div
+        :if={
+          @run.asset_attempts_truncated? or @run.requested_windows_truncated? or
+            @run.child_runs_truncated?
+        }
+        class="rounded-box border border-warning/30 bg-warning/10 p-3 text-sm text-warning-content"
+        data-testid="run-detail-truncated-warning"
+      >
+        Showing the first bounded detail slice. Header totals are exact; some detail rows are omitted.
+      </div>
+
       <GlassPanel.glass_panel
         class="p-0"
         data-testid={if(@active_mode == :overview, do: "run-overview-panel", else: "run-mode-panel")}
@@ -156,6 +167,10 @@ defmodule FavnView.Components.RunDetailPage do
     |> Map.put_new(:backfill_failures, [])
     |> Map.put_new(:backfill_failure_count, 0)
     |> Map.put_new(:retry_remaining?, false)
+    |> Map.put_new(:effective_window_count, length(Map.get(run, :windows, [])))
+    |> Map.put_new(:requested_windows_truncated?, false)
+    |> Map.put_new(:asset_attempts_truncated?, false)
+    |> Map.put_new(:child_runs_truncated?, false)
   end
 
   defp default_timeline_state(%{active?: true}) do
