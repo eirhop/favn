@@ -112,18 +112,21 @@ defmodule FavnOrchestrator.Operator.Catalogue do
 
   @type asset_timeline_window :: %{
           required(:id) => String.t(),
+          required(:source) => :refresh_timeline | :freshness_timeline | :data_coverage_timeline,
           required(:kind) => :hour | :day | :month | :year,
           required(:value) => String.t(),
+          required(:timezone) => String.t(),
           required(:label) => String.t(),
           required(:date) => Date.t(),
           required(:range) => String.t(),
-          required(:status) => :healthy | :running | :failed | :unknown,
+          required(:status) =>
+            :fresh | :covered | :running | :failed | :missing | :stale | :unknown,
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
           required(:latest_run_at) => DateTime.t() | nil,
           required(:run_enabled?) => boolean(),
           required(:run_disabled_reason) => atom() | nil,
-          required(:run_label) => String.t()
+          required(:run_label) => String.t() | nil
         }
 
   @type asset_detail :: %{
@@ -141,7 +144,9 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:latest_run_at) => DateTime.t() | nil,
           required(:window) => map() | nil,
           required(:refresh_timeline) => [asset_timeline_window()],
+          required(:freshness_timeline) => [asset_timeline_window()] | nil,
           required(:data_coverage_timeline) => [asset_timeline_window()] | nil,
+          required(:has_freshness_timeline?) => boolean(),
           required(:has_data_windows?) => boolean(),
           required(:can_run_asset?) => boolean(),
           required(:freshness) => asset_freshness_detail(),

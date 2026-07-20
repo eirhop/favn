@@ -42,6 +42,13 @@ defmodule Favn.Freshness.Key do
   @typedoc "Canonical encoded freshness key."
   @type t :: String.t()
 
+  @typedoc "Validated structural representation of a freshness key."
+  @type parsed ::
+          :latest
+          | {:window, Key.t()}
+          | {:calendar, kind(), String.t(), String.t()}
+          | {:window_refresh, Key.t(), kind(), String.t(), String.t()}
+
   @doc """
   Returns the key for latest/full-load freshness state.
   """
@@ -156,39 +163,67 @@ defmodule Favn.Freshness.Key do
   Returns the canonical encoded key string on success.
   """
   @spec decode(term()) :: {:ok, t()} | {:error, term()}
-  def decode("latest"), do: {:ok, latest()}
+  def decode(value) do
+    with {:ok, parsed} <- parse(value) do
+      {:ok, encode_parsed(parsed)}
+    end
+  end
 
-  def decode("window:" <> encoded_window_key) do
+  @doc """
+  Parses and validates a freshness key into its structural components.
+
+  Use this when callers need to distinguish exact data-window identity from a
+  calendar refresh period without matching encoded string prefixes.
+
+  ## Examples
+
+      iex> Favn.Freshness.Key.parse("calendar:day:Europe/Oslo:2026-05-09")
+      {:ok, {:calendar, :day, "Europe/Oslo", "2026-05-09"}}
+  """
+  @spec parse(term()) :: {:ok, parsed()} | {:error, term()}
+  def parse("latest"), do: {:ok, :latest}
+
+  def parse("window:" <> encoded_window_key) do
     case String.split(encoded_window_key, "|calendar:", parts: 2) do
       [encoded_window_key] ->
         with {:ok, window_key} <- Key.decode(encoded_window_key) do
-          window(window_key)
+          {:ok, {:window, window_key}}
         end
 
       [encoded_window_key, encoded_calendar_key] ->
         with {:ok, window_key} <- Key.decode(encoded_window_key),
-             {:ok, calendar_key} <- decode("calendar:" <> encoded_calendar_key) do
-          {:ok, "window:#{Key.encode(window_key)}|#{calendar_key}"}
+             {:ok, {:calendar, kind, timezone, value}} <-
+               parse("calendar:" <> encoded_calendar_key) do
+          {:ok, {:window_refresh, window_key, kind, timezone, value}}
         end
     end
   end
 
-  def decode("calendar:" <> encoded_calendar_key) do
+  def parse("calendar:" <> encoded_calendar_key) do
     case String.split(encoded_calendar_key, ":", parts: 3) do
-      [kind_raw, timezone, value] -> decode_calendar(kind_raw, timezone, value)
+      [kind_raw, timezone, value] -> parse_calendar(kind_raw, timezone, value)
       _other -> {:error, {:invalid_freshness_key, "calendar:" <> encoded_calendar_key}}
     end
   end
 
-  def decode(value), do: {:error, {:invalid_freshness_key, value}}
+  def parse(value), do: {:error, {:invalid_freshness_key, value}}
 
-  defp decode_calendar(kind_raw, timezone, value) do
+  defp parse_calendar(kind_raw, timezone, value) do
     with {:ok, kind} <- normalize_kind(kind_raw),
          :ok <- Validate.timezone(timezone),
          {:ok, value} <- format_period_start(kind, timezone, value) do
-      {:ok, "calendar:#{kind}:#{timezone}:#{value}"}
+      {:ok, {:calendar, kind, timezone, value}}
     end
   end
+
+  defp encode_parsed(:latest), do: latest()
+  defp encode_parsed({:window, window_key}), do: "window:#{Key.encode(window_key)}"
+
+  defp encode_parsed({:calendar, kind, timezone, value}),
+    do: "calendar:#{kind}:#{timezone}:#{value}"
+
+  defp encode_parsed({:window_refresh, window_key, kind, timezone, value}),
+    do: "window:#{Key.encode(window_key)}|calendar:#{kind}:#{timezone}:#{value}"
 
   defp normalize_kind("hour"), do: Policy.normalize_kind(:hour)
   defp normalize_kind("hourly"), do: Policy.normalize_kind(:hourly)

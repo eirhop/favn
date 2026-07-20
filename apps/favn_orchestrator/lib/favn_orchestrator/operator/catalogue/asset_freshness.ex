@@ -18,6 +18,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Freshness.Decider, as: FreshnessDecider
+  alias FavnOrchestrator.Operator.Catalogue.RunAnchorPolicy
   alias FavnOrchestrator.Operator.Catalogue.Targets
 
   @doc "Builds an operator freshness explanation for one manifest asset."
@@ -72,20 +73,25 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
 
   defp classify(asset, version, freshness_states, policy, now) do
     with {:ok, plan} <- freshness_plan(asset, version, now),
-         {:ok, target_node_key} <- target_node_key(plan, asset.ref) do
+         {:ok, target_node_keys} <- target_node_keys(plan, asset.ref) do
       states = state_lookup(freshness_states)
       assets_by_ref = Map.new(List.wrap(version.manifest.assets), &{&1.ref, &1})
 
-      decision =
-        FreshnessDecider.decide(plan, target_node_key,
+      decisions =
+        FreshnessDecider.decide_many(plan, target_node_keys,
           assets_by_ref: assets_by_ref,
           prior_states: states,
           current_states: states,
           now: now
         )
 
-      state = decision_state(states, asset.ref, decision)
-      detail_from_decision(asset, policy, state, decision)
+      decision_entries =
+        Enum.map(target_node_keys, fn node_key ->
+          decision = Map.fetch!(decisions, node_key)
+          {decision, decision_state(states, asset.ref, decision)}
+        end)
+
+      detail_from_decisions(asset, policy, decision_entries)
     else
       {:error, _reason} -> insufficient_state_detail(policy)
     end
@@ -169,7 +175,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
       opts = [dependencies: :all, planning_index: index.planning_index]
 
       opts =
-        case current_anchor_window(asset, now) do
+        case current_anchor_window(asset, version, now) do
           {:ok, anchor_window} -> Keyword.put(opts, :anchor_window, anchor_window)
           :error -> opts
         end
@@ -178,20 +184,56 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
     end
   end
 
-  defp current_anchor_window(%{window: %WindowSpec{} = spec}, now) do
+  defp current_anchor_window(asset, version, now) do
+    with {:ok, %RunAnchorPolicy{} = run_policy} <- RunAnchorPolicy.resolve(version, asset),
+         {:ok, %Anchor{} = anchor} <- RunAnchorPolicy.anchor(run_policy, now) do
+      {:ok, anchor}
+    else
+      _error -> asset_anchor_window(asset, now)
+    end
+  end
+
+  defp asset_anchor_window(%{window: %WindowSpec{} = spec}, now) do
     with {:ok, period} <- TimePeriod.current(spec.kind, now, spec.timezone) do
       {:ok, Anchor.new!(period.kind, period.start_at, period.end_at, timezone: period.timezone)}
     end
   end
 
-  defp current_anchor_window(_asset, _now), do: :error
+  defp asset_anchor_window(_asset, _now), do: :error
 
-  defp target_node_key(plan, asset_ref) do
-    case Enum.find(plan.target_node_keys, fn {ref, _window_key} -> ref == asset_ref end) do
-      nil -> {:error, :target_node_key_not_found}
-      node_key -> {:ok, node_key}
+  defp target_node_keys(plan, asset_ref) do
+    target_node_keys =
+      Enum.filter(plan.target_node_keys, fn {ref, _window_key} -> ref == asset_ref end)
+
+    case target_node_keys do
+      [] -> {:error, :target_node_key_not_found}
+      target_node_keys -> {:ok, target_node_keys}
     end
   end
+
+  defp detail_from_decisions(asset, policy, decision_entries) do
+    case Enum.find(decision_entries, fn {decision, _state} ->
+           decision.decision != :skipped_fresh
+         end) do
+      nil ->
+        {_decision, state} =
+          Enum.max_by(
+            decision_entries,
+            fn {_decision, state} -> state_timestamp(state) end,
+            &>=/2
+          )
+
+        detail_from_decision(asset, policy, state, %{decision: :skipped_fresh})
+
+      {decision, state} ->
+        detail_from_decision(asset, policy, state, decision)
+    end
+  end
+
+  defp state_timestamp(%AssetFreshnessState{updated_at: %DateTime{} = updated_at}),
+    do: DateTime.to_unix(updated_at, :microsecond)
+
+  defp state_timestamp(_state), do: 0
 
   defp state_lookup(freshness_states) do
     Enum.reduce(freshness_states, %{}, fn

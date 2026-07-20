@@ -40,7 +40,10 @@ freshness, and execution coordination.
 - `Identity` and `Auth` own accounts, memberships, sessions, service identities,
   policy enforcement, and audit intent.
 - `Operator.Catalogue`, `Operator.Lineage`, `Operator.Schedules`, `Logs`, and the
-  facade expose bounded read models to thin clients.
+  facade expose bounded read models to thin clients. Asset catalogue detail
+  decodes freshness keys structurally and projects run anchors, exact coverage,
+  and aggregated calendar freshness separately; only anchor and exact-window
+  projections carry submission intent.
 - `RuntimeInputPins` owns encrypted resolve/pin/replay behavior. Raw resolved
   credentials never enter generic run metadata. Pins are bound to the selected
   asset's exact execution-package hash and resolver.

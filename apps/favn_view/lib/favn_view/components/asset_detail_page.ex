@@ -16,16 +16,21 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :window_kind_label, :string, default: "Windows"
   attr :refresh_timeline_label, :string, default: "Refresh periods"
   attr :refresh_cadence_label, :string, default: "Refresh cadence"
+  attr :freshness_timeline_label, :string, default: "Freshness periods"
+  attr :freshness_cadence_label, :string, default: "Freshness cadence"
   attr :data_coverage_timeline_label, :string, default: "Data windows"
   attr :window_range, :string, required: true
   attr :refresh_window_range, :string, default: "No windows"
+  attr :freshness_window_range, :string, default: "No windows"
   attr :data_coverage_window_range, :string, default: "No windows"
   attr :active_timeline, :atom, default: :refresh
+  attr :has_freshness_timeline?, :boolean, default: false
   attr :has_data_windows?, :boolean, default: false
   attr :can_run_asset?, :boolean, default: true
   attr :nav_items, :list, required: true
   attr :timeline, :list, default: []
   attr :refresh_timeline, :list, default: nil
+  attr :freshness_timeline, :list, default: nil
   attr :data_coverage_timeline, :list, default: nil
   attr :active_mode, :atom, default: :timeline
   attr :freshness, :map, default: nil
@@ -54,14 +59,19 @@ defmodule FavnView.Components.AssetDetailPage do
         window_kind_label={@window_kind_label}
         refresh_timeline_label={@refresh_timeline_label}
         refresh_cadence_label={@refresh_cadence_label}
+        freshness_timeline_label={@freshness_timeline_label}
+        freshness_cadence_label={@freshness_cadence_label}
         data_coverage_timeline_label={@data_coverage_timeline_label}
         window_range={@window_range}
         refresh_window_range={@refresh_window_range}
+        freshness_window_range={@freshness_window_range}
         data_coverage_window_range={@data_coverage_window_range}
         active_timeline={@active_timeline}
+        has_freshness_timeline?={@has_freshness_timeline?}
         has_data_windows?={@has_data_windows?}
         can_run_asset?={@can_run_asset?}
         refresh_timeline={@refresh_timeline}
+        freshness_timeline={@freshness_timeline}
         data_coverage_timeline={@data_coverage_timeline}
         freshness={@freshness}
         assurance={@assurance}
@@ -86,14 +96,19 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :window_kind_label, :string, default: "Windows"
   attr :refresh_timeline_label, :string, default: "Refresh periods"
   attr :refresh_cadence_label, :string, default: "Refresh cadence"
+  attr :freshness_timeline_label, :string, default: "Freshness periods"
+  attr :freshness_cadence_label, :string, default: "Freshness cadence"
   attr :data_coverage_timeline_label, :string, default: "Data windows"
   attr :window_range, :string, required: true
   attr :refresh_window_range, :string, default: "No windows"
+  attr :freshness_window_range, :string, default: "No windows"
   attr :data_coverage_window_range, :string, default: "No windows"
   attr :active_timeline, :atom, default: :refresh
+  attr :has_freshness_timeline?, :boolean, default: false
   attr :has_data_windows?, :boolean, default: false
   attr :can_run_asset?, :boolean, default: true
   attr :refresh_timeline, :list, default: []
+  attr :freshness_timeline, :list, default: nil
   attr :data_coverage_timeline, :list, default: nil
   attr :freshness, :map, default: nil
   attr :assurance, :map, default: nil
@@ -113,14 +128,19 @@ defmodule FavnView.Components.AssetDetailPage do
       window_kind_label={@window_kind_label}
       refresh_timeline_label={@refresh_timeline_label}
       refresh_cadence_label={@refresh_cadence_label}
+      freshness_timeline_label={@freshness_timeline_label}
+      freshness_cadence_label={@freshness_cadence_label}
       data_coverage_timeline_label={@data_coverage_timeline_label}
       window_range={@window_range}
       refresh_window_range={@refresh_window_range}
+      freshness_window_range={@freshness_window_range}
       data_coverage_window_range={@data_coverage_window_range}
       active_timeline={@active_timeline}
+      has_freshness_timeline?={@has_freshness_timeline?}
       has_data_windows?={@has_data_windows?}
       can_run_asset?={@can_run_asset?}
       refresh_timeline={@refresh_timeline}
+      freshness_timeline={@freshness_timeline}
       data_coverage_timeline={@data_coverage_timeline}
       freshness={@freshness}
       selected_window={@selected_window}
@@ -148,13 +168,18 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :window_kind_label, :string, default: "Windows"
   attr :refresh_timeline_label, :string, default: "Refresh periods"
   attr :refresh_cadence_label, :string, default: "Refresh cadence"
+  attr :freshness_timeline_label, :string, default: "Freshness periods"
+  attr :freshness_cadence_label, :string, default: "Freshness cadence"
   attr :data_coverage_timeline_label, :string, default: "Data windows"
   attr :refresh_window_range, :string, default: "No windows"
+  attr :freshness_window_range, :string, default: "No windows"
   attr :data_coverage_window_range, :string, default: "No windows"
   attr :active_timeline, :atom, default: :refresh
+  attr :has_freshness_timeline?, :boolean, default: false
   attr :has_data_windows?, :boolean, default: false
   attr :can_run_asset?, :boolean, default: true
   attr :refresh_timeline, :list, default: []
+  attr :freshness_timeline, :list, default: nil
   attr :data_coverage_timeline, :list, default: nil
   attr :freshness, :map, default: nil
   attr :selected_window, :map, default: nil
@@ -187,7 +212,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
           <div class="join self-start text-sm text-base-content/70">
             <button
-              :if={@has_data_windows?}
+              :if={@has_data_windows? or @has_freshness_timeline?}
               type="button"
               class={[
                 "btn btn-sm join-item",
@@ -198,7 +223,21 @@ defmodule FavnView.Components.AssetDetailPage do
               phx-value-timeline="refresh"
               data-testid="refresh-timeline-toggle"
             >
-              Refresh
+              Run
+            </button>
+            <button
+              :if={@has_freshness_timeline?}
+              type="button"
+              class={[
+                "btn btn-sm join-item",
+                @active_timeline == :freshness && "btn-primary btn-soft",
+                @active_timeline != :freshness && "btn-ghost"
+              ]}
+              phx-click="set_timeline"
+              phx-value-timeline="freshness"
+              data-testid="freshness-timeline-toggle"
+            >
+              Freshness
             </button>
             <button
               :if={@has_data_windows?}
@@ -249,11 +288,13 @@ defmodule FavnView.Components.AssetDetailPage do
               :for={window <- @timeline}
               window={window}
               selected={selected_window?(@selected_window, window)}
+              selectable?={@active_timeline != :freshness}
             />
           </div>
         </div>
 
         <SelectedWindowActions.selected_window_actions
+          :if={@active_timeline != :freshness}
           selected_window={@selected_window}
           can_run_asset?={@can_run_asset?}
           has_data_windows?={@has_data_windows?}
@@ -583,14 +624,16 @@ defmodule FavnView.Components.AssetDetailPage do
 
   attr :window, :map, required: true
   attr :selected, :boolean, default: false
+  attr :selectable?, :boolean, default: true
 
   def timeline_window(assigns) do
     ~H"""
     <div class="flex flex-col items-center gap-4">
       <button
         type="button"
-        phx-click="select_window"
+        phx-click={@selectable? && "select_window"}
         phx-value-window-id={@window.id}
+        disabled={!@selectable?}
         data-testid={"timeline-window-#{@window.id}"}
         class={[
           "flex h-32 w-9 items-center justify-center rounded-box border backdrop-blur-sm transition hover:border-primary/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary",
@@ -938,6 +981,9 @@ defmodule FavnView.Components.AssetDetailPage do
   defp active_timeline(%{active_timeline: :data_coverage, data_coverage_timeline: timeline})
        when is_list(timeline), do: timeline
 
+  defp active_timeline(%{active_timeline: :freshness, freshness_timeline: timeline})
+       when is_list(timeline), do: timeline
+
   defp active_timeline(%{refresh_timeline: timeline}), do: timeline
 
   defp active_timeline_range(%{
@@ -946,14 +992,27 @@ defmodule FavnView.Components.AssetDetailPage do
        }),
        do: range
 
+  defp active_timeline_range(%{
+         active_timeline: :freshness,
+         freshness_window_range: range
+       }),
+       do: range
+
   defp active_timeline_range(%{refresh_window_range: range}), do: range
 
   defp active_timeline_label(%{active_timeline: :data_coverage}), do: "Data coverage timeline"
-  defp active_timeline_label(_assigns), do: "Refresh timeline"
+  defp active_timeline_label(%{active_timeline: :freshness}), do: "Freshness timeline"
+  defp active_timeline_label(_assigns), do: "Run anchor timeline"
 
   defp active_timeline_kind_label(%{
          active_timeline: :data_coverage,
          data_coverage_timeline_label: label
+       }),
+       do: label
+
+  defp active_timeline_kind_label(%{
+         active_timeline: :freshness,
+         freshness_cadence_label: label
        }),
        do: label
 
