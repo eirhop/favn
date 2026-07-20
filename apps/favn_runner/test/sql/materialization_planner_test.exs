@@ -69,7 +69,93 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
            }
   end
 
-  defp session(capability_opts \\ []) do
+  test "uses staged relation columns instead of probing a zero-row query" do
+    materialization =
+      canonical_materialization(
+        {:incremental, strategy: :delete_insert, window_column: :partition_day}
+      )
+
+    candidate = RelationRef.new!(name: "favn_check_candidate_123")
+
+    assert {:ok, %WritePlan{strategy: :delete_insert}} =
+             MaterializationPlanner.build(
+               session([transactions: :supported], tracker: self()),
+               definition(materialization, Spec.new!(:day)),
+               incremental_render(materialization),
+               {:relation, candidate}
+             )
+
+    assert_received {:columns, ^candidate}
+    refute_received :query
+  end
+
+  test "reports unavailable query metadata instead of a missing delete-scope column" do
+    materialization =
+      canonical_materialization(
+        {:incremental, strategy: :delete_insert, window_column: :partition_day}
+      )
+
+    assert {:error, error} =
+             MaterializationPlanner.build(
+               session([transactions: :supported], query_columns: []),
+               definition(materialization, Spec.new!(:day)),
+               incremental_render(materialization)
+             )
+
+    assert error.type == :materialization_planning_failed
+    assert error.message == "incremental source column metadata is unavailable"
+    assert error.details == %{source: :query, columns: []}
+  end
+
+  test "rejects a staged relation that genuinely lacks the delete-scope column" do
+    materialization =
+      canonical_materialization(
+        {:incremental, strategy: :delete_insert, window_column: :partition_day}
+      )
+
+    candidate = RelationRef.new!(name: "favn_check_candidate_456")
+
+    assert {:error, error} =
+             MaterializationPlanner.build(
+               session([transactions: :supported],
+                 columns_by_relation: %{
+                   candidate.name => [
+                     %Column{name: "id", position: 1, data_type: "INTEGER", nullable?: false}
+                   ]
+                 }
+               ),
+               definition(materialization, Spec.new!(:day)),
+               incremental_render(materialization),
+               {:relation, candidate}
+             )
+
+    assert error.type == :materialization_planning_failed
+    assert error.message == "incremental delete scope column is missing"
+
+    assert error.details == %{
+             window_column: "partition_day",
+             source: :relation,
+             columns: ["id"]
+           }
+  end
+
+  defp session(capability_opts \\ [], adapter_opts \\ []) do
+    default_columns = [
+      %Column{name: "id", position: 1, data_type: "INTEGER", nullable?: false},
+      %Column{name: "partition_day", position: 2, data_type: "DATE", nullable?: false}
+    ]
+
+    conn =
+      Map.merge(
+        %{
+          columns_by_relation: %{},
+          query_columns: ["id", "partition_day"],
+          relation_columns: default_columns,
+          tracker: nil
+        },
+        Map.new(adapter_opts)
+      )
+
     %Session{
       adapter: __MODULE__.Adapter,
       resolved: %Resolved{
@@ -78,9 +164,16 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
         module: __MODULE__,
         config: %{}
       },
-      conn: :conn,
+      conn: conn,
       capabilities: struct!(Capabilities, capability_opts)
     }
+  end
+
+  defp incremental_render(materialization) do
+    start_at = ~U[2026-07-14 00:00:00Z]
+    end_at = ~U[2026-07-15 00:00:00Z]
+    runtime = Runtime.new!(:day, start_at, end_at, Key.new!(:day, start_at, "Etc/UTC"))
+    %Render{render(materialization) | runtime: runtime}
   end
 
   defp definition(materialization, window_spec \\ nil) do
@@ -144,7 +237,7 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
   end
 
   defmodule Adapter do
-    def relation(:conn, ref, _opts) do
+    def relation(_conn, ref, _opts) do
       {:ok,
        %Relation{
          catalog: ref.catalog,
@@ -154,15 +247,17 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
        }}
     end
 
-    def query(:conn, _statement, _opts),
-      do: {:ok, %Result{kind: :query, command: "SELECT", columns: ["id", "partition_day"]}}
+    def query(conn, _statement, _opts) do
+      notify(conn, :query)
+      {:ok, %Result{kind: :query, command: "SELECT", columns: conn.query_columns}}
+    end
 
-    def columns(:conn, _ref, _opts),
-      do:
-        {:ok,
-         [
-           %Column{name: "id", position: 1, data_type: "INTEGER", nullable?: false},
-           %Column{name: "partition_day", position: 2, data_type: "DATE", nullable?: false}
-         ]}
+    def columns(conn, ref, _opts) do
+      notify(conn, {:columns, ref})
+      {:ok, Map.get(conn.columns_by_relation, ref.name, conn.relation_columns)}
+    end
+
+    defp notify(%{tracker: tracker}, message) when is_pid(tracker), do: send(tracker, message)
+    defp notify(_conn, _message), do: :ok
   end
 end
