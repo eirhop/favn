@@ -10,7 +10,9 @@ defmodule FavnView.Components.RunDetailPage.WindowRuns do
     ~H"""
     <section data-testid="window-runs-view">
       <h2 class="text-lg font-medium">Window runs</h2>
-      <p class="text-sm text-base-content/55">Window runs created for this backfill.</p>
+      <p class="text-sm text-base-content/55">
+        Child runs created for requested backfill anchors. Effective asset windows are shown on Overview.
+      </p>
 
       <div class="mt-4 space-y-2">
         <div

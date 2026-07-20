@@ -10,7 +10,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.FreshnessIdentity
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
-  alias FavnOrchestrator.Persistence.Queries.GetAssetDetailState
+  alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
+  alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
   alias FavnOrchestrator.Persistence.Queries.GetFreshnessMany
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
@@ -19,21 +20,23 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Queries.PageManifests
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: BackfillWindowResult
-  alias FavnOrchestrator.Persistence.Results.AssetDetailState, as: AssetDetailStateResult
   alias FavnOrchestrator.Persistence.Results.AssetWindowState, as: AssetWindowResult
+  alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview, as: AssetAttemptResult
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.ExecutionGroup
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview, as: GroupOverviewResult
   alias FavnOrchestrator.Persistence.Results.FreshnessState, as: FreshnessResult
   alias FavnOrchestrator.Persistence.Results.ManifestSummary
+  alias FavnOrchestrator.Persistence.Results.OperatorRunOverview, as: OperatorRunOverviewResult
   alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: TargetStatusResult
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.Backfill
+  alias FavnStoragePostgres.Schemas.BackfillOverview
   alias FavnStoragePostgres.Schemas.BackfillWindow
-  alias FavnStoragePostgres.Schemas.AssetFreshnessState
+  alias FavnStoragePostgres.Schemas.AssetAttemptOverview
   alias FavnStoragePostgres.Schemas.AssetWindowState
   alias FavnStoragePostgres.Schemas.ExecutionGroupOverview
   alias FavnStoragePostgres.Schemas.ManifestVersion
@@ -137,6 +140,65 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
          runs: runs,
          windows: windows,
          failures: failures
+       }}
+    else
+      nil -> {:error, Error.new(:not_found, "execution group not found")}
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_operator_run_overview(%GetOperatorRunOverview{} = query) do
+    with :ok <- validate_operator_run_overview(query),
+         %Run{} = selected <-
+           Repo.get_by(Run,
+             workspace_id: query.workspace_context.workspace_id,
+             run_id: query.run_id
+           ),
+         root_run_id <- selected.root_execution_group_id,
+         %ExecutionGroupOverview{} = overview <-
+           Repo.get_by(ExecutionGroupOverview,
+             workspace_id: query.workspace_context.workspace_id,
+             root_run_id: root_run_id
+           ),
+         %Run{} = root <-
+           Repo.get_by(Run,
+             workspace_id: query.workspace_context.workspace_id,
+             run_id: root_run_id
+           ),
+         {:ok, runs} <-
+           page_group_runs(%PageGroupRuns{
+             workspace_context: query.workspace_context,
+             root_run_id: root_run_id,
+             limit: query.limit
+           }),
+         {:ok, requested_windows} <-
+           page_group_windows(%PageGroupWindows{
+             workspace_context: query.workspace_context,
+             root_run_id: root_run_id,
+             limit: query.limit
+           }) do
+      {attempts, attempts_truncated?} =
+        compact_attempts(query.workspace_context.workspace_id, root_run_id, query.limit)
+
+      {:ok,
+       %OperatorRunOverviewResult{
+         overview: group_result(overview),
+         root_run: root |> Map.take(@run_summary_fields) |> run_result(),
+         runs: runs.items,
+         requested_windows: requested_windows.items,
+         requested_windows_truncated?: requested_windows.has_more?,
+         requested_window_counts:
+           requested_window_counts(query.workspace_context.workspace_id, root_run_id),
+         attempts: attempts,
+         attempt_counts:
+           compact_attempt_counts(query.workspace_context.workspace_id, root_run_id),
+         attempts_truncated?: attempts_truncated?,
+         runs_truncated?: runs.has_more?,
+         target_refs: target_refs(query.workspace_context.workspace_id, root_run_id)
        }}
     else
       nil -> {:error, Error.new(:not_found, "execution group not found")}
@@ -299,21 +361,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   @impl true
-  def get_asset_detail_state(%GetAssetDetailState{} = query) do
+  def get_asset_window_states(%GetAssetWindowStates{} = query) do
     with :ok <- validate_asset_detail_state(query) do
       workspace_id = query.workspace_context.workspace_id
-
-      freshness_states =
-        from(state in AssetFreshnessState,
-          where:
-            state.workspace_id == ^workspace_id and
-              state.deployment_id == ^query.deployment_id and
-              state.target_id == ^query.target_id,
-          order_by: [desc: state.updated_at, desc: state.freshness_key],
-          limit: ^query.limit
-        )
-        |> Repo.all()
-        |> Enum.map(&freshness_result/1)
 
       window_states =
         from(state in AssetWindowState,
@@ -327,11 +377,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         |> Repo.all()
         |> Enum.map(&asset_window_result/1)
 
-      {:ok,
-       %AssetDetailStateResult{
-         freshness_states: freshness_states,
-         window_states: window_states
-       }}
+      {:ok, window_states}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -460,6 +506,152 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
+  defp compact_attempts(workspace_id, root_run_id, limit) do
+    rows =
+      from(attempt in AssetAttemptOverview,
+        where: attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id,
+        order_by: [asc: attempt.window_identity, asc: attempt.asset_ref, asc: attempt.run_id],
+        limit: ^(limit + 1)
+      )
+      |> Repo.all()
+
+    {rows |> Enum.take(limit) |> Enum.map(&attempt_result/1), length(rows) > limit}
+  end
+
+  defp compact_attempt_counts(workspace_id, root_run_id) do
+    from(attempt in AssetAttemptOverview,
+      where: attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id,
+      select: %{
+        total: count(attempt.asset_step_id),
+        completed:
+          fragment(
+            "count(*) FILTER (WHERE ? IN ('ok', 'error', 'timed_out', 'cancelled', 'skipped_fresh', 'blocked'))",
+            attempt.status
+          ),
+        failed:
+          fragment(
+            "count(*) FILTER (WHERE ? IN ('error', 'timed_out', 'cancelled', 'blocked'))",
+            attempt.status
+          ),
+        running: fragment("count(*) FILTER (WHERE ? IN ('running', 'retrying'))", attempt.status),
+        queued: fragment("count(*) FILTER (WHERE ? = 'queued')", attempt.status),
+        effective_windows:
+          fragment(
+            "count(DISTINCT ?) FILTER (WHERE ? <> 'none')",
+            attempt.window_identity,
+            attempt.window_identity
+          )
+      }
+    )
+    |> Repo.one!()
+  end
+
+  defp requested_window_counts(workspace_id, root_run_id) do
+    row =
+      from(backfill in Backfill,
+        left_join: overview in BackfillOverview,
+        on:
+          overview.workspace_id == backfill.workspace_id and
+            overview.backfill_id == backfill.backfill_id,
+        where: backfill.workspace_id == ^workspace_id and backfill.root_run_id == ^root_run_id,
+        select: {
+          backfill.expected_window_count,
+          overview.succeeded_count,
+          overview.failed_count,
+          overview.cancelled_count
+        },
+        limit: 1
+      )
+      |> Repo.one()
+
+    case row do
+      {total, succeeded, failed, cancelled} ->
+        %{
+          total: total || 0,
+          completed: (succeeded || 0) + (failed || 0) + (cancelled || 0),
+          failed: failed || 0
+        }
+
+      nil ->
+        %{total: 0, completed: 0, failed: 0}
+    end
+  end
+
+  defp target_refs(workspace_id, root_run_id) do
+    from(target in RunTarget,
+      join: run in Run,
+      on: run.workspace_id == target.workspace_id and run.run_id == target.run_id,
+      where:
+        run.workspace_id == ^workspace_id and run.root_execution_group_id == ^root_run_id and
+          target.target_kind == "asset",
+      select: {target.target_module, target.target_name},
+      distinct: true
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn
+      {module, name} when is_binary(module) and is_binary(name) -> [module <> ":" <> name]
+      _incomplete_identity -> []
+    end)
+    |> Enum.sort()
+  end
+
+  defp attempt_result(attempt) do
+    %AssetAttemptResult{
+      workspace_id: attempt.workspace_id,
+      root_run_id: attempt.root_run_id,
+      run_id: attempt.run_id,
+      asset_step_id: attempt.asset_step_id,
+      asset_ref: attempt.asset_ref,
+      window_identity: attempt.window_identity,
+      window: restore_window(attempt.window),
+      status: String.to_existing_atom(attempt.status),
+      stage: attempt.stage,
+      attempt_number: attempt.attempt_number,
+      execution_pool: attempt.execution_pool,
+      queue_reason: attempt.queue_reason,
+      started_at: attempt.started_at,
+      finished_at: attempt.finished_at,
+      duration_ms: attempt.duration_ms,
+      error: attempt.error,
+      output_metadata: attempt.output_metadata,
+      source_publication_id: attempt.source_publication_id,
+      updated_at: attempt.updated_at
+    }
+  end
+
+  defp restore_window(nil), do: nil
+
+  defp restore_window(window) when is_map(window) do
+    %{
+      key: map_field(window, "key"),
+      label: map_field(window, "label"),
+      kind: known_window_kind(map_field(window, "kind")),
+      start_at: parsed_datetime(map_field(window, "start_at")),
+      end_at: parsed_datetime(map_field(window, "end_at")),
+      timezone: map_field(window, "timezone")
+    }
+  end
+
+  defp known_window_kind("hour"), do: :hour
+  defp known_window_kind("day"), do: :day
+  defp known_window_kind("month"), do: :month
+  defp known_window_kind("year"), do: :year
+  defp known_window_kind(value) when value in [:hour, :day, :month, :year], do: value
+  defp known_window_kind(_value), do: nil
+
+  defp parsed_datetime(%DateTime{} = value), do: value
+
+  defp parsed_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, parsed, _offset} -> parsed
+      _error -> nil
+    end
+  end
+
+  defp parsed_datetime(_value), do: nil
+
+  defp map_field(map, key), do: Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
+
   defp freshness_result([
          workspace_id,
          deployment_id,
@@ -483,21 +675,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       payload: payload,
       source_publication_id: publication_id,
       updated_at: updated_at
-    }
-  end
-
-  defp freshness_result(state) do
-    %FreshnessResult{
-      workspace_id: state.workspace_id,
-      deployment_id: state.deployment_id,
-      target_id: state.target_id,
-      freshness_key: state.freshness_key,
-      latest_attempt_materialization_id: state.latest_attempt_materialization_id,
-      latest_success_materialization_id: state.latest_success_materialization_id,
-      status: String.to_existing_atom(state.status),
-      payload: state.payload,
-      source_publication_id: state.source_publication_id,
-      updated_at: state.updated_at
     }
   end
 
@@ -654,6 +831,13 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp validate_get_group(query) do
     if workspace_context?(query.workspace_context) and valid_id?(query.root_run_id) and
          valid_bound?(query.detail_limit, 1, 200),
+       do: :ok,
+       else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp validate_operator_run_overview(query) do
+    if workspace_context?(query.workspace_context) and valid_id?(query.run_id) and
+         valid_bound?(query.limit, 1, 500),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
   end

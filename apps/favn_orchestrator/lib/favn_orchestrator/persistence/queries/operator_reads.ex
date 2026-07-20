@@ -48,6 +48,22 @@ defmodule FavnOrchestrator.Persistence.Queries.GetExecutionGroup do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview do
+  @moduledoc """
+  Fetches a compact run overview without snapshots, plans, or event payloads.
+  """
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  @enforce_keys [:workspace_context, :run_id]
+  defstruct [:workspace_context, :run_id, limit: 200]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          run_id: String.t(),
+          limit: 1..500
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Queries.PageGroupRuns do
   @moduledoc "Keyset-pages canonical run summaries in one execution group."
 
@@ -144,8 +160,8 @@ defmodule FavnOrchestrator.Persistence.Queries.GetFreshnessMany do
         }
 end
 
-defmodule FavnOrchestrator.Persistence.Queries.GetAssetDetailState do
-  @moduledoc "Fetches bounded freshness and window projections for one deployed asset."
+defmodule FavnOrchestrator.Persistence.Queries.GetAssetWindowStates do
+  @moduledoc "Fetches bounded window projections for one deployed asset."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
   @enforce_keys [:workspace_context, :deployment_id, :manifest_version_id, :target_id]
@@ -271,6 +287,124 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroup do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Results.AssetAttemptOverview do
+  @moduledoc "Compact projected asset attempt with one concrete runtime window identity."
+
+  @enforce_keys [
+    :workspace_id,
+    :root_run_id,
+    :run_id,
+    :asset_step_id,
+    :asset_ref,
+    :window_identity,
+    :status
+  ]
+  defstruct [
+    :workspace_id,
+    :root_run_id,
+    :run_id,
+    :asset_step_id,
+    :asset_ref,
+    :window_identity,
+    :window,
+    :status,
+    :stage,
+    :attempt_number,
+    :execution_pool,
+    :queue_reason,
+    :started_at,
+    :finished_at,
+    :duration_ms,
+    :error,
+    :output_metadata,
+    :source_publication_id,
+    :updated_at
+  ]
+
+  @type t :: %__MODULE__{
+          workspace_id: String.t(),
+          root_run_id: String.t(),
+          run_id: String.t(),
+          asset_step_id: String.t(),
+          asset_ref: String.t(),
+          window_identity: String.t(),
+          window: map() | nil,
+          status: atom(),
+          stage: non_neg_integer() | nil,
+          attempt_number: pos_integer() | nil,
+          execution_pool: String.t() | nil,
+          queue_reason: String.t() | nil,
+          started_at: DateTime.t() | nil,
+          finished_at: DateTime.t() | nil,
+          duration_ms: non_neg_integer() | nil,
+          error: term(),
+          output_metadata: map() | nil,
+          source_publication_id: pos_integer(),
+          updated_at: DateTime.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverview do
+  @moduledoc "Bounded compact slices required by the run Overview view."
+
+  alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview
+  alias FavnOrchestrator.Persistence.Results.BackfillWindow
+  alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
+  alias FavnOrchestrator.Persistence.Results.RunSummary
+
+  @enforce_keys [
+    :overview,
+    :root_run,
+    :runs,
+    :requested_windows,
+    :requested_windows_truncated?,
+    :requested_window_counts,
+    :attempts,
+    :attempt_counts,
+    :attempts_truncated?,
+    :runs_truncated?,
+    :target_refs
+  ]
+  defstruct [
+    :overview,
+    :root_run,
+    :runs,
+    :requested_windows,
+    :requested_windows_truncated?,
+    :requested_window_counts,
+    :attempts,
+    :attempt_counts,
+    :attempts_truncated?,
+    :runs_truncated?,
+    :target_refs
+  ]
+
+  @type t :: %__MODULE__{
+          overview: ExecutionGroupOverview.t(),
+          root_run: RunSummary.t(),
+          runs: [RunSummary.t()],
+          requested_windows: [BackfillWindow.t()],
+          requested_windows_truncated?: boolean(),
+          requested_window_counts: %{
+            required(:total) => non_neg_integer(),
+            required(:completed) => non_neg_integer(),
+            required(:failed) => non_neg_integer()
+          },
+          attempts: [AssetAttemptOverview.t()],
+          attempt_counts: %{
+            required(:total) => non_neg_integer(),
+            required(:completed) => non_neg_integer(),
+            required(:failed) => non_neg_integer(),
+            required(:running) => non_neg_integer(),
+            required(:queued) => non_neg_integer(),
+            required(:effective_windows) => non_neg_integer()
+          },
+          attempts_truncated?: boolean(),
+          runs_truncated?: boolean(),
+          target_refs: [String.t()]
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Results.TargetStatus do
   @moduledoc "Current projected target status guarded by publication order."
   @enforce_keys [:workspace_id, :deployment_id, :target_kind, :target_id, :status]
@@ -360,16 +494,5 @@ defmodule FavnOrchestrator.Persistence.Results.AssetWindowState do
           payload: map(),
           source_publication_id: pos_integer(),
           updated_at: DateTime.t()
-        }
-end
-
-defmodule FavnOrchestrator.Persistence.Results.AssetDetailState do
-  @moduledoc "Bounded persisted state needed to render one asset detail."
-  @enforce_keys [:freshness_states, :window_states]
-  defstruct [:freshness_states, :window_states]
-
-  @type t :: %__MODULE__{
-          freshness_states: [FavnOrchestrator.Persistence.Results.FreshnessState.t()],
-          window_states: [FavnOrchestrator.Persistence.Results.AssetWindowState.t()]
         }
 end

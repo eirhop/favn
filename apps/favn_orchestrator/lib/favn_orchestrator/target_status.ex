@@ -163,11 +163,14 @@ defmodule FavnOrchestrator.TargetStatus do
 
   @doc false
   @spec status_from_run(atom() | nil) :: status()
-  def status_from_run(status) when status in [:pending, :running], do: :running
-  def status_from_run(:ok), do: :healthy
+  def status_from_run(status) when status in [:pending, :queued, :running, :retrying],
+    do: :running
 
-  def status_from_run(status) when status in [:partial, :error, :cancelled, :timed_out],
-    do: :failed
+  def status_from_run(status) when status in [:ok, :skipped, :skipped_fresh], do: :healthy
+
+  def status_from_run(status)
+      when status in [:partial, :error, :blocked, :cancelled, :timed_out],
+      do: :failed
 
   def status_from_run(_status), do: :unknown
 

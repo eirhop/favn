@@ -10,6 +10,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Favn.Manifest.Graph
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
+  alias Favn.Freshness.Policy
   alias Favn.SQL.Template
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInput.Resolution
@@ -60,6 +61,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.RenewExecutionLease
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
+  alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
   alias FavnOrchestrator.Persistence.Queries.GetActor
   alias FavnOrchestrator.Persistence.Queries.GetSession
@@ -97,6 +99,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Identity
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.Operator.Catalogue
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunReadModel
@@ -2300,7 +2303,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       deployment_id: fixture.deployment_id,
       target_kind: :asset,
       target_id: fixture.target_id,
-      partition_key: "2026-07-17",
+      partition_key: Favn.Freshness.Key.latest(),
       run_id: run.id,
       owner_id: "worker-a",
       lease_duration_ms: 30_000,
@@ -2334,7 +2337,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, renewed} = MaterializationStore.renew(renewal)
     assert {:ok, ^renewed} = MaterializationStore.renew(renewal)
 
-    node_key_fingerprint = String.duplicate("ab", 32)
+    node_key_fingerprint =
+      FavnOrchestrator.AssetStepIdentity.node_fingerprint({{MyApp.Asset, :asset}, nil})
 
     finish = %FinishMaterialization{
       workspace_context: fixture.workspace_context,
@@ -2348,6 +2352,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       payload: %{
         "row_count" => 42,
         "output_ref" => "warehouse/table",
+        "run_id" => run.id,
+        "freshness_version" => "#{run.id}:#{node_key_fingerprint}",
         "node_key_fingerprint" => node_key_fingerprint
       },
       occurred_at: DateTime.utc_now()
@@ -2386,6 +2392,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              )
 
     assert persisted_node_key_hash == Base.decode16!(node_key_fingerprint, case: :mixed)
+
+    assert {:ok, detail} =
+             Catalogue.active_asset_detail(fixture.workspace_context, fixture.target_id,
+               now: DateTime.utc_now()
+             )
+
+    assert %{state: :fresh} = detail.freshness
+    assert detail.freshness.latest_success.run_id == run.id
   end
 
   test "redacts, deduplicates, pages, and purges bounded log batches", fixture do
@@ -3029,13 +3043,42 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                  sequence: 3,
                  event_type: :step_started,
                  status: :running,
-                 data: %{asset_step_id: "step:" <> run.id},
+                 data: %{
+                   asset_step_id: "step:" <> run.id,
+                   asset_ref: {MyApp.Asset, :asset},
+                   attempt: 1,
+                   window: %{
+                     key: "requested:2026-07-20",
+                     kind: :day,
+                     start_at: ~U[2026-07-13 00:00:00Z],
+                     end_at: ~U[2026-07-21 00:00:00Z],
+                     timezone: "Etc/UTC"
+                   }
+                 },
                  occurred_at: DateTime.utc_now()
                }
              })
 
     assert {:ok, [_publication]} = Sequencer.sequence_batch()
     assert drain_projector("node-a") >= 1
+
+    assert {:ok, compact} =
+             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert [attempt] = compact.attempts
+    assert attempt.asset_step_id == "step:" <> run.id
+    assert attempt.window.start_at == ~U[2026-07-13 00:00:00Z]
+    assert String.starts_with?(attempt.window_identity, "runtime:")
+    assert compact.attempt_counts.total == 1
+    assert compact.attempt_counts.running == 1
+    assert compact.attempt_counts.effective_windows == 1
+    refute compact.attempts_truncated?
+    refute compact.runs_truncated?
+    refute compact.requested_windows_truncated?
 
     %{rows: [[^status_publication_id]]} =
       SQL.query!(
@@ -3048,6 +3091,50 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         """,
         [fixture.workspace_id, fixture.deployment_id, fixture.target_id]
       )
+
+    completed = RunState.transition(progressed, status: :ok)
+
+    assert {:ok, _committed} =
+             RunStore.commit_transition(%CommitRunTransition{
+               workspace_context: fixture.workspace_context,
+               command_id: "project-step-finished:" <> run.id,
+               expected_sequence: 3,
+               run: completed,
+               event: %{
+                 run_id: run.id,
+                 sequence: 4,
+                 event_type: :step_finished,
+                 status: :ok,
+                 data: %{
+                   asset_step_id: "step:" <> run.id,
+                   asset_ref: {MyApp.Asset, :asset},
+                   attempt: 1,
+                   window: %{
+                     key: "requested:2026-07-20",
+                     kind: :day,
+                     start_at: ~U[2026-07-13 00:00:00Z],
+                     end_at: ~U[2026-07-21 00:00:00Z],
+                     timezone: "Etc/UTC"
+                   }
+                 },
+                 occurred_at: DateTime.utc_now()
+               }
+             })
+
+    assert {:ok, [_publication]} = Sequencer.sequence_batch()
+    assert drain_projector("node-a") >= 1
+
+    assert {:ok, completed_compact} =
+             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert [%{status: :ok}] = completed_compact.attempts
+    assert completed_compact.attempt_counts.total == 1
+    assert completed_compact.attempt_counts.completed == 1
+    assert completed_compact.attempt_counts.running == 0
 
     assert {:ok, target_runs} =
              OperatorReadStore.page_target_runs(%PageTargetRuns{
@@ -3592,6 +3679,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           module: MyApp.Asset,
           name: :asset,
           type: :sql,
+          freshness: Policy.from_value!(max_age: {:days, 1}),
           execution_package_hash: package.content_hash
         },
         %Favn.Manifest.Asset{

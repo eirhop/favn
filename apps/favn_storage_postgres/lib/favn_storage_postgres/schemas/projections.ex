@@ -100,3 +100,32 @@ defmodule FavnStoragePostgres.Schemas.AssetFreshnessState do
     field(:updated_at, :utc_datetime_usec)
   end
 end
+
+defmodule FavnStoragePostgres.Schemas.AssetAttemptOverview do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "asset_attempt_overviews" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:root_run_id, :string, primary_key: true)
+    field(:run_id, :string, primary_key: true)
+    field(:asset_step_id, :string, primary_key: true)
+    field(:asset_ref, :string)
+    field(:window_identity, :string)
+    field(:window, :map)
+    field(:status, :string)
+    field(:stage, :integer)
+    field(:attempt_number, :integer)
+    field(:execution_pool, :string)
+    field(:queue_reason, :string)
+    field(:started_at, :utc_datetime_usec)
+    field(:finished_at, :utc_datetime_usec)
+    field(:duration_ms, :integer)
+    field(:error, :map)
+    field(:output_metadata, :map)
+    field(:source_publication_id, :integer)
+    field(:updated_at, :utc_datetime_usec)
+  end
+end

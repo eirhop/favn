@@ -10,6 +10,9 @@ defmodule FavnStoragePostgres.Projections.Projector do
 
   alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.RunReadModel.AssetAttemptProjection
+  alias FavnOrchestrator.Storage.JsonSafe
+  alias FavnOrchestrator.Storage.RunEventCodec
   alias Favn.TimePeriod
   alias Favn.Timezone
   alias Favn.Window.Key, as: WindowKey
@@ -179,6 +182,9 @@ defmodule FavnStoragePostgres.Projections.Projector do
   def rebuild_event!(:target_statuses, %OutboxEvent{event_kind: "run." <> _} = event),
     do: event |> run_projection_context!() |> project_target_statuses!(event)
 
+  def rebuild_event!(:asset_attempts, %OutboxEvent{event_kind: "run." <> _} = event),
+    do: event |> run_projection_context!() |> project_asset_attempt!(event)
+
   def rebuild_event!(:backfills, %OutboxEvent{event_kind: "backfill.plan.activated"} = event),
     do: project_backfill_activation!(event)
 
@@ -207,7 +213,95 @@ defmodule FavnStoragePostgres.Projections.Projector do
   defp project_run!(event, context) do
     project_execution_group!(context, event)
     project_target_statuses!(context, event)
+    project_asset_attempt!(context, event)
   end
+
+  defp project_asset_attempt!({run, run_event, _previous_status, _new_status}, event) do
+    with {:ok, decoded} <- RunEventCodec.decode(Jason.encode!(run_event.event)),
+         {:ok, attempt} <- AssetAttemptProjection.from_event(decoded) do
+      SQL.query!(
+        Repo,
+        """
+        INSERT INTO favn_control.asset_attempt_overviews
+          (workspace_id, root_run_id, run_id, asset_step_id, asset_ref,
+           window_identity, "window", status, stage, attempt_number, execution_pool,
+           queue_reason, started_at, finished_at, duration_ms, error,
+           output_metadata, source_publication_id, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12,
+                $13, $14, $15, $16::jsonb, $17::jsonb, $18, $19)
+        ON CONFLICT (workspace_id, root_run_id, run_id, asset_step_id) DO UPDATE
+        SET asset_ref = EXCLUDED.asset_ref,
+            window_identity = CASE
+              WHEN EXCLUDED."window" IS NULL THEN asset_attempt_overviews.window_identity
+              ELSE EXCLUDED.window_identity
+            END,
+            "window" = COALESCE(EXCLUDED."window", asset_attempt_overviews."window"),
+            status = EXCLUDED.status,
+            stage = COALESCE(EXCLUDED.stage, asset_attempt_overviews.stage),
+            attempt_number = COALESCE(EXCLUDED.attempt_number,
+                                      asset_attempt_overviews.attempt_number),
+            execution_pool = COALESCE(EXCLUDED.execution_pool,
+                                      asset_attempt_overviews.execution_pool),
+            queue_reason = COALESCE(EXCLUDED.queue_reason,
+                                    asset_attempt_overviews.queue_reason),
+            started_at = CASE
+              WHEN EXCLUDED.status = 'running' THEN EXCLUDED.started_at
+              WHEN EXCLUDED.status IN ('queued', 'retrying') THEN NULL
+              ELSE COALESCE(EXCLUDED.started_at, asset_attempt_overviews.started_at)
+            END,
+            finished_at = CASE
+              WHEN EXCLUDED.status IN ('queued', 'running', 'retrying') THEN NULL
+              ELSE COALESCE(EXCLUDED.finished_at, asset_attempt_overviews.finished_at)
+            END,
+            duration_ms = CASE
+              WHEN EXCLUDED.status IN ('queued', 'running', 'retrying') THEN NULL
+              ELSE COALESCE(EXCLUDED.duration_ms, asset_attempt_overviews.duration_ms)
+            END,
+            error = CASE
+              WHEN EXCLUDED.status IN ('queued', 'running', 'retrying') THEN NULL
+              ELSE COALESCE(EXCLUDED.error, asset_attempt_overviews.error)
+            END,
+            output_metadata = CASE
+              WHEN EXCLUDED.status IN ('queued', 'running', 'retrying') THEN NULL
+              ELSE COALESCE(EXCLUDED.output_metadata,
+                            asset_attempt_overviews.output_metadata)
+            END,
+            source_publication_id = EXCLUDED.source_publication_id,
+            updated_at = EXCLUDED.updated_at
+        WHERE asset_attempt_overviews.source_publication_id < EXCLUDED.source_publication_id
+        """,
+        [
+          event.workspace_id,
+          run.root_execution_group_id,
+          run.run_id,
+          attempt.asset_step_id,
+          attempt.asset_ref,
+          attempt.window_identity,
+          json(attempt.window),
+          Atom.to_string(attempt.status),
+          attempt.stage,
+          attempt.attempt_number,
+          attempt.execution_pool,
+          attempt.queue_reason,
+          attempt.started_at,
+          attempt.finished_at,
+          attempt.duration_ms,
+          json(attempt.error),
+          json(attempt.output_metadata),
+          event.publication_id,
+          run_event.occurred_at
+        ]
+      )
+    else
+      :ignore -> :ok
+      {:error, reason} -> raise "asset attempt projection failed: #{inspect(reason)}"
+    end
+
+    :ok
+  end
+
+  defp json(nil), do: nil
+  defp json(value), do: JsonSafe.data(value)
 
   defp load_run_projection_contexts!(events) do
     run_events = Enum.filter(events, &match?(%OutboxEvent{event_kind: "run." <> _}, &1))

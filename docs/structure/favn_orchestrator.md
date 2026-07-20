@@ -53,6 +53,9 @@ freshness, and execution coordination.
   asset to one selecting pipeline policy and timezone. Catalogue reads and operator
   commands share its stable id, reject forged or stale contexts, and surface
   multi-pipeline ambiguity instead of depending on manifest order.
+- `RunReadModel` keeps requested backfill anchors distinct from exact effective
+  asset windows. Its default operator detail path expands compact relational
+  projections; the events view is the explicit bounded snapshot/event path.
 - `RuntimeInputPins` owns encrypted resolve/pin/replay behavior. Raw resolved
   credentials never enter generic run metadata. Pins are bound to the selected
   asset's exact execution-package hash and resolver.
