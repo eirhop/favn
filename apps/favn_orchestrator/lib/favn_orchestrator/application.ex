@@ -58,7 +58,8 @@ defmodule FavnOrchestrator.Application do
             {AdmissionCoordinator, []},
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
             {Task.Supervisor, name: FavnOrchestrator.RunManagerTaskSupervisor},
-            {RunManager, []}
+            {RunManager, []},
+            {FavnOrchestrator.ResourceRecovery, []}
           ] ++
           [{BackfillDispatcher, []}] ++
           [{RunRecovery, []}, {BoundedDispatcher, []}] ++ scheduler_children() ++ api_children()

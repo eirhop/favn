@@ -43,8 +43,22 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
             attempted_node_key_set: MapSet.new(),
             node_statuses: %{}
 
-  @spec new(RunState.t(), [term()], [entry()], [node_key()], MapSet.t(term())) :: t()
-  def new(%RunState{} = run, results, entries, deferred_node_keys, queued_steps)
+  @spec new(
+          RunState.t(),
+          [term()],
+          [entry()],
+          [node_key()],
+          MapSet.t(term()),
+          terminal_failure() | nil
+        ) :: t()
+  def new(
+        %RunState{} = run,
+        results,
+        entries,
+        deferred_node_keys,
+        queued_steps,
+        terminal_failure \\ nil
+      )
       when is_list(results) and is_list(entries) and is_list(deferred_node_keys) do
     node_keys = entry_node_keys(entries)
 
@@ -56,6 +70,21 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
       queued_steps: queued_steps,
       attempted_node_keys: Enum.reverse(node_keys),
       attempted_node_key_set: MapSet.new(node_keys)
+    }
+    |> add_admission_failure(terminal_failure)
+  end
+
+  @doc false
+  @spec add_admission_failure(t(), terminal_failure() | nil) :: t()
+  def add_admission_failure(%__MODULE__{} = state, nil), do: state
+
+  def add_admission_failure(%__MODULE__{} = state, failure) when is_map(failure) do
+    statuses = Map.get(failure, :node_statuses, %{})
+
+    %{
+      state
+      | terminal_failure: state.terminal_failure || failure,
+        node_statuses: Map.merge(state.node_statuses, statuses)
     }
   end
 

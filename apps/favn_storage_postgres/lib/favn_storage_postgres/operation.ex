@@ -150,6 +150,14 @@ defmodule FavnStoragePostgres.Instrumented.Materialization do
     store: :materialization
 end
 
+defmodule FavnStoragePostgres.Instrumented.ResourceCircuits do
+  @moduledoc false
+  use FavnStoragePostgres.InstrumentedStore,
+    behaviour: FavnOrchestrator.Persistence.ResourceCircuitStore,
+    implementation: FavnStoragePostgres.ResourceCircuits.Store,
+    store: :resource_circuits
+end
+
 defmodule FavnStoragePostgres.Instrumented.Backfills do
   @moduledoc false
   use FavnStoragePostgres.InstrumentedStore,

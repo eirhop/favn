@@ -82,6 +82,9 @@ defmodule Favn do
     rerun asset code or consume an asset attempt.
   - A node-attempt retry repeats one failed asset node inside the same run. It
     consumes an attempt and preserves successful sibling nodes.
+  - Opt-in resource recovery creates a linked new run after a shared resource's
+    exclusive probe succeeds. It includes circuit-blocked nodes and only failed
+    nodes explicitly classified as safe to repeat.
   - A rerun, replay, backfill child, or admitted schedule occurrence creates a
     new run with independent attempt counts. Schedule overlap and missed-run
     policy decide whether such a run exists; they are not execution retries.
@@ -128,6 +131,13 @@ defmodule Favn do
   its absolute `next_retry_at` are durable across an orchestrator restart.
   Recovery does not dispatch replacement work when an earlier side effect may
   have succeeded.
+
+  Resource circuit breakers are configured on execution pools or named SQL
+  connections. They count consecutive explicit resource failures, block only
+  affected nodes, and grant one half-open probe after their delay. Independent
+  DAG siblings keep running; required downstream nodes become durably blocked.
+  Pipelines opt into linked recovery with `resource_recovery :retry_remaining`.
+  The terminal source run is immutable.
 
   Read [Retries, Replay, And Runtime-Input Pins](retries-and-replay.html) before
   setting retry policy at more than one level. It includes the complete

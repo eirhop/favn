@@ -1649,14 +1649,25 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp sql_error_details(%SQLError{} = error, phase) do
     classification = Map.get(error.details || %{}, :classification)
+    resource_failure? = resource_failure?(error)
 
     %{
       connection: error.connection,
       operation: error.operation,
       retryable?: error.retryable? == true,
       classification: classification,
-      asset_retryable?: sql_asset_retryable?(phase, error, classification)
+      asset_retryable?: sql_asset_retryable?(phase, error, classification),
+      resource_failure?: resource_failure?,
+      resource_succeeded?:
+        not resource_failure? and error.operation not in [nil, :connect, :bootstrap],
+      resource_failure_category: classification || error.type,
+      resource_safe_to_repeat?: resource_failure? and error.operation in [:connect, :bootstrap]
     }
+  end
+
+  defp resource_failure?(%SQLError{} = error) do
+    error.operation in [:connect, :bootstrap] or
+      error.type in [:authentication_error, :connection_error, :admission_timeout, :pool_timeout]
   end
 
   defp sql_asset_retryable?(phase, %SQLError{} = error, classification) do

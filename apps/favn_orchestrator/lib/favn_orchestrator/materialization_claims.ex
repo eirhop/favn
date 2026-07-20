@@ -175,7 +175,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
     Persistence.stores().materialization.finish(%FinishMaterialization{
       workspace_context:
         SystemContext.workspace(field(claim, :workspace_id), :materialization_finish),
-      command_id: command_id("finish", key(claim), status),
+      command_id: command_id("finish", {key(claim), field(claim, :fencing_token)}, status),
       claim_key: key(claim),
       owner_id: field(claim, :owner_id),
       fencing_token: field(claim, :fencing_token),

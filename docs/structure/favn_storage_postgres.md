@@ -11,7 +11,7 @@ Favn's PostgreSQL 18 control-plane persistence.
   publisher, projectors, and bounded maintenance workers.
 - Capability stores live under `registry/`, `runs/`, `run_ownership/`,
   `scheduler/`, `admission/`, `materialization/`, `backfills/`, `identity/`,
-  `logs/`, `operator_reads/`, and `maintenance/`.
+  `resource_circuits/`, `logs/`, `operator_reads/`, and `maintenance/`.
 - Ecto schemas live under `schemas/`. Ordinary typed queries use Ecto;
   concurrency-critical commands may use focused SQL.
 - The registry stores compact manifest indexes in `manifest_versions`, immutable
@@ -56,6 +56,10 @@ database-enforced invariants.
   preventing a pin from replaying against changed SQL execution content.
 - PostgreSQL `NOTIFY` and local PubSub are wake-up optimizations only; durable
   publications and cursors provide replay correctness.
+- `resource_circuits` stores workspace-scoped closed/open/half-open state and an
+  exclusive expiring probe token. `resource_circuit_outcomes` makes terminal
+  updates idempotent by run/node/attempt/resource. `resource_recovery_candidates`
+  durably claims linked recovery work without changing the source run.
 
 ## Tests
 

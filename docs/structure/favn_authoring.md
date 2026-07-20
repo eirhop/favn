@@ -15,7 +15,7 @@ Tests:
 - Schedule DSL fetch/load coverage lives here because `Favn.Triggers.Schedules`
   is an authoring macro layered on core schedule values.
 
-Use when changing asset, SQL asset, settings/freshness/execution-pool/retry DSL
+Use when changing asset, SQL asset, settings/freshness/execution-pool/retry/resource-recovery DSL
 capture, SQL `resources`, reusable runtime-config bundle authoring, pipeline concurrency clauses,
 namespace, source, connection, or
 authoring documentation behavior.
@@ -72,3 +72,7 @@ Pipeline and asset/SQL `retry` declarations compile directly to the same core
 `%Favn.Retry.Policy{}`. Asset policy is optional so the orchestrator can apply
 operator → asset → pipeline → one-attempt precedence without losing source
 attribution.
+
+Pipeline `resource_recovery :retry_remaining` compiles to the separate
+`%Favn.ResourceRecovery.Policy{}` manifest field. It opts into a linked new run
+after a resource probe closes a circuit; it never changes node-attempt policy.

@@ -19,6 +19,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntryTest do
       lease: :lease,
       materialization_claim: :claim,
       execution_pool: :default,
+      resource_circuit_permits: [],
       freshness_key: :freshness_key
     }
 

@@ -7,6 +7,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerWork
+  alias Favn.Contracts.ResourceOutcome
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.ExecutionPackage
@@ -15,6 +16,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.Manifest.Version
   alias Favn.Plan.NodeIdentity
   alias Favn.RelationRef
+  alias Favn.Resource.Ref, as: ResourceRef
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL.Check
@@ -86,6 +88,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert {:ok, result} = FavnRunner.run(work)
     assert result.status == :ok
+
+    assert [
+             %ResourceOutcome{
+               resource: %ResourceRef{kind: :connection, name: "runner_sql_runtime"},
+               status: :success
+             }
+           ] = result.resource_outcomes
+
     assert_received {:connect_opts, :runner_sql_runtime, opts}
     assert Keyword.fetch!(opts, :required_catalogs) == ["raw"]
   end
@@ -303,6 +313,15 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert result.status == :error
 
     assert %RunnerError{retryable?: true, outcome: :safe_failure} = result.error
+
+    assert [
+             %ResourceOutcome{
+               resource: %ResourceRef{kind: :connection, name: "runner_sql_runtime"},
+               status: :failure,
+               category: :connection_error,
+               safe_to_repeat?: true
+             }
+           ] = result.error.resource_outcomes
 
     assert [%{error: %RunnerError{retryable?: true, outcome: :safe_failure}}] =
              result.asset_results
@@ -700,6 +719,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     refute inspect(asset_result.error) =~ "user:password"
     refute inspect(asset_result.error) =~ "credential=raw"
     assert asset_result.error.details.cause.details.password == :redacted
+
+    assert [
+             %ResourceOutcome{
+               resource: %ResourceRef{kind: :connection, name: "runner_sql_runtime"},
+               status: :success,
+               category: :sql_resource_reached
+             }
+           ] = result.resource_outcomes
   end
 
   test "checked materialization stages once, persists warnings, and commits" do

@@ -212,3 +212,72 @@ defmodule FavnStoragePostgres.Schemas.Materialization do
     field(:inserted_at, :utc_datetime_usec)
   end
 end
+
+defmodule FavnStoragePostgres.Schemas.ResourceCircuit do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "resource_circuits" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:resource_kind, :string, primary_key: true)
+    field(:resource_name, :string, primary_key: true)
+    field(:state, :string)
+    field(:consecutive_failures, :integer)
+    field(:failure_threshold, :integer)
+    field(:probe_after_ms, :integer)
+    field(:opened_at, :utc_datetime_usec)
+    field(:next_probe_at, :utc_datetime_usec)
+    field(:probe_owner_id, :string)
+    field(:probe_expires_at, :utc_datetime_usec)
+    field(:last_category, :string)
+    field(:last_outcome_at, :utc_datetime_usec)
+    field(:version, :integer)
+    timestamps(type: :utc_datetime_usec)
+  end
+end
+
+defmodule FavnStoragePostgres.Schemas.ResourceCircuitOutcome do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "resource_circuit_outcomes" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:outcome_id, :string, primary_key: true)
+    field(:resource_kind, :string)
+    field(:resource_name, :string)
+    field(:run_id, :string)
+    field(:asset_step_id, :string)
+    field(:attempt, :integer)
+    field(:status, :string)
+    field(:category, :string)
+    field(:occurred_at, :utc_datetime_usec)
+    field(:inserted_at, :utc_datetime_usec)
+  end
+end
+
+defmodule FavnStoragePostgres.Schemas.ResourceRecoveryCandidate do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "resource_recovery_candidates" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:candidate_id, :string, primary_key: true)
+    field(:source_run_id, :string)
+    field(:node_key, :string)
+    field(:resource_kind, :string)
+    field(:resource_name, :string)
+    field(:reason, :string)
+    field(:status, :string)
+    field(:expires_at, :utc_datetime_usec)
+    field(:claim_owner, :string)
+    field(:claim_expires_at, :utc_datetime_usec)
+    field(:recovery_run_id, :string)
+    timestamps(type: :utc_datetime_usec)
+  end
+end

@@ -63,6 +63,7 @@ defmodule Favn.Pipeline.Resolver do
          :ok <- validate_window(definition.window),
          :ok <- validate_max_concurrency(definition.max_concurrency),
          :ok <- validate_execution_pool(definition.execution_pool),
+         :ok <- validate_resource_recovery(definition.resource_recovery),
          :ok <- validate_source(definition.source) do
       validate_outputs(definition.outputs)
     end
@@ -97,6 +98,18 @@ defmodule Favn.Pipeline.Resolver do
   defp validate_execution_pool(nil), do: :ok
   defp validate_execution_pool(value) when is_atom(value), do: :ok
   defp validate_execution_pool(value), do: {:error, {:invalid_execution_pool, value}}
+
+  defp validate_resource_recovery(nil), do: :ok
+
+  defp validate_resource_recovery(%Favn.ResourceRecovery.Policy{} = policy) do
+    case Favn.ResourceRecovery.Policy.from_value(policy) do
+      {:ok, _policy} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_resource_recovery(value),
+    do: {:error, {:invalid_resource_recovery_policy, value}}
 
   defp validate_source(nil), do: :ok
   defp validate_source(value) when is_atom(value), do: :ok
@@ -238,6 +251,7 @@ defmodule Favn.Pipeline.Resolver do
       window: definition.window,
       max_concurrency: definition.max_concurrency,
       execution_pool: definition.execution_pool,
+      resource_recovery: definition.resource_recovery,
       schedule: schedule,
       source: definition.source,
       outputs: definition.outputs

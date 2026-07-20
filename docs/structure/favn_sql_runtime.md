@@ -92,6 +92,13 @@ session creation/bootstrap and read-only inspection/query paths. Blind retries o
 SQL writes are not safe, and unknown commit state must be surfaced rather than
 retried.
 
+Connection runtime config reserves `circuit_breaker` and normalizes it into
+`%Favn.CircuitBreaker.Policy{}` on `%Favn.Connection.Resolved{}` rather than
+passing it to adapters. The SQL runtime reports typed failure details; runner
+normalization turns only known connection/bootstrap categories into explicit
+connection resource outcomes. PostgreSQL circuit coordination remains owned by
+the orchestrator and storage apps.
+
 Pool checkout, admission waits, and SQL operations use finite default timeouts.
 `%Favn.SQL.Deadline{}` carries per-operation budgets through query, execute,
 materialize, transaction, and inspection paths. SQL operation timeouts return a

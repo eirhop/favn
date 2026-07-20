@@ -3,6 +3,8 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
 
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
+  alias FavnOrchestrator.RunServer.Execution.StageAttemptState
+  alias FavnOrchestrator.RunState
 
   test "stale await monitor and timeout messages do not remove the current await" do
     execution_id = "exec_1"
@@ -43,5 +45,32 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
                state,
                {:execution_admission_wakeup, waiter.waiter_id, 1}
              )
+  end
+
+  test "terminal sibling failure still refills deferred work and schedules safe retries" do
+    run =
+      RunState.new(
+        id: "continue-independent-siblings",
+        manifest_version_id: "manifest-version",
+        manifest_content_hash: "manifest-hash",
+        asset_ref: {__MODULE__, :asset}
+      )
+
+    failed = %{status: :error, error: :terminal_failure}
+
+    deferred =
+      StageAttemptState.new(
+        run,
+        [],
+        [],
+        [{{__MODULE__, :later_sibling}, nil}],
+        MapSet.new(),
+        failed
+      )
+
+    assert :refill == Execution.pipeline_progress_action(deferred, 0, 0)
+
+    retrying = %{deferred | deferred_node_keys: [], retry_refs: [{{__MODULE__, :retry}, nil}]}
+    assert :retry == Execution.pipeline_progress_action(retrying, 0, 0)
   end
 end

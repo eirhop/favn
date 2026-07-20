@@ -9,7 +9,8 @@ design rationale and scale budgets remain in the
 
 PostgreSQL stores orchestration metadata: workspaces, immutable manifests and
 execution packages, deployments, runs, events, schedules, leases,
-materializations, backfills, authentication, audit, logs, and repairable
+materializations, resource circuits and recovery candidates, backfills,
+authentication, audit, logs, and repairable
 projections.
 
 It does not store customer business data, DuckLake metadata, blob data, secret
@@ -92,6 +93,9 @@ Important properties:
 - Command identities make retries deterministic; conflicting reuse is rejected.
 - Ownership and claim writes require current fencing tokens.
 - Multi-node claimers use row locks and `SKIP LOCKED` where appropriate.
+- Resource circuit acquisition locks requested resources in deterministic order;
+  one expiring owner identity holds a half-open probe, and a terminal outcome is
+  applied at most once for each run/node/attempt/resource identity.
 - PostgreSQL sequences are identifiers, not transaction commit order. A durable
   sequencer assigns publication order after commit.
 - Multi-step operations use transactions or `Ecto.Multi`; focused SQL is kept
@@ -174,6 +178,11 @@ Redis is not required for correctness or initial multi-node scale.
   pinned manifests, immutable run plans, and persisted checkpoints.
 - Derived projections are repairable from authoritative rows/outbox events.
 - Unknown transaction outcomes are resolved using the original command identity.
+- Circuit and recovery rows survive orchestrator restarts. A successful probe
+  closes the circuit before opt-in candidates are claimed into linked runs; the
+  terminal source run remains immutable. A bounded supervised sweep finds
+  claimable workspace/resource pairs, and deterministic run identity prevents
+  duplicate recovery submissions after an uncertain completion update.
 - Retention and purge operations are bounded maintenance jobs; immutable packages
   are removed only when no manifest link references them.
 

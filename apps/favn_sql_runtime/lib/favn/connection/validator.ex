@@ -4,10 +4,11 @@ defmodule Favn.Connection.Validator do
   alias Favn.Connection.Definition
   alias Favn.Connection.Error
   alias Favn.Connection.Resolved
+  alias Favn.CircuitBreaker.Policy, as: CircuitBreakerPolicy
   alias Favn.RuntimeConfig.Resolver, as: RuntimeConfigResolver
   alias Favn.SQL.PoolConfig
 
-  @reserved_runtime_keys [:write_concurrency, :admission_timeout_ms, :pool]
+  @reserved_runtime_keys [:write_concurrency, :admission_timeout_ms, :pool, :circuit_breaker]
 
   @spec validate_definition(Definition.t()) :: :ok | {:error, [Error.t()]}
   def validate_definition(%Definition{} = definition) do
@@ -23,7 +24,7 @@ defmodule Favn.Connection.Validator do
   @spec resolve(Definition.t(), map()) :: {:ok, Resolved.t()} | {:error, [Error.t()]}
   def resolve(%Definition{} = definition, runtime_values) when is_map(runtime_values) do
     with :ok <- validate_definition(definition),
-         {:ok, config, required_keys, secret_fields, secret_paths, schema_keys} <-
+         {:ok, config, circuit_breaker, required_keys, secret_fields, secret_paths, schema_keys} <-
            build_config(definition, runtime_values) do
       {:ok,
        %Resolved{
@@ -31,6 +32,7 @@ defmodule Favn.Connection.Validator do
          adapter: definition.adapter,
          module: definition.module,
          config: config,
+         circuit_breaker: circuit_breaker,
          required_keys: required_keys,
          secret_fields: secret_fields,
          secret_paths: secret_paths,
@@ -50,7 +52,8 @@ defmodule Favn.Connection.Validator do
 
     with [] <- maybe_add_unknown_keys_error([], definition, unknown),
          {:ok, resolved_values} <- resolve_runtime_refs(definition, merged),
-         {:ok, resolved_values} <- normalize_reserved_runtime_config(definition, resolved_values) do
+         {:ok, resolved_values, circuit_breaker} <-
+           normalize_reserved_runtime_config(definition, resolved_values) do
       errors =
         []
         |> validate_required(definition, resolved_values)
@@ -66,7 +69,8 @@ defmodule Favn.Connection.Validator do
 
         secret_paths = collect_secret_paths(merged)
 
-        {:ok, resolved_values, required_keys, secret_fields, secret_paths, schema_keys}
+        {:ok, resolved_values, circuit_breaker, required_keys, secret_fields, secret_paths,
+         schema_keys}
       else
         {:error, Enum.reverse(errors)}
       end
@@ -100,13 +104,29 @@ defmodule Favn.Connection.Validator do
   end
 
   defp normalize_reserved_runtime_config(definition, values) do
-    case PoolConfig.parse(Map.get(values, :pool)) do
-      {:ok, pool_config} ->
-        {:ok, Map.put(values, :pool, pool_config)}
-
-      {:error, error} ->
+    with {:ok, pool_config} <- PoolConfig.parse(Map.get(values, :pool)),
+         {:ok, circuit_breaker} <- CircuitBreakerPolicy.new(Map.get(values, :circuit_breaker)) do
+      {:ok,
+       values
+       |> Map.delete(:circuit_breaker)
+       |> Map.put(:pool, pool_config), circuit_breaker}
+    else
+      {:error, %Favn.SQL.Error{} = error} ->
         {:error, [pool_config_error(definition, error)]}
+
+      {:error, reason} ->
+        {:error, [circuit_breaker_config_error(definition, reason)]}
     end
+  end
+
+  defp circuit_breaker_config_error(definition, reason) do
+    %Error{
+      type: :invalid_type,
+      module: definition.module,
+      connection: definition.name,
+      details: %{key: :circuit_breaker, reason: reason},
+      message: "connection #{inspect(definition.name)} has invalid :circuit_breaker configuration"
+    }
   end
 
   defp pool_config_error(definition, error) do
@@ -166,6 +186,7 @@ defmodule Favn.Connection.Validator do
     do: [Enum.reverse(path)]
 
   defp collect_secret_paths(%Favn.RuntimeConfig.Ref{}, _path), do: []
+
   defp collect_secret_paths(%Favn.RuntimeValue.Ref{secret?: true}, path),
     do: [Enum.reverse(path)]
 

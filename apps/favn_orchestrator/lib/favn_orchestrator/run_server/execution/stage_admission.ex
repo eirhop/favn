@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunExecutionOwnership
+  alias FavnOrchestrator.ResourceCircuits
   alias FavnOrchestrator.RuntimeInputPins
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
@@ -35,10 +36,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @type node_key :: Favn.Plan.node_key()
   @type entry :: StageEntry.t()
   @type result ::
-          {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()]}
+          {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()], map() | nil}
           | {:retry, RunState.t(), [node_key()], [node_key()]}
           | {:partial_retry, RunState.t(), [entry()], [node_key()], node_key(), term(),
-             MapSet.t(term()), [map()]}
+             MapSet.t(term()), [map()], map() | nil}
           | {:error, RunState.t(), [term()], [node_key()]}
           | {:persist_retry, PersistenceRetry.t(), term()}
 
@@ -79,20 +80,22 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       queued_steps: queued_steps,
       waiters: [],
       batch_started_ms: System.monotonic_time(:millisecond),
-      batch_count: 0
+      batch_count: 0,
+      terminal_failure: nil
     }
 
     do_submit(node_keys, ctx)
   end
 
   defp do_submit([], ctx) do
-    {:ok, ctx.current_run, entries(ctx), [], ctx.queued_steps, ctx.waiters}
+    {:ok, ctx.current_run, entries(ctx), [], ctx.queued_steps, ctx.waiters, ctx.terminal_failure}
   end
 
   defp do_submit([node_key | rest] = node_keys, ctx) do
     cond do
       yield_batch?(ctx) ->
-        {:ok, ctx.current_run, entries(ctx), node_keys, ctx.queued_steps, ctx.waiters}
+        {:ok, ctx.current_run, entries(ctx), node_keys, ctx.queued_steps, ctx.waiters,
+         ctx.terminal_failure}
 
       Persistence.externally_cancelled?(ctx.current_run) ->
         {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
@@ -117,35 +120,102 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
             batch_count: ctx.batch_count + 1
           })
 
-        case ExecutionAdmission.acquire_or_wait(
-               ctx.current_run,
-               %{
-                 asset_step_id: work.asset_step_id,
-                 execution_pool: RunnerWork.execution_pool(work)
-               },
-               stage: ctx.stage,
-               attempt: ctx.attempt
-             ) do
-          {:ok, lease} ->
-            handle_admitted_entry(Map.put(entry_context, :lease, lease))
+        admit_execution_capacity(entry_context)
+    end
+  end
 
-          {:waiting, waiter} ->
-            persist_or_defer_queued_entry(
-              entry_context
-              |> Map.put(:queue_signature, queue_signature(work.asset_step_id, waiter))
-              |> Map.put(:queue_reason, waiter.queue_reason)
-              |> Map.put(:scope, waiter.blocked_scope)
-              |> Map.put(:waiter, waiter)
-            )
+  defp admit_resource_circuits(ctx) do
+    case ResourceCircuits.acquire(ctx.current_run, ctx.work, ctx.manifest_index) do
+      {:ok, permits} ->
+        handle_admitted_entry(Map.put(ctx, :resource_circuit_permits, permits))
 
-          {:error, {:run_not_admissible, run_id, _status}}
-          when run_id == ctx.current_run.id ->
-            {:error, ctx.current_run, [], attempted_node_keys(ctx)}
+      {:blocked, blockers} ->
+        :ok = release_entry_lease(ctx)
+        persist_resource_block(ctx, blockers)
 
-          {:error, reason} ->
-            failed = Snapshots.snapshot_update(ctx.current_run, status: :error, error: reason)
-            {:error, failed, [], attempted_node_keys(ctx)}
-        end
+      {:error, reason} ->
+        :ok = release_entry_lease(ctx)
+        failed = Snapshots.snapshot_update(ctx.current_run, status: :error, error: reason)
+        {:error, failed, [], attempted_node_keys(ctx)}
+    end
+  end
+
+  defp admit_execution_capacity(ctx) do
+    case ExecutionAdmission.acquire_or_wait(
+           ctx.current_run,
+           %{
+             asset_step_id: ctx.work.asset_step_id,
+             execution_pool: RunnerWork.execution_pool(ctx.work)
+           },
+           stage: ctx.stage,
+           attempt: ctx.attempt
+         ) do
+      {:ok, lease} ->
+        admit_resource_circuits(Map.put(ctx, :lease, lease))
+
+      {:waiting, waiter} ->
+        persist_or_defer_queued_entry(
+          ctx
+          |> Map.put(:queue_signature, queue_signature(ctx.work.asset_step_id, waiter))
+          |> Map.put(:queue_reason, waiter.queue_reason)
+          |> Map.put(:scope, waiter.blocked_scope)
+          |> Map.put(:waiter, waiter)
+        )
+
+      {:error, {:run_not_admissible, run_id, _status}}
+      when run_id == ctx.current_run.id ->
+        {:error, ctx.current_run, [], attempted_node_keys(ctx)}
+
+      {:error, reason} ->
+        failed = Snapshots.snapshot_update(ctx.current_run, status: :error, error: reason)
+        {:error, failed, [], attempted_node_keys(ctx)}
+    end
+  end
+
+  defp persist_resource_block(ctx, blockers) do
+    blocker_maps =
+      Enum.map(blockers, fn blocker ->
+        blocker |> Map.from_struct() |> Map.delete(:probe_owner_id)
+      end)
+
+    reason =
+      {:resource_circuit_open, blocker_maps}
+
+    decision = %{
+      decision: :blocked,
+      reason: reason,
+      resource_circuit_blockers: blocker_maps
+    }
+
+    with {:ok, blocked_run} <-
+           StageClassifier.persist_decision(
+             ctx.current_run,
+             ctx.version,
+             ctx.node_key,
+             ctx.stage,
+             :blocked,
+             decision
+           ),
+         :ok <- ResourceCircuits.record_blocked(blocked_run, ctx.work, blockers) do
+      failure =
+        (ctx.terminal_failure || %{status: :error, error: {:blocked, ctx.node_key, reason}})
+        |> Map.update(:node_statuses, %{ctx.node_key => :blocked}, fn statuses ->
+          Map.put(statuses, ctx.node_key, :blocked)
+        end)
+
+      do_submit(ctx.rest, %{
+        ctx
+        | current_run: blocked_run,
+          terminal_failure: failure,
+          batch_count: ctx.batch_count
+      })
+    else
+      {:error, :external_cancel} ->
+        {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
+
+      {:error, reason} ->
+        failed = Snapshots.snapshot_update(ctx.current_run, status: :error, error: reason)
+        {:error, failed, [], attempted_node_keys(ctx)}
     end
   end
 
@@ -170,28 +240,39 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         submit_admitted_entry(Map.put(ctx, :materialization_claim, claim))
 
       {:already_succeeded, claim} ->
-        :ok = release_entry_lease(%{lease: ctx.lease})
-        maybe_skip_succeeded_claim(ctx, claim)
+        with :ok <- release_pre_dispatch(ctx) do
+          maybe_skip_succeeded_claim(ctx, claim)
+        else
+          {:error, reason} -> pre_dispatch_release_failed(ctx, reason)
+        end
 
       {:already_claimed, claim} ->
-        :ok = release_entry_lease(%{lease: ctx.lease})
-        queue_reason = :materialization_claim
-        scope = MaterializationClaims.scope(claim)
+        with :ok <- release_pre_dispatch(ctx) do
+          queue_reason = :materialization_claim
+          scope = MaterializationClaims.scope(claim)
 
-        persist_or_defer_queued_entry(
-          ctx
-          |> Map.put(
-            :queue_signature,
-            queue_signature(ctx.work.asset_step_id, queue_reason, scope)
+          persist_or_defer_queued_entry(
+            ctx
+            |> Map.put(
+              :queue_signature,
+              queue_signature(ctx.work.asset_step_id, queue_reason, scope)
+            )
+            |> Map.put(:queue_reason, queue_reason)
+            |> Map.put(:scope, scope)
           )
-          |> Map.put(:queue_reason, queue_reason)
-          |> Map.put(:scope, scope)
-        )
+        else
+          {:error, reason} -> pre_dispatch_release_failed(ctx, reason)
+        end
 
       {:error, reason} ->
-        :ok = release_entry_lease(%{lease: ctx.lease})
-        failed = Snapshots.snapshot_update(current_run, status: :error, error: reason)
-        {:error, failed, [], attempted_node_keys(ctx)}
+        case release_pre_dispatch(ctx) do
+          :ok ->
+            failed = Snapshots.snapshot_update(current_run, status: :error, error: reason)
+            {:error, failed, [], attempted_node_keys(ctx)}
+
+          {:error, release_reason} ->
+            pre_dispatch_release_failed(ctx, release_reason)
+        end
     end
   end
 
@@ -246,10 +327,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
            ctx.scope
          ) do
       {:ok, queued_run, next_queued_steps} when ctx.entries_rev == [] ->
-        {:ok, queued_run, [], ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx)}
+        {:ok, queued_run, [], ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx),
+         ctx.terminal_failure}
 
       {:ok, queued_run, next_queued_steps} ->
-        {:ok, queued_run, entries(ctx), ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx)}
+        {:ok, queued_run, entries(ctx), ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx),
+         ctx.terminal_failure}
 
       {:error, :external_cancel} ->
         {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
@@ -351,14 +434,21 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp fail_unsubmitted_entry(ctx, asset_ref, reason) do
-    :ok = release_entry_lease(%{lease: ctx.lease})
-    :ok = fail_claim(ctx, reason)
-
-    if safe_retryable?(reason) and
-         StepAttemptLifecycle.retry_allowed?(ctx.current_run, ctx.node_key, ctx.attempt) do
-      persist_retryable_submit_failure(ctx, asset_ref, reason)
+    with :ok <- release_entry_lease(%{lease: ctx.lease}),
+         :ok <-
+           ResourceCircuits.release(
+             ctx.current_run,
+             Map.get(ctx, :resource_circuit_permits, [])
+           ),
+         :ok <- fail_claim(ctx, reason) do
+      if safe_retryable?(reason) and
+           StepAttemptLifecycle.retry_allowed?(ctx.current_run, ctx.node_key, ctx.attempt) do
+        persist_retryable_submit_failure(ctx, asset_ref, reason)
+      else
+        terminalize_unsubmitted_entry(ctx, asset_ref, reason)
+      end
     else
-      terminalize_unsubmitted_entry(ctx, asset_ref, reason)
+      {:error, release_reason} -> pre_dispatch_release_failed(ctx, release_reason)
     end
   end
 
@@ -367,7 +457,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
     result =
       {:partial_retry, failed, entries(ctx), ctx.rest, ctx.node_key, reason, ctx.queued_steps,
-       ctx.waiters}
+       ctx.waiters, ctx.terminal_failure}
 
     case persist_stage_submit_failure_event(ctx, failed, asset_ref, reason, true, result) do
       :ok ->
@@ -594,6 +684,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
             lease: ctx.lease,
             materialization_claim: ctx.materialization_claim,
             execution_pool: RunnerWork.execution_pool(ctx.work),
+            resource_circuit_permits: ctx.resource_circuit_permits,
             freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key),
             version: ctx.version,
             freshness_context: ctx.freshness_context
@@ -785,6 +876,22 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp release_entry_lease(entry), do: RunWorkSet.release_entry(entry)
+
+  defp release_pre_dispatch(ctx) do
+    with :ok <- release_entry_lease(ctx),
+         :ok <-
+           ResourceCircuits.release(
+             ctx.current_run,
+             Map.get(ctx, :resource_circuit_permits, [])
+           ) do
+      :ok
+    end
+  end
+
+  defp pre_dispatch_release_failed(ctx, reason) do
+    failed = Snapshots.snapshot_update(ctx.current_run, status: :error, error: reason)
+    {:error, failed, [], attempted_node_keys(ctx)}
+  end
 
   defp attempt_start_event(attempt) when attempt > 1, do: :step_retry_started
   defp attempt_start_event(_attempt), do: :step_started

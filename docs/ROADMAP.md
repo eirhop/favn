@@ -49,6 +49,8 @@ production operations are defined in
   explicit unknown outcomes where cancellation cannot be proved.
 - Expand DuckDB/DuckLake stress and failure-injection coverage independently of
   PostgreSQL control-plane recovery.
+- Add operator-facing circuit state, recovery history, and reset controls after
+  production use defines the minimum safe workflow.
 - Add native Windows CI only when Windows becomes a supported production or
   developer target.
 
@@ -68,6 +70,6 @@ production operations are defined in
 - Richer landed-data inspection and narrowly scoped local SQL tooling.
 - Additional SQL adapters and cloud credential providers driven by real customer
   integrations.
-- Resource-aware distributed scheduling beyond the current durable admission and
-  ownership contracts.
+- Resource-aware distributed scheduling beyond the current durable execution-pool
+  and SQL-connection circuit breakers, admission, and ownership contracts.
 - More deployment automation for managed-cloud and split-topology environments.

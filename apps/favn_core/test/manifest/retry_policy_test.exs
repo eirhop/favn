@@ -7,6 +7,7 @@ defmodule Favn.Manifest.RetryPolicyTest do
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
   alias Favn.Retry.Policy
+  alias Favn.ResourceRecovery.Policy, as: ResourceRecoveryPolicy
 
   test "manifest serialization and rehydration preserve typed asset and pipeline policies" do
     ref = {MyApp.Assets.RetryRoundtrip, :asset}
@@ -17,6 +18,8 @@ defmodule Favn.Manifest.RetryPolicyTest do
         max_attempts: 3,
         backoff: {:exponential, initial: 100, max: 5_000, jitter: 0.25}
       )
+
+    resource_recovery = ResourceRecoveryPolicy.new!(:retry_remaining, max_age_ms: 3_600_000)
 
     manifest =
       FavnTestSupport.with_manifest_graph(%Manifest{
@@ -35,7 +38,8 @@ defmodule Favn.Manifest.RetryPolicyTest do
             module: MyApp.Pipelines.RetryRoundtrip,
             name: :retry_roundtrip,
             selectors: [{:asset, ref}],
-            retry_policy: pipeline_policy
+            retry_policy: pipeline_policy,
+            resource_recovery: resource_recovery
           }
         ]
       })
@@ -46,7 +50,14 @@ defmodule Favn.Manifest.RetryPolicyTest do
     assert {:ok, roundtrip} = Version.new(decoded, manifest_version_id: "mv_retry_roundtrip")
 
     assert [%Asset{retry_policy: ^asset_policy}] = roundtrip.manifest.assets
-    assert [%Pipeline{retry_policy: ^pipeline_policy}] = roundtrip.manifest.pipelines
+
+    assert [
+             %Pipeline{
+               retry_policy: ^pipeline_policy,
+               resource_recovery: ^resource_recovery
+             }
+           ] = roundtrip.manifest.pipelines
+
     assert roundtrip.content_hash == original.content_hash
   end
 end

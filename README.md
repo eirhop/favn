@@ -398,6 +398,20 @@ for an explicitly retryable, known-safe failure. Unknown write,
 materialization, transaction, and external-side-effect outcomes are terminal.
 Successful same-stage siblings are preserved.
 
+Independent DAG branches also keep running after another branch fails. Nodes
+whose required upstream work failed or was blocked become durably blocked, so
+every planned node reaches a terminal state without turning one resource outage
+into a whole-pipeline stop.
+
+Shared execution pools and named SQL connections may additionally use a durable
+circuit breaker. It opens only from consecutive, explicitly classified resource
+failures, blocks new work for that resource, and lets one normal eligible node
+probe it after the configured delay. This is admission control, not an asset
+retry. Pipelines remain manual-recovery by default; `resource_recovery
+:retry_remaining` opts into a linked new run for circuit-blocked and explicitly
+repeat-safe failed nodes after a probe succeeds. The terminal source run is never
+mutated.
+
 Reruns/replays create new runs. Normal runs, schedules, and backfill children
 resolve fresh runtime inputs; exact replay requires source pins; resume and
 retry-remaining inherit existing pins and resolve only nodes the source run
@@ -512,7 +526,10 @@ must be protected before asset code starts:
 config :favn,
   execution_pools: [
     global: [max_concurrency: 8],
-    github_api: [max_concurrency: 2],
+    github_api: [
+      max_concurrency: 2,
+      circuit_breaker: [failure_threshold: 3, probe_after_ms: :timer.minutes(5)]
+    ],
     shopify_api: [max_concurrency: 1]
   ]
 ```
@@ -534,6 +551,9 @@ defmodule MyDataPlatform.Pipelines.RawGitHub do
     assets MyDataPlatform.Lakehouse.Raw.GitHub
     execution_pool :github_api
     max_concurrency 2
+
+    resource_recovery :retry_remaining,
+      max_age_ms: :timer.hours(6)
   end
 end
 ```
@@ -692,6 +712,7 @@ config :favn,
   connections: [
     important_lakehouse: [
       open: [database: ":memory:"],
+      circuit_breaker: [failure_threshold: 5, probe_after_ms: :timer.minutes(1)],
       pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000],
       duckdb: [
         resources: [

@@ -149,6 +149,7 @@ config :favn,
   connections: [
     warehouse: [
       open: [database: ":memory:"],
+      circuit_breaker: [failure_threshold: 5, probe_after_ms: :timer.minutes(1)],
       duckdb: [startup: [file: {:priv, :my_app, "duckdb/startup.sql"}]]
     ]
   ]
@@ -168,6 +169,25 @@ Reserved runtime keys:
 | `:write_concurrency` | Advanced connection-level write admission. |
 | `:admission_timeout_ms` | How long writes wait for admission. Default `30_000`; may be `:infinity`. |
 | `:pool` | Session pooling options. |
+| `:circuit_breaker` | Durable connection admission after consecutive resource failures. Requires positive `failure_threshold` and `probe_after_ms`. |
+
+Execution pools accept the same policy alongside their concurrency limit:
+
+```elixir
+config :favn,
+  execution_pools: [
+    partner_api: [
+      max_concurrency: 2,
+      circuit_breaker: [failure_threshold: 3, probe_after_ms: :timer.minutes(5)]
+    ]
+  ]
+```
+
+Circuit identity is workspace plus resource kind and name. An open circuit
+blocks only nodes that use that pool or connection. After `probe_after_ms`, one
+normal eligible node receives the exclusive half-open probe; success closes the
+circuit and resets its consecutive failure count. Circuit breakers do not change
+node retry policy or authorize repeating an unknown side effect.
 
 ## Runner Plugins
 

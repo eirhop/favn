@@ -23,6 +23,30 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
              Validator.resolve(definition, %{database: "warehouse.duckdb", write_concurrency: 1})
   end
 
+  test "extracts circuit breaker policy instead of passing it to the adapter" do
+    definition = %Definition{
+      name: :warehouse,
+      adapter: Favn.SQL.Adapter.DuckDB,
+      module: __MODULE__,
+      config_schema: [%{key: :database, required: true, type: :path}]
+    }
+
+    assert {:ok,
+            %Resolved{
+              circuit_breaker: %Favn.CircuitBreaker.Policy{
+                failure_threshold: 3,
+                probe_after_ms: 1_000
+              },
+              config: config
+            }} =
+             Validator.resolve(definition, %{
+               database: "warehouse.duckdb",
+               circuit_breaker: [failure_threshold: 3, probe_after_ms: 1_000]
+             })
+
+    refute Map.has_key?(config, :circuit_breaker)
+  end
+
   test "resolves nested refs and records exact secret paths" do
     System.put_env(
       "FAVN_TEST_DUCKLAKE_DATA_PATH",

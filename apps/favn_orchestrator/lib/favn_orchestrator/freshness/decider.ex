@@ -88,14 +88,28 @@ defmodule FavnOrchestrator.Freshness.Decider do
   end
 
   defp dependency_satisfied?(%{upstream: upstream}, context) do
+    missing =
+      if context.enforce_upstream_completion? do
+        Enum.reject(upstream, &Map.has_key?(context.upstream_statuses, &1))
+      else
+        []
+      end
+
     blocking =
       Enum.filter(upstream, &(Map.get(context.upstream_statuses, &1) in @blocking_statuses))
 
-    case blocking do
-      [] ->
+    case {missing, blocking} do
+      {[], []} ->
         :ok
 
-      blocking ->
+      {[_ | _] = missing, _blocking} ->
+        %{
+          decision: :blocked,
+          reason: :upstream_incomplete,
+          blocking_upstream: missing
+        }
+
+      {[], blocking} ->
         %{decision: :blocked, reason: :upstream_blocked, blocking_upstream: blocking}
     end
   end
@@ -267,6 +281,7 @@ defmodule FavnOrchestrator.Freshness.Decider do
       completed_node_keys: opts |> Keyword.get(:completed_node_keys, []) |> set(),
       refreshed_node_keys: opts |> Keyword.get(:refreshed_node_keys, []) |> set(),
       upstream_statuses: Keyword.get(opts, :upstream_statuses, %{}),
+      enforce_upstream_completion?: Keyword.has_key?(opts, :upstream_statuses),
       now: Keyword.fetch!(opts, :now)
     }
   end

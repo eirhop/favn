@@ -2071,6 +2071,62 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert :ok = ExecutionAdmission.release(second_lease)
   end
 
+  test "pipeline continues independent branches after a terminal sibling failure", fixture do
+    {plan, keys} = continuation_regression_plan()
+    {command, original} = pipeline_run_command(fixture)
+
+    run =
+      RunState.new(
+        id: original.id,
+        workspace_id: fixture.workspace_id,
+        deployment_id: fixture.deployment_id,
+        manifest_version_id: fixture.version.manifest_version_id,
+        manifest_content_hash: fixture.version.content_hash,
+        asset_ref: original.asset_ref,
+        target_refs: original.target_refs,
+        submit_kind: :pipeline,
+        plan: plan,
+        metadata: %{pipeline_execution_policy: %{max_concurrency: 1}}
+      )
+
+    command = %{command | run: run, event: %{command.event | occurred_at: run.inserted_at}}
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    {:ok, runner_state} =
+      Agent.start_link(fn -> %{work: %{}, submitted: [], fail_key: keys.b} end)
+
+    configure_pipeline_runner_client!(runner_state)
+    start_supervised!({FavnOrchestrator.ExecutionAdmission.Coordinator, []})
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    monitor = Process.monitor(pid)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+
+    assert {:ok, finished} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+
+    assert finished.status == :error
+    node_results = finished.result.node_results
+
+    assert length(node_results) == 5
+
+    statuses = Map.new(node_results, &{&1.node_key, &1.status})
+    assert statuses[keys.a] == :ok
+    assert statuses[keys.b] == :error
+    assert statuses[keys.c] == :ok
+    assert statuses[keys.d] == :blocked
+    assert statuses[keys.e] == :ok
+
+    submitted = Agent.get(runner_state, &Enum.reverse(&1.submitted))
+    assert Enum.count(submitted, &(&1 == keys.b)) == 2
+    assert keys.c in submitted
+    assert keys.e in submitted
+    refute keys.d in submitted
+  end
+
   test "claims schedules and dispatches deterministic occurrence intents", fixture do
     assert {:ok, schedule_page} =
              SchedulerStore.page_schedules(%PageSchedules{
@@ -3811,6 +3867,88 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     on_exit(fn -> Sandbox.mode(Repo, :manual) end)
   end
 
+  defp configure_pipeline_runner_client!(runner_state) do
+    env_keys = [:runtime_config_dynamic_env?, :runner_client, :runner_client_opts]
+    previous = Map.new(env_keys, &{&1, Application.get_env(:favn_orchestrator, &1)})
+    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_app_env(key, value) end) end)
+
+    Application.put_env(:favn_orchestrator, :runtime_config_dynamic_env?, true)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :runner_client,
+      FavnStoragePostgres.TestPipelineRunnerClient
+    )
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts, state: runner_state)
+    Sandbox.mode(Repo, {:shared, self()})
+    on_exit(fn -> Sandbox.mode(Repo, :manual) end)
+  end
+
+  defp continuation_regression_plan do
+    ref = {MyApp.Asset, :asset}
+    start_at = ~U[2026-07-01 00:00:00Z]
+
+    windows =
+      Enum.map(0..4, fn offset ->
+        window_start = DateTime.add(start_at, offset, :day)
+        anchor = Favn.Window.Key.new!(:day, window_start, "Etc/UTC")
+
+        Favn.Window.Runtime.new!(
+          :day,
+          window_start,
+          DateTime.add(window_start, 1, :day),
+          anchor
+        )
+      end)
+
+    [a_window, b_window, c_window, d_window, e_window] = windows
+
+    keys = %{
+      a: {ref, a_window.key},
+      b: {ref, b_window.key},
+      c: {ref, c_window.key},
+      d: {ref, d_window.key},
+      e: {ref, e_window.key}
+    }
+
+    node = fn key, window, upstream, downstream, stage, retry_policy ->
+      %{
+        ref: ref,
+        node_key: key,
+        window: window,
+        upstream: upstream,
+        downstream: downstream,
+        stage: stage,
+        execution_pool: nil,
+        action: :run,
+        retry_policy: retry_policy,
+        retry_policy_source: :asset
+      }
+    end
+
+    default = Favn.Retry.Policy.default()
+    retrying = Favn.Retry.Policy.new!(max_attempts: 2, backoff: 0)
+
+    plan = %Favn.Plan{
+      target_refs: [ref],
+      target_node_keys: [keys.d, keys.e],
+      dependencies: :all,
+      nodes: %{
+        keys.a => node.(keys.a, a_window, [], [], 0, default),
+        keys.b => node.(keys.b, b_window, [], [keys.d], 0, retrying),
+        keys.c => node.(keys.c, c_window, [], [keys.e], 0, default),
+        keys.d => node.(keys.d, d_window, [keys.b], [], 1, default),
+        keys.e => node.(keys.e, e_window, [keys.c], [], 1, default)
+      },
+      topo_order: [ref, ref, ref, ref, ref],
+      stages: [[ref, ref, ref], [ref, ref]],
+      node_stages: [[keys.a, keys.b, keys.c], [keys.d, keys.e]]
+    }
+
+    {plan, keys}
+  end
+
   defp sequential_retry_checkpoint(%RunState{} = run) do
     %{
       kind: :sequential,
@@ -3891,4 +4029,95 @@ defmodule FavnStoragePostgres.TestRestartedRunnerClient do
 
   @impl true
   def inspect_relation(_request, _opts), do: {:error, :unsupported}
+end
+
+defmodule FavnStoragePostgres.TestPipelineRunnerClient do
+  @behaviour Favn.Contracts.RunnerClient
+
+  alias Favn.Contracts.RunnerCancellation
+  alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.RunnerWork
+
+  @impl true
+  def register_manifest(_version, _opts), do: :ok
+
+  @impl true
+  def ensure_manifest(_manifest_version_id, _content_hash, _opts), do: :ok
+
+  @impl true
+  def acquire_manifest(_version, _lease_id, _expires_at, _planned_asset_refs, _opts), do: :ok
+
+  @impl true
+  def renew_manifest(_lease_id, _expires_at, _opts), do: :ok
+
+  @impl true
+  def release_manifest(_lease_id, _opts), do: :ok
+
+  @impl true
+  def resolve_runtime_inputs(_work, _opts), do: {:ok, nil}
+
+  @impl true
+  def submit_work(%RunnerWork{} = work, opts) do
+    state = Keyword.fetch!(opts, :state)
+    node_key = RunnerWork.node_key(work)
+
+    Agent.update(state, fn current ->
+      %{
+        current
+        | work: Map.put(current.work, work.execution_id, work),
+          submitted: [node_key | current.submitted]
+      }
+    end)
+
+    {:ok, work.execution_id}
+  end
+
+  @impl true
+  def await_result(execution_id, _timeout, opts) do
+    state = Keyword.fetch!(opts, :state)
+    %{work: work, fail_key: fail_key} = Agent.get(state, &%{work: &1.work, fail_key: &1.fail_key})
+    work = Map.fetch!(work, execution_id)
+
+    if RunnerWork.node_key(work) == fail_key do
+      retryable? = work.attempt == 1
+
+      error =
+        RunnerError.new(
+          type: :fixture_failure,
+          message: "fixture failure",
+          retryable?: retryable?,
+          outcome: if(retryable?, do: :safe_failure, else: :unknown)
+        )
+
+      {:ok, result(work, :error, error)}
+    else
+      {:ok, result(work, :ok, nil)}
+    end
+  end
+
+  @impl true
+  def cancel_work(execution_id, _reason, _opts) do
+    {:ok,
+     RunnerCancellation.outcome(:acknowledged,
+       execution_id: execution_id,
+       runner_status: :cancelled,
+       native_status: :native_cancel_unknown
+     )}
+  end
+
+  @impl true
+  def inspect_relation(_request, _opts), do: {:error, :unsupported}
+
+  defp result(work, status, error) do
+    %RunnerResult{
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      status: status,
+      asset_results: [],
+      error: error,
+      metadata: %{}
+    }
+  end
 end

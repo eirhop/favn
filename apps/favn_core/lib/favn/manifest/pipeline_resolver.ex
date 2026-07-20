@@ -63,6 +63,7 @@ defmodule Favn.Manifest.PipelineResolver do
            retry_policy: normalized_pipeline.retry_policy,
            max_concurrency: normalized_pipeline.max_concurrency,
            execution_pool: normalized_pipeline.execution_pool,
+           resource_recovery: normalized_pipeline.resource_recovery,
            schedule: schedule,
            source: normalized_pipeline.source,
            outputs: normalized_pipeline.outputs
@@ -89,7 +90,8 @@ defmodule Favn.Manifest.PipelineResolver do
          :ok <- validate_window(window),
          :ok <- validate_retry_policy(pipeline.retry_policy),
          :ok <- validate_max_concurrency(pipeline.max_concurrency),
-         :ok <- validate_execution_pool(pipeline.execution_pool) do
+         :ok <- validate_execution_pool(pipeline.execution_pool),
+         :ok <- validate_resource_recovery(pipeline.resource_recovery) do
       validate_outputs(pipeline)
     end
   end
@@ -133,6 +135,18 @@ defmodule Favn.Manifest.PipelineResolver do
   defp validate_execution_pool(nil), do: :ok
   defp validate_execution_pool(value) when is_atom(value), do: :ok
   defp validate_execution_pool(value), do: {:error, {:invalid_execution_pool, value}}
+
+  defp validate_resource_recovery(nil), do: :ok
+
+  defp validate_resource_recovery(%Favn.ResourceRecovery.Policy{} = policy) do
+    case Favn.ResourceRecovery.Policy.from_value(policy) do
+      {:ok, _policy} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_resource_recovery(value),
+    do: {:error, {:invalid_resource_recovery_policy, value}}
 
   defp validate_params(params) when is_map(params), do: :ok
   defp validate_params(_other), do: {:error, :invalid_run_params}
