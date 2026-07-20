@@ -7,7 +7,7 @@ This packet defines the independent review target. It is not an approval record.
 
 ## Review baseline
 
-- Worktree: `/home/eirik/code/favn-orchestrator-cleanup`.
+- Worktree: dedicated orchestrator-cleanup worktree.
 - Branch: `codex/orchestrator-cleanup`.
 - Review base: `origin/main` at
   `58eea6702c7d368a923cc433cdbe1d03307da986`.
