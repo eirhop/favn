@@ -1,5 +1,8 @@
 # Orchestrator cleanup ledger
 
+> **Historical:** This ledger describes the removed generic storage-adapter era.
+> It is retained for migration history and is not an active backlog.
+
 This is a working review record, not a public architecture contract.
 
 ## Scope and baseline

@@ -5,6 +5,10 @@ This runbook adds launcher-specific steps to the PostgreSQL procedures in
 database provisioning, TLS, roles, migrations, workspace provisioning, backup,
 restore, monitoring, and incidents.
 
+This is a backend-only, project-local pilot runbook. It does not describe a
+supported Phoenix deployment or complete browser login flow because no production
+web artifact exists yet. Issue #522 owns that release contract.
+
 ## Build
 
 From the customer project:

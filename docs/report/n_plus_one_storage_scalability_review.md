@@ -1,5 +1,9 @@
 # N+1 And Storage Scalability Review
 
+> **Historical point-in-time review:** This predates PostgreSQL Storage V2 and
+> references removed SQLite and generic-adapter implementations. Use current
+> storage docs and query-plan tests for present behavior.
+
 Date: 2026-05-24
 
 Priority: P2 - performance and scalability

@@ -1,75 +1,43 @@
 # Favn Roadmap
 
-This file contains forward-looking work only. Shipped capabilities and current
-limitations live in `docs/FEATURES.md`.
+PostgreSQL Storage V2 is implemented. The shortest path to a supported production
+release is five large, coherent implementation epics. Shipped capability and
+current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
+[`production/README.md`](production/README.md).
 
-PostgreSQL Storage V2 is now the control-plane baseline. The architecture is
-summarized in `docs/storage/postgresql/architecture.md`, the detailed decision
-record is `docs/architecture/postgresql-control-plane-storage-v2.md`, and
-production operations are defined in
-`docs/production/postgresql_operator_runbook.md`.
+## Production release path
 
-## Planned Next
+1. [#522 — runnable release artifacts and supported deployment topology](https://github.com/eirhop/favn/issues/522)
+   - Ship relocatable web, orchestrator, and runner artifacts.
+   - Finalize topology, configuration, secrets, health, packaging, upgrades, and
+     clean-machine acceptance.
+   - Validate the manifest, runner, and public package boundary against at least
+     six representative real customer projects.
+2. [#525 — durable scheduling and asynchronous orchestration](https://github.com/eirhop/favn/issues/525)
+   - Persist submission intent, move work outside scheduler/RunManager critical
+     paths, and add bounded workers, recovery, fairness, cancellation, and visibility.
+3. [#526 — DuckDB/DuckLake data-plane production hardening](https://github.com/eirhop/favn/issues/526)
+   - Define data-plane durability and recovery, add failure injection and honest
+     cancellation, and finish safe operator resource controls.
+4. [#524 — production operator UI, security, and browser acceptance](https://github.com/eirhop/favn/issues/524)
+   - Finish operator workflows, mutation audit, actor/session administration,
+     authorization, accessibility, and real-browser release acceptance.
+5. [#523 — PostgreSQL production proof and observability](https://github.com/eirhop/favn/issues/523)
+   - Prove managed PostgreSQL 18 restore, PITR, load, contention, failover, query
+     plans, least privilege, dashboards, alerts, and incident response.
 
-### 1. Prove the production deployment
+Observability and drill tooling from #523 should start alongside #522; #523 closes
+last as release qualification. The initial supported target is one application
+node with PostgreSQL. Multi-node application acceptance may follow without
+weakening PostgreSQL's durable coordination contracts.
 
-- Exercise the release against a production-sized restored snapshot on the target
-  managed PostgreSQL 18 service.
-- Record multi-node contention, failover, lock-wait, pool-pressure, outbox-lag,
-  projector-lag, and high-growth query-plan evidence.
-- Complete a provider PITR restore drill and verify the restored authority,
-  projections, cursors, and workspace isolation before enabling dispatch.
-- Establish alerts and dashboards for every signal required by the PostgreSQL
-  operator runbook.
-
-### 2. Finish deployment packaging
-
-- Turn `build.web` and `build.orchestrator` into independently runnable,
-  supportable release artifacts.
-- Keep `build.single` as the one-node developer and acceptance launcher backed by
-  PostgreSQL; do not reintroduce an embedded production database.
-- Define the private package publishing and upgrade process for the supported
-  application split.
-
-### 3. Stabilize the v1 product boundary
-
-- Validate manifest schema and runner contract 9 against real customer projects.
-- Measure execution-package fetch latency and reuse under production-sized SQL
-  projects. Add a package cache only if evidence justifies it; any cache must be
-  byte-bounded and content-addressed rather than retaining whole manifest packages.
-- Align all public moduledocs, examples, and package exports with
-  `docs/production/public_api_boundary.md`.
-- Complete the remaining operator UI flows through the public orchestrator facade.
-- Extend whole-backfill cancellation only when product requirements define its
-  parent/child semantics.
-
-### 4. Harden the runtime and data plane
-
-- Add adapter-native cancellation where a SQL backend supports it; preserve
-  explicit unknown outcomes where cancellation cannot be proved.
-- Expand DuckDB/DuckLake stress and failure-injection coverage independently of
-  PostgreSQL control-plane recovery.
-- Add operator-facing circuit state, recovery history, and reset controls after
-  production use defines the minimum safe workflow.
-- Add native Windows CI only when Windows becomes a supported production or
-  developer target.
-
-### 5. Re-evaluate local storage only from measured need
-
-- Use PostgreSQL for development and integration tests today.
-- Consider a smaller SQLite implementation only if the PostgreSQL developer loop
-  proves materially costly. Any SQLite implementation must satisfy the accepted
-  capability contracts and must not become a second source of semantics.
-- Do not restore a full memory persistence backend. Pure domain tests should use
-  values or focused fakes; persistence behavior belongs in PostgreSQL tests.
+The first supported release is ready only when these epics are complete or a
+remaining item is explicitly removed from the supported product contract.
 
 ## Later
 
-- Optional PostgreSQL row-level security as defense in depth after the application
-  workspace boundary is proven and operational ownership is clear.
-- Richer landed-data inspection and narrowly scoped local SQL tooling.
-- Additional SQL adapters and cloud credential providers driven by real customer
-  integrations.
-- Resource-aware distributed scheduling beyond the current durable execution-pool
-  and SQL-connection circuit breakers, admission, and ownership contracts.
-- More deployment automation for managed-cloud and split-topology environments.
+- Optional PostgreSQL row-level security as defense in depth.
+- Additional SQL adapters and credential providers driven by customer demand.
+- A smaller development-only storage adapter only if PostgreSQL developer-loop
+  measurements justify a second implementation.
+- Native Windows CI when Windows becomes a supported platform.

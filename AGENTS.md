@@ -1,108 +1,84 @@
 # AGENTS.md
 
-Favn is a manifest-first Elixir orchestration system for defining, compiling,
-and running business-oriented data assets.
+This file contains repository-wide contributor rules. The root `README.md` is a
+short public introduction and does not need to be read for implementation work.
+Start at [`docs/README.md`](docs/README.md), then read only the relevant structure,
+architecture, production, or public guide pages.
 
-## App Boundaries
+## Boundaries
 
-- `favn`: public DSL surface only.
-- `favn_core`: shared compiler, domain, and manifest logic.
-- `favn_runner`: execution runtime.
-- `favn_orchestrator`: control plane, state, scheduling, persistence, Phoenix API endpoints, and Plug pipelines.
-- `favn_view`: thin Phoenix/LiveView UI/API boundary.
-- Plugins and adapters own external integrations.
+- `favn`: public DSL, public Mix tasks, and HexDocs guides.
+- `favn_core`: compiler, domain, manifest, and shared contracts.
+- `favn_runner`: execution runtime; it does not own durable control-plane state.
+- `favn_orchestrator`: control plane, scheduling, auth, APIs, and persistence contracts.
+- `favn_storage_postgres`: the only control-plane persistence backend.
+- `favn_local`: local workflow and build/bootstrap tooling.
+- `favn_view`: thin Phoenix/LiveView boundary.
+- Plugins and adapters own external data-system integrations.
 
-`favn_view` must call backend functionality only through the public orchestrator
-facade. It must not call storage adapters, scheduler internals, runner modules,
-persistence modules, repos, compiler internals, or plugin internals directly.
+`favn_view` must use the public orchestrator facade. It must not call storage,
+scheduler, runner, repo, compiler, or plugin internals directly.
 
+## Repository rules
 
-## Repo Rules
+- Favn is private pre-v1 software. Prefer a clean breaking change over deprecation;
+  remove stale code and docs.
+- PostgreSQL is mandatory. Do not restore SQLite or memory persistence semantics.
+- Keep public behavior in moduledocs and `apps/favn/guides/`. Keep current product
+  status in `docs/FEATURES.md` and forward work in `docs/ROADMAP.md`.
+- Do not repeat a contract across overview docs. Explain it once in its canonical
+  guide or technical document and link to it elsewhere.
+- Public DSL changes must update the canonical guide, public docs/typespecs, and
+  `Favn.AI` routing in the same change.
+- Prefer small explicit modules, deterministic data flow, stable return shapes,
+  focused tests, and shared fixtures from `apps/favn_test_support`.
+- Preserve explicit failure and unknown-outcome semantics. Never blindly retry
+  writes, materialization, transactions, or other possibly completed side effects.
+- SQL sessions are runner-local and owner-exclusive; pooling is not distributed
+  coordination or permission to exceed catalog write limits. See
+  `docs/structure/favn_sql_runtime.md` before changing SQL session behavior.
 
-- Favn is private pre-v1 software; breaking changes are allowed when they make the design cleaner. Always remove deprecated code.
-- Keep user documentation current in `README.md`, `docs/FEATURES.md`, `docs/ROADMAP.md`, and relevant `docs/structure/*.md` files.
-- Every public DSL change must remove stale forms and document the new canonical form in the HexDocs guides, public moduledocs, AI breadcrumbs starting at `Favn.AI`, and the repository docs listed above.
-- Prefer small, explicit modules and public boundary functions with moduledocs, docs, and typespecs.
-- Use shared fixtures and test helpers from `apps/favn_test_support` when available.
+For documentation work, follow
+[`docs/DOCUMENTATION_GUIDE.md`](docs/DOCUMENTATION_GUIDE.md). Historical plans and
+reports are not active requirements unless a current document links to them.
 
-## SQL Session Pooling
+## Tool routing
 
-- DuckDB/ADBC SQL session pooling is default-on for poolable adapters; disable per connection with `pool: [enabled: false]`.
-- Pooling is runner-local to one BEAM, not distributed, and must not increase catalog/write concurrency.
-- Pool reuse is keyed by connection identity/config, required catalog set, and adapter fingerprint; checked-out sessions are exclusive to their owner process and SQL client operations must reject non-owner use.
-- Pooling and bounded same-key fresh session creation reduce repeated attach/bootstrap pressure but do not replace finite DuckLake catalog `write_concurrency`, especially on low-tier Azure PostgreSQL metadata stores.
-- Safe retries are only for session creation/bootstrap and read-only inspection/query paths. Do not blindly retry writes, materialization, transactions, or unknown-outcome failures.
-- Raw execute/materialize/transaction paths must not return sessions to the idle pool after mutation unless explicitly proven pool-safe internally.
-
-## Tidewave MCP Usage
-
-This repo has Tidewave MCP servers configured:
-
-- `tidewave_view`: use for `apps/favn_view`, including Phoenix LiveView, UI flows, routes, templates, components, browser-facing behavior, logs, source lookup, and runtime inspection.
-- `tidewave_orchestrator`: use for `apps/favn_orchestrator`, including Phoenix/Plug API endpoints, storage behavior, database inspection, orchestration runtime state, logs, and source lookup.
-
-Tidewave only works when the corresponding local runtime is running. Do not use
-Tidewave to bypass Favn boundaries; runtime inspection is allowed, but
-implementation must respect app ownership. `favn_view` must call orchestrator
-through public APIs/functions only and must not depend on orchestrator internals.
-
-If only UI work is needed, `favn_view` is enough. If only orchestrator/API/storage
-work is needed, `favn_orchestrator` is enough. For end-to-end UI to orchestrator
-debugging, run both.
-
-## Playwright MCP Setup
-
-Playwright MCP is configured as `playwright` for rendered browser interaction
-with `apps/favn_view` and `/storybook`.
-Use playwright to open http://127.0.0.1:4173/storybook and inspect the asset card component story. Use tidewave_view if you need runtime/source/log context.
-
-### Low-context tooling
-
-- Prefer explicit JSON fields for `gh` commands to avoid broad or deprecated output.
-- Prefer `git diff --name-only` or `git diff --stat` before targeted `git diff -- <path>`.
-- Avoid full logs, full diffs, and whole large-file reads unless broad output is the purpose of the task.
+- Use `tidewave_view` for running Phoenix/LiveView, routes, stories, logs, and UI
+  source inspection.
+- Use `tidewave_orchestrator` for running API, orchestration, storage, database,
+  and backend source inspection.
+- Tidewave requires the corresponding local runtime. Runtime inspection does not
+  relax application boundaries.
+- Use Playwright for rendered browser behavior and `/storybook`, not for backend
+  inspection.
+- Prefer targeted searches, diffs, and command output over whole-repository reads.
 
 ## Verification
 
-Prefer focused tests over E2E. One golden acceptance path is enough; bugs should
-get the smallest regression test at the owning layer.
-
-Run the narrowest useful check first. For app-scoped tests from the umbrella
-root, use:
+Run the narrowest owning-layer check first. From the umbrella root, app-scoped
+tests must use `cmd mix test` so the root alias does not recurse:
 
 ```bash
 MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
 MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --only acceptance
+```
+
+Replace `favn_local` with the affected app. Before finishing code changes, run
+the relevant subset of:
+
+```bash
+mix format
+mix compile --warnings-as-errors
+mix test --no-compile --timeout 1200000
 mix test.acceptance
 mix test.slow
 elixir scripts/check_test_tag_tiers.exs
 ```
 
-Untagged tests run in fast CI; `:acceptance`, `:slow`, and `:browser` tags must
-stay in apps covered by explicit CI slices or the tag guard must be updated.
-
-Replace `favn_local` with the affected app. Before finishing changes, run:
-
-- `mix format`
-- `mix compile --warnings-as-errors`
-- the fast, acceptance, and slow umbrella commands below
-
-The root runner forwards supported ExUnit arguments to every child app, keeps
-running after a child failure, and reports all failing app slices. It excludes
-the explicit acceptance, slow, and browser tiers. Run all three commands for the
-complete suite:
-
-```bash
-mix test --no-compile --timeout 1200000
-mix test.acceptance
-mix test.slow
-```
-
-Avoid plain `mix do --app <app> test ...` for scoped test arguments in this repo;
-the root `test` alias can recurse unexpectedly. Use `cmd mix test` under
-`mix do --app` as shown above.
-
-If dependencies change, update lockfiles and run the relevant verification.
+The fast suite excludes explicit `:acceptance`, `:slow`, and `:browser` tiers.
+Keep tagged tests in a CI-covered app or update the tag guard. Documentation-only
+changes need link/render review and `git diff --check`, not the umbrella suite.
 
 ## What the agent should optimize for
 

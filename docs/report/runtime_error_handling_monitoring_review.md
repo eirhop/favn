@@ -1,5 +1,9 @@
 # Runtime Error Handling and Monitoring Review
 
+> **Historical point-in-time review:** This predates PostgreSQL Storage V2 and
+> references removed adapters and paths. Reproduce every finding against current
+> `main` before opening work from it.
+
 Priority: P1 - production operability.
 
 Reviewed after fast-forwarding the worktree to `origin/main` at `ada8d15`.

@@ -1,10 +1,12 @@
-# PostgreSQL-Backed Single-Node Contract
+# Project-Local PostgreSQL Backend Launcher Contract
 
-This document defines the supported one-node launcher used for development,
-acceptance, and small controlled deployments. It uses the same PostgreSQL Storage
-V2 semantics as multi-node deployments; it is not an embedded-database mode.
+This document defines the project-local one-node backend launcher used for
+development, acceptance, and controlled internal pilots. It uses PostgreSQL
+Storage V2 and is not an embedded-database mode. It is not yet the relocatable,
+supported production distribution tracked by issue #522.
 
-The normative persistence design remains
+Current persistence behavior lives in `docs/storage/postgresql/`; the accepted
+PostgreSQL-only decision and invariants remain in
 `docs/architecture/postgresql-control-plane-storage-v2.md`.
 
 ## Topology
@@ -19,9 +21,14 @@ PostgreSQL is external and may be shared with other Favn nodes. Customer analyti
 data remains outside the control plane in each workspace's dedicated blob and
 DuckLake infrastructure.
 
+The launcher does not include the Phoenix UI. The current UI implementation calls
+the orchestrator through an in-BEAM facade; there is no supported split web release
+or network boundary yet.
+
 This topology has no application-node failover. A node outage stops dispatch until
-the node restarts, although committed control-plane state remains durable. Use at
-least two orchestrator nodes when node-failure tolerance is required.
+the node restarts, although committed control-plane state remains durable. The
+supported multi-node application topology is deferred to issue #522; operators
+must not infer it from the database coordination contracts alone.
 
 ## Artifact
 

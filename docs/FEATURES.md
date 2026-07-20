@@ -1,188 +1,100 @@
 # Favn Features
 
-This file records implemented behavior. Forward-looking work belongs in
-`docs/ROADMAP.md`; normative PostgreSQL decisions live in
-`docs/architecture/postgresql-control-plane-storage-v2.md`, with the concise
-implementation reference under `docs/storage/postgresql/`.
+This file records current capability and limits. Forward work belongs in
+[`ROADMAP.md`](ROADMAP.md); production readiness is summarized in
+[`production/README.md`](production/README.md).
 
-Maturity labels:
+Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane database.
 
-- **solid**: covered at its owning boundary and intended to remain.
-- **prototype**: implemented, but its public or operational contract may change.
-- **internal**: runtime implementation, not a consumer API.
+## Authoring and execution
 
-## Product Boundary
+- The `favn` package provides manifest-first asset, SQL-asset, pipeline, schedule,
+  window, freshness, retry, settings, and runtime-input DSLs.
+- Compilation produces a deterministic schema-9 manifest with graph metadata,
+  compact catalogue/planning indexes, and content-addressed SQL execution packages.
+- SQL output contracts validate ordered columns/types, lineage, grain, uniqueness,
+  nullability, and up to 16 ordered conditional row-count claims.
+- Planning supports asset and pipeline targets, dependency selection, refresh
+  modes, windows, stages, retries, replay, and bounded admission.
+- Runner work is pinned to a manifest version and verified execution package.
+  Ownership leases and fencing prevent stale executors from committing.
+- DuckDB and DuckDB ADBC support bounded queries, typed configuration, catalog
+  requirements, session scripts, and runner-local exclusive sessions.
 
-- `favn` is the public manifest-first DSL and Mix-task surface.
-- `favn_core` owns shared domain, compiler, manifest, and contract types.
-- `favn_runner` executes compiled work; SQL/data-plane integrations remain plugin-owned.
-- `favn_orchestrator` owns control-plane use cases, scheduling, coordination, auth,
-  private APIs, and the public backend facade used by `favn_view`.
-- `favn_storage_postgres` is the only control-plane persistence backend.
-- `favn_local` owns the project-local developer loop and build/bootstrap tooling.
-- `favn_view` is a thin Phoenix/LiveView boundary and calls only the public
-  orchestrator facade.
+Authoring and manifest contracts are comparatively mature. Planning, execution,
+runtime inputs, and SQL integrations remain pre-v1 and may change.
 
-Favn is private pre-v1 software. Breaking legacy forms are removed rather than
-deprecated when a cleaner contract is accepted.
+## Control plane
 
-## Authoring And Compilation
+- `favn_orchestrator` owns manifests, deployments, runs, events, schedules, logs,
+  backfills, admission, circuits, auth, audit, idempotency, and operator read models.
+- Every customer operation carries explicit workspace authority. Platform actions
+  use a separate authority boundary.
+- Mutating HTTP commands atomically commit idempotency state, domain mutation,
+  audit, outbox, and replay result.
+- Password auth uses Argon2id. Actors, memberships, credential hashes, session-token
+  hashes, revocation, access versions, and audit records are durable PostgreSQL data.
+- SSE and cross-node notifications use durable cursors; PubSub and PostgreSQL
+  `NOTIFY` are wake-ups, never correctness authorities.
+- Resource circuits, recovery candidates, schedule occurrences, execution
+  ownership, claims, leases, and fencing are durable coordination state.
 
-- Asset, multi-asset, SQL-asset, namespace, pipeline, schedule, window, freshness,
-  retry, resource-recovery, settings, and runtime-config DSLs are implemented.
-  **State: solid.**
-- Discovery and explicit module lists compile business code into a deterministic,
-  versioned manifest with graph metadata and runner contract identity. **State: solid.**
-- Manifest publication separates compact catalogue/planning indexes from immutable,
-  content-addressed SQL execution packages. Large generated SQL stays in PostgreSQL
-  and only the selected asset package is fetched at runtime. **State: solid.**
-- Typed references, relation catalogs, resource requirements, and explicit
-  connection modules cross the manifest/runtime boundary; arbitrary functions and
-  generic config bags do not. **State: solid.**
-- Runtime-input resolvers select immutable inputs before execution. Sensitive pins
-  are encrypted with the configured runtime-input key and are never copied into
-  generic metadata, events, logs, telemetry, or errors. **State: prototype.**
-- SQL output contracts support up to 16 ordered row-count claims with independent
-  conditions and fail, warn, or successful no-op policies. Generated checks retain
-  declaration order and expose every claim/result through asset assurance.
-  **State: solid.**
-
-## Planning And Execution
-
-- Asset and pipeline target planning supports dependency selection, refresh modes,
-  windowed execution, stages, retries, replay input modes, and bounded execution
-  admission. **State: prototype.**
-- Terminal branch failures no longer stop independent DAG siblings. Required
-  downstream nodes become durably blocked, and each planned node reaches a
-  terminal state. **State: solid internal contract.**
-- Runner work is pinned to a manifest version and explicit execution identity, with
-  the selected SQL asset's verified execution package attached before preflight.
-  Ownership and fencing tokens prevent a stale orchestrator from committing after
-  losing a lease. **State: solid internal contract.**
-- DuckDB and DuckDB ADBC adapters support bounded queries, typed configuration,
-  required catalogs/resources, session scripts, and runner-local exclusive session
-  pooling. **State: prototype.**
-- Azure credential integration provides cached Azure CLI and managed-identity
-  tokens without moving credential material into the control plane. **State: prototype.**
-
-## Orchestration And Operations
-
-- Run submit/read/cancel/retry, backfill planning/execution, schedules, logs,
-  materialization claims, admission, manifest publication/deployment, lineage, and
-  operator read models are implemented behind explicit workspace authority.
-  **State: prototype.**
-- PostgreSQL-backed circuit breakers protect configured execution pools and named
-  SQL connections. They use consecutive explicit resource outcomes, exclusive
-  half-open probes, and durable opt-in linked recovery runs for safe remaining
-  work. **State: prototype.**
-- Mutating HTTP commands use scoped idempotency keys. PostgreSQL atomically commits
-  the request fingerprint, domain mutation, audit entry, outbox event, and replay
-  result. Exact retries replay; conflicting input is rejected. **State: solid.**
-- Password auth uses Argon2id. Actors, workspace memberships, credentials, opaque
-  session-token hashes, revocation, access versions, and audit records are durable
-  PostgreSQL state. Browser cookies contain the selected workspace and opaque token;
-  browser-safe scopes exclude credential and token material. **State: prototype.**
-- SSE replay reads durable publication/run cursors. PubSub and PostgreSQL `NOTIFY`
-  are latency wake-ups only and never correctness authorities. **State: prototype.**
-- Diagnostics and readiness are redacted. Runtime readiness requires a reachable
-  database, the exact supported schema, critical constraints/indexes, and valid
-  runtime-input encryption keys. **State: solid internal contract.**
-- Asset detail projects operational run anchors, exact data coverage, and calendar
-  freshness as separate timelines. Composite freshness periods require successful
-  evidence for every expected lookback window and remain non-actionable in the UI.
-  Its health header and freshness explanation use the same exact planned target
-  and upstream freshness identities, including persisted input versions.
-  Multi-pipeline assets expose stable pipeline run contexts and require an explicit
-  selection before policy-sensitive reads or run actions; single-pipeline assets
-  remain automatic. Planner lookback expands nodes once, and each runner node keeps
-  its exact window through runtime-input resolution and incremental materialization.
-  **State: prototype.**
-- Run detail labels requested backfill anchors separately from effective per-asset
-  runtime windows. Overview, timeline, failures, and window views use bounded
-  compact projections; full snapshots and event payloads are loaded only for the
-  Events view. **State: prototype.**
+These capabilities are implemented and tested, but several operator workflows and
+high-volume asynchronous submission paths remain unfinished.
 
 ## PostgreSQL Storage V2
 
-- The former 97-callback adapter, memory backend, SQLite backend, and legacy
-  PostgreSQL schema were removed. Capability-specific behaviours now group atomic
-  commands and bounded queries by domain. **State: implemented.**
-- The `favn_control` schema stores platform manifest releases and hard-separated
-  workspace state. Customer access always carries an explicit workspace context;
-  platform operations require a distinct platform context. **State: implemented.**
-- Compact manifests reference immutable SHA-256 execution packages through normalized
-  manifest/asset associations. Package-first publication, one-query missing-hash
-  negotiation, primary-key runtime reads, and package-bound encrypted input pins
-  avoid full-manifest SQL loading and unbounded package scans. **State: implemented.**
-- Workspace deployments materialize an exact immutable target catalog containing
-  common targets plus customer-specific grants and dependency closure. Customer
-  reads expose only customer-visible targets. **State: implemented.**
-- Authoritative writes use database constraints, optimistic versions, leases with
-  fencing, `FOR UPDATE SKIP LOCKED`, advisory serialization where appropriate, a
-  commit-safe ordered outbox, and idempotent projectors. **State: implemented.**
-- Resource circuit state, idempotent outcomes, exclusive probe leases, and
-  recovery candidates are durable coordination records. **State: implemented.**
-- High-growth reads are keyset-paginated and bounded. Operator screens read compact
-  projections instead of scanning runs/events or issuing per-row follow-up queries.
-  Performance-contract tests assert query counts and reviewed query plans.
-  **State: implemented.**
-- Runtime nodes validate but never apply migrations. Separate Mix tasks cover
-  migration, workspace provisioning, least-privilege grants, restore verification,
-  missing-row projection backfill, and bounded retention of disposable operational
-  records. Online repair of corrupt current projection rows is explicitly deferred
-  until shadow generations and atomic cutover exist.
-  Canonical history and published outbox events remain indefinite until safe
-  referential/SSE watermarks are implemented. **State: implemented.**
-- Live-PostgreSQL tests cover authority, tenant isolation, idempotency, competing
-  connections, fencing, claim concurrency, query plans, restore checks, and facade
-  use cases. **State: implemented.**
+- `favn_storage_postgres` is the only persistence backend. The generic mega-adapter,
+  memory backend, SQLite backend, and legacy PostgreSQL schema were removed.
+- Capability-specific stores group atomic commands and bounded queries by domain.
+- The `favn_control` schema separates platform manifests from workspace data and
+  enforces exact schema, constraint, index, identifier, and payload requirements.
+- High-growth reads use keyset pagination and bounded projections. Manifest runtime
+  reads fetch compact indexes and selected immutable execution packages.
+- Separate tasks own migration, runtime grants, workspace provisioning, restore
+  verification, projection backfill, and bounded retention. Runtime nodes never
+  migrate automatically.
+- Live PostgreSQL suites cover tenancy, idempotency, concurrency, fencing, claims,
+  query plans, restore mechanics, and multi-node database authority.
 
-See `docs/storage/postgresql/architecture.md` for the implementation guide,
-`docs/storage/postgresql/data-model.md` for ER diagrams,
-`docs/structure/favn_storage_postgres.md` for the code/data map, and
-`docs/production/postgresql_operator_runbook.md` for operations.
+Implementation details live in [`storage/postgresql/`](storage/postgresql/); the
+operator contract is [`production/postgresql_operator_runbook.md`](production/postgresql_operator_runbook.md).
 
-## Local Development And Packaging
+## Local development and packaging
 
 - `mix favn.init`, `doctor`, `install`, `dev`, `run`, `backfill`, `runs`, `logs`,
-  `inspect`, `query`, `diagnostics`, `reload`, `status`, `stop`, and `reset` form the
-  local developer loop. **State: solid but private-dev.**
-- Local development uses PostgreSQL and one explicit local workspace. Memory and
-  SQLite are not supported storage modes. **State: implemented.**
-- `mix favn.build.runner` builds project-local runner output. `build.web` and
-  `build.orchestrator` remain metadata-oriented. `build.single` creates an
-  operational, project-local, non-relocatable PostgreSQL backend launcher.
-  **State: prototype.**
-- `mix favn.bootstrap.single` publishes missing execution packages followed by the
-  compact manifest index, logs into an explicit workspace, deploys the selected
-  release, registers it with the runner, and verifies the workspace active manifest.
-  **State: prototype.**
+  `inspect`, `query`, `diagnostics`, `reload`, `status`, `stop`, and `reset` provide
+  the private local developer loop against PostgreSQL.
+- `build.runner` creates project-specific runner output.
+- `build.single` creates an operational but project-local, non-relocatable backend
+  launcher containing orchestrator, scheduler, and one runner.
+- `build.web` and `build.orchestrator` currently produce metadata, not deployable
+  releases. Package publishing and supported upgrade distribution are unfinished.
 
-## Web Shell
+## Operator web UI
 
-- Phoenix/LiveView provides authenticated asset, lineage, pipeline, schedule, run,
-  log, and readiness surfaces. It depends only on the public orchestrator facade.
-  **State: prototype.**
-- Run/log live topics are workspace-scoped. Cross-node PostgreSQL publication
-  notifications trigger bounded durable refreshes; payload data is reauthorized and
-  reread from PostgreSQL. **State: prototype.**
+- Authenticated LiveView routes cover assets, pipelines, schedules, runs, logs,
+  lineage, login/logout, and health through the public orchestrator facade.
+- Workspace-scoped live updates reread durable state after notification.
+- Asset and run detail distinguish requested anchors from exact effective runtime
+  windows and use compact projections; event payloads load only on the Events view.
+- The UI remains a prototype: some asset-detail modes are placeholders, mutation
+  audit is incomplete, actor/session/audit administration is absent, and there is
+  no production browser acceptance suite.
 
-## Current Caveats
+## Production limits
 
-- The repository is still pre-v1; the package/release distribution model is not
-  finalized.
-- The single-node launcher is not a relocatable OTP release, and split web/
-  orchestrator build outputs are not yet deployable releases.
-- PostgreSQL is intentionally mandatory. A smaller SQLite developer adapter may be
-  evaluated only after production operation proves a real need.
-- Analytics data remains runner/plugin-owned: customer blob accounts, DuckLake
-  metadata databases, warehouses, and key-vault credentials are not stored in the
-  Favn control-plane database.
+- There is no relocatable supported release artifact or finalized web/backend
+  deployment topology.
+- PostgreSQL production-size restore, provider PITR, failover/load evidence,
+  dashboards, and alert wiring remain release gates.
+- PostgreSQL backup does not recover DuckDB files, DuckLake metadata, object
+  storage, warehouses, source systems, or external secret stores.
+- Scheduler occurrences are durable, but submission still runs synchronously in
+  the scheduler tick. The general durable asynchronous submission queue is not
+  implemented.
+- SQL adapter-native cancellation and broader DuckDB/DuckLake failure-injection
+  coverage remain incomplete.
 
-## Verification
-
-The root fast, acceptance, and slow suites are explicit CI tiers. PostgreSQL tests
-require `FAVN_DATABASE_URL`; CI starts an ephemeral PostgreSQL service rather than
-using a shared cloud database. The slow PostgreSQL tier starts three independent
-BEAM VMs and repository pools to verify database-authoritative partitioning,
-failover, and fencing. Security advisories are checked with `mix hex.audit`.
+CI runs fast, acceptance, and slow suites against PostgreSQL. Dependency advisory,
+documentation-link, ExDoc, and stale-document checks are not yet automated CI gates.

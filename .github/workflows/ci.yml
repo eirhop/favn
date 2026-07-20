@@ -21,15 +21,15 @@ jobs:
         uses: dorny/paths-filter@v3
         id: filter
         with:
+          predicate-quantifier: every
           filters: |
             tests:
-              - 'apps/**'
-              - 'config/**'
-              - 'scripts/**'
-              - '.github/workflows/**'
-              - 'mix.exs'
-              - 'mix.lock'
-              - '.formatter.exs'
+              - '**'
+              - '!**/*.md'
+              - '!**/README'
+              - '!**/README.*'
+              - '!docs/**'
+              - '!apps/favn/guides/**'
 
   fast-tests:
     name: Fast tests

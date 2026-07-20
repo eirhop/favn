@@ -13,6 +13,7 @@ Use these pages to find ownership and test locations for an umbrella application
 - `favn_duckdb.md` and `favn_duckdb_adbc.md`: DuckDB integrations
 - `favn_test_support.md`: shared test fixtures and helpers
 
-The normative persistence design is
+Current persistence implementation is documented under `docs/storage/postgresql/`;
+the rationale and invariants are in
 `docs/architecture/postgresql-control-plane-storage-v2.md`. SQLite storage was
 removed during the Storage V2 reset and has no current application boundary.

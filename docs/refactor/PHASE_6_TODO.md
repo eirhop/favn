@@ -1,5 +1,8 @@
 # Phase 6 TODO
 
+> **Historical and superseded:** The memory, SQLite, and generic adapter work
+> recorded here was removed by PostgreSQL Storage V2.
+
 ## Status
 
 Checklist for implementing the Phase 6 storage adapter plan defined in `docs/refactor/PHASE_6_STORAGE_ADAPTER_PLAN.md`.

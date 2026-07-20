@@ -15,13 +15,16 @@ alternatives. Full development and integration testing use PostgreSQL so the
 same constraints, transactions, query plans, and concurrency behavior are
 exercised before production.
 
+Production release status and the remaining non-storage gates are tracked in
+[`../production/README.md`](../production/README.md).
+
 ## PostgreSQL documentation
 
 - [Architecture and implementation](postgresql/architecture.md)
 - [Data model and ER diagrams](postgresql/data-model.md)
 - [Testing strategy](postgresql/testing.md)
 - [Operator runbook](../production/postgresql_operator_runbook.md)
-- [Detailed design decision record](../architecture/postgresql-control-plane-storage-v2.md)
+- [Architecture decision and invariants](../architecture/postgresql-control-plane-storage-v2.md)
 - [Application ownership map](../structure/favn_storage_postgres.md)
 
 ## Contract rules
