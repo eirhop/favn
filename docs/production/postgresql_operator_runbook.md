@@ -1,6 +1,6 @@
 # PostgreSQL Control-Plane Operator Runbook
 
-Status: Storage V2 implementation runbook
+Status: Storage V2 implementation runbook; managed-provider proof is tracked by #523
 Scope: Favn-owned `favn_control` schema on PostgreSQL 18
 
 Implementation architecture and ER diagrams live in
@@ -17,7 +17,9 @@ Vault contents, or runner/plugin-owned data.
 - One Favn-owned database and one `favn_control` schema.
 - One migrator identity with DDL authority and a separate `favn_runtime` identity.
 - Verified TLS with hostname checking on every production connection.
-- At least two orchestrator nodes when node-failure tolerance is required.
+- At least two orchestrator nodes are required for application-node failure
+  tolerance after the deployable multi-node topology in #522 exists. The database
+  coordination foundation alone is not a supported deployment artifact.
 - Provider-managed high availability and point-in-time recovery (PITR).
 - Customer isolation through explicit workspace context and composite workspace
   keys; customers never receive database credentials.

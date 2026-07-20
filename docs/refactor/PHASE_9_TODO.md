@@ -1,5 +1,8 @@
 # Phase 9 TODO
 
+> **Historical and superseded:** This completed phase records removed SQLite and
+> multi-storage behavior. It is not a current TODO list.
+
 ## Status
 
 Execution checklist for Phase 9 hardening, verification, and packaging honesty

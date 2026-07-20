@@ -21,6 +21,9 @@ The public user guides and HexDocs sources live under
 [`apps/favn/guides/`](../apps/favn/guides/). Internal implementation documents
 must not be presented as public API.
 
+For the current path to a supported release, start with
+[`production/README.md`](production/README.md).
+
 ## PostgreSQL storage
 
 PostgreSQL 18 is Favn's production, development, and integration-test
@@ -44,7 +47,8 @@ has its current invariants; it is not the quickest implementation reference.
 
 - [`report/`](report/) contains point-in-time audits. Findings may already be
   resolved; use Git history and current technical docs before acting on them.
-- [`refactor/`](refactor/) contains migration plans and completed phase notes.
+- [`refactor/`](refactor/) contains historical migration plans and completed phase
+  notes; it is not an active backlog.
 - [`archive/`](archive/) contains explicitly retired material.
 - `DOCUMENTATION_PLAN.md` records the original documentation initiative and is
   not the current navigation entry point.

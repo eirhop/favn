@@ -1,5 +1,8 @@
 # Phase 9 Remaining Dev Tooling And Packaging Plan
 
+> **Historical and superseded:** This plan assumes SQLite-first local and packaged
+> operation. PostgreSQL is now mandatory; current packaging work is issue #522.
+
 ## Status
 
 Source-of-truth completion record for the Phase 9 developer-tooling and

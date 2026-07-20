@@ -15,6 +15,9 @@ alternatives. Full development and integration testing use PostgreSQL so the
 same constraints, transactions, query plans, and concurrency behavior are
 exercised before production.
 
+Production release status and the remaining non-storage gates are tracked in
+[`../production/README.md`](../production/README.md).
+
 ## PostgreSQL documentation
 
 - [Architecture and implementation](postgresql/architecture.md)

@@ -1,5 +1,8 @@
 # Orchestrator refactor review packet
 
+> **Historical:** This review packet predates PostgreSQL Storage V2 and references
+> removed memory/SQLite/generic-adapter code. Do not use it as current guidance.
+
 This packet defines the independent review target. It is not an approval record.
 
 ## Review baseline

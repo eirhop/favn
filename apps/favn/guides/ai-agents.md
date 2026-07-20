@@ -1,144 +1,58 @@
 # AI Agent Development
 
-Favn includes `Favn.AI`, a compiled-doc entry point for AI-assisted development.
-Use it when an agent needs to decide which Favn modules, guides, or local
-commands to inspect next.
-
-## Start Here
-
-From a project that depends on `:favn`, read the AI entry point before guessing
-about APIs:
+Favn exposes compiled documentation so agents can discover the supported public
+API without reading runtime internals. Start every unfamiliar Favn task with:
 
 ```bash
 mix favn.read_doc Favn.AI
 ```
 
-`Favn.AI` maps common tasks to the next docs to read, including asset authoring,
-SQL assets, namespaces, pipelines, local commands, manifest functions, windows,
-freshness, and `Favn.SQLClient`.
+Follow its module pointers with `mix favn.read_doc ModuleName` or
+`mix favn.read_doc ModuleName function_name`.
 
-For SQL output contracts, follow this path instead of inferring a schema or
-lineage DSL from runtime code:
+## Task routing
 
-1. Read `mix favn.read_doc Favn.SQLAsset` and
-   `mix favn.read_doc Favn.SQLAsset contract` for public authoring.
-2. Read `mix favn.read_doc Favn.SQL.ContractFragment` for reusable columns and
-   `mix favn.read_doc Favn.SQL.Contract` for the compiled typed model.
-3. Read `mix favn.read_doc Favn.SQL.ContractValidation` for candidate schema
-   enforcement and `mix favn.read_doc Favn.SQL.Contract.Diff` for evolution.
-4. Read [SQL Output Contracts](sql-output-contracts.md) for the complete DSL,
-   automatic checks, policy outcomes, assurance, and limits.
+| Task | Read next |
+| --- | --- |
+| Assets, pipelines, namespaces, windows, or freshness | `Favn.Asset`, `Favn.Pipeline`, `Favn.Namespace`, then [Authoring Assets](authoring-assets.md) |
+| Local commands and runtime | `Favn.Dev`, then [Local Development](local-development.md) |
+| SQL assets | `Favn.SQLAsset`, then the relevant SQL guide |
+| Output schema and evolution | `Favn.SQLAsset contract`, `Favn.SQL.Contract`, then [SQL Output Contracts](sql-output-contracts.md) |
+| Transactional checks | `Favn.SQLAsset check`, `Favn.SQL.CheckResult`, then [SQL Asset Checks](sql-asset-checks.md) |
+| Runtime inputs | `Favn.SQLAsset.RuntimeInputs` and its result/error modules, then [SQL Runtime Inputs](sql-runtime-inputs.md) |
+| Connections, pooling, or DuckDB setup | `Favn.Connection`, then [Configuration](configuration.md) and [DuckDB Session Scripts](duckdb-session-scripts.md) |
+| SQL from Elixir | `Favn.SQLClient`, then [SQL Client](sql-client.md) |
+| Runner-local supervised state | `Favn.Runner.Plugin`, then [Runner Plugins](runner-plugins.md) |
+| Manifest tooling or debugging | `Favn`, then [Manifest-First](manifest-first.md) |
 
-The canonical lineage declaration is a plain `from:` list. Write the query's
-`select` list explicitly and use the contract to validate its output.
+## Public contract guardrails
 
-For transactional SQL asset checks, follow this path instead of inferring the
-contract from runtime code:
+- Consumer code depends on `:favn` and supported plugins, not orchestrator,
+  runner, storage, SQL-runtime, or UI implementation apps.
+- Use documented DSL modules and `mix favn.*` commands before considering internals.
+- `settings` are static authoring values, submitted inputs are `ctx.params`, and
+  environment-dependent values or secrets use `runtime_config`.
+- SQL identifiers and lineage are explicit. Do not infer a schema DSL or invent
+  structured DuckDB extension, secret, setting, or attach options.
+- SQL runtime-input resolvers implement `Favn.SQLAsset.RuntimeInputs`; configuration
+  does not become SQL parameters automatically.
+- Runner plugins are runner-local and disposable. Never use them for durable
+  business state or correctness-sensitive cross-run messaging.
 
-1. Read `mix favn.read_doc Favn.SQLAsset` for placement and execution semantics.
-2. Read `mix favn.read_doc Favn.SQLAsset check` for the macro's exact options.
-3. Read `mix favn.read_doc Favn.SQL.CheckResult` when interpreting persisted run
-   metadata and check outcomes.
-4. Read [Transactional SQL Asset Checks](sql-asset-checks.md) for the full
-   authoring workflow, result limits, and failure modes.
+Use the linked guide when exact options, lifecycle, limits, redaction, retries,
+or failure outcomes matter. Keep project-specific conventions in the consumer
+project's own agent instructions.
 
-For behaviour-based SQL runtime inputs, follow this path instead of inventing
-an inline resolver DSL:
-
-1. Read `mix favn.read_doc Favn.SQLAsset` for placement and execution timing.
-2. Read `mix favn.read_doc Favn.SQLAsset.RuntimeInputs` for `resolve/1`.
-3. Read `mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Result` and
-   `mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Error` for the only accepted
-   outcomes.
-4. Read [Runtime Inputs For SQL Assets](sql-runtime-inputs.md) for the full
-   workflow, supported values, budgets, redaction, and retry boundary.
-
-The canonical declaration is `runtime_inputs MyApp.Inputs`, where
-`MyApp.Inputs` implements `Favn.SQLAsset.RuntimeInputs`.
-Namespace modules may share both `runtime_config` bundles and a resolver across
-compatible descendant SQLAssets. Any SQLAsset with non-empty effective
-requirements must also have an effective resolver, and configuration values do
-not become automatic SQL parameters.
-
-For configuration questions, preserve the canonical value model instead of
-inventing generic bags: `settings` → `ctx.asset.settings` or
-`ctx.pipeline.settings`, submitted inputs → `ctx.params`, and
-`runtime_config` → `ctx.runtime_config`. SQLAssets may reference scalar settings
-as bound `@name` values, but settings cannot supply identifiers or silently
-override params. MultiAsset shared declarations are defaults and child
-declarations shallowly override them. Keep real `@moduledoc` and function
-`@doc`; custom Favn declarations do not use `@`.
-
-For DuckDB session setup, do not invent structured extension, setting, secret,
-or attach options. Read
-[DuckDB Session Scripts And Resources](duckdb-session-scripts.md), then
-`Favn.SQLAsset` and `Favn.Namespace`. Native trusted SQL files own DuckDB syntax;
-SQL assets declare stable `resources [...]` names. Both session scripts and
-asset SQL use `@name` for values, but they have separate parameter sources.
-
-For consumer-owned services inside an isolated runner, read
-[Runner Plugins And Runner-Local Services](runner-plugins.md) and
-`Favn.Runner.Plugin`. Use `Favn.Runner.SupervisedChildren` for ordinary OTP
-children. Treat all plugin state as runner-local and disposable; never suggest
-it for durable business state or correctness-sensitive cross-run messages. The
-optional `:favn_azure` package is the reference credential-cache plugin and can
-inject secret cached tokens through `Favn.Azure.Credentials.token_ref/2`.
-
-## Recommended Workflow
-
-- Use `:favn` as the public package surface for asset authoring, local commands,
-  manifest helpers, and SQL client usage.
-- Read `Favn.AI` first, then follow its module pointers with
-  `mix favn.read_doc ModuleName`.
-- Prefer the documented DSL modules and `mix favn.*` commands over direct calls
-  into runtime, storage, orchestrator, runner, or UI implementation apps.
-- Use the local guides in this package for user-facing behavior before reading
-  source files.
-- Keep project-specific instructions in the consumer project's `AGENTS.md` or
-  equivalent agent instruction file.
-
-## Consumer Agent Prompt
-
-Add a short Favn section to a consumer project's agent instructions:
+## Consumer agent prompt
 
 ```md
 ## Favn
 
-Favn is used to define business-oriented assets and pipelines in Elixir,
-compile them into a manifest, and run or inspect them locally.
-
-Before guessing about Favn APIs, read `mix favn.read_doc Favn.AI` and follow
-the module pointers there. Prefer the recommended consumer shape unless this
-project documents a stronger local convention.
+Favn defines business-oriented assets and pipelines in Elixir and compiles them
+into a manifest. Before guessing about its APIs, run
+`mix favn.read_doc Favn.AI` and follow the documented module and guide pointers.
+Use public `:favn` APIs and supported plugins, not runtime implementation apps.
 ```
 
-## Follow-Up Reads
-
-Useful follow-up commands:
-
-```bash
-mix favn.read_doc Favn
-mix favn.read_doc Favn.Asset
-mix favn.read_doc Favn.Settings
-mix favn.read_doc Favn.Run.Context
-mix favn.read_doc Favn.SQLAsset
-mix favn.read_doc Favn.SQLAsset.RuntimeInputs
-mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Result
-mix favn.read_doc Favn.SQLAsset.RuntimeInputs.Error
-mix favn.read_doc Favn.SQLAsset check
-mix favn.read_doc Favn.SQLAsset contract
-mix favn.read_doc Favn.SQL.ContractFragment
-mix favn.read_doc Favn.SQL.Contract
-mix favn.read_doc Favn.SQL.ContractValidation
-mix favn.read_doc Favn.SQL.Contract.Diff
-mix favn.read_doc Favn.SQL.CheckResult
-mix favn.read_doc Favn.Connection
-mix favn.read_doc Favn.Pipeline
-mix favn.read_doc Favn.Namespace
-mix favn.read_doc Favn.SQLClient
-mix favn.read_doc Favn.Dev
-```
-
-For repository contributors, the root `AGENTS.md` and `.opencode/skills/`
-contain additional boundary-specific guidance. Those files are contributor
-instructions for this repository, not consumer API documentation.
+Repository contributors should follow the root `AGENTS.md`. It contains internal
+boundaries and verification rules that do not belong in consumer documentation.

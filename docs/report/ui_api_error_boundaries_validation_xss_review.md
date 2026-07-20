@@ -1,5 +1,9 @@
 # UI/API Error Boundaries, Validation, Sanitization, and XSS Review
 
+> **Historical point-in-time review:** Authentication, storage, operator DTOs, and
+> LiveView behavior have changed since this review. Revalidate findings against
+> current `main`; issue #524 owns the production UI/security gate.
+
 Date: 2026-05-24
 
 Scope reviewed:

@@ -340,7 +340,8 @@ is out of sync.
   `bin/start|stop` scripts. It runs runner, PostgreSQL persistence, and
   orchestrator in one backend BEAM runtime. The launcher is operational and
   start/stop tested, but remains project-local and non-relocatable because it
-  depends on the installed runtime source root. Web startup is a separate process.
+  depends on the installed runtime source root. It does not provide a supported web
+  startup path; the current UI requires an in-BEAM orchestrator facade.
 
 ## Platform assumptions
 
