@@ -251,15 +251,13 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp decode_materialization({:incremental, opts}) when is_list(opts) do
     Materialization.normalize!({:incremental, decode_materialization_opts(opts)})
-  rescue
-    _error -> {:incremental, decode_materialization_opts(opts)}
   end
 
   defp decode_materialization([kind, opts]) when kind in [:incremental, "incremental"] do
     decode_materialization({:incremental, opts})
   end
 
-  defp decode_materialization(other), do: other
+  defp decode_materialization(other), do: Materialization.normalize!(other)
 
   defp decode_materialization_opts(values) when is_list(values) do
     Enum.map(values, fn

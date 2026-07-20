@@ -64,10 +64,6 @@ defmodule Favn.Manifest.Serializer do
     |> normalize_value()
   end
 
-  defp normalize_value({module, name}) when is_atom(module) and is_atom(name) do
-    %{"module" => Atom.to_string(module), "name" => Atom.to_string(name)}
-  end
-
   defp normalize_value(tuple) when is_tuple(tuple) do
     tuple
     |> Tuple.to_list()

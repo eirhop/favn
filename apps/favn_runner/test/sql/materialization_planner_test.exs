@@ -2,6 +2,8 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
   use ExUnit.Case, async: true
 
   alias Favn.Connection.Resolved
+  alias Favn.Manifest
+  alias Favn.Manifest.{Asset, Graph, Version}
   alias Favn.RelationRef
 
   alias Favn.SQL.{
@@ -39,13 +41,15 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
     assert write_plan.metadata == %{rebuild?: true}
   end
 
-  test "uses the exact planned runtime window as the incremental write scope" do
+  test "uses rehydrated options and the exact planned incremental window" do
     start_at = ~U[2026-07-14 00:00:00Z]
     end_at = ~U[2026-07-15 00:00:00Z]
     runtime = Runtime.new!(:day, start_at, end_at, Key.new!(:day, start_at, "Etc/UTC"))
 
     materialization =
-      {:incremental, strategy: :delete_insert, window_column: :partition_day}
+      canonical_materialization(
+        {:incremental, strategy: :delete_insert, window_column: :partition_day}
+      )
 
     assert {:ok, %WritePlan{} = write_plan} =
              MaterializationPlanner.build(
@@ -56,6 +60,8 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
 
     assert write_plan.window == runtime
     assert write_plan.effective_window == runtime
+    assert write_plan.strategy == :delete_insert
+    assert write_plan.window_column == "partition_day"
 
     assert write_plan.metadata.delete_scope == %{
              window_column: "partition_day",
@@ -112,6 +118,29 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
 
   defp relation do
     RelationRef.new!(%{connection: :warehouse, schema: "analytics", name: "orders"})
+  end
+
+  defp canonical_materialization(materialization) do
+    ref = {__MODULE__, :asset}
+
+    manifest = %Manifest{
+      assets: [
+        %Asset{
+          ref: ref,
+          module: elem(ref, 0),
+          name: elem(ref, 1),
+          type: :sql,
+          materialization: materialization,
+          execution_package_hash: String.duplicate("a", 64)
+        }
+      ],
+      graph: %Graph{nodes: [ref], topo_order: [ref]}
+    }
+
+    assert {:ok, version} =
+             Version.new(manifest, manifest_version_id: "mv_runner_incremental_materialization")
+
+    version.manifest.assets |> hd() |> Map.fetch!(:materialization)
   end
 
   defmodule Adapter do
