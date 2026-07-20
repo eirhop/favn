@@ -176,7 +176,7 @@ defmodule FavnOrchestrator.Operator.Commands do
          %AssetRunRequest{} = request,
          command_opts
        ) do
-    with {:ok, opts} <- AssetOptions.from_operator_request(asset, request) do
+    with {:ok, opts} <- AssetOptions.from_operator_request(version, asset, request) do
       submit_asset_run(
         context,
         asset.ref,

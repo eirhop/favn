@@ -43,7 +43,10 @@ freshness, and execution coordination.
   facade expose bounded read models to thin clients. Asset catalogue detail
   decodes freshness keys structurally and projects run anchors, exact coverage,
   and aggregated calendar freshness separately; only anchor and exact-window
-  projections carry submission intent.
+  projections carry submission intent. `AssetRunContext` binds a manifest-pinned
+  asset to one selecting pipeline policy and timezone. Catalogue reads and operator
+  commands share its stable id, reject forged or stale contexts, and surface
+  multi-pipeline ambiguity instead of depending on manifest order.
 - `RuntimeInputPins` owns encrypted resolve/pin/replay behavior. Raw resolved
   credentials never enter generic run metadata. Pins are bound to the selected
   asset's exact execution-package hash and resolver.

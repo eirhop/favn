@@ -192,6 +192,15 @@ defmodule FavnOrchestrator.API.RunsRouter do
   defp submit_error(:invalid_pipeline_target),
     do: validation_command_error("Invalid pipeline target id")
 
+  defp submit_error(:ambiguous_asset_run_context),
+    do:
+      {:error, 422, "validation_failed", "Asset run context is required",
+       %{field: "run_context_id"}}
+
+  defp submit_error(:invalid_asset_run_context),
+    do:
+      {:error, 422, "validation_failed", "Invalid asset run context", %{field: "run_context_id"}}
+
   defp submit_error(:active_manifest_not_set),
     do: {:error, 404, "not_found", "Active manifest is not set", %{}}
 

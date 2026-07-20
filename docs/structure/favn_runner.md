@@ -49,7 +49,10 @@ Code:
   `native_status: :native_cancel_unknown` unless an adapter-specific native
   cancellation path proves a stronger outcome.
 - `apps/favn_runner/lib/favn_runner/sql/materialization_planner.ex` owns runner SQL
-  asset materialization planning and emits shared `%Favn.SQL.WritePlan{}` values
+  asset materialization planning and emits shared `%Favn.SQL.WritePlan{}` values.
+  Planner lookback is represented by distinct work nodes; runtime-input resolution
+  and incremental delete/insert planning preserve each node's exact runtime window
+  rather than applying asset lookback again.
 - runner-owned execution modules under `apps/favn_runner/lib/favn/`
 
 Tests:

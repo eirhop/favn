@@ -16,9 +16,9 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
   alias Favn.Window.Anchor
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Freshness.Decider, as: FreshnessDecider
-  alias FavnOrchestrator.Operator.Catalogue.RunAnchorPolicy
   alias FavnOrchestrator.Operator.Catalogue.Targets
 
   @doc "Builds an operator freshness explanation for one manifest asset."
@@ -27,9 +27,13 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
       when is_list(freshness_states) and is_list(opts) do
     policy = policy(asset)
     now = Keyword.get(opts, :now) || DateTime.utc_now()
+    opts = normalize_run_context_opts(version, asset, opts)
 
-    case policy.kind do
-      :always ->
+    case {policy.kind, opts[:run_context_status]} do
+      {kind, :ambiguous} when kind not in [:always, :none] ->
+        run_context_required_detail(policy)
+
+      {:always, _status} ->
         freshness_detail(
           :always_run,
           policy,
@@ -38,7 +42,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
           [%{kind: :always_run, message: "Manifest policy is always run."}]
         )
 
-      :none ->
+      {:none, _status} ->
         freshness_detail(
           :unknown,
           policy,
@@ -47,8 +51,8 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
           [%{kind: :no_freshness_policy, message: "No freshness policy is declared."}]
         )
 
-      _policy_kind ->
-        classify(asset, version, freshness_states, policy, now)
+      {_policy_kind, _status} ->
+        classify(asset, version, freshness_states, policy, now, opts)
     end
   end
 
@@ -71,8 +75,8 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
     Targets.ref_string({state.asset_ref_module, state.asset_ref_name})
   end
 
-  defp classify(asset, version, freshness_states, policy, now) do
-    with {:ok, plan} <- freshness_plan(asset, version, now),
+  defp classify(asset, version, freshness_states, policy, now, opts) do
+    with {:ok, plan} <- freshness_plan(asset, version, now, opts),
          {:ok, target_node_keys} <- target_node_keys(plan, asset.ref) do
       states = state_lookup(freshness_states)
       assets_by_ref = Map.new(List.wrap(version.manifest.assets), &{&1.ref, &1})
@@ -170,26 +174,44 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
   defp detail_from_decision(_asset, policy, _state, _decision),
     do: insufficient_state_detail(policy)
 
-  defp freshness_plan(asset, version, now) do
+  defp freshness_plan(asset, version, now, opts) do
     with {:ok, index} <- ManifestIndexCache.fetch(version) do
-      opts = [dependencies: :all, planning_index: index.planning_index]
+      planner_opts = [dependencies: :all, planning_index: index.planning_index]
 
-      opts =
-        case current_anchor_window(asset, version, now) do
-          {:ok, anchor_window} -> Keyword.put(opts, :anchor_window, anchor_window)
-          :error -> opts
+      planner_opts =
+        case current_anchor_window(asset, now, opts) do
+          {:ok, anchor_window} -> Keyword.put(planner_opts, :anchor_window, anchor_window)
+          :error -> planner_opts
         end
 
-      Planner.plan(asset.ref, opts)
+      Planner.plan(asset.ref, planner_opts)
     end
   end
 
-  defp current_anchor_window(asset, version, now) do
-    with {:ok, %RunAnchorPolicy{} = run_policy} <- RunAnchorPolicy.resolve(version, asset),
-         {:ok, %Anchor{} = anchor} <- RunAnchorPolicy.anchor(run_policy, now) do
+  defp current_anchor_window(asset, now, opts) do
+    with %AssetRunContext{} = run_context <- Keyword.get(opts, :asset_run_context),
+         {:ok, %Anchor{} = anchor} <- AssetRunContext.anchor(run_context, now) do
       {:ok, anchor}
     else
       _error -> asset_anchor_window(asset, now)
+    end
+  end
+
+  defp normalize_run_context_opts(version, asset, opts) do
+    if Keyword.has_key?(opts, :run_context_status) do
+      opts
+    else
+      case AssetRunContext.select(version, asset) do
+        {:ok, selection} ->
+          opts
+          |> Keyword.put(:asset_run_context, selection.selected)
+          |> Keyword.put(:run_context_status, selection.status)
+
+        {:error, _reason} ->
+          opts
+          |> Keyword.put(:asset_run_context, nil)
+          |> Keyword.put(:run_context_status, :unavailable)
+      end
     end
   end
 
@@ -277,6 +299,21 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
         %{
           kind: :insufficient_state,
           message: "Backend could not build a staleness explanation from available state."
+        }
+      ]
+    )
+  end
+
+  defp run_context_required_detail(policy) do
+    freshness_detail(
+      :unknown,
+      policy,
+      nil,
+      "Select a pipeline context before evaluating policy-sensitive freshness.",
+      [
+        %{
+          kind: :run_context_required,
+          message: "Multiple pipeline policies select this asset."
         }
       ]
     )

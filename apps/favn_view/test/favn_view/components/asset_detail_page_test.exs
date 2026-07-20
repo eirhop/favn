@@ -56,6 +56,38 @@ defmodule FavnView.Components.AssetDetailPageTest do
     refute submit_socket.assigns.submitting_window_run?
   end
 
+  test "surfaces ambiguous pipeline context and renders stable selection links" do
+    contexts = [
+      %{
+        id: "pipeline:manual",
+        label: "Manual pipeline",
+        href: "/assets/orders?run_context=pipeline%3Amanual",
+        timezone: "Etc/UTC",
+        policy: %{kind: :month, anchor: :previous_complete_period}
+      },
+      %{
+        id: "pipeline:scheduled",
+        label: "Scheduled pipeline",
+        href: "/assets/orders?run_context=pipeline%3Ascheduled",
+        timezone: "Europe/Oslo",
+        policy: %{kind: :month, anchor: :current_period}
+      }
+    ]
+
+    html =
+      render_component(&AssetDetailPage.run_context_selector/1,
+        contexts: contexts,
+        selected: nil,
+        status: :ambiguous
+      )
+
+    assert html =~ ~s(data-testid="asset-run-context-selector")
+    assert html =~ ~s(data-testid="asset-run-context-required")
+    assert html =~ "Select one before running it"
+    assert html =~ "run_context=pipeline%3Amanual"
+    assert html =~ "run_context=pipeline%3Ascheduled"
+  end
+
   defp freshness_window do
     %{
       id: "freshness:day:2026-07-17",

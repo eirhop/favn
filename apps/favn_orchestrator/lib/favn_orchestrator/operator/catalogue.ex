@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   alias Favn.Manifest.Version
   alias Favn.Window.Key, as: WindowKey
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Operator.Catalogue.AssetFreshness
@@ -149,6 +150,9 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:has_freshness_timeline?) => boolean(),
           required(:has_data_windows?) => boolean(),
           required(:can_run_asset?) => boolean(),
+          required(:run_contexts) => [map()],
+          required(:selected_run_context) => map() | nil,
+          required(:run_context_status) => AssetRunContext.status(),
           required(:freshness) => asset_freshness_detail(),
           required(:assurance) => map() | nil,
           required(:timeline) => [asset_timeline_window()]
@@ -230,6 +234,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
          true <- MapSet.member?(granted_ids(grants, :asset), target_id),
          {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
          {:ok, asset} <- asset_for_target(version, target_id),
+         {:ok, run_context_selection} <-
+           AssetRunContext.select(version, asset, Keyword.get(opts, :run_context_id)),
          {:ok, status} <- target_status(context, runtime, :asset, target_id),
          {:ok, page} <- target_runs(context, runtime, :asset, target_id),
          {:ok, projection_state} <- asset_projection_state(context, runtime, target_id),
@@ -248,7 +254,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
          freshness_states,
          window_states,
          runs,
-         opts
+         opts,
+         run_context_selection
        )}
     else
       false -> {:error, :not_found}
@@ -258,9 +265,10 @@ defmodule FavnOrchestrator.Operator.Catalogue do
 
   defp normalize_asset_detail_opts(opts) do
     with true <- Keyword.keyword?(opts),
-         [] <- Keyword.keys(opts) -- [:now, :today],
+         [] <- Keyword.keys(opts) -- [:now, :today, :run_context_id],
          :ok <- validate_optional_datetime(Keyword.get(opts, :now), :now),
-         :ok <- validate_optional_date(Keyword.get(opts, :today), :today) do
+         :ok <- validate_optional_date(Keyword.get(opts, :today), :today),
+         :ok <- validate_optional_run_context_id(Keyword.get(opts, :run_context_id)) do
       {:ok, opts}
     else
       false ->
@@ -285,6 +293,12 @@ defmodule FavnOrchestrator.Operator.Catalogue do
 
   defp validate_optional_date(value, field),
     do: {:error, {:invalid_asset_detail_option, field, value}}
+
+  defp validate_optional_run_context_id(nil), do: :ok
+  defp validate_optional_run_context_id(value) when is_binary(value) and value != "", do: :ok
+
+  defp validate_optional_run_context_id(value),
+    do: {:error, {:invalid_asset_detail_option, :run_context_id, value}}
 
   defp target_statuses(context, runtime, target_kind, targets) do
     target_ids = Enum.map(targets, & &1.target_id)
@@ -506,13 +520,19 @@ defmodule FavnOrchestrator.Operator.Catalogue do
          freshness_states,
          asset_window_states,
          runs,
-         opts
+         opts,
+         run_context_selection
        ) do
     target = Targets.asset(asset)
     ref_string = Targets.ref_string(asset.ref)
     latest_freshness = AssetFreshness.latest_for_ref(freshness_states, ref_string)
     latest_run = latest_run_for_ref(runs, ref_string)
     runs_by_id = Map.new(runs, &{&1.id, &1})
+
+    context_opts =
+      opts
+      |> Keyword.put(:asset_run_context, run_context_selection.selected)
+      |> Keyword.put(:run_context_status, run_context_selection.status)
 
     timeline =
       Timeline.build(
@@ -523,8 +543,13 @@ defmodule FavnOrchestrator.Operator.Catalogue do
         freshness_states,
         asset_window_states,
         runs_by_id,
-        opts
+        context_opts
       )
+
+    context_descriptors = Enum.map(run_context_selection.contexts, &AssetRunContext.descriptor/1)
+
+    selected_context_descriptor =
+      run_context_selection.selected && AssetRunContext.descriptor(run_context_selection.selected)
 
     target
     |> Map.take([:target_id, :label, :asset_ref, :relation, :type, :window])
@@ -532,10 +557,13 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Map.put(:canonical_asset_ref, asset.ref)
     |> Map.put(:name, asset_detail_name(target))
     |> Status.put(status)
-    |> Map.put(:freshness, AssetFreshness.detail(asset, version, freshness_states, opts))
+    |> Map.put(:freshness, AssetFreshness.detail(asset, version, freshness_states, context_opts))
     |> Map.put(:assurance, assurance_detail(asset, latest_run))
     |> Map.merge(timeline)
-    |> Map.put(:can_run_asset?, true)
+    |> Map.put(:run_contexts, context_descriptors)
+    |> Map.put(:selected_run_context, selected_context_descriptor)
+    |> Map.put(:run_context_status, run_context_selection.status)
+    |> Map.put(:can_run_asset?, run_context_selection.status != :ambiguous)
   end
 
   defp assurance_detail(%{assurance: nil}, _latest_run), do: nil

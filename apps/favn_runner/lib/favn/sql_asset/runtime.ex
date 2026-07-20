@@ -14,7 +14,7 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.SQL.Error, as: SQLError
   alias Favn.SQL.{Check, CheckResult, Contract, ContractValidation, Result, Session}
 
-  alias Favn.SQL.{Explain, IncrementalWindow, MaterializationResult, Params, Preview, Render}
+  alias Favn.SQL.{Explain, MaterializationResult, Params, Preview, Render}
 
   alias Favn.SQLAsset.{
     CheckResultNormalizer,
@@ -329,24 +329,21 @@ defmodule Favn.SQLAsset.Runtime do
        ) do
     case context.window do
       %Runtime{} = runtime_window ->
-        with {:ok, %IncrementalWindow{} = effective_window} <-
-               IncrementalWindow.resolve(runtime_window, definition.asset.window_spec),
-             {:ok, %Runtime{} = effective_runtime} <-
-               IncrementalWindow.to_runtime(effective_window) do
-          final_context = %Context{context | window: effective_runtime}
+        case validate_runtime_window(runtime_window, definition.asset.window_spec) do
+          :ok ->
+            {:ok, context,
+             opts
+             |> Keyword.put(:context, context)
+             |> put_runtime_window(runtime_window)}
 
-          {:ok, final_context,
-           opts
-           |> Keyword.put(:context, final_context)
-           |> put_runtime_window(effective_runtime)}
-        else
           {:error, reason} ->
             {:error,
              %Error{
                type: :materialization_planning_failed,
                phase: :materialize,
                asset_ref: definition.asset.ref,
-               message: "failed to resolve the effective incremental window",
+               message:
+                 "incremental runtime window does not match the asset window specification",
                details: %{materialization: definition.materialization},
                cause: reason
              }}
@@ -1446,14 +1443,24 @@ defmodule Favn.SQLAsset.Runtime do
          %Definition{materialization: {:incremental, _opts}} = definition,
          opts
        ) do
-    with {:ok, %Render{} = initial_render} <- Renderer.render(definition, opts),
-         {:ok, %Runtime{} = runtime_window} <- runtime_window(initial_render, definition),
-         {:ok, %IncrementalWindow{} = effective_window} <-
-           IncrementalWindow.resolve(runtime_window, definition.asset.window_spec),
-         {:ok, %Runtime{} = effective_runtime} <- IncrementalWindow.to_runtime(effective_window),
-         {:ok, %Render{} = widened_render} <-
-           Renderer.render(definition, put_runtime_window(opts, effective_runtime)) do
-      {:ok, widened_render}
+    with {:ok, %Render{} = render} <- Renderer.render(definition, opts),
+         {:ok, %Runtime{} = runtime_window} <- runtime_window(render, definition),
+         :ok <- validate_runtime_window(runtime_window, definition.asset.window_spec) do
+      {:ok, render}
+    else
+      {:error, {:runtime_window_mismatch, _runtime, _spec} = reason} ->
+        {:error,
+         %Error{
+           type: :materialization_planning_failed,
+           phase: :materialize,
+           asset_ref: definition.asset.ref,
+           message: "incremental runtime window does not match the asset window specification",
+           details: %{materialization: definition.materialization},
+           cause: reason
+         }}
+
+      other ->
+        other
     end
   end
 
@@ -1476,6 +1483,13 @@ defmodule Favn.SQLAsset.Runtime do
          }}
     end
   end
+
+  defp validate_runtime_window(%Runtime{kind: kind, timezone: timezone}, window_spec)
+       when kind == window_spec.kind and timezone == window_spec.timezone,
+       do: :ok
+
+  defp validate_runtime_window(%Runtime{} = runtime, window_spec),
+    do: {:error, {:runtime_window_mismatch, runtime, window_spec}}
 
   defp put_runtime_window(opts, %Runtime{} = runtime_window) do
     runtime_map =

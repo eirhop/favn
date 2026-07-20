@@ -132,6 +132,7 @@ defmodule FavnOrchestrator.OperatorCommands.Input do
   end
 
   defp invalid_text_field(:coverage_baseline_id), do: :invalid_operator_coverage_baseline_id
+  defp invalid_text_field(:run_context_id), do: :invalid_operator_run_context_id
   defp invalid_text_field(field), do: {:invalid_operator_text_field, field}
 
   defp has_field?(input, field) when is_map(input),

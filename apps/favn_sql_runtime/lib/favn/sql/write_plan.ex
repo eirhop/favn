@@ -4,6 +4,7 @@ defmodule Favn.SQL.WritePlan do
   """
 
   alias Favn.SQL.Relation
+  alias Favn.Window.Runtime
 
   @type materialization :: :view | :table | :incremental
   @type strategy :: :append | :replace | :delete_insert | :merge
@@ -49,8 +50,8 @@ defmodule Favn.SQL.WritePlan do
           replace?: boolean() | nil,
           if_not_exists?: boolean() | nil,
           transactional?: boolean() | nil,
-          window: term(),
-          effective_window: term(),
+          window: Runtime.t() | nil,
+          effective_window: Runtime.t() | nil,
           window_column: String.t() | nil,
           unique_key: [binary()] | nil,
           incremental_predicate_sql: iodata() | nil,

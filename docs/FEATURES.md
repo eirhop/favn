@@ -78,6 +78,10 @@ deprecated when a cleaner contract is accepted.
 - Asset detail projects operational run anchors, exact data coverage, and calendar
   freshness as separate timelines. Composite freshness periods require successful
   evidence for every expected lookback window and remain non-actionable in the UI.
+  Multi-pipeline assets expose stable pipeline run contexts and require an explicit
+  selection before policy-sensitive reads or run actions; single-pipeline assets
+  remain automatic. Planner lookback expands nodes once, and each runner node keeps
+  its exact window through runtime-input resolution and incremental materialization.
   **State: prototype.**
 
 ## PostgreSQL Storage V2

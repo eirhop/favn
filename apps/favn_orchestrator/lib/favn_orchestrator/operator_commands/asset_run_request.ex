@@ -30,6 +30,7 @@ defmodule FavnOrchestrator.OperatorCommands.AssetRunRequest do
         }
 
   @type t :: %__MODULE__{
+          run_context_id: String.t() | nil,
           dependency_mode: dependency_mode(),
           refresh_mode: refresh_mode(),
           selection: selection() | nil,
@@ -38,7 +39,8 @@ defmodule FavnOrchestrator.OperatorCommands.AssetRunRequest do
           timeout_ms: pos_integer() | nil
         }
 
-  defstruct dependency_mode: :all,
+  defstruct run_context_id: nil,
+            dependency_mode: :all,
             refresh_mode: :auto,
             selection: nil,
             metadata: nil,
@@ -75,12 +77,15 @@ defmodule FavnOrchestrator.OperatorCommands.AssetRunRequest do
     with :ok <- Input.reject_legacy_retry_fields(input),
          {:ok, dependency_mode} <- Input.dependency_mode(dependency_value),
          {:ok, refresh_mode} <- Input.asset_refresh_mode(refresh_value),
+         {:ok, run_context_id} <-
+           Input.non_empty_binary(Input.field(input, :run_context_id), :run_context_id),
          {:ok, selection} <- Input.selection(Input.field(input, :selection)),
          {:ok, metadata} <- Input.metadata(Input.field(input, :metadata)),
          {:ok, retry_policy} <- Input.retry_policy(Input.field(input, :retry_policy)),
          {:ok, timeout_ms} <- Input.timeout_ms(Input.field(input, :timeout_ms)) do
       {:ok,
        %__MODULE__{
+         run_context_id: run_context_id,
          dependency_mode: dependency_mode,
          refresh_mode: refresh_mode,
          selection: selection,

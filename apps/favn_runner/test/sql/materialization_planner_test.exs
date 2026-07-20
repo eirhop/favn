@@ -3,8 +3,21 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
 
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
-  alias Favn.SQL.{Capabilities, Params, Render, Session, Template, WritePlan}
+
+  alias Favn.SQL.{
+    Capabilities,
+    Column,
+    Params,
+    Relation,
+    Render,
+    Result,
+    Session,
+    Template,
+    WritePlan
+  }
+
   alias Favn.SQLAsset.Definition
+  alias Favn.Window.{Key, Runtime, Spec}
   alias FavnRunner.SQL.MaterializationPlanner
 
   test "materialization planner is runner-owned" do
@@ -26,7 +39,31 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
     assert write_plan.metadata == %{rebuild?: true}
   end
 
-  defp session do
+  test "uses the exact planned runtime window as the incremental write scope" do
+    start_at = ~U[2026-07-14 00:00:00Z]
+    end_at = ~U[2026-07-15 00:00:00Z]
+    runtime = Runtime.new!(:day, start_at, end_at, Key.new!(:day, start_at, "Etc/UTC"))
+
+    materialization =
+      {:incremental, strategy: :delete_insert, window_column: :partition_day}
+
+    assert {:ok, %WritePlan{} = write_plan} =
+             MaterializationPlanner.build(
+               session(transactions: :supported),
+               definition(materialization, Spec.new!(:day, lookback: 1)),
+               %Render{render(materialization) | runtime: runtime}
+             )
+
+    assert write_plan.window == runtime
+    assert write_plan.effective_window == runtime
+
+    assert write_plan.metadata.delete_scope == %{
+             window_column: "partition_day",
+             predicate: :half_open
+           }
+  end
+
+  defp session(capability_opts \\ []) do
     %Session{
       adapter: __MODULE__.Adapter,
       resolved: %Resolved{
@@ -36,11 +73,11 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
         config: %{}
       },
       conn: :conn,
-      capabilities: %Capabilities{}
+      capabilities: struct!(Capabilities, capability_opts)
     }
   end
 
-  defp definition(materialization) do
+  defp definition(materialization, window_spec \\ nil) do
     template =
       Template.compile!("SELECT 1 AS id",
         file: "test/fixtures/materialization_planner_test.sql",
@@ -54,7 +91,7 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
         ref: {__MODULE__, :asset},
         relation: relation(),
         file: "test/fixtures/materialization_planner_test.sql",
-        window_spec: nil
+        window_spec: window_spec
       },
       sql: template.source,
       template: template,
@@ -78,5 +115,25 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
   end
 
   defmodule Adapter do
+    def relation(:conn, ref, _opts) do
+      {:ok,
+       %Relation{
+         catalog: ref.catalog,
+         schema: ref.schema,
+         name: ref.name,
+         type: :table
+       }}
+    end
+
+    def query(:conn, _statement, _opts),
+      do: {:ok, %Result{kind: :query, command: "SELECT", columns: ["id", "partition_day"]}}
+
+    def columns(:conn, _ref, _opts),
+      do:
+        {:ok,
+         [
+           %Column{name: "id", position: 1, data_type: "INTEGER", nullable?: false},
+           %Column{name: "partition_day", position: 2, data_type: "DATE", nullable?: false}
+         ]}
   end
 end

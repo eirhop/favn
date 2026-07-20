@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.API.CommandErrors do
     invalid_operator_timeout_ms: {"timeout_ms", "Invalid timeout_ms"},
     invalid_operator_coverage_baseline_id:
       {"coverage_baseline_id", "Invalid coverage_baseline_id"},
+    invalid_operator_run_context_id: {"run_context_id", "Invalid run_context_id"},
     invalid_operator_metadata: {"metadata", "Invalid metadata"}
   }
 
@@ -38,6 +39,16 @@ defmodule FavnOrchestrator.API.CommandErrors do
        field: Atom.to_string(field),
        replacement: "retry_policy"
      }}
+  end
+
+  def operator({:asset_run_context_timezone_mismatch, expected, actual}) do
+    {:error, 422, "validation_failed", "Run context timezone does not match the selection",
+     %{field: "run_context_id", expected_timezone: expected, actual_timezone: actual}}
+  end
+
+  def operator({:asset_run_context_window_kind_mismatch, expected, actual}) do
+    {:error, 422, "validation_failed", "Run context window kind does not match the selection",
+     %{field: "run_context_id", expected_kind: name(expected), actual_kind: name(actual)}}
   end
 
   def operator({reason, _value}) do

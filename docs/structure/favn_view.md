@@ -45,7 +45,9 @@ Ownership rules:
 - Asset detail renders orchestrator-owned run-anchor, data-coverage, and calendar
   freshness timelines as distinct views. Calendar freshness periods are
   read-only; the view must never translate one into pipeline anchor or exact
-  data-window submission intent.
+  data-window submission intent. When the orchestrator reports multiple pipeline
+  run contexts, the view keeps the selected stable context id in the asset route
+  and includes it in run requests; run actions stay disabled until one is selected.
 - Operator run cancellation controls must call the public `FavnOrchestrator`
   facade only. UI state may disable buttons, show confirmations, and map stable
   error atoms to labels, but cancellation lifecycle, audit, idempotency, runner

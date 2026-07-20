@@ -8,11 +8,14 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
   """
 
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Version
   alias Favn.Retry.Policy
   alias Favn.Window.Anchor
+  alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
   alias Favn.Window.Runtime, as: RuntimeWindow
   alias FavnOrchestrator.Operator.WindowSelection
+  alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.OperatorCommands.AssetRunRequest
 
   @doc """
@@ -36,9 +39,36 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
   @spec from_operator_request(Asset.t(), AssetRunRequest.t()) ::
           {:ok, keyword()} | {:error, term()}
   def from_operator_request(%Asset{} = asset, %AssetRunRequest{} = request) do
+    from_operator_request(asset, request, nil)
+  end
+
+  @doc "Translates operator intent using a pinned manifest or resolved run context."
+  @spec from_operator_request(Version.t(), Asset.t(), AssetRunRequest.t()) ::
+          {:ok, keyword()} | {:error, term()}
+  @spec from_operator_request(Asset.t(), AssetRunRequest.t(), AssetRunContext.t() | nil) ::
+          {:ok, keyword()} | {:error, term()}
+  def from_operator_request(first, second, third)
+
+  def from_operator_request(
+        %Version{} = version,
+        %Asset{} = asset,
+        %AssetRunRequest{} = request
+      ) do
+    with {:ok, selection} <- AssetRunContext.select(version, asset, request.run_context_id) do
+      from_context_selection(asset, request, selection)
+    end
+  end
+
+  def from_operator_request(
+        %Asset{} = asset,
+        %AssetRunRequest{} = request,
+        run_context
+      )
+      when is_nil(run_context) or is_struct(run_context, AssetRunContext) do
     with {:ok, refresh} <-
            operator_refresh(request.refresh_mode, asset.ref, request.dependency_mode),
-         {:ok, opts} <- put_metadata([], request.metadata) do
+         {:ok, opts} <- put_metadata([], request.metadata),
+         {:ok, opts} <- put_run_context_metadata(opts, run_context) do
       opts =
         opts
         |> Keyword.put(:dependencies, request.dependency_mode)
@@ -46,30 +76,43 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
         |> maybe_put(:retry_policy, request.retry_policy)
         |> maybe_put(:timeout_ms, request.timeout_ms)
 
-      apply_selection(opts, asset, request.selection)
+      apply_selection(opts, asset, request.selection, run_context)
     end
   end
+
+  defp from_context_selection(asset, request, %{status: :selected, selected: run_context}),
+    do: from_operator_request(asset, request, run_context)
+
+  defp from_context_selection(asset, request, %{status: :unavailable}),
+    do: from_operator_request(asset, request)
+
+  defp from_context_selection(_asset, _request, %{status: :ambiguous}),
+    do: {:error, :ambiguous_asset_run_context}
 
   @doc "Applies one validated timeline selection to runtime submission options."
   @spec apply_selection(keyword(), Asset.t(), map() | nil) ::
           {:ok, keyword()} | {:error, term()}
-  def apply_selection(opts, %Asset{}, nil) when is_list(opts), do: {:ok, opts}
+  def apply_selection(opts, %Asset{} = asset, selection),
+    do: apply_selection(opts, asset, selection, nil)
 
-  def apply_selection(opts, %Asset{} = asset, selection)
-      when is_list(opts) and is_map(selection) do
+  defp apply_selection(opts, %Asset{}, nil, _run_context) when is_list(opts), do: {:ok, opts}
+
+  defp apply_selection(opts, %Asset{} = asset, selection, run_context)
+       when is_list(opts) and is_map(selection) do
     case normalize_selection_source(field(selection, :source)) do
       {:ok, :data_coverage_timeline} ->
         apply_data_coverage_selection(opts, asset, field(selection, :id), selection)
 
       {:ok, :refresh_timeline} ->
-        apply_refresh_selection(opts, field(selection, :id), selection)
+        apply_refresh_selection(opts, field(selection, :id), selection, run_context)
 
       {:error, _reason} = error ->
         error
     end
   end
 
-  def apply_selection(_opts, %Asset{}, _selection), do: {:error, :invalid_asset_run_selection}
+  defp apply_selection(_opts, %Asset{}, _selection, _run_context),
+    do: {:error, :invalid_asset_run_selection}
 
   defp config_options(asset, config) when is_map(config) do
     dependencies_value = field(config, :dependencies, :all) || :all
@@ -109,7 +152,7 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
   defp apply_data_coverage_selection(_opts, _asset, _id, _selection),
     do: {:error, :invalid_asset_run_selection}
 
-  defp apply_refresh_selection(opts, id, selection) when is_binary(id) do
+  defp apply_refresh_selection(opts, id, selection, nil) when is_binary(id) do
     with {:ok, window_request} <- WindowSelection.refresh_request(id),
          {:ok, anchor_window} <-
            WindowRequest.to_anchor(window_request, selection_timezone(selection)),
@@ -118,8 +161,51 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
     end
   end
 
-  defp apply_refresh_selection(_opts, _id, _selection),
+  defp apply_refresh_selection(
+         opts,
+         id,
+         selection,
+         %AssetRunContext{} = run_context
+       )
+       when is_binary(id) do
+    with {:ok, window_request} <- WindowSelection.refresh_request(id),
+         :ok <- validate_refresh_context(window_request, selection, run_context),
+         {:ok, anchor_window} <- WindowRequest.to_anchor(window_request, run_context.timezone),
+         {:ok, opts} <- merge_metadata(opts, selection_metadata(:refresh_timeline, selection)) do
+      {:ok, Keyword.put(opts, :anchor_window, anchor_window)}
+    end
+  end
+
+  defp apply_refresh_selection(_opts, _id, _selection, _run_context),
     do: {:error, :invalid_asset_run_selection}
+
+  defp validate_refresh_context(
+         %WindowRequest{kind: request_kind},
+         selection,
+         %AssetRunContext{policy: %Policy{kind: policy_kind}, timezone: timezone}
+       ) do
+    cond do
+      request_kind != policy_kind ->
+        {:error, {:asset_run_context_window_kind_mismatch, policy_kind, request_kind}}
+
+      selection_timezone(selection) != timezone ->
+        {:error, {:asset_run_context_timezone_mismatch, timezone, selection_timezone(selection)}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_refresh_context(
+         %WindowRequest{},
+         selection,
+         %AssetRunContext{timezone: timezone}
+       ) do
+    if selection_timezone(selection) == timezone,
+      do: :ok,
+      else:
+        {:error, {:asset_run_context_timezone_mismatch, timezone, selection_timezone(selection)}}
+  end
 
   defp runtime_window(%Anchor{} = anchor_window) do
     RuntimeWindow.new(
@@ -218,6 +304,27 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
         timezone: anchor_window.timezone
       }
     }
+  end
+
+  defp put_run_context_metadata(opts, nil), do: {:ok, opts}
+
+  defp put_run_context_metadata(opts, %AssetRunContext{} = context) do
+    {module, name} = context.pipeline_ref
+
+    merge_metadata(opts, %{
+      asset_run_context: %{
+        id: context.id,
+        pipeline_ref: %{module: Atom.to_string(module), name: Atom.to_string(name)},
+        policy: context_policy_metadata(context.policy),
+        timezone: context.timezone
+      }
+    })
+  end
+
+  defp context_policy_metadata(nil), do: nil
+
+  defp context_policy_metadata(%Policy{} = policy) do
+    %{kind: policy.kind, anchor: policy.anchor, timezone: policy.timezone}
   end
 
   defp put_metadata(opts, value) when value in [:missing, nil], do: {:ok, opts}
