@@ -28,7 +28,7 @@ defmodule FavnStoragePostgres.Migrations.AddResourceCircuitsV2 do
       constraint(:resource_circuits, :resource_circuits_values_valid,
         prefix: @prefix,
         check:
-          "resource_kind IN ('execution_pool', 'connection') AND state IN ('closed', 'open', 'half_open') AND consecutive_failures >= 0 AND failure_threshold > 0 AND probe_after_ms >= 0 AND version > 0 AND octet_length(workspace_id) BETWEEN 1 AND 255 AND octet_length(resource_name) BETWEEN 1 AND 255"
+          "resource_kind::text IN ('execution_pool'::text, 'connection'::text) AND state::text IN ('closed'::text, 'open'::text, 'half_open'::text) AND consecutive_failures >= 0 AND failure_threshold > 0 AND probe_after_ms >= 0 AND version > 0 AND octet_length(workspace_id) BETWEEN 1 AND 255 AND octet_length(resource_name) BETWEEN 1 AND 255"
       )
     )
 
@@ -44,7 +44,7 @@ defmodule FavnStoragePostgres.Migrations.AddResourceCircuitsV2 do
       index(:resource_circuits, [:workspace_id, :state, :next_probe_at],
         prefix: @prefix,
         name: :resource_circuits_probe_idx,
-        where: "state IN ('open', 'half_open')"
+        where: "state::text IN ('open'::text, 'half_open'::text)"
       )
     )
 
@@ -66,7 +66,7 @@ defmodule FavnStoragePostgres.Migrations.AddResourceCircuitsV2 do
       constraint(:resource_circuit_outcomes, :resource_circuit_outcomes_values_valid,
         prefix: @prefix,
         check:
-          "resource_kind IN ('execution_pool', 'connection') AND status IN ('success', 'failure') AND attempt > 0 AND octet_length(workspace_id) BETWEEN 1 AND 255 AND octet_length(outcome_id) BETWEEN 1 AND 255 AND octet_length(resource_name) BETWEEN 1 AND 255 AND octet_length(run_id) BETWEEN 1 AND 255 AND octet_length(asset_step_id) BETWEEN 1 AND 255"
+          "resource_kind::text IN ('execution_pool'::text, 'connection'::text) AND status::text IN ('success'::text, 'failure'::text) AND attempt > 0 AND octet_length(workspace_id) BETWEEN 1 AND 255 AND octet_length(outcome_id) BETWEEN 1 AND 255 AND octet_length(resource_name) BETWEEN 1 AND 255 AND octet_length(run_id) BETWEEN 1 AND 255 AND octet_length(asset_step_id) BETWEEN 1 AND 255"
       )
     )
 
@@ -99,7 +99,7 @@ defmodule FavnStoragePostgres.Migrations.AddResourceCircuitsV2 do
       constraint(:resource_recovery_candidates, :resource_recovery_candidates_values_valid,
         prefix: @prefix,
         check:
-          "resource_kind IN ('execution_pool', 'connection') AND reason IN ('blocked', 'safe_failure') AND status IN ('pending', 'claimed', 'submitted') AND octet_length(workspace_id) BETWEEN 1 AND 255 AND octet_length(candidate_id) BETWEEN 1 AND 255 AND octet_length(source_run_id) BETWEEN 1 AND 255 AND octet_length(resource_name) BETWEEN 1 AND 255 AND octet_length(node_key) BETWEEN 1 AND 65536"
+          "resource_kind::text IN ('execution_pool'::text, 'connection'::text) AND reason::text IN ('blocked'::text, 'safe_failure'::text) AND status::text IN ('pending'::text, 'claimed'::text, 'submitted'::text) AND octet_length(workspace_id) BETWEEN 1 AND 255 AND octet_length(candidate_id) BETWEEN 1 AND 255 AND octet_length(source_run_id) BETWEEN 1 AND 255 AND octet_length(resource_name) BETWEEN 1 AND 255 AND octet_length(node_key) BETWEEN 1 AND 65536"
       )
     )
 
@@ -109,7 +109,7 @@ defmodule FavnStoragePostgres.Migrations.AddResourceCircuitsV2 do
         [:workspace_id, :resource_kind, :resource_name, :status, :expires_at],
         prefix: @prefix,
         name: :resource_recovery_candidates_claim_idx,
-        where: "status IN ('pending', 'claimed')"
+        where: "status::text IN ('pending'::text, 'claimed'::text)"
       )
     )
   end

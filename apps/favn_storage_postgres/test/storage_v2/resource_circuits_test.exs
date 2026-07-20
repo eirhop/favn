@@ -29,19 +29,9 @@ defmodule FavnStoragePostgres.StorageV2.ResourceCircuitsTest do
       System.get_env("FAVN_DATABASE_URL") ||
         raise "FAVN_DATABASE_URL is required for PostgreSQL storage tests"
 
-    migrator_url =
-      System.get_env("FAVN_DATABASE_MIGRATOR_URL") ||
-        "ecto://favn_migrator:favn_migrator_local@127.0.0.1:5432/favn_dev"
-
-    {:ok, migrator_options} =
-      Config.repo_options(url: migrator_url, ssl_mode: :disable, pool_size: 2)
-
-    {:ok, migrator} = Repo.start_link(migrator_options)
-    :ok = Migrations.migrate!(Repo)
-    GenServer.stop(migrator)
-
     {:ok, options} = Config.repo_options(url: url, ssl_mode: :disable, pool_size: 8)
     start_supervised!({Repo, options})
+    :ok = Migrations.migrate!(Repo)
     :ok
   end
 
