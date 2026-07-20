@@ -75,6 +75,10 @@ deprecated when a cleaner contract is accepted.
 - Diagnostics and readiness are redacted. Runtime readiness requires a reachable
   database, the exact supported schema, critical constraints/indexes, and valid
   runtime-input encryption keys. **State: solid internal contract.**
+- Asset detail projects operational run anchors, exact data coverage, and calendar
+  freshness as separate timelines. Composite freshness periods require successful
+  evidence for every expected lookback window and remain non-actionable in the UI.
+  **State: prototype.**
 
 ## PostgreSQL Storage V2
 

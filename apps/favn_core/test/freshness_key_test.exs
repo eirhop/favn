@@ -34,6 +34,9 @@ defmodule Favn.Freshness.KeyTest do
            ) == {:ok, expected}
 
     assert FreshnessKey.decode(expected) == {:ok, expected}
+
+    assert FreshnessKey.parse(expected) ==
+             {:ok, {:window_refresh, window_key, :day, "Europe/Oslo", "2026-07-17"}}
   end
 
   test "builds calendar day keys with local date and timezone" do
@@ -42,6 +45,9 @@ defmodule Favn.Freshness.KeyTest do
 
     assert FreshnessKey.decode("calendar:day:Europe/Oslo:2026-05-08") ==
              {:ok, "calendar:day:Europe/Oslo:2026-05-08"}
+
+    assert FreshnessKey.parse("calendar:day:Europe/Oslo:2026-05-08") ==
+             {:ok, {:calendar, :day, "Europe/Oslo", "2026-05-08"}}
   end
 
   test "builds deterministic calendar keys for hour month and year" do

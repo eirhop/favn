@@ -39,7 +39,9 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
             title: "stg_payments",
             status: "Unknown",
             status_tone: :neutral,
+            has_freshness_timeline?: false,
             has_data_windows?: false,
+            freshness_timeline: nil,
             data_coverage_timeline: nil,
             data_coverage_window_range: "No windows",
             selected_window: nil,
@@ -52,6 +54,15 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           base_attributes()
           |> Map.merge(%{
             active_timeline: :data_coverage,
+            selected_window: nil
+          })
+      },
+      %Variation{
+        id: :active_composite_freshness_timeline,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            active_timeline: :freshness,
             selected_window: nil
           })
       },
@@ -166,15 +177,20 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
       status_tone: :success,
       window_range: "May 14 - Jun 12",
       refresh_window_range: "May 14 - Jun 12",
+      freshness_window_range: "May 14 - Jun 12",
       data_coverage_window_range: "May 14 - Jun 12",
-      refresh_timeline_label: "Refresh timeline",
-      refresh_cadence_label: "Daily refresh periods Etc/UTC",
+      refresh_timeline_label: "Monthly run anchors",
+      refresh_cadence_label: "Monthly run anchors Europe/Oslo",
+      freshness_timeline_label: "Daily freshness periods",
+      freshness_cadence_label: "Daily freshness Europe/Oslo",
       data_coverage_timeline_label: "Daily data windows",
       active_timeline: :refresh,
+      has_freshness_timeline?: true,
       has_data_windows?: true,
       can_run_asset?: true,
       nav_items: AssetDetailPage.sample_nav_items(),
       refresh_timeline: refresh_timeline(),
+      freshness_timeline: freshness_timeline(),
       data_coverage_timeline: data_coverage_timeline(),
       freshness: AssetDetailPage.sample_freshness(:fresh),
       active_mode: :timeline,
@@ -256,6 +272,18 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
       data_window("2026-06-11", "Jun 11", :muted),
       data_window("2026-06-12", "Jun 12", :success)
     ]
+  end
+
+  defp freshness_timeline do
+    Enum.map(refresh_timeline(), fn window ->
+      window
+      |> Map.put(:id, String.replace_prefix(window.id, "refresh:", "freshness:"))
+      |> Map.put(:source, :freshness_timeline)
+      |> Map.put(:timezone, "Europe/Oslo")
+      |> Map.put(:run_enabled?, false)
+      |> Map.put(:run_disabled_reason, :freshness_period_not_runnable)
+      |> Map.put(:run_label, nil)
+    end)
   end
 
   defp refresh_window(value, label, status) do

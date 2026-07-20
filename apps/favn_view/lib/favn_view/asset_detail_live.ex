@@ -51,6 +51,9 @@ defmodule FavnView.AssetDetailLive do
 
   def handle_event("set_mode", _params, socket), do: {:noreply, socket}
 
+  def handle_event("select_window", _params, %{assigns: %{active_timeline: :freshness}} = socket),
+    do: {:noreply, socket}
+
   def handle_event("select_window", %{"window-id" => window_id}, socket) do
     current = socket.assigns.selected_window
 
@@ -91,7 +94,7 @@ defmodule FavnView.AssetDetailLive do
   def handle_event("select_window", _params, socket), do: {:noreply, socket}
 
   def handle_event("set_timeline", %{"timeline" => timeline}, socket)
-      when timeline in ["refresh", "data_coverage"] do
+      when timeline in ["refresh", "freshness", "data_coverage"] do
     {:noreply,
      assign(socket,
        active_timeline: timeline_atom(timeline),
@@ -105,6 +108,14 @@ defmodule FavnView.AssetDetailLive do
   end
 
   def handle_event("set_timeline", _params, socket), do: {:noreply, socket}
+
+  def handle_event(
+        "open_run_config",
+        _params,
+        %{assigns: %{active_timeline: :freshness}} = socket
+      ) do
+    {:noreply, assign(socket, :selected_window_error, "Freshness periods are read-only.")}
+  end
 
   def handle_event("open_run_config", _params, socket) do
     %{asset: asset, selected_window: selected_window} = socket.assigns
@@ -153,6 +164,19 @@ defmodule FavnView.AssetDetailLive do
        run_config: run_config,
        run_config_valid?: is_nil(error),
        selected_window_error: error
+     )}
+  end
+
+  def handle_event(
+        "run_selected_window",
+        _params,
+        %{assigns: %{active_timeline: :freshness}} = socket
+      ) do
+    {:noreply,
+     assign(socket,
+       run_config_open?: false,
+       submitting_window_run?: false,
+       selected_window_error: "Freshness periods are read-only."
      )}
   end
 
@@ -276,15 +300,20 @@ defmodule FavnView.AssetDetailLive do
       window_kind_label={@asset.window_kind_label}
       refresh_timeline_label={@asset.refresh_timeline_label}
       refresh_cadence_label={@asset.refresh_cadence_label}
+      freshness_timeline_label={@asset.freshness_timeline_label}
+      freshness_cadence_label={@asset.freshness_cadence_label}
       data_coverage_timeline_label={@asset.data_coverage_timeline_label}
       window_range={@asset.window_range}
       refresh_window_range={@asset.refresh_window_range}
+      freshness_window_range={@asset.freshness_window_range}
       data_coverage_window_range={@asset.data_coverage_window_range}
       active_timeline={@active_timeline}
+      has_freshness_timeline?={@asset.has_freshness_timeline?}
       has_data_windows?={@asset.has_data_windows?}
       can_run_asset?={@asset.can_run_asset?}
       nav_items={@nav_items}
       refresh_timeline={@asset.refresh_timeline}
+      freshness_timeline={@asset.freshness_timeline}
       data_coverage_timeline={@asset.data_coverage_timeline}
       active_mode={@active_mode}
       freshness={@asset.freshness}
@@ -372,6 +401,9 @@ defmodule FavnView.AssetDetailLive do
   defp asset_from_detail(detail) do
     refresh_timeline = Enum.map(detail.refresh_timeline, &timeline_window/1)
 
+    freshness_timeline =
+      detail[:freshness_timeline] && Enum.map(detail.freshness_timeline, &timeline_window/1)
+
     data_coverage_timeline =
       detail.data_coverage_timeline && Enum.map(detail.data_coverage_timeline, &timeline_window/1)
 
@@ -383,6 +415,7 @@ defmodule FavnView.AssetDetailLive do
       canonical_asset_ref: detail.canonical_asset_ref,
       can_run_asset?: detail.can_run_asset?,
       has_data_windows?: detail.has_data_windows?,
+      has_freshness_timeline?: Map.get(detail, :has_freshness_timeline?, false),
       title: detail.name || asset_name(detail),
       status: status_label(Map.get(detail, :status)),
       status_tone: status_tone(Map.get(detail, :status)),
@@ -391,12 +424,16 @@ defmodule FavnView.AssetDetailLive do
       window_kind_label: window_kind_label(Map.get(detail, :window)),
       refresh_timeline_label: Map.get(detail, :refresh_timeline_label, "Refresh periods"),
       refresh_cadence_label: Map.get(detail, :refresh_cadence_label, "Refresh cadence"),
+      freshness_timeline_label: Map.get(detail, :freshness_timeline_label, "Freshness periods"),
+      freshness_cadence_label: Map.get(detail, :freshness_cadence_label, "Freshness cadence"),
       data_coverage_timeline_label:
         Map.get(detail, :data_coverage_timeline_label, "Data windows"),
       window_range: window_range(timeline),
       refresh_window_range: window_range(refresh_timeline),
+      freshness_window_range: window_range(freshness_timeline || []),
       data_coverage_window_range: window_range(data_coverage_timeline || []),
       refresh_timeline: refresh_timeline,
+      freshness_timeline: freshness_timeline,
       data_coverage_timeline: data_coverage_timeline,
       timeline: timeline
     }
@@ -477,10 +514,12 @@ defmodule FavnView.AssetDetailLive do
   defp window_kind_label(_kind), do: "Windows"
 
   defp timeline_atom("refresh"), do: :refresh
+  defp timeline_atom("freshness"), do: :freshness
   defp timeline_atom("data_coverage"), do: :data_coverage
 
   defp asset_timeline(nil, _active_timeline), do: []
   defp asset_timeline(asset, :refresh), do: Map.get(asset, :refresh_timeline, [])
+  defp asset_timeline(asset, :freshness), do: Map.get(asset, :freshness_timeline, []) || []
 
   defp asset_timeline(asset, :data_coverage),
     do: Map.get(asset, :data_coverage_timeline, []) || []

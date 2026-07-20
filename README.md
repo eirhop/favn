@@ -274,6 +274,11 @@ During pipeline execution, the orchestrator records latest freshness state, skip
 fresh nodes under the selected refresh policy, and keeps stale explanations as an
 internal control-plane query surface.
 
+Asset detail keeps operational run anchors, exact data-coverage windows, and
+calendar freshness periods separate. Composite window-refresh freshness is
+aggregated only when every expected lookback window has successful evidence, and
+calendar buckets are display-only so they cannot be submitted as anchor intent.
+
 Freshness policy input variants are documented in `Favn.Freshness.Policy`:
 
 - `:daily` / `:day` for daily calendar freshness in `"Etc/UTC"`
