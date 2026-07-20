@@ -9,10 +9,11 @@ Audit branch: `codex/storage-audit`
 
 The SQLite-first assumption used during this audit has been superseded.
 PostgreSQL is now the sole initial Storage V2 backend for production,
-development, tests, and CI. The normative implementation design is
-`docs/architecture/postgresql-control-plane-storage-v2.md`. This report remains
-the evidence for the redesign: its correctness, complexity, contract-size, and
-operational findings still apply to the legacy implementations.
+development, tests, and CI. The accepted decision is recorded in
+`docs/architecture/postgresql-control-plane-storage-v2.md`; current implementation
+documentation lives under `docs/storage/postgresql/`. This report remains evidence
+for the redesign: its correctness, complexity, contract-size, and operational
+findings still apply to the legacy implementations.
 
 ## Executive verdict
 

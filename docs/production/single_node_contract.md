@@ -5,7 +5,8 @@ development, acceptance, and controlled internal pilots. It uses PostgreSQL
 Storage V2 and is not an embedded-database mode. It is not yet the relocatable,
 supported production distribution tracked by issue #522.
 
-The normative persistence design remains
+Current persistence behavior lives in `docs/storage/postgresql/`; the accepted
+PostgreSQL-only decision and invariants remain in
 `docs/architecture/postgresql-control-plane-storage-v2.md`.
 
 ## Topology

@@ -24,7 +24,7 @@ Production release status and the remaining non-storage gates are tracked in
 - [Data model and ER diagrams](postgresql/data-model.md)
 - [Testing strategy](postgresql/testing.md)
 - [Operator runbook](../production/postgresql_operator_runbook.md)
-- [Detailed design decision record](../architecture/postgresql-control-plane-storage-v2.md)
+- [Architecture decision and invariants](../architecture/postgresql-control-plane-storage-v2.md)
 - [Application ownership map](../structure/favn_storage_postgres.md)
 
 ## Contract rules

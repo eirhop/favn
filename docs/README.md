@@ -38,10 +38,9 @@ control-plane database. The canonical technical documentation is:
 4. [`production/postgresql_operator_runbook.md`](production/postgresql_operator_runbook.md)
    — deployment and operational procedures.
 
-The longer
 [`architecture/postgresql-control-plane-storage-v2.md`](architecture/postgresql-control-plane-storage-v2.md)
-is the detailed design and decision record. It explains why the implementation
-has its current invariants; it is not the quickest implementation reference.
+is the concise decision record: use it for rationale, rejected alternatives,
+invariants, and tradeoffs rather than current implementation detail.
 
 ## Historical material
 
