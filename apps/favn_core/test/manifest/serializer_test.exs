@@ -38,6 +38,20 @@ defmodule Favn.Manifest.SerializerTest do
     refute Map.has_key?(decoded, "diagnostics")
   end
 
+  test "encodes tuples structurally without guessing reference semantics" do
+    manifest = %{
+      materialization: {:incremental, strategy: :delete_insert, window_column: :event_date}
+    }
+
+    assert {:ok, encoded} = Serializer.encode_manifest(manifest)
+    assert {:ok, decoded} = Serializer.decode_manifest(encoded)
+
+    assert decoded["materialization"] == [
+             "incremental",
+             [["strategy", "delete_insert"], ["window_column", "event_date"]]
+           ]
+  end
+
   test "encodes runtime config refs without resolved values" do
     manifest = %{
       schema_version: 8,

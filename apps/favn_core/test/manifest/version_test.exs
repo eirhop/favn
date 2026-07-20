@@ -157,6 +157,39 @@ defmodule Favn.Manifest.VersionTest do
              Version.new(manifest, schema_version: 8)
   end
 
+  test "preserves incremental materialization options through canonicalization" do
+    materialization =
+      {:incremental, strategy: :delete_insert, window_column: :event_date}
+
+    assert {:ok, version} =
+             materialization
+             |> manifest_with_materialization()
+             |> Version.new(manifest_version_id: "mv_incremental_materialization")
+
+    assert [asset] = version.manifest.assets
+
+    assert asset.materialization ==
+             {:incremental, strategy: :delete_insert, window_column: "event_date"}
+  end
+
+  test "rejects malformed incremental materialization options" do
+    malformed =
+      [
+        "incremental",
+        [
+          %{"module" => "strategy", "name" => "delete_insert"},
+          %{"module" => "window_column", "name" => "event_date"}
+        ]
+      ]
+
+    assert {:error, {:invalid_manifest_payload, %ArgumentError{message: message}}} =
+             malformed
+             |> manifest_with_materialization()
+             |> Version.new(manifest_version_id: "mv_invalid_incremental_materialization")
+
+    assert message =~ "incremental materialization options must be a keyword list"
+  end
+
   test "rehydrates decoded manifests into canonical runtime structs" do
     ref = {MyApp.Assets.SalesSummary, :asset}
 
@@ -541,6 +574,24 @@ defmodule Favn.Manifest.VersionTest do
                message:
                  "invalid runtime input resolver reference; expected %{module: MyApp.Inputs}"
              }}} = ExecutionPackage.from_published(resolver_with_payload)
+  end
+
+  defp manifest_with_materialization(materialization) do
+    ref = {__MODULE__.IncrementalAsset, :asset}
+
+    %Manifest{
+      assets: [
+        %Asset{
+          ref: ref,
+          module: elem(ref, 0),
+          name: elem(ref, 1),
+          type: :sql,
+          materialization: materialization,
+          execution_package_hash: String.duplicate("a", 64)
+        }
+      ],
+      graph: %Graph{nodes: [ref], topo_order: [ref]}
+    }
   end
 
   test "keeps content hash stable across JSON roundtrip" do
