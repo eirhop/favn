@@ -639,6 +639,7 @@ defmodule Favn.SQLAsset.Runtime do
           rendered,
           opts,
           runtime_relations,
+          stage,
           target_exists?
         )
         |> put_contract_validation(contract_validation)
@@ -661,6 +662,7 @@ defmodule Favn.SQLAsset.Runtime do
          rendered,
          opts,
          runtime_relations,
+         stage,
          target_exists?
        ) do
     case run_check_phase(
@@ -679,6 +681,7 @@ defmodule Favn.SQLAsset.Runtime do
           rendered,
           opts,
           runtime_relations,
+          stage,
           before_results
         )
 
@@ -705,11 +708,14 @@ defmodule Favn.SQLAsset.Runtime do
          rendered,
          opts,
          runtime_relations,
+         stage,
          before_results
        ) do
     staged_render = staged_materialization_render(rendered, runtime_relations)
+    column_source = candidate_column_source(stage)
 
-    with {:ok, write_plan} <- MaterializationPlanner.build(session, definition, staged_render),
+    with {:ok, write_plan} <-
+           MaterializationPlanner.build(session, definition, staged_render, column_source),
          {:ok, result} <-
            SQLClient.materialize_in_transaction(
              session,
@@ -941,7 +947,9 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp candidate_stage(%Definition{} = definition) do
     if match?(%Contract{}, definition.contract) or Enum.any?(definition.checks, & &1.uses_query?) do
-      "favn_check_candidate_#{System.unique_integer([:positive, :monotonic])}"
+      RelationRef.new!(
+        name: "favn_check_candidate_#{System.unique_integer([:positive, :monotonic])}"
+      )
     end
   end
 
@@ -951,12 +959,11 @@ defmodule Favn.SQLAsset.Runtime do
   defp validate_candidate_contract(
          %Session{} = session,
          %Definition{contract: %Contract{} = contract},
-         stage,
+         %RelationRef{} = stage,
          %Render{} = rendered
-       )
-       when is_binary(stage) do
+       ) do
     if function_exported?(session.adapter, :columns, 3) do
-      case SQLClient.columns(session, RelationRef.new!(name: stage)) do
+      case SQLClient.columns(session, stage) do
         {:ok, columns} when is_list(columns) ->
           validation = ContractValidation.compare(contract, columns)
 
@@ -1000,7 +1007,12 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp create_candidate_stage(_session, nil, _rendered, _opts), do: :ok
 
-  defp create_candidate_stage(session, stage, %Render{} = rendered, opts) do
+  defp create_candidate_stage(
+         session,
+         %RelationRef{name: stage},
+         %Render{} = rendered,
+         opts
+       ) do
     SQLClient.execute(
       session,
       ["CREATE TEMP TABLE ", quote_identifier(stage), " AS ", trim_sql(rendered.sql)],
@@ -1017,7 +1029,7 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp finalize_candidate_stage(
          session,
-         stage,
+         %RelationRef{name: stage},
          {:ok, output},
          opts,
          definition,
@@ -1055,8 +1067,11 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp maybe_put_candidate_relation(relations, nil), do: relations
 
-  defp maybe_put_candidate_relation(relations, stage),
+  defp maybe_put_candidate_relation(relations, %RelationRef{name: stage}),
     do: Map.put(relations, :query, quote_identifier(stage))
+
+  defp candidate_column_source(nil), do: :query
+  defp candidate_column_source(%RelationRef{} = stage), do: {:relation, stage}
 
   defp staged_materialization_render(%Render{} = rendered, %{query: staged_query}) do
     %Render{

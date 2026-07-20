@@ -831,6 +831,141 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert telemetry.transaction_outcome == :committed
   end
 
+  test "checked incremental materialization inspects non-empty and empty candidates as relations" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+
+    Application.put_env(:favn_runner, :checked_columns, [
+      %Column{name: "id", position: 1, data_type: "INTEGER", nullable?: false},
+      %Column{name: "partition_month", position: 2, data_type: "DATE", nullable?: false}
+    ])
+
+    check =
+      checked_check(
+        :candidate_valid,
+        :before_materialize,
+        :fail,
+        "select count(*) >= 0 as passed from query() /* check:pass */"
+      )
+
+    contract =
+      Contract.new!(%{
+        columns: [
+          %{name: :id, type: :integer, null: false},
+          %{name: :partition_month, type: :date, null: false}
+        ]
+      })
+
+    materialization =
+      {:incremental, strategy: :delete_insert, window_column: :partition_month}
+
+    window_spec = Favn.Window.Spec.new!(:month, timezone: "Etc/UTC")
+    start_at = ~U[2026-07-01 00:00:00Z]
+    end_at = ~U[2026-08-01 00:00:00Z]
+
+    runtime_window =
+      Favn.Window.Runtime.new!(
+        :month,
+        start_at,
+        end_at,
+        Favn.Window.Key.new!(:month, start_at, "Etc/UTC"),
+        timezone: "Etc/UTC"
+      )
+
+    for {name, sql} <- [
+          {:non_empty, "SELECT 1 AS id, DATE '2026-07-01' AS partition_month"},
+          {:empty, "SELECT 1 AS id, DATE '2026-07-01' AS partition_month WHERE false"}
+        ] do
+      ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
+
+      version =
+        register_checked_sql_manifest!(ref, [check], nil, contract,
+          sql: sql,
+          materialization: materialization,
+          window: window_spec
+        )
+
+      work =
+        version
+        |> work_for(ref, "run_checked_incremental_#{name}")
+        |> Map.put(:trigger, %{window: runtime_window})
+
+      assert {:ok, result} = FavnRunner.run(work)
+      assert result.status == :ok
+      assert [%{meta: %{write_outcome: :written}}] = result.asset_results
+
+      assert_received {:checked_columns,
+                       %RelationRef{name: "favn_check_candidate_" <> _rest} = candidate}
+
+      assert_received {:checked_columns, ^candidate}
+
+      assert_received {:checked_materialize, write_plan}
+      assert write_plan.strategy == :delete_insert
+      refute_received :checked_incremental_probe
+    end
+  end
+
+  test "missing candidate delete-scope column rolls back before target mutation" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+
+    Application.put_env(:favn_runner, :checked_columns, [
+      %Column{name: "id", position: 1, data_type: "INTEGER", nullable?: false}
+    ])
+
+    check =
+      checked_check(
+        :candidate_valid,
+        :before_materialize,
+        :fail,
+        "select true as passed from query() /* check:pass */"
+      )
+
+    materialization =
+      {:incremental, strategy: :delete_insert, window_column: :partition_month}
+
+    window_spec = Favn.Window.Spec.new!(:month, timezone: "Etc/UTC")
+    start_at = ~U[2026-07-01 00:00:00Z]
+
+    runtime_window =
+      Favn.Window.Runtime.new!(
+        :month,
+        start_at,
+        ~U[2026-08-01 00:00:00Z],
+        Favn.Window.Key.new!(:month, start_at, "Etc/UTC"),
+        timezone: "Etc/UTC"
+      )
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedFailureSQLAsset, :asset}
+
+    version =
+      register_checked_sql_manifest!(ref, [check], nil, nil,
+        sql: "SELECT 1 AS id",
+        materialization: materialization,
+        window: window_spec
+      )
+
+    work =
+      version
+      |> work_for(ref, "run_checked_incremental_missing_scope")
+      |> Map.put(:trigger, %{window: runtime_window})
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :error
+
+    assert [
+             %{
+               error: %{
+                 type: :materialization_planning_failed,
+                 message: "incremental delete scope column is missing"
+               },
+               meta: %{write_outcome: :rolled_back}
+             }
+           ] = result.asset_results
+
+    assert_received :checked_transaction_rollback
+    refute_received {:checked_materialize, _write_plan}
+    refute_received :checked_incremental_probe
+  end
+
   test "a failed after check rolls back and persists failed-attempt diagnostics" do
     reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
     attach_check_telemetry()
@@ -1373,12 +1508,20 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     remember_execution_package(version, package)
   end
 
-  defp register_checked_sql_manifest!(ref, checks, runtime_inputs \\ nil, contract \\ nil) do
+  defp register_checked_sql_manifest!(
+         ref,
+         checks,
+         runtime_inputs \\ nil,
+         contract \\ nil,
+         opts \\ []
+       ) do
     relation =
       RelationRef.new!(%{connection: :runner_sql_runtime, schema: "gold", name: "checked_asset"})
 
+    sql = Keyword.get(opts, :sql, "SELECT 1 AS id")
+
     template =
-      Template.compile!("SELECT 1 AS id",
+      Template.compile!(sql,
         file: "test/checked_sql_asset_manifest.sql",
         line: 1,
         module: __MODULE__,
@@ -1389,7 +1532,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     checks = generated_contract_checks(contract) ++ checks
 
     execution = %SQLExecution{
-      sql: "SELECT 1 AS id",
+      sql: sql,
       template: template,
       runtime_inputs: runtime_inputs,
       contract: contract,
@@ -1410,7 +1553,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
           type: :sql,
           execution: %{entrypoint: :asset, arity: 1},
           relation: relation,
-          materialization: :table,
+          window: Keyword.get(opts, :window),
+          materialization: Keyword.get(opts, :materialization, :table),
           execution_package_hash: package.content_hash,
           assurance: assurance(execution)
         }
@@ -2000,6 +2144,17 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedExecutionAdapter do
     notify({:checked_query_params, Keyword.get(opts, :params, [])})
 
     cond do
+      String.contains?(statement, "favn_incremental_probe") ->
+        notify(:checked_incremental_probe)
+
+        {:ok,
+         %Result{
+           kind: :query,
+           command: "SELECT",
+           columns: [],
+           rows: []
+         }}
+
       String.contains?(statement, "check:sql_error") ->
         {:error, %Error{type: :execution_error, message: "check query failed"}}
 
