@@ -36,6 +36,13 @@ defmodule Favn.Contracts.RunnerClient do
 
   @callback release_manifest(String.t(), keyword()) :: :ok
 
+  @doc """
+  Submits work and returns its execution identity.
+
+  A successful client must return the exact `execution_id` supplied in the
+  `RunnerWork`. This keeps dispatch, idempotency, recovery, and cancellation on
+  one orchestrator-selected identity.
+  """
   @callback submit_work(RunnerWork.t(), keyword()) :: {:ok, execution_id()} | {:error, term()}
 
   @callback resolve_runtime_inputs(RunnerWork.t(), keyword()) ::

@@ -13,6 +13,7 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
   alias FavnOrchestrator.Persistence.Commands.RenewRunOwnership
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Persistence.Identity
   alias FavnOrchestrator.Persistence.Queries.PageRunnerExecutions
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RunnerExecution, as: RunnerExecutionResult
@@ -706,5 +707,5 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
     do: DateTime.compare(left, right) == :eq
 
   defp same_datetime?(_left, _right), do: false
-  defp valid_id?(value), do: is_binary(value) and value != "" and byte_size(value) <= 255
+  defp valid_id?(value), do: Identity.valid?(value)
 end

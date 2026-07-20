@@ -13,11 +13,14 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.AdvanceRunnerExecution
   alias FavnOrchestrator.Persistence.Commands.RecordRunnerDispatch
+  alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Persistence.Identity
   alias FavnOrchestrator.Persistence.Queries.PageRunnerExecutions
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RunnerExecution
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunnerExecutionIdentity
   alias FavnOrchestrator.Storage.JsonSafe
 
   @active_statuses [
@@ -144,6 +147,45 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
       inserted_at: now,
       updated_at: now
     }
+  end
+
+  @doc "Validates the persistence identities for one planned runner attempt."
+  @spec validate_identity(String.t(), String.t(), pos_integer() | nil) ::
+          :ok | {:error, FavnOrchestrator.Persistence.Error.t()}
+  def validate_identity(run_id, asset_step_id, attempt)
+      when is_binary(run_id) and is_binary(asset_step_id) do
+    with :ok <- Identity.validate(:run_id, run_id),
+         :ok <- Identity.validate(:asset_step_id, asset_step_id) do
+      execution_id = RunnerExecutionIdentity.build(run_id, asset_step_id, attempt)
+
+      Identity.validate_many(
+        runner_execution_id: execution_id,
+        dispatch_id: execution_id,
+        ownership_id: execution_id
+      )
+    end
+  end
+
+  @doc "Validates that a runner echoed the orchestrator-selected dispatch identity."
+  @spec validate_runner_execution_id(t(), term()) ::
+          :ok | {:error, Error.t()}
+  def validate_runner_execution_id(%__MODULE__{} = ownership, execution_id) do
+    with :ok <- Identity.validate(:runner_execution_id, execution_id) do
+      if execution_id == ownership.dispatch_id do
+        :ok
+      else
+        {:error,
+         Error.new(
+           :invalid,
+           "runner execution identity does not match the orchestrator dispatch identity",
+           details: %{
+             field: :runner_execution_id,
+             actual_bytes: byte_size(execution_id),
+             max_bytes: Identity.max_bytes()
+           }
+         )}
+      end
+    end
   end
 
   @doc "Returns true when an ownership record still represents active runner work."
@@ -404,6 +446,7 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
 
   defp persist_v2(%__MODULE__{status: :dispatch_intent} = ownership) do
     with :ok <- validate_v2_authority(ownership),
+         :ok <- validate_v2_identities(ownership),
          {:ok, _execution} <-
            Persistence.stores().run_ownership.record_dispatch(%RecordRunnerDispatch{
              workspace_context: context(ownership, :runner_dispatch),
@@ -420,12 +463,16 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
     end
   end
 
-  defp persist_v2(%__MODULE__{status: status})
-       when status in [:submitted, :finish_persist_pending],
-       do: :ok
+  defp persist_v2(%__MODULE__{status: :submitted} = ownership) do
+    validate_v2_identities(ownership)
+  end
+
+  defp persist_v2(%__MODULE__{status: :finish_persist_pending} = ownership),
+    do: validate_v2_identities(ownership)
 
   defp persist_v2(%__MODULE__{} = ownership) do
     with :ok <- validate_v2_authority(ownership),
+         :ok <- validate_v2_identities(ownership),
          {:ok, status, result, error} <- v2_transition(ownership),
          {:ok, _execution} <-
            Persistence.stores().run_ownership.advance_execution(%AdvanceRunnerExecution{
@@ -465,6 +512,22 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
 
   defp validate_v2_authority(%__MODULE__{}),
     do: {:error, {:invalid_runner_execution_authority, :missing_run_fence}}
+
+  defp validate_v2_identities(%__MODULE__{} = ownership) do
+    runner_execution_id = ownership.runner_execution_id || ownership.dispatch_id
+
+    with :ok <-
+           Identity.validate_many(
+             workspace_id: ownership.workspace_id,
+             run_id: ownership.run_id,
+             ownership_id: ownership.ownership_id,
+             dispatch_id: ownership.dispatch_id,
+             owner_id: ownership.owner_id,
+             runner_execution_id: runner_execution_id
+           ) do
+      validate_runner_execution_id(ownership, runner_execution_id)
+    end
+  end
 
   defp v2_transition(%__MODULE__{status: :started}), do: {:ok, :running, nil, nil}
 
@@ -606,7 +669,7 @@ defmodule FavnOrchestrator.RunExecutionOwnership do
   end
 
   defp ownership_id(run_id, asset_step_id, attempt) do
-    Enum.join([run_id, asset_step_id, attempt || 1], ":")
+    RunnerExecutionIdentity.build(run_id, asset_step_id, attempt)
   end
 
   defp touch(%__MODULE__{} = ownership), do: %{ownership | updated_at: DateTime.utc_now()}

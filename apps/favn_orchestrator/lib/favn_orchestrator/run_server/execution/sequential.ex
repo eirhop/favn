@@ -321,17 +321,27 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   defp dispatch_attempt(state, lifecycle, work, ownership) do
     case state.runner_client.submit_work(work, state.runner_opts) do
       {:ok, execution_id} ->
-        submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)
+        with :ok <- RunExecutionOwnership.validate_runner_execution_id(ownership, execution_id) do
+          submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)
 
-        case persist_submitted_ownership_snapshot(submitted_ownership) do
-          :ok ->
-            start_submitted_attempt(state, lifecycle, work, submitted_ownership, execution_id)
+          case persist_submitted_ownership_snapshot(submitted_ownership) do
+            :ok ->
+              start_submitted_attempt(state, lifecycle, work, submitted_ownership, execution_id)
 
-          {:error, :external_cancel} ->
-            fail_submitted_attempt(state, submitted_ownership, execution_id, :external_cancel)
+            {:error, :external_cancel} ->
+              fail_submitted_attempt(state, submitted_ownership, execution_id, :external_cancel)
 
+            {:error, reason} ->
+              fail_submitted_attempt(state, submitted_ownership, execution_id, reason)
+          end
+        else
           {:error, reason} ->
-            fail_submitted_attempt(state, submitted_ownership, execution_id, reason)
+            fail_submitted_attempt(
+              state,
+              RunExecutionOwnership.submitted(ownership, execution_id),
+              execution_id,
+              reason
+            )
         end
 
       {:error, reason} ->

@@ -13,11 +13,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
   """
 
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunExecutionCleanup
+  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunnerManifestRegistration
@@ -75,7 +77,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     case RunState.execution_mode(run_state) do
       :pipeline ->
-        with :ok <- RunnerClientValidator.validate(runner_client),
+        with :ok <- preflight_execution_identities(run_state),
+             :ok <- RunnerClientValidator.validate(runner_client),
              {:ok, manifest_index} <- ManifestIndexCache.fetch(version),
              execution_index <- execution_index(run_state, manifest_index),
              {:ok, freshness_context} <- FreshnessContext.initialize(run_state, execution_index),
@@ -109,7 +112,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         end
 
       :sequential ->
-        with :ok <- RunnerClientValidator.validate(runner_client),
+        with :ok <- preflight_execution_identities(run_state),
+             :ok <- RunnerClientValidator.validate(runner_client),
              {:ok, manifest_index} <- ManifestIndexCache.fetch(version),
              lease_id <- manifest_lease_id(run_state),
              :ok <-
@@ -335,6 +339,27 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp planned_asset_refs(%RunState{asset_ref: ref}) when is_tuple(ref), do: [ref]
   defp planned_asset_refs(%RunState{}), do: []
+
+  defp preflight_execution_identities(%RunState{} = run) do
+    run
+    |> planned_execution_nodes()
+    |> Enum.reduce_while(:ok, fn {node_key, asset_ref}, :ok ->
+      asset_step_id = AssetStepIdentity.asset_step_id(run.id, node_key, asset_ref)
+
+      case RunExecutionOwnership.validate_identity(run.id, asset_step_id, 1) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp planned_execution_nodes(%RunState{plan: %Favn.Plan{nodes: nodes}}) do
+    Enum.map(nodes, fn {node_key, node} -> {node_key, node.ref} end)
+  end
+
+  defp planned_execution_nodes(%RunState{} = run) do
+    Enum.map(Sequential.refs(run), fn {asset_ref, node_key, _stage} -> {node_key, asset_ref} end)
+  end
 
   @doc false
   @spec manifest_lease_expires_at(RunState.t()) :: DateTime.t()
