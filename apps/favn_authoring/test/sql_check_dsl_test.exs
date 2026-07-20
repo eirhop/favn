@@ -186,11 +186,13 @@ defmodule Favn.SQLCheckDSLTest do
                }
              ],
              unique_keys: [%UniqueKey{columns: [:record_id]}],
-             row_count: %RowCount{
-               min: 1,
-               when: :target_exists,
-               on_violation: :skip_materialization
-             }
+             row_counts: [
+               %RowCount{
+                 min: 1,
+                 when: :target_exists,
+                 on_violation: :skip_materialization
+               }
+             ]
            } = definition.contract
 
     assert [row_count, not_null, unique, custom] = definition.checks
@@ -223,12 +225,41 @@ defmodule Favn.SQLCheckDSLTest do
              }
            ] = definition.contract.compositions
 
-    assert %RowCount{equals: %Param{name: :expected_rows}} = definition.contract.row_count
+    assert [%RowCount{equals: %Param{name: :expected_rows}}] = definition.contract.row_counts
 
     assert [
              %{claim_id: "row_count.equals.param.expected_rows"},
              %{claim_id: "columns.not_null"}
            ] = definition.checks
+  end
+
+  test "compiles repeated row-count declarations in authored order" do
+    definition =
+      compile_definition!("""
+      contract do
+        column :id, :integer
+
+        row_count equals: param(:expected_rows), on_violation: :fail
+
+        row_count min: 1,
+          when: :target_exists,
+          on_violation: :skip_materialization
+      end
+      """)
+
+    assert [
+             %RowCount{equals: %Param{name: :expected_rows}, on_violation: :fail},
+             %RowCount{
+               min: 1,
+               when: :target_exists,
+               on_violation: :skip_materialization
+             }
+           ] = definition.contract.row_counts
+
+    assert Enum.map(definition.checks, & &1.claim_id) == [
+             "row_count.equals.param.expected_rows",
+             "row_count.min.1"
+           ]
   end
 
   test "rejects fragment column conflicts and duplicate includes at compile time" do

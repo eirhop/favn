@@ -3,7 +3,7 @@ defmodule Favn.Manifest.SQLExecution do
   Canonical SQL execution payload carried by immutable execution packages.
 
   The optional typed `contract` preserves authored output shape, grain, keys,
-  row-count policy, and lineage. Generated contract checks and custom checks are
+  ordered row-count policies, and lineage. Generated contract checks and custom checks are
   both carried in `checks`, distinguished by their origin and claim identity.
   Compact manifest assets reference the package by content hash, so the runner
   needs no authoring module to validate a candidate and catalogue operations do

@@ -106,7 +106,10 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
 
     assert_receive {:verify_service_token, "http://127.0.0.1:4000", "token-1"}
     assert_receive {:password_login, _url, _token, "workspace-1", "admin", "admin-password-long"}
-    assert_receive {:publish_manifest, _url, _token, %Publication{} = publication, session_context}
+
+    assert_receive {:publish_manifest, _url, _token, %Publication{} = publication,
+                    session_context}
+
     assert_receive {:activate_manifest, _url, _token, manifest_version_id, ^session_context}
     assert_receive {:register_runner, _url, _token, ^session_context, runner_payload}
     assert_receive {:bootstrap_active_manifest, _url, _token, ^session_context}
@@ -156,8 +159,8 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
     File.write!(
       path,
       JSON.encode_to_iodata!(%{
-        schema_version: 8,
-        runner_contract_version: 8,
+        schema_version: 9,
+        runner_contract_version: 9,
         assets: [],
         pipelines: [],
         schedules: [],

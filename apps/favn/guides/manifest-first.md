@@ -119,7 +119,7 @@ A manifest can include:
 - freshness and window metadata
 - JSON-safe asset and pipeline settings
 - runtime config requirements
-- schema and runner contract version 8 data used by the runtime
+- schema and runner contract version 9 data used by the runtime
 
 Execution packages contain the full SQL templates, runtime-input resolver refs,
 typed output contracts, and executable generated/custom checks. They are not a

@@ -1145,7 +1145,15 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   end
 
   test "late failure recording cannot block readiness after projector takeover" do
+    drain_outbox()
     release_projector_claim!()
+
+    %{rows: [[projected_through]]} =
+      SQL.query!(
+        Repo,
+        "SELECT last_publication_id FROM favn_control.outbox_publication_state WHERE singleton_id = 1",
+        []
+      )
 
     SQL.query!(
       Repo,
@@ -1186,10 +1194,10 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
             Repo,
             """
             UPDATE favn_control.projection_cursors
-            SET last_publication_id = 42, updated_at = clock_timestamp()
+            SET last_publication_id = $1, updated_at = clock_timestamp()
             WHERE projector_name = 'control_plane_v1' AND shard_id = 0
             """,
-            []
+            [projected_through]
           )
         end)
       end)
@@ -1197,7 +1205,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     assert_receive :cursor_locked, 5_000
 
     event = %OutboxEvent{
-      publication_id: 42,
+      publication_id: projected_through,
       workspace_id: "takeover-workspace",
       event_kind: "run.submitted"
     }
@@ -1214,9 +1222,9 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
         """
         SELECT count(*)
         FROM favn_control.projection_failures
-        WHERE projector_name = 'control_plane_v1' AND shard_id = 0 AND publication_id = 42
+        WHERE projector_name = 'control_plane_v1' AND shard_id = 0 AND publication_id = $1
         """,
-        []
+        [projected_through]
       )
 
     assert failure_count == 0

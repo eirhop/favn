@@ -47,7 +47,8 @@ defmodule MyApp.Assets.NormalizedRecords do
     grain by: [:record_id], description: "one normalized record"
     column :record_id, :integer, null: false
     column :payload, :json
-    row_count min: 1, on_violation: :fail
+    row_count equals: param(:expected_rows), on_violation: :fail
+    row_count min: 1, when: :target_exists, on_violation: :skip_materialization
   end
 
   check :candidate_has_rows,
@@ -67,7 +68,8 @@ end
 ```
 
 Contracts support `grain`, ordered `column` declarations, reusable
-`Favn.SQL.ContractFragment` includes, `unique`, and exact or bounded `row_count`.
+`Favn.SQL.ContractFragment` includes, `unique`, and repeated ordered exact or
+bounded `row_count` claims.
 Run `mix favn.read_doc Favn.SQLAsset contract` or read
 `guides/sql-output-contracts.md`. Write SQL in `query` and use the contract to
 validate its output.

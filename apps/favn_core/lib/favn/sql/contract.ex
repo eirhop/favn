@@ -4,11 +4,11 @@ defmodule Favn.SQL.Contract do
 
   Contracts preserve ordered logical columns, explicit fragment-composition
   provenance, optional structured or descriptive grain, explicit unique keys,
-  an optional bounded row-count claim, and authored column lineage. Asset
+  ordered bounded row-count claims, and authored column lineage. Asset
   queries define SQL; contracts validate and document their output.
 
-  The contract compiler exposes at most three grouped generated check
-  specifications for required columns, keys, and row count. The SQL asset
+  The contract compiler exposes grouped generated check specifications for
+  required columns and keys plus one check per row-count claim. The SQL asset
   frontend compiles those specifications into ordinary `Favn.SQL.Check` values,
   so wide contracts remain bounded while contract and custom checks share one
   transaction, one policy vocabulary, and one durable result model.
@@ -20,16 +20,17 @@ defmodule Favn.SQL.Contract do
   @max_columns 1_000
   @max_compositions 128
   @max_unique_keys 128
+  @max_row_count_claims 16
 
   @enforce_keys [:columns]
-  defstruct [:grain, :row_count, columns: [], compositions: [], unique_keys: []]
+  defstruct [:grain, columns: [], compositions: [], unique_keys: [], row_counts: []]
 
   @type t :: %__MODULE__{
           grain: Grain.t() | nil,
           columns: [Column.t()],
           compositions: [Composition.t()],
           unique_keys: [UniqueKey.t()],
-          row_count: RowCount.t() | nil
+          row_counts: [RowCount.t()]
         }
 
   @type check_spec :: %{
@@ -45,14 +46,14 @@ defmodule Favn.SQL.Contract do
   @doc "Builds and validates a compiled contract."
   @spec new!(map() | keyword()) :: t()
   def new!(fields) when is_map(fields) or is_list(fields) do
-    fields = Map.new(fields)
+    fields = fields |> Map.new() |> validate_fields!()
 
     %__MODULE__{
       grain: normalize_grain(Map.get(fields, :grain)),
       columns: Enum.map(Map.get(fields, :columns, []), &normalize_column/1),
       compositions: Enum.map(Map.get(fields, :compositions, []), &normalize_composition/1),
       unique_keys: Enum.map(Map.get(fields, :unique_keys, []), &normalize_unique_key/1),
-      row_count: normalize_row_count(Map.get(fields, :row_count))
+      row_counts: fields |> Map.get(:row_counts, []) |> normalize_row_counts()
     }
     |> validate!()
   end
@@ -86,11 +87,21 @@ defmodule Favn.SQL.Contract do
           "SQL output contract supports at most #{@max_unique_keys} unique keys"
         )
 
+    unless is_list(contract.row_counts),
+      do: raise(ArgumentError, "SQL output contract row_counts must be a list")
+
+    if length(contract.row_counts) > @max_row_count_claims,
+      do:
+        raise(
+          ArgumentError,
+          "SQL output contract supports at most #{@max_row_count_claims} row-count claims"
+        )
+
     Enum.each(contract.columns, &Column.validate!/1)
     Enum.each(contract.compositions, &Composition.validate!/1)
     if contract.grain, do: Grain.validate!(contract.grain)
     Enum.each(contract.unique_keys, &UniqueKey.validate!/1)
-    if contract.row_count, do: RowCount.validate!(contract.row_count)
+    Enum.each(contract.row_counts, &RowCount.validate!/1)
 
     names = Enum.map(contract.columns, & &1.name)
     ensure_unique_columns!(names)
@@ -144,16 +155,23 @@ defmodule Favn.SQL.Contract do
   @spec max_unique_keys() :: pos_integer()
   def max_unique_keys, do: @max_unique_keys
 
+  @doc "Returns the maximum ordered row-count claims accepted by one output contract."
+  @spec max_row_count_claims() :: pos_integer()
+  def max_row_count_claims, do: @max_row_count_claims
+
   @doc "Returns typed runtime parameter requirements introduced by contract claims."
   @spec runtime_param_requirements(t() | nil) :: %{optional(atom()) => :non_neg_integer}
   def runtime_param_requirements(nil), do: %{}
 
-  def runtime_param_requirements(%__MODULE__{
-        row_count: %RowCount{equals: %Param{name: name}}
-      }),
-      do: %{name => :non_neg_integer}
+  def runtime_param_requirements(%__MODULE__{row_counts: row_counts}) do
+    Enum.reduce(row_counts, %{}, fn
+      %RowCount{equals: %Param{name: name}}, requirements ->
+        Map.put(requirements, name, :non_neg_integer)
 
-  def runtime_param_requirements(%__MODULE__{}), do: %{}
+      %RowCount{}, requirements ->
+        requirements
+    end)
+  end
 
   @doc "Returns whether an observed backend type satisfies a logical contract type."
   @spec compatible_type?(Column.logical_type(), String.t() | nil) :: boolean()
@@ -277,7 +295,26 @@ defmodule Favn.SQL.Contract do
   defp normalize_unique_key(other),
     do: raise(ArgumentError, "invalid contract unique key #{inspect(other)}")
 
-  defp normalize_row_count(nil), do: nil
+  defp validate_fields!(fields) do
+    allowed = MapSet.new([:grain, :columns, :compositions, :unique_keys, :row_counts])
+    unknown = fields |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1)) |> Enum.sort()
+
+    if unknown != [],
+      do: raise(ArgumentError, "invalid SQL output contract fields #{inspect(unknown)}")
+
+    fields
+  end
+
+  defp normalize_row_counts(values) when is_list(values),
+    do: Enum.map(values, &normalize_row_count/1)
+
+  defp normalize_row_counts(other),
+    do:
+      raise(
+        ArgumentError,
+        "SQL output contract row_counts must be a list, got: #{inspect(other)}"
+      )
+
   defp normalize_row_count(%RowCount{} = row_count), do: RowCount.validate!(row_count)
   defp normalize_row_count(value), do: RowCount.new!(value)
 
@@ -383,25 +420,35 @@ defmodule Favn.SQL.Contract do
     end
   end
 
-  defp row_count_specs(%__MODULE__{row_count: nil}), do: []
+  defp row_count_specs(%__MODULE__{row_counts: row_counts}) do
+    {specs, _occurrences} =
+      Enum.map_reduce(row_counts, %{}, fn row_count, occurrences ->
+        {base_claim_id, predicate, metrics, message} = row_count_check(row_count)
+        occurrence = Map.get(occurrences, base_claim_id, 0) + 1
+        claim_id = row_count_claim_id(base_claim_id, occurrence)
 
-  defp row_count_specs(%__MODULE__{row_count: row_count}) do
-    {claim_id, predicate, metrics, message} = row_count_check(row_count)
+        spec = %{
+          name: check_name(claim_id),
+          claim_id: claim_id,
+          at: :before_materialize,
+          on_violation: row_count.on_violation,
+          when: row_count.when,
+          message: message,
+          sql:
+            "SELECT #{predicate} AS passed, actual#{metrics} " <>
+              "FROM (SELECT count(*) AS actual FROM query()) AS favn_contract_row_count"
+        }
 
-    [
-      %{
-        name: check_name(claim_id),
-        claim_id: claim_id,
-        at: :before_materialize,
-        on_violation: row_count.on_violation,
-        when: row_count.when,
-        message: message,
-        sql:
-          "SELECT #{predicate} AS passed, actual#{metrics} " <>
-            "FROM (SELECT count(*) AS actual FROM query()) AS favn_contract_row_count"
-      }
-    ]
+        {spec, Map.put(occurrences, base_claim_id, occurrence)}
+      end)
+
+    specs
   end
+
+  defp row_count_claim_id(base_claim_id, 1), do: base_claim_id
+
+  defp row_count_claim_id(base_claim_id, occurrence),
+    do: "#{base_claim_id}.occurrence.#{occurrence}"
 
   defp row_count_check(%RowCount{equals: %Param{name: name}}) do
     placeholder = "@#{name}"

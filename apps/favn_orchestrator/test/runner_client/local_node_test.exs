@@ -36,8 +36,8 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
 
   test "dispatches runner calls to configured runner module" do
     manifest = %{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [],
       pipelines: [],
       schedules: [],

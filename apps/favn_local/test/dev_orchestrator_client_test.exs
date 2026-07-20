@@ -67,8 +67,8 @@ defmodule Favn.Dev.OrchestratorClientTest do
       )
 
     manifest = %{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [],
       pipelines: [],
       schedules: [],
@@ -108,8 +108,8 @@ defmodule Favn.Dev.OrchestratorClientTest do
       ])
 
     manifest = %{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [],
       pipelines: [],
       schedules: [],
@@ -131,8 +131,8 @@ defmodule Favn.Dev.OrchestratorClientTest do
       start_server(missing_response([unknown_hash]), 200)
 
     manifest = %{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [],
       pipelines: [],
       schedules: [],
@@ -523,8 +523,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
         publication_limits: %{
           max_packages: Keyword.get(opts, :max_packages, 100),
           compressed_limit_bytes: Keyword.get(opts, :compressed_limit_bytes, 8 * 1024 * 1024),
-          decompressed_limit_bytes:
-            Keyword.get(opts, :decompressed_limit_bytes, 32 * 1024 * 1024)
+          decompressed_limit_bytes: Keyword.get(opts, :decompressed_limit_bytes, 32 * 1024 * 1024)
         }
       }
     })

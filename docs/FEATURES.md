@@ -42,6 +42,10 @@ deprecated when a cleaner contract is accepted.
 - Runtime-input resolvers select immutable inputs before execution. Sensitive pins
   are encrypted with the configured runtime-input key and are never copied into
   generic metadata, events, logs, telemetry, or errors. **State: prototype.**
+- SQL output contracts support up to 16 ordered row-count claims with independent
+  conditions and fail, warn, or successful no-op policies. Generated checks retain
+  declaration order and expose every claim/result through asset assurance.
+  **State: solid.**
 
 ## Planning And Execution
 

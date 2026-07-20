@@ -175,7 +175,7 @@ Each unique key generates a candidate check.
 
 ### Row Count
 
-Declare one exact or bounded candidate row count:
+Declare one or more exact or bounded candidate row-count claims:
 
 ```elixir
 row_count equals: 500, on_violation: :fail
@@ -185,7 +185,9 @@ row_count min: 1, max: 10_000, on_violation: :fail
 ```
 
 Choose either `equals:` or a `min:`/`max:` bound. Keep `min:` less than or equal
-to `max:` and use non-negative integer literals.
+to `max:` and use non-negative integer literals. Repeated declarations retain
+their authored order and each declaration has its own `when:` and
+`on_violation:` options.
 
 An exact count may come from the asset's normal settings or runtime params:
 
@@ -221,6 +223,23 @@ checks.
 `:skip_materialization` requires `when: :target_exists`. On first-target
 bootstrap, that claim is condition-skipped and materialization proceeds rather
 than pretending a missing target is a successful no-op.
+
+Combine exact reconciliation with empty-candidate protection by declaring the
+failing reconciliation first:
+
+```elixir
+row_count equals: param(:expected_row_count),
+  on_violation: :fail
+
+row_count min: 1,
+  when: :target_exists,
+  on_violation: :skip_materialization
+```
+
+For a zero-row candidate, the no-op is reachable only when exact reconciliation
+also expects zero. A non-zero expectation fails first and rolls back; the later
+no-op claim cannot hide it. When the target is missing, the second claim is
+condition-skipped and normal bootstrap behavior continues.
 
 ### Favn-Owned Runtime Inputs
 
@@ -259,12 +278,13 @@ Data claims compile into the ordinary transactional check engine:
 - every `null: false` column must contain no null values;
 - structured grain columns must be unique;
 - every `unique` declaration must be unique; and
-- `row_count` must satisfy its configured exact, minimum, maximum, or range
-  constraint.
+- every `row_count` declaration must satisfy its configured exact, minimum,
+  maximum, or range constraint in authored order.
 
 Generated checks use grouped stable claim identities: `columns.not_null`,
 `keys.unique`, `row_count.equals.literal.N`, `row_count.equals.param.NAME`,
-`row_count.min.N`, `row_count.max.N`, and `row_count.range.MIN.MAX`. Each
+`row_count.min.N`, `row_count.max.N`, and `row_count.range.MIN.MAX`. Repeated
+semantic identities receive an `.occurrence.N` suffix. Each
 row-count check computes `count(*)` once and returns the actual count plus the
 applicable expected/bound metrics. Grouping makes a wide contract a bounded
 number of scans and durable results instead of one check per required column.
@@ -298,12 +318,13 @@ inspection.
 ## Bounds
 
 One contract supports up to 1,000 ordered columns, 128 explicit fragment
-compositions, and 128 explicit unique keys.
-Automatic enforcement is grouped into at most three checks—required columns,
-keys, and row count—so wide schemas do not consume the separate budget of 50
-authored custom checks. Candidate schema evidence retains up to 1,000 observed
-columns. If an adapter reports more, validation fails with a structured column
-limit difference and persists the total count plus an explicit truncation flag.
+compositions, 128 explicit unique keys, and 16 ordered row-count claims.
+Automatic enforcement uses one grouped required-column check, one grouped key
+check, and one check per row-count claim, for at most 18 generated checks. Wide
+schemas do not consume the separate budget of 50 authored custom checks.
+Candidate schema evidence retains up to 1,000 observed columns. If an adapter
+reports more, validation fails with a structured column limit difference and
+persists the total count plus an explicit truncation flag.
 
 Each custom or generated check still uses the metric and message limits in
 [Transactional SQL Asset Checks](sql-asset-checks.md).

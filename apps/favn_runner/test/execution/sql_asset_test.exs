@@ -36,6 +36,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     previous_begin_failure = Application.get_env(:favn_runner, :checked_begin_failure)
     previous_checked_columns = Application.get_env(:favn_runner, :checked_columns)
 
+    previous_contract_outcomes =
+      Application.get_env(:favn_runner, :checked_contract_outcomes)
+
     previous_runtime_inputs_resolved =
       Application.get_env(:favn_runner, :runtime_inputs_resolved)
 
@@ -44,6 +47,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     Application.put_env(:favn_runner, :checked_cleanup_failure, false)
     Application.put_env(:favn_runner, :checked_rollback_failure, false)
     Application.put_env(:favn_runner, :checked_begin_failure, false)
+    Application.put_env(:favn_runner, :checked_contract_outcomes, [])
 
     Application.put_env(:favn_runner, :checked_columns, [
       %Column{name: "id", position: 1, data_type: "INTEGER", nullable?: true}
@@ -58,6 +62,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       restore_env(:checked_rollback_failure, previous_rollback_failure)
       restore_env(:checked_begin_failure, previous_begin_failure)
       restore_env(:checked_columns, previous_checked_columns)
+      restore_env(:checked_contract_outcomes, previous_contract_outcomes)
       restore_env(:runtime_inputs_resolved, previous_runtime_inputs_resolved)
       Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
     end)
@@ -1124,7 +1129,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     contract =
       Contract.new!(%{
         columns: [%{name: :id, type: :integer}],
-        row_count: [equals: Param.new!(:expected_rows)]
+        row_counts: [[equals: Param.new!(:expected_rows)]]
       })
 
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
@@ -1147,6 +1152,87 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert valid_result.status == :ok
     assert_received :checked_connect
     assert_received {:checked_query_params, [1, 1]}
+  end
+
+  test "an earlier row-count failure cannot become a later successful no-op" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+    Application.put_env(:favn_runner, :checked_contract_outcomes, [false, false])
+
+    contract = ordered_row_count_contract()
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedFailureSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, [], nil, contract)
+
+    work =
+      version
+      |> work_for(ref, "run_ordered_row_count_failure")
+      |> Map.put(:params, %{expected_rows: 100})
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :error
+    assert [%{meta: meta}] = result.asset_results
+    assert meta.write_outcome == :rolled_back
+
+    assert Enum.map(meta.check_results, &{&1.claim_id, &1.outcome}) == [
+             {"row_count.equals.param.expected_rows", :failed},
+             {"row_count.min.1", :not_run}
+           ]
+
+    assert_received {:checked_query, _statement}
+    refute_received {:checked_query, _statement}
+    refute_received {:checked_materialize, _write_plan}
+  end
+
+  test "a later row-count no-op preserves the target after exact reconciliation passes" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+    Application.put_env(:favn_runner, :checked_contract_outcomes, [true, false])
+
+    contract = ordered_row_count_contract()
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSkipSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, [], nil, contract)
+
+    work =
+      version
+      |> work_for(ref, "run_ordered_row_count_no_op")
+      |> Map.put(:params, %{expected_rows: 0})
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :ok
+    assert [%{meta: meta}] = result.asset_results
+    assert meta.write_outcome == :no_op
+
+    assert Enum.map(meta.check_results, &{&1.claim_id, &1.outcome}) == [
+             {"row_count.equals.param.expected_rows", :passed},
+             {"row_count.min.1", :materialization_skipped}
+           ]
+
+    refute_received {:checked_materialize, _write_plan}
+  end
+
+  test "a target-conditioned row-count claim is skipped during empty bootstrap" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+    Application.put_env(:favn_runner, :checked_target_exists, false)
+    Application.put_env(:favn_runner, :checked_contract_outcomes, [true])
+
+    contract = ordered_row_count_contract()
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedBootstrapSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, [], nil, contract)
+
+    work =
+      version
+      |> work_for(ref, "run_ordered_row_count_bootstrap")
+      |> Map.put(:params, %{expected_rows: 0})
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :ok
+    assert [%{meta: meta}] = result.asset_results
+    assert meta.write_outcome == :written
+
+    assert Enum.map(meta.check_results, &{&1.claim_id, &1.outcome}) == [
+             {"row_count.equals.param.expected_rows", :passed},
+             {"row_count.min.1", :condition_skipped}
+           ]
+
+    assert_received {:checked_materialize, _write_plan}
   end
 
   test "rejects caller-supplied Favn runtime names before opening a SQL session" do
@@ -1174,7 +1260,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     contract =
       Contract.new!(%{
         columns: [%{name: :id, type: :integer}],
-        row_count: [equals: Param.new!(:expected_rows)]
+        row_counts: [[equals: Param.new!(:expected_rows)]]
       })
 
     resolver = %RuntimeInputResolverRef{
@@ -1415,8 +1501,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 8,
-        runner_contract_version: 8,
+        schema_version: 9,
+        runner_contract_version: 9,
         assets: [
           %Asset{
             ref: ref,
@@ -1475,8 +1561,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     package = execution_package!(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [
         %Asset{
           ref: ref,
@@ -1543,8 +1629,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     package = execution_package!(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [
         %Asset{
           ref: ref,
@@ -1602,6 +1688,16 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         uses_target?: false
       })
     end)
+  end
+
+  defp ordered_row_count_contract do
+    Contract.new!(%{
+      columns: [%{name: :id, type: :integer}],
+      row_counts: [
+        [equals: Param.new!(:expected_rows), on_violation: :fail],
+        [min: 1, when: :target_exists, on_violation: :skip_materialization]
+      ]
+    })
   end
 
   defp checked_check(name, at, on_violation, sql, opts \\ []) do
@@ -1702,8 +1798,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 8,
-        runner_contract_version: 8,
+        schema_version: 9,
+        runner_contract_version: 9,
         assets: [
           %Asset{
             ref: ref,
@@ -1735,8 +1831,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [
         %Asset{
           ref: ref,
@@ -2168,10 +2264,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedExecutionAdapter do
          }}
 
       true ->
-        passed? =
-          not (String.contains?(statement, "check:warn") or
-                 String.contains?(statement, "check:fail") or
-                 String.contains?(statement, "check:skip"))
+        passed? = checked_query_passed?(statement)
 
         {:ok,
          %Result{
@@ -2180,6 +2273,23 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedExecutionAdapter do
            columns: ["passed", "row_count"],
            rows: [%{"passed" => passed?, "row_count" => 1}]
          }}
+    end
+  end
+
+  defp checked_query_passed?(statement) do
+    if String.contains?(statement, "favn_contract_row_count") do
+      case Application.get_env(:favn_runner, :checked_contract_outcomes, []) do
+        [passed? | remaining] ->
+          Application.put_env(:favn_runner, :checked_contract_outcomes, remaining)
+          passed?
+
+        [] ->
+          true
+      end
+    else
+      not (String.contains?(statement, "check:warn") or
+             String.contains?(statement, "check:fail") or
+             String.contains?(statement, "check:skip"))
     end
   end
 

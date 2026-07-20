@@ -23,7 +23,7 @@ defmodule Favn.SQL.Check do
   Validation also enforces the cross-field rules needed by the runner:
   `:skip_materialization` is before-only and target-existence guarded, and any
   before check using `target()` has the same guard. One asset may carry at most
-  50 authored checks plus the three grouped contract claims; messages are
+  50 authored checks plus up to 18 generated contract checks; messages are
   limited to 1,024 bytes.
   """
 
@@ -35,7 +35,7 @@ defmodule Favn.SQL.Check do
   @conditions [nil, :target_exists]
   @max_message_bytes 1_024
   @max_per_asset 50
-  @max_contract_per_asset 3
+  @max_contract_per_asset 18
 
   @enforce_keys [:name, :at, :on_violation, :sql, :template, :uses_query?, :uses_target?]
   defstruct [
@@ -156,7 +156,7 @@ defmodule Favn.SQL.Check do
 
     if contract_count > @max_contract_per_asset do
       raise ArgumentError,
-            "SQL contracts support at most #{@max_contract_per_asset} grouped generated checks"
+            "SQL contracts support at most #{@max_contract_per_asset} generated checks"
     end
 
     checks
@@ -176,7 +176,7 @@ defmodule Favn.SQL.Check do
   @spec max_per_asset() :: pos_integer()
   def max_per_asset, do: @max_per_asset
 
-  @doc "Returns the maximum grouped contract checks supported by one SQL asset."
+  @doc "Returns the maximum generated contract checks supported by one SQL asset."
   @spec max_contract_per_asset() :: pos_integer()
   def max_contract_per_asset, do: @max_contract_per_asset
 end

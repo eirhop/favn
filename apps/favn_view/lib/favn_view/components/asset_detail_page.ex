@@ -526,7 +526,42 @@ defmodule FavnView.Components.AssetDetailPage do
         <div class="grid gap-3 md:grid-cols-3">
           <.assurance_fact label="Grain" value={grain_label(@contract[:grain])} />
           <.assurance_fact label="Unique keys" value={unique_keys_label(@contract[:unique_keys])} />
-          <.assurance_fact label="Row count" value={row_count_label(@contract[:row_count])} />
+          <.assurance_fact
+            label="Row count claims"
+            value={row_counts_label(@contract[:row_counts])}
+          />
+        </div>
+
+        <div
+          :if={List.wrap(@contract[:row_counts]) != []}
+          class="grid gap-3 lg:grid-cols-2"
+          data-testid="contract-row-count-claims"
+        >
+          <article
+            :for={{row_count, index} <- Enum.with_index(List.wrap(@contract[:row_counts]), 1)}
+            class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
+            data-testid="contract-row-count-claim"
+            data-claim-id={row_count[:claim_id]}
+          >
+            <div class="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <p class="text-xs uppercase tracking-[0.14em] text-base-content/40">
+                  Row count claim {index}
+                </p>
+                <p class="mt-1 text-sm font-medium">{row_count_constraint_label(row_count)}</p>
+                <p class="mt-1 font-mono text-[0.7rem] text-base-content/45">
+                  {row_count[:claim_id]}
+                </p>
+              </div>
+              <span class={check_result_badge(row_count[:latest_result])}>
+                {check_result_label(row_count[:latest_result])}
+              </span>
+            </div>
+            <p class="mt-2 text-xs text-base-content/60">
+              On violation {humanize(row_count[:on_violation])}
+              <span :if={row_count[:when]}> · when {humanize(row_count[:when])}</span>
+            </p>
+          </article>
         </div>
 
         <div
@@ -917,11 +952,11 @@ defmodule FavnView.Components.AssetDetailPage do
   defp unique_keys_label(keys),
     do: Enum.map_join(keys, " · ", &Enum.map_join(&1, ", ", fn name -> to_string(name) end))
 
-  defp row_count_label(nil), do: "Not declared"
+  defp row_counts_label([]), do: "Not declared"
+  defp row_counts_label(nil), do: "Not declared"
 
-  defp row_count_label(row_count) do
-    "#{row_count_constraint_label(row_count)} · #{humanize(row_count[:on_violation])} on violation"
-  end
+  defp row_counts_label([_row_count]), do: "1 ordered claim"
+  defp row_counts_label(row_counts), do: "#{length(row_counts)} ordered claims"
 
   defp row_count_constraint_label(%{equals: %{source: :param, name: name}}),
     do: "Exactly @#{name}"

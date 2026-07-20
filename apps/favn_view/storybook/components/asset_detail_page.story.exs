@@ -261,12 +261,26 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
         contract: %{
           grain: %{by: [:order_id], description: "one customer order"},
           unique_keys: [[:order_id]],
-          row_count: %{
-            equals: %{source: :param, name: :expected_rows},
-            min: nil,
-            max: nil,
-            on_violation: :fail
-          },
+          row_counts: [
+            %{
+              claim_id: "row_count.equals.param.expected_rows",
+              equals: %{source: :param, name: :expected_rows},
+              min: nil,
+              max: nil,
+              when: nil,
+              on_violation: :fail,
+              latest_result: %{outcome: :passed}
+            },
+            %{
+              claim_id: "row_count.min.1",
+              equals: nil,
+              min: 1,
+              max: nil,
+              when: :target_exists,
+              on_violation: :skip_materialization,
+              latest_result: %{outcome: :condition_skipped}
+            }
+          ],
           compositions: [
             %{module: fragment, start_index: 1, columns: [:processed_at, :favn_run_id]}
           ],

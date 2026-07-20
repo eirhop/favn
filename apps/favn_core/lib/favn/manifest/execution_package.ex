@@ -30,7 +30,7 @@ defmodule Favn.Manifest.ExecutionPackage do
     Text
   }
 
-  @schema_version 1
+  @schema_version 2
 
   @enforce_keys [:content_hash, :asset_ref, :sql_execution]
   defstruct schema_version: @schema_version,

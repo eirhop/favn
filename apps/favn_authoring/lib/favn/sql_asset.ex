@@ -157,8 +157,9 @@ defmodule Favn.SQLAsset do
 
   Table and incremental assets may declare one typed output contract. The
   contract is compiled into the manifest and describes ordered columns,
-  structured or descriptive grain, unique keys, an exact or bounded row count,
-  reusable column-fragment provenance, and explicit column lineage:
+  structured or descriptive grain, unique keys, ordered exact or bounded
+  row-count claims, reusable column-fragment provenance, and explicit column
+  lineage:
 
       contract do
         grain by: [:record_id], description: "one normalized record"
@@ -171,6 +172,9 @@ defmodule Favn.SQLAsset do
         column :payload, :json, from: [{"external.records", "payload"}]
         unique [:record_id]
 
+        row_count equals: param(:expected_row_count),
+          on_violation: :fail
+
         row_count min: 1,
           when: :target_exists,
           on_violation: :skip_materialization
@@ -182,8 +186,9 @@ defmodule Favn.SQLAsset do
   ordinary transactional check engine. Generated checks carry origin
   `:contract` and stable claim identities; authored checks carry origin
   `:authored`, and both appear in the same assurance result model.
-  Required-column and key enforcement is grouped, so a wide schema adds at most
-  three contract checks and does not consume the 50 authored-check budget.
+  Required-column and key enforcement is grouped; every row-count declaration
+  adds one ordered check. A contract adds at most 18 generated checks and does
+  not consume the 50 authored-check budget.
 
   Grain may use `by:`, `description:`, or both. A description is useful when
   row identity cannot be expressed by output columns, but only structured `by:`
@@ -200,9 +205,10 @@ defmodule Favn.SQLAsset do
   the asset.
 
   Row counts accept literal `equals:`, `min:`, `max:`, or a `min:`/`max:` range.
-  Exact counts may use `equals: param(:name)` to bind a normal setting or runtime
-  param that the runner validates as a non-negative integer before opening a SQL
-  session.
+  Repeat `row_count` to declare independent claims with their own conditions and
+  violation policies; claims execute in authored order. Exact counts may use
+  `equals: param(:name)` to bind a normal setting or runtime param that the
+  runner validates as a non-negative integer before opening a SQL session.
 
   Write `select` expressions, aliases, casts, and backend-specific SQL in
   `query`; the contract validates and documents the result. Run
@@ -213,8 +219,8 @@ defmodule Favn.SQLAsset do
   ## Transactional Checks
 
   Table and incremental assets can declare up to 50 uniquely named authored
-  SQL-native checks. An output contract adds at most three grouped generated
-  checks. Checks use the same compiler, reusable `defsql` definitions,
+  SQL-native checks. An output contract adds at most 18 generated checks. Checks
+  use the same compiler, reusable `defsql` definitions,
   parameters, window values, and relation resolution as `query`.
 
   Use checks for read-only aggregate invariants over the exact candidate or
@@ -654,8 +660,9 @@ defmodule Favn.SQLAsset do
       end
 
   `grain by:` and `unique` generate transactional uniqueness checks;
-  non-null columns generate non-null checks; and `row_count` generates the
-  normal policy-controlled row-count check. Candidate column names, order,
+  non-null columns generate non-null checks; and each ordered `row_count`
+  declaration generates a normal policy-controlled row-count check. An earlier
+  failed claim cannot be hidden by a later no-op claim. Candidate column names, order,
   types, and observable nullability are hard contract requirements checked
   before target mutation. Write the query and select list explicitly. See the
   HexDocs guide `guides/sql-output-contracts.md` for the complete option,
@@ -1188,7 +1195,7 @@ defmodule Favn.SQLAsset do
       DSLCompiler.compile_error!(
         raw_definition.file,
         raw_definition.line,
-        "SQL contracts support at most #{Check.max_contract_per_asset()} grouped generated checks"
+        "SQL contracts support at most #{Check.max_contract_per_asset()} generated checks"
       )
     end
   end
@@ -1659,7 +1666,7 @@ defmodule Favn.SQLAsset do
     definition =
       Enum.reduce(
         statements,
-        %{grain: nil, columns: [], compositions: [], unique_keys: [], row_count: nil},
+        %{grain: nil, columns: [], compositions: [], unique_keys: [], row_counts: []},
         &parse_contract_statement!(&1, &2, env)
       )
 
@@ -1734,16 +1741,12 @@ defmodule Favn.SQLAsset do
   end
 
   defp parse_contract_statement!({:row_count, meta, [opts_ast]}, definition, env) do
-    if definition.row_count do
-      contract_compile_error!(env, meta, "contract can declare row_count only once")
-    end
-
     opts = contract_row_count_opts!(opts_ast, env, meta)
 
     unless Enum.any?([:equals, :min, :max], &Keyword.has_key?(opts, &1)),
       do: contract_compile_error!(env, meta, "contract row_count requires equals:, min:, or max:")
 
-    %{definition | row_count: opts}
+    %{definition | row_counts: definition.row_counts ++ [opts]}
   end
 
   defp parse_contract_statement!(statement, _definition, env) do

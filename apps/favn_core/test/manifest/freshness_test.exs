@@ -42,8 +42,8 @@ defmodule Favn.Manifest.FreshnessTest do
   test "manifest serialization and rehydration round-trips freshness policies" do
     manifest =
       FavnTestSupport.with_manifest_graph(%Manifest{
-        schema_version: 8,
-        runner_contract_version: 8,
+        schema_version: 9,
+        runner_contract_version: 9,
         assets: [
           asset(:missing, nil),
           asset(:daily_oslo, %Policy{

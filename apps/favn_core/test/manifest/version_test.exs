@@ -23,7 +23,7 @@ defmodule Favn.Manifest.VersionTest do
   alias Favn.SQL.Template
 
   test "builds pinned manifest version with id and content hash" do
-    manifest = %{schema_version: 8, runner_contract_version: 8, assets: []}
+    manifest = %{schema_version: 9, runner_contract_version: 9, assets: []}
 
     assert {:ok, %Version{} = version} =
              Version.new(manifest,
@@ -41,16 +41,16 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "fails when schema version is unsupported" do
-    manifest = %{schema_version: 0, runner_contract_version: 8, assets: []}
+    manifest = %{schema_version: 0, runner_contract_version: 9, assets: []}
 
-    assert {:error, {:unsupported_schema_version, 0, 8}} =
+    assert {:error, {:unsupported_schema_version, 0, 9}} =
              Version.new(manifest)
   end
 
   test "rejects the removed inline SQL execution field" do
     manifest = %{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [%{type: :sql, sql_execution: %{sql: "SELECT 1"}}]
     }
 
@@ -75,20 +75,20 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "pins canonical manifest payload when input is build" do
-    canonical_manifest = %{schema_version: 8, runner_contract_version: 8, assets: []}
+    canonical_manifest = %{schema_version: 9, runner_contract_version: 9, assets: []}
     build = Build.new(canonical_manifest, diagnostics: [%{message: "warn"}])
 
     assert {:ok, %Version{} = version} = Version.new(build, manifest_version_id: "mv_test_build")
 
     assert %Manifest{} = version.manifest
-    assert version.manifest.schema_version == 8
-    assert version.manifest.runner_contract_version == 8
+    assert version.manifest.schema_version == 9
+    assert version.manifest.runner_contract_version == 9
     assert version.manifest.assets == []
     refute Map.has_key?(version.manifest, :manifest)
   end
 
   test "build input uses canonical payload hash invariant" do
-    canonical_manifest = %{schema_version: 8, runner_contract_version: 8, assets: []}
+    canonical_manifest = %{schema_version: 9, runner_contract_version: 9, assets: []}
     build = Build.new(canonical_manifest, diagnostics: [%{message: "warn"}])
 
     assert {:ok, %Version{} = version} =
@@ -99,7 +99,7 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "verifies published manifest version envelopes without minting a new identity" do
-    manifest = %{schema_version: 8, runner_contract_version: 8, assets: []}
+    manifest = %{schema_version: 9, runner_contract_version: 9, assets: []}
 
     assert {:ok, original} =
              Version.new(manifest,
@@ -126,7 +126,7 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "rejects published manifest version envelopes with mismatched hashes" do
-    manifest = %{schema_version: 8, runner_contract_version: 8, assets: []}
+    manifest = %{schema_version: 9, runner_contract_version: 9, assets: []}
 
     assert {:error, {:manifest_content_hash_mismatch, expected, computed}} =
              Version.from_published(manifest,
@@ -139,7 +139,7 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "envelope versions are derived from manifest payload" do
-    manifest = %{schema_version: 8, runner_contract_version: 8, assets: []}
+    manifest = %{schema_version: 9, runner_contract_version: 9, assets: []}
 
     assert {:ok, %Version{} = version} =
              Version.new(manifest,
@@ -151,10 +151,10 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "rejects version override options" do
-    manifest = %{schema_version: 8, runner_contract_version: 8, assets: []}
+    manifest = %{schema_version: 9, runner_contract_version: 9, assets: []}
 
     assert {:error, {:unknown_opt, :schema_version}} =
-             Version.new(manifest, schema_version: 8)
+             Version.new(manifest, schema_version: 9)
   end
 
   test "preserves incremental materialization options through canonicalization" do
@@ -241,34 +241,10 @@ defmodule Favn.Manifest.VersionTest do
           Composition.new!(MyApp.Contracts.RecordIdentity, 0, [:id])
         ],
         unique_keys: [[:id]],
-        row_count: [equals: Param.new!(:expected_rows), on_violation: :warn]
+        row_counts: [[equals: Param.new!(:expected_rows), on_violation: :warn]]
       })
 
-    contract_checks =
-      Enum.map(Contract.generated_check_specs(contract), fn spec ->
-        generated_template =
-          Template.compile!(spec.sql,
-            file: "test/fixtures/version_contract_check.sql",
-            line: 1,
-            module: __MODULE__,
-            scope: :query,
-            enforce_query_root: true
-          )
-
-        Check.new!(%{
-          name: spec.name,
-          at: spec.at,
-          on_violation: spec.on_violation,
-          when: spec.when,
-          message: spec.message,
-          sql: spec.sql,
-          template: generated_template,
-          origin: :contract,
-          claim_id: spec.claim_id,
-          uses_query?: true,
-          uses_target?: false
-        })
-      end)
+    contract_checks = generated_contract_checks(contract)
 
     execution = %SQLExecution{
       sql: "SELECT 1 AS id",
@@ -282,8 +258,8 @@ defmodule Favn.Manifest.VersionTest do
     assert {:ok, package} = ExecutionPackage.new(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [
         %Asset{
           ref: ref,
@@ -393,10 +369,12 @@ defmodule Favn.Manifest.VersionTest do
                }
              ],
              unique_keys: [%UniqueKey{columns: [:id]}],
-             row_count: %RowCount{
-               equals: %Param{name: :expected_rows},
-               on_violation: :warn
-             }
+             row_counts: [
+               %RowCount{
+                 equals: %Param{name: :expected_rows},
+                 on_violation: :warn
+               }
+             ]
            } = asset.assurance.contract
 
     assert asset.metadata.category == "sales"
@@ -453,7 +431,7 @@ defmodule Favn.Manifest.VersionTest do
     invalid_row_count =
       put_in(
         package_decoded,
-        ["sql_execution", "contract", "row_count", "min"],
+        ["sql_execution", "contract", "row_counts", Access.at(0), "min"],
         1
       )
 
@@ -463,6 +441,18 @@ defmodule Favn.Manifest.VersionTest do
                message: "contract row_count equals: cannot be combined with min: or max:"
              }}} =
              ExecutionPackage.from_published(invalid_row_count)
+
+    noncanonical_contract =
+      update_in(package_decoded, ["sql_execution", "contract"], fn contract ->
+        contract
+        |> Map.put("row_count", List.first(contract["row_counts"]))
+        |> Map.delete("row_counts")
+      end)
+
+    assert {:error,
+            {:invalid_manifest_payload,
+             %ArgumentError{message: "invalid SQL output contract fields"}}} =
+             ExecutionPackage.from_published(noncanonical_contract)
 
     invalid_query =
       put_in(
@@ -576,6 +566,52 @@ defmodule Favn.Manifest.VersionTest do
              }}} = ExecutionPackage.from_published(resolver_with_payload)
   end
 
+  test "round trips multiple ordered row-count claims through execution packages" do
+    ref = {MyApp.Assets.OrderedCounts, :asset}
+
+    template =
+      Template.compile!("SELECT 1 AS id",
+        file: "test/fixtures/version_multiple_row_counts.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    contract =
+      Contract.new!(%{
+        columns: [%{name: :id, type: :integer}],
+        row_counts: [
+          [equals: Param.new!(:expected_rows), on_violation: :fail],
+          [min: 1, when: :target_exists, on_violation: :skip_materialization]
+        ]
+      })
+
+    execution = %SQLExecution{
+      sql: "SELECT 1 AS id",
+      template: template,
+      contract: contract,
+      checks: generated_contract_checks(contract)
+    }
+
+    assert {:ok, package} = ExecutionPackage.new(ref, execution)
+    assert package.schema_version == 2
+    assert {:ok, encoded} = Serializer.encode_manifest(package)
+    assert {:ok, decoded} = Serializer.decode_manifest(encoded)
+    assert length(get_in(decoded, ["sql_execution", "contract", "row_counts"])) == 2
+    assert {:ok, canonical} = ExecutionPackage.from_published(decoded)
+
+    assert Enum.map(canonical.sql_execution.contract.row_counts, &{&1.equals, &1.min}) == [
+             {%Param{name: :expected_rows}, nil},
+             {nil, 1}
+           ]
+
+    assert Enum.map(canonical.sql_execution.checks, & &1.claim_id) == [
+             "row_count.equals.param.expected_rows",
+             "row_count.min.1"
+           ]
+  end
+
   defp manifest_with_materialization(materialization) do
     ref = {__MODULE__.IncrementalAsset, :asset}
 
@@ -598,8 +634,8 @@ defmodule Favn.Manifest.VersionTest do
     ref = {MyApp.Assets.Roundtrip, :asset}
 
     manifest = %Manifest{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [
         %Asset{
           ref: ref,
@@ -651,8 +687,8 @@ defmodule Favn.Manifest.VersionTest do
     gold = {MyApp.Assets.LegacyGold, :asset}
 
     manifest = %Manifest{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [
         %Asset{ref: raw, module: elem(raw, 0), name: :asset, depends_on: []},
         %Asset{ref: gold, module: elem(gold, 0), name: :asset, depends_on: [raw]}
@@ -670,8 +706,8 @@ defmodule Favn.Manifest.VersionTest do
 
   test "rehydrates known manifest module atoms without loading user modules" do
     manifest = %{
-      "schema_version" => 8,
-      "runner_contract_version" => 8,
+      "schema_version" => 9,
+      "runner_contract_version" => 9,
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"},
@@ -712,8 +748,8 @@ defmodule Favn.Manifest.VersionTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom(tag) end
 
     manifest = %{
-      "schema_version" => 8,
-      "runner_contract_version" => 8,
+      "schema_version" => 9,
+      "runner_contract_version" => 9,
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"},
@@ -784,8 +820,8 @@ defmodule Favn.Manifest.VersionTest do
     assert {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: assets,
       pipelines: [
         %Pipeline{
@@ -819,8 +855,8 @@ defmodule Favn.Manifest.VersionTest do
 
   test "rejects invalid unloaded module references during rehydration" do
     manifest = %{
-      "schema_version" => 8,
-      "runner_contract_version" => 8,
+      "schema_version" => 9,
+      "runner_contract_version" => 9,
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.not-a-module", "name" => "asset"},
@@ -843,8 +879,8 @@ defmodule Favn.Manifest.VersionTest do
     module = "Elixir." <> String.duplicate("A", 249)
 
     manifest = %{
-      "schema_version" => 8,
-      "runner_contract_version" => 8,
+      "schema_version" => 9,
+      "runner_contract_version" => 9,
       "assets" => [
         %{
           "ref" => %{"module" => module, "name" => "asset"},
@@ -874,8 +910,8 @@ defmodule Favn.Manifest.VersionTest do
     name = "generated_asset_#{unique}"
 
     manifest = %{
-      "schema_version" => 8,
-      "runner_contract_version" => 8,
+      "schema_version" => 9,
+      "runner_contract_version" => 9,
       "assets" => [
         %{
           "ref" => %{"module" => module, "name" => name},
@@ -919,8 +955,8 @@ defmodule Favn.Manifest.VersionTest do
       end)
 
     manifest = %{
-      "schema_version" => 8,
-      "runner_contract_version" => 8,
+      "schema_version" => 9,
+      "runner_contract_version" => 9,
       "assets" => assets,
       "pipelines" => [],
       "schedules" => [],
@@ -938,5 +974,32 @@ defmodule Favn.Manifest.VersionTest do
     {:ok, String.to_existing_atom(value)}
   rescue
     ArgumentError -> :error
+  end
+
+  defp generated_contract_checks(contract) do
+    Enum.map(Contract.generated_check_specs(contract), fn spec ->
+      generated_template =
+        Template.compile!(spec.sql,
+          file: "test/fixtures/version_contract_check.sql",
+          line: 1,
+          module: __MODULE__,
+          scope: :query,
+          enforce_query_root: true
+        )
+
+      Check.new!(%{
+        name: spec.name,
+        at: spec.at,
+        on_violation: spec.on_violation,
+        when: spec.when,
+        message: spec.message,
+        sql: spec.sql,
+        template: generated_template,
+        origin: :contract,
+        claim_id: spec.claim_id,
+        uses_query?: true,
+        uses_target?: false
+      })
+    end)
   end
 end

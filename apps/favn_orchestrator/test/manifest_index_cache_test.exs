@@ -50,8 +50,8 @@ defmodule FavnOrchestrator.ManifestIndexCacheTest do
 
   defp version!(id, metadata) do
     manifest = %Manifest{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [],
       pipelines: [],
       schedules: [],

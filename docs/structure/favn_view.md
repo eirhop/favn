@@ -68,7 +68,8 @@ Ownership rules:
 - Tidewave is plugged only in dev. PhoenixStorybook is mounted under
   `/storybook` when dev routes are enabled.
 - SQL contracts, expected-versus-observed candidate schema, flattened fragment
-  origins, row-count bounds/parameters, lineage, Contract and Custom checks,
+  origins, ordered row-count bounds/parameters and policies, lineage, Contract
+  and Custom checks,
   quality warnings, no-op writes, and rolled-back diagnostics render from
   orchestrator-owned asset-detail assurance and attempt
   `output_metadata`. `FavnView.Components.OutputMetadata` owns the shared run

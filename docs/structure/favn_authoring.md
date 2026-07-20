@@ -52,9 +52,10 @@ authored `check` declarations through the same `Favn.SQL.Template` and visible
 column-only declarations; explicit `include Module` statements flatten those
 columns at the declaration position and retain composition provenance. Contract
 columns, structured/descriptive grain, explicit lineage, unique keys, and
-exact/bounded row-count policy normalize into core types. A typed contract
-runtime parameter uses `row_count equals: param(:name)`.
-Required columns and keys are grouped into bounded generated checks,
+ordered exact/bounded row-count claims normalize into core types. Repeated
+`row_count` declarations retain authored order; a typed claim parameter uses
+`row_count equals: param(:name)`. Required columns and keys are grouped into
+bounded generated checks while every row-count claim emits its own check,
 and the compiler validates that the generated claim set exactly matches the
 contract before emitting manifest runtime data. It validates
 phase/policy/condition combinations at compile time; no authoring module is

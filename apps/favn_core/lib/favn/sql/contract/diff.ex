@@ -207,7 +207,7 @@ defmodule Favn.SQL.Contract.Diff do
   defp contract_changes(previous, current) do
     maybe_change(:grain_changed, previous.grain, current.grain) ++
       maybe_change(:unique_keys_changed, previous.unique_keys, current.unique_keys) ++
-      maybe_change(:row_count_changed, previous.row_count, current.row_count)
+      maybe_change(:row_count_changed, previous.row_counts, current.row_counts)
   end
 
   defp maybe_change(_kind, value, value), do: []

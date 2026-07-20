@@ -40,7 +40,9 @@ Treat checks as publication gates and quality annotations.
 
 Declare up to 50 authored checks in the SQL asset module. Give every check a
 unique atom name and choose when it runs and what a false result means. Output
-contracts have a separate budget of at most three grouped generated checks.
+contracts have a separate budget of at most 18 generated checks: one grouped
+required-column check, one grouped key check, and up to 16 ordered row-count
+checks.
 
 ```elixir
 defmodule MyApp.Assets.NormalizedRecords do
@@ -144,7 +146,7 @@ end
 
 | Input | Required | Values and meaning |
 | --- | --- | --- |
-| name | yes | A unique, non-`nil` atom. One asset supports at most 50 authored checks; an output contract adds at most three grouped generated checks. |
+| name | yes | A unique, non-`nil` atom. One asset supports at most 50 authored checks; an output contract adds at most 18 generated checks. |
 | `at` | yes | `:before_materialize` or `:after_materialize`. |
 | `on_violation` | yes | `:fail`, `:warn`, or `:skip_materialization`. |
 | `when` | no | `:target_exists` skips the check during first-target bootstrap. |

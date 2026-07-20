@@ -145,8 +145,8 @@ defmodule Favn.Dev.RunnerControlTest do
 
   defp version_fixture do
     manifest = %{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [],
       pipelines: [],
       schedules: [],
