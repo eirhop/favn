@@ -351,7 +351,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "9ee440451202bf01ccde8d581e855b748fff559ded83514f289a64c8f8bd27f1"
+  @expected_definition_fingerprint "b3841285078fd44a08310717da24273849a5d4e1e37b6a31ce02f6f8e9f858cc"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok
