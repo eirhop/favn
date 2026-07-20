@@ -2,30 +2,68 @@ defmodule Favn.Manifest.CompatibilityTest do
   use ExUnit.Case, async: true
 
   alias Favn.Manifest.Compatibility
+  alias Favn.SQL.Contract
 
   test "accepts current schema and runner contract versions" do
+    manifest = %{schema_version: 9, runner_contract_version: 9, assets: []}
+    assert :ok = Compatibility.validate_manifest(manifest)
+  end
+
+  test "accepts the immediately previous schema and runner contract versions" do
     manifest = %{schema_version: 8, runner_contract_version: 8, assets: []}
     assert :ok = Compatibility.validate_manifest(manifest)
   end
 
-  test "rejects the previous schema version" do
-    manifest = %{schema_version: 7, runner_contract_version: 8, assets: []}
+  test "legacy manifest contracts reject multiple row-count claims" do
+    ref = {MyApp.SQLAsset, :asset}
 
-    assert {:error, {:unsupported_schema_version, 7, 8}} =
+    contract =
+      Contract.new!(
+        columns: [%{name: :id, type: :integer, null: false}],
+        row_counts: [[min: 1], [max: 10]]
+      )
+
+    manifest = %{
+      schema_version: 8,
+      runner_contract_version: 8,
+      assets: [
+        %{
+          ref: ref,
+          type: :sql,
+          execution_package_hash: String.duplicate("a", 64),
+          assurance: %{contract: contract}
+        }
+      ]
+    }
+
+    assert {:error, {:unsupported_legacy_row_count_claims, ^ref, 2}} =
+             Compatibility.validate_manifest(manifest)
+
+    assert :ok =
+             manifest
+             |> Map.put(:schema_version, 9)
+             |> Map.put(:runner_contract_version, 9)
+             |> Compatibility.validate_manifest()
+  end
+
+  test "rejects older schema versions" do
+    manifest = %{schema_version: 7, runner_contract_version: 9, assets: []}
+
+    assert {:error, {:unsupported_schema_version, 7, 9}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported schema version" do
-    manifest = %{schema_version: 9, runner_contract_version: 8, assets: []}
+    manifest = %{schema_version: 10, runner_contract_version: 9, assets: []}
 
-    assert {:error, {:unsupported_schema_version, 9, 8}} =
+    assert {:error, {:unsupported_schema_version, 10, 9}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported runner contract version" do
-    manifest = %{schema_version: 8, runner_contract_version: 9, assets: []}
+    manifest = %{schema_version: 9, runner_contract_version: 10, assets: []}
 
-    assert {:error, {:unsupported_runner_contract_version, 9, 8}} =
+    assert {:error, {:unsupported_runner_contract_version, 10, 9}} =
              Compatibility.validate_manifest(manifest)
   end
 
@@ -78,7 +116,7 @@ defmodule Favn.Manifest.CompatibilityTest do
       ]
     }
 
-    assert {:error, {:unsupported_runner_contract_version, 7, 8}} =
+    assert {:error, {:unsupported_runner_contract_version, 7, 9}} =
              Compatibility.validate_manifest(manifest)
   end
 

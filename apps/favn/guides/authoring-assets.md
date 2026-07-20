@@ -317,13 +317,15 @@ contract do
 
   column :payload, :json, from: [{"external.records", "payload"}]
   unique [:record_id]
-  row_count min: 1, on_violation: :fail
+  row_count equals: param(:expected_rows), on_violation: :fail
+  row_count min: 1, when: :target_exists, on_violation: :skip_materialization
 end
 ```
 
 Favn validates the staged candidate's ordered column names and types before
 target mutation. It generates ordinary transactional checks for non-null
-columns, structured grain, unique keys, and exact or bounded row counts. Use a
+columns, structured grain, unique keys, and ordered exact or bounded row-count
+claims. Use a
 grain description for operator-facing row identity and add `by:` when Favn
 should enforce uniqueness over output columns.
 

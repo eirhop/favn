@@ -449,6 +449,9 @@ contract do
   column :payload, :json, from: [{"external.records", "payload"}]
   unique [:record_id]
 
+  row_count equals: param(:expected_row_count),
+    on_violation: :fail
+
   row_count min: 1,
     when: :target_exists,
     on_violation: :skip_materialization
@@ -457,8 +460,9 @@ end
 
 Favn validates the staged candidate's ordered names and types before target
 mutation, generates checks for non-null columns, structured grain, unique keys,
-and minimum row count, and persists explicit column lineage. Contract-generated
-and custom checks use the same `on_violation: :fail | :warn |
+and every ordered row-count claim, and persists explicit column lineage. An
+earlier failed reconciliation cannot be hidden by a later successful no-op.
+Contract-generated and custom checks use the same `on_violation: :fail | :warn |
 :skip_materialization` vocabulary and appear together in asset assurance. The
 contract describes output; it does not generate the query's `select` list.
 

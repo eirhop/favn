@@ -7,6 +7,7 @@ defmodule Favn.Manifest.Serializer do
   """
 
   alias Favn.Manifest.Build
+  alias Favn.SQL.Contract
 
   @compile_time_only_keys MapSet.new([
                             "diagnostics",
@@ -58,6 +59,14 @@ defmodule Favn.Manifest.Serializer do
     |> normalize_value()
   end
 
+  defp normalize_value(%Contract{} = contract) do
+    contract
+    |> Map.from_struct()
+    |> Map.delete(:row_counts)
+    |> put_serialized_row_counts(contract.row_counts)
+    |> normalize_value()
+  end
+
   defp normalize_value(%_{} = struct) do
     struct
     |> Map.from_struct()
@@ -91,6 +100,14 @@ defmodule Favn.Manifest.Serializer do
   defp normalize_value(nil), do: nil
   defp normalize_value(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_value(value), do: inspect(value)
+
+  defp put_serialized_row_counts(fields, []), do: Map.put(fields, :row_count, nil)
+
+  defp put_serialized_row_counts(fields, [row_count]),
+    do: Map.put(fields, :row_count, row_count)
+
+  defp put_serialized_row_counts(fields, row_counts),
+    do: Map.put(fields, :row_counts, row_counts)
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key) when is_binary(key), do: key

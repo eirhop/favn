@@ -88,6 +88,51 @@ defmodule FavnView.Components.AssetDetailPageTest do
     assert html =~ "run_context=pipeline%3Ascheduled"
   end
 
+  test "renders every ordered row-count claim in the assurance contract" do
+    html =
+      render_component(&AssetDetailPage.assurance_panel/1,
+        assurance: %{
+          quality_status: :passed,
+          write_outcome: :written,
+          latest_run_id: nil,
+          contract_validation: nil,
+          checks: [],
+          contract: %{
+            grain: nil,
+            unique_keys: [],
+            columns: [],
+            row_counts: [
+              %{
+                claim_id: "row_count.equals.param.expected_rows",
+                equals: %{source: :param, name: :expected_rows},
+                min: nil,
+                max: nil,
+                when: nil,
+                on_violation: :fail,
+                latest_result: %{outcome: :passed}
+              },
+              %{
+                claim_id: "row_count.min.1",
+                equals: nil,
+                min: 1,
+                max: nil,
+                when: :target_exists,
+                on_violation: :skip_materialization,
+                latest_result: %{outcome: :condition_skipped}
+              }
+            ]
+          }
+        }
+      )
+
+    assert html =~ ~s(data-claim-id="row_count.equals.param.expected_rows")
+    assert html =~ ~s(data-claim-id="row_count.min.1")
+    assert html =~ "Exactly @expected_rows"
+    assert html =~ "At least 1"
+    assert html =~ "passed"
+    assert html =~ "condition skipped"
+  end
+
   defp freshness_window do
     %{
       id: "freshness:day:2026-07-17",

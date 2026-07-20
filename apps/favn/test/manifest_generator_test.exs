@@ -87,8 +87,8 @@ defmodule Favn.Manifest.GeneratorTest do
                schedule_modules: [TestSchedules]
              )
 
-    assert manifest.schema_version == 8
-    assert manifest.runner_contract_version == 8
+    assert manifest.schema_version == 9
+    assert manifest.runner_contract_version == 9
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1
     assert length(manifest.schedules) == 1

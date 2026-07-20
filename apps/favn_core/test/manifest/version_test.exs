@@ -23,7 +23,7 @@ defmodule Favn.Manifest.VersionTest do
   alias Favn.SQL.Template
 
   test "builds pinned manifest version with id and content hash" do
-    manifest = %{schema_version: 8, runner_contract_version: 8, assets: []}
+    manifest = %{schema_version: 9, runner_contract_version: 9, assets: []}
 
     assert {:ok, %Version{} = version} =
              Version.new(manifest,
@@ -41,9 +41,9 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "fails when schema version is unsupported" do
-    manifest = %{schema_version: 0, runner_contract_version: 8, assets: []}
+    manifest = %{schema_version: 0, runner_contract_version: 9, assets: []}
 
-    assert {:error, {:unsupported_schema_version, 0, 8}} =
+    assert {:error, {:unsupported_schema_version, 0, 9}} =
              Version.new(manifest)
   end
 
@@ -244,31 +244,7 @@ defmodule Favn.Manifest.VersionTest do
         row_count: [equals: Param.new!(:expected_rows), on_violation: :warn]
       })
 
-    contract_checks =
-      Enum.map(Contract.generated_check_specs(contract), fn spec ->
-        generated_template =
-          Template.compile!(spec.sql,
-            file: "test/fixtures/version_contract_check.sql",
-            line: 1,
-            module: __MODULE__,
-            scope: :query,
-            enforce_query_root: true
-          )
-
-        Check.new!(%{
-          name: spec.name,
-          at: spec.at,
-          on_violation: spec.on_violation,
-          when: spec.when,
-          message: spec.message,
-          sql: spec.sql,
-          template: generated_template,
-          origin: :contract,
-          claim_id: spec.claim_id,
-          uses_query?: true,
-          uses_target?: false
-        })
-      end)
+    contract_checks = generated_contract_checks(contract)
 
     execution = %SQLExecution{
       sql: "SELECT 1 AS id",
@@ -281,9 +257,23 @@ defmodule Favn.Manifest.VersionTest do
 
     assert {:ok, package} = ExecutionPackage.new(ref, execution)
 
+    legacy_payload = %{schema_version: 1, asset_ref: ref, sql_execution: execution}
+    assert {:ok, legacy_encoded} = Serializer.encode_manifest(legacy_payload)
+    legacy_hash = :crypto.hash(:sha256, legacy_encoded) |> Base.encode16(case: :lower)
+
+    legacy_package = %ExecutionPackage{
+      schema_version: 1,
+      content_hash: legacy_hash,
+      asset_ref: ref,
+      sql_execution: execution
+    }
+
+    assert {:ok, %ExecutionPackage{schema_version: 1}} =
+             ExecutionPackage.verify(legacy_package)
+
     manifest = %Manifest{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [
         %Asset{
           ref: ref,
@@ -393,10 +383,12 @@ defmodule Favn.Manifest.VersionTest do
                }
              ],
              unique_keys: [%UniqueKey{columns: [:id]}],
-             row_count: %RowCount{
-               equals: %Param{name: :expected_rows},
-               on_violation: :warn
-             }
+             row_counts: [
+               %RowCount{
+                 equals: %Param{name: :expected_rows},
+                 on_violation: :warn
+               }
+             ]
            } = asset.assurance.contract
 
     assert asset.metadata.category == "sales"
@@ -574,6 +566,65 @@ defmodule Favn.Manifest.VersionTest do
                message:
                  "invalid runtime input resolver reference; expected %{module: MyApp.Inputs}"
              }}} = ExecutionPackage.from_published(resolver_with_payload)
+  end
+
+  test "round trips multiple ordered row-count claims through execution packages" do
+    ref = {MyApp.Assets.OrderedCounts, :asset}
+
+    template =
+      Template.compile!("SELECT 1 AS id",
+        file: "test/fixtures/version_multiple_row_counts.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    contract =
+      Contract.new!(%{
+        columns: [%{name: :id, type: :integer}],
+        row_counts: [
+          [equals: Param.new!(:expected_rows), on_violation: :fail],
+          [min: 1, when: :target_exists, on_violation: :skip_materialization]
+        ]
+      })
+
+    execution = %SQLExecution{
+      sql: "SELECT 1 AS id",
+      template: template,
+      contract: contract,
+      checks: generated_contract_checks(contract)
+    }
+
+    assert {:ok, package} = ExecutionPackage.new(ref, execution)
+    assert package.schema_version == 2
+    assert {:ok, encoded} = Serializer.encode_manifest(package)
+    assert {:ok, decoded} = Serializer.decode_manifest(encoded)
+    assert length(get_in(decoded, ["sql_execution", "contract", "row_counts"])) == 2
+    assert {:ok, canonical} = ExecutionPackage.from_published(decoded)
+
+    assert Enum.map(canonical.sql_execution.contract.row_counts, &{&1.equals, &1.min}) == [
+             {%Param{name: :expected_rows}, nil},
+             {nil, 1}
+           ]
+
+    assert Enum.map(canonical.sql_execution.checks, & &1.claim_id) == [
+             "row_count.equals.param.expected_rows",
+             "row_count.min.1"
+           ]
+
+    legacy_payload = %{schema_version: 1, asset_ref: ref, sql_execution: execution}
+    assert {:ok, legacy_encoded} = Serializer.encode_manifest(legacy_payload)
+    legacy_hash = :crypto.hash(:sha256, legacy_encoded) |> Base.encode16(case: :lower)
+
+    legacy_package = %ExecutionPackage{
+      schema_version: 1,
+      content_hash: legacy_hash,
+      asset_ref: ref,
+      sql_execution: execution
+    }
+
+    assert {:error, :invalid_execution_package} = ExecutionPackage.verify(legacy_package)
   end
 
   defp manifest_with_materialization(materialization) do
@@ -938,5 +989,32 @@ defmodule Favn.Manifest.VersionTest do
     {:ok, String.to_existing_atom(value)}
   rescue
     ArgumentError -> :error
+  end
+
+  defp generated_contract_checks(contract) do
+    Enum.map(Contract.generated_check_specs(contract), fn spec ->
+      generated_template =
+        Template.compile!(spec.sql,
+          file: "test/fixtures/version_contract_check.sql",
+          line: 1,
+          module: __MODULE__,
+          scope: :query,
+          enforce_query_root: true
+        )
+
+      Check.new!(%{
+        name: spec.name,
+        at: spec.at,
+        on_violation: spec.on_violation,
+        when: spec.when,
+        message: spec.message,
+        sql: spec.sql,
+        template: generated_template,
+        origin: :contract,
+        claim_id: spec.claim_id,
+        uses_query?: true,
+        uses_target?: false
+      })
+    end)
   end
 end

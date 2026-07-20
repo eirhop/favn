@@ -498,7 +498,7 @@ defmodule Favn.Manifest.Rehydrate do
         |> Enum.map(&build_contract_composition/1),
       unique_keys:
         value |> field_value(:unique_keys, []) |> Enum.map(&build_contract_unique_key/1),
-      row_count: value |> field_value(:row_count) |> build_contract_row_count()
+      row_counts: build_contract_row_counts(value)
     })
   end
 
@@ -589,6 +589,31 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp build_contract_unique_key(other),
     do: raise(ArgumentError, "invalid SQL contract unique key #{inspect(other)}")
+
+  defp build_contract_row_counts(value) do
+    has_row_counts? = Map.has_key?(value, :row_counts) or Map.has_key?(value, "row_counts")
+    has_row_count? = Map.has_key?(value, :row_count) or Map.has_key?(value, "row_count")
+
+    case {has_row_counts?, has_row_count?} do
+      {true, true} ->
+        raise ArgumentError, "SQL output contract cannot set both row_counts and row_count"
+
+      {true, false} ->
+        case field_value(value, :row_counts) do
+          row_counts when is_list(row_counts) -> Enum.map(row_counts, &build_contract_row_count/1)
+          other -> raise ArgumentError, "invalid SQL contract row_counts #{inspect(other)}"
+        end
+
+      {false, true} ->
+        case field_value(value, :row_count) do
+          nil -> []
+          row_count -> [build_contract_row_count(row_count)]
+        end
+
+      {false, false} ->
+        []
+    end
+  end
 
   defp build_contract_row_count(nil), do: nil
   defp build_contract_row_count(%RowCount{} = row_count), do: RowCount.validate!(row_count)

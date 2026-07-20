@@ -79,6 +79,9 @@ linked run and never rewrites that source result.
 Run-list APIs select compact relational summaries without the authoritative JSON
 snapshot. Operator detail reconstruction caps full child snapshots at four and marks
 `child_run_details_truncated?` when more relational child rows exist.
+Asset assurance projects every ordered SQL contract row-count claim with its exact
+or bounded constraint, condition, violation policy, stable claim identity, and
+latest bounded check result; `favn_view` does not reconstruct this state.
 
 ## Tests
 

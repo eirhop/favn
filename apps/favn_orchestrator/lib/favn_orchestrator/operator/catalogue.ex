@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.Operator.Catalogue.Assurance
   alias FavnOrchestrator.Operator.Catalogue.AssetFreshness
   alias FavnOrchestrator.Operator.Catalogue.RunHistory
   alias FavnOrchestrator.Operator.Catalogue.Status
@@ -558,165 +559,13 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Map.put(:name, asset_detail_name(target))
     |> Status.put(status)
     |> Map.put(:freshness, AssetFreshness.detail(asset, version, freshness_states, context_opts))
-    |> Map.put(:assurance, assurance_detail(asset, latest_run))
+    |> Map.put(:assurance, Assurance.detail(asset, latest_run))
     |> Map.merge(timeline)
     |> Map.put(:run_contexts, context_descriptors)
     |> Map.put(:selected_run_context, selected_context_descriptor)
     |> Map.put(:run_context_status, run_context_selection.status)
     |> Map.put(:can_run_asset?, run_context_selection.status != :ambiguous)
   end
-
-  defp assurance_detail(%{assurance: nil}, _latest_run), do: nil
-
-  defp assurance_detail(%{assurance: assurance, ref: asset_ref}, latest_run) do
-    contract = Map.get(assurance, :contract)
-    checks = List.wrap(Map.get(assurance, :checks))
-
-    if is_nil(contract) and checks == [] do
-      nil
-    else
-      meta = latest_asset_meta(latest_run, asset_ref)
-      results = meta |> field(:check_results, []) |> List.wrap()
-      results_by_name = Map.new(results, &{to_string(field(&1, :name)), &1})
-
-      %{
-        contract: contract_detail(contract),
-        checks:
-          Enum.map(checks, &check_detail(&1, Map.get(results_by_name, Atom.to_string(&1.name)))),
-        quality_status:
-          normalize_enum(field(meta, :quality_status), [:passed, :warning, :failed]),
-        write_outcome:
-          normalize_enum(field(meta, :write_outcome), [
-            :written,
-            :no_op,
-            :rolled_back,
-            :not_started,
-            :unknown
-          ]),
-        contract_validation: contract_validation_detail(field(meta, :contract_validation)),
-        latest_run_id: latest_run && Map.get(latest_run, :id)
-      }
-    end
-  end
-
-  defp contract_detail(nil), do: nil
-
-  defp contract_detail(contract) do
-    %{
-      grain:
-        case contract.grain do
-          nil -> nil
-          grain -> %{by: grain.by, description: grain.description}
-        end,
-      columns: Enum.map(contract.columns, &contract_column_detail/1),
-      unique_keys: Enum.map(contract.unique_keys, & &1.columns),
-      row_count:
-        case contract.row_count do
-          nil ->
-            nil
-
-          row_count ->
-            %{
-              min: row_count.min,
-              when: row_count.when,
-              on_violation: row_count.on_violation
-            }
-        end
-    }
-  end
-
-  defp contract_column_detail(column) do
-    %{
-      name: column.name,
-      type: column.type,
-      nullable?: column.nullable?,
-      description: column.description,
-      tags: column.tags,
-      renamed_from: column.renamed_from,
-      via: column.via,
-      sources: Enum.map(column.sources, &lineage_detail/1)
-    }
-  end
-
-  defp lineage_detail(%{kind: :asset} = lineage) do
-    %{kind: :asset, asset_ref: lineage.asset_ref, column: lineage.column}
-  end
-
-  defp lineage_detail(%{kind: :external} = lineage) do
-    %{kind: :external, dataset: lineage.dataset, column: lineage.column}
-  end
-
-  defp check_detail(check, latest_result) do
-    %{
-      name: field(check, :name),
-      origin: field(check, :origin),
-      claim_id: field(check, :claim_id),
-      phase: field(check, :at),
-      when: field(check, :when),
-      on_violation: field(check, :on_violation),
-      message: field(check, :message),
-      latest_result: check_result_detail(latest_result)
-    }
-  end
-
-  defp check_result_detail(nil), do: nil
-
-  defp check_result_detail(result) do
-    %{
-      outcome:
-        normalize_enum(field(result, :outcome), [
-          :passed,
-          :warned,
-          :failed,
-          :materialization_skipped,
-          :condition_skipped,
-          :not_run,
-          :errored
-        ]),
-      metrics: field(result, :metrics, %{}),
-      duration_ms: field(result, :duration_ms),
-      reason: field(result, :reason),
-      message: field(result, :message)
-    }
-  end
-
-  defp contract_validation_detail(nil), do: nil
-
-  defp contract_validation_detail(validation) do
-    %{
-      status: normalize_enum(field(validation, :status), [:passed, :failed]),
-      expected_columns: field(validation, :expected_columns, []),
-      observed_columns: field(validation, :observed_columns, []),
-      differences: field(validation, :differences, []),
-      observed_column_count: field(validation, :observed_column_count),
-      observed_truncated?: field(validation, :observed_truncated?, false)
-    }
-  end
-
-  defp latest_asset_meta(nil, _asset_ref), do: %{}
-
-  defp latest_asset_meta(latest_run, asset_ref) do
-    result =
-      case Map.get(latest_run, :asset_results) do
-        results when is_map(results) ->
-          Map.get(results, asset_ref)
-
-        _other ->
-          latest_run
-          |> field(:result, %{})
-          |> field(:asset_results, [])
-          |> find_asset_result(asset_ref)
-      end
-
-    field(result, :meta, %{})
-  end
-
-  defp find_asset_result(results, asset_ref) when is_map(results), do: Map.get(results, asset_ref)
-
-  defp find_asset_result(results, asset_ref) when is_list(results),
-    do: Enum.find(results, &(field(&1, :ref) == asset_ref))
-
-  defp find_asset_result(_results, _asset_ref), do: nil
 
   defp field(value, key, default \\ nil)
   defp field(nil, _key, default), do: default
@@ -726,15 +575,6 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   end
 
   defp field(_value, _key, default), do: default
-
-  defp normalize_enum(value, allowed) when is_atom(value),
-    do: if(value in allowed, do: value, else: value)
-
-  defp normalize_enum(value, allowed) when is_binary(value) do
-    Enum.find(allowed, value, &(Atom.to_string(&1) == value))
-  end
-
-  defp normalize_enum(value, _allowed), do: value
 
   defp latest_run_for_ref(runs, ref_string) do
     runs

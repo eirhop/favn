@@ -114,8 +114,9 @@ the worker persists failed-attempt diagnostics.
 The SQL renderer binds Favn-owned `@favn_run_id` and
 `@favn_run_started_at` from `%Favn.Run.Context{}`. Parameterized exact
 row-count claims reuse normal settings/runtime params and are type-checked before
-rendering or opening an adapter session; values never become SQL source or error
-details.
+rendering or opening an adapter session. Generated claims execute in authored
+order, so an earlier failure cannot be hidden by a later no-op; values never
+become SQL source or error details.
 
 `FavnRunner.RuntimeInputResolver` owns behaviour-based SQL runtime input
 resolution. The public runner boundary can perform a bounded selection-only

@@ -186,6 +186,54 @@ defmodule Favn.SQL.ContractTest do
     end)
   end
 
+  test "generates ordered collision-free checks for multiple row-count claims" do
+    contract =
+      Contract.new!(%{
+        columns: [%{name: :id, type: :integer}],
+        row_counts: [
+          [equals: Param.new!(:expected_rows), on_violation: :fail],
+          [min: 1, when: :target_exists, on_violation: :skip_materialization],
+          [min: 1, on_violation: :warn]
+        ]
+      })
+
+    assert Enum.map(Contract.generated_check_specs(contract), & &1.claim_id) == [
+             "row_count.equals.param.expected_rows",
+             "row_count.min.1",
+             "row_count.min.1.occurrence.2"
+           ]
+
+    assert Contract.runtime_param_requirements(contract) == %{
+             expected_rows: :non_neg_integer
+           }
+  end
+
+  test "bounds ordered row-count claims" do
+    row_counts = Enum.map(1..17, &[min: &1])
+
+    assert_raise ArgumentError, ~r/supports at most 16 row-count claims/, fn ->
+      Contract.new!(%{columns: [%{name: :id, type: :integer}], row_counts: row_counts})
+    end
+  end
+
+  test "reports row-count declaration reordering as a semantic change" do
+    first =
+      Contract.new!(%{
+        columns: [%{name: :id, type: :integer}],
+        row_counts: [[equals: 0], [min: 1, on_violation: :warn]]
+      })
+
+    second =
+      Contract.new!(%{
+        columns: first.columns,
+        row_counts: [[min: 1, on_violation: :warn], [equals: 0]]
+      })
+
+    assert [%{kind: :row_count_changed, from: from, to: to}] = Diff.between(first, second)
+    assert Enum.map(from, &{&1.equals, &1.min}) == [{0, nil}, {nil, 1}]
+    assert Enum.map(to, &{&1.equals, &1.min}) == [{nil, 1}, {0, nil}]
+  end
+
   test "exposes typed requirements for parameterized exact row counts" do
     contract =
       Contract.new!(%{

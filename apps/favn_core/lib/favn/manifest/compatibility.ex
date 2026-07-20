@@ -3,12 +3,15 @@ defmodule Favn.Manifest.Compatibility do
   Manifest schema and runner contract compatibility checks.
   """
 
-  @current_schema_version 8
-  @current_runner_contract_version 8
+  @current_schema_version 9
+  @current_runner_contract_version 9
+  @previous_schema_version 8
+  @previous_runner_contract_version 8
 
   @type error ::
           {:invalid_manifest_input, term()}
           | {:missing_manifest_field, :schema_version | :runner_contract_version}
+          | {:unsupported_legacy_row_count_claims, Favn.Ref.t(), pos_integer()}
           | {:invalid_execution_package_hash, Favn.Ref.t(), term()}
           | {:duplicate_execution_package_hash, String.t(), [Favn.Ref.t()]}
           | {:missing_execution_package_hash, Favn.Ref.t()}
@@ -28,7 +31,13 @@ defmodule Favn.Manifest.Compatibility do
          {:ok, runner_contract_version} <-
            read_required_field(manifest, :runner_contract_version),
          :ok <- validate_schema_version(schema_version),
-         :ok <- validate_runner_contract_version(runner_contract_version) do
+         :ok <- validate_runner_contract_version(runner_contract_version),
+         :ok <-
+           validate_legacy_row_count_claims(
+             manifest,
+             schema_version,
+             runner_contract_version
+           ) do
       validate_execution_package_refs(manifest)
     end
   end
@@ -36,16 +45,48 @@ defmodule Favn.Manifest.Compatibility do
   def validate_manifest(other), do: {:error, {:invalid_manifest_input, other}}
 
   @spec validate_schema_version(term()) :: :ok | {:error, error()}
-  def validate_schema_version(@current_schema_version), do: :ok
+  def validate_schema_version(version)
+      when version in [@previous_schema_version, @current_schema_version],
+      do: :ok
 
   def validate_schema_version(other),
     do: {:error, {:unsupported_schema_version, other, @current_schema_version}}
 
   @spec validate_runner_contract_version(term()) :: :ok | {:error, error()}
-  def validate_runner_contract_version(@current_runner_contract_version), do: :ok
+  def validate_runner_contract_version(version)
+      when version in [@previous_runner_contract_version, @current_runner_contract_version],
+      do: :ok
 
   def validate_runner_contract_version(other),
     do: {:error, {:unsupported_runner_contract_version, other, @current_runner_contract_version}}
+
+  defp validate_legacy_row_count_claims(
+         _manifest,
+         @current_schema_version,
+         @current_runner_contract_version
+       ),
+       do: :ok
+
+  defp validate_legacy_row_count_claims(manifest, _schema_version, _runner_contract_version) do
+    manifest
+    |> field(:assets, [])
+    |> Enum.reduce_while(:ok, fn asset, :ok ->
+      row_count_claims =
+        asset
+        |> field(:assurance)
+        |> field(:contract)
+        |> field(:row_counts, [])
+        |> List.wrap()
+
+      if length(row_count_claims) > 1 do
+        {:halt,
+         {:error,
+          {:unsupported_legacy_row_count_claims, field(asset, :ref), length(row_count_claims)}}}
+      else
+        {:cont, :ok}
+      end
+    end)
+  end
 
   defp validate_execution_package_refs(manifest) do
     assets = Map.get(manifest, :assets, Map.get(manifest, "assets", []))
@@ -105,6 +146,15 @@ defmodule Favn.Manifest.Compatibility do
   end
 
   defp canonical_hash?(hash), do: Regex.match?(~r/\A[0-9a-f]{64}\z/, hash)
+
+  defp field(value, key, default \\ nil)
+  defp field(nil, _key, default), do: default
+
+  defp field(value, key, default) when is_map(value) do
+    Map.get(value, key, Map.get(value, Atom.to_string(key), default))
+  end
+
+  defp field(_value, _key, default), do: default
 
   defp read_required_field(value, field) do
     atom_key = field

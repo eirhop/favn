@@ -70,8 +70,10 @@ defmodule Favn.AI do
     `mix favn.read_doc Favn.SQL.ContractFragment` and read `Favn.SQL.Contract`,
     `Favn.SQLAsset.RuntimeInputs`, `Favn.SQL`, `Favn.Connection`,
     `Favn.Namespace`, and `Favn.Window` as needed. A contract describes ordered
-    output columns, grain, keys, exact or bounded row count, and explicit
-    lineage. Write SQL explicitly in `query`; use column-only fragments to
+    output columns, grain, keys, ordered exact or bounded row-count claims, and
+    explicit lineage. Repeat `row_count` declarations when independent claims
+    need different conditions or violation policies; they execute in authored
+    order. Write SQL explicitly in `query`; use column-only fragments to
     remove repeated metadata declarations; includes flatten into canonical
     columns and retain separate provenance. Use `param(:name)` as an exact
     row-count value; it uses the normal settings/runtime-param source with
@@ -257,7 +259,8 @@ defmodule Favn.AI do
   ## SQL Output Contract Breadcrumbs
 
   When a task mentions output schema, grain, data contract, column lineage,
-  logical types, nullable columns, unique keys, exact or bounded row count,
+  logical types, nullable columns, unique keys, ordered exact or bounded
+  row-count claims,
   `param/1`, column fragments, contract diffs, `renamed_from`,
   expected-versus-observed schema, or Contract versus Custom checks, read these
   docs in order:
@@ -452,7 +455,7 @@ defmodule Favn.AI do
     `Favn.SQL.ContractFragment`, `Favn.SQL.Contract`, and
     `Favn.SQL.ContractValidation` whenever a task
     mentions SQL output shape, repeated contract metadata, fragments, grain,
-    keys, exact/bounded row count, `param/1`, column lineage, logical types,
+    keys, ordered exact/bounded row-count claims, `param/1`, column lineage, logical types,
     contract-generated checks, or expected-versus-observed schema. Read
     `Favn.SQL.Contract.Diff` for semantic or separate provenance comparison.
     User code declares the DSL; the compiler owns the core structs.

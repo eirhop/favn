@@ -4,6 +4,7 @@ defmodule Favn.Manifest.SerializerTest do
   alias Favn.Manifest.Build
   alias Favn.Manifest.Serializer
   alias Favn.RuntimeConfig.Ref
+  alias Favn.SQL.Contract
 
   test "encodes canonical json with sorted keys" do
     manifest = %{schema_version: 8, runner_contract_version: 8, z: 1, a: 2}
@@ -74,5 +75,34 @@ defmodule Favn.Manifest.SerializerTest do
     assert encoded =~ "SOURCE_SYSTEM_TOKEN"
     assert encoded =~ ~s|"secret?":true|
     refute encoded =~ "resolved-token-value"
+  end
+
+  test "preserves the legacy singleton row-count shape and orders multiple claims" do
+    single =
+      Contract.new!(%{
+        columns: [%{name: :id, type: :integer}],
+        row_counts: [[min: 1]]
+      })
+
+    assert {:ok, single_encoded} = Serializer.encode_manifest(single)
+
+    assert {:ok, %{"row_count" => %{"min" => 1}} = single_decoded} =
+             Serializer.decode_manifest(single_encoded)
+
+    refute Map.has_key?(single_decoded, "row_counts")
+
+    multiple =
+      Contract.new!(%{
+        columns: single.columns,
+        row_counts: [[equals: 0], [min: 1, on_violation: :warn]]
+      })
+
+    assert {:ok, multiple_encoded} = Serializer.encode_manifest(multiple)
+
+    assert {:ok, %{"row_counts" => row_counts} = multiple_decoded} =
+             Serializer.decode_manifest(multiple_encoded)
+
+    assert Enum.map(row_counts, &{&1["equals"], &1["min"]}) == [{0, nil}, {nil, 1}]
+    refute Map.has_key?(multiple_decoded, "row_count")
   end
 end
