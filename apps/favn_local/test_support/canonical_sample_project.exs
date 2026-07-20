@@ -120,7 +120,7 @@ defmodule Favn.Local.CanonicalSampleProject do
         %Favn.Connection.Definition{
           name: :issue262_warehouse,
           adapter: Favn.SQL.Adapter.DuckDB,
-          doc: "Canonical DuckDB warehouse",
+          doc: "Issue #262 canonical DuckDB warehouse",
           metadata: %{scope: :issue262_acceptance},
           config_schema: Favn.SQL.Adapter.DuckDB.config_schema_fields()
         }

@@ -3,8 +3,8 @@ defmodule FavnView.Readiness do
   Web liveness and readiness checks for the Phoenix boundary.
 
   The web app talks to the orchestrator through the public `FavnOrchestrator`
-  facade because the current implementation runs in the same BEAM as the backend
-  apps. A deployable split web/orchestrator boundary is not implemented yet.
+  facade because the supported production web placement runs in the same BEAM as
+  the backend apps.
   """
 
   alias FavnView.ProductionRuntimeConfig
