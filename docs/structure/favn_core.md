@@ -54,8 +54,7 @@ Integration boundaries opt in explicitly; DuckDB session-script parameters are
 the first consumer. Providers return bounded errors, refs have redacted Inspect
 output, and secret refs are tracked by connection redaction.
 
-Manifest schema 9 and runner contract 9 are current; version 8 remains readable
-for persisted zero/single-row-count contracts. Static
+Manifest schema 9 and runner contract 9 are the only supported versions. Static
 asset and pipeline settings use `Favn.Settings`; top-level atom keys are retained
 for runtime access while nested maps normalize to JSON-safe string keys.
 `Favn.Run.Context`, `Favn.Run.AssetContext`, and `Favn.Run.PipelineContext`

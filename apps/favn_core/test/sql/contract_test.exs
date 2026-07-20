@@ -95,7 +95,7 @@ defmodule Favn.SQL.ContractTest do
       Contract.new!(%{
         columns: [%{name: :old_id, type: :integer, null: true}],
         unique_keys: [[:old_id]],
-        row_count: [min: 1]
+        row_counts: [[min: 1]]
       })
 
     current =
@@ -105,7 +105,7 @@ defmodule Favn.SQL.ContractTest do
           %{name: :payload, type: :json}
         ],
         unique_keys: [[:id]],
-        row_count: [min: 2]
+        row_counts: [[min: 2]]
       })
 
     changes = Diff.between(previous, current)
@@ -177,7 +177,8 @@ defmodule Favn.SQL.ContractTest do
     ]
 
     Enum.each(cases, fn {row_count, claim_id, predicate, metrics} ->
-      contract = Contract.new!(%{columns: [%{name: :id, type: :integer}], row_count: row_count})
+      contract =
+        Contract.new!(%{columns: [%{name: :id, type: :integer}], row_counts: [row_count]})
 
       assert [%{claim_id: ^claim_id, sql: sql}] = Contract.generated_check_specs(contract)
       assert sql =~ predicate
@@ -238,7 +239,7 @@ defmodule Favn.SQL.ContractTest do
     contract =
       Contract.new!(%{
         columns: [%{name: :id, type: :integer}],
-        row_count: [equals: Param.new!(:expected_rows)]
+        row_counts: [[equals: Param.new!(:expected_rows)]]
       })
 
     assert %{expected_rows: :non_neg_integer} = Contract.runtime_param_requirements(contract)
@@ -253,16 +254,20 @@ defmodule Favn.SQL.ContractTest do
   test "rejects ambiguous and invalid row-count constraints" do
     columns = [%{name: :id, type: :integer}]
 
+    assert_raise ArgumentError, ~r/invalid SQL output contract fields/, fn ->
+      Contract.new!(%{columns: columns, row_count: [min: 1]})
+    end
+
     assert_raise ArgumentError, ~r/equals: cannot be combined/, fn ->
-      Contract.new!(%{columns: columns, row_count: [equals: 1, min: 1]})
+      Contract.new!(%{columns: columns, row_counts: [[equals: 1, min: 1]]})
     end
 
     assert_raise ArgumentError, ~r/min: must not exceed max:/, fn ->
-      Contract.new!(%{columns: columns, row_count: [min: 2, max: 1]})
+      Contract.new!(%{columns: columns, row_counts: [[min: 2, max: 1]]})
     end
 
     assert_raise ArgumentError, ~r/max: must be a non-negative integer/, fn ->
-      Contract.new!(%{columns: columns, row_count: [max: -1]})
+      Contract.new!(%{columns: columns, row_counts: [[max: -1]]})
     end
 
     assert_raise ArgumentError, ~r/reserved for Favn runtime input/, fn ->
@@ -332,7 +337,9 @@ defmodule Favn.SQL.ContractTest do
   end
 
   test "rejects generated checks whose executable template was tampered with" do
-    contract = Contract.new!(%{columns: [%{name: :id, type: :integer}], row_count: [min: 1]})
+    contract =
+      Contract.new!(%{columns: [%{name: :id, type: :integer}], row_counts: [[min: 1]]})
+
     [spec] = Contract.generated_check_specs(contract)
 
     compile_opts = [

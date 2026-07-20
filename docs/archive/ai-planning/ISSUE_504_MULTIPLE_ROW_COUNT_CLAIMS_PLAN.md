@@ -6,9 +6,8 @@ Status: temporary implementation plan for issue #504.
 
 Allow one SQL output contract to declare multiple independent `row_count`
 claims. The claims must retain authored order, compile into ordinary
-transactional checks, preserve older zero/single-claim manifests and execution
-packages, and remain visible through the orchestrator-owned assurance read
-model.
+transactional checks, use one canonical persisted shape, and remain visible
+through the orchestrator-owned assurance read model.
 
 The canonical authoring form is repeated singular declarations:
 
@@ -56,25 +55,19 @@ unchanged.
 The existing semantic ID remains unchanged for the first occurrence, for
 example `row_count.min.1`. A repeated semantic ID receives a deterministic
 declaration-order suffix such as `row_count.min.1.occurrence.2`. This preserves
-older singleton identities while guaranteeing unique generated check names and
-durable result identities.
+the concise semantic ID for the first occurrence while guaranteeing unique
+generated check names and durable result identities.
 
-### Persistence compatibility
+### Persistence contract
 
-The in-memory model is always a list. Persisted contracts accept both:
+The in-memory and persisted model is always the canonical ordered list:
 
-- legacy `row_count: null | object`; and
-- new `row_counts: [object, ...]`.
+- `row_counts: [object, ...]`.
 
-Canonical serialization retains the legacy singular field for zero or one
-claim so existing content hashes continue to verify. Multiple claims serialize
-under the plural ordered-list field.
-
-The manifest schema, runner contract, and execution-package schema advance for
-new publications. Current readers continue to accept the immediately previous
-versions so stored manifests and execution packages containing zero or one
-claim remain readable and hash-verifiable. Legacy execution-package versions
-reject multiple claims.
+The manifest schema, runner contract, and execution-package schema advance to
+9, 9, and 2 respectively. Readers accept only those current versions; stale
+singular fields and older versions are rejected rather than maintained through
+compatibility branches.
 
 ### Ordering semantics
 
@@ -96,8 +89,8 @@ Runner behavior remains:
 2. Replace the core singular field with the bounded ordered list; update
    validation, parameter requirements, generated specs, identities, and diffs.
 3. Raise the generated-contract-check budget to match the explicit claim cap.
-4. Add dual-shape rehydration, compatibility serialization, and legacy/current
-   manifest and execution-package version support.
+4. Make `row_counts` the only serialized and rehydrated shape and advance the
+   manifest, runner-contract, and execution-package versions.
 5. Project complete ordered claim details through the orchestrator catalogue,
    including literal/parameter equality, bounds, condition, and policy.
 6. Render all claims in the asset assurance component and update its Storybook

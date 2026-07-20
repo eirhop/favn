@@ -2,54 +2,16 @@ defmodule Favn.Manifest.CompatibilityTest do
   use ExUnit.Case, async: true
 
   alias Favn.Manifest.Compatibility
-  alias Favn.SQL.Contract
 
   test "accepts current schema and runner contract versions" do
     manifest = %{schema_version: 9, runner_contract_version: 9, assets: []}
     assert :ok = Compatibility.validate_manifest(manifest)
   end
 
-  test "accepts the immediately previous schema and runner contract versions" do
-    manifest = %{schema_version: 8, runner_contract_version: 8, assets: []}
-    assert :ok = Compatibility.validate_manifest(manifest)
-  end
+  test "rejects the previous schema version" do
+    manifest = %{schema_version: 8, runner_contract_version: 9, assets: []}
 
-  test "legacy manifest contracts reject multiple row-count claims" do
-    ref = {MyApp.SQLAsset, :asset}
-
-    contract =
-      Contract.new!(
-        columns: [%{name: :id, type: :integer, null: false}],
-        row_counts: [[min: 1], [max: 10]]
-      )
-
-    manifest = %{
-      schema_version: 8,
-      runner_contract_version: 8,
-      assets: [
-        %{
-          ref: ref,
-          type: :sql,
-          execution_package_hash: String.duplicate("a", 64),
-          assurance: %{contract: contract}
-        }
-      ]
-    }
-
-    assert {:error, {:unsupported_legacy_row_count_claims, ^ref, 2}} =
-             Compatibility.validate_manifest(manifest)
-
-    assert :ok =
-             manifest
-             |> Map.put(:schema_version, 9)
-             |> Map.put(:runner_contract_version, 9)
-             |> Compatibility.validate_manifest()
-  end
-
-  test "rejects older schema versions" do
-    manifest = %{schema_version: 7, runner_contract_version: 9, assets: []}
-
-    assert {:error, {:unsupported_schema_version, 7, 9}} =
+    assert {:error, {:unsupported_schema_version, 8, 9}} =
              Compatibility.validate_manifest(manifest)
   end
 
@@ -71,8 +33,8 @@ defmodule Favn.Manifest.CompatibilityTest do
     ref = {MyApp.SQLAsset, :asset}
 
     manifest = %{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [%{ref: ref, type: :sql, execution_package_hash: nil}]
     }
 
@@ -89,8 +51,8 @@ defmodule Favn.Manifest.CompatibilityTest do
     ref = {MyApp.ElixirAsset, :asset}
 
     manifest = %{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [
         %{ref: ref, type: :elixir, execution_package_hash: String.duplicate("a", 64)}
       ]
@@ -100,35 +62,22 @@ defmodule Favn.Manifest.CompatibilityTest do
              Compatibility.validate_manifest(manifest)
   end
 
-  test "rejects namespaced SQL definitions with the previous runner contract" do
-    manifest = %{
-      schema_version: 8,
-      runner_contract_version: 7,
-      assets: [
-        %{
-          type: :sql,
-          sql_execution: %{
-            sql_definitions: [
-              %{name: :orders, relation_defaults: %{catalog: "raw", schema: "sales"}}
-            ]
-          }
-        }
-      ]
-    }
+  test "rejects the previous runner contract version" do
+    manifest = %{schema_version: 9, runner_contract_version: 8, assets: []}
 
-    assert {:error, {:unsupported_runner_contract_version, 7, 9}} =
+    assert {:error, {:unsupported_runner_contract_version, 8, 9}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects missing schema version" do
-    manifest = %{runner_contract_version: 8, assets: []}
+    manifest = %{runner_contract_version: 9, assets: []}
 
     assert {:error, {:missing_manifest_field, :schema_version}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects missing runner contract version" do
-    manifest = %{schema_version: 8, assets: []}
+    manifest = %{schema_version: 9, assets: []}
 
     assert {:error, {:missing_manifest_field, :runner_contract_version}} =
              Compatibility.validate_manifest(manifest)

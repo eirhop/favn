@@ -489,6 +489,8 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_sql_contract(%Contract{} = contract), do: Contract.validate!(contract)
 
   defp build_sql_contract(value) when is_map(value) do
+    validate_contract_fields!(value)
+
     Contract.new!(%{
       grain: value |> field_value(:grain) |> build_contract_grain(),
       columns: value |> field_value(:columns, []) |> Enum.map(&build_contract_column/1),
@@ -498,12 +500,32 @@ defmodule Favn.Manifest.Rehydrate do
         |> Enum.map(&build_contract_composition/1),
       unique_keys:
         value |> field_value(:unique_keys, []) |> Enum.map(&build_contract_unique_key/1),
-      row_counts: build_contract_row_counts(value)
+      row_counts: value |> field_value(:row_counts, []) |> build_contract_row_counts()
     })
   end
 
   defp build_sql_contract(other),
     do: raise(ArgumentError, "invalid SQL output contract #{inspect(other)}")
+
+  defp validate_contract_fields!(value) do
+    allowed =
+      MapSet.new([
+        :grain,
+        "grain",
+        :columns,
+        "columns",
+        :compositions,
+        "compositions",
+        :unique_keys,
+        "unique_keys",
+        :row_counts,
+        "row_counts"
+      ])
+
+    if Enum.any?(Map.keys(value), &(!MapSet.member?(allowed, &1))) do
+      raise ArgumentError, "invalid SQL output contract fields"
+    end
+  end
 
   defp build_contract_grain(nil), do: nil
   defp build_contract_grain(%Grain{} = grain), do: Grain.validate!(grain)
@@ -590,32 +612,12 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_contract_unique_key(other),
     do: raise(ArgumentError, "invalid SQL contract unique key #{inspect(other)}")
 
-  defp build_contract_row_counts(value) do
-    has_row_counts? = Map.has_key?(value, :row_counts) or Map.has_key?(value, "row_counts")
-    has_row_count? = Map.has_key?(value, :row_count) or Map.has_key?(value, "row_count")
+  defp build_contract_row_counts(row_counts) when is_list(row_counts),
+    do: Enum.map(row_counts, &build_contract_row_count/1)
 
-    case {has_row_counts?, has_row_count?} do
-      {true, true} ->
-        raise ArgumentError, "SQL output contract cannot set both row_counts and row_count"
+  defp build_contract_row_counts(other),
+    do: raise(ArgumentError, "invalid SQL contract row_counts #{inspect(other)}")
 
-      {true, false} ->
-        case field_value(value, :row_counts) do
-          row_counts when is_list(row_counts) -> Enum.map(row_counts, &build_contract_row_count/1)
-          other -> raise ArgumentError, "invalid SQL contract row_counts #{inspect(other)}"
-        end
-
-      {false, true} ->
-        case field_value(value, :row_count) do
-          nil -> []
-          row_count -> [build_contract_row_count(row_count)]
-        end
-
-      {false, false} ->
-        []
-    end
-  end
-
-  defp build_contract_row_count(nil), do: nil
   defp build_contract_row_count(%RowCount{} = row_count), do: RowCount.validate!(row_count)
 
   defp build_contract_row_count(value) when is_map(value) do

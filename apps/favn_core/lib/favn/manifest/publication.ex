@@ -25,7 +25,6 @@ defmodule Favn.Manifest.Publication do
           | {:missing_execution_packages, [String.t()]}
           | {:unexpected_execution_packages, [String.t()]}
           | {:execution_package_asset_mismatch, String.t(), Favn.Ref.t(), Favn.Ref.t()}
-          | {:incompatible_execution_package_schema, String.t(), pos_integer(), pos_integer()}
           | ExecutionPackage.error()
           | Version.error()
 
@@ -43,8 +42,7 @@ defmodule Favn.Manifest.Publication do
   def from_parts(%Version{} = version, packages) when is_list(packages) do
     with {:ok, canonical_version} <- Version.verify(version),
          {:ok, canonical_packages} <- verify_packages(packages),
-         :ok <- validate_coverage(canonical_version, canonical_packages),
-         :ok <- validate_package_schemas(canonical_version, canonical_packages) do
+         :ok <- validate_coverage(canonical_version, canonical_packages) do
       {:ok, %__MODULE__{version: canonical_version, execution_packages: canonical_packages}}
     end
   end
@@ -133,17 +131,4 @@ defmodule Favn.Manifest.Publication do
         end)
     end
   end
-
-  defp validate_package_schemas(%Version{runner_contract_version: 8}, packages) do
-    case Enum.find(packages, &(&1.schema_version != 1)) do
-      nil ->
-        :ok
-
-      package ->
-        {:error,
-         {:incompatible_execution_package_schema, package.content_hash, package.schema_version, 1}}
-    end
-  end
-
-  defp validate_package_schemas(%Version{}, _packages), do: :ok
 end

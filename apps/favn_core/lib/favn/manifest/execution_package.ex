@@ -31,7 +31,6 @@ defmodule Favn.Manifest.ExecutionPackage do
   }
 
   @schema_version 2
-  @previous_schema_version 1
 
   @enforce_keys [:content_hash, :asset_ref, :sql_execution]
   defstruct schema_version: @schema_version,
@@ -149,12 +148,7 @@ defmodule Favn.Manifest.ExecutionPackage do
          {:ok, decoded} <- Serializer.decode_manifest(encoded),
          {:ok, canonical} <- Rehydrate.execution_package(decoded),
          :ok <- validate_schema(canonical.schema_version),
-         :ok <-
-           validate_payload(
-             canonical.schema_version,
-             canonical.asset_ref,
-             canonical.sql_execution
-           ),
+         :ok <- validate_payload(canonical.asset_ref, canonical.sql_execution),
          {:ok, canonical_encoded} <-
            Serializer.encode_manifest(
              canonical_payload(
@@ -176,8 +170,7 @@ defmodule Favn.Manifest.ExecutionPackage do
   defp require_canonical_round_trip(_original, _canonical),
     do: {:error, :invalid_execution_package}
 
-  defp validate_schema(version) when version in [@previous_schema_version, @schema_version],
-    do: :ok
+  defp validate_schema(@schema_version), do: :ok
 
   defp validate_schema(actual),
     do: {:error, {:unsupported_execution_package_schema, actual, @schema_version}}
@@ -193,27 +186,17 @@ defmodule Favn.Manifest.ExecutionPackage do
   defp canonical_hash?(hash), do: Regex.match?(~r/\A[0-9a-f]{64}\z/, hash)
 
   defp validate_payload(
-         schema_version,
          {module, name},
          %SQLExecution{} = execution
        )
        when is_atom(module) and is_atom(name) do
-    validate_contract_version!(schema_version, execution.contract)
     validate_sql_execution!(execution)
     :ok
   rescue
     _error -> {:error, :invalid_execution_package}
   end
 
-  defp validate_payload(_schema_version, _asset_ref, _execution),
-    do: {:error, :invalid_execution_package}
-
-  defp validate_contract_version!(@previous_schema_version, %Favn.SQL.Contract{
-         row_counts: [_first, _second | _rest]
-       }),
-       do: raise(ArgumentError, "execution package schema 1 supports at most one row-count claim")
-
-  defp validate_contract_version!(_schema_version, _contract), do: :ok
+  defp validate_payload(_asset_ref, _execution), do: {:error, :invalid_execution_package}
 
   defp validate_sql_execution!(%SQLExecution{
          sql: sql,

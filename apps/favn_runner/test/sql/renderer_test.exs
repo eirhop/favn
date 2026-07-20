@@ -114,7 +114,7 @@ defmodule FavnRunner.SQLRendererTest do
     contract =
       Contract.new!(%{
         columns: [%{name: :id, type: :integer}],
-        row_count: [equals: Param.new!(:expected_rows)]
+        row_counts: [[equals: Param.new!(:expected_rows)]]
       })
 
     definition = %{definition() | contract: contract}
@@ -137,7 +137,7 @@ defmodule FavnRunner.SQLRendererTest do
     contract =
       Contract.new!(%{
         columns: [%{name: :id, type: :integer}],
-        row_count: [equals: Param.new!(:expected_rows)]
+        row_counts: [[equals: Param.new!(:expected_rows)]]
       })
 
     definition =

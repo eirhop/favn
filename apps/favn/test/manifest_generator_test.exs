@@ -225,8 +225,8 @@ defmodule Favn.Manifest.GeneratorTest do
 
     assert :ok =
              Favn.validate_manifest_compatibility(%{
-               schema_version: 8,
-               runner_contract_version: 8
+               schema_version: 9,
+               runner_contract_version: 9
              })
 
     assert {:ok, version} =

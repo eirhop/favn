@@ -46,14 +46,14 @@ defmodule Favn.SQL.Contract do
   @doc "Builds and validates a compiled contract."
   @spec new!(map() | keyword()) :: t()
   def new!(fields) when is_map(fields) or is_list(fields) do
-    fields = Map.new(fields)
+    fields = fields |> Map.new() |> validate_fields!()
 
     %__MODULE__{
       grain: normalize_grain(Map.get(fields, :grain)),
       columns: Enum.map(Map.get(fields, :columns, []), &normalize_column/1),
       compositions: Enum.map(Map.get(fields, :compositions, []), &normalize_composition/1),
       unique_keys: Enum.map(Map.get(fields, :unique_keys, []), &normalize_unique_key/1),
-      row_counts: fields |> row_count_values!() |> normalize_row_counts()
+      row_counts: fields |> Map.get(:row_counts, []) |> normalize_row_counts()
     }
     |> validate!()
   end
@@ -295,23 +295,14 @@ defmodule Favn.SQL.Contract do
   defp normalize_unique_key(other),
     do: raise(ArgumentError, "invalid contract unique key #{inspect(other)}")
 
-  defp row_count_values!(fields) do
-    case {Map.fetch(fields, :row_counts), Map.fetch(fields, :row_count)} do
-      {{:ok, _row_counts}, {:ok, _row_count}} ->
-        raise ArgumentError, "SQL output contract cannot set both row_counts and row_count"
+  defp validate_fields!(fields) do
+    allowed = MapSet.new([:grain, :columns, :compositions, :unique_keys, :row_counts])
+    unknown = fields |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1)) |> Enum.sort()
 
-      {{:ok, row_counts}, :error} ->
-        row_counts
+    if unknown != [],
+      do: raise(ArgumentError, "invalid SQL output contract fields #{inspect(unknown)}")
 
-      {:error, {:ok, nil}} ->
-        []
-
-      {:error, {:ok, row_count}} ->
-        [row_count]
-
-      {:error, :error} ->
-        []
-    end
+    fields
   end
 
   defp normalize_row_counts(values) when is_list(values),

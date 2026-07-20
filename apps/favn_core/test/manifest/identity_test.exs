@@ -4,8 +4,8 @@ defmodule Favn.Manifest.IdentityTest do
   alias Favn.Manifest.Identity
 
   test "hash is stable for key order variations" do
-    manifest_a = %{schema_version: 8, runner_contract_version: 8, assets: [%{name: "a"}]}
-    manifest_b = %{assets: [%{name: "a"}], runner_contract_version: 8, schema_version: 8}
+    manifest_a = %{schema_version: 9, runner_contract_version: 9, assets: [%{name: "a"}]}
+    manifest_b = %{assets: [%{name: "a"}], runner_contract_version: 9, schema_version: 9}
 
     assert {:ok, hash_a} = Identity.hash_manifest(manifest_a)
     assert {:ok, hash_b} = Identity.hash_manifest(manifest_b)
@@ -13,7 +13,7 @@ defmodule Favn.Manifest.IdentityTest do
   end
 
   test "hash ignores compile-time-only keys" do
-    base = %{schema_version: 8, runner_contract_version: 8, assets: []}
+    base = %{schema_version: 9, runner_contract_version: 9, assets: []}
 
     with_build_fields =
       Map.merge(base, %{

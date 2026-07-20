@@ -1129,7 +1129,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     contract =
       Contract.new!(%{
         columns: [%{name: :id, type: :integer}],
-        row_count: [equals: Param.new!(:expected_rows)]
+        row_counts: [[equals: Param.new!(:expected_rows)]]
       })
 
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
@@ -1260,7 +1260,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     contract =
       Contract.new!(%{
         columns: [%{name: :id, type: :integer}],
-        row_count: [equals: Param.new!(:expected_rows)]
+        row_counts: [[equals: Param.new!(:expected_rows)]]
       })
 
     resolver = %RuntimeInputResolverRef{
@@ -1501,8 +1501,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 8,
-        runner_contract_version: 8,
+        schema_version: 9,
+        runner_contract_version: 9,
         assets: [
           %Asset{
             ref: ref,
@@ -1798,8 +1798,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 8,
-        runner_contract_version: 8,
+        schema_version: 9,
+        runner_contract_version: 9,
         assets: [
           %Asset{
             ref: ref,
@@ -1831,8 +1831,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 8,
-      runner_contract_version: 8,
+      schema_version: 9,
+      runner_contract_version: 9,
       assets: [
         %Asset{
           ref: ref,

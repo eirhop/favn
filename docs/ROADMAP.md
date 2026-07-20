@@ -33,8 +33,7 @@ production operations are defined in
 
 ### 3. Stabilize the v1 product boundary
 
-- Validate manifest schema and runner contract 9 against real customer projects,
-  including version-8 zero/single-row-count compatibility.
+- Validate manifest schema and runner contract 9 against real customer projects.
 - Measure execution-package fetch latency and reuse under production-sized SQL
   projects. Add a package cache only if evidence justifies it; any cache must be
   byte-bounded and content-addressed rather than retaining whole manifest packages.
