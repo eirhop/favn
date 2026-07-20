@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 Audited commit: `69937d5afd4d581e7d6bae7a7a445c9c884678d7`
-Audit worktree: `/home/eirik/code/favn-storage-audit`
+Audit worktree: dedicated storage-audit worktree
 Audit branch: `codex/storage-audit`
 
 ## Post-audit architecture decision
