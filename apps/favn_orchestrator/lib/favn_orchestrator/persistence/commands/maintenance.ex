@@ -8,7 +8,8 @@ defmodule FavnOrchestrator.Persistence.Commands.BackfillMissingProjection do
   @type t :: %__MODULE__{
           platform_context: PlatformContext.t(),
           job_id: String.t(),
-          projection: :execution_groups | :backfills | :target_statuses | :freshness,
+          projection:
+            :execution_groups | :backfills | :target_statuses | :asset_attempts | :freshness,
           workspace_id: String.t(),
           limit: 1..250
         }

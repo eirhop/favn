@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
   alias Favn.Freshness.Policy, as: FreshnessPolicy
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
+  alias Favn.Plan
   alias Favn.TimePeriod
   alias Favn.Window.Anchor
   alias Favn.Window.Spec, as: WindowSpec
@@ -20,6 +21,15 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Freshness.Decider, as: FreshnessDecider
   alias FavnOrchestrator.Operator.Catalogue.Targets
+
+  @doc "Plans the selected asset and its freshness dependencies in one run context."
+  @spec plan(Asset.t(), Version.t(), DateTime.t(), keyword()) ::
+          {:ok, Plan.t()} | {:error, term()}
+  def plan(%Asset{} = asset, %Version{} = version, %DateTime{} = now, opts)
+      when is_list(opts) do
+    opts = normalize_run_context_opts(version, asset, opts)
+    freshness_plan(asset, version, now, opts)
+  end
 
   @doc "Builds an operator freshness explanation for one manifest asset."
   @spec detail(Asset.t(), Version.t(), [AssetFreshnessState.t()], keyword()) :: map()
@@ -76,7 +86,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
   end
 
   defp classify(asset, version, freshness_states, policy, now, opts) do
-    with {:ok, plan} <- freshness_plan(asset, version, now, opts),
+    with {:ok, plan} <- selected_plan(asset, version, now, opts),
          {:ok, target_node_keys} <- target_node_keys(plan, asset.ref) do
       states = state_lookup(freshness_states)
       assets_by_ref = Map.new(List.wrap(version.manifest.assets), &{&1.ref, &1})
@@ -98,6 +108,13 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
       detail_from_decisions(asset, policy, decision_entries)
     else
       {:error, _reason} -> insufficient_state_detail(policy)
+    end
+  end
+
+  defp selected_plan(asset, version, now, opts) do
+    case Keyword.get(opts, :freshness_plan) do
+      %Plan{} = plan -> {:ok, plan}
+      nil -> freshness_plan(asset, version, now, opts)
     end
   end
 

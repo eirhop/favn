@@ -78,6 +78,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       error: result.error,
       node_key: entry.node_key,
       asset_step_id: entry.asset_step_id,
+      window: entry.window,
       stage: entry.stage,
       attempt: entry.attempt,
       max_attempts: StepAttemptLifecycle.retry_policy(state.run, entry.node_key).max_attempts,
@@ -122,6 +123,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       error: :timeout,
       node_key: entry.node_key,
       asset_step_id: entry.asset_step_id,
+      window: entry.window,
       stage: entry.stage,
       attempt: entry.attempt,
       max_attempts: StepAttemptLifecycle.retry_policy(state.run, entry.node_key).max_attempts,
@@ -163,6 +165,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       error: reason,
       node_key: entry.node_key,
       asset_step_id: entry.asset_step_id,
+      window: entry.window,
       stage: entry.stage,
       attempt: entry.attempt,
       max_attempts: StepAttemptLifecycle.retry_policy(state.run, entry.node_key).max_attempts,
@@ -402,6 +405,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       node_key: node_key,
       asset_step_id:
         asset_step_id || AssetStepIdentity.asset_step_id(state.run.id, node_key, asset_ref),
+      window: planned_window(state.run, node_key),
       stage: stage,
       attempt: attempt,
       max_attempts: StepAttemptLifecycle.retry_policy(state.run, node_key).max_attempts
@@ -449,6 +453,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
                runner_execution_id: execution_id,
                node_key: lifecycle.node_key,
                asset_step_id: work.asset_step_id,
+               window: RunnerWork.window(work),
                stage: lifecycle.stage,
                attempt: lifecycle.attempt,
                max_attempts: lifecycle.max_attempts,
@@ -507,6 +512,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       asset_step_id: work.asset_step_id,
       asset_ref: lifecycle.asset_ref,
       node_key: lifecycle.node_key,
+      window: RunnerWork.window(work),
       execution_id: execution_id,
       runner_execution_id: execution_id,
       ownership: ownership,
@@ -587,6 +593,14 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
   defp attempt_start_event(attempt) when attempt > 1, do: :step_retry_started
   defp attempt_start_event(_attempt), do: :step_started
+
+  defp planned_window(%RunState{plan: %Favn.Plan{nodes: nodes}}, node_key) do
+    nodes
+    |> Map.get(node_key, %{})
+    |> Map.get(:window)
+  end
+
+  defp planned_window(%RunState{}, _node_key), do: nil
 
   defp persist_or_retry(state, run, event_type, data, resume) do
     retry = PersistenceRetry.new(run, event_type, data, {:sequential, resume})

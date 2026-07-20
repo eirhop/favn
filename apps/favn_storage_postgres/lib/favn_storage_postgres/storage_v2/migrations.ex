@@ -8,6 +8,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
 
   alias Ecto.Adapters.SQL
   alias FavnStoragePostgres.Migrations.AddBackfillsAndProjectionsV2
+  alias FavnStoragePostgres.Migrations.AddAssetAttemptOverviewsV2
   alias FavnStoragePostgres.Migrations.AddCommitSafeLogReplayV2
   alias FavnStoragePostgres.Migrations.AddDeploymentTargetDescriptorsV2
   alias FavnStoragePostgres.Migrations.AddExecutionPackageRuntimeInputResolverV2
@@ -50,7 +51,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_717_160_000, OptimizeRunStatusPagingV2},
     {20_260_717_170_000, OptimizeExecutionPackageRetentionV2},
     {20_260_717_180_000, EnforceRunPlanManifestIdentityV2},
-    {20_260_720_000_000, AddResourceCircuitsV2}
+    {20_260_720_000_000, AddResourceCircuitsV2},
+    {20_260_720_010_000, AddAssetAttemptOverviewsV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -93,6 +95,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     target_statuses
     asset_window_states
     asset_freshness_states
+    asset_attempt_overviews
     log_batches
     log_entries
     auth_actors
@@ -170,6 +173,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     target_statuses_status_idx
     asset_window_states_history_idx
     asset_freshness_states_node_idx
+    asset_attempt_overviews_group_idx
+    asset_attempt_overviews_run_idx
     log_entries_recent_idx
     log_entries_run_idx
     auth_actors_username_uidx
@@ -186,6 +191,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
       ~w(workspace_id waiter_id run_id step_id command_id request_hash requested_scopes blocking_scope_id priority status available_at expires_at claim_owner claim_generation claim_command_id claim_expires_at inserted_at updated_at),
     "asset_freshness_states" =>
       ~w(workspace_id deployment_id target_id freshness_key latest_attempt_materialization_id latest_success_materialization_id latest_success_node_key_hash input_fingerprint status payload source_publication_id updated_at),
+    "asset_attempt_overviews" =>
+      ~w(workspace_id root_run_id run_id asset_step_id asset_ref window_identity window status stage attempt_number execution_pool queue_reason started_at finished_at duration_ms error output_metadata source_publication_id updated_at),
     "asset_window_states" =>
       ~w(workspace_id manifest_version_id target_id window_key window_start window_end status run_id materialization_id payload source_publication_id updated_at),
     "auth_actors" =>
@@ -286,7 +293,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     execution_leases execution_lease_scopes admission_waiters materialization_claims
     materializations coverage_baselines backfills backfill_plan_batches backfill_windows
     projection_cursors projection_failures execution_group_overviews backfill_overviews
-    target_statuses asset_window_states asset_freshness_states log_batches log_entries
+    target_statuses asset_window_states asset_freshness_states asset_attempt_overviews log_batches log_entries
     auth_actors auth_credentials auth_sessions auth_workspace_memberships auth_platform_grants
     auth_audit_entries auth_platform_audit_entries idempotency_records maintenance_jobs
   )
@@ -294,7 +301,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     manifest_versions execution_packages workspace_deployments outbox_events runs run_events runtime_input_pins
     runner_executions schedule_cursors schedule_occurrences admission_waiters
     materialization_claims materializations coverage_baselines backfills backfill_windows
-    projection_failures asset_window_states asset_freshness_states log_entries
+    projection_failures asset_window_states asset_freshness_states asset_attempt_overviews log_entries
     auth_audit_entries auth_platform_audit_entries maintenance_jobs
   )
   @critical_constraints ~w(
@@ -317,6 +324,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     resource_circuits_values_valid resource_circuits_probe_shape_valid
     resource_circuit_outcomes_values_valid resource_recovery_candidates_values_valid
     coverage_baselines_values_valid backfills_values_valid backfill_plan_batches_values_valid
+    asset_attempt_overviews_values_valid
     backfill_windows_values_valid backfill_windows_claim_shape_v2 projection_cursors_values_valid
     auth_actors_values_valid
     auth_credentials_values_valid auth_sessions_values_valid auth_workspace_memberships_values_valid
@@ -343,7 +351,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "bb7cade47d96af61b81bebef7ab8c1716c3f01d4937401c9a703bed4dfb8c4c8"
+  @expected_definition_fingerprint "b3841285078fd44a08310717da24273849a5d4e1e37b6a31ce02f6f8e9f858cc"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok
