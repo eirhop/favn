@@ -93,6 +93,20 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilderTest do
            } = ResultBuilder.pipeline_result(run, :ok, [%{ref: @first_ref}])
   end
 
+  test "aggregate result exposes only the latest outcome for a retried node" do
+    node_key = {@first_ref, nil}
+    failed = NodeResult.new(%{node_key: node_key, ref: @first_ref, status: :error})
+    succeeded = NodeResult.new(%{node_key: node_key, ref: @first_ref, status: :ok})
+
+    run =
+      run_state()
+      |> ResultBuilder.append_node_result(failed)
+      |> ResultBuilder.append_node_result(succeeded)
+
+    assert %{node_results: [^succeeded]} = ResultBuilder.pipeline_result(run, :ok, [])
+    assert ResultBuilder.node_result_count(run) == 2
+  end
+
   test "large runs retain bounded detail and exact node counts" do
     run =
       Enum.reduce(1..2_000, run_state(), fn index, run ->

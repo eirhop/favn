@@ -132,6 +132,13 @@ Runner failures use `%Favn.Contracts.RunnerError{}`. `retryable?: true` plus
 an attempt left. Boundary timeouts and unknown write/materialization outcomes
 remain terminal; runner code never decides attempt count.
 
+Runner results and errors may also carry bounded
+`%Favn.Contracts.ResourceOutcome{}` entries. SQL connection/bootstrap failures
+identify the named connection, classification, and whether repeating is proven
+safe; successful SQL use emits connection success. The orchestrator alone owns
+circuit state and recovery policy. Generic exceptions and unknown-outcome SQL
+writes never become inferred resource failures.
+
 DuckDB/ADBC session pooling is default-on for poolable adapters unless disabled
 with `pool: [enabled: false]`. It is runner-local and per BEAM. A pooled SQL
 session may be checked out by only one asset execution at a time, and the runner

@@ -114,6 +114,13 @@ defmodule Favn.AI do
     serialize independent assets, and do not confuse these controls with SQL
     `write_concurrency`, which protects writer/backend admission after asset
     execution has already started.
+  - To protect a shared execution pool or named SQL connection from a sustained
+    outage, configure its `circuit_breaker` with `failure_threshold` and
+    `probe_after_ms`. The circuit blocks only affected nodes and grants one
+    exclusive normal-work probe. Use pipeline `resource_recovery
+    :retry_remaining` only when a linked run should recover circuit-blocked and
+    explicitly repeat-safe nodes after the probe succeeds; it never retries an
+    unknown-outcome side effect or mutates the source run.
   - To debug duplicate materializations, reruns that should skip already-finished
     work, or crash recovery after a stopped orchestrator, read
     `FavnOrchestrator.MaterializationClaim`,
@@ -415,6 +422,11 @@ defmodule Favn.AI do
     a task mentions `max_concurrency`, `execution_pool`, rate-limited APIs,
     runner-local versus orchestrator-owned limits, queue reasons, execution
     leases, or why many independent assets should not start at once.
+  - Read `Favn.CircuitBreaker.Policy`, `Favn.ResourceRecovery.Policy`, and the
+    retries guide whenever a task mentions probes, sustained shared-resource
+    failure, circuit-open blocking, or automatic recovery after a resource
+    returns. Keep circuit admission separate from node retries and SQL write
+    concurrency.
   - Read `Favn.SQLAsset` and `Favn.SQLAsset.RuntimeInputs` whenever a task
     mentions runtime-selected files, external manifests/snapshots, watermarks,
     or resolver-provided SQL parameters. Read `Favn.RuntimeInputResolver.Ref`

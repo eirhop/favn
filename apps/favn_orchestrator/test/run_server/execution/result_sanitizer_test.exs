@@ -4,6 +4,8 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultSanitizerTest do
   alias Favn.Contracts.RunnerAssetResult
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.ResourceOutcome
+  alias Favn.Resource.Ref
   alias FavnOrchestrator.RunServer.Execution.ResultSanitizer
 
   test "redacts manually constructed runner errors throughout a result" do
@@ -69,5 +71,21 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultSanitizerTest do
 
     assert ResultSanitizer.merge_metadata(metadata, %{worker: "runner@node"}) ==
              %{request_id: "req_1", runner_metadata: %{worker: "runner@node"}}
+  end
+
+  test "preserves only valid explicit resource outcomes" do
+    outcome =
+      ResourceOutcome.new!(
+        resource: Ref.new!(:connection, :warehouse),
+        status: :failure,
+        category: :connection_error,
+        safe_to_repeat?: true
+      )
+
+    assert %RunnerResult{resource_outcomes: [^outcome]} =
+             ResultSanitizer.sanitize(%RunnerResult{resource_outcomes: [outcome]})
+
+    assert %RunnerResult{resource_outcomes: []} =
+             ResultSanitizer.sanitize(%RunnerResult{resource_outcomes: [:invalid]})
   end
 end

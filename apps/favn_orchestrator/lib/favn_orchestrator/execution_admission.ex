@@ -30,7 +30,9 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   @type queue_reason :: :pipeline_concurrency | :execution_pool | :global_concurrency
   @type entry :: %{
           required(:asset_step_id) => String.t(),
-          optional(:execution_pool) => atom() | String.t() | nil
+          optional(:execution_pool) => atom() | String.t() | nil,
+          optional(:stage) => non_neg_integer(),
+          optional(:attempt) => pos_integer()
         }
 
   @spec acquire(RunState.t(), entry()) ::
@@ -51,6 +53,8 @@ defmodule FavnOrchestrator.ExecutionAdmission do
           {:ok, lease() | nil} | {:waiting, Waiter.t()} | {:error, term()}
   def acquire_or_wait(%RunState{} = run, entry, opts \\ [])
       when is_map(entry) and is_list(opts) do
+    entry = Map.merge(entry, Map.new(Keyword.take(opts, [:stage, :attempt])))
+
     with {:ok, entry} <- normalize_entry(entry) do
       case acquire_result(run, entry) do
         {:ok, lease} ->
@@ -96,7 +100,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
             {:ok, lease_map(lease, scopes)}
 
           %Admission{status: :waiting, waiter: %AdmissionWaiter{} = waiter} ->
-            {:waiting, waiter_struct(waiter, scopes)}
+            {:waiting, waiter_struct(waiter, scopes, entry)}
         end
       end
     end
@@ -345,8 +349,8 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   defp validate_v2_authority(%RunState{}), do: {:error, :execution_admission_authority_required}
 
   defp admit_command(run, entry, scopes) do
-    lease_id = Identity.lease_id(run.id, entry.asset_step_id)
-    waiter_id = Waiter.waiter_id(run.id, entry.asset_step_id, 0, 1)
+    lease_id = Identity.lease_id(run.id, entry.asset_step_id, entry.stage, entry.attempt)
+    waiter_id = Waiter.waiter_id(run.id, entry.asset_step_id, entry.stage, entry.attempt)
     now = DateTime.utc_now()
 
     %AdmitExecution{
@@ -378,7 +382,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
     }
   end
 
-  defp waiter_struct(%AdmissionWaiter{} = waiter, scopes) do
+  defp waiter_struct(%AdmissionWaiter{} = waiter, scopes, entry) do
     blocked_scope =
       Enum.find(scopes, &(&1.scope_id == waiter.blocking_scope_id)) || List.first(scopes)
 
@@ -391,8 +395,8 @@ defmodule FavnOrchestrator.ExecutionAdmission do
         queue_reason: queue_reason(blocked_scope),
         blocked_scope: Map.take(blocked_scope, [:kind, :key, :limit]),
         requested_scopes: Enum.map(scopes, &Map.take(&1, [:kind, :key, :limit])),
-        stage: 0,
-        attempt: 1,
+        stage: entry.stage,
+        attempt: entry.attempt,
         inserted_at: DateTime.utc_now(),
         updated_at: DateTime.utc_now(),
         deadline_at: waiter.expires_at,
@@ -443,6 +447,8 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   defp normalize_entry(entry) do
     asset_step_id = field(entry, :asset_step_id)
     execution_pool = field(entry, :execution_pool)
+    stage = field(entry, :stage) || 0
+    attempt = field(entry, :attempt) || 1
 
     cond do
       not (is_binary(asset_step_id) and byte_size(asset_step_id) > 0) ->
@@ -451,8 +457,20 @@ defmodule FavnOrchestrator.ExecutionAdmission do
       not (is_nil(execution_pool) or is_atom(execution_pool) or is_binary(execution_pool)) ->
         {:error, {:invalid_execution_admission_entry, :execution_pool}}
 
+      not (is_integer(stage) and stage >= 0) ->
+        {:error, {:invalid_execution_admission_entry, :stage}}
+
+      not (is_integer(attempt) and attempt > 0) ->
+        {:error, {:invalid_execution_admission_entry, :attempt}}
+
       true ->
-        {:ok, %{asset_step_id: asset_step_id, execution_pool: execution_pool}}
+        {:ok,
+         %{
+           asset_step_id: asset_step_id,
+           execution_pool: execution_pool,
+           stage: stage,
+           attempt: attempt
+         }}
     end
   end
 

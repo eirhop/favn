@@ -42,6 +42,13 @@ carry the frozen effective policy and source. `Favn.RuntimeInput.Pin`,
 `Favn.RuntimeInput.Resolution`, and `Favn.Replay.InputMode` own the cross-app
 pin/replay contracts without storage dependencies.
 
+`Favn.CircuitBreaker.Policy` owns the bounded shared-resource admission policy,
+and `Favn.Resource.Ref` identifies an execution pool or SQL connection without
+storage dependencies. `Favn.Contracts.ResourceOutcome` is the only cross-runtime
+signal that advances a circuit. `Favn.ResourceRecovery.Policy` is the serialized
+pipeline opt-in for linked safe-remaining recovery; it is distinct from node
+attempt policy.
+
 `Favn.RuntimeValue` is not a global configuration-resolution mechanism.
 Integration boundaries opt in explicitly; DuckDB session-script parameters are
 the first consumer. Providers return bounded errors, refs have redacted Inspect

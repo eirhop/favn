@@ -105,6 +105,7 @@ Common failures:
 | Missing runtime config | Add the environment variable or secret named by diagnostics, then retry. |
 | Duplicate command key | Re-read the existing command result instead of submitting the same side effect again. |
 | Invalid dependency/refresh combination | Use `dependencies=all` with `force_selected_upstream`, or choose a target-only refresh mode. |
+| Resource circuit open | Inspect the blocking execution pool or SQL connection, consecutive count, threshold, and next probe time. Unrelated branches continue. |
 
 ## Inspect A Run
 
@@ -151,6 +152,14 @@ internals directly.
 6. For backfills, retry failed windows first.
 7. Rerun successful windows only when you have an explicit force or refresh
    policy that makes that safe.
+
+If the pipeline declares `resource_recovery :retry_remaining`, a successful
+half-open resource probe may create a linked run for unexpired circuit-blocked
+nodes and explicitly repeat-safe failed nodes. This applies equally to ordinary
+runs and backfill child runs because circuit identity is workspace plus resource
+kind and name. The source run or child remains terminal and immutable; inspect
+the linked recovery run separately. Pipelines without that declaration remain
+manual recovery.
 
 Expected result: the orchestrator creates new persisted run records linked to the
 source run or backfill group.

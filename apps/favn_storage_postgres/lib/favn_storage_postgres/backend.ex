@@ -39,6 +39,7 @@ defmodule FavnStoragePostgres.Backend do
       run_ownership: FavnStoragePostgres.Instrumented.RunOwnership,
       scheduler: FavnStoragePostgres.Instrumented.Scheduler,
       admission: FavnStoragePostgres.Instrumented.Admission,
+      resource_circuits: FavnStoragePostgres.Instrumented.ResourceCircuits,
       materialization: FavnStoragePostgres.Instrumented.Materialization,
       backfills: FavnStoragePostgres.Instrumented.Backfills,
       operator_reads: FavnStoragePostgres.Instrumented.OperatorReads,

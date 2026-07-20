@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   alias FavnOrchestrator.Freshness.StateWriter
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunExecutionOwnership
+  alias FavnOrchestrator.ResourceCircuits
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.ResultSanitizer
@@ -411,12 +412,32 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
               :error
           end
 
-        {step_state, outcome, resume.asset_results}
+        case persist_terminal_resource_outcome(
+               step_state,
+               resume.entry,
+               outcome,
+               resume.post_step_value
+             ) do
+          :ok ->
+            {step_state, outcome, resume.asset_results}
+
+          {:error, reason} ->
+            {post_step_persistence_failure(step_state, reason), :error, resume.asset_results}
+        end
 
       {:error, reason} ->
         {post_step_persistence_failure(step_state, reason), :error, resume.asset_results}
     end
   end
+
+  defp persist_terminal_resource_outcome(step_state, entry, :ok, value),
+    do: ResourceCircuits.settle(step_state, entry, :ok, value)
+
+  defp persist_terminal_resource_outcome(step_state, entry, :error, value),
+    do: ResourceCircuits.settle(step_state, entry, :error, value)
+
+  defp persist_terminal_resource_outcome(_step_state, _entry, {:retry, _delay_ms}, _value),
+    do: :ok
 
   defp persist_post_step_state(%RunState{} = step_state, entry, :ok, %RunnerResult{} = result) do
     with {:ok, freshness_state} <- record_freshness(step_state, entry, :ok),
@@ -467,19 +488,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
          {:retry, retry_delay_ms},
          %{
            state: state,
-           terminal_failure: terminal_failure,
            retry_refs: retry_refs,
            retry_delays: retry_delays
          } = settlement,
          %{entry: entry}
        ) do
-    next_retry_refs =
-      if is_nil(terminal_failure), do: [entry.node_key | retry_refs], else: retry_refs
-
-    next_retry_delays =
-      if is_nil(terminal_failure),
-        do: Map.put(retry_delays, entry.node_key, retry_delay_ms),
-        else: retry_delays
+    next_retry_refs = [entry.node_key | retry_refs]
+    next_retry_delays = Map.put(retry_delays, entry.node_key, retry_delay_ms)
 
     {:cont,
      record_result(state, %{

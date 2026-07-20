@@ -44,6 +44,7 @@ defmodule Favn.Contracts.RunnerError do
           retryable?: boolean(),
           retry_after_ms: non_neg_integer() | nil,
           outcome: outcome(),
+          resource_outcomes: [Favn.Contracts.ResourceOutcome.t()],
           redacted?: boolean()
         }
 
@@ -56,6 +57,7 @@ defmodule Favn.Contracts.RunnerError do
             retryable?: false,
             retry_after_ms: nil,
             outcome: :unknown,
+            resource_outcomes: [],
             redacted?: true
 
   @doc """
@@ -65,6 +67,8 @@ defmodule Favn.Contracts.RunnerError do
   def new(fields \\ []) when is_map(fields) or is_list(fields) do
     fields = Map.new(fields)
     reason = Map.get(fields, :reason)
+
+    resource_outcomes = normalize_resource_outcomes(Map.get(fields, :resource_outcomes, []))
 
     struct!(__MODULE__, %{
       kind: Map.get(fields, :kind, :error),
@@ -76,6 +80,7 @@ defmodule Favn.Contracts.RunnerError do
       retryable?: Map.get(fields, :retryable?, false),
       retry_after_ms: normalize_retry_after(Map.get(fields, :retry_after_ms)),
       outcome: normalize_outcome(Map.get(fields, :outcome), Map.get(fields, :retryable?, false)),
+      resource_outcomes: resource_outcomes,
       redacted?: Map.get(fields, :redacted?, true)
     })
   end
@@ -97,7 +102,8 @@ defmodule Favn.Contracts.RunnerError do
       details: Keyword.get(opts, :details, details_from_error(error)),
       retryable?: Keyword.get(opts, :retryable?, retryable_from_error(error)),
       retry_after_ms: Keyword.get(opts, :retry_after_ms, retry_after_from_error(error)),
-      outcome: Keyword.get(opts, :outcome, outcome_from_error(error))
+      outcome: Keyword.get(opts, :outcome, outcome_from_error(error)),
+      resource_outcomes: Keyword.get(opts, :resource_outcomes, [])
     )
   end
 
@@ -204,6 +210,13 @@ defmodule Favn.Contracts.RunnerError do
   defp normalize_outcome("unknown", _retryable?), do: :unknown
   defp normalize_outcome("cancelled", _retryable?), do: :cancelled
   defp normalize_outcome(_value, _retryable?), do: :unknown
+
+  defp normalize_resource_outcomes(value) do
+    case Favn.Contracts.ResourceOutcome.normalize_many(value) do
+      {:ok, outcomes} -> outcomes
+      {:error, _reason} -> []
+    end
+  end
 
   defp error_message(%{__exception__: true} = exception) do
     Exception.message(exception)

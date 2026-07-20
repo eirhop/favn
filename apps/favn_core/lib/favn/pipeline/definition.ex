@@ -31,6 +31,7 @@ defmodule Favn.Pipeline.Definition do
           retry_policy: Favn.Retry.Policy.t() | nil,
           max_concurrency: pos_integer() | nil,
           execution_pool: atom() | nil,
+          resource_recovery: Favn.ResourceRecovery.Policy.t() | nil,
           source: atom() | nil,
           outputs: [atom()]
         }
@@ -47,6 +48,7 @@ defmodule Favn.Pipeline.Definition do
             retry_policy: nil,
             max_concurrency: nil,
             execution_pool: nil,
+            resource_recovery: nil,
             source: nil,
             outputs: []
 end

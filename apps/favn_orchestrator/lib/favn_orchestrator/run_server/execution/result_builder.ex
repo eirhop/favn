@@ -112,7 +112,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
   def pipeline_result(%RunState{} = run_state, status, asset_results)
       when is_list(asset_results) do
     retained_assets = retain_asset_results(asset_results)
-    retained_nodes = run_state |> node_results() |> Enum.reverse()
+    retained_nodes = run_state |> node_results() |> latest_node_results() |> Enum.reverse()
     node_count = node_result_count(run_state)
 
     metadata =
@@ -220,6 +220,21 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
 
   defp node_result_field(result, field) when is_map(result),
     do: Map.get(result, field, Map.get(result, Atom.to_string(field)))
+
+  defp latest_node_results(results) do
+    {latest, _seen} =
+      Enum.reduce(results, {[], MapSet.new()}, fn result, {acc, seen} ->
+        node_key = node_result_field(result, :node_key)
+
+        if MapSet.member?(seen, node_key) do
+          {acc, seen}
+        else
+          {[result | acc], MapSet.put(seen, node_key)}
+        end
+      end)
+
+    Enum.reverse(latest)
+  end
 
   defp map_field(result, field) do
     case asset_result_field(result, field) do

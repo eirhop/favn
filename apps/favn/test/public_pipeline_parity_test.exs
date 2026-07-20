@@ -78,6 +78,7 @@ defmodule Favn.PublicPipelineParityTest do
           asset {#{inspect(SalesAssets)}, :sales_daily}
           max_concurrency 2
           execution_pool :github_api
+          resource_recovery :retry_remaining, max_age_ms: 3_600_000
         end
       end
       """
@@ -86,8 +87,11 @@ defmodule Favn.PublicPipelineParityTest do
     assert {:ok, resolution} = Favn.resolve_pipeline(module)
     assert resolution.pipeline.max_concurrency == 2
     assert resolution.pipeline.execution_pool == :github_api
+    assert resolution.pipeline.resource_recovery.mode == :retry_remaining
+    assert resolution.pipeline.resource_recovery.max_age_ms == 3_600_000
     assert resolution.pipeline_ctx.max_concurrency == 2
     assert resolution.pipeline_ctx.execution_pool == :github_api
+    assert resolution.pipeline_ctx.resource_recovery == resolution.pipeline.resource_recovery
   end
 
   test "resolve_pipeline/2 preserves the current-period window anchor" do

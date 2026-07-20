@@ -29,7 +29,8 @@ deprecated when a cleaner contract is accepted.
 ## Authoring And Compilation
 
 - Asset, multi-asset, SQL-asset, namespace, pipeline, schedule, window, freshness,
-  retry, settings, and runtime-config DSLs are implemented. **State: solid.**
+  retry, resource-recovery, settings, and runtime-config DSLs are implemented.
+  **State: solid.**
 - Discovery and explicit module lists compile business code into a deterministic,
   versioned manifest with graph metadata and runner contract identity. **State: solid.**
 - Manifest publication separates compact catalogue/planning indexes from immutable,
@@ -47,6 +48,9 @@ deprecated when a cleaner contract is accepted.
 - Asset and pipeline target planning supports dependency selection, refresh modes,
   windowed execution, stages, retries, replay input modes, and bounded execution
   admission. **State: prototype.**
+- Terminal branch failures no longer stop independent DAG siblings. Required
+  downstream nodes become durably blocked, and each planned node reaches a
+  terminal state. **State: solid internal contract.**
 - Runner work is pinned to a manifest version and explicit execution identity, with
   the selected SQL asset's verified execution package attached before preflight.
   Ownership and fencing tokens prevent a stale orchestrator from committing after
@@ -63,6 +67,10 @@ deprecated when a cleaner contract is accepted.
   materialization claims, admission, manifest publication/deployment, lineage, and
   operator read models are implemented behind explicit workspace authority.
   **State: prototype.**
+- PostgreSQL-backed circuit breakers protect configured execution pools and named
+  SQL connections. They use consecutive explicit resource outcomes, exclusive
+  half-open probes, and durable opt-in linked recovery runs for safe remaining
+  work. **State: prototype.**
 - Mutating HTTP commands use scoped idempotency keys. PostgreSQL atomically commits
   the request fingerprint, domain mutation, audit entry, outbox event, and replay
   result. Exact retries replay; conflicting input is rejected. **State: solid.**
@@ -102,6 +110,8 @@ deprecated when a cleaner contract is accepted.
 - Authoritative writes use database constraints, optimistic versions, leases with
   fencing, `FOR UPDATE SKIP LOCKED`, advisory serialization where appropriate, a
   commit-safe ordered outbox, and idempotent projectors. **State: implemented.**
+- Resource circuit state, idempotent outcomes, exclusive probe leases, and
+  recovery candidates are durable coordination records. **State: implemented.**
 - High-growth reads are keyset-paginated and bounded. Operator screens read compact
   projections instead of scanning runs/events or issuing per-row follow-up queries.
   Performance-contract tests assert query counts and reviewed query plans.

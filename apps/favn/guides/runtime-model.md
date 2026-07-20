@@ -105,6 +105,12 @@ Already completed work is not changed into a successful cancellation.
 Retry and rerun operations use recorded run state and the pinned manifest version.
 They do not use UI state as the source of truth.
 
+One terminal branch does not stop independent siblings. Nodes that require a
+failed or resource-blocked upstream become terminally blocked. A configured
+resource circuit blocks only work that uses that execution pool or named SQL
+connection. Pipeline `resource_recovery` may create a linked new run after a
+successful half-open probe; it never changes the terminal source run.
+
 ## Common Runtime Failures
 
 | Failure | What it means |
@@ -114,6 +120,7 @@ They do not use UI state as the source of truth.
 | Not authorized | The operator session or role is not valid for the command. |
 | Persistence failure | Favn could not store runtime state; inspect readiness and diagnostics before retrying. |
 | Runner unavailable | Work cannot execute until runner connectivity or startup is fixed. |
+| Resource circuit open | The node's execution pool or SQL connection is temporarily blocked; one eligible node probes it after the configured delay. |
 | Timeout or crash | Execution failed; inspect run events and logs. |
 | Operator view is stale | Operator views may need repair from recorded runtime state. |
 

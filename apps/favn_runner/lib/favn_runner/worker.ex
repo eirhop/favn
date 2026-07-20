@@ -8,9 +8,11 @@ defmodule FavnRunner.Worker do
   alias Favn.Contracts.RunnerEvent
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
+  alias Favn.Contracts.ResourceOutcome
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
   alias Favn.RelationRef
+  alias Favn.Resource.Ref, as: ResourceRef
   alias Favn.Run.Context
   alias Favn.SQL.Client, as: SQLClient
   alias Favn.RuntimeConfig.Redactor, as: RuntimeConfigRedactor
@@ -110,10 +112,13 @@ defmodule FavnRunner.Worker do
           work,
           manifest,
           [asset_result(work, asset, started_at, finished_at, :ok, meta, nil)],
-          status: :ok
+          status: :ok,
+          resource_outcomes: resource_success_outcomes(asset)
         )
 
       {:error, error} ->
+        error = normalize_error(error, asset)
+
         emit_event(server, execution_id, work, :asset_failed, %{
           asset_ref: asset.ref,
           error: error
@@ -128,10 +133,13 @@ defmodule FavnRunner.Worker do
           manifest,
           [asset_result(work, asset, started_at, finished_at, :error, %{}, error)],
           status: :error,
-          error: error
+          error: error,
+          resource_outcomes: error.resource_outcomes
         )
 
       {:error, error, meta} when is_map(meta) ->
+        error = normalize_error(error, asset)
+
         emit_event(server, execution_id, work, :asset_failed, %{
           asset_ref: asset.ref,
           error: error
@@ -147,7 +155,8 @@ defmodule FavnRunner.Worker do
           manifest,
           [asset_result(work, asset, started_at, finished_at, :error, meta, error)],
           status: :error,
-          error: error
+          error: error,
+          resource_outcomes: error.resource_outcomes
         )
     end
   end
@@ -271,6 +280,7 @@ defmodule FavnRunner.Worker do
       status: Keyword.get(opts, :status, :ok),
       asset_results: asset_results,
       error: normalize_error(Keyword.get(opts, :error)),
+      resource_outcomes: Keyword.get(opts, :resource_outcomes, []),
       metadata:
         Map.put(
           RunnerWork.lifecycle_metadata(work),
@@ -329,11 +339,108 @@ defmodule FavnRunner.Worker do
 
     RunnerError.normalize(error,
       retryable?: retryable?,
-      outcome: if(retryable?, do: :safe_failure, else: :unknown)
+      outcome: if(retryable?, do: :safe_failure, else: :unknown),
+      resource_outcomes: sql_resource_outcomes(details)
     )
   end
 
   defp normalize_error(error), do: RunnerError.normalize(error)
+
+  defp normalize_error(%SQLAssetError{details: details} = error, %Asset{} = asset) do
+    retryable? =
+      is_map(details) and
+        Map.get(details, :asset_retryable?, Map.get(details, "asset_retryable?", false)) == true
+
+    RunnerError.normalize(error,
+      retryable?: retryable?,
+      outcome: if(retryable?, do: :safe_failure, else: :unknown),
+      resource_outcomes: sql_resource_outcomes(details, connection_name(asset.relation))
+    )
+  end
+
+  defp normalize_error(error, %Asset{}), do: normalize_error(error)
+
+  defp resource_success_outcomes(%Asset{type: :sql, relation: relation}) do
+    case connection_name(relation) do
+      nil ->
+        []
+
+      connection ->
+        [
+          ResourceOutcome.new!(
+            resource: ResourceRef.new!(:connection, connection),
+            status: :success,
+            category: :sql_asset_succeeded
+          )
+        ]
+    end
+  end
+
+  defp resource_success_outcomes(%Asset{}), do: []
+
+  defp sql_resource_outcomes(details) when is_map(details) do
+    resource_failure? =
+      Map.get(details, :resource_failure?, Map.get(details, "resource_failure?", false))
+
+    resource_succeeded? =
+      Map.get(details, :resource_succeeded?, Map.get(details, "resource_succeeded?", false))
+
+    connection = Map.get(details, :connection, Map.get(details, "connection"))
+
+    cond do
+      resource_failure? and not is_nil(connection) ->
+        [
+          ResourceOutcome.new!(
+            resource: ResourceRef.new!(:connection, connection),
+            status: :failure,
+            category:
+              Map.get(
+                details,
+                :resource_failure_category,
+                Map.get(details, "resource_failure_category")
+              ),
+            safe_to_repeat?:
+              Map.get(
+                details,
+                :resource_safe_to_repeat?,
+                Map.get(details, "resource_safe_to_repeat?", false)
+              )
+          )
+        ]
+
+      resource_succeeded? and not is_nil(connection) ->
+        [
+          ResourceOutcome.new!(
+            resource: ResourceRef.new!(:connection, connection),
+            status: :success,
+            category: :sql_resource_reached
+          )
+        ]
+
+      true ->
+        []
+    end
+  end
+
+  defp sql_resource_outcomes(_details), do: []
+
+  defp sql_resource_outcomes(details, fallback_connection) when is_map(details) do
+    details =
+      if Map.get(details, :connection, Map.get(details, "connection")) in [nil, ""] do
+        Map.put(details, :connection, fallback_connection)
+      else
+        details
+      end
+
+    sql_resource_outcomes(details)
+  end
+
+  defp sql_resource_outcomes(_details, _fallback_connection), do: []
+
+  defp connection_name(%RelationRef{connection: connection}), do: connection
+  defp connection_name(%{connection: connection}), do: connection
+  defp connection_name(%{"connection" => connection}), do: connection
+  defp connection_name(_relation), do: nil
 
   defp duration_ms(started_at, finished_at) do
     max(DateTime.diff(finished_at, started_at, :millisecond), 0)

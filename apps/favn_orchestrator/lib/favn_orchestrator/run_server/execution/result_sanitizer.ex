@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultSanitizer do
   alias Favn.Contracts.RunnerAssetResult
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.ResourceOutcome
   alias Favn.Run.AssetResult
   alias FavnOrchestrator.Redaction
 
@@ -24,7 +25,8 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultSanitizer do
     %{
       result
       | error: sanitize_error(result.error),
-        asset_results: sanitize_asset_results(result.asset_results)
+        asset_results: sanitize_asset_results(result.asset_results),
+        resource_outcomes: sanitize_resource_outcomes(result.resource_outcomes)
     }
   end
 
@@ -57,6 +59,13 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultSanitizer do
 
   def merge_metadata(run_metadata, _runner_metadata) when is_map(run_metadata),
     do: run_metadata
+
+  defp sanitize_resource_outcomes(outcomes) do
+    case ResourceOutcome.normalize_many(outcomes) do
+      {:ok, normalized} -> normalized
+      {:error, _reason} -> []
+    end
+  end
 
   defp sanitize_asset_result(%RunnerAssetResult{} = result) do
     %{result | error: sanitize_error(result.error), attempts: sanitize_attempts(result.attempts)}

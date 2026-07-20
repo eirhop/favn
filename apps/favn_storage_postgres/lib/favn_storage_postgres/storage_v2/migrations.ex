@@ -14,6 +14,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddCoordinationAndSchedulingV2
   alias FavnStoragePostgres.Migrations.AddLogsIdentityAndOperationsV2
   alias FavnStoragePostgres.Migrations.AddRuntimeInputKeyInventoryV2
+  alias FavnStoragePostgres.Migrations.AddResourceCircuitsV2
   alias FavnStoragePostgres.Migrations.AddScheduleOperatorReadsV2
   alias FavnStoragePostgres.Migrations.CreateStorageV2
   alias FavnStoragePostgres.Migrations.EnforceRunPlanManifestIdentityV2
@@ -48,7 +49,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_717_150_000, AddExecutionPackageRuntimeInputResolverV2},
     {20_260_717_160_000, OptimizeRunStatusPagingV2},
     {20_260_717_170_000, OptimizeExecutionPackageRetentionV2},
-    {20_260_717_180_000, EnforceRunPlanManifestIdentityV2}
+    {20_260_717_180_000, EnforceRunPlanManifestIdentityV2},
+    {20_260_720_000_000, AddResourceCircuitsV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -75,6 +77,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     execution_leases
     execution_lease_scopes
     admission_waiters
+    resource_circuits
+    resource_circuit_outcomes
+    resource_recovery_candidates
     materialization_claims
     materializations
     coverage_baselines
@@ -148,6 +153,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     capacity_scopes_identity_uidx
     execution_leases_expiry_idx
     admission_waiters_claim_idx
+    resource_circuits_probe_idx
+    resource_circuit_outcomes_resource_idx
+    resource_recovery_candidates_claim_idx
     materialization_claims_expiry_idx
     materializations_target_idx
     coverage_baselines_target_idx
@@ -250,6 +258,12 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "runtime_input_pins" =>
       ~w(workspace_id run_id node_key_hash payload_fingerprint execution_package_hash resolver_module encryption_key_version payload inserted_at),
     "runtime_input_key_versions" => ~w(key_version first_used_at),
+    "resource_circuits" =>
+      ~w(workspace_id resource_kind resource_name state consecutive_failures failure_threshold probe_after_ms opened_at next_probe_at probe_owner_id probe_expires_at last_category last_outcome_at version inserted_at updated_at),
+    "resource_circuit_outcomes" =>
+      ~w(workspace_id outcome_id resource_kind resource_name run_id asset_step_id attempt status category occurred_at inserted_at),
+    "resource_recovery_candidates" =>
+      ~w(workspace_id candidate_id source_run_id node_key resource_kind resource_name reason status expires_at claim_owner claim_expires_at recovery_run_id inserted_at updated_at),
     "schedule_cursors" =>
       ~w(workspace_id deployment_id target_kind pipeline_target_id schedule_id schedule_fingerprint definition next_due_at cursor version claim_owner claim_generation claim_command_id last_command_id claim_expires_at updated_at),
     "schedule_occurrences" =>
@@ -300,6 +314,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     schedule_occurrences_values_valid capacity_scopes_scope_valid capacity_scopes_values_valid
     execution_lease_scopes_units_valid execution_leases_values_valid
     admission_waiters_values_valid materialization_claims_values_valid
+    resource_circuits_values_valid resource_circuits_probe_shape_valid
+    resource_circuit_outcomes_values_valid resource_recovery_candidates_values_valid
     coverage_baselines_values_valid backfills_values_valid backfill_plan_batches_values_valid
     backfill_windows_values_valid backfill_windows_claim_shape_v2 projection_cursors_values_valid
     auth_actors_values_valid
@@ -327,7 +343,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "40d0645a14efeef7aa0d348f18bb96c953f2ba29ccd2d277b883e7babd089754"
+  @expected_definition_fingerprint "bb7cade47d96af61b81bebef7ab8c1716c3f01d4937401c9a703bed4dfb8c4c8"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok
@@ -555,6 +571,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
              JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = $1 AND c.relname = ANY($2::text[])
+               AND con.contype <> 'n'
              ORDER BY c.relname, con.conname
              """,
              [@prefix, @required_tables]

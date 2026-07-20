@@ -272,6 +272,39 @@ erDiagram
         int priority
         text status
     }
+    RESOURCE_CIRCUITS {
+        text workspace_id PK
+        text resource_kind PK
+        text resource_name PK
+        text state
+        int consecutive_failures
+        int failure_threshold
+        bigint probe_after_ms
+        timestamptz next_probe_at
+        text probe_owner_id
+        timestamptz probe_expires_at
+    }
+    RESOURCE_CIRCUIT_OUTCOMES {
+        text workspace_id PK
+        text outcome_id PK
+        text run_id
+        text asset_step_id
+        int attempt
+        text resource_kind
+        text resource_name
+        text status
+    }
+    RESOURCE_RECOVERY_CANDIDATES {
+        text workspace_id PK
+        text candidate_id PK
+        text source_run_id
+        text node_key
+        text resource_kind
+        text resource_name
+        text status
+        timestamptz expires_at
+        text recovery_run_id
+    }
     MATERIALIZATION_CLAIMS {
         text workspace_id PK, FK
         text claim_key PK
@@ -334,6 +367,9 @@ erDiagram
     CAPACITY_SCOPES ||--o{ EXECUTION_LEASE_SCOPES : allocates
     RUNS ||--o{ ADMISSION_WAITERS : queues
     CAPACITY_SCOPES o|--o{ ADMISSION_WAITERS : blocks
+    WORKSPACES ||--o{ RESOURCE_CIRCUITS : protects
+    RUNS ||--o{ RESOURCE_CIRCUIT_OUTCOMES : reports
+    RUNS ||--o{ RESOURCE_RECOVERY_CANDIDATES : originates
     RUN_TARGETS ||--o{ MATERIALIZATION_CLAIMS : claims
     RUN_TARGETS ||--o{ MATERIALIZATIONS : produces
     OUTBOX_EVENTS ||--o| MATERIALIZATIONS : publishes
@@ -347,7 +383,10 @@ erDiagram
 
 Claims and leases are durable multi-node coordination records. Expiry allows
 recovery; fencing generations prevent stale owners from committing after a
-claim is reused.
+claim is reused. Resource circuits use an exclusive expiring half-open probe;
+their outcome ledger prevents duplicate terminal updates. Recovery candidates
+link safe remaining work to an immutable terminal source run and, once claimed,
+to a separate recovery run.
 
 ## Identity, audit, maintenance, and projections
 
@@ -496,6 +535,7 @@ repaired from authoritative publications.
 | Publication | `outbox_events`, `outbox_publication_state` | Authoritative delivery ledger |
 | Scheduling | `schedule_cursors`, `schedule_occurrences` | Authoritative |
 | Admission | `capacity_scopes`, `execution_leases`, `execution_lease_scopes`, `admission_waiters` | Authoritative coordination |
+| Resource circuits | `resource_circuits`, `resource_circuit_outcomes`, `resource_recovery_candidates` | Authoritative coordination |
 | Materialization | `materialization_claims`, `materializations`, `coverage_baselines` | Authoritative |
 | Backfills | `backfills`, `backfill_plan_batches`, `backfill_windows` | Authoritative |
 | Logs | `log_batches`, `log_entries` | Authoritative operational history subject to retention |
@@ -505,7 +545,7 @@ repaired from authoritative publications.
 | Read projections | `execution_group_overviews`, `backfill_overviews`, `target_statuses`, `asset_window_states`, `asset_freshness_states` | Derived and repairable |
 | Ecto | `schema_migrations` | Migration bookkeeping |
 
-There are 48 application/schema tables including `schema_migrations`. Tables
+There are 51 application/schema tables including `schema_migrations`. Tables
 without direct foreign keys still require workspace-scoped application contracts;
 their lack of an FK is not permission to perform unscoped reads.
 

@@ -115,6 +115,18 @@ defmodule FavnOrchestrator.Freshness.DeciderTest do
              )
   end
 
+  test "missing upstream status blocks downstream instead of treating it as success" do
+    assert %{
+             decision: :blocked,
+             reason: :upstream_incomplete,
+             blocking_upstream: [@raw_key]
+           } =
+             Decider.decide(plan(), @stage_key,
+               upstream_statuses: %{},
+               now: @now
+             )
+  end
+
   test "upstream version changed causes run with stale reason" do
     prior =
       freshness_state(@stage_ref, @stage_key, Key.latest(),

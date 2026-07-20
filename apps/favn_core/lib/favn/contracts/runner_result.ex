@@ -5,6 +5,7 @@ defmodule Favn.Contracts.RunnerResult do
 
   alias Favn.Contracts.RunnerAssetResult
   alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.ResourceOutcome
 
   @type status :: :ok | :error | :cancelled | :timed_out
 
@@ -14,6 +15,7 @@ defmodule Favn.Contracts.RunnerResult do
           manifest_content_hash: String.t(),
           status: status(),
           asset_results: [RunnerAssetResult.t()],
+          resource_outcomes: [ResourceOutcome.t()],
           error: RunnerError.t() | nil,
           metadata: map()
         }
@@ -23,6 +25,7 @@ defmodule Favn.Contracts.RunnerResult do
             manifest_content_hash: nil,
             status: :ok,
             asset_results: [],
+            resource_outcomes: [],
             error: nil,
             metadata: %{}
 end

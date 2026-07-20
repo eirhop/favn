@@ -34,4 +34,25 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptStateTest do
     assert {:ok, ^run, [:first, :second, :third, :fourth], [:retry_one, :retry_two], [], %{}} =
              StageResult.finalize(state)
   end
+
+  test "keeps the first resource-admission failure while sibling work proceeds" do
+    run =
+      RunState.new(
+        id: "stage-admission-failure",
+        manifest_version_id: "manifest-version",
+        manifest_content_hash: "manifest-hash",
+        asset_ref: {MyApp.Assets.StageAttempt, :asset}
+      )
+
+    first_key = {{__MODULE__, :first}, nil}
+    second_key = {{__MODULE__, :second}, nil}
+    first = %{status: :error, error: :circuit_open, node_statuses: %{first_key => :blocked}}
+    second = %{status: :error, error: :another_circuit, node_statuses: %{second_key => :blocked}}
+
+    state = StageAttemptState.new(run, [], [], [], MapSet.new(), first)
+    next = StageAttemptState.add_admission_failure(state, second)
+
+    assert next.terminal_failure == first
+    assert next.node_statuses == %{first_key => :blocked, second_key => :blocked}
+  end
 end

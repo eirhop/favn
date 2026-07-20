@@ -33,6 +33,12 @@ freshness, and execution coordination.
   database operation cannot block unrelated manager calls.
 - `RunOwnership`, `ExecutionAdmission`, `MaterializationClaims`, and scheduler
   runtime modules own fenced distributed coordination.
+- `ResourceCircuits` resolves configured execution-pool and SQL-connection
+  resources before ordinary capacity admission. It records only explicit runner
+  resource outcomes, while `ResourceRecovery` submits linked targeted runs for
+  durable, unexpired, safe candidates after an exclusive probe succeeds. Its
+  supervised bounded sweep resumes pending candidates after restart, and
+  deterministic recovery run ids make uncertain submission replay idempotent.
 - Run recovery discovers active workspace identities from PostgreSQL rather than
   treating a static node environment list as persistence authority.
 - `Backfills` and `BackfillDispatcher` own range expansion, parent/child state,
@@ -66,6 +72,10 @@ node/time batch so ownership renewal and cancellation messages cannot be starved
 Wide-stage retry persistence writes one authoritative compact stage-bitset checkpoint
 instead of per-node retry-scheduled transitions, keeping the database work constant
 per retry decision.
+Terminal node failure does not stop independent stage siblings. Downstream nodes
+with incomplete required upstreams are durably blocked. Resource-open blocking is
+a terminal node result in the source run; opt-in recovery always creates another
+linked run and never rewrites that source result.
 Run-list APIs select compact relational summaries without the authoritative JSON
 snapshot. Operator detail reconstruction caps full child snapshots at four and marks
 `child_run_details_truncated?` when more relational child rows exist.

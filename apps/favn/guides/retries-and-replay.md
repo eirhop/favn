@@ -12,14 +12,15 @@ problems. There is intentionally no global “retry everything” switch.
 | SQL safety retry | Proven-safe session creation/bootstrap or read-only inspection/query | No | Same call input; never blindly retries a write |
 | Persistence retry | A failed control-plane state write | No | Same state transition; does not rerun the asset |
 | Node attempt retry | One explicitly safe failed asset node in the same run | Yes | Reuses that run/node runtime-input pin |
+| Resource recovery | Safe remaining work after a resource probe succeeds | Starts new attempt counts | Opt-in linked run with inherited existing pins |
 | Rerun or replay | Creates a new run | Starts new attempt counts | `:fresh`, `:inherit`, or `:pinned` as described below |
 | Backfill | Creates child runs for windows | Each child has its own attempts | Normal children resolve fresh inputs |
 | Schedule overlap/missed handling | Decides whether a separate run is submitted | No relation to an older run's attempts | Every admitted run has independent pins |
 | HTTP command idempotency | Replays the response to the same command key | No | Prevents duplicate commands; it does not retry execution |
 
 An internal retry never reruns an asset. A node retry never creates a new run.
-A rerun always creates a new run. Schedule overlap decides whether another run
-exists at all.
+A rerun or resource recovery always creates a new run. Schedule overlap decides
+whether another run exists at all.
 
 ## Configure Node Attempts
 
@@ -142,9 +143,43 @@ attempt 2: A remains complete, B runs with B's original pin
 next stage: starts only after required upstream work succeeds
 ```
 
-There is no automatic whole-pipeline rerun. After terminal failure an operator
-may create a new run with retry-remaining, resume, exact replay, or fresh rerun
-semantics.
+Independent siblings continue after terminal failure. Required downstream nodes
+become durably blocked, so the run records a terminal result for every planned
+node. There is no automatic whole-pipeline rerun. An operator may create a new
+run with retry-remaining, resume, exact replay, or fresh rerun semantics.
+
+## Recover After A Shared Resource Returns
+
+Resource circuit breakers are configured on an execution pool or named SQL
+connection, not in retry policy. A circuit opens after its configured number of
+consecutive explicit resource failures. While open, only nodes that need that
+resource are blocked. Once the delay expires, one normal eligible node gets the
+exclusive probe permit. Probe success closes the circuit; probe failure reopens
+it.
+
+Pipeline recovery is off by default. Opt in explicitly:
+
+```elixir
+pipeline :daily_orders do
+  assets [MyApp.Orders.Raw, MyApp.Orders.Mart]
+
+  resource_recovery :retry_remaining,
+    max_age_ms: :timer.hours(6)
+end
+```
+
+When a probe succeeds, Favn may submit one linked recovery run containing nodes
+that were circuit-blocked and failed nodes whose runner outcome explicitly says
+they are safe to repeat. Candidates older than `max_age_ms` are ignored. Existing
+runtime-input pins are inherited where present; nodes never reached resolve their
+inputs normally. The source run stays terminal and immutable. Unknown-outcome
+writes, materializations, transactions, and external side effects are never
+included merely because the circuit closed.
+
+Recovery candidates are durable. A supervised bounded sweep resumes pending
+work after an orchestrator restart, and each claimed candidate set derives a
+deterministic recovery run id. Replaying an uncertain submission therefore
+returns the same linked run instead of creating a duplicate.
 
 ## Runtime-Input Resolve, Pin, Execute
 

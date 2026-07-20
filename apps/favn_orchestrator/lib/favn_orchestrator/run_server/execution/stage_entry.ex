@@ -18,6 +18,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntry do
     :lease,
     :materialization_claim,
     :execution_pool,
+    :resource_circuit_permits,
     :freshness_key,
     :version,
     :freshness_context
@@ -37,6 +38,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntry do
           required(:lease) => term(),
           required(:materialization_claim) => term(),
           required(:execution_pool) => term(),
+          required(:resource_circuit_permits) => [
+            FavnOrchestrator.Persistence.Results.ResourceCircuitPermit.t()
+          ],
           required(:freshness_key) => term(),
           required(:version) => Version.t(),
           required(:freshness_context) => map()
