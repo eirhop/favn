@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
              AssetRunRequest.from_input(%{
                "dependencies" => "none",
                "refresh" => "force_selected_upstream",
+               "run_context_id" => "pipeline:scheduled",
                "selection" => %{
                  "source" => "refresh_timeline",
                  "kind" => "day",
@@ -22,6 +23,7 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
 
     assert request.dependency_mode == :none
     assert request.refresh_mode == :force_selected_upstream
+    assert request.run_context_id == "pipeline:scheduled"
     assert request.selection.source == :refresh_timeline
     assert request.selection.id == "refresh:day:2026-05-10"
   end
@@ -46,6 +48,9 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
                  timezone: ""
                }
              })
+
+    assert {:error, {:invalid_operator_run_context_id, ""}} =
+             AssetRunRequest.from_input(%{run_context_id: ""})
   end
 
   test "asset run requests accept every canonical dependency and refresh mode" do

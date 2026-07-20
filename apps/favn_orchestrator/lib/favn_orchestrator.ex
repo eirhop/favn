@@ -264,7 +264,13 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Returns one customer-visible asset detail for an operator workspace."
+  @doc """
+  Returns one customer-visible asset detail for an operator workspace.
+
+  Pass `run_context_id: id` to select one manifest-pinned pipeline context for
+  run-anchor and policy-sensitive freshness projections. A unique context is
+  automatic; multiple contexts are returned as an explicit ambiguous state.
+  """
   @spec active_asset_detail(OperatorContext.t(), String.t(), keyword()) ::
           {:ok, asset_detail()} | {:error, term()}
   def active_asset_detail(%OperatorContext{} = operator_context, target_id, opts)

@@ -7,7 +7,7 @@ defmodule FavnRunner.SQL.MaterializationPlanner do
   """
 
   alias Favn.RelationRef
-  alias Favn.SQL.{Client, IncrementalWindow, Params, Render, Session, WritePlan}
+  alias Favn.SQL.{Client, Params, Render, Session, WritePlan}
   alias Favn.SQLAsset.{Definition, Error}
   alias Favn.Window.Runtime
 
@@ -30,21 +30,19 @@ defmodule FavnRunner.SQL.MaterializationPlanner do
     strategy = Keyword.fetch!(opts, :strategy)
 
     with {:ok, %Runtime{} = runtime_window} <- runtime_window(definition, render),
-         %IncrementalWindow{} = effective_window <-
-           IncrementalWindow.from_runtime(runtime_window, definition.asset.window_spec),
          {:ok, target_exists?} <- target_exists?(session, render),
          {:ok, _} <- validate_strategy_shape(strategy, opts, session, render),
          {:ok, _} <-
            maybe_validate_existing_target(strategy, opts, session, render, target_exists?) do
       if target_exists? do
-        incremental_write_plan(render, strategy, opts, effective_window)
+        incremental_write_plan(render, strategy, opts, runtime_window)
       else
-        bootstrap_write_plan(render, strategy, effective_window)
+        bootstrap_write_plan(render, strategy, runtime_window)
       end
     end
   end
 
-  defp bootstrap_write_plan(%Render{} = render, strategy, %IncrementalWindow{} = window) do
+  defp bootstrap_write_plan(%Render{} = render, strategy, %Runtime{} = window) do
     {:ok,
      table_write_plan(render)
      |> Map.merge(%{
@@ -64,7 +62,7 @@ defmodule FavnRunner.SQL.MaterializationPlanner do
      })}
   end
 
-  defp incremental_write_plan(%Render{} = render, :append, _opts, %IncrementalWindow{} = window) do
+  defp incremental_write_plan(%Render{} = render, :append, _opts, %Runtime{} = window) do
     {:ok,
      %WritePlan{
        asset_ref: render.asset_ref,
@@ -88,7 +86,7 @@ defmodule FavnRunner.SQL.MaterializationPlanner do
          %Render{} = render,
          :delete_insert,
          opts,
-         %IncrementalWindow{} = window
+         %Runtime{} = window
        ) do
     column = opts |> Keyword.fetch!(:window_column) |> normalize_column_name()
 

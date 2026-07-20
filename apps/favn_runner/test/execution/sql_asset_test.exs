@@ -3,6 +3,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
+  alias Favn.Assets.GraphIndex
+  alias Favn.Assets.Planner
   alias Favn.Asset.RelationInput
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerError
@@ -363,7 +365,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert context.window.anchor_key == anchor_key
   end
 
-  test "incremental runtime-input resolution receives the effective lookback window" do
+  test "incremental runtime-input resolution receives the exact planned node window" do
     ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
     window_spec = Favn.Window.Spec.new!(:day, lookback: 1, timezone: "Etc/UTC")
 
@@ -395,13 +397,62 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert {:ok, _resolution} = FavnRunner.resolve_runtime_inputs(work)
     assert_received {:runtime_inputs_context, context}
-    assert context.window.start_at == ~U[2026-07-13 00:00:00Z]
+    assert context.window.start_at == requested_start
     assert context.window.end_at == requested_end
     assert context.window.anchor_key == anchor_key
     assert work.trigger.window == requested_window
   end
 
-  test "monthly runtime-input lookback uses Favn's timezone database" do
+  test "planner lookback nodes reach runner resolution as distinct exact windows" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+    window_spec = Favn.Window.Spec.new!(:month, lookback: 1, timezone: "Europe/Oslo")
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver,
+        materialization:
+          {:incremental, strategy: :delete_insert, window_column: :partition_month},
+        window: window_spec
+      )
+
+    {:ok, graph_index} = GraphIndex.build_index(version.manifest.assets)
+
+    anchor =
+      Favn.Window.Anchor.new!(
+        :month,
+        oslo_datetime!(~N[2026-07-01 00:00:00]),
+        oslo_datetime!(~N[2026-08-01 00:00:00]),
+        timezone: "Europe/Oslo"
+      )
+
+    assert {:ok, plan} =
+             Planner.plan(ref, graph_index: graph_index, anchor_window: anchor)
+
+    windows =
+      plan.nodes
+      |> Map.values()
+      |> Enum.map(& &1.window)
+      |> Enum.sort_by(&DateTime.to_unix(&1.start_at, :microsecond))
+
+    assert Enum.map(windows, & &1.start_at) == [
+             oslo_datetime!(~N[2026-06-01 00:00:00]),
+             oslo_datetime!(~N[2026-07-01 00:00:00])
+           ]
+
+    Enum.with_index(windows, fn window, index ->
+      work =
+        version
+        |> work_for(ref, "run_sql_planner_window_#{index}")
+        |> Map.put(:trigger, %{window: window})
+
+      assert {:ok, _resolution} = FavnRunner.resolve_runtime_inputs(work)
+      assert_received {:runtime_inputs_context, context}
+      assert context.window == window
+    end)
+  end
+
+  test "monthly runtime-input resolution preserves the exact Oslo node window" do
     ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
     timezone = "Europe/Oslo"
     database = Favn.Timezone.database!()
@@ -417,7 +468,6 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     requested_start = DateTime.from_naive!(~N[2026-04-01 00:00:00], timezone, database)
     requested_end = DateTime.from_naive!(~N[2026-05-01 00:00:00], timezone, database)
-    expected_start = DateTime.from_naive!(~N[2026-03-01 00:00:00], timezone, database)
     anchor_key = Favn.Window.Key.new!(:month, requested_start, timezone)
 
     requested_window =
@@ -437,13 +487,13 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert Calendar.get_time_zone_database() == Calendar.UTCOnlyTimeZoneDatabase
     assert {:ok, _resolution} = FavnRunner.resolve_runtime_inputs(work)
     assert_received {:runtime_inputs_context, context}
-    assert context.window.start_at == expected_start
+    assert context.window.start_at == requested_start
     assert context.window.end_at == requested_end
     assert context.window.anchor_key == anchor_key
     assert work.trigger.window == requested_window
   end
 
-  test "UTC monthly runtime-input lookback remains on calendar boundaries" do
+  test "UTC monthly runtime-input resolution preserves the exact node window" do
     ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
     window_spec = Favn.Window.Spec.new!(:month, lookback: 1, timezone: "Etc/UTC")
 
@@ -475,7 +525,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert {:ok, _resolution} = FavnRunner.resolve_runtime_inputs(work)
     assert_received {:runtime_inputs_context, context}
-    assert context.window.start_at == ~U[2026-05-01 00:00:00Z]
+    assert context.window.start_at == requested_start
     assert context.window.end_at == requested_end
     assert context.window.anchor_key == anchor_key
     assert work.trigger.window == requested_window
@@ -1418,6 +1468,10 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       asset_ref: ref,
       execution_package: execution_package_for(version)
     }
+  end
+
+  defp oslo_datetime!(naive) do
+    DateTime.from_naive!(naive, "Europe/Oslo", Favn.Timezone.database!())
   end
 
   defp resolve_and_pin!(%RunnerWork{} = work) do

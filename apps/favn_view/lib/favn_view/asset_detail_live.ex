@@ -20,13 +20,18 @@ defmodule FavnView.AssetDetailLive do
   @timezone_pattern ~r/\A[A-Za-z0-9_+\-\/]{1,64}\z/
 
   @impl true
-  def mount(%{"asset_id" => asset_id}, _session, socket) do
-    asset_state = load_asset(socket.assigns.current_scope.operator_context, asset_id)
+  def mount(%{"asset_id" => asset_id} = params, _session, socket) do
+    run_context_id = run_context_param(params)
+
+    asset_state =
+      load_asset(socket.assigns.current_scope.operator_context, asset_id, run_context_id)
+
     asset = asset_from_state(asset_state)
 
     socket =
       assign(socket,
         asset_id: asset_id,
+        run_context_id: run_context_id,
         asset_state: asset_state,
         asset: asset,
         active_mode: :timeline,
@@ -42,6 +47,32 @@ defmodule FavnView.AssetDetailLive do
       )
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_params(%{"asset_id" => asset_id} = params, _uri, socket) do
+    run_context_id = run_context_param(params)
+
+    if socket.assigns.asset_id == asset_id and socket.assigns.run_context_id == run_context_id do
+      {:noreply, socket}
+    else
+      asset_state = load_asset(actor_context(socket), asset_id, run_context_id)
+
+      {:noreply,
+       assign(socket,
+         asset_id: asset_id,
+         run_context_id: run_context_id,
+         asset_state: asset_state,
+         asset: asset_from_state(asset_state),
+         selected_window: nil,
+         run_config_open?: false,
+         run_config: default_run_config(),
+         run_config_valid?: true,
+         submitting_window_run?: false,
+         submitted_run_id: nil,
+         selected_window_error: nil
+       )}
+    end
   end
 
   @impl true
@@ -273,6 +304,7 @@ defmodule FavnView.AssetDetailLive do
 
   defp submit_asset_window_run(socket, asset, selected_window, run_config) do
     request = %{
+      run_context_id: asset.selected_run_context && asset.selected_run_context.id,
       selection: timeline_selection(selected_window, run_config),
       dependency_mode: run_config.dependencies,
       refresh_mode: run_config.refresh
@@ -311,6 +343,9 @@ defmodule FavnView.AssetDetailLive do
       has_freshness_timeline?={@asset.has_freshness_timeline?}
       has_data_windows?={@asset.has_data_windows?}
       can_run_asset?={@asset.can_run_asset?}
+      run_contexts={@asset.run_contexts}
+      selected_run_context={@asset.selected_run_context}
+      run_context_status={@asset.run_context_status}
       nav_items={@nav_items}
       refresh_timeline={@asset.refresh_timeline}
       freshness_timeline={@asset.freshness_timeline}
@@ -368,12 +403,13 @@ defmodule FavnView.AssetDetailLive do
     """
   end
 
-  defp load_asset(operator_context, asset_id) do
+  defp load_asset(operator_context, asset_id, run_context_id) do
     target_id = AssetRoute.from_param(asset_id)
+    opts = if run_context_id, do: [run_context_id: run_context_id], else: []
 
-    case FavnOrchestrator.active_asset_detail(operator_context, target_id, []) do
+    case FavnOrchestrator.active_asset_detail(operator_context, target_id, opts) do
       {:ok, detail} ->
-        {:ok, asset_from_detail(detail)}
+        {:ok, asset_from_detail(detail, asset_id)}
 
       {:error, :not_found} ->
         {:not_found, asset_id}
@@ -398,7 +434,7 @@ defmodule FavnView.AssetDetailLive do
     scope.operator_context
   end
 
-  defp asset_from_detail(detail) do
+  defp asset_from_detail(detail, asset_id) do
     refresh_timeline = Enum.map(detail.refresh_timeline, &timeline_window/1)
 
     freshness_timeline =
@@ -409,11 +445,19 @@ defmodule FavnView.AssetDetailLive do
 
     timeline = refresh_timeline
 
+    run_contexts =
+      detail
+      |> Map.get(:run_contexts, [])
+      |> Enum.map(&Map.put(&1, :href, run_context_path(asset_id, &1.id)))
+
     %{
       manifest_version_id: detail.manifest_version_id,
       target_id: detail.target_id,
       canonical_asset_ref: detail.canonical_asset_ref,
       can_run_asset?: detail.can_run_asset?,
+      run_contexts: run_contexts,
+      selected_run_context: Map.get(detail, :selected_run_context),
+      run_context_status: Map.get(detail, :run_context_status, :unavailable),
       has_data_windows?: detail.has_data_windows?,
       has_freshness_timeline?: Map.get(detail, :has_freshness_timeline?, false),
       title: detail.name || asset_name(detail),
@@ -437,6 +481,15 @@ defmodule FavnView.AssetDetailLive do
       data_coverage_timeline: data_coverage_timeline,
       timeline: timeline
     }
+  end
+
+  defp run_context_param(%{"run_context" => value}) when is_binary(value) and value != "",
+    do: value
+
+  defp run_context_param(_params), do: nil
+
+  defp run_context_path(asset_id, run_context_id) do
+    ~p"/assets/#{asset_id}?#{[run_context: run_context_id]}"
   end
 
   defp timeline_window(window) do

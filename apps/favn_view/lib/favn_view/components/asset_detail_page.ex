@@ -27,6 +27,9 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :has_freshness_timeline?, :boolean, default: false
   attr :has_data_windows?, :boolean, default: false
   attr :can_run_asset?, :boolean, default: true
+  attr :run_contexts, :list, default: []
+  attr :selected_run_context, :map, default: nil
+  attr :run_context_status, :atom, default: :unavailable
   attr :nav_items, :list, required: true
   attr :timeline, :list, default: []
   attr :refresh_timeline, :list, default: nil
@@ -70,6 +73,9 @@ defmodule FavnView.Components.AssetDetailPage do
         has_freshness_timeline?={@has_freshness_timeline?}
         has_data_windows?={@has_data_windows?}
         can_run_asset?={@can_run_asset?}
+        run_contexts={@run_contexts}
+        selected_run_context={@selected_run_context}
+        run_context_status={@run_context_status}
         refresh_timeline={@refresh_timeline}
         freshness_timeline={@freshness_timeline}
         data_coverage_timeline={@data_coverage_timeline}
@@ -107,6 +113,9 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :has_freshness_timeline?, :boolean, default: false
   attr :has_data_windows?, :boolean, default: false
   attr :can_run_asset?, :boolean, default: true
+  attr :run_contexts, :list, default: []
+  attr :selected_run_context, :map, default: nil
+  attr :run_context_status, :atom, default: :unavailable
   attr :refresh_timeline, :list, default: []
   attr :freshness_timeline, :list, default: nil
   attr :data_coverage_timeline, :list, default: nil
@@ -139,6 +148,9 @@ defmodule FavnView.Components.AssetDetailPage do
       has_freshness_timeline?={@has_freshness_timeline?}
       has_data_windows?={@has_data_windows?}
       can_run_asset?={@can_run_asset?}
+      run_contexts={@run_contexts}
+      selected_run_context={@selected_run_context}
+      run_context_status={@run_context_status}
       refresh_timeline={@refresh_timeline}
       freshness_timeline={@freshness_timeline}
       data_coverage_timeline={@data_coverage_timeline}
@@ -178,6 +190,9 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :has_freshness_timeline?, :boolean, default: false
   attr :has_data_windows?, :boolean, default: false
   attr :can_run_asset?, :boolean, default: true
+  attr :run_contexts, :list, default: []
+  attr :selected_run_context, :map, default: nil
+  attr :run_context_status, :atom, default: :unavailable
   attr :refresh_timeline, :list, default: []
   attr :freshness_timeline, :list, default: nil
   attr :data_coverage_timeline, :list, default: nil
@@ -204,6 +219,13 @@ defmodule FavnView.Components.AssetDetailPage do
       data-testid="window-timeline-panel"
     >
       <div class="flex flex-col gap-10">
+        <.run_context_selector
+          :if={@run_contexts != []}
+          contexts={@run_contexts}
+          selected={@selected_run_context}
+          status={@run_context_status}
+        />
+
         <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <h2 class="text-xl font-medium tracking-tight">{@timeline_label}</h2>
@@ -309,6 +331,52 @@ defmodule FavnView.Components.AssetDetailPage do
         />
       </div>
     </GlassPanel.glass_panel>
+    """
+  end
+
+  attr :contexts, :list, required: true
+  attr :selected, :map, default: nil
+  attr :status, :atom, required: true
+
+  def run_context_selector(assigns) do
+    ~H"""
+    <div
+      class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
+      data-testid="asset-run-context-selector"
+    >
+      <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Run context</p>
+          <p class="mt-1 text-sm text-base-content/70">
+            Choose the pipeline policy used for run anchors and freshness evaluation.
+          </p>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          <.link
+            :for={context <- @contexts}
+            patch={context.href}
+            class={[
+              "btn btn-sm",
+              selected_run_context?(@selected, context) && "btn-primary btn-soft",
+              !selected_run_context?(@selected, context) && "btn-ghost"
+            ]}
+            data-testid={"asset-run-context-#{context.id}"}
+          >
+            {context.label}
+            <span class="text-xs opacity-60">{run_context_policy_label(context)}</span>
+          </.link>
+        </div>
+      </div>
+
+      <p
+        :if={@status == :ambiguous}
+        class="mt-3 text-sm text-warning"
+        data-testid="asset-run-context-required"
+      >
+        This asset belongs to multiple pipelines. Select one before running it.
+      </p>
+    </div>
     """
   end
 
@@ -977,6 +1045,15 @@ defmodule FavnView.Components.AssetDetailPage do
 
   defp selected_window?(nil, _window), do: false
   defp selected_window?(selected_window, window), do: selected_window.id == window.id
+
+  defp selected_run_context?(%{id: id}, %{id: id}), do: true
+  defp selected_run_context?(_selected, _context), do: false
+
+  defp run_context_policy_label(%{policy: %{kind: kind, anchor: anchor}, timezone: timezone}) do
+    "#{humanize(kind)} / #{humanize(anchor)} / #{timezone}"
+  end
+
+  defp run_context_policy_label(%{timezone: timezone}), do: timezone
 
   defp active_timeline(%{active_timeline: :data_coverage, data_coverage_timeline: timeline})
        when is_list(timeline), do: timeline

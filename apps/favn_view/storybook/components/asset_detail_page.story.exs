@@ -67,6 +67,21 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           })
       },
       %Variation{
+        id: :ambiguous_pipeline_run_context,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            can_run_asset?: false,
+            run_contexts: run_contexts(),
+            selected_run_context: nil,
+            run_context_status: :ambiguous,
+            refresh_timeline: [],
+            refresh_window_range: "No windows",
+            refresh_timeline_label: "Run context required",
+            refresh_cadence_label: "Select a pipeline context"
+          })
+      },
+      %Variation{
         id: :selected_refresh_period,
         attributes:
           base_attributes()
@@ -188,6 +203,9 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
       has_freshness_timeline?: true,
       has_data_windows?: true,
       can_run_asset?: true,
+      run_contexts: [List.last(run_contexts())],
+      selected_run_context: List.last(run_contexts()),
+      run_context_status: :selected,
       nav_items: AssetDetailPage.sample_nav_items(),
       refresh_timeline: refresh_timeline(),
       freshness_timeline: freshness_timeline(),
@@ -198,6 +216,25 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
       run_config_open?: false,
       run_config: run_config(:refresh_timeline, :day, "2026-06-12")
     }
+  end
+
+  defp run_contexts do
+    [
+      %{
+        id: "pipeline:manual",
+        label: "MyApp.Pipelines.Manual / monthly",
+        href: "/assets/orders?run_context=pipeline%3Amanual",
+        timezone: "Etc/UTC",
+        policy: %{kind: :month, anchor: :previous_complete_period}
+      },
+      %{
+        id: "pipeline:scheduled",
+        label: "MyApp.Pipelines.Scheduled / monthly",
+        href: "/assets/orders?run_context=pipeline%3Ascheduled",
+        timezone: "Europe/Oslo",
+        policy: %{kind: :month, anchor: :current_period}
+      }
+    ]
   end
 
   defp freshness_attributes(state) do

@@ -278,6 +278,14 @@ Asset detail keeps operational run anchors, exact data-coverage windows, and
 calendar freshness periods separate. Composite window-refresh freshness is
 aggregated only when every expected lookback window has successful evidence, and
 calendar buckets are display-only so they cannot be submitted as anchor intent.
+When multiple pipelines select an asset, asset detail requires an explicit stable
+pipeline run context; the same manifest-pinned policy and timezone drive the
+displayed anchors, freshness evaluation, and submitted run. A unique selecting
+pipeline remains automatic.
+
+Window lookback expands the planner's target-node set once. Each runner work item,
+runtime-input resolver, and incremental write plan receives one exact planned node
+window; the runner does not widen that window again.
 
 Freshness policy input variants are documented in `Favn.Freshness.Policy`:
 

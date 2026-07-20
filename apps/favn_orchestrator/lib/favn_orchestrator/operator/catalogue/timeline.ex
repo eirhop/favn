@@ -18,9 +18,9 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Operator.Catalogue.AssetFreshness
-  alias FavnOrchestrator.Operator.Catalogue.RunAnchorPolicy
   alias FavnOrchestrator.Operator.Catalogue.Status
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Operator.WindowSelection
@@ -52,20 +52,24 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
       )
       when is_list(freshness_states) and is_list(asset_window_states) and is_map(runs_by_id) and
              is_list(opts) do
-    {refresh_kind, refresh_timezone} = refresh_policy(version, asset)
+    opts = normalize_run_context_opts(version, asset, opts)
+    {refresh_kind, refresh_timezone} = refresh_policy(opts)
     {coverage_kind, _coverage_timezone} = coverage_policy(asset)
     freshness_policy = timeline_freshness_policy(asset)
 
     refresh_timeline =
-      refresh_timeline(
-        version,
-        asset,
-        latest_freshness,
-        latest_run,
-        freshness_states,
-        runs_by_id,
-        opts
-      )
+      if opts[:run_context_status] == :ambiguous do
+        []
+      else
+        refresh_timeline(
+          asset,
+          latest_freshness,
+          latest_run,
+          freshness_states,
+          runs_by_id,
+          opts
+        )
+      end
 
     data_coverage_timeline =
       data_coverage_timeline(
@@ -92,9 +96,17 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
     {freshness_timeline_label, freshness_cadence_label} =
       freshness_labels(freshness_policy)
 
+    {refresh_timeline_label, refresh_cadence_label} =
+      if opts[:run_context_status] == :ambiguous do
+        {"Run context required", "Select a pipeline context"}
+      else
+        {kind_label(refresh_kind, "run anchors"),
+         "#{kind_label(refresh_kind, "run anchors")} #{refresh_timezone}"}
+      end
+
     %{
-      refresh_timeline_label: kind_label(refresh_kind, "run anchors"),
-      refresh_cadence_label: "#{kind_label(refresh_kind, "run anchors")} #{refresh_timezone}",
+      refresh_timeline_label: refresh_timeline_label,
+      refresh_cadence_label: refresh_cadence_label,
       freshness_timeline_label: freshness_timeline_label,
       freshness_cadence_label: freshness_cadence_label,
       data_coverage_timeline_label: kind_label(coverage_kind, "data windows"),
@@ -181,7 +193,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   end
 
   defp refresh_timeline(
-         version,
          asset,
          latest_freshness,
          latest_run,
@@ -189,8 +200,11 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
          runs_by_id,
          opts
        ) do
-    {kind, timezone} = refresh_policy(version, asset)
-    selected_value = selected_value(kind, timezone, latest_freshness, latest_run, opts)
+    {kind, timezone} = refresh_policy(opts)
+
+    selected_value =
+      selected_refresh_value(kind, timezone, latest_freshness, latest_run, opts)
+
     freshness_by_value = freshness_by_value(asset, freshness_states, kind, timezone)
 
     latest_run_value =
@@ -257,7 +271,8 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
           asset,
           freshness_policy,
           value,
-          states_by_identity
+          states_by_identity,
+          opts
         )
 
       latest_state =
@@ -288,13 +303,34 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
     end
   end
 
-  defp refresh_policy(version, asset) do
-    case RunAnchorPolicy.resolve(version, asset) do
-      {:ok, %RunAnchorPolicy{policy: %Policy{kind: kind}, timezone: timezone}} ->
+  defp refresh_policy(opts) do
+    case Keyword.get(opts, :asset_run_context) do
+      %AssetRunContext{policy: %Policy{kind: kind}, timezone: timezone} ->
         normalize_policy(kind, timezone)
 
-      _pipeline ->
+      %AssetRunContext{policy: nil, timezone: timezone} ->
+        normalize_policy(@default_kind, timezone)
+
+      _context ->
         default_policy()
+    end
+  end
+
+  defp normalize_run_context_opts(version, asset, opts) do
+    if Keyword.has_key?(opts, :run_context_status) do
+      opts
+    else
+      case AssetRunContext.select(version, asset) do
+        {:ok, selection} ->
+          opts
+          |> Keyword.put(:asset_run_context, selection.selected)
+          |> Keyword.put(:run_context_status, selection.status)
+
+        {:error, _reason} ->
+          opts
+          |> Keyword.put(:asset_run_context, nil)
+          |> Keyword.put(:run_context_status, :unavailable)
+      end
     end
   end
 
@@ -479,6 +515,23 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
     end
   end
 
+  defp selected_refresh_value(kind, timezone, latest_freshness, latest_run, opts) do
+    reference_at =
+      Keyword.get(opts, :now) || Status.latest_run_at(latest_freshness, latest_run) ||
+        DateTime.utc_now()
+
+    case Keyword.get(opts, :asset_run_context) do
+      %AssetRunContext{} = run_context ->
+        case AssetRunContext.anchor(run_context, reference_at) do
+          {:ok, anchor} -> value_from_datetime(anchor.start_at, kind, timezone)
+          {:error, _reason} -> selected_value(kind, timezone, latest_freshness, latest_run, opts)
+        end
+
+      _context ->
+        selected_value(kind, timezone, latest_freshness, latest_run, opts)
+    end
+  end
+
   defp freshness_by_value(asset, freshness_states, timeline_kind, timeline_timezone) do
     asset_ref_string = Targets.ref_string(asset.ref)
 
@@ -570,39 +623,46 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   end
 
   defp freshness_period_evidence(
-         _version,
-         _asset,
-         _freshness_policy,
-         _value,
-         states_by_identity
-       )
-       when map_size(states_by_identity) == 0,
-       do: {:missing, []}
-
-  defp freshness_period_evidence(
          version,
          asset,
          freshness_policy,
          value,
-         states_by_identity
+         states_by_identity,
+         opts
        ) do
-    case expected_freshness_identities(version, asset, freshness_policy, value) do
-      {:ok, expected_identities} ->
-        expected_count = MapSet.size(expected_identities)
-
-        if expected_count > 0 do
-          states =
-            expected_identities
-            |> Enum.map(&Map.get(states_by_identity, &1))
-            |> Enum.reject(&is_nil/1)
-
-          {freshness_period_status(states, expected_count), states}
-        else
-          {:unknown, []}
-        end
-
-      _error ->
+    cond do
+      freshness_policy.identity == :window_refresh and
+          opts[:run_context_status] == :ambiguous ->
         {:unknown, []}
+
+      map_size(states_by_identity) == 0 ->
+        {:missing, []}
+
+      true ->
+        case expected_freshness_identities(
+               version,
+               asset,
+               freshness_policy,
+               value,
+               opts[:asset_run_context]
+             ) do
+          {:ok, expected_identities} ->
+            expected_count = MapSet.size(expected_identities)
+
+            if expected_count > 0 do
+              states =
+                expected_identities
+                |> Enum.map(&Map.get(states_by_identity, &1))
+                |> Enum.reject(&is_nil/1)
+
+              {freshness_period_status(states, expected_count), states}
+            else
+              {:unknown, []}
+            end
+
+          _error ->
+            {:unknown, []}
+        end
     end
   end
 
@@ -610,23 +670,24 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
          _version,
          _asset,
          %{identity: :calendar},
-         _value
+         _value,
+         _run_context
        ),
        do: {:ok, MapSet.new([:calendar])}
 
   defp expected_freshness_identities(
-         version,
+         _version,
          asset,
          %{identity: :window_refresh, kind: kind, timezone: timezone},
-         value
+         value,
+         %AssetRunContext{} = run_context
        ) do
-    with {:ok, %RunAnchorPolicy{} = run_policy} <- RunAnchorPolicy.resolve(version, asset),
-         {:ok, period} <- calendar_period(kind, value, timezone),
-         {:ok, anchor_window} <- RunAnchorPolicy.anchor(run_policy, period.start_at),
+    with {:ok, period} <- calendar_period(kind, value, timezone),
+         {:ok, anchor_window} <- AssetRunContext.anchor(run_context, period.start_at),
          {:ok, plan} <-
            Planner.plan(asset.ref,
              dependencies: :none,
-             planning_index: run_policy.index.planning_index,
+             planning_index: run_context.index.planning_index,
              anchor_window: anchor_window
            ) do
       identities =
@@ -648,6 +709,15 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
       _error -> {:error, :freshness_target_windows_not_found}
     end
   end
+
+  defp expected_freshness_identities(
+         _version,
+         _asset,
+         %{identity: :window_refresh},
+         _value,
+         _run_context
+       ),
+       do: {:error, :asset_run_context_required}
 
   defp freshness_period_values(kind, timezone, latest_freshness, latest_run, opts) do
     {:ok, selected_period} = selected_period(kind, timezone, latest_freshness, latest_run, opts)

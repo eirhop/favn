@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
   alias Favn.Window.Policy, as: WindowPolicy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.Operator.Catalogue.AssetFreshness
   alias FavnOrchestrator.Operator.Catalogue.Timeline
 
@@ -112,6 +113,28 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
     assert List.last(failed.freshness_timeline).status == :failed
   end
 
+  test "uses the schedule timezone for a policy-less pipeline context" do
+    asset = asset_fixture()
+
+    detail =
+      Timeline.build(
+        version_fixture(asset, nil),
+        asset,
+        nil,
+        nil,
+        [],
+        [],
+        %{},
+        now: @now
+      )
+
+    refresh = List.last(detail.refresh_timeline)
+
+    assert refresh.kind == :day
+    assert refresh.timezone == "Europe/Oslo"
+    assert refresh.default_run_config.timezone == "Europe/Oslo"
+  end
+
   test "requires every fine-grained asset window expanded from a coarse run anchor" do
     asset = daily_asset_fixture()
     version = version_fixture(asset)
@@ -142,6 +165,85 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
 
     header = AssetFreshness.detail(asset, version, [state], now: @now)
     refute header.state == :fresh
+  end
+
+  test "uses one explicit pipeline context consistently and surfaces context-free ambiguity" do
+    asset = asset_fixture()
+    states = [freshness_state(:june, :ok), freshness_state(:july, :ok)]
+    version = multi_pipeline_version_fixture(asset, :declared)
+
+    assert {:ok, contexts} = AssetRunContext.list(version, asset)
+    scheduled = Enum.find(contexts, &(&1.pipeline.name == :scheduled_current))
+    manual = Enum.find(contexts, &(&1.pipeline.name == :manual_previous))
+
+    scheduled_detail =
+      Timeline.build(
+        version,
+        asset,
+        List.last(states),
+        nil,
+        states,
+        [],
+        %{},
+        now: @now,
+        asset_run_context: scheduled,
+        run_context_status: :selected
+      )
+
+    assert List.last(scheduled_detail.refresh_timeline).value == "2026-07"
+    assert List.last(scheduled_detail.refresh_timeline).timezone == "Europe/Oslo"
+
+    assert Enum.find(scheduled_detail.data_coverage_timeline, &(&1.value == "2026-06")).status ==
+             :covered
+
+    assert Enum.find(scheduled_detail.data_coverage_timeline, &(&1.value == "2026-07")).status ==
+             :covered
+
+    assert List.last(scheduled_detail.freshness_timeline).status == :fresh
+
+    manual_detail =
+      Timeline.build(
+        version,
+        asset,
+        List.last(states),
+        nil,
+        states,
+        [],
+        %{},
+        now: @now,
+        asset_run_context: manual,
+        run_context_status: :selected
+      )
+
+    assert List.last(manual_detail.refresh_timeline).value == "2026-06"
+    assert List.last(manual_detail.refresh_timeline).timezone == "Etc/UTC"
+    assert List.last(manual_detail.freshness_timeline).status == :missing
+
+    ambiguous =
+      Timeline.build(version, asset, List.last(states), nil, states, [], %{}, now: @now)
+
+    reordered =
+      Timeline.build(
+        multi_pipeline_version_fixture(asset, :reversed),
+        asset,
+        List.last(states),
+        nil,
+        states,
+        [],
+        %{},
+        now: @now
+      )
+
+    assert ambiguous.refresh_timeline == []
+    assert ambiguous.refresh_timeline_label == "Run context required"
+    assert List.last(ambiguous.freshness_timeline).status == :unknown
+
+    assert Map.take(ambiguous, [:refresh_timeline, :refresh_timeline_label]) ==
+             Map.take(reordered, [:refresh_timeline, :refresh_timeline_label])
+
+    freshness = AssetFreshness.detail(asset, version, states, now: @now)
+    assert freshness.state == :unknown
+    assert [%{kind: :run_context_required}] = freshness.reasons
   end
 
   defp asset_fixture do
@@ -198,6 +300,46 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
       manifest: %Manifest{
         assets: [asset],
         pipelines: [pipeline],
+        schedules: [schedule],
+        graph: graph
+      }
+    }
+  end
+
+  defp multi_pipeline_version_fixture(asset, order) do
+    {:ok, graph} = Graph.build([asset])
+
+    schedule = %Schedule{
+      module: __MODULE__.Schedules,
+      name: :daily,
+      ref: {__MODULE__.Schedules, :daily},
+      cron: "0 8 * * *",
+      timezone: "Europe/Oslo"
+    }
+
+    manual = %Pipeline{
+      module: __MODULE__.ManualPipeline,
+      name: :manual_previous,
+      selectors: [{:asset, @asset_ref}],
+      window: WindowPolicy.new!(:monthly, anchor: :previous_complete_period)
+    }
+
+    scheduled = %Pipeline{
+      module: __MODULE__.ScheduledPipeline,
+      name: :scheduled_current,
+      selectors: [{:asset, @asset_ref}],
+      schedule: {:ref, schedule.ref},
+      window: WindowPolicy.new!(:monthly, anchor: :current_period)
+    }
+
+    pipelines = if order == :reversed, do: [scheduled, manual], else: [manual, scheduled]
+
+    %Version{
+      manifest_version_id: "mv_timeline_multi_#{order}",
+      content_hash: "sha256:timeline-multi-#{order}",
+      manifest: %Manifest{
+        assets: [asset],
+        pipelines: pipelines,
         schedules: [schedule],
         graph: graph
       }

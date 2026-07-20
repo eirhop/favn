@@ -20,4 +20,20 @@ defmodule FavnOrchestrator.API.CommandErrorsTest do
     refute log =~ secret
     assert log =~ "[REDACTED]"
   end
+
+  test "maps asset run context validation to stable fields" do
+    assert {:error, 422, "validation_failed", "Invalid run_context_id",
+            %{field: "run_context_id"}} =
+             CommandErrors.operator({:invalid_operator_run_context_id, ""})
+
+    assert {:error, 422, "validation_failed", "Run context timezone does not match the selection",
+            %{
+              field: "run_context_id",
+              expected_timezone: "Europe/Oslo",
+              actual_timezone: "Etc/UTC"
+            }} =
+             CommandErrors.operator(
+               {:asset_run_context_timezone_mismatch, "Europe/Oslo", "Etc/UTC"}
+             )
+  end
 end

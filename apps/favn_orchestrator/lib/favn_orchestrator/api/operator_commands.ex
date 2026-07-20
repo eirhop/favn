@@ -23,7 +23,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
     with :ok <- reject_legacy_retry_fields(params),
          {:ok, manifest_version_id} <- manifest_version(params, actor_context),
          {:ok, target} <- target(params, manifest_version_id, actor_context),
-         {:ok, command_input} <- run_input(params, target) do
+         {:ok, command_input} <- normalize_run_input(params, target) do
       submit_operator_run(actor_context, manifest_version_id, target, command_input, opts)
     end
   end
@@ -98,11 +98,15 @@ defmodule FavnOrchestrator.API.OperatorCommands do
     end
   end
 
-  defp run_input(params, %{type: "asset"}) do
+  @doc false
+  @spec normalize_run_input(map(), %{required(:type) => String.t()}) ::
+          {:ok, keyword()} | {:error, term()}
+  def normalize_run_input(params, %{type: "asset"}) do
     with {:ok, selection} <- asset_selection(params) do
       {:ok,
        []
        |> put_optional(:selection, selection)
+       |> put_optional(:run_context_id, Map.get(params, "run_context_id"))
        |> put_present(:dependency_mode, params, "dependencies")
        |> put_present(:refresh_mode, params, "refresh")
        |> put_optional(:metadata, Map.get(params, "metadata"))
@@ -111,7 +115,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
     end
   end
 
-  defp run_input(params, %{type: "pipeline"}) do
+  def normalize_run_input(params, %{type: "pipeline"}) do
     if Map.has_key?(params, "dependencies") do
       {:error, :invalid_dependencies}
     else
