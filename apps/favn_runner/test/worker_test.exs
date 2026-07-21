@@ -36,6 +36,7 @@ defmodule FavnRunner.WorkerTest do
 
     work =
       %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         run_id: "run_worker_test",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
@@ -54,6 +55,7 @@ defmodule FavnRunner.WorkerTest do
 
     assert_receive {:runner_result, "rx_worker_test", %RunnerResult{} = result}, 2_000
     assert result.status == :error
+    assert result.required_runner_release_id == FavnTestSupport.runner_release_id()
     assert [%{status: :error}] = result.asset_results
 
     assert_receive {:runner_log_entry, "rx_worker_test", %{level: :error, metadata: metadata}},
@@ -233,6 +235,7 @@ defmodule FavnRunner.WorkerTest do
                      2_000
 
       assert event.payload.error == result.error
+      assert event.required_runner_release_id == FavnTestSupport.runner_release_id()
       refute inspect(result) =~ "error-secret-token"
       refute inspect(event) =~ "error-secret-token"
     after
@@ -373,6 +376,7 @@ defmodule FavnRunner.WorkerTest do
 
     work =
       %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         run_id: "run_worker_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower),
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,

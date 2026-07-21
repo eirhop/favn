@@ -4672,7 +4672,7 @@ defmodule FavnStoragePostgres.TestReleaseRunnerClient do
   def register_manifest(_version, _opts), do: :ok
 
   @impl true
-  def ensure_manifest(_manifest_version_id, _content_hash, _opts), do: :ok
+  def ensure_manifest(_version, _opts), do: :ok
 
   @impl true
   def acquire_manifest(_version, _lease_id, _expires_at, _planned_asset_refs, _opts), do: :ok
@@ -4715,7 +4715,7 @@ defmodule FavnStoragePostgres.TestRestartedRunnerClient do
   def register_manifest(_version, _opts), do: :ok
 
   @impl true
-  def ensure_manifest(_manifest_version_id, _content_hash, _opts), do: :ok
+  def ensure_manifest(_version, _opts), do: :ok
 
   @impl true
   def acquire_manifest(_version, lease_id, _expires_at, _planned_asset_refs, opts) do
@@ -4779,7 +4779,7 @@ defmodule FavnStoragePostgres.TestPipelineRunnerClient do
   def register_manifest(_version, _opts), do: :ok
 
   @impl true
-  def ensure_manifest(_manifest_version_id, _content_hash, _opts), do: :ok
+  def ensure_manifest(_version, _opts), do: :ok
 
   @impl true
   def acquire_manifest(_version, _lease_id, _expires_at, _planned_asset_refs, _opts), do: :ok

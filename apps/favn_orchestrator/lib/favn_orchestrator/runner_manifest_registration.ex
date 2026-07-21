@@ -6,11 +6,7 @@ defmodule FavnOrchestrator.RunnerManifestRegistration do
   @spec ensure(module(), Version.t(), keyword()) :: :ok | {:error, term()}
   def ensure(runner_client, %Version{} = version, opts)
       when is_atom(runner_client) and is_list(opts) do
-    case runner_client.ensure_manifest(
-           version.manifest_version_id,
-           version.content_hash,
-           opts
-         ) do
+    case runner_client.ensure_manifest(version, opts) do
       :ok -> :ok
       :missing -> runner_client.register_manifest(version, opts)
       {:error, _reason} = error -> error

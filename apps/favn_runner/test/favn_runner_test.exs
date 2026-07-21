@@ -5,6 +5,7 @@ defmodule FavnRunnerTest do
   alias Favn.Connection.Resolved
   alias Favn.Contracts.RunnerCancellation
   alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -85,6 +86,12 @@ defmodule FavnRunnerTest do
 
     assert {:ok, diagnostics} = FavnRunner.diagnostics()
     assert diagnostics.available? == true
+    assert diagnostics.ready? == true
+    assert diagnostics.status == :ready
+    assert diagnostics.runner_release_id == FavnTestSupport.runner_release_id()
+    assert diagnostics.favn_version == Favn.RunnerRelease.current_favn_version()
+    assert diagnostics.runner_contract_version == 10
+    assert is_binary(diagnostics.node_name)
     assert diagnostics.data_plane.connection_count == 1
 
     assert [entry] = diagnostics.data_plane.connections
@@ -93,6 +100,47 @@ defmodule FavnRunnerTest do
     assert entry.details.token == "[REDACTED]"
     refute inspect(diagnostics) =~ "connection-secret"
     refute inspect(diagnostics) =~ "/tmp/secret/path.duckdb"
+  end
+
+  test "rejects a different release before manifest or work lookup", %{version: version} do
+    alternate = FavnTestSupport.runner_release_id(:alternate)
+    incompatible_version = %{version | required_runner_release_id: alternate}
+
+    assert {:error, %RunnerError{type: :runner_release_mismatch, retryable?: false}} =
+             FavnRunner.register_manifest(incompatible_version)
+
+    assert {:error, %RunnerError{type: :runner_release_mismatch, retryable?: false}} =
+             FavnRunner.ensure_manifest(incompatible_version)
+
+    work = %RunnerWork{
+      required_runner_release_id: alternate,
+      run_id: "run_wrong_release",
+      manifest_version_id: "mv_not_registered",
+      manifest_content_hash: "not-registered",
+      asset_ref: {FavnRunnerTest.ElixirAsset, :asset}
+    }
+
+    assert {:error,
+            %RunnerError{
+              type: :runner_release_mismatch,
+              retryable?: false,
+              outcome: :safe_failure,
+              details: %{
+                required_runner_release_id: ^alternate,
+                runner_release_id: required
+              }
+            }} = FavnRunner.submit_work(work)
+
+    assert required == version.required_runner_release_id
+
+    request = %RelationInspectionRequest{
+      manifest_version_id: "mv_not_registered",
+      required_runner_release_id: alternate,
+      asset_ref: {FavnRunnerTest.ElixirAsset, :asset}
+    }
+
+    assert {:error, %RunnerError{type: :runner_release_mismatch, retryable?: false}} =
+             FavnRunner.inspect_relation(request)
   end
 
   test "runs a local plain Elixir asset through runner execution boundary", %{version: version} do
@@ -119,6 +167,7 @@ defmodule FavnRunnerTest do
 
     work =
       %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         run_id: "run_fixture",
         manifest_version_id: fixture_version.manifest_version_id,
         manifest_content_hash: fixture_version.content_hash,
@@ -139,6 +188,7 @@ defmodule FavnRunnerTest do
   test "runs one elixir asset through runner boundary", %{version: version} do
     work =
       %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         run_id: "run_elixir",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
@@ -152,6 +202,7 @@ defmodule FavnRunnerTest do
     assert {:ok, result} = FavnRunner.run(work)
     assert result.status == :ok
     assert result.manifest_version_id == version.manifest_version_id
+    assert result.required_runner_release_id == version.required_runner_release_id
     assert [asset_result] = result.asset_results
     assert asset_result.ref == {FavnRunnerTest.ElixirAsset, :asset}
     assert asset_result.status == :ok
@@ -163,6 +214,7 @@ defmodule FavnRunnerTest do
   test "runs one source asset as observe/no-op", %{version: version} do
     work =
       %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         run_id: "run_source",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
@@ -202,6 +254,7 @@ defmodule FavnRunnerTest do
     work =
       leased_work(
         %RunnerWork{
+          required_runner_release_id: FavnTestSupport.runner_release_id(),
           run_id: "run_log_forward",
           manifest_version_id: fixture_version.manifest_version_id,
           manifest_content_hash: fixture_version.content_hash,
@@ -247,6 +300,7 @@ defmodule FavnRunnerTest do
     assert :ok = FavnRunner.register_manifest(fixture_version)
 
     work = %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: "run_invalid_return",
       manifest_version_id: fixture_version.manifest_version_id,
       manifest_content_hash: fixture_version.content_hash,
@@ -284,6 +338,7 @@ defmodule FavnRunnerTest do
     work =
       leased_work(
         %RunnerWork{
+          required_runner_release_id: FavnTestSupport.runner_release_id(),
           run_id: "run_cancel",
           manifest_version_id: fixture_version.manifest_version_id,
           manifest_content_hash: fixture_version.content_hash,
@@ -305,6 +360,7 @@ defmodule FavnRunnerTest do
   test "rejects direct submission without an active manifest lease" do
     work =
       %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         run_id: "run_missing",
         manifest_version_id: "mv_missing",
         manifest_content_hash: "hash_missing",

@@ -20,6 +20,7 @@ defmodule FavnRunner.ManifestStore do
   alias Favn.SQL.Template
   alias Favn.SQL.Template.AssetRef
   alias FavnRunner.ManifestHandle
+  alias FavnRunner.ReleaseVerifier
 
   @default_max_entries 128
   @default_max_bytes 512 * 1_024 * 1_024
@@ -40,25 +41,27 @@ defmodule FavnRunner.ManifestStore do
 
   @spec register(Version.t(), keyword()) :: :ok | {:error, term()}
   def register(%Version{} = version, opts \\ []) do
-    cache = server(opts)
+    with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+      cache = server(opts)
 
-    case ensure(version.manifest_version_id, version.content_hash, server: cache) do
-      :ok ->
-        :ok
+      case ensure(version.manifest_version_id, version.content_hash, server: cache) do
+        :ok ->
+          :ok
 
-      :missing ->
-        with {:ok, entry} <- compile_entry(version) do
-          bytes = @term_budget_multiplier * :erlang.external_size(entry)
+        :missing ->
+          with {:ok, entry} <- compile_entry(version) do
+            bytes = @term_budget_multiplier * :erlang.external_size(entry)
 
-          GenServer.call(
-            cache,
-            {:put_compiled, entry, bytes},
-            Keyword.get(opts, :timeout, 30_000)
-          )
-        end
+            GenServer.call(
+              cache,
+              {:put_compiled, entry, bytes},
+              Keyword.get(opts, :timeout, 30_000)
+            )
+          end
 
-      {:error, _reason} = error ->
-        error
+        {:error, _reason} = error ->
+          error
+      end
     end
   end
 
@@ -80,32 +83,34 @@ defmodule FavnRunner.ManifestStore do
 
   def acquire(%Version{} = version, lease_id, %DateTime{} = expires_at, opts)
       when is_binary(lease_id) and byte_size(lease_id) in 1..512 and is_list(opts) do
-    cache = server(opts)
-    expires_at_ms = DateTime.to_unix(expires_at, :millisecond)
-    timeout = Keyword.get(opts, :timeout, 30_000)
+    with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+      cache = server(opts)
+      expires_at_ms = DateTime.to_unix(expires_at, :millisecond)
+      timeout = Keyword.get(opts, :timeout, 30_000)
 
-    case GenServer.call(
-           cache,
-           {:acquire_existing, version.manifest_version_id, version.content_hash, lease_id,
-            expires_at_ms},
-           timeout
-         ) do
-      :ok ->
-        :ok
+      case GenServer.call(
+             cache,
+             {:acquire_existing, version.manifest_version_id, version.content_hash, lease_id,
+              expires_at_ms},
+             timeout
+           ) do
+        :ok ->
+          :ok
 
-      :missing ->
-        with {:ok, entry} <- compile_entry(version) do
-          bytes = @term_budget_multiplier * :erlang.external_size(entry)
+        :missing ->
+          with {:ok, entry} <- compile_entry(version) do
+            bytes = @term_budget_multiplier * :erlang.external_size(entry)
 
-          GenServer.call(
-            cache,
-            {:put_compiled_and_acquire, entry, bytes, lease_id, expires_at_ms},
-            timeout
-          )
-        end
+            GenServer.call(
+              cache,
+              {:put_compiled_and_acquire, entry, bytes, lease_id, expires_at_ms},
+              timeout
+            )
+          end
 
-      {:error, _reason} = error ->
-        error
+        {:error, _reason} = error ->
+          error
+      end
     end
   end
 
@@ -772,7 +777,8 @@ defmodule FavnRunner.ManifestStore do
   defp handle(%Version{} = version) do
     %ManifestHandle{
       manifest_version_id: version.manifest_version_id,
-      content_hash: version.content_hash
+      content_hash: version.content_hash,
+      required_runner_release_id: version.required_runner_release_id
     }
   end
 

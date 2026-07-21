@@ -17,8 +17,17 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
   nullability, and up to 16 ordered conditional row-count claims.
 - Planning supports asset and pipeline targets, dependency selection, refresh
   modes, windows, stages, retries, replay, and bounded admission.
-- Runner work is pinned to a manifest version and verified execution package.
-  Ownership leases and fencing prevent stale executors from committing.
+- Packaged runners self-verify their baked descriptor against runtime target and
+  versions, selected BEAM digests, and application version/lock fingerprints in
+  packaged `.app` files before startup. Stamped application and configured
+  plugin inventories must exactly match the descriptor; plugin callbacks may
+  select only descriptor-fingerprinted applications and supervised child roots.
+  Runner
+  work, inspection, results, and events carry the exact verified release id in
+  addition to the manifest and execution-package identity. The server discards
+  events that do not exactly match stored work and replaces mismatched results
+  with bounded errors. Ownership leases and fencing prevent stale executors
+  from committing.
 - DuckDB and DuckDB ADBC support bounded queries, typed configuration, catalog
   requirements, session scripts, and runner-local exclusive sessions.
 

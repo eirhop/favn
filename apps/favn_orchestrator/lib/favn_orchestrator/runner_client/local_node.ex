@@ -33,11 +33,9 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   end
 
   @impl true
-  @spec ensure_manifest(String.t(), String.t(), [opt()]) ::
-          :ok | :missing | {:error, term()}
-  def ensure_manifest(manifest_version_id, content_hash, opts \\ [])
-      when is_binary(manifest_version_id) and is_binary(content_hash) and is_list(opts) do
-    dispatch(opts, :ensure_manifest, [manifest_version_id, content_hash, opts])
+  @spec ensure_manifest(Version.t(), [opt()]) :: :ok | :missing | {:error, term()}
+  def ensure_manifest(%Version{} = version, opts \\ []) when is_list(opts) do
+    dispatch(opts, :ensure_manifest, [version, opts])
   end
 
   @impl true

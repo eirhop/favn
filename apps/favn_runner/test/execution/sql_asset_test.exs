@@ -86,6 +86,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version = register_sql_manifest!(ref, relation)
 
     work = %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: "run_sql_catalog_scope",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
@@ -119,6 +120,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     work = %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: "run_sql_resource_scope",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
@@ -161,6 +163,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       ])
 
     work = %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: "run_sql_relation_input_catalog_scope",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
@@ -195,6 +198,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     work =
       %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         run_id: "run_sql_in_process",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
@@ -216,6 +220,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       register_sql_manifest!(ref, nil, [], SessionRequirements.empty(), sql)
 
     work = %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: "run_sql_favn_runtime_inputs",
       run_started_at: run_started_at,
       manifest_version_id: version.manifest_version_id,
@@ -246,6 +251,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       })
 
     work = %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: "run_sql_runtime_inputs",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
@@ -678,6 +684,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version = register_elixir_manifest!(ref, relation)
 
     work = %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: "run_elixir_sql_catalog_scope",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
@@ -696,6 +703,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     work =
       %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         run_id: "run_sql_manifest_only",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
@@ -717,6 +725,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     work =
       %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         run_id: "run_sql_missing_payload",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
@@ -734,6 +743,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     work =
       %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         run_id: "run_sql_missing_connection",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
@@ -759,6 +769,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version = register_sql_manifest!(ref)
 
     work = %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: "run_sql_secret_failure",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
@@ -1424,6 +1435,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert {:ok, result} = FavnRunner.Inspection.inspect_relation(request, version)
     assert result.asset_ref == ref
+    assert result.required_runner_release_id == version.required_runner_release_id
     assert result.relation_ref.name == "manifest_sql_asset"
     assert result.relation == nil
     assert result.columns == []
@@ -1732,6 +1744,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp work_for(version, ref, run_id) do
     %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: run_id,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,

@@ -25,7 +25,15 @@ defmodule FavnRunner.Inspection do
              connect_opts(relation_ref)
            ) do
       try do
-        {:ok, inspect_with_session(asset, relation_ref, session, include, sample_limit)}
+        {:ok,
+         inspect_with_session(
+           asset,
+           relation_ref,
+           session,
+           include,
+           sample_limit,
+           version.required_runner_release_id
+         )}
       after
         Client.disconnect(session)
       end
@@ -67,9 +75,17 @@ defmodule FavnRunner.Inspection do
 
   defp connect_opts(%RelationRef{}), do: [registry_name: @runner_registry]
 
-  defp inspect_with_session(asset, relation_ref, session, include, sample_limit) do
+  defp inspect_with_session(
+         asset,
+         relation_ref,
+         session,
+         include,
+         sample_limit,
+         required_runner_release_id
+       ) do
     %RelationInspectionResult{
       asset_ref: inspection_asset_ref(asset),
+      required_runner_release_id: required_runner_release_id,
       relation_ref: relation_ref,
       adapter: session.adapter,
       inspected_at: DateTime.utc_now()

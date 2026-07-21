@@ -2,6 +2,7 @@ defmodule FavnRunner.ServerTest do
   use ExUnit.Case, async: false
 
   alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerEvent
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
@@ -157,6 +158,74 @@ defmodule FavnRunner.ServerTest do
 
     assert {:ok, result} = FavnRunner.await_result(execution_id, 7_000)
     assert result.status == :cancelled
+  end
+
+  test "discards runner events that do not match their stored work identity" do
+    server = start_runner_server()
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv_event_binding")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+    work = build_work(version, FavnRunner.ServerTest.SlowAsset)
+    assert {:ok, execution_id} = FavnRunner.submit_work(work, server: server)
+
+    forged = %RunnerEvent{
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: String.duplicate("f", 64),
+      required_runner_release_id: work.required_runner_release_id,
+      event_type: :asset_started,
+      occurred_at: DateTime.utc_now(),
+      payload: %{}
+    }
+
+    send(server, {:runner_event, execution_id, forged})
+    state = :sys.get_state(server)
+    execution = state.lifecycle.executions[execution_id]
+    refute forged in execution.events
+
+    assert {:ok, %{status: :acknowledged}} =
+             FavnRunner.cancel_work(execution_id, %{reason: :test_cleanup}, server: server)
+
+    assert {:ok, _result} = FavnRunner.await_result(execution_id, 1_000, server: server)
+  end
+
+  test "replaces worker results that do not match their stored work identity" do
+    server = start_runner_server()
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv_result_binding")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+    work = build_work(version, FavnRunner.ServerTest.SlowAsset)
+    assert {:ok, execution_id} = FavnRunner.submit_work(work, server: server)
+
+    state = :sys.get_state(server)
+    worker_pid = state.lifecycle.executions[execution_id].pid
+
+    forged = %RunnerResult{
+      run_id: "run_forged",
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
+      status: :ok,
+      asset_results: [],
+      metadata: %{}
+    }
+
+    send(server, {:runner_result, execution_id, forged})
+
+    assert {:ok, result} = FavnRunner.await_result(execution_id, 1_000, server: server)
+    assert result.status == :error
+    assert result.run_id == work.run_id
+    assert %RunnerError{type: :runner_result_identity_mismatch, retryable?: false} = result.error
+
+    Process.exit(worker_pid, :kill)
   end
 
   test "late runner_result does not overwrite a cancelled terminal result" do
@@ -563,6 +632,7 @@ defmodule FavnRunner.ServerTest do
     end)
 
     %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: unique_id("run"),
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,

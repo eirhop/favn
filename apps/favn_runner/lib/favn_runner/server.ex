@@ -10,6 +10,7 @@ defmodule FavnRunner.Server do
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerCancellation
   alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerEvent
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.ExecutionPackage
@@ -21,6 +22,7 @@ defmodule FavnRunner.Server do
   alias FavnRunner.ManifestResolver
   alias FavnRunner.ManifestHandle
   alias FavnRunner.ManifestStore
+  alias FavnRunner.ReleaseVerifier
   alias FavnRunner.Worker
 
   @type execution_id :: String.t()
@@ -47,23 +49,25 @@ defmodule FavnRunner.Server do
 
   @spec submit_work(RunnerWork.t(), keyword()) :: {:ok, execution_id()} | {:error, term()}
   def submit_work(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
-    server = Keyword.get(opts, :server, __MODULE__)
+    with :ok <- ReleaseVerifier.verify_required_release(work.required_runner_release_id) do
+      server = Keyword.get(opts, :server, __MODULE__)
 
-    case GenServer.call(server, {:lookup_execution_replay, work}, submit_call_timeout_ms(opts)) do
-      {:replay, execution_id} ->
-        {:ok, execution_id}
+      case GenServer.call(server, {:lookup_execution_replay, work}, submit_call_timeout_ms(opts)) do
+        {:replay, execution_id} ->
+          {:ok, execution_id}
 
-      :new ->
-        with {:ok, submission} <-
-               prepare_submission(
-                 work,
-                 Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
-               ) do
-          GenServer.call(server, {:submit_work, submission}, submit_call_timeout_ms(opts))
-        end
+        :new ->
+          with {:ok, submission} <-
+                 prepare_submission(
+                   work,
+                   Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+                 ) do
+            GenServer.call(server, {:submit_work, submission}, submit_call_timeout_ms(opts))
+          end
 
-      {:error, _reason} = error ->
-        error
+        {:error, _reason} = error ->
+          error
+      end
     end
   catch
     :exit, {:timeout, _call} ->
@@ -145,8 +149,10 @@ defmodule FavnRunner.Server do
   @spec inspect_relation(RelationInspectionRequest.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts) do
-    server = Keyword.get(opts, :server, __MODULE__)
-    GenServer.call(server, {:inspect_relation, request}, Keyword.get(opts, :timeout, 15_000))
+    with :ok <- ReleaseVerifier.verify_required_release(request.required_runner_release_id) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:inspect_relation, request}, Keyword.get(opts, :timeout, 15_000))
+    end
   end
 
   @spec diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
@@ -332,10 +338,12 @@ defmodule FavnRunner.Server do
 
   def handle_call({:inspect_relation, %RelationInspectionRequest{} = request}, _from, state) do
     reply =
-      with {:ok, version} <-
+      with :ok <- ReleaseVerifier.verify_required_release(request.required_runner_release_id),
+           {:ok, version} <-
              ManifestStore.fetch(request.manifest_version_id, request.manifest_content_hash,
                server: state.manifest_store
-             ) do
+             ),
+           :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
         Inspection.inspect_relation(request, version)
       end
 
@@ -343,26 +351,44 @@ defmodule FavnRunner.Server do
   end
 
   def handle_call(:diagnostics, _from, state) do
+    release_diagnostics = release_diagnostics()
+
     reply =
       {:ok,
        state.lifecycle
        |> ExecutionLifecycle.diagnostics()
        |> Map.merge(%{
          available?: true,
+         node_name: Atom.to_string(node()),
          server: __MODULE__,
          admission: admission_diagnostics(state),
          manifest_cache: ManifestStore.diagnostics(server: state.manifest_store),
          data_plane: data_plane_diagnostics()
-       })}
+       })
+       |> Map.merge(release_diagnostics)}
 
     {:reply, reply, state}
   end
 
   @impl true
-  def handle_info({:runner_event, execution_id, event}, state) do
-    lifecycle = ExecutionLifecycle.append_event(state.lifecycle, execution_id, event)
+  def handle_info({:runner_event, execution_id, %RunnerEvent{} = event}, state) do
+    lifecycle =
+      case ExecutionLifecycle.fetch_execution(state.lifecycle, execution_id) do
+        {:ok, %{status: :running, work: %RunnerWork{} = work}} ->
+          if valid_runner_event?(work, event) do
+            ExecutionLifecycle.append_event(state.lifecycle, execution_id, event)
+          else
+            state.lifecycle
+          end
+
+        _not_running ->
+          state.lifecycle
+      end
+
     {:noreply, %{state | lifecycle: lifecycle}}
   end
+
+  def handle_info({:runner_event, _execution_id, _invalid_event}, state), do: {:noreply, state}
 
   def handle_info({:runner_log_entry, execution_id, entry}, state) do
     {subscribers, lifecycle} = ExecutionLifecycle.append_log(state.lifecycle, execution_id, entry)
@@ -376,7 +402,8 @@ defmodule FavnRunner.Server do
 
   def handle_info({:runner_result, execution_id, %RunnerResult{} = result}, state) do
     case ExecutionLifecycle.fetch_execution(state.lifecycle, execution_id) do
-      {:ok, %{status: :running}} ->
+      {:ok, %{status: :running, work: %RunnerWork{} = work}} ->
+        result = validate_worker_result(work, result)
         {:noreply, finalize_execution(state, execution_id, result)}
 
       {:ok, %{status: :completed}} ->
@@ -403,7 +430,8 @@ defmodule FavnRunner.Server do
   end
 
   defp prepare_submission(%RunnerWork{} = work, manifest_store) do
-    with {:ok, asset_ref} <- ManifestResolver.resolve_target_ref(work),
+    with :ok <- ReleaseVerifier.verify_required_release(work.required_runner_release_id),
+         {:ok, asset_ref} <- ManifestResolver.resolve_target_ref(work),
          {:ok, manifest, asset, relation_by_module} <-
            ManifestStore.fetch_execution_bundle(
              work.manifest_lease_id,
@@ -413,6 +441,7 @@ defmodule FavnRunner.Server do
              work.execution_package,
              server: manifest_store
            ),
+         :ok <- ReleaseVerifier.verify_required_release(manifest.required_runner_release_id),
          {:ok, package} <- ExecutionPackage.verify_for_asset(work.execution_package, asset) do
       work = %{work | execution_package: package}
 
@@ -530,6 +559,29 @@ defmodule FavnRunner.Server do
     ExecutionAdmission.diagnostics(state.admission, active_worker_count(state))
   end
 
+  defp release_diagnostics do
+    case ReleaseVerifier.release_info() do
+      {:ok, release_info} ->
+        release_info
+        |> Map.put(:ready?, true)
+        |> Map.put(:status, :ready)
+
+      {:error, :runner_release_not_verified} ->
+        %{
+          ready?: false,
+          status: :not_ready,
+          release_status: :runner_release_not_verified
+        }
+    end
+  end
+
+  defp valid_runner_event?(%RunnerWork{} = work, %RunnerEvent{} = event) do
+    event.run_id == work.run_id and
+      event.manifest_version_id == work.manifest_version_id and
+      event.manifest_content_hash == work.manifest_content_hash and
+      event.required_runner_release_id == work.required_runner_release_id
+  end
+
   defp active_worker_count(state) do
     state.lifecycle.executions
     |> Map.values()
@@ -553,6 +605,56 @@ defmodule FavnRunner.Server do
     %{state | lifecycle: lifecycle}
   end
 
+  defp validate_worker_result(
+         %RunnerWork{
+           run_id: run_id,
+           manifest_version_id: manifest_version_id,
+           manifest_content_hash: manifest_content_hash,
+           required_runner_release_id: release_id
+         },
+         %RunnerResult{
+           run_id: run_id,
+           manifest_version_id: manifest_version_id,
+           manifest_content_hash: manifest_content_hash,
+           required_runner_release_id: release_id
+         } = result
+       )
+       when is_binary(release_id),
+       do: result
+
+  defp validate_worker_result(%RunnerWork{} = work, %RunnerResult{} = result) do
+    error = worker_result_identity_error(result)
+
+    %RunnerResult{
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
+      status: :error,
+      asset_results: [],
+      error: error,
+      metadata: RunnerWork.lifecycle_metadata(work)
+    }
+  end
+
+  defp worker_result_identity_error(%RunnerResult{} = result) do
+    case ReleaseVerifier.verify_required_release(result.required_runner_release_id) do
+      {:error, %RunnerError{} = error} ->
+        error
+
+      :ok ->
+        RunnerError.new(
+          kind: :boundary,
+          type: :runner_result_identity_mismatch,
+          phase: :runner_result,
+          message: "Runner result does not match its stored work identity",
+          reason: :runner_result_identity_mismatch,
+          retryable?: false,
+          outcome: :safe_failure
+        )
+    end
+  end
+
   defp cleanup_monitor_refs(monitor_refs) when is_list(monitor_refs),
     do: Enum.each(monitor_refs, &Process.demonitor(&1, [:flush]))
 
@@ -561,6 +663,7 @@ defmodule FavnRunner.Server do
       run_id: work.run_id,
       manifest_version_id: work.manifest_version_id,
       manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
       status: :cancelled,
       asset_results: [],
       error: RunnerError.cancelled(reason),
@@ -573,6 +676,7 @@ defmodule FavnRunner.Server do
       run_id: work.run_id,
       manifest_version_id: work.manifest_version_id,
       manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
       status: :error,
       asset_results: [],
       error: RunnerError.normalize(reason, kind: :exit, type: :worker_crash),
@@ -591,6 +695,7 @@ defmodule FavnRunner.Server do
       run_id: work.run_id,
       manifest_version_id: manifest.manifest_version_id,
       manifest_content_hash: manifest.content_hash,
+      required_runner_release_id: manifest.required_runner_release_id,
       status: :error,
       asset_results: [],
       error:

@@ -14,7 +14,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
     @behaviour Favn.Contracts.RunnerClient
 
     def register_manifest(_version, _opts), do: :ok
-    def ensure_manifest(_manifest_version_id, _content_hash, _opts), do: :ok
+    def ensure_manifest(_version, _opts), do: :ok
 
     def acquire_manifest(_version, lease_id, _expires_at, planned_asset_refs, opts) do
       send(
