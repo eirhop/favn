@@ -708,6 +708,21 @@ Do not hash the unmodified BEAM file. Add a regression test that compiles the
 same source in two absolute checkout directories and obtains the same module
 digest.
 
+The canonical representation uses only executable chunks retained by the
+default stripped OTP release so build-time and runner self-verification bytes
+are identical. Compiler source provenance is unavailable after stripping, so a
+selected module containing any absolute path in its executable literal table is
+rejected with a stable, redacted build error instead of guessing whether the
+literal came from `__DIR__`, `__ENV__.file`, or business code. Deployment paths
+must be supplied through runtime configuration. Strip-removable attributes,
+local symbol tables, line tables, compiler info, docs, and debug chunks never
+participate in identity.
+
+Protocol dispatch is dynamic. The closure therefore conservatively includes
+every project-local protocol implementation in the supplied module set,
+including implementations of protocols owned by dependencies, even when a
+static import path cannot prove that one implementation will be called.
+
 The runtime dependency digest covers:
 
 - the normalized lock entries for runtime dependencies;
@@ -1488,7 +1503,8 @@ production deployment artifacts.
 Implement:
 
 - Favn.RunnerRelease descriptor, serializer, identity, validation, and types;
-- canonical executable BEAM digest support with deterministic tests;
+- canonical executable BEAM digest support with deterministic tests,
+  post-strip parity, and redacted absolute-literal rejection;
 - runtime root/closure value types that do not depend on Mix;
 - required_runner_release_id in manifests and versions;
 - compatibility/schema/contract version changes;
@@ -1656,7 +1672,8 @@ Add focused tests for:
 
 - canonical runner descriptor JSON and ID;
 - every malformed descriptor field;
-- path-independent canonical BEAM digest;
+- path-independent canonical BEAM digest, pre/post release-strip parity, and
+  absolute executable path-literal rejection;
 - runtime root selection and transitive import closure;
 - explicit dynamic modules/applications;
 - SQL-only versus Elixir/runtime change classification;

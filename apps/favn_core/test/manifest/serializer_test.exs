@@ -13,6 +13,25 @@ defmodule Favn.Manifest.SerializerTest do
     assert encoded == ~s|{"a":2,"runner_contract_version":9,"schema_version":9,"z":1}|
   end
 
+  test "generic canonical encoding preserves non-manifest build metadata" do
+    value = %{z: 1, build_metadata: %{built_at: "2026-07-21T12:00:00Z"}, a: 2}
+
+    assert {:ok, encoded} = Serializer.encode_canonical(value)
+
+    assert encoded ==
+             ~s|{"a":2,"build_metadata":{"built_at":"2026-07-21T12:00:00Z"},"z":1}|
+  end
+
+  test "generic canonical encoding rejects nondeterministic terms and normalized-key collisions" do
+    assert {:error, {:encode_failed, %ArgumentError{}}} = Serializer.encode_canonical(self())
+
+    assert {:error, {:encode_failed, %ArgumentError{}}} =
+             Serializer.encode_canonical(%{:duplicate => 1, "duplicate" => 2})
+
+    assert {:error, {:encode_failed, %ArgumentError{}}} =
+             Serializer.encode_canonical(%{{:unsupported, :key} => 1})
+  end
+
   test "drops build-only keys from encoded payload" do
     manifest = %{
       schema_version: 9,

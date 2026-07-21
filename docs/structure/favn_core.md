@@ -14,6 +14,17 @@ Code:
   normalization so selector-facing metadata persists and matches as strings
 - `apps/favn_core/lib/favn/runner/` owns the public runner plugin lifecycle and
   simple supervised-children implementation
+- `Favn.RunnerRelease` owns the canonical customer runtime descriptor,
+  `runner_release_id`, and validation. `RuntimeRoots` keeps Elixir assets,
+  runtime-input resolvers, plugins, supervised children, and explicit dynamic
+  modules/applications as typed Mix-free build inputs. `BeamDigest` removes
+  compile/debug/source-root metadata and uses only chunks retained after OTP
+  release stripping. It rejects compiled absolute-path literals because they
+  cannot be distinguished safely from business-significant paths after
+  stripping. `ModuleClosure` selects caller-supplied project-local imports and
+  conservatively includes every project-local protocol implementation,
+  including implementations of dependency protocols. Container assembly and
+  filesystem discovery remain outside core.
 - `apps/favn_core/lib/favn/runtime_value*` owns inert provider refs for deferred,
   explicitly supported runtime-boundary values; refs never contain resolved
   credentials
