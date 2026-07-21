@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.RuntimeInputPins do
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInput.Resolution
   alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RunState
 
@@ -57,7 +58,7 @@ defmodule FavnOrchestrator.RuntimeInputPins do
 
   defp resolve_and_persist(context, work, node_key, runner_client, runner_opts) do
     if function_exported?(runner_client, :resolve_runtime_inputs, 2) do
-      case runner_client.resolve_runtime_inputs(work, runner_opts) do
+      case RunnerDispatch.resolve_runtime_inputs(runner_client, work, runner_opts) do
         {:ok, %Resolution{} = resolution} ->
           persist_and_attach(
             context,

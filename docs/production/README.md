@@ -10,6 +10,7 @@ completion, and data-plane recovery.
 | --- | --- | --- |
 | PostgreSQL Storage V2 | Implemented | Prove it against a production-sized restored snapshot and managed-provider PITR. |
 | Workspace isolation, fencing, idempotency, bounded reads | Implemented | Record load, contention, failover, and recovery evidence. |
+| Lifecycle, readiness, bounded drain | Implemented | Qualify active-work SIGTERM and recovery in the final container topology. |
 | Backend single-node launcher | Project-local prototype | Replace it with relocatable, supported release artifacts. |
 | Web and orchestrator artifacts | Metadata only | Build runnable releases and define one supported topology. |
 | Operator UI | Prototype | Finish core flows, audit mutations, and add browser acceptance. |
@@ -38,7 +39,8 @@ not a gate for the first supported single-node target.
 ## Canonical documents
 
 - [`control_plane_environment.md`](control_plane_environment.md) defines the
-  implemented same-BEAM environment, proxy, HTTP, and secret contract.
+  implemented same-BEAM environment, proxy, HTTP, lifecycle, shutdown, and secret
+  contract.
 - [`../storage/postgresql/architecture.md`](../storage/postgresql/architecture.md)
   defines the implemented storage architecture.
 - [`../storage/postgresql/data-model.md`](../storage/postgresql/data-model.md)

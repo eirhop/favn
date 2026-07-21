@@ -148,7 +148,8 @@ defmodule FavnRunner.ReleaseVerifier do
          elixir_version: descriptor.elixir_version,
          otp_release: descriptor.otp_release,
          target: descriptor.target,
-         build_profile: descriptor.build_profile
+         build_profile: descriptor.build_profile,
+         self_verified?: true
        }}
     end
   end

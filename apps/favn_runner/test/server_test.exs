@@ -405,6 +405,42 @@ defmodule FavnRunner.ServerTest do
              FavnRunner.cancel_work(first_execution_id, %{}, server: server)
   end
 
+  test "shutdown deadline cancellation stops active workers without another drain-length wait" do
+    server = start_runner_server(admission: [max_active_workers: 1])
+
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version, server: server)
+
+    assert {:ok, execution_id} =
+             FavnRunner.submit_work(build_work(version, FavnRunner.ServerTest.SlowAsset),
+               server: server
+             )
+
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:ok, 1} =
+             FavnRunner.Server.cancel_active(%{kind: :runner_shutdown_deadline}, server: server)
+
+    assert System.monotonic_time(:millisecond) - started_at < 500
+
+    assert {:ok,
+            %{
+              status: :error,
+              error: %RunnerError{
+                type: :runner_shutdown_interrupted,
+                outcome: :unknown,
+                details: %{native_status: :native_cancel_unknown}
+              },
+              metadata: %{
+                shutdown_interruption: %{native_status: :native_cancel_unknown}
+              }
+            }} = FavnRunner.await_result(execution_id, 1_000, server: server)
+  end
+
   test "submit_work accepts new work after a worker completes" do
     server = start_runner_server(admission: [max_active_workers: 1])
 

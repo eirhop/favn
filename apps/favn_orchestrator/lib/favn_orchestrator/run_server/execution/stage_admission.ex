@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunExecutionOwnership
+  alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.ResourceCircuits
   alias FavnOrchestrator.RuntimeInputPins
   alias FavnOrchestrator.RunServer.Cancellation
@@ -404,7 +405,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp submit_owned_entry(ctx, ownership, work, asset_ref) do
-    result = ctx.runner_client.submit_work(work, ctx.runner_opts)
+    result = RunnerDispatch.submit_work(ctx.runner_client, work, ctx.runner_opts)
 
     case result do
       {:ok, execution_id} ->

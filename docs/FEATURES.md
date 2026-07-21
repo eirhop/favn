@@ -55,6 +55,10 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   `NOTIFY` are wake-ups, never correctness authorities.
 - Resource circuits, recovery candidates, schedule occurrences, execution
   ownership, claims, leases, and fencing are durable coordination state.
+- Both runtime BEAMs expose monotonic lifecycle state and reject new mutation or
+  execution admission while draining. Readiness flips before bounded shutdown;
+  admitted work may settle until the configured deadline, after which ordinary
+  durable cancellation/result paths preserve honest recovery state.
 
 These capabilities are implemented and tested, but several operator workflows and
 high-volume asynchronous submission paths remain unfinished.

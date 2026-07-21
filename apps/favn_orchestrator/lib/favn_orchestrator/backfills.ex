@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.Backfills do
   alias Favn.Retry.Policy
   alias Favn.Window.Key
   alias FavnOrchestrator.Backfills.Submission
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.ManifestTarget
@@ -89,34 +90,36 @@ defmodule FavnOrchestrator.Backfills do
         opts
       )
       when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
-    with :ok <- authorize(context),
-         :ok <- validate_options(opts),
-         {:ok, runtime, version, pipeline} <-
-           active_pipeline(context, manifest_version_id, target_id),
-         {:ok, range} <- RangeResolver.resolve(range_request),
-         :ok <- validate_window_count(range.requested_count, opts),
-         {:ok, resolution} <- resolve_pipeline(version, pipeline, List.first(range.anchors)),
-         submission <-
-           build_submission(
-             context,
-             runtime,
-             version,
-             {:pipeline, pipeline, resolution},
-             target_id,
-             range,
-             opts
-           ),
-         {:ok, _root} <- ensure_root_run(submission),
-         {:ok, planning} <- start_plan(submission),
-         {:ok, appended} <-
-           append_batches(
-             context,
-             planning,
-             submission.batches,
-             submission.batch_hashes
-           ) do
-      activate(context, appended)
-    end
+    Lifecycle.with_admission(fn ->
+      with :ok <- authorize(context),
+           :ok <- validate_options(opts),
+           {:ok, runtime, version, pipeline} <-
+             active_pipeline(context, manifest_version_id, target_id),
+           {:ok, range} <- RangeResolver.resolve(range_request),
+           :ok <- validate_window_count(range.requested_count, opts),
+           {:ok, resolution} <- resolve_pipeline(version, pipeline, List.first(range.anchors)),
+           submission <-
+             build_submission(
+               context,
+               runtime,
+               version,
+               {:pipeline, pipeline, resolution},
+               target_id,
+               range,
+               opts
+             ),
+           {:ok, _root} <- ensure_root_run(submission),
+           {:ok, planning} <- start_plan(submission),
+           {:ok, appended} <-
+             append_batches(
+               context,
+               planning,
+               submission.batches,
+               submission.batch_hashes
+             ) do
+        activate(context, appended)
+      end
+    end)
   end
 
   @doc "Resolves and validates an asset backfill without writing control-plane state."
@@ -155,24 +158,26 @@ defmodule FavnOrchestrator.Backfills do
         opts
       )
       when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
-    with :ok <- authorize(context),
-         :ok <- validate_options(opts),
-         {:ok, runtime, version, asset} <- active_asset(context, manifest_version_id, target_id),
-         {:ok, range} <- RangeResolver.resolve(range_request),
-         :ok <- validate_window_count(range.requested_count, opts),
-         submission <-
-           build_submission(context, runtime, version, {:asset, asset}, target_id, range, opts),
-         {:ok, _root} <- ensure_root_run(submission),
-         {:ok, planning} <- start_plan(submission),
-         {:ok, appended} <-
-           append_batches(
-             context,
-             planning,
-             submission.batches,
-             submission.batch_hashes
-           ) do
-      activate(context, appended)
-    end
+    Lifecycle.with_admission(fn ->
+      with :ok <- authorize(context),
+           :ok <- validate_options(opts),
+           {:ok, runtime, version, asset} <- active_asset(context, manifest_version_id, target_id),
+           {:ok, range} <- RangeResolver.resolve(range_request),
+           :ok <- validate_window_count(range.requested_count, opts),
+           submission <-
+             build_submission(context, runtime, version, {:asset, asset}, target_id, range, opts),
+           {:ok, _root} <- ensure_root_run(submission),
+           {:ok, planning} <- start_plan(submission),
+           {:ok, appended} <-
+             append_batches(
+               context,
+               planning,
+               submission.batches,
+               submission.batch_hashes
+             ) do
+        activate(context, appended)
+      end
+    end)
   end
 
   @doc "Fetches one authoritative backfill under its workspace boundary."

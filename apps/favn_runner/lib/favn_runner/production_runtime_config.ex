@@ -15,12 +15,15 @@ defmodule FavnRunner.ProductionRuntimeConfig do
     "FAVN_BEAM_DISTRIBUTION_PORT"
   ]
 
+  @default_shutdown_drain_timeout_ms 120_000
+
   @type config :: %{
           topology: :beam_node,
           runner_node: String.t(),
           expected_control_plane_node: String.t(),
           distribution_port: pos_integer(),
           epmd_port: pos_integer(),
+          shutdown_drain_timeout_ms: pos_integer(),
           cookie_configured?: true
         }
 
@@ -40,6 +43,13 @@ defmodule FavnRunner.ProductionRuntimeConfig do
     with {:ok, config} <- validate(env) do
       Application.put_env(:favn_runner, :production_runtime_config, config)
       Application.put_env(:favn_runner, :production_runtime_diagnostics, diagnostics(config))
+
+      Application.put_env(
+        :favn_runner,
+        :shutdown_drain_timeout_ms,
+        config.shutdown_drain_timeout_ms
+      )
+
       :ok
     end
   end
@@ -55,6 +65,14 @@ defmodule FavnRunner.ProductionRuntimeConfig do
          :ok <- current_distribution_cookie(cookie),
          {:ok, distribution_port} <- required_port(env, "FAVN_BEAM_DISTRIBUTION_PORT"),
          {:ok, epmd_port} <- optional_port(env, "ERL_EPMD_PORT", 4_369),
+         {:ok, shutdown_drain_timeout_ms} <-
+           optional_integer(
+             env,
+             "FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS",
+             @default_shutdown_drain_timeout_ms,
+             1_000,
+             3_600_000
+           ),
          :ok <- current_node_matches(runner_node) do
       {:ok,
        %{
@@ -63,6 +81,7 @@ defmodule FavnRunner.ProductionRuntimeConfig do
          expected_control_plane_node: control_plane_node,
          distribution_port: distribution_port,
          epmd_port: epmd_port,
+         shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
          cookie_configured?: true
        }}
     else
@@ -81,6 +100,7 @@ defmodule FavnRunner.ProductionRuntimeConfig do
         expected_control_plane_node: Map.fetch!(config, :expected_control_plane_node),
         distribution_port: Map.fetch!(config, :distribution_port),
         epmd_port: Map.fetch!(config, :epmd_port),
+        shutdown_drain_timeout_ms: Map.fetch!(config, :shutdown_drain_timeout_ms),
         cookie_configured?: true
       }
     }
@@ -173,6 +193,19 @@ defmodule FavnRunner.ProductionRuntimeConfig do
     case Integer.parse(value) do
       {port, ""} when port in 1..65_535 -> {:ok, port}
       _invalid -> {:error, {:invalid_env, name, "1..65535"}}
+    end
+  end
+
+  defp optional_integer(env, name, default, minimum, maximum) do
+    case fetch(env, name) do
+      {:ok, value} ->
+        case Integer.parse(value) do
+          {integer, ""} when integer >= minimum and integer <= maximum -> {:ok, integer}
+          _invalid -> {:error, {:invalid_env, name, "#{minimum}..#{maximum}"}}
+        end
+
+      :error ->
+        {:ok, default}
     end
   end
 

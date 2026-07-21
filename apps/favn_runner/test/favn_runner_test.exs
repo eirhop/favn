@@ -45,6 +45,47 @@ defmodule FavnRunnerTest do
     assert :ok = FavnRunner.readiness()
   end
 
+  test "draining rejects code-executing admissions while cache checks remain readable", %{
+    version: version
+  } do
+    lifecycle = :"runner_gate_#{System.unique_integer([:positive, :monotonic])}"
+
+    start_supervised!({FavnRunner.Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 1_000})
+
+    :ok = FavnRunner.Lifecycle.mark_accepting(lifecycle)
+    :ok = FavnRunner.Lifecycle.drain(lifecycle)
+
+    assert {:error, :runtime_draining} =
+             FavnRunner.register_manifest(version, lifecycle: lifecycle)
+
+    assert :ok = FavnRunner.ensure_manifest(version, lifecycle: lifecycle)
+
+    assert {:error, :runtime_draining} =
+             FavnRunner.submit_work(
+               %RunnerWork{
+                 required_runner_release_id: version.required_runner_release_id,
+                 run_id: "run_during_drain",
+                 manifest_version_id: version.manifest_version_id,
+                 manifest_content_hash: version.content_hash,
+                 asset_ref: {FavnRunnerTest.ElixirAsset, :asset}
+               },
+               lifecycle: lifecycle
+             )
+
+    assert {:error, :runtime_draining} =
+             FavnRunner.run(
+               %RunnerWork{
+                 required_runner_release_id: version.required_runner_release_id,
+                 run_id: "direct_run_during_drain",
+                 manifest_version_id: version.manifest_version_id,
+                 manifest_content_hash: version.content_hash,
+                 asset_ref: {FavnRunnerTest.ElixirAsset, :asset}
+               },
+               lifecycle: lifecycle,
+               manifest_store: :missing_manifest_store
+             )
+  end
+
   test "readiness reports unavailable when the runner server is stopped" do
     assert :ok = Supervisor.terminate_child(FavnRunner.Supervisor, FavnRunner.Server)
 
@@ -97,9 +138,55 @@ defmodule FavnRunnerTest do
     assert [entry] = diagnostics.data_plane.connections
     assert entry.status == :ok
     assert entry.config.database_path == :redacted
-    assert entry.details.token == "[REDACTED]"
+    assert entry.details == %{status: :ok}
     refute inspect(diagnostics) =~ "connection-secret"
     refute inspect(diagnostics) =~ "/tmp/secret/path.duckdb"
+  end
+
+  test "dependency diagnostics are bounded without wedging the runner server" do
+    connection = %Resolved{
+      name: :blocking,
+      adapter: FavnRunnerTest.BlockingDiagnosticsAdapter,
+      module: FavnRunnerTest.ConnectionModule,
+      config: %{}
+    }
+
+    :ok =
+      ConnectionRegistry.reload(%{blocking: connection},
+        registry_name: FavnRunner.ConnectionRegistry
+      )
+
+    on_exit(fn ->
+      :ok = ConnectionRegistry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
+    end)
+
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:ok, %{ready?: false, data_plane: %{reason: :runner_dependency_diagnostics_timeout}}} =
+             FavnRunner.diagnostics(diagnostics_timeout_ms: 25)
+
+    assert System.monotonic_time(:millisecond) - started_at < 500
+    assert {:ok, 0} = FavnRunner.Server.active_execution_count()
+  end
+
+  test "readiness fails closed when a required runtime process is unavailable" do
+    assert :ok = Supervisor.terminate_child(FavnRunner.Supervisor, FavnRunner.WorkerSupervisor)
+
+    on_exit(fn ->
+      case Supervisor.restart_child(FavnRunner.Supervisor, FavnRunner.WorkerSupervisor) do
+        {:ok, _pid} -> :ok
+        {:ok, _pid, _info} -> :ok
+        {:error, :running} -> :ok
+      end
+    end)
+
+    assert {:ok, diagnostics} = FavnRunner.diagnostics()
+
+    assert diagnostics.ready? == false
+    assert diagnostics.status == :not_ready
+
+    assert diagnostics.supervision.status == :error
+    assert diagnostics.supervision.processes[FavnRunner.WorkerSupervisor] == :unavailable
   end
 
   test "rejects a different release before manifest or work lookup", %{version: version} do
@@ -449,5 +536,11 @@ end
 defmodule FavnRunnerTest.DiagnosticsAdapter do
   def diagnostics(_resolved, _opts) do
     {:ok, %{status: :ok, token: "connection-secret", database: "/tmp/secret/path.duckdb"}}
+  end
+end
+
+defmodule FavnRunnerTest.BlockingDiagnosticsAdapter do
+  def diagnostics(_resolved, _opts) do
+    Process.sleep(:infinity)
   end
 end

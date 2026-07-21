@@ -151,7 +151,11 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
              runner_node,
              runner_module,
              :diagnostics,
-             [remote_opts(opts)],
+             [
+               opts
+               |> remote_opts()
+               |> Keyword.put(:diagnostics_timeout_ms, max(diagnostics_timeout(opts) - 250, 1))
+             ],
              diagnostics_timeout(opts)
            ) do
       normalize_diagnostics(result)

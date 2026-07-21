@@ -8,6 +8,7 @@ defmodule FavnView.ProductionRuntimeConfig do
   """
 
   @default_timeout_ms 1_000
+  @post_drain_shutdown_timeout_ms 5_000
   @max_timeout_ms 30_000
   @max_proxy_cidrs 32
   @max_proxy_cidrs_bytes 4_096
@@ -485,7 +486,7 @@ defmodule FavnView.ProductionRuntimeConfig do
           num_acceptors: 1,
           num_connections: config.http_server.max_connections,
           read_timeout: config.http_server.idle_timeout_ms,
-          shutdown_timeout: config.shutdown_drain_timeout_ms
+          shutdown_timeout: @post_drain_shutdown_timeout_ms
         ]
       )
     )

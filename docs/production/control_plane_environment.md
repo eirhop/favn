@@ -60,6 +60,51 @@ variables.
 | `FAVN_RUNNER_DIAGNOSTICS_TIMEOUT_MS` | `100..30000`, default `5000`. |
 | `FAVN_RUNNER_AWAIT_TIMEOUT_BUFFER_MS` | `0..120000`, default `2000`. |
 
+## Lifecycle, readiness, and shutdown
+
+Each BEAM owns an in-memory lifecycle authority with monotonic states:
+`starting`, `accepting`, `draining`, and `stopping`. This state is not durable;
+PostgreSQL ownership and fencing remain the recovery authority after a crash.
+Readiness is true only in `accepting`. Liveness remains true while draining so
+the platform can distinguish an orderly drain from a failed process.
+
+The control-plane readiness response has the stable checks `config`, `api`,
+`view`, `storage`, `schema`, `scheduler`, `lifecycle`, `runner_connection`,
+`runner_release`, and `active_manifests`. A configured workspace may have no
+deployment, so a clean installation can become ready before its first publish.
+Every workspace that does have an active manifest must align with the connected,
+self-verified runner release and be present in its manifest cache.
+
+HTTP readiness reads cached snapshots only. A bounded background runner probe
+checks the runner server, required supervisors and registries, extensions, and
+data-plane adapters. A separate bounded reconciliation pass re-registers active
+manifests after runner-cache restarts. Pending, failed, timed-out, malformed, or
+stale snapshots fail closed; the readiness request itself never performs remote
+adapter or PostgreSQL mutation work.
+
+On `SIGTERM`, the application callback enters `draining` before OTP stops the
+supervision tree. New HTTP mutations, run/rerun and backfill submissions,
+scheduler/backfill claims, manifest publication/activation, runner manifest
+leases, runner work, runtime-input resolution, and executable inspection are
+rejected. Read-only operator and health requests remain available until the
+listeners stop. Work admitted before the transition is tracked by monitored
+permits and may finish for up to `FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS`. At the
+deadline, control-plane runs use the durable cancellation path and runner
+executions are stopped through the runner result path. A runner forced to stop a
+worker records `native_cancel_unknown` as an unknown-outcome interruption rather
+than claiming safe cancellation. Unresolved outcomes remain explicit and are
+handled by fenced recovery after restart; shutdown never invents success.
+
+Configure the container platform's termination grace period longer than the
+drain timeout. Allow at least an additional 50 seconds for the control plane's
+single 30-second post-drain cancellation/settlement budget, bounded listener
+shutdown, repository teardown, and a small platform safety margin. The drain
+election is process-local and idempotent, so the View and
+Orchestrator application callbacks share one long drain window. After it, each
+HTTP listener and worker child has a separate five-second teardown bound.
+Production upgrades are drain-first; zero-downtime rolling replacement is not
+supported by this release.
+
 ## View, proxy, and HTTP limits
 
 | Variable | Contract |

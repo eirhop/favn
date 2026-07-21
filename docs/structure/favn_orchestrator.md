@@ -56,6 +56,20 @@ freshness, and execution coordination.
   both same-BEAM applications before either supervisor starts. Production always
   installs the PostgreSQL backend; there is no storage selector. `RuntimeConfig`
   freezes runner, instance, HTTP, and shutdown values for hot runtime paths.
+- `Lifecycle` owns monotonic `starting`, `accepting`, `draining`, and `stopping`
+  state plus monitored admission permits. `Shutdown` flips readiness before
+  waiting for admitted mutations and active run servers, then requests durable
+  cancellation at the configured deadline. One lifecycle election makes repeated
+  View and Orchestrator shutdown callbacks reuse the same drain result. PostgreSQL
+  fencing remains the crash recovery authority. The private API rejects unsafe
+  methods with a stable, retryable `503 runtime_draining` response while read-only
+  requests remain live.
+- `RuntimeStarter` is the final child of a coupled `one_for_all` runtime tree. It
+  performs the idempotent bootstrap and marks the lifecycle accepting only after
+  restarted dependencies are alive. Lifecycle, `RunManager`, `RunSupervisor`,
+  and active run servers therefore cannot survive or restart independently and
+  lose ownership visibility; a critical child failure restarts the whole
+  single-node runtime for fenced PostgreSQL recovery.
 - `ResourceCircuits` resolves configured execution-pool and SQL-connection
   resources before ordinary capacity admission. It records only explicit runner
   resource outcomes, while `ResourceRecovery` submits linked targeted runs for
@@ -83,7 +97,14 @@ freshness, and execution coordination.
   credentials never enter generic run metadata. Pins are bound to the selected
   asset's exact execution-package hash and resolver.
 - `Readiness`, `Diagnostics`, and persistence maintenance expose safe operational
-  state without bypassing the public boundary.
+  state without bypassing the public boundary. `RunnerHealth` maintains one
+  bounded, reusable remote diagnostic snapshot. `ActiveManifestReconciler`
+  periodically restores active manifests after runner-cache restarts and treats a
+  configured workspace without a deployment as valid. Readiness uses stable
+  component names and cached snapshots, verifies lifecycle admission and the
+  connected runner release, and requires every existing active manifest to be
+  aligned and registered. Pending, stale, malformed, and failed snapshots make
+  readiness fail closed without putting remote or mutation work on the HTTP path.
 
 Run snapshots and append-only events are authoritative for run state. Compact
 operator projections are versioned, repairable, and updated through the durable

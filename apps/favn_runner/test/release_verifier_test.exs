@@ -62,7 +62,8 @@ defmodule FavnRunner.ReleaseVerifierTest do
              elixir_version: descriptor.elixir_version,
              otp_release: descriptor.otp_release,
              target: descriptor.target,
-             build_profile: descriptor.build_profile
+             build_profile: descriptor.build_profile,
+             self_verified?: true
            }
 
     refute Map.has_key?(info, :runtime_modules)

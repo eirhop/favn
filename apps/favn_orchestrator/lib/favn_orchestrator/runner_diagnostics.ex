@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.RunnerDiagnostics do
   def validate_ready(diagnostics, opts \\ []) when is_map(diagnostics) and is_list(opts) do
     with :ok <- validate_readiness(diagnostics),
          {:ok, release_id} <- validate_release_id(diagnostics),
+         :ok <- validate_self_verification(diagnostics),
          :ok <- validate_runtime_contract(diagnostics),
          :ok <- validate_node_identity(diagnostics, opts) do
       {:ok, release_id}
@@ -38,6 +39,12 @@ defmodule FavnOrchestrator.RunnerDiagnostics do
       :ok -> {:ok, release_id}
       {:error, _reason} -> {:error, :runner_release_info_unavailable}
     end
+  end
+
+  defp validate_self_verification(diagnostics) do
+    if field(diagnostics, :self_verified?) == true,
+      do: :ok,
+      else: {:error, :runner_release_info_unavailable}
   end
 
   defp validate_runtime_contract(diagnostics) do

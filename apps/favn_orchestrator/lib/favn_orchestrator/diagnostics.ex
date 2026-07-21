@@ -166,7 +166,7 @@ defmodule FavnOrchestrator.Diagnostics do
   end
 
   defp scheduler_check do
-    scheduler_opts = Application.get_env(:favn_orchestrator, :scheduler, [])
+    scheduler_opts = RuntimeConfig.scheduler()
     enabled? = Keyword.get(scheduler_opts, :enabled, false)
     name = Keyword.get(scheduler_opts, :name, SchedulerRuntime)
 
@@ -306,7 +306,7 @@ defmodule FavnOrchestrator.Diagnostics do
   end
 
   defp workspace_ids do
-    Application.get_env(:favn_orchestrator, :workspace_ids, [])
+    RuntimeConfig.workspace_ids()
   end
 
   defp run_summary(%FavnOrchestrator.Persistence.Results.RunSummary{} = run) do

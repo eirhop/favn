@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.API.Config do
 
   @default_bind_ip {127, 0, 0, 1}
   @default_port 4101
+  @post_drain_shutdown_timeout_ms 5_000
 
   @spec validate() :: :ok | {:error, term()}
   def validate do
@@ -41,7 +42,7 @@ defmodule FavnOrchestrator.API.Config do
            num_acceptors: 1,
            num_connections: http.max_connections,
            read_timeout: http.idle_timeout_ms,
-           shutdown_timeout: RuntimeConfig.shutdown_drain_timeout_ms()
+           shutdown_timeout: @post_drain_shutdown_timeout_ms
          ]
        ]}
     end

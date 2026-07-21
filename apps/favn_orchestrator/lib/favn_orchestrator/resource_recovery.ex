@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.ResourceRecovery do
   use GenServer
 
   alias Favn.Resource.Ref
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.ClaimResourceRecovery
   alias FavnOrchestrator.Persistence.Commands.CompleteResourceRecovery
@@ -34,7 +35,7 @@ defmodule FavnOrchestrator.ResourceRecovery do
 
   @impl true
   def handle_info(:sweep, state) do
-    sweep()
+    _ = Lifecycle.with_admission(&sweep/0)
     Process.send_after(self(), :sweep, state.sweep_interval_ms)
     {:noreply, state}
   end
@@ -57,6 +58,13 @@ defmodule FavnOrchestrator.ResourceRecovery do
   @doc false
   @spec recover(String.t(), Ref.t()) :: :ok | :retry
   def recover(workspace_id, %Ref{} = resource) do
+    case Lifecycle.with_admission(fn -> do_recover(workspace_id, resource) end) do
+      {:error, reason} when reason in [:runtime_starting, :runtime_draining] -> :retry
+      result -> result
+    end
+  end
+
+  defp do_recover(workspace_id, %Ref{} = resource) do
     owner_id = "resource-recovery:#{System.unique_integer([:positive, :monotonic])}"
     context = SystemContext.workspace(workspace_id, :resource_recovery)
 

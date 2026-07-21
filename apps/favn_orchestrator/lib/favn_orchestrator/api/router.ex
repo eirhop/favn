@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.ExecutionPackagesRouter
   alias FavnOrchestrator.API.ManifestPublication
+  alias FavnOrchestrator.API.MutationAdmission
   alias FavnOrchestrator.API.ManifestsRouter
   alias FavnOrchestrator.API.Parsers
   alias FavnOrchestrator.API.Response
@@ -31,6 +32,8 @@ defmodule FavnOrchestrator.API.Router do
   if Mix.env() == :dev and Code.ensure_loaded?(Tidewave) do
     plug(Tidewave)
   end
+
+  plug(MutationAdmission)
 
   plug(ManifestPublication)
 

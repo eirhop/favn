@@ -14,6 +14,7 @@ defmodule FavnRunner.ProductionRuntimeConfigTest do
              expected_control_plane_node: "control@control-plane.internal",
              distribution_port: 9_100,
              epmd_port: 4_369,
+             shutdown_drain_timeout_ms: 120_000,
              cookie_configured?: true
            }
 
@@ -82,6 +83,22 @@ defmodule FavnRunner.ProductionRuntimeConfigTest do
              |> ProductionRuntimeConfig.validate()
 
     refute Map.has_key?(config, :mode)
+  end
+
+  test "validates the bounded shutdown drain timeout" do
+    assert {:ok, %{shutdown_drain_timeout_ms: 45_000}} =
+             base_env()
+             |> Map.put("FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS", "45000")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              status: :invalid,
+              error: {:invalid_env, "FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS", "1000..3600000"}
+            }} =
+             base_env()
+             |> Map.put("FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS", "999")
+             |> ProductionRuntimeConfig.validate()
   end
 
   defp base_env do

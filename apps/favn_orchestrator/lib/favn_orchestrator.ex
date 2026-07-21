@@ -18,6 +18,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.Logs
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestTarget
   alias FavnOrchestrator.Manifests
@@ -41,12 +42,14 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunnerManifestRegistration
+  alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.Shutdown
   alias FavnOrchestrator.ScheduleListEntry
   alias FavnOrchestrator.ScheduleOccurrencePreview
   alias FavnOrchestrator.SchedulerEntry
@@ -146,6 +149,14 @@ defmodule FavnOrchestrator do
   """
   @spec readiness() :: map()
   def readiness, do: FavnOrchestrator.Readiness.readiness()
+
+  @doc "Returns bounded lifecycle state for operator and release tooling."
+  @spec lifecycle() :: map()
+  def lifecycle, do: Lifecycle.diagnostics()
+
+  @doc "Begins the irreversible bounded drain used before a controlled shutdown."
+  @spec drain(keyword()) :: {:ok, map()}
+  def drain(opts \\ []) when is_list(opts), do: Shutdown.drain(opts)
 
   @doc "Authenticates an operator against one explicit workspace membership."
   @spec operator_password_login(String.t(), String.t(), String.t(), keyword() | map()) ::
@@ -543,7 +554,11 @@ defmodule FavnOrchestrator do
         sample_limit: Keyword.get(opts, :sample_limit, 20)
       }
 
-      case configured_runner_client().inspect_relation(request, configured_runner_opts()) do
+      case RunnerDispatch.inspect_relation(
+             configured_runner_client(),
+             request,
+             configured_runner_opts()
+           ) do
         {:ok, %RelationInspectionResult{} = result} ->
           with :ok <-
                  RunnerReleaseCompatibility.verify_inspection_result(

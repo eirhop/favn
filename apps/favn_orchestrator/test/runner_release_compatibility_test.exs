@@ -28,6 +28,7 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibilityTest do
         favn_version: Keyword.get(opts, :favn_version, release.favn_version),
         runner_contract_version:
           Keyword.get(opts, :runner_contract_version, release.runner_contract_version),
+        self_verified?: true,
         node_name: Keyword.get(opts, :node_name, "runner@runner.internal")
       }
 

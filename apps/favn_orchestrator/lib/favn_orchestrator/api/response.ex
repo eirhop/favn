@@ -21,13 +21,19 @@ defmodule FavnOrchestrator.API.Response do
   @doc "Returns the stable JSON error envelope used by the private API."
   @spec error(Plug.Conn.t(), status(), String.t(), String.t(), map()) :: Plug.Conn.t()
   def error(conn, status, code, message, details \\ %{}) do
+    error(conn, status, code, message, details, false)
+  end
+
+  @doc "Returns the stable JSON error envelope with an explicit retryability flag."
+  @spec error(Plug.Conn.t(), status(), String.t(), String.t(), map(), boolean()) :: Plug.Conn.t()
+  def error(conn, status, code, message, details, retryable?) when is_boolean(retryable?) do
     send_json(conn, status, %{
       error: %{
         code: code,
         message: message,
         status: status,
         request_id: request_id(conn),
-        retryable: false,
+        retryable: retryable?,
         details: DTO.normalize(details)
       }
     })

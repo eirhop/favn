@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.RunRecovery do
 
   use GenServer
 
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Persistence.SystemContext
@@ -47,7 +48,7 @@ defmodule FavnOrchestrator.RunRecovery do
 
   @impl true
   def handle_info(:reconcile, state) do
-    reconcile_workspaces(state.batch_size)
+    _ = Lifecycle.with_admission(fn -> reconcile_workspaces(state.batch_size) end)
     Process.send_after(self(), :reconcile, state.interval_ms)
     {:noreply, state}
   end

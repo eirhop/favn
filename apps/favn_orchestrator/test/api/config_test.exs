@@ -95,6 +95,7 @@ defmodule FavnOrchestrator.API.ConfigTest do
     assert default_options[:ip] == {127, 0, 0, 1}
     assert default_options[:thousand_island_options][:num_connections] == 1_024
     assert default_options[:thousand_island_options][:read_timeout] == 60_000
+    assert default_options[:thousand_island_options][:shutdown_timeout] == 5_000
 
     assert {:ok, explicit_options} = Config.server_options(host: "0.0.0.0", port: 4444)
     assert explicit_options[:port] == 4444

@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   alias Favn.Retry.Policy
   alias Favn.Window.Anchor
   alias FavnOrchestrator.Backfills
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.ClaimBackfillWindows
   alias FavnOrchestrator.Persistence.Commands.TransitionBackfillWindow
@@ -23,6 +24,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RuntimeConfig
 
   @default_interval_ms 1_000
   @default_lease_ms 30_000
@@ -40,7 +42,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
         opts
         |> Keyword.get(
           :workspace_ids,
-          Application.get_env(:favn_orchestrator, :workspace_ids, [])
+          RuntimeConfig.workspace_ids()
         )
         |> Enum.uniq(),
       owner_id: Keyword.get(opts, :owner_id, owner_id()),
@@ -59,7 +61,11 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   def handle_info(:dispatch, state), do: dispatch(state)
 
   defp dispatch(state) do
-    Enum.each(state.workspace_ids, &dispatch_workspace(&1, state))
+    _ =
+      Lifecycle.with_admission(fn ->
+        Enum.each(state.workspace_ids, &dispatch_workspace(&1, state))
+      end)
+
     Process.send_after(self(), :dispatch, state.interval_ms)
     {:noreply, state}
   end

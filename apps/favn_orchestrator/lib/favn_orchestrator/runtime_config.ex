@@ -18,6 +18,9 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @type t :: %__MODULE__{
           runner_client: module() | nil,
           runner_client_opts: keyword(),
+          workspace_ids: [String.t()],
+          api_server: keyword(),
+          scheduler: keyword(),
           log_redaction_policy: term(),
           instance_id: String.t(),
           http_server: map(),
@@ -29,6 +32,9 @@ defmodule FavnOrchestrator.RuntimeConfig do
 
   defstruct runner_client: nil,
             runner_client_opts: [],
+            workspace_ids: [],
+            api_server: [],
+            scheduler: [],
             log_redaction_policy: nil,
             instance_id: "local",
             http_server: %{
@@ -90,6 +96,9 @@ defmodule FavnOrchestrator.RuntimeConfig do
     normalize!(
       runner_client: Application.get_env(:favn_orchestrator, :runner_client, nil),
       runner_client_opts: Application.get_env(:favn_orchestrator, :runner_client_opts, []),
+      workspace_ids: Application.get_env(:favn_orchestrator, :workspace_ids, []),
+      api_server: Application.get_env(:favn_orchestrator, :api_server, []),
+      scheduler: Application.get_env(:favn_orchestrator, :scheduler, []),
       log_redaction_policy: Application.get_env(:favn_orchestrator, :log_redaction_policy),
       instance_id: Application.get_env(:favn_orchestrator, :instance_id, "local"),
       http_server: Application.get_env(:favn_orchestrator, :http_server, %{}),
@@ -120,6 +129,9 @@ defmodule FavnOrchestrator.RuntimeConfig do
   def normalize(attrs) when is_list(attrs) do
     runner_client = Keyword.get(attrs, :runner_client, nil)
     runner_client_opts = Keyword.get(attrs, :runner_client_opts, [])
+    workspace_ids = Keyword.get(attrs, :workspace_ids, [])
+    api_server = Keyword.get(attrs, :api_server, [])
+    scheduler = Keyword.get(attrs, :scheduler, [])
     instance_id = Keyword.get(attrs, :instance_id, "local")
     http_server = normalize_http_server(Keyword.get(attrs, :http_server, %{}))
     shutdown_drain_timeout_ms = Keyword.get(attrs, :shutdown_drain_timeout_ms, 120_000)
@@ -130,6 +142,9 @@ defmodule FavnOrchestrator.RuntimeConfig do
 
     with :ok <- validate_module_or_nil(:runner_client, runner_client),
          {:ok, runner_client_opts} <- validate_keyword(:runner_client_opts, runner_client_opts),
+         :ok <- validate_workspace_ids(workspace_ids),
+         {:ok, api_server} <- validate_keyword(:api_server, api_server),
+         {:ok, scheduler} <- validate_keyword(:scheduler, scheduler),
          :ok <- validate_instance_id(instance_id),
          :ok <- validate_http_server(http_server),
          :ok <- validate_positive_integer(:shutdown_drain_timeout_ms, shutdown_drain_timeout_ms),
@@ -139,6 +154,9 @@ defmodule FavnOrchestrator.RuntimeConfig do
        %__MODULE__{
          runner_client: runner_client,
          runner_client_opts: runner_client_opts,
+         workspace_ids: workspace_ids,
+         api_server: api_server,
+         scheduler: scheduler,
          log_redaction_policy: Keyword.get(attrs, :log_redaction_policy),
          instance_id: instance_id,
          http_server: http_server,
@@ -183,6 +201,18 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @spec auth_session_ttl_seconds() :: pos_integer()
   def auth_session_ttl_seconds, do: current().auth_session_ttl_seconds
 
+  @doc "Returns the boot-frozen configured workspace identities."
+  @spec workspace_ids() :: [String.t()]
+  def workspace_ids, do: current().workspace_ids
+
+  @doc "Returns the boot-frozen private API server options."
+  @spec api_server() :: keyword()
+  def api_server, do: current().api_server
+
+  @doc "Returns the boot-frozen scheduler options."
+  @spec scheduler() :: keyword()
+  def scheduler, do: current().scheduler
+
   @impl true
   def init({%__MODULE__{} = config, name}) do
     :persistent_term.put(persistent_key(name), config)
@@ -221,6 +251,18 @@ defmodule FavnOrchestrator.RuntimeConfig do
   end
 
   defp validate_keyword(field, value), do: {:error, {:invalid_runtime_config, {field, value}}}
+
+  defp validate_workspace_ids(workspace_ids) when is_list(workspace_ids) do
+    if Enum.all?(workspace_ids, &(is_binary(&1) and byte_size(&1) in 1..255)) and
+         length(workspace_ids) == length(Enum.uniq(workspace_ids)) do
+      :ok
+    else
+      {:error, {:invalid_runtime_config, {:workspace_ids, :invalid}}}
+    end
+  end
+
+  defp validate_workspace_ids(_value),
+    do: {:error, {:invalid_runtime_config, {:workspace_ids, :invalid}}}
 
   defp validate_instance_id(instance_id)
        when is_binary(instance_id) and byte_size(instance_id) in 1..160,

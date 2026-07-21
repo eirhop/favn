@@ -7,8 +7,11 @@ defmodule FavnRunner.Application do
   alias Favn.Connection.Loader
   alias Favn.Connection.Registry, as: ConnectionRegistry
   alias FavnRunner.{ExtensionSupervisor, PluginLoader}
+  alias FavnRunner.Lifecycle
   alias FavnRunner.ProductionRuntimeConfig
   alias FavnRunner.ReleaseVerifier
+  alias FavnRunner.RuntimeStarter
+  alias FavnRunner.Shutdown
 
   @impl true
   def start(_type, _args) do
@@ -17,8 +20,12 @@ defmodule FavnRunner.Application do
     connections = load_connections_or_raise()
     plugin_children = load_plugin_children_or_raise()
 
+    shutdown_drain_timeout_ms =
+      Application.get_env(:favn_runner, :shutdown_drain_timeout_ms, 120_000)
+
     children =
       [
+        {Lifecycle, shutdown_drain_timeout_ms: shutdown_drain_timeout_ms},
         {ExtensionSupervisor, children: plugin_children},
         {ConnectionRegistry, name: FavnRunner.ConnectionRegistry, connections: connections},
         {Registry, keys: :unique, name: FavnRunner.ExecutionRegistry},
@@ -32,12 +39,24 @@ defmodule FavnRunner.Application do
         {FavnRunner.Server,
          name: FavnRunner.Server,
          admission: Application.get_env(:favn_runner, :admission, []),
-         retention: Application.get_env(:favn_runner, :execution_retention, [])}
+         retention: Application.get_env(:favn_runner, :execution_retention, [])},
+        {RuntimeStarter, []}
       ]
 
-    opts = [strategy: :rest_for_one, name: FavnRunner.Supervisor]
-    Supervisor.start_link(children, opts)
+    opts = [strategy: :one_for_all, name: FavnRunner.Supervisor]
+
+    with {:ok, supervisor} <- Supervisor.start_link(children, opts) do
+      {:ok, supervisor, %{runtime?: true}}
+    end
   end
+
+  @impl true
+  def prep_stop(%{runtime?: true} = state) do
+    _ = Shutdown.drain()
+    state
+  end
+
+  def prep_stop(state), do: state
 
   defp apply_production_runtime_config_or_raise do
     case ProductionRuntimeConfig.apply_from_env_if_configured() do

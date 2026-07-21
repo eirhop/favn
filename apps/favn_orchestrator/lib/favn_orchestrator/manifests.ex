@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.Manifests do
 
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.ActiveManifestReconciler
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Persistence.DeploymentPlanner
@@ -25,9 +27,11 @@ defmodule FavnOrchestrator.Manifests do
   @spec publish(PlatformContext.t(), Version.t()) ::
           {:ok, :published | :already_published, Version.t()} | {:error, term()}
   def publish(%PlatformContext{} = context, %Version{} = version) do
-    result = ManifestStore.publish_manifest(context, version)
-    emit_publication_result(version, result)
-    result
+    Lifecycle.with_admission(fn ->
+      result = ManifestStore.publish_manifest(context, version)
+      emit_publication_result(version, result)
+      result
+    end)
   end
 
   @doc "Creates and activates one exact workspace deployment."
@@ -41,25 +45,28 @@ defmodule FavnOrchestrator.Manifests do
         opts \\ []
       )
       when is_binary(manifest_version_id) and is_map(selection) and is_list(opts) do
-    result =
-      with true <- platform_deployer?(platform_context),
-           {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
-           {:ok, planner} <- deployment_selection(version, selection),
-           :ok <- prepare_runner(version) do
-        ManifestStore.deploy_manifest(
-          platform_context,
-          context,
-          manifest_version_id,
-          planner,
-          Keyword.put_new(opts, :configuration, %{})
-        )
-      else
-        false -> {:error, :platform_operator_required}
-        {:error, _reason} = error -> error
-      end
+    Lifecycle.with_admission(fn ->
+      result =
+        with true <- platform_deployer?(platform_context),
+             {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
+             {:ok, planner} <- deployment_selection(version, selection),
+             :ok <- prepare_runner(version) do
+          ManifestStore.deploy_manifest(
+            platform_context,
+            context,
+            manifest_version_id,
+            planner,
+            Keyword.put_new(opts, :configuration, %{})
+          )
+        else
+          false -> {:error, :platform_operator_required}
+          {:error, _reason} = error -> error
+        end
 
-    emit_activation_result(context, manifest_version_id, result)
-    result
+      emit_activation_result(context, manifest_version_id, result)
+      if match?({:ok, %RuntimeState{}}, result), do: ActiveManifestReconciler.refresh()
+      result
+    end)
   end
 
   @doc "Returns the active release and exact customer-visible targets for one workspace."

@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
 
   alias Favn.Window.Policy
   alias FavnOrchestrator.BoundedDispatcher
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Persistence
@@ -54,6 +55,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
         owner_id: owner_id(),
         tick_ms: Keyword.get(opts, :tick_ms, @default_tick_ms),
         auto_tick?: Keyword.get(opts, :auto_tick?, true),
+        started_at: DateTime.utc_now(),
         last_error: nil,
         last_tick_at: nil,
         claimed_schedules: 0,
@@ -67,9 +69,10 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
 
   @impl true
   def handle_call(:tick, _from, state) do
-    case tick(state) do
+    case admitted_tick(state) do
       {:ok, next} -> {:reply, :ok, next}
       {:error, reason, next} -> {:reply, {:error, reason}, next}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
@@ -84,6 +87,9 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
         backend: :postgres,
         workspace_count: length(state.workspace_ids),
         owner_id: state.owner_id,
+        started_at: state.started_at,
+        tick_ms: state.tick_ms,
+        auto_tick?: state.auto_tick?,
         last_tick_at: state.last_tick_at,
         last_error: state.last_error,
         claimed_schedules: state.claimed_schedules,
@@ -94,7 +100,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
   @impl true
   def handle_info(:tick, state) do
     next =
-      case tick(state) do
+      case admitted_tick(state) do
         {:ok, next} ->
           next
 
@@ -104,11 +110,16 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
           )
 
           next
+
+        {:error, reason} when reason in [:runtime_starting, :runtime_draining] ->
+          state
       end
 
     schedule_tick(next)
     {:noreply, next}
   end
+
+  defp admitted_tick(state), do: Lifecycle.with_admission(fn -> tick(state) end)
 
   defp tick(state) do
     result =

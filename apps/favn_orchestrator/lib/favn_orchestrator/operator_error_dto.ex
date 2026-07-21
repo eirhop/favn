@@ -56,6 +56,15 @@ defmodule FavnOrchestrator.OperatorErrorDTO do
   def schedule_activation(:schedule_not_found), do: not_found("Schedule was not found.")
   def schedule_activation(:not_found), do: not_found("Schedule was not found.")
 
+  def schedule_activation(reason) when reason in [:runtime_starting, :runtime_draining] do
+    %__MODULE__{
+      code: reason,
+      title: "Control plane is not accepting changes.",
+      detail: "Control plane is starting or draining. Try again after it becomes ready.",
+      retryable?: true
+    }
+  end
+
   def schedule_activation(reason) do
     %__MODULE__{
       code: reason_code(reason, :schedule_update_failed),

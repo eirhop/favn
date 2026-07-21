@@ -23,7 +23,23 @@ Code:
 - `apps/favn_runner/lib/favn_runner/`
 - `apps/favn_runner/lib/favn_runner/production_runtime_config.ex` owns
   runner-side long-node, expected-peer, cookie-strength, and fixed-port
-  validation for the separate production BEAM
+  validation for the separate production BEAM, including the bounded
+  `FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS` contract
+- `apps/favn_runner/lib/favn_runner/lifecycle.ex` owns monotonic runtime state and
+  monitored admission permits. Registration, new manifest leases, work
+  submission, runtime-input resolution, and executable inspection fail with
+  `runtime_draining` after the transition. Cache checks, result waits,
+  cancellation, and log delivery remain available so admitted work can settle.
+- `apps/favn_runner/lib/favn_runner/runtime_starter.ex` is the final child of the
+  coupled `one_for_all` runtime tree and restores acceptance only after all
+  restarted runner dependencies are alive. The runner server, manifest store,
+  worker supervisor, workers, and lifecycle cannot restart independently and
+  lose execution visibility.
+- `apps/favn_runner/lib/favn_runner/shutdown.ex` waits for admitted calls and
+  workers within the frozen drain window, then cancels remaining workers through
+  the normal result path before OTP stops their supervisors. Deadline interruption
+  is an error with unknown outcome and `native_cancel_unknown`, not a claimed safe
+  cancellation.
 - `apps/favn_runner/lib/favn_runner/release_verifier.ex` reads the fixed
   `priv/runner-release.json` artifact before packaged-release startup. It verifies
   descriptor self-identity, exact target/Favn/Elixir/OTP compatibility, every
@@ -76,6 +92,11 @@ Code:
   orchestrator concern; the runner rejects exhausted capacity with a typed,
   retryable `:runner_overloaded` boundary error. Submit and cancel calls are
   bounded and normalize call timeouts into typed runner boundary errors.
+- Runner diagnostics prove the runner server, required supervisors and registries,
+  manifest store, extensions, and every configured data-plane adapter are ready.
+  The whole dependency probe has one deadline outside the runner GenServer, so a
+  blocking adapter cannot wedge execution. Adapter-provided payloads are not
+  forwarded; only a small runner-owned status allowlist is exposed.
 - Runner cancellation outcomes distinguish BEAM worker acknowledgement from
   native data-plane certainty. A stopped BEAM worker reports
   `native_status: :native_cancel_unknown` unless an adapter-specific native

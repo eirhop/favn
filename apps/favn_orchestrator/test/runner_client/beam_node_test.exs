@@ -28,6 +28,7 @@ defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
          runner_release_id: FavnTestSupport.runner_release_id(),
          favn_version: Favn.RunnerRelease.current_favn_version(),
          runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
+         self_verified?: true,
          node_name: Atom.to_string(Node.self())
        }}
     end
@@ -195,6 +196,7 @@ defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
         runner_release_id: FavnTestSupport.runner_release_id(),
         favn_version: Favn.RunnerRelease.current_favn_version(),
         runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
+        self_verified?: true,
         node_name: Atom.to_string(peer_node)
       }
 
