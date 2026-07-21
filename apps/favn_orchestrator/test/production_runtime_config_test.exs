@@ -1,16 +1,3 @@
-unless Code.ensure_loaded?(FavnRunner.ProductionRuntimeConfig) do
-  defmodule FavnRunner.ProductionRuntimeConfig do
-    @moduledoc false
-
-    def validate(env) do
-      case Map.get(env, "FAVN_RUNNER_MODE", "local") do
-        "local" -> {:ok, %{mode: :local, topology: :single_node}}
-        value -> {:error, %{error: {:invalid_env, "FAVN_RUNNER_MODE", value, "local"}}}
-      end
-    end
-  end
-end
-
 defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
   use ExUnit.Case, async: false
 
@@ -64,7 +51,24 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              max_missed_all_occurrences: 1_000
            ]
 
-    assert config.runner == %{mode: :local, topology: :single_node}
+    assert config.runner == %{
+             topology: :beam_node,
+             control_plane_node: "control@control-plane.internal",
+             runner_node: "runner@runner.internal",
+             distribution_port: 9_100,
+             epmd_port: 4_369,
+             cookie_configured?: true
+           }
+
+    assert config.runner_client == FavnOrchestrator.RunnerClient.BeamNode
+
+    assert config.runner_client_opts == [
+             runner_node: "runner@runner.internal",
+             runner_module: Module.concat(["FavnRunner"]),
+             runner_rpc_timeout_ms: 15_000,
+             runner_diagnostics_timeout_ms: 5_000,
+             runner_await_timeout_buffer_ms: 2_000
+           ]
   end
 
   test "validate/1 accepts explicit supported production values", %{ca_file: ca_file} do
@@ -86,7 +90,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
           "favn_web:#{@token},bootstrap_cli:#{@token <> "-bravo"}",
         "FAVN_SCHEDULER_ENABLED" => "false",
         "FAVN_SCHEDULER_TICK_MS" => "250",
-        "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES" => "2"
+        "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES" => "2",
+        "FAVN_RUNNER_RPC_TIMEOUT_MS" => "30000",
+        "FAVN_RUNNER_DIAGNOSTICS_TIMEOUT_MS" => "3000",
+        "FAVN_RUNNER_AWAIT_TIMEOUT_BUFFER_MS" => "500",
+        "ERL_EPMD_PORT" => "44369"
       })
 
     assert {:ok, config} = ProductionRuntimeConfig.validate(env)
@@ -106,6 +114,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              tick_ms: 250,
              max_missed_all_occurrences: 2
            ]
+
+    assert config.runner.epmd_port == 44_369
+    assert config.runner_client_opts[:runner_rpc_timeout_ms] == 30_000
+    assert config.runner_client_opts[:runner_diagnostics_timeout_ms] == 3_000
+    assert config.runner_client_opts[:runner_await_timeout_buffer_ms] == 500
   end
 
   test "validate/1 rejects missing and unsupported storage", %{ca_file: ca_file} do
@@ -235,9 +248,23 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> Map.put("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", "short")
              |> ProductionRuntimeConfig.validate()
 
-    assert {:error, %{error: {:invalid_env, "FAVN_RUNNER_MODE", "local"}}} =
+    assert {:error,
+            %{error: {:invalid_env, "FAVN_RUNNER_NODE", "different from control-plane node"}}} =
              base
-             |> Map.put("FAVN_RUNNER_MODE", "distributed")
+             |> Map.put("FAVN_RUNNER_NODE", "control@control-plane.internal")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{error: {:invalid_env, "FAVN_RUNNER_NODE", "long name@private-dns-name"}}} =
+             base
+             |> Map.put("FAVN_RUNNER_NODE", "runner@localhost")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error: {:invalid_secret_env, "FAVN_DISTRIBUTION_COOKIE", :insufficient_entropy}
+            }} =
+             base
+             |> Map.put("FAVN_DISTRIBUTION_COOKIE", "short-cookie")
              |> ProductionRuntimeConfig.validate()
   end
 
@@ -307,6 +334,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert Application.get_env(:favn_orchestrator, :active_run_plan_max_bytes) ==
              512 * 1_024 * 1_024
 
+    assert Application.get_env(:favn_orchestrator, :runner_client) ==
+             FavnOrchestrator.RunnerClient.BeamNode
+
+    assert Application.get_env(:favn_orchestrator, :runner_client_opts)[:runner_node] ==
+             :"runner@runner.internal"
+
     diagnostics = Application.get_env(:favn_orchestrator, :production_runtime_diagnostics)
     refute inspect(diagnostics) =~ "secret"
     refute inspect(diagnostics) =~ ca_file
@@ -314,7 +347,17 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     refute inspect(diagnostics) =~ @old_pin_key
     assert diagnostics.runtime_input_pin == %{current_version: 2, retained_versions: [1, 2]}
     assert diagnostics.active_run_plan == %{max_bytes: 512 * 1_024 * 1_024}
-    assert diagnostics.runner == %{mode: :local, topology: :single_node}
+
+    assert diagnostics.runner == %{
+             topology: :beam_node,
+             control_plane_node: "control@control-plane.internal",
+             runner_node: "runner@runner.internal",
+             distribution_port: 9_100,
+             epmd_port: 4_369,
+             cookie_configured?: true
+           }
+
+    refute inspect(diagnostics) =~ Map.fetch!(base_env(ca_file), "FAVN_DISTRIBUTION_COOKIE")
   end
 
   defp base_env(ca_file) do
@@ -326,7 +369,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       "FAVN_WORKSPACE_IDS" => "salmon-one,salmon-two",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
       "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long"
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long",
+      "FAVN_CONTROL_PLANE_NODE" => "control@control-plane.internal",
+      "FAVN_RUNNER_NODE" => "runner@runner.internal",
+      "FAVN_DISTRIBUTION_COOKIE" => "bN7!tQ2#vL9@xR4$kM8%pC6&zH3*eW5?",
+      "FAVN_BEAM_DISTRIBUTION_PORT" => "9100"
     }
   end
 

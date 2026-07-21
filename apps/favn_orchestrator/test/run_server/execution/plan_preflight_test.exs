@@ -42,7 +42,11 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
        %{
          available?: true,
          ready?: true,
-         runner_release_id: Keyword.fetch!(opts, :runner_release_id)
+         status: :ready,
+         runner_release_id: Keyword.fetch!(opts, :runner_release_id),
+         favn_version: Favn.RunnerRelease.current_favn_version(),
+         runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
+         node_name: "runner@runner.internal"
        }}
     end
   end

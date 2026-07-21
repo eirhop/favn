@@ -20,11 +20,16 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibilityTest do
     def inspect_relation(_, _), do: {:error, :not_supported}
 
     def diagnostics(opts) do
-      diagnostics =
-        case Keyword.fetch(opts, :diagnostics_release) do
-          {:ok, release} -> %{release: release}
-          :error -> %{runner_release_id: Keyword.get(opts, :runner_release_id)}
-        end
+      release = FavnTestSupport.runner_release()
+
+      diagnostics = %{
+        runner_release_id:
+          Keyword.get(opts, :diagnostics_release, Keyword.get(opts, :runner_release_id)),
+        favn_version: Keyword.get(opts, :favn_version, release.favn_version),
+        runner_contract_version:
+          Keyword.get(opts, :runner_contract_version, release.runner_contract_version),
+        node_name: Keyword.get(opts, :node_name, "runner@runner.internal")
+      }
 
       if Keyword.get(opts, :omit_readiness?, false) do
         {:ok, diagnostics}
@@ -32,7 +37,8 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibilityTest do
         {:ok,
          Map.merge(diagnostics, %{
            available?: true,
-           ready?: Keyword.get(opts, :ready?, true)
+           ready?: Keyword.get(opts, :ready?, true),
+           status: Keyword.get(opts, :status, :ready)
          })}
       end
     end
@@ -70,6 +76,19 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibilityTest do
     assert {:error, :runner_release_info_unavailable} =
              RunnerReleaseCompatibility.verify_runner(ReadyClient, version,
                diagnostics_release: "malformed"
+             )
+
+    assert {:error, :runner_runtime_info_unavailable} =
+             RunnerReleaseCompatibility.verify_runner(ReadyClient, version,
+               runner_release_id: primary,
+               favn_version: "incompatible"
+             )
+
+    assert {:error, :runner_node_identity_mismatch} =
+             RunnerReleaseCompatibility.verify_runner(ReadyClient, version,
+               runner_release_id: primary,
+               runner_node: :expected@runner,
+               node_name: "different@runner"
              )
   end
 

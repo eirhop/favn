@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibility do
   alias Favn.RunnerRelease
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.RunnerClientValidator
+  alias FavnOrchestrator.RunnerDiagnostics
   alias FavnOrchestrator.RunState
 
   @type error ::
@@ -20,6 +21,8 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibility do
           | :invalid_runner_release_identity
           | :runner_client_not_available
           | :runner_release_info_unavailable
+          | :runner_runtime_info_unavailable
+          | :runner_node_identity_mismatch
           | :runner_not_ready
           | {:runner_release_mismatch, String.t(), term()}
           | {:run_manifest_identity_mismatch, atom()}
@@ -65,8 +68,7 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibility do
     with :ok <- RunnerClientValidator.validate(client),
          true <- function_exported?(client, :diagnostics, 1),
          {:ok, diagnostics} <- runner_diagnostics(client, opts),
-         :ok <- require_ready(diagnostics),
-         {:ok, actual} <- runner_release_id(diagnostics),
+         {:ok, actual} <- RunnerDiagnostics.validate_ready(diagnostics, opts),
          :ok <- require_match(required, actual) do
       :ok
     else
@@ -76,7 +78,13 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibility do
       {:error, :runner_client_not_available} = error ->
         error
 
-      {:error, reason} when reason in [:runner_release_info_unavailable, :runner_not_ready] ->
+      {:error, reason}
+      when reason in [
+             :runner_release_info_unavailable,
+             :runner_runtime_info_unavailable,
+             :runner_node_identity_mismatch,
+             :runner_not_ready
+           ] ->
         {:error, reason}
 
       {:error, {:runner_release_mismatch, _required, _actual}} = error ->
@@ -136,32 +144,6 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibility do
     _kind, _reason -> {:error, :runner_not_ready}
   end
 
-  defp require_ready(diagnostics) do
-    available? = field(diagnostics, :available?, false)
-    ready? = field(diagnostics, :ready?, false)
-    status = field(diagnostics, :status)
-
-    if available? == true and ready? == true and
-         status not in [:not_ready, "not_ready", :draining, "draining", :error, "error"] do
-      :ok
-    else
-      {:error, :runner_not_ready}
-    end
-  end
-
-  defp runner_release_id(diagnostics) do
-    nested_release = field(diagnostics, :release, %{})
-
-    release_id =
-      field(diagnostics, :runner_release_id) ||
-        if(is_map(nested_release), do: field(nested_release, :runner_release_id))
-
-    case RunnerRelease.validate_id(release_id) do
-      :ok -> {:ok, release_id}
-      {:error, _reason} -> {:error, :runner_release_info_unavailable}
-    end
-  end
-
   defp require_match(required, actual) do
     with :ok <- RunnerRelease.validate_id(required),
          :ok <- RunnerRelease.validate_id(actual) do
@@ -171,10 +153,6 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibility do
     else
       {:error, _reason} -> {:error, :invalid_runner_release_identity}
     end
-  end
-
-  defp field(map, key, default \\ nil) when is_map(map) do
-    Map.get(map, key, Map.get(map, Atom.to_string(key), default))
   end
 
   defp diagnostics_metadata(required, :ok) do

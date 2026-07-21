@@ -21,6 +21,10 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @default_active_run_plan_max_bytes 512 * 1_024 * 1_024
   @min_active_run_plan_max_bytes 64 * 1_024 * 1_024
   @max_active_run_plan_max_bytes 8 * 1_024 * 1_024 * 1_024
+  @max_runner_rpc_timeout_ms 120_000
+  @max_runner_diagnostics_timeout_ms 30_000
+  @max_runner_await_buffer_ms 120_000
+  @runner_module Module.concat(["FavnRunner"])
 
   @type runtime_input_pin_config :: %{
           keys: %{pos_integer() => binary()},
@@ -139,7 +143,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
       Application.put_env(:favn_orchestrator, :scheduler, config.scheduler)
       Application.put_env(:favn_orchestrator, :runner_client, config.runner_client)
-      Application.put_env(:favn_orchestrator, :runner_client_opts, config.runner_client_opts)
+
+      Application.put_env(
+        :favn_orchestrator,
+        :runner_client_opts,
+        install_runner_node_atom(config.runner_client_opts)
+      )
 
       Application.put_env(
         :favn_orchestrator,
@@ -166,7 +175,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
          {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
          {:ok, scheduler} <- scheduler(env, workspace_ids),
-         {:ok, runner} <- runner(env) do
+         {:ok, {runner, runner_client_opts}} <- runner(env) do
       {:ok,
        %{
          storage: storage,
@@ -181,8 +190,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          active_run_plan_max_bytes: active_run_plan_max_bytes,
          scheduler: scheduler,
          runner: runner,
-         runner_client: FavnOrchestrator.RunnerClient.LocalNode,
-         runner_client_opts: []
+         runner_client: FavnOrchestrator.RunnerClient.BeamNode,
+         runner_client_opts: runner_client_opts
        }}
     else
       {:error, reason} -> {:error, %{status: :invalid, error: redact(reason)}}
@@ -485,17 +494,135 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   end
 
   defp runner(env) do
-    module = Module.concat([FavnRunner, ProductionRuntimeConfig])
+    with {:ok, control_plane_node} <- node_name(env, "FAVN_CONTROL_PLANE_NODE"),
+         {:ok, runner_node} <- node_name(env, "FAVN_RUNNER_NODE"),
+         :ok <- distinct_nodes(control_plane_node, runner_node),
+         :ok <- current_control_plane_node(control_plane_node),
+         {:ok, cookie} <- required_secret(env, "FAVN_DISTRIBUTION_COOKIE"),
+         :ok <- distribution_cookie(cookie),
+         :ok <- current_distribution_cookie(cookie),
+         {:ok, distribution_port} <- required_port(env, "FAVN_BEAM_DISTRIBUTION_PORT"),
+         {:ok, epmd_port} <- int(env, "ERL_EPMD_PORT", "4369", 1, 65_535),
+         {:ok, rpc_timeout_ms} <-
+           int(
+             env,
+             "FAVN_RUNNER_RPC_TIMEOUT_MS",
+             "15000",
+             100,
+             @max_runner_rpc_timeout_ms
+           ),
+         {:ok, diagnostics_timeout_ms} <-
+           int(
+             env,
+             "FAVN_RUNNER_DIAGNOSTICS_TIMEOUT_MS",
+             "5000",
+             100,
+             @max_runner_diagnostics_timeout_ms
+           ),
+         {:ok, await_buffer_ms} <-
+           int(
+             env,
+             "FAVN_RUNNER_AWAIT_TIMEOUT_BUFFER_MS",
+             "2000",
+             0,
+             @max_runner_await_buffer_ms
+           ) do
+      {:ok,
+       {
+         %{
+           topology: :beam_node,
+           control_plane_node: control_plane_node,
+           runner_node: runner_node,
+           distribution_port: distribution_port,
+           epmd_port: epmd_port,
+           cookie_configured?: true
+         },
+         [
+           runner_node: runner_node,
+           runner_module: @runner_module,
+           runner_rpc_timeout_ms: rpc_timeout_ms,
+           runner_diagnostics_timeout_ms: diagnostics_timeout_ms,
+           runner_await_timeout_buffer_ms: await_buffer_ms
+         ]
+       }}
+    end
+  end
 
-    with {:module, ^module} <- Code.ensure_loaded(module),
-         true <- function_exported?(module, :validate, 1) do
-      case module.validate(env) do
-        {:ok, config} -> {:ok, config}
-        {:error, %{error: reason}} -> {:error, reason}
-        {:error, reason} -> {:error, reason}
-      end
+  defp node_name(env, name) do
+    with {:ok, value} <- required(env, name),
+         [local_name, host] <- String.split(value, "@", parts: 2),
+         true <- valid_node_part?(local_name),
+         true <- valid_node_host?(host) do
+      {:ok, local_name <> "@" <> host}
     else
-      _other -> {:error, {:runtime_config_unavailable, "FAVN_RUNNER_MODE"}}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, {:invalid_env, name, "long name@private-dns-name"}}
+    end
+  end
+
+  defp valid_node_part?(value) do
+    byte_size(value) in 1..255 and Regex.match?(~r/^[A-Za-z0-9_.-]+$/, value)
+  end
+
+  defp valid_node_host?(host) do
+    normalized = String.downcase(host)
+
+    valid_node_part?(host) and
+      normalized not in ["localhost", "nohost", "127.0.0.1", "::1"] and
+      not String.ends_with?(normalized, ".localhost") and
+      not loopback_host?(host)
+  end
+
+  defp loopback_host?(host) do
+    case :inet.parse_address(String.to_charlist(host)) do
+      {:ok, {127, _b, _c, _d}} -> true
+      {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
+      _other -> false
+    end
+  end
+
+  defp distinct_nodes(node, node),
+    do: {:error, {:invalid_env, "FAVN_RUNNER_NODE", "different from control-plane node"}}
+
+  defp distinct_nodes(_control_plane_node, _runner_node), do: :ok
+
+  defp current_control_plane_node(control_plane_node) do
+    if Node.alive?() and Atom.to_string(node()) != control_plane_node do
+      {:error, {:invalid_env, "FAVN_CONTROL_PLANE_NODE", "equal to the running release node"}}
+    else
+      :ok
+    end
+  end
+
+  defp distribution_cookie(cookie) do
+    unique_bytes = cookie |> :binary.bin_to_list() |> MapSet.new() |> MapSet.size()
+
+    if byte_size(cookie) in 32..255 and unique_bytes >= 12 and
+         not Regex.match?(~r/\s/, cookie) do
+      :ok
+    else
+      {:error, {:invalid_secret_env, "FAVN_DISTRIBUTION_COOKIE", :insufficient_entropy}}
+    end
+  end
+
+  defp current_distribution_cookie(cookie) do
+    if Node.alive?() and Atom.to_string(Node.get_cookie()) != cookie do
+      {:error, {:invalid_secret_env, "FAVN_DISTRIBUTION_COOKIE", :running_cookie_mismatch}}
+    else
+      :ok
+    end
+  end
+
+  defp install_runner_node_atom(opts) do
+    Keyword.update!(opts, :runner_node, &String.to_atom/1)
+  end
+
+  defp required_port(env, name) do
+    with {:ok, value} <- required(env, name) do
+      case Integer.parse(value) do
+        {port, ""} when port in 1..65_535 -> {:ok, port}
+        _invalid -> {:error, {:invalid_env, name, "1..65535"}}
+      end
     end
   end
 

@@ -40,7 +40,7 @@ defmodule FavnRunner.Application do
   end
 
   defp apply_production_runtime_config_or_raise do
-    case ProductionRuntimeConfig.apply_from_env() do
+    case ProductionRuntimeConfig.apply_from_env_if_configured() do
       :ok ->
         :ok
 

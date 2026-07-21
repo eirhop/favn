@@ -4,11 +4,26 @@ Purpose: execution runtime for pinned manifest work, runner server, worker
 execution, plugin loading, runtime context construction, and safe relation
 inspection.
 
+The production control plane reaches this app only through
+`FavnOrchestrator.RunnerClient.BeamNode`; there is no in-process control-plane
+fallback. The two releases use a private distributed-Erlang connection with a
+fixed port and a shared high-entropy cookie. This transport is unencrypted and
+the cookie grants node-level trust; EPMD and the fixed distribution ports must
+be firewalled to the two BEAM nodes, never exposed publicly, with operator
+access supplied through a VPN or authenticated TLS reverse proxy.
+
+The private firewall contract permits TCP EPMD on `ERL_EPMD_PORT` (4369 when
+unset) and each node's single TCP distribution port from
+`FAVN_BEAM_DISTRIBUTION_PORT`, only between the control-plane and runner
+containers. PostgreSQL and the private orchestrator API are likewise
+private-only; none of these ports belong on an internet-facing listener.
+
 Code:
 - `apps/favn_runner/lib/favn_runner.ex`
 - `apps/favn_runner/lib/favn_runner/`
 - `apps/favn_runner/lib/favn_runner/production_runtime_config.ex` owns
-  runner-side production env validation for the first local single-node setup
+  runner-side long-node, expected-peer, cookie-strength, and fixed-port
+  validation for the separate production BEAM
 - `apps/favn_runner/lib/favn_runner/release_verifier.ex` reads the fixed
   `priv/runner-release.json` artifact before packaged-release startup. It verifies
   descriptor self-identity, exact target/Favn/Elixir/OTP compatibility, every

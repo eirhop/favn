@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Diagnostics do
   alias FavnOrchestrator.ProjectionDiagnostics
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunnerClientValidator
+  alias FavnOrchestrator.RunnerDiagnostics
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
@@ -203,8 +204,19 @@ defmodule FavnOrchestrator.Diagnostics do
 
         if function_exported?(module, :diagnostics, 1) do
           case module.diagnostics(opts) do
-            {:ok, runner_details} ->
-              ok(:runner, "Runner is available", Map.merge(details, runner_details))
+            {:ok, runner_details} when is_map(runner_details) ->
+              case RunnerDiagnostics.validate_ready(runner_details, opts) do
+                {:ok, _release_id} ->
+                  ok(:runner, "Runner is available", Map.merge(details, runner_details))
+
+                {:error, reason} ->
+                  error(
+                    :runner,
+                    "Runner is unavailable",
+                    Map.merge(details, runner_details),
+                    reason
+                  )
+              end
 
             {:error, reason} ->
               error(:runner, "Runner is unavailable", details, normalize_error(reason))

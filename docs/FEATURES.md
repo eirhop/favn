@@ -28,6 +28,9 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
   events that do not exactly match stored work and replaces mismatched results
   with bounded errors. Ownership leases and fencing prevent stale executors
   from committing.
+- The control plane reaches the runner only through a statically configured
+  distributed-BEAM node. Connection, diagnostics, and RPC calls are bounded;
+  readiness requires connected, ready diagnostics with a valid release ID.
 - DuckDB and DuckDB ADBC support bounded queries, typed configuration, catalog
   requirements, session scripts, and runner-local exclusive sessions.
 

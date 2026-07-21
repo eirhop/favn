@@ -154,7 +154,7 @@ defmodule Favn.Dev.RuntimeLaunch do
       end
 
       runner_node = System.fetch_env!("FAVN_DEV_RUNNER_NODE") |> validate_runner_node_name!.() |> String.to_atom()
-      Application.put_env(:favn_orchestrator, :runner_client, FavnOrchestrator.RunnerClient.LocalNode)
+      Application.put_env(:favn_orchestrator, :runner_client, FavnOrchestrator.RunnerClient.BeamNode)
       Application.put_env(:favn_orchestrator, :runner_client_opts, [runner_node: runner_node])
       Application.put_env(:favn_orchestrator, :scheduler,
         enabled: System.get_env("FAVN_DEV_SCHEDULER_ENABLED", "0") == "1",

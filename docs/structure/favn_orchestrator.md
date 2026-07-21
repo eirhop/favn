@@ -48,6 +48,10 @@ freshness, and execution coordination.
   database operation cannot block unrelated manager calls.
 - `RunOwnership`, `ExecutionAdmission`, `MaterializationClaims`, and scheduler
   runtime modules own fenced distributed coordination.
+- `RunnerClient.BeamNode` is the sole production runner transport. It connects
+  to one validated static long node name, performs bounded `:erpc` calls, and
+  never loads or calls `favn_runner` inside the control-plane BEAM. Readiness
+  accepts only connected runner diagnostics with a ready verified release ID.
 - `ResourceCircuits` resolves configured execution-pool and SQL-connection
   resources before ordinary capacity admission. It records only explicit runner
   resource outcomes, while `ResourceRecovery` submits linked targeted runs for

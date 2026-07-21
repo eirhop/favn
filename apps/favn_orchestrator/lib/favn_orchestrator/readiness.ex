@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.Readiness do
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.RunnerClientValidator
+  alias FavnOrchestrator.RunnerDiagnostics
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
 
@@ -72,30 +73,21 @@ defmodule FavnOrchestrator.Readiness do
   end
 
   defp runner_check do
-    module = RuntimeConfig.current().runner_client
+    runtime_config = RuntimeConfig.current()
+    module = runtime_config.runner_client
+    opts = runtime_config.runner_client_opts
 
     with :ok <- RunnerClientValidator.validate(module),
-         :ok <- runner_runtime_check(module) do
-      ok(:runner, %{module: module_name(module)})
+         true <- function_exported?(module, :diagnostics, 1),
+         {:ok, diagnostics} when is_map(diagnostics) <- module.diagnostics(opts),
+         {:ok, _release_id} <- RunnerDiagnostics.validate_ready(diagnostics, opts) do
+      ok(:runner, Map.put(diagnostics, :client, module_name(module)))
     else
+      false -> error(:runner, :runner_diagnostics_not_supported)
       {:error, reason} -> error(:runner, reason)
       _other -> error(:runner, :runner_client_not_available)
     end
   end
-
-  defp runner_runtime_check(FavnOrchestrator.RunnerClient.LocalNode) do
-    runner_opts = RuntimeConfig.current().runner_client_opts
-    runner_module = Keyword.get(runner_opts, :runner_module, Module.concat([FavnRunner]))
-
-    with {:module, ^runner_module} <- Code.ensure_loaded(runner_module),
-         true <- function_exported?(runner_module, :readiness, 0) do
-      runner_module.readiness()
-    else
-      _other -> {:error, :runner_runtime_not_available}
-    end
-  end
-
-  defp runner_runtime_check(_module), do: :ok
 
   defp api_opts, do: Application.get_env(:favn_orchestrator, :api_server, [])
 
