@@ -266,7 +266,8 @@ future artifact could be built.
 The CI output records:
 
 - image repository and immutable digest;
-- Favn version;
+- control-plane OTP application version for a newly built digest, kept distinct
+  from the repository-wide Favn release version alias;
 - Git commit SHA;
 - Elixir and OTP versions;
 - manifest schema version;
@@ -302,6 +303,12 @@ non-identity provenance only when new image bytes are built. The build task
 emits both the input record set and its ID for review without including source
 content or secrets.
 
+The control-plane OTP application version is part of image identity because it
+is compiled into the release. The repository-wide Favn release version is the
+semantic Git/GHCR alias and is not part of image identity. A runner-only or
+development-tooling-only release may therefore add a new Favn version alias to
+the existing compatible control-plane digest.
+
 The control-plane production closure must not include favn_runner, favn_local,
 favn_authoring, favn, test-support applications, or development-only
 dependencies. Therefore ordinary edits confined to runner code, customer
@@ -333,12 +340,18 @@ image job:
    OCI labels, contract versions, and target. It reuses the digest and performs
    no Docker build or control-plane image acceptance.
 4. If the tag does not exist, main rebuilds the exact merged candidate, runs the
-   full pre-publish image and production-topology acceptance, and pushes
-   build-<id> and sha-<git_sha> only after every required check passes.
-5. Publishing records the registry digest, generates provenance and an SBOM,
-   then pulls/inspects that digest in a clean verification step. A failed clean
-   verification blocks release promotion and is reported as a publishing
-   failure; no Favn version tag is added.
+   pre-publish checks, and pushes only a run-scoped staging tag. It generates
+   provenance and an SBOM for that digest, then pulls and inspects the digest in
+   a clean verification job. An interruption before or between attestations
+   leaves no official build cache key, so a retry safely rebuilds.
+5. Only after attestation and clean verification succeed does CI add immutable
+   build-<control_plane_build_id>, verified-build-<control_plane_build_id>, and
+   sha-<git_sha> aliases for the digest. A failure adds none of them. If CI is
+   interrupted after writing the build alias but before both verification
+   markers, the next run verifies the existing digest and finishes the markers;
+   it never treats the unmarked tag as trusted. Release promotion requires the
+   build, verified-build, and exact tagged-main SHA references to resolve to the
+   same digest.
 6. A Favn release adds v<version> as another immutable alias of the verified
    digest. Runner-only or development-tooling-only releases therefore receive
    a version tag that reuses the previous control-plane digest without building

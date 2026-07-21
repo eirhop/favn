@@ -1,0 +1,241 @@
+defmodule Favn.Dev.ControlPlaneRegistryTest do
+  use ExUnit.Case, async: true
+
+  @repo_root Path.expand("../../..", __DIR__)
+  @script Path.join(@repo_root, "scripts/control_plane_registry.sh")
+  @digest "sha256:" <> String.duplicate("a", 64)
+  @other_digest "sha256:" <> String.duplicate("b", 64)
+
+  setup do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "favn_control_plane_registry_test_#{System.unique_integer([:positive])}"
+      )
+
+    bin = Path.join(root, "bin")
+    File.mkdir_p!(bin)
+    log = Path.join(root, "docker.log")
+    count = Path.join(root, "inspect.count")
+
+    write_executable!(Path.join(bin, "docker"), fake_docker())
+    write_executable!(Path.join(bin, "gh"), fake_gh())
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    %{
+      env: [
+        {"PATH", bin <> ":" <> System.fetch_env!("PATH")},
+        {"FAKE_DOCKER_LOG", log},
+        {"FAKE_DOCKER_COUNT", count},
+        {"FAKE_DIGEST", @digest}
+      ],
+      log: log
+    }
+  end
+
+  test "registry lookups distinguish existing, missing, and failed requests", %{env: env} do
+    assert {@digest <> "\n", 0} = run(["lookup-digest", "registry/image:tag"], env)
+
+    assert {_output, 3} =
+             run(["lookup-digest", "registry/image:missing"], [
+               {"FAKE_DOCKER_MODE", "missing"} | env
+             ])
+
+    assert {output, 1} =
+             run(["lookup-digest", "registry/image:error"], [
+               {"FAKE_DOCKER_MODE", "error"} | env
+             ])
+
+    assert output =~ "registry lookup failed"
+  end
+
+  test "immutable aliases are reused, created once, and never overwritten", %{env: env, log: log} do
+    assert {output, 0} =
+             run(
+               ["record-alias", "registry/image@#{@digest}", "registry/image:v1.0.0", @digest],
+               env
+             )
+
+    assert output =~ "already points"
+    refute File.read!(log) =~ "push"
+
+    File.write!(log, "")
+
+    assert {_output, 0} =
+             run(
+               ["record-alias", "registry/image@#{@digest}", "registry/image:v1.0.1", @digest],
+               [{"FAKE_DOCKER_MODE", "missing_then_expected"} | env]
+             )
+
+    commands = File.read!(log)
+    assert commands =~ "pull registry/image@#{@digest}"
+    assert commands =~ "tag registry/image@#{@digest} registry/image:v1.0.1"
+    assert commands =~ "push registry/image:v1.0.1"
+
+    assert {output, 1} =
+             run(
+               ["record-alias", "registry/image@#{@digest}", "registry/image:v1.0.0", @digest],
+               [{"FAKE_DOCKER_MODE", "mismatched"}, {"FAKE_OTHER_DIGEST", @other_digest} | env]
+             )
+
+    assert output =~ "refusing to overwrite"
+  end
+
+  test "GitHub release lookup accepts only an explicit 404", %{env: env} do
+    assert {_output, 0} =
+             run(
+               ["require-github-release-absent", "eirhop/favn", "v1.0.0"],
+               [{"FAKE_GH_HTTP", "404"} | env]
+             )
+
+    assert {output, 1} =
+             run(
+               ["require-github-release-absent", "eirhop/favn", "v1.0.0"],
+               [{"FAKE_GH_HTTP", "200"} | env]
+             )
+
+    assert output =~ "already exists"
+
+    assert {output, 1} =
+             run(
+               ["require-github-release-absent", "eirhop/favn", "v1.0.0"],
+               [{"FAKE_GH_HTTP", "403"} | env]
+             )
+
+    assert output =~ "lookup failed"
+  end
+
+  test "workflows keep one toolchain and restrict pull-request permissions" do
+    ci_workflow = File.read!(Path.join(@repo_root, ".github/workflows/ci.yml"))
+
+    image_workflow =
+      File.read!(Path.join(@repo_root, ".github/workflows/control-plane-image.yml"))
+
+    release_workflow =
+      File.read!(Path.join(@repo_root, ".github/workflows/control-plane-release.yml"))
+
+    assert Regex.scan(
+             ~r/otp-version: '([^']+)'/,
+             ci_workflow <> image_workflow <> release_workflow,
+             capture: :all_but_first
+           )
+           |> List.flatten()
+           |> Enum.uniq() == ["28.3.3"]
+
+    refute ci_workflow =~ "28.4.2"
+    refute image_workflow =~ "28.4.2"
+    refute release_workflow =~ "28.4.2"
+    assert image_workflow =~ "mix local.hex 2.5.1 --force"
+    assert image_workflow =~ "control_plane_registry.sh record-alias"
+    assert image_workflow =~ ~s($IMAGE_REPOSITORY:sha-$HEAD_SHA)
+    assert Bitwise.band(File.stat!(@script).mode, 0o111) != 0
+    assert image_workflow =~ ~s(staging-$HEAD_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT)
+    refute image_workflow =~ ~s(docker tag "$candidate" "$build_ref")
+
+    [pr_job, _rest] = String.split(image_workflow, "  main-image:", parts: 2)
+    [_before, pr_job] = String.split(pr_job, "  pr-candidate:", parts: 2)
+    assert pr_job =~ "permissions:\n      contents: read"
+    refute pr_job =~ "packages: write"
+
+    [record_job, _rest] =
+      image_workflow
+      |> String.split("  record-main-verification:", parts: 2)
+      |> List.last()
+      |> String.split("  control-plane-image:", parts: 2)
+
+    assert record_job =~ "actions/checkout@"
+    assert record_job =~ "docker/setup-buildx-action@"
+    assert record_job =~ ~s($IMAGE_REPOSITORY:build-$BUILD_ID)
+    assert record_job =~ "control_plane_registry.sh record-alias"
+
+    assert release_workflow =~ "require-github-release-absent"
+    assert release_workflow =~ "require-digest \"$IMAGE_REPOSITORY:sha-$TAGGED_SHA\""
+    assert release_workflow =~ "record-alias"
+  end
+
+  test "new image publication exposes no immutable cache key before qualification" do
+    workflow = File.read!(Path.join(@repo_root, ".github/workflows/control-plane-image.yml"))
+
+    staging = byte_offset!(workflow, "Push run-scoped staging tag")
+    provenance = byte_offset!(workflow, "Attest build provenance")
+    sbom = byte_offset!(workflow, "Attest SBOM")
+    clean_verification = byte_offset!(workflow, "Verify published digest cleanly")
+    immutable_alias = byte_offset!(workflow, ~s(build_ref="$IMAGE_REPOSITORY:build-$BUILD_ID"))
+
+    assert staging < provenance
+    assert provenance < sbom
+    assert sbom < clean_verification
+    assert clean_verification < immutable_alias
+
+    before_clean_verification = binary_part(workflow, 0, clean_verification)
+
+    refute before_clean_verification =~
+             "record-alias \"$IMAGE_REPOSITORY@$DIGEST\" \"$build_ref\""
+  end
+
+  defp run(arguments, env) do
+    System.cmd("bash", [@script | arguments], env: env, stderr_to_stdout: true)
+  end
+
+  defp byte_offset!(source, pattern) do
+    {offset, _length} = :binary.match(source, pattern)
+    offset
+  end
+
+  defp write_executable!(path, source) do
+    File.write!(path, source)
+    File.chmod!(path, 0o755)
+  end
+
+  defp fake_docker do
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
+
+    if [[ "${1:-}" == buildx ]]; then
+      mode=${FAKE_DOCKER_MODE:-existing}
+
+      case "$mode" in
+        existing)
+          printf 'Digest: %s\n' "$FAKE_DIGEST"
+          ;;
+        missing)
+          echo 'manifest unknown' >&2
+          exit 1
+          ;;
+        error)
+          echo 'unauthorized' >&2
+          exit 1
+          ;;
+        mismatched)
+          printf 'Digest: %s\n' "$FAKE_OTHER_DIGEST"
+          ;;
+        missing_then_expected)
+          count=0
+          if [[ -f "$FAKE_DOCKER_COUNT" ]]; then count=$(cat "$FAKE_DOCKER_COUNT"); fi
+          count=$((count + 1))
+          printf '%s' "$count" > "$FAKE_DOCKER_COUNT"
+          if [[ $count -eq 1 ]]; then
+            echo 'manifest unknown' >&2
+            exit 1
+          fi
+          printf 'Digest: %s\n' "$FAKE_DIGEST"
+          ;;
+      esac
+    fi
+    """
+  end
+
+  defp fake_gh do
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+    status=${FAKE_GH_HTTP:-404}
+    printf 'HTTP/2.0 %s status\n\n' "$status"
+    if [[ "$status" == 200 ]]; then exit 0; fi
+    exit 1
+    """
+  end
+end

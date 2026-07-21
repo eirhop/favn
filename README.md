@@ -16,8 +16,9 @@ DuckDB and other data systems remain runner-owned integrations.
 Canonical manifests are bound to the exact verified customer runner release;
 changing executable user code therefore cannot be deployed as a manifest-only update.
 
-Favn is private pre-v1 software. APIs may change, and the supported production
-release artifacts are still being completed.
+Favn is private pre-v1 software. APIs may change. Immutable control-plane and
+customer runner release artifacts are implemented; Docker-first installation and
+the complete production acceptance evidence are still being completed.
 
 ## Start here
 

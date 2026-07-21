@@ -17,6 +17,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Favn.SQL.Result
   alias Mix.Tasks.Favn.Backfill, as: BackfillTask
   alias Mix.Tasks.Favn.Bootstrap.Single, as: BootstrapSingleTask
+  alias Mix.Tasks.Favn.Build.ControlPlane, as: BuildControlPlaneTask
   alias Mix.Tasks.Favn.Build.Orchestrator, as: BuildOrchestratorTask
   alias Mix.Tasks.Favn.Build.Runner, as: BuildRunnerTask
   alias Mix.Tasks.Favn.Build.Single, as: BuildSingleTask
@@ -328,6 +329,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
   test "no-positional public mix favn tasks reject invalid options and unexpected args" do
     tasks = [
+      {BuildControlPlaneTask, "favn.build.control_plane"},
       {BuildOrchestratorTask, "favn.build.orchestrator"},
       {BuildRunnerTask, "favn.build.runner"},
       {BuildSingleTask, "favn.build.single"},

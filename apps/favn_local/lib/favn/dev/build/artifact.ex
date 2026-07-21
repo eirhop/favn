@@ -3,6 +3,8 @@ defmodule Favn.Dev.Build.Artifact do
 
   alias Favn.Manifest.Serializer
 
+  @bundle_schema_version 2
+
   @spec atomic_directory(Path.t(), (Path.t() -> {:ok, term()} | {:error, term()})) ::
           {:ok, term()} | {:error, term()}
   def atomic_directory(final_dir, build) when is_binary(final_dir) and is_function(build, 1) do
@@ -57,6 +59,7 @@ defmodule Favn.Dev.Build.Artifact do
         bytes = File.read!(path)
 
         %{
+          "executable" => executable?(File.stat!(path).mode),
           "path" => Path.relative_to(path, directory),
           "sha256" => sha256(bytes),
           "size" => byte_size(bytes)
@@ -68,7 +71,7 @@ defmodule Favn.Dev.Build.Artifact do
       Path.join(directory, "bundle.json"),
       Map.merge(
         %{
-          "schema_version" => 1,
+          "schema_version" => @bundle_schema_version,
           "kind" => kind,
           "files" => files
         },
@@ -82,7 +85,7 @@ defmodule Favn.Dev.Build.Artifact do
       when is_binary(directory) and is_binary(kind) and is_map(expected_metadata) do
     with {:ok, bytes} <- File.read(Path.join(directory, "bundle.json")),
          {:ok, bundle} <- JSON.decode(bytes),
-         1 <- bundle["schema_version"],
+         @bundle_schema_version <- bundle["schema_version"],
          ^kind <- bundle["kind"],
          true <- metadata_matches?(bundle, expected_metadata),
          {:ok, declared} <- declared_files(bundle["files"]),
@@ -213,10 +216,13 @@ defmodule Favn.Dev.Build.Artifact do
   defp declared_files(files) when is_list(files) do
     files
     |> Enum.reduce_while({:ok, %{}}, fn
-      %{"path" => path, "sha256" => digest, "size" => size}, {:ok, acc}
-      when is_binary(path) and is_binary(digest) and is_integer(size) and size >= 0 ->
+      %{"executable" => executable, "path" => path, "sha256" => digest, "size" => size},
+      {:ok, acc}
+      when is_boolean(executable) and is_binary(path) and is_binary(digest) and is_integer(size) and
+             size >= 0 ->
         if safe_relative_path?(path) and valid_digest?(digest) and not Map.has_key?(acc, path) do
-          {:cont, {:ok, Map.put(acc, path, %{sha256: digest, size: size})}}
+          {:cont,
+           {:ok, Map.put(acc, path, %{executable: executable, sha256: digest, size: size})}}
         else
           {:halt, {:error, :invalid_bundle_file}}
         end
@@ -244,8 +250,15 @@ defmodule Favn.Dev.Build.Artifact do
 
         {:ok, %{type: :regular}} ->
           bytes = File.read!(path)
+          executable = executable?(File.stat!(path).mode)
 
-          {:cont, {:ok, Map.put(acc, relative, %{sha256: sha256(bytes), size: byte_size(bytes)})}}
+          {:cont,
+           {:ok,
+            Map.put(acc, relative, %{
+              executable: executable,
+              sha256: sha256(bytes),
+              size: byte_size(bytes)
+            })}}
 
         _unsupported ->
           {:halt, {:error, :unsupported_artifact_entry}}
@@ -265,6 +278,8 @@ defmodule Favn.Dev.Build.Artifact do
   defp valid_digest?(digest) do
     byte_size(digest) == 64 and digest =~ ~r/\A[0-9a-f]{64}\z/
   end
+
+  defp executable?(mode), do: Bitwise.band(mode, 0o111) != 0
 
   defp continue(:ok), do: {:cont, :ok}
   defp continue({:error, reason}), do: {:halt, {:error, reason}}

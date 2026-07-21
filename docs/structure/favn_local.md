@@ -41,6 +41,12 @@ Code:
 - `apps/favn_local/lib/favn_local.ex`
 - single-node artifact integration test harness under `apps/favn_local/test_support/`
 - canonical single-node acceptance sample generator under `apps/favn_local/test_support/canonical_sample_project.exs`
+- `apps/favn_local/lib/favn/dev/build/control_plane_inputs.ex` for the selective,
+  deterministic official-image input closure and
+  `apps/favn_local/lib/favn/dev/build/control_plane.ex` for the repository-only,
+  integrity-checked OCI context/candidate builder
+- `apps/favn_local/lib/favn/dev/control_plane_image.ex` for canonical GHCR tags,
+  digest references, and exact RepoDigest selection
 
 Tests:
 - `apps/favn_local/test/`

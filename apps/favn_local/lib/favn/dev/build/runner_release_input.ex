@@ -6,6 +6,12 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
 
   @builder_image "hexpm/elixir:1.20.2-erlang-28.3.3-debian-bookworm-20260713-slim@sha256:874b36d3e432c42a4f78e12fbe251c5e6c3b1342c8f1072e25dc418b823c31ba"
   @runtime_image "debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"
+  @debian_snapshot "20260713T000000Z"
+  @elixir_version "1.20.2"
+  @otp_version "28.3.3"
+  @hex_version "2.5.1"
+  @rebar_url "https://builds.hex.pm/installs/1.18.4/rebar3-3.25.1-otp-28"
+  @rebar_sha512 "992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24"
   @release_version "1.0.0"
   @spec write(Path.t(), map(), keyword()) :: :ok | {:error, term()}
   def write(artifact_dir, inputs, _opts \\ []) when is_binary(artifact_dir) and is_map(inputs) do
@@ -297,6 +303,43 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
         : "${FAVN_DISTRIBUTION_COOKIE:?FAVN_DISTRIBUTION_COOKIE is required}"
         : "${FAVN_BEAM_DISTRIBUTION_PORT:?FAVN_BEAM_DISTRIBUTION_PORT is required}"
 
+        validate_node_name() {
+          value=$1
+
+          case "$value" in
+            *@*@*|@*|*@|*[!A-Za-z0-9_.@-]*) return 1 ;;
+          esac
+
+          local_name=${value%%@*}
+          host=${value#*@}
+          [ "$local_name" != "$value" ] || return 1
+          [ "${#local_name}" -le 255 ] || return 1
+          [ "${#host}" -le 255 ] || return 1
+
+          normalized_host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+
+          case "$normalized_host" in
+            localhost|nohost|127.*|::1|*.localhost) return 1 ;;
+          esac
+        }
+
+        if ! validate_node_name "$FAVN_RUNNER_NODE"; then
+          echo "invalid FAVN_RUNNER_NODE" >&2
+          exit 1
+        fi
+
+        case "$FAVN_DISTRIBUTION_COOKIE" in
+          *[[:space:]]*) echo "invalid FAVN_DISTRIBUTION_COOKIE" >&2; exit 1 ;;
+        esac
+
+        cookie_length=${#FAVN_DISTRIBUTION_COOKIE}
+        unique_cookie_bytes=$(printf '%s' "$FAVN_DISTRIBUTION_COOKIE" | LC_ALL=C fold -w 1 | LC_ALL=C sort -u | wc -l | tr -d ' ')
+
+        if [ "$cookie_length" -lt 32 ] || [ "$cookie_length" -gt 255 ] || [ "$unique_cookie_bytes" -lt 12 ]; then
+          echo "invalid FAVN_DISTRIBUTION_COOKIE" >&2
+          exit 1
+        fi
+
         case "$FAVN_BEAM_DISTRIBUTION_PORT" in
           *[!0-9]*) echo "invalid FAVN_BEAM_DISTRIBUTION_PORT" >&2; exit 1 ;;
         esac
@@ -306,6 +349,17 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
           exit 1
         fi
 
+        ERL_EPMD_PORT="${ERL_EPMD_PORT:-4369}"
+        case "$ERL_EPMD_PORT" in
+          *[!0-9]*) echo "invalid ERL_EPMD_PORT" >&2; exit 1 ;;
+        esac
+
+        if [ "$ERL_EPMD_PORT" -lt 1 ] || [ "$ERL_EPMD_PORT" -gt 65535 ]; then
+          echo "invalid ERL_EPMD_PORT" >&2
+          exit 1
+        fi
+
+        export ERL_EPMD_PORT
         export RELEASE_DISTRIBUTION=name
         export RELEASE_NODE="$FAVN_RUNNER_NODE"
         export RELEASE_COOKIE="$FAVN_DISTRIBUTION_COOKIE"
@@ -316,45 +370,84 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
   end
 
   defp write_dockerfile(artifact_dir, %RunnerRelease{} = descriptor) do
-    revision = Map.get(descriptor.build_metadata, "source_revision", "unknown")
+    with {:ok, revision} <- source_revision(descriptor.build_metadata) do
+      dockerfile = """
+      FROM --platform=linux/amd64 #{@builder_image} AS builder
 
-    dockerfile = """
-    FROM --platform=linux/amd64 #{@builder_image} AS builder
+      ENV MIX_ENV=prod
+      WORKDIR /build
+      RUN sed -i \\
+        -e 's|URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/#{@debian_snapshot}|' \\
+        -e 's|URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/#{@debian_snapshot}|' \\
+        /etc/apt/sources.list.d/debian.sources \\
+        && apt-get -o Acquire::Check-Valid-Until=false update \\
+        && apt-get -o Acquire::Check-Valid-Until=false install -y --no-install-recommends build-essential ca-certificates git cmake pkg-config \\
+        && rm -rf /var/lib/apt/lists/*
+      RUN mix local.hex #{@hex_version} --force \\
+        && mix local.rebar rebar3 #{@rebar_url} --sha512 #{@rebar_sha512} --force
+      COPY release-input/ ./
+      RUN mix deps.get --only prod --check-locked && mix deps.compile && mix compile
+      RUN mix run --no-start stamp_apps.exs
+      RUN mix release favn_runner
+      RUN mkdir -p /build/runtime-versions \\
+        && elixir -e 'IO.write(System.version())' > /build/runtime-versions/ELIXIR_VERSION \\
+        && cp /usr/local/lib/erlang/releases/28/OTP_VERSION /build/runtime-versions/OTP_VERSION \\
+        && test "$(cat /build/runtime-versions/ELIXIR_VERSION)" = "#{@elixir_version}" \\
+        && test "$(cat /build/runtime-versions/OTP_VERSION)" = "#{@otp_version}"
 
-    ENV MIX_ENV=prod
-    WORKDIR /build
-    RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates git cmake pkg-config && rm -rf /var/lib/apt/lists/*
-    RUN mix local.hex --force && mix local.rebar --force
-    COPY release-input/ ./
-    RUN mix deps.get --only prod && mix deps.compile && mix compile
-    RUN mix run --no-start stamp_apps.exs
-    RUN mix release favn_runner
+      FROM --platform=linux/amd64 #{@runtime_image} AS runtime
+      ARG BUILD_DATE=unknown
+      ARG RUNNER_DIST_PORT=9100
+      RUN sed -i \\
+        -e 's|URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/#{@debian_snapshot}|' \\
+        -e 's|URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/#{@debian_snapshot}|' \\
+        /etc/apt/sources.list.d/debian.sources \\
+        && apt-get -o Acquire::Check-Valid-Until=false update \\
+        && apt-get -o Acquire::Check-Valid-Until=false install -y --no-install-recommends ca-certificates libstdc++6 libgcc-s1 openssl libncurses6 \\
+        && rm -rf /var/lib/apt/lists/* \\
+        && groupadd --system --gid 10001 favn \\
+        && useradd --system --uid 10001 --gid favn --home-dir /opt/favn --shell /usr/sbin/nologin favn \\
+        && mkdir -p /opt/favn /tmp/favn \\
+        && chown -R favn:favn /opt/favn /tmp/favn
+      WORKDIR /opt/favn
+      COPY --from=builder --chown=favn:favn /build/_build/prod/rel/favn_runner/ ./
+      COPY --from=builder --chown=favn:favn /build/runtime-versions/ /opt/favn/runtime-versions/
+      RUN rm -f /opt/favn/releases/COOKIE
+      ENV HOME=/tmp/favn TMPDIR=/tmp/favn RELEASE_TMP=/tmp/favn LANG=C.UTF-8 LC_ALL=C.UTF-8
+      LABEL org.opencontainers.image.title="Favn customer runner" \\
+        org.opencontainers.image.created="${BUILD_DATE}" \\
+        org.opencontainers.image.revision="#{revision}" \\
+        io.favn.runner-release-id="#{descriptor.runner_release_id}" \\
+        io.favn.version="#{descriptor.favn_version}" \\
+        io.favn.runner-contract-version="#{descriptor.runner_contract_version}" \\
+        io.favn.elixir-version="#{@elixir_version}" \\
+        io.favn.otp-version="#{@otp_version}" \\
+        io.favn.target="#{descriptor.target}"
+      USER 10001:10001
+      VOLUME ["/tmp/favn"]
+      EXPOSE 4369 ${RUNNER_DIST_PORT}
+      ENTRYPOINT ["/opt/favn/bin/favn_runner"]
+      CMD ["start"]
+      """
 
-    FROM --platform=linux/amd64 #{@runtime_image} AS runtime
-    ARG BUILD_DATE=unknown
-    ARG RUNNER_DIST_PORT=9100
-    RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 libgcc-s1 openssl libncurses6 && rm -rf /var/lib/apt/lists/* \\
-      && groupadd --system --gid 10001 favn \\
-      && useradd --system --uid 10001 --gid favn --home-dir /opt/favn --shell /usr/sbin/nologin favn \\
-      && mkdir -p /opt/favn /tmp/favn \\
-      && chown -R favn:favn /opt/favn /tmp/favn
-    WORKDIR /opt/favn
-    COPY --from=builder --chown=favn:favn /build/_build/prod/rel/favn_runner/ ./
-    ENV HOME=/tmp/favn TMPDIR=/tmp/favn RELEASE_TMP=/tmp/favn
-    LABEL org.opencontainers.image.title="Favn customer runner" \\
-      org.opencontainers.image.created="${BUILD_DATE}" \\
-      org.opencontainers.image.revision="#{revision}" \\
-      io.favn.runner-release-id="#{descriptor.runner_release_id}" \\
-      io.favn.version="#{descriptor.favn_version}" \\
-      io.favn.runner-contract-version="#{descriptor.runner_contract_version}" \\
-      io.favn.target="#{descriptor.target}"
-    USER 10001:10001
-    VOLUME ["/tmp/favn"]
-    EXPOSE 4369 ${RUNNER_DIST_PORT}
-    ENTRYPOINT ["/opt/favn/bin/favn_runner"]
-    CMD ["start"]
-    """
+      File.write(Path.join(artifact_dir, "Dockerfile"), dockerfile)
+    end
+  end
 
-    File.write(Path.join(artifact_dir, "Dockerfile"), dockerfile)
+  @doc false
+  @spec source_revision(map()) :: {:ok, String.t()} | {:error, :invalid_runner_source_revision}
+  def source_revision(metadata) when is_map(metadata) do
+    case Map.get(metadata, "source_revision", "unknown") do
+      "unknown" ->
+        {:ok, "unknown"}
+
+      revision when is_binary(revision) and byte_size(revision) in [40, 64] ->
+        if Regex.match?(~r/\A[0-9a-f]+\z/, revision),
+          do: {:ok, revision},
+          else: {:error, :invalid_runner_source_revision}
+
+      _invalid ->
+        {:error, :invalid_runner_source_revision}
+    end
   end
 end

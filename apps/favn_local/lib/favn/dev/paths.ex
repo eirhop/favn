@@ -45,6 +45,10 @@ defmodule Favn.Dev.Paths do
   def build_target_dir(root_dir, target) when is_binary(target),
     do: Path.join(build_dir(root_dir), target)
 
+  @spec build_control_plane_dir(Path.t(), String.t()) :: Path.t()
+  def build_control_plane_dir(root_dir, build_id),
+    do: Path.join(build_target_dir(root_dir, "control-plane"), build_id)
+
   @spec build_runner_dir(Path.t(), String.t()) :: Path.t()
   def build_runner_dir(root_dir, build_id),
     do: Path.join(build_target_dir(root_dir, "runner"), build_id)

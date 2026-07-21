@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  migrate) operation=migrate ;;
+  verify-schema) operation=verify_schema ;;
+  verify-restore) operation=verify_restore ;;
+  grant-runtime) operation=grant_runtime ;;
+  provision-workspace) operation=provision_workspace ;;
+  runtime-input-key-inventory) operation=runtime_input_key_inventory ;;
+  compact-runtime-input-keys) operation=compact_runtime_input_keys ;;
+  preflight-upgrade) operation=preflight_upgrade ;;
+  *)
+    echo "usage: favn_control_plane_ops {migrate|verify-schema|verify-restore|grant-runtime|provision-workspace|runtime-input-key-inventory|compact-runtime-input-keys|preflight-upgrade}" >&2
+    exit 64
+    ;;
+esac
+
+exec /app/bin/favn_control_plane eval "FavnStoragePostgres.ReleaseCLI.run!(:$operation)"

@@ -111,7 +111,7 @@ supported by this release.
 | --- | --- |
 | `FAVN_VIEW_PUBLIC_ORIGIN` | Required absolute HTTPS origin. The production loader has no plaintext HTTP interlock. |
 | `FAVN_VIEW_SECRET_KEY_BASE` | Required secret of at least 64 bytes. |
-| `FAVN_VIEW_BIND_HOST` | IPv4 bind address, default `0.0.0.0`. |
+| `FAVN_VIEW_BIND_HOST` | IPv4 bind address, default `0.0.0.0`. Container health probes this address; wildcard maps to loopback. |
 | `FAVN_VIEW_PORT` | `1..65535`, default `4000`. |
 | `FAVN_VIEW_TRUSTED_PROXY_CIDRS` | Required comma-separated private IPv4/IPv6 proxy allowlist, maximum 32 entries. |
 | `FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS` | `100..30000`, default `1000`. |

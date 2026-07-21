@@ -366,6 +366,11 @@ is out of sync.
 
 ### Packaging targets
 
+- `build.control_plane` (repository maintainers only): immutable
+  `.favn/build/control-plane/<control_plane_build_id>/context` containing the
+  deterministic production release inputs. `--load` builds and loads the fixed
+  Linux amd64 unpublished candidate. Protected CI is the only publisher for
+  `ghcr.io/eirhop/favn-control-plane`; deployments use its digest, not a tag.
 - `build.runner`: immutable
   `.favn/dist/runner/<runner_release_id>/` OCI context containing the verified
   descriptor, aligned manifest release, vendored release inputs, digest-pinned

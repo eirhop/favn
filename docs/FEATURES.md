@@ -59,6 +59,10 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   execution admission while draining. Readiness flips before bounded shutdown;
   admitted work may settle until the configured deadline, after which ordinary
   durable cancellation/result paths preserve honest recovery state.
+- The production control plane is an immutable Linux amd64 OTP release containing
+  only View, Orchestrator, PostgreSQL storage, Core, and runtime dependencies. It
+  runs as non-root, supports a read-only root filesystem, and has fixed health and
+  release-operation entrypoints.
 
 These capabilities are implemented and tested, but several operator workflows and
 high-volume asynchronous submission paths remain unfinished.
@@ -88,14 +92,19 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   the private local developer loop against PostgreSQL.
 - `build.runner` creates an immutable, relocatable customer runner OCI context
   keyed by the deterministic runner release ID; Favn does not push it.
+- Repository maintainers use `build.control_plane` for the deterministic,
+  integrity-checked official image context and optional unpublished local
+  candidate. Protected CI publishes only changed control-plane inputs to GHCR,
+  records immutable digest aliases, scans the image, and attaches provenance and
+  SPDX SBOM attestations.
 - `build.manifest` allows manifest-only deployment only after exact runner
   fingerprint alignment. `publish` stages content-addressed artifacts and
   `activate` selects one exact version for one workspace using a service token
   read only from the environment.
 - `build.single` creates an operational but project-local, non-relocatable backend
   launcher containing orchestrator, scheduler, and one runner.
-- `build.web` and `build.orchestrator` currently produce metadata, not deployable
-  releases. Package publishing and supported upgrade distribution are unfinished.
+- Docker-first installation and Compose lifecycle replacement of the older local
+  source launcher are still in progress.
 
 ## Operator web UI
 
@@ -110,8 +119,8 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 
 ## Production limits
 
-- There is no relocatable supported release artifact or finalized web/backend
-  deployment topology.
+- The relocatable control-plane and runner artifacts exist, but the complete
+  Docker Compose and production-container acceptance evidence is not yet finished.
 - PostgreSQL production-size restore, provider PITR, failover/load evidence,
   dashboards, and alert wiring remain release gates.
 - PostgreSQL backup does not recover DuckDB files, DuckLake metadata, object

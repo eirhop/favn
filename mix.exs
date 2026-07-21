@@ -1,3 +1,5 @@
+Code.require_file("rel/control_plane/release.exs", __DIR__)
+
 defmodule FavnUmbrella.MixProject do
   use Mix.Project
 
@@ -23,6 +25,7 @@ defmodule FavnUmbrella.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      releases: FavnControlPlane.Release.config(),
       aliases: aliases(),
       listeners: listeners(Mix.env()),
       dialyzer: [plt_add_apps: [:mix]]

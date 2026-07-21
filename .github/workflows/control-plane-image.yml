@@ -1,0 +1,524 @@
+name: Control-plane image
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('control-plane-image-pr-{0}', github.event.pull_request.number) || 'favn-control-plane-registry' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/eirhop/favn-control-plane
+
+jobs:
+  discover:
+    name: Discover control-plane inputs
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    outputs:
+      changed: ${{ steps.identity.outputs.changed }}
+      control_plane_build_id: ${{ steps.metadata.outputs.control_plane_build_id }}
+      control_plane_version: ${{ steps.metadata.outputs.control_plane_version }}
+      release_version: ${{ steps.metadata.outputs.release_version }}
+      elixir_version: ${{ steps.metadata.outputs.elixir_version }}
+      otp_version: ${{ steps.metadata.outputs.otp_version }}
+      manifest_schema_version: ${{ steps.metadata.outputs.manifest_schema_version }}
+      runner_contract_version: ${{ steps.metadata.outputs.runner_contract_version }}
+      target: ${{ steps.metadata.outputs.target }}
+      head_sha: ${{ steps.revisions.outputs.head_sha }}
+
+    steps:
+      - name: Resolve revisions
+        id: revisions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MAIN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            head_sha=$PR_HEAD_SHA
+            base_sha=$PR_BASE_SHA
+          else
+            head_sha=$MAIN_HEAD_SHA
+            base_sha="${MAIN_HEAD_SHA}^"
+          fi
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.revisions.outputs.head_sha }}
+          fetch-depth: 0
+
+      - name: Setup Elixir and Erlang
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: '1.20.2'
+          otp-version: '28.3.3'
+
+      - name: Compute head metadata
+        id: metadata
+        run: elixir scripts/control_plane_build_id.exs --metadata >> "$GITHUB_OUTPUT"
+
+      - name: Compare base and head identities
+        id: identity
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_ID: ${{ steps.metadata.outputs.control_plane_build_id }}
+          BASE_SHA: ${{ steps.revisions.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != pull_request ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Main publication will resolve the exact build ID through GHCR."
+            exit 0
+          fi
+          base_dir="$RUNNER_TEMP/favn-control-plane-base"
+          git worktree add --detach "$base_dir" "$BASE_SHA"
+          if [[ ! -f "$base_dir/scripts/control_plane_build_id.exs" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Base revision predates deterministic control-plane identity; candidate build is required."
+            exit 0
+          fi
+          base_id=$(elixir "$base_dir/scripts/control_plane_build_id.exs" --root "$base_dir")
+          if [[ "$base_id" == "$HEAD_ID" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Control-plane inputs are unchanged ($HEAD_ID)."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Control-plane inputs changed: $base_id -> $HEAD_ID"
+          fi
+
+  pr-candidate:
+    name: PR control-plane candidate
+    runs-on: ubuntu-latest
+    needs: discover
+    if: github.event_name == 'pull_request' && needs.discover.outputs.changed == 'true'
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout exact pull-request revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.discover.outputs.head_sha }}
+
+      - name: Setup Elixir and Erlang
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: '1.20.2'
+          otp-version: '28.3.3'
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex 2.5.1 --force
+          mix local.rebar rebar3 https://builds.hex.pm/installs/1.18.4/rebar3-3.25.1-otp-28 --sha512 992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24 --force
+
+      - name: Compile maintainer tooling
+        env:
+          MIX_ENV: prod
+        run: |
+          mix deps.get
+          mix compile --warnings-as-errors
+
+      - name: Build and load unpublished candidate
+        env:
+          MIX_ENV: prod
+        run: mix favn.build.control_plane --load
+
+      - name: Inspect final image contract
+        env:
+          BUILD_ID: ${{ needs.discover.outputs.control_plane_build_id }}
+        run: >-
+          scripts/control_plane_image_contract.sh
+          "favn-control-plane-candidate:$BUILD_ID"
+          "$BUILD_ID"
+
+      - name: Scan high and critical vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: favn-control-plane-candidate:${{ needs.discover.outputs.control_plane_build_id }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          output-format: sarif
+          output-file: control-plane-grype.sarif
+
+      - name: Generate candidate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: favn-control-plane-candidate:${{ needs.discover.outputs.control_plane_build_id }}
+          format: spdx-json
+          output-file: control-plane.spdx.json
+          upload-artifact: false
+
+      - name: Upload candidate evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: control-plane-candidate-${{ needs.discover.outputs.control_plane_build_id }}
+          if-no-files-found: error
+          path: |
+            .favn/build/control-plane/*/context/control-plane-build.json
+            .favn/build/control-plane/candidate-*.json
+            control-plane-grype.sarif
+            control-plane.spdx.json
+
+  main-image:
+    name: Publish or reuse merged image
+    runs-on: ubuntu-latest
+    needs: discover
+    if: github.event_name == 'workflow_run'
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    outputs:
+      digest: ${{ steps.result.outputs.digest }}
+      published: ${{ steps.result.outputs.published }}
+      verification_required: ${{ steps.result.outputs.verification_required }}
+
+    steps:
+      - name: Checkout exact tested merge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.discover.outputs.head_sha }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Look up immutable build tag
+        id: lookup
+        env:
+          BUILD_ID: ${{ needs.discover.outputs.control_plane_build_id }}
+          CONTROL_PLANE_VERSION: ${{ needs.discover.outputs.control_plane_version }}
+          ELIXIR_VERSION: ${{ needs.discover.outputs.elixir_version }}
+          OTP_VERSION: ${{ needs.discover.outputs.otp_version }}
+          MANIFEST_SCHEMA: ${{ needs.discover.outputs.manifest_schema_version }}
+          RUNNER_CONTRACT: ${{ needs.discover.outputs.runner_contract_version }}
+        run: |
+          set -euo pipefail
+          ref="$IMAGE_REPOSITORY:build-$BUILD_ID"
+          set +e
+          digest=$(scripts/control_plane_registry.sh lookup-digest "$ref")
+          lookup_status=$?
+          set -e
+          if [[ $lookup_status -eq 0 ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            docker pull "$ref"
+            [[ $(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$ref") == linux/amd64 ]]
+            [[ $(docker image inspect --format '{{ index .Config.Labels "io.favn.control-plane.build-id" }}' "$ref") == "$BUILD_ID" ]]
+            [[ $(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$ref") == "$CONTROL_PLANE_VERSION" ]]
+            [[ $(docker image inspect --format '{{ index .Config.Labels "io.favn.elixir-version" }}' "$ref") == "$ELIXIR_VERSION" ]]
+            [[ $(docker image inspect --format '{{ index .Config.Labels "io.favn.otp-version" }}' "$ref") == "$OTP_VERSION" ]]
+            [[ $(docker image inspect --format '{{ index .Config.Labels "io.favn.manifest-schema-version" }}' "$ref") == "$MANIFEST_SCHEMA" ]]
+            [[ $(docker image inspect --format '{{ index .Config.Labels "io.favn.runner-contract-version" }}' "$ref") == "$RUNNER_CONTRACT" ]]
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            verified_ref="$IMAGE_REPOSITORY:verified-build-$BUILD_ID"
+            set +e
+            verified_digest=$(scripts/control_plane_registry.sh lookup-digest "$verified_ref")
+            verified_status=$?
+            set -e
+            if [[ $verified_status -eq 0 ]]; then
+              scripts/control_plane_registry.sh require-digest "$verified_ref" "$digest"
+              echo "verified=true" >> "$GITHUB_OUTPUT"
+            elif [[ $verified_status -eq 3 ]]; then
+              echo "verified=false" >> "$GITHUB_OUTPUT"
+            else
+              exit "$verified_status"
+            fi
+          elif [[ $lookup_status -eq 3 ]]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+          else
+            exit "$lookup_status"
+          fi
+
+      - name: Verify reused build provenance
+        if: steps.lookup.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.lookup.outputs.digest }}
+        run: >-
+          gh attestation verify
+          "oci://$IMAGE_REPOSITORY@$DIGEST"
+          --repo "${{ github.repository }}"
+          --predicate-type https://slsa.dev/provenance/v1
+
+      - name: Verify reused SBOM
+        if: steps.lookup.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.lookup.outputs.digest }}
+        run: >-
+          gh attestation verify
+          "oci://$IMAGE_REPOSITORY@$DIGEST"
+          --repo "${{ github.repository }}"
+          --predicate-type https://spdx.dev/Document/v2.3
+
+      - name: Setup Elixir and Erlang
+        if: steps.lookup.outputs.exists == 'false'
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: '1.20.2'
+          otp-version: '28.3.3'
+
+      - name: Install and compile maintainer tooling
+        if: steps.lookup.outputs.exists == 'false'
+        env:
+          MIX_ENV: prod
+        run: |
+          mix local.hex 2.5.1 --force
+          mix local.rebar rebar3 https://builds.hex.pm/installs/1.18.4/rebar3-3.25.1-otp-28 --sha512 992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24 --force
+          mix deps.get
+          mix compile --warnings-as-errors
+
+      - name: Build merged candidate
+        if: steps.lookup.outputs.exists == 'false'
+        env:
+          MIX_ENV: prod
+        run: mix favn.build.control_plane --load
+
+      - name: Run pre-publish image contract
+        if: steps.lookup.outputs.exists == 'false'
+        env:
+          BUILD_ID: ${{ needs.discover.outputs.control_plane_build_id }}
+        run: >-
+          scripts/control_plane_image_contract.sh
+          "favn-control-plane-candidate:$BUILD_ID"
+          "$BUILD_ID"
+
+      - name: Scan high and critical vulnerabilities
+        if: steps.lookup.outputs.exists == 'false'
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: favn-control-plane-candidate:${{ needs.discover.outputs.control_plane_build_id }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          output-format: sarif
+          output-file: control-plane-grype.sarif
+
+      - name: Generate SBOM
+        if: steps.lookup.outputs.exists == 'false'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: favn-control-plane-candidate:${{ needs.discover.outputs.control_plane_build_id }}
+          format: spdx-json
+          output-file: control-plane.spdx.json
+          upload-artifact: false
+
+      - name: Push run-scoped staging tag
+        if: steps.lookup.outputs.exists == 'false'
+        id: publish
+        env:
+          BUILD_ID: ${{ needs.discover.outputs.control_plane_build_id }}
+          HEAD_SHA: ${{ needs.discover.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          candidate="favn-control-plane-candidate:$BUILD_ID"
+          staging_ref="$IMAGE_REPOSITORY:staging-$HEAD_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker tag "$candidate" "$staging_ref"
+          docker push "$staging_ref"
+          staging_digest=$(scripts/control_plane_registry.sh lookup-digest "$staging_ref")
+          echo "digest=$staging_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        if: steps.lookup.outputs.exists == 'false'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.IMAGE_REPOSITORY }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest SBOM
+        if: steps.lookup.outputs.exists == 'false'
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ${{ env.IMAGE_REPOSITORY }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          sbom-path: control-plane.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Record selected digest
+        id: result
+        env:
+          EXISTING: ${{ steps.lookup.outputs.exists }}
+          EXISTING_VERIFIED: ${{ steps.lookup.outputs.verified }}
+          EXISTING_DIGEST: ${{ steps.lookup.outputs.digest }}
+          PUBLISHED_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ "$EXISTING" == true ]]; then
+            digest=$EXISTING_DIGEST
+            published=false
+            if [[ "$EXISTING_VERIFIED" == true ]]; then
+              verification_required=false
+            else
+              verification_required=true
+            fi
+          else
+            digest=$PUBLISHED_DIGEST
+            published=true
+            verification_required=true
+          fi
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "published=$published" >> "$GITHUB_OUTPUT"
+          echo "verification_required=$verification_required" >> "$GITHUB_OUTPUT"
+          echo "Selected $IMAGE_REPOSITORY@$digest"
+
+      - name: Upload publish evidence
+        if: steps.lookup.outputs.exists == 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: control-plane-publish-${{ needs.discover.outputs.control_plane_build_id }}
+          if-no-files-found: error
+          path: |
+            .favn/build/control-plane/*/context/control-plane-build.json
+            .favn/build/control-plane/candidate-*.json
+            control-plane-grype.sarif
+            control-plane.spdx.json
+
+  verify-published:
+    name: Verify published digest cleanly
+    runs-on: ubuntu-latest
+    needs: [discover, main-image]
+    if: needs.main-image.outputs.verification_required == 'true'
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout exact tested merge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.discover.outputs.head_sha }}
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull and inspect immutable digest
+        env:
+          BUILD_ID: ${{ needs.discover.outputs.control_plane_build_id }}
+          DIGEST: ${{ needs.main-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image="$IMAGE_REPOSITORY@$DIGEST"
+          docker pull "$image"
+          scripts/control_plane_image_contract.sh "$image" "$BUILD_ID"
+
+  record-main-verification:
+    name: Record verified main revision
+    runs-on: ubuntu-latest
+    needs: [discover, main-image, verify-published]
+    if: >-
+      always() &&
+      github.event_name == 'workflow_run' &&
+      needs.main-image.result == 'success' &&
+      (needs.main-image.outputs.verification_required != 'true' || needs.verify-published.result == 'success')
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout exact tested merge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.discover.outputs.head_sha }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Add immutable post-verification markers
+        env:
+          BUILD_ID: ${{ needs.discover.outputs.control_plane_build_id }}
+          DIGEST: ${{ needs.main-image.outputs.digest }}
+          HEAD_SHA: ${{ needs.discover.outputs.head_sha }}
+          PUBLISHED: ${{ needs.main-image.outputs.published }}
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE_REPOSITORY@$DIGEST"
+          build_ref="$IMAGE_REPOSITORY:build-$BUILD_ID"
+          if [[ "$PUBLISHED" == true ]]; then
+            scripts/control_plane_registry.sh record-alias "$IMAGE_REPOSITORY@$DIGEST" "$build_ref" "$DIGEST"
+          else
+            scripts/control_plane_registry.sh require-digest "$build_ref" "$DIGEST"
+          fi
+          scripts/control_plane_registry.sh record-alias "$IMAGE_REPOSITORY@$DIGEST" "$IMAGE_REPOSITORY:verified-build-$BUILD_ID" "$DIGEST"
+          scripts/control_plane_registry.sh record-alias "$IMAGE_REPOSITORY@$DIGEST" "$IMAGE_REPOSITORY:sha-$HEAD_SHA" "$DIGEST"
+
+  control-plane-image:
+    name: Control-plane image result
+    runs-on: ubuntu-latest
+    needs: [discover, pr-candidate, main-image, verify-published, record-main-verification]
+    if: always()
+
+    steps:
+      - name: Check workflow result
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISCOVER_RESULT: ${{ needs.discover.result }}
+          INPUTS_CHANGED: ${{ needs.discover.outputs.changed }}
+          PR_RESULT: ${{ needs.pr-candidate.result }}
+          MAIN_RESULT: ${{ needs.main-image.result }}
+          PUBLISHED: ${{ needs.main-image.outputs.published }}
+          VERIFICATION_REQUIRED: ${{ needs.main-image.outputs.verification_required }}
+          VERIFY_RESULT: ${{ needs.verify-published.result }}
+          MAIN_MARKER_RESULT: ${{ needs.record-main-verification.result }}
+        run: |
+          set -euo pipefail
+          [[ "$DISCOVER_RESULT" == success ]]
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            if [[ "$INPUTS_CHANGED" == true ]]; then
+              [[ "$PR_RESULT" == success ]]
+            else
+              [[ "$PR_RESULT" == skipped ]]
+            fi
+          else
+            [[ "$MAIN_RESULT" == success ]]
+            [[ "$MAIN_MARKER_RESULT" == success ]]
+            if [[ "$VERIFICATION_REQUIRED" == true ]]; then
+              [[ "$VERIFY_RESULT" == success ]]
+            else
+              [[ "$VERIFY_RESULT" == skipped ]]
+            fi
+          fi

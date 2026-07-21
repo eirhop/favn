@@ -3,6 +3,7 @@ defmodule Favn.Dev.Build.RunnerTest do
 
   alias Favn.Dev
   alias Favn.Dev.Build.Artifact
+  alias Favn.Dev.Build.RunnerReleaseInput
   alias Favn.RunnerRelease
 
   defmodule SQLVersionOne do
@@ -75,6 +76,7 @@ defmodule Favn.Dev.Build.RunnerTest do
 
     assert {:ok, bundle_bytes} = File.read(Path.join(result.dist_dir, "bundle.json"))
     assert {:ok, bundle} = JSON.decode(bundle_bytes)
+    assert bundle["schema_version"] == 2
     assert bundle["runner_release_id"] == result.runner_release_id
     assert bundle["kind"] == "favn_runner_build_context"
     assert Enum.any?(bundle["files"], &(&1["path"] == "manifest/bundle.json"))
@@ -85,7 +87,96 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert length(Regex.scan(~r/FROM --platform=linux\/amd64 /, dockerfile)) == 2
     assert dockerfile =~ "USER 10001:10001"
     assert dockerfile =~ ~s(ENTRYPOINT ["/opt/favn/bin/favn_runner"])
+    assert dockerfile =~ "RUN rm -f /opt/favn/releases/COOKIE"
+    assert dockerfile =~ "snapshot.debian.org/archive/debian/20260713T000000Z"
+    assert dockerfile =~ "mix local.hex 2.5.1 --force"
+    assert dockerfile =~ "rebar3-3.25.1-otp-28"
+    assert dockerfile =~ "mix deps.get --only prod --check-locked"
+    assert dockerfile =~ "io.favn.elixir-version=\"1.20.2\""
+    assert dockerfile =~ "io.favn.otp-version=\"28.3.3\""
+    assert dockerfile =~ "LANG=C.UTF-8 LC_ALL=C.UTF-8"
     refute dockerfile =~ root_dir
+
+    source_fixture = Path.join(root_dir, "debian.sources")
+
+    File.write!(
+      source_fixture,
+      "URIs: http://deb.debian.org/debian\nURIs: http://deb.debian.org/debian-security\n"
+    )
+
+    sed_expressions =
+      Regex.scan(~r/-e '([^']+)'/, dockerfile, capture: :all_but_first)
+      |> Enum.take(2)
+      |> Enum.flat_map(fn [expression] -> ["-e", expression] end)
+
+    assert {"", 0} = System.cmd("sed", ["-i" | sed_expressions] ++ [source_fixture])
+
+    assert File.read!(source_fixture) ==
+             "URIs: http://snapshot.debian.org/archive/debian/20260713T000000Z\n" <>
+               "URIs: http://snapshot.debian.org/archive/debian-security/20260713T000000Z\n"
+
+    release_env = Path.join(result.dist_dir, "release-input/rel/env.sh.eex")
+    valid_cookie = "favn-runner-cookie-7A9c2D4e6F8h0J1k"
+
+    assert {"", 0} =
+             System.cmd("sh", [release_env],
+               env: [
+                 {"FAVN_RUNNER_NODE", "runner@runner.internal"},
+                 {"FAVN_DISTRIBUTION_COOKIE", valid_cookie},
+                 {"FAVN_BEAM_DISTRIBUTION_PORT", "9100"}
+               ],
+               stderr_to_stdout: true
+             )
+
+    for invalid_node <- ["runner@localhost", "runner@127.0.0.2", "runner@@internal", "runner"] do
+      assert {output, 1} =
+               System.cmd("sh", [release_env],
+                 env: [
+                   {"FAVN_RUNNER_NODE", invalid_node},
+                   {"FAVN_DISTRIBUTION_COOKIE", valid_cookie},
+                   {"FAVN_BEAM_DISTRIBUTION_PORT", "9100"}
+                 ],
+                 stderr_to_stdout: true
+               )
+
+      assert output =~ "invalid FAVN_RUNNER_NODE"
+    end
+
+    assert {output, 1} =
+             System.cmd("sh", [release_env],
+               env: [
+                 {"FAVN_RUNNER_NODE", "runner@runner.internal"},
+                 {"FAVN_DISTRIBUTION_COOKIE", String.duplicate("a", 32)},
+                 {"FAVN_BEAM_DISTRIBUTION_PORT", "9100"}
+               ],
+               stderr_to_stdout: true
+             )
+
+    assert output =~ "invalid FAVN_DISTRIBUTION_COOKIE"
+
+    assert {"", 0} =
+             System.cmd("sh", [release_env],
+               env: [
+                 {"FAVN_RUNNER_NODE", "runner@runner.internal"},
+                 {"FAVN_DISTRIBUTION_COOKIE", valid_cookie},
+                 {"FAVN_BEAM_DISTRIBUTION_PORT", "9100"},
+                 {"ERL_EPMD_PORT", "4370"}
+               ],
+               stderr_to_stdout: true
+             )
+
+    assert {output, 1} =
+             System.cmd("sh", [release_env],
+               env: [
+                 {"FAVN_RUNNER_NODE", "runner@runner.internal"},
+                 {"FAVN_DISTRIBUTION_COOKIE", valid_cookie},
+                 {"FAVN_BEAM_DISTRIBUTION_PORT", "9100"},
+                 {"ERL_EPMD_PORT", "invalid"}
+               ],
+               stderr_to_stdout: true
+             )
+
+    assert output =~ "invalid ERL_EPMD_PORT"
 
     for relative <- [
           "release-input/mix.exs",
@@ -326,7 +417,17 @@ defmodule Favn.Dev.Build.RunnerTest do
              )
            )
 
-    File.write!(Path.join(customer, "priv/resource.txt"), "changed-resource")
+    resource = Path.join(customer, "priv/resource.txt")
+    File.chmod!(resource, 0o755)
+    assert {:ok, executable_result} = build(root_dir, current_app_source: customer)
+    refute executable_result.runner_release_id == result.runner_release_id
+
+    copied_resource =
+      Path.join(executable_result.dist_dir, "release-input/apps/favn_local/priv/resource.txt")
+
+    assert Bitwise.band(File.stat!(copied_resource).mode, 0o111) != 0
+
+    File.write!(resource, "changed-resource")
 
     assert {:error, {:runner_rebuild_required, categories}} =
              Dev.build_manifest(
@@ -456,6 +557,19 @@ defmodule Favn.Dev.Build.RunnerTest do
 
     refute build_output =~ "runner release verification failed"
 
+    inspect_format =
+      ~s({{.Config.User}}|{{.Architecture}}|{{ index .Config.Labels "io.favn.runner-release-id" }}|{{ index .Config.Labels "io.favn.elixir-version" }}|{{ index .Config.Labels "io.favn.otp-version" }})
+
+    assert {image_metadata, 0} =
+             System.cmd(
+               "docker",
+               ["image", "inspect", "--format", inspect_format, image],
+               stderr_to_stdout: true
+             )
+
+    assert String.trim(image_metadata) ==
+             "10001:10001|amd64|#{descriptor.runner_release_id}|1.20.2|28.3.3"
+
     assert {_output, 0} =
              System.cmd(
                "docker",
@@ -466,7 +580,7 @@ defmodule Favn.Dev.Build.RunnerTest do
                  "/bin/sh",
                  image,
                  "-c",
-                 "set -- /opt/favn/lib/favn_local-*/ebin/Elixir.Favn.Dev.Build.Runner.beam; test ! -e \"$1\""
+                 "set -- /opt/favn/lib/favn_local-*/ebin/Elixir.Favn.Dev.Build.Runner.beam; test ! -e \"$1\"; test ! -e /opt/favn/releases/COOKIE; ! find /opt/favn -type f -name .erlang.cookie | grep -q .; test \"$(cat /opt/favn/runtime-versions/ELIXIR_VERSION)\" = 1.20.2; test \"$(cat /opt/favn/runtime-versions/OTP_VERSION)\" = 28.3.3"
                ],
                stderr_to_stdout: true
              )
@@ -479,6 +593,9 @@ defmodule Favn.Dev.Build.RunnerTest do
                [
                  "run",
                  "--rm",
+                 "--read-only",
+                 "--tmpfs",
+                 "/tmp/favn:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700",
                  "--hostname",
                  "runner.internal",
                  "--env",
@@ -498,6 +615,7 @@ defmodule Favn.Dev.Build.RunnerTest do
 
     assert output =~ "started: {:ok"
     assert output =~ descriptor.runner_release_id
+    refute output =~ "native name encoding of latin1"
   end
 
   test "failed validation leaves no publishable artifact", %{root_dir: root_dir} do
@@ -526,6 +644,18 @@ defmodule Favn.Dev.Build.RunnerTest do
              )
 
     assert Path.wildcard(Path.join(root_dir, ".favn/dist/manifest/*")) == []
+  end
+
+  test "runner Docker labels accept only bounded source revisions" do
+    assert {:ok, "unknown"} = RunnerReleaseInput.source_revision(%{})
+
+    revision = String.duplicate("a", 40)
+    assert {:ok, ^revision} = RunnerReleaseInput.source_revision(%{"source_revision" => revision})
+
+    for invalid <- [123, "ABC", String.duplicate("a", 39), "\"\nRUN touch /injected"] do
+      assert {:error, :invalid_runner_source_revision} =
+               RunnerReleaseInput.source_revision(%{"source_revision" => invalid})
+    end
   end
 
   test "build_runner/1 rejects an artifact root other than the current project", %{

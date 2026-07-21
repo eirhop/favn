@@ -1,8 +1,9 @@
 # Production Readiness
 
-PostgreSQL 18 is Favn's only control-plane database. Storage V2 is implemented;
-the remaining production work is release packaging, deployment proof, operator UI
-completion, and data-plane recovery.
+PostgreSQL 18 is Favn's only control-plane database. Storage V2 and the immutable
+control-plane release/image contract are implemented; the remaining production
+work includes complete deployment proof, operator UI completion, and data-plane
+recovery.
 
 ## Current status
 
@@ -11,14 +12,15 @@ completion, and data-plane recovery.
 | PostgreSQL Storage V2 | Implemented | Prove it against a production-sized restored snapshot and managed-provider PITR. |
 | Workspace isolation, fencing, idempotency, bounded reads | Implemented | Record load, contention, failover, and recovery evidence. |
 | Lifecycle, readiness, bounded drain | Implemented | Qualify active-work SIGTERM and recovery in the final container topology. |
-| Backend single-node launcher | Project-local prototype | Replace it with relocatable, supported release artifacts. |
-| Web and orchestrator artifacts | Metadata only | Build runnable releases and define one supported topology. |
+| Control-plane release image | Implemented | Complete the Docker Compose and production-container acceptance drills. |
+| Customer runner and manifest releases | Implemented | Complete the two-container execution and upgrade acceptance drills. |
 | Operator UI | Prototype | Finish core flows, audit mutations, and add browser acceptance. |
 | DuckDB/DuckLake data plane | Prototype | Define and verify backup, recovery, cancellation, and failure behavior. |
 | Multi-node control-plane coordination | Implemented foundation | Not an initial single-node release gate; package and prove it before claiming application-node failover. |
 
-Favn can support a controlled backend pilot operated from the source/runtime
-workspace. It is not yet a repeatable, supportable production distribution.
+Favn has deterministic release inputs and runnable OCI artifacts. The complete
+Docker-first installation, upgrade, rotation, and production acceptance contract
+must still pass before it is a supportable production distribution.
 
 ## Release gates
 
@@ -41,6 +43,8 @@ not a gate for the first supported single-node target.
 - [`control_plane_environment.md`](control_plane_environment.md) defines the
   implemented same-BEAM environment, proxy, HTTP, lifecycle, shutdown, and secret
   contract.
+- [`control_plane_image.md`](control_plane_image.md) defines the immutable OCI
+  image, GHCR publishing, selective build identity, and maintainer candidate path.
 - [`../storage/postgresql/architecture.md`](../storage/postgresql/architecture.md)
   defines the implemented storage architecture.
 - [`../storage/postgresql/data-model.md`](../storage/postgresql/data-model.md)

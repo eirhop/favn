@@ -3,10 +3,11 @@ defmodule Favn.Manifest.Compatibility do
   Manifest schema and runner contract compatibility checks.
   """
 
+  alias Favn.Manifest.ContractVersions
   alias Favn.RunnerRelease
 
-  @current_schema_version 10
-  @current_runner_contract_version 10
+  @current_schema_version ContractVersions.manifest_schema_version()
+  @current_runner_contract_version ContractVersions.runner_contract_version()
 
   @type error ::
           {:invalid_manifest_input, term()}

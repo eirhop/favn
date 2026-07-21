@@ -1,0 +1,170 @@
+name: Promote control-plane release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: favn-control-plane-registry
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/eirhop/favn-control-plane
+
+jobs:
+  promote:
+    name: Qualify and add immutable version tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+      attestations: read
+
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Setup Elixir and Erlang
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: '1.20.2'
+          otp-version: '28.3.3'
+
+      - name: Resolve release identity
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          release_version=${RELEASE_TAG#v}
+          [[ "v$release_version" == "$RELEASE_TAG" ]]
+          [[ ${#RELEASE_TAG} -le 128 ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9A-Za-z_.-]{1,127}$ ]]
+          elixir -e 'case Version.parse(hd(System.argv())) do {:ok, _version} -> :ok; :error -> System.halt(1) end' "$release_version"
+          metadata=$(elixir scripts/control_plane_build_id.exs --metadata)
+          printf '%s\n' "$metadata" >> "$GITHUB_OUTPUT"
+          declared_release_version=$(sed -n 's/^release_version=//p' <<< "$metadata")
+          [[ "$RELEASE_TAG" == "v$declared_release_version" ]]
+          tagged_commit_sha=$(git rev-parse --verify 'HEAD^{commit}')
+          [[ "$tagged_commit_sha" =~ ^[0-9a-f]{40,64}$ ]]
+          echo "tagged_commit_sha=$tagged_commit_sha" >> "$GITHUB_OUTPUT"
+          echo "version_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Require workflow-owned release publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_TAG: ${{ steps.release.outputs.version_tag }}
+        run: >-
+          scripts/control_plane_registry.sh
+          require-github-release-absent
+          "${{ github.repository }}"
+          "$VERSION_TAG"
+
+      - name: Require tested main revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAGGED_SHA: ${{ steps.release.outputs.tagged_commit_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$TAGGED_SHA" origin/main
+          successful_runs=$(gh run list --workflow CI --branch main --commit "$TAGGED_SHA" --event push --status success --json databaseId --jq 'length')
+          [[ "$successful_runs" -ge 1 ]]
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Resolve verified build digest
+        id: image
+        env:
+          BUILD_ID: ${{ steps.release.outputs.control_plane_build_id }}
+          TAGGED_SHA: ${{ steps.release.outputs.tagged_commit_sha }}
+        run: |
+          set -euo pipefail
+          build_ref="$IMAGE_REPOSITORY:build-$BUILD_ID"
+          digest=$(scripts/control_plane_registry.sh lookup-digest "$build_ref")
+          scripts/control_plane_registry.sh require-digest "$IMAGE_REPOSITORY:verified-build-$BUILD_ID" "$digest"
+          scripts/control_plane_registry.sh require-digest "$IMAGE_REPOSITORY:sha-$TAGGED_SHA" "$digest"
+          docker pull "$IMAGE_REPOSITORY@$digest"
+          [[ $(docker image inspect --format '{{ index .Config.Labels "io.favn.control-plane.build-id" }}' "$IMAGE_REPOSITORY@$digest") == "$BUILD_ID" ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify build provenance attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: >-
+          gh attestation verify
+          "oci://$IMAGE_REPOSITORY@$DIGEST"
+          --repo "${{ github.repository }}"
+          --predicate-type https://slsa.dev/provenance/v1
+
+      - name: Verify SBOM attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: >-
+          gh attestation verify
+          "oci://$IMAGE_REPOSITORY@$DIGEST"
+          --repo "${{ github.repository }}"
+          --predicate-type https://spdx.dev/Document/v2.3
+
+      - name: Run release qualification
+        env:
+          BUILD_ID: ${{ steps.release.outputs.control_plane_build_id }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: >-
+          scripts/control_plane_release_qualification.sh
+          "$IMAGE_REPOSITORY@$DIGEST"
+          "$BUILD_ID"
+          "$DIGEST"
+
+      - name: Add or verify immutable Favn version tag
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          VERSION_TAG: ${{ steps.release.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          version_ref="$IMAGE_REPOSITORY:$VERSION_TAG"
+          scripts/control_plane_registry.sh record-alias "$IMAGE_REPOSITORY@$DIGEST" "$version_ref" "$DIGEST"
+
+      - name: Record immutable deployment reference
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          VERSION_TAG: ${{ steps.release.outputs.version_tag }}
+        run: |
+          echo "### Control-plane release" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Lookup tag: \`$IMAGE_REPOSITORY:$VERSION_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployment reference: \`$IMAGE_REPOSITORY@$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish qualified GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+          VERSION_TAG: ${{ steps.release.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          notes=$(printf 'Control-plane deployment reference: `%s@%s`\n\nControl-plane lookup tag: `%s:%s`' "$IMAGE_REPOSITORY" "$DIGEST" "$IMAGE_REPOSITORY" "$VERSION_TAG")
+          args=("$VERSION_TAG" --verify-tag --generate-notes --notes "$notes")
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"

@@ -580,7 +580,10 @@ defmodule Favn.Dev.Build.RunnerInputs do
           )
 
         Map.has_key?(lock, app) ->
-          :erlang.term_to_binary({app, Map.fetch!(lock, app)}, [:deterministic])
+          :erlang.term_to_binary(
+            {app, Map.fetch!(lock, app), source_tree_identity(source)},
+            [:deterministic]
+          )
 
         true ->
           source_tree_identity(source)
@@ -626,7 +629,14 @@ defmodule Favn.Dev.Build.RunnerInputs do
     |> Enum.sort()
     |> Enum.map(fn path ->
       relative = Path.relative_to(path, source)
-      [<<byte_size(relative)::32>>, relative, <<File.stat!(path).size::64>>, File.read!(path)]
+      stat = File.stat!(path)
+
+      [
+        <<byte_size(relative)::32>>,
+        relative,
+        <<executable_bit(stat.mode)::8, stat.size::64>>,
+        File.read!(path)
+      ]
     end)
     |> IO.iodata_to_binary()
   end
@@ -659,7 +669,14 @@ defmodule Favn.Dev.Build.RunnerInputs do
     |> Enum.map(fn path ->
       relative = Path.relative_to(path, source)
       bytes = File.read!(path)
-      [<<byte_size(relative)::32>>, relative, <<byte_size(bytes)::64>>, bytes]
+      mode = File.stat!(path).mode
+
+      [
+        <<byte_size(relative)::32>>,
+        relative,
+        <<executable_bit(mode)::8, byte_size(bytes)::64>>,
+        bytes
+      ]
     end)
     |> IO.iodata_to_binary()
     |> sha256()
@@ -681,6 +698,10 @@ defmodule Favn.Dev.Build.RunnerInputs do
       [top | _rest] -> top in [".git", ".favn", "_build", "deps", "test"]
       [] -> false
     end
+  end
+
+  defp executable_bit(mode) do
+    if Bitwise.band(mode, 0o111) == 0, do: 0, else: 1
   end
 
   defp plugin_fingerprints(entries, closure, inventory) do

@@ -105,9 +105,16 @@ Runtime nodes never migrate at boot.
 1. Record the current image and active manifest IDs, then run candidate-image
    preflight with a read-capable database role:
 
+   Run the fixed operation wrapper from the candidate image. The env file must
+   contain the normal production release environment plus a read-capable
+   database URL; pin the image by digest:
+
    ```bash
-   bin/favn_control_plane eval \
-     'IO.inspect(FavnStoragePostgres.Release.preflight_upgrade())'
+   docker run --rm \
+     --env-file /secure/favn-preflight.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     preflight-upgrade
    ```
 
    An error has code `:runner_identity_upgrade_blocked`. Its
@@ -124,8 +131,16 @@ Runtime nodes never migrate at boot.
    grants:
 
    ```bash
-   bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.migrate())'
-   bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.grant_runtime())'
+   docker run --rm \
+     --env-file /secure/favn-migrator.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     migrate
+   docker run --rm \
+     --env-file /secure/favn-migrator.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     grant-runtime
    ```
 
    Then run exact schema verification from a separate one-off process configured
@@ -134,7 +149,11 @@ Runtime nodes never migrate at boot.
    role:
 
    ```bash
-   bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.verify_schema())'
+   docker run --rm \
+     --env-file /secure/favn-runtime-verify.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     verify-schema
    ```
 
    The equivalent development wrappers are:
@@ -149,9 +168,15 @@ Runtime nodes never migrate at boot.
    Production uses the candidate release image with the elevated database
    identity:
 
+   Put `FAVN_WORKSPACE_ID=salmon-one`, `FAVN_WORKSPACE_SLUG=salmon-one`, and
+   `FAVN_WORKSPACE_NAME=Salmon One` in the one-off migrator env file, then run:
+
    ```bash
-   bin/favn_control_plane eval \
-     'IO.inspect(FavnStoragePostgres.Release.provision_workspace(%{workspace_id: "salmon-one", slug: "salmon-one", display_name: "Salmon One"}))'
+   docker run --rm \
+     --env-file /secure/favn-migrator.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     provision-workspace
    ```
 
    The development wrapper is:
@@ -227,8 +252,11 @@ returns that canonical pin without rewriting it.
 First inspect version numbers and pin counts. Neither command reads key material:
 
 ```bash
-bin/favn_control_plane eval \
-  'IO.inspect(FavnStoragePostgres.Release.runtime_input_key_inventory())'
+docker run --rm \
+  --env-file /secure/favn-runtime-verify.env \
+  --entrypoint /app/bin/favn_control_plane_ops \
+  ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+  runtime-input-key-inventory
 ```
 
 The one-off process validates the complete keyring directly from
@@ -239,9 +267,14 @@ having populated application state.
 After the retention workflow has purged or re-encrypted every pin using the old
 version, compact that explicit non-current version:
 
+Set `FAVN_RUNTIME_INPUT_KEY_VERSIONS=1` in the one-off migrator env file, then run:
+
 ```bash
-bin/favn_control_plane eval \
-  'IO.inspect(FavnStoragePostgres.Release.compact_runtime_input_keys([1]))'
+docker run --rm \
+  --env-file /secure/favn-migrator.env \
+  --entrypoint /app/bin/favn_control_plane_ops \
+  ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+  compact-runtime-input-keys
 ```
 
 The equivalent development wrappers are:
@@ -290,8 +323,11 @@ At least monthly, and before a major upgrade or destructive migration:
    with a read-capable restored runtime identity:
 
    ```bash
-   bin/favn_control_plane eval \
-     'IO.inspect(FavnStoragePostgres.Release.verify_restore())'
+   docker run --rm \
+     --env-file /secure/favn-restore-verify.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     verify-restore
    ```
 
    The development wrapper is
