@@ -146,6 +146,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilderTest do
       id: "run_result_builder",
       manifest_version_id: "mv_1",
       manifest_content_hash: "hash_1",
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       asset_ref: @second_ref,
       target_refs: [@second_ref],
       plan: plan,

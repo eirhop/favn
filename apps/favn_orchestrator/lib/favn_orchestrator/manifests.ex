@@ -8,12 +8,16 @@ defmodule FavnOrchestrator.Manifests do
 
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Persistence.DeploymentPlanner
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Results.RuntimeState
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.RunnerManifestRegistration
+  alias FavnOrchestrator.RunnerReleaseCompatibility
+  alias FavnOrchestrator.RuntimeConfig
 
   @type details :: %{required(:manifest) => map(), required(:targets) => map()}
 
@@ -21,7 +25,9 @@ defmodule FavnOrchestrator.Manifests do
   @spec publish(PlatformContext.t(), Version.t()) ::
           {:ok, :published | :already_published, Version.t()} | {:error, term()}
   def publish(%PlatformContext{} = context, %Version{} = version) do
-    ManifestStore.publish_manifest(context, version)
+    result = ManifestStore.publish_manifest(context, version)
+    emit_publication_result(version, result)
+    result
   end
 
   @doc "Creates and activates one exact workspace deployment."
@@ -35,20 +41,25 @@ defmodule FavnOrchestrator.Manifests do
         opts \\ []
       )
       when is_binary(manifest_version_id) and is_map(selection) and is_list(opts) do
-    with true <- platform_deployer?(platform_context),
-         {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
-         {:ok, planner} <- deployment_selection(version, selection) do
-      ManifestStore.deploy_manifest(
-        platform_context,
-        context,
-        manifest_version_id,
-        planner,
-        Keyword.put_new(opts, :configuration, %{})
-      )
-    else
-      false -> {:error, :platform_operator_required}
-      {:error, _reason} = error -> error
-    end
+    result =
+      with true <- platform_deployer?(platform_context),
+           {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
+           {:ok, planner} <- deployment_selection(version, selection),
+           :ok <- prepare_runner(version) do
+        ManifestStore.deploy_manifest(
+          platform_context,
+          context,
+          manifest_version_id,
+          planner,
+          Keyword.put_new(opts, :configuration, %{})
+        )
+      else
+        false -> {:error, :platform_operator_required}
+        {:error, _reason} = error -> error
+      end
+
+    emit_activation_result(context, manifest_version_id, result)
+    result
   end
 
   @doc "Returns the active release and exact customer-visible targets for one workspace."
@@ -116,6 +127,7 @@ defmodule FavnOrchestrator.Manifests do
       content_hash: runtime.manifest_content_hash,
       schema_version: runtime.schema_version,
       runner_contract_version: runtime.runner_contract_version,
+      required_runner_release_id: runtime.required_runner_release_id,
       asset_count: runtime.asset_count,
       pipeline_count: runtime.pipeline_count,
       schedule_count: runtime.schedule_count
@@ -203,4 +215,117 @@ defmodule FavnOrchestrator.Manifests do
     PlatformContext.valid?(context) and
       Enum.any?(context.roles, &(&1 in [:platform_operator, :platform_admin]))
   end
+
+  defp prepare_runner(%Version{} = version) do
+    runtime = RuntimeConfig.current()
+
+    with :ok <-
+           RunnerReleaseCompatibility.verify_runner(
+             runtime.runner_client,
+             version,
+             runtime.runner_client_opts
+           ),
+         :ok <-
+           RunnerManifestRegistration.ensure(
+             runtime.runner_client,
+             version,
+             runtime.runner_client_opts
+           ) do
+      :ok
+    else
+      {:error, {:manifest_version_conflict, _id, _existing, _incoming}} ->
+        {:error, :runner_manifest_conflict}
+
+      {:error, {:runner_release_mismatch, _required, _actual}} = error ->
+        error
+
+      {:error, reason} = error
+      when reason in [
+             :runner_client_not_available,
+             :runner_release_info_unavailable,
+             :runner_not_ready
+           ] ->
+        error
+
+      {:error, _reason} ->
+        {:error, :runner_unavailable}
+    end
+  end
+
+  defp emit_publication_result(version, {:ok, status, canonical}) do
+    OperationalEvents.emit(:manifest_publication_succeeded, %{count: 1}, %{
+      status: status,
+      manifest_version_id: canonical.manifest_version_id,
+      manifest_content_hash: canonical.content_hash,
+      required_runner_release_id: canonical.required_runner_release_id
+    })
+
+    version
+  end
+
+  defp emit_publication_result(version, {:error, reason}) do
+    OperationalEvents.emit(
+      :manifest_publication_rejected,
+      %{count: 1},
+      %{
+        status: :rejected,
+        manifest_version_id: version.manifest_version_id,
+        required_runner_release_id: version.required_runner_release_id,
+        reason: bounded_reason(reason)
+      },
+      level: :warning
+    )
+
+    version
+  end
+
+  defp emit_activation_result(context, manifest_version_id, {:ok, runtime}) do
+    OperationalEvents.emit(:manifest_activation_succeeded, %{count: 1}, %{
+      status: :activated,
+      workspace_id: context.workspace_id,
+      deployment_id: runtime.deployment_id,
+      manifest_version_id: manifest_version_id,
+      required_runner_release_id: runtime.required_runner_release_id,
+      revision: runtime.revision
+    })
+  end
+
+  defp emit_activation_result(context, manifest_version_id, {:error, reason}) do
+    OperationalEvents.emit(
+      :manifest_activation_rejected,
+      %{count: 1},
+      activation_rejection_metadata(context, manifest_version_id, reason),
+      level: :warning
+    )
+  end
+
+  defp activation_rejection_metadata(
+         context,
+         manifest_version_id,
+         {:runner_release_mismatch, required, actual}
+       ) do
+    %{
+      status: :rejected,
+      workspace_id: context.workspace_id,
+      manifest_version_id: manifest_version_id,
+      reason: :runner_release_mismatch,
+      required_runner_release_id: required,
+      runner_release_id: actual
+    }
+  end
+
+  defp activation_rejection_metadata(context, manifest_version_id, reason) do
+    %{
+      status: :rejected,
+      workspace_id: context.workspace_id,
+      manifest_version_id: manifest_version_id,
+      reason: bounded_reason(reason)
+    }
+  end
+
+  defp bounded_reason(%{details: %{reason: reason}}) when is_atom(reason), do: reason
+  defp bounded_reason(reason) when is_atom(reason), do: reason
+  defp bounded_reason({reason, _detail}) when is_atom(reason), do: reason
+  defp bounded_reason({reason, _left, _right}) when is_atom(reason), do: reason
+  defp bounded_reason(_reason), do: :unknown
 end

@@ -76,6 +76,12 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
     assert attempt.id == "child:gold-expanded"
     assert attempt.asset_step_id == "gold-expanded"
     assert detail.child_run_details_truncated?
+    assert detail.root_run.required_runner_release_id == FavnTestSupport.runner_release_id()
+
+    assert Enum.all?(detail.child_runs, fn run ->
+             run.required_runner_release_id == FavnTestSupport.runner_release_id()
+           end)
+
     refute Map.has_key?(detail, :events)
   end
 
@@ -88,6 +94,7 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
       event_sequence: 6,
       submit_kind: submit_kind,
       manifest_version_id: "manifest-v1",
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       inserted_at: @started_at,
       updated_at: @finished_at,
       terminal_at: @finished_at

@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @moduledoc false
 
   alias Favn.Plan
+  alias Favn.Contracts.RunnerReleaseBinding
   alias Favn.Retry.Policy, as: RetryPolicy
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
@@ -13,7 +14,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms
   alias FavnOrchestrator.Storage.RunStateCodec
 
-  @format "favn.run_snapshot.storage.v2"
+  @format "favn.run_snapshot.storage.v3"
+  @legacy_format "favn.run_snapshot.storage.v2"
   # Favn-owned run snapshot atoms are fixed here; consumer module/name atoms come only from
   # the associated manifest record.
   @internal_atom_strings [
@@ -92,6 +94,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "retry_policy",
     "retry_policy_source",
     "retrying",
+    "required_runner_release_id",
     "retry_state",
     "reason",
     "replay_mode",
@@ -143,12 +146,14 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @type manifest_record :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
+          required(:required_runner_release_id) => String.t(),
           required(:manifest_index_json) => String.t()
         }
 
   @spec encode_run(RunState.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def encode_run(%RunState{} = run_state, opts \\ []) when is_list(opts) do
-    with {:ok, normalized} <- RunStateCodec.normalize(run_state) do
+    with :ok <- validate_current_release_binding(run_state),
+         {:ok, normalized} <- RunStateCodec.normalize(run_state) do
       snapshot =
         case Keyword.get(opts, :plan, :inline) do
           :inline ->
@@ -185,7 +190,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, run_state} <- dto_to_run(dto, allowed_atom_strings),
          :ok <- validate_run_manifest(run_state, manifest_version_id),
          :ok <- validate_run_content_hash(run_state, manifest_record),
-         {:ok, normalized} <- RunStateCodec.normalize(run_state) do
+         {:ok, normalized} <- RunStateCodec.normalize(run_state),
+         :ok <- validate_run_release_binding(normalized, manifest_record) do
       {:ok, normalized}
     else
       {:error, reason} -> {:error, reason}
@@ -198,12 +204,13 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp run_to_dto(%RunState{} = run) do
     %{
       "format" => @format,
-      "schema_version" => 2,
+      "schema_version" => 3,
       "id" => run.id,
       "workspace_id" => run.workspace_id,
       "deployment_id" => run.deployment_id,
       "manifest_version_id" => run.manifest_version_id,
       "manifest_content_hash" => run.manifest_content_hash,
+      "required_runner_release_id" => run.required_runner_release_id,
       "asset_ref" => JsonSafe.ref(run.asset_ref),
       "target_refs" => Enum.map(run.target_refs, &JsonSafe.ref/1),
       "plan" => plan_to_dto(run.plan),
@@ -265,6 +272,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       {:ok, %{"format" => @format} = dto} ->
         {:ok, dto}
 
+      {:ok, %{"format" => @legacy_format} = dto} ->
+        {:ok, dto}
+
       {:ok, other} ->
         {:error, {:invalid_run_snapshot_dto, other}}
 
@@ -273,7 +283,23 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     end
   end
 
-  defp dto_to_run(%{"schema_version" => 2} = dto, allowed_atom_strings) do
+  defp dto_to_run(
+         %{"format" => @format, "schema_version" => 3} = dto,
+         allowed_atom_strings
+       ) do
+    dto_to_run(dto, allowed_atom_strings, 3)
+  end
+
+  defp dto_to_run(
+         %{"format" => @legacy_format, "schema_version" => 2} = dto,
+         allowed_atom_strings
+       ) do
+    dto_to_run(dto, allowed_atom_strings, 2)
+  end
+
+  defp dto_to_run(dto, _allowed_atom_strings), do: {:error, {:unsupported_run_snapshot_dto, dto}}
+
+  defp dto_to_run(dto, allowed_atom_strings, schema_version) do
     with {:ok, asset_ref} <- ref_from_dto(Map.get(dto, "asset_ref"), allowed_atom_strings),
          {:ok, encoded_target_refs} <-
            refs_from_dto(Map.get(dto, "target_refs"), allowed_atom_strings),
@@ -283,6 +309,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, submit_kind} <- submit_kind_from_dto(Map.get(dto, "submit_kind")),
          {:ok, inserted_at} <- datetime_from_dto(Map.get(dto, "inserted_at")),
          {:ok, updated_at} <- datetime_from_dto(Map.get(dto, "updated_at")),
+         {:ok, required_runner_release_id} <- release_id_from_dto(dto, schema_version),
          {:ok, result} <- result_from_dto(Map.get(dto, "result"), allowed_atom_strings) do
       {:ok,
        %RunState{
@@ -291,6 +318,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          deployment_id: Map.get(dto, "deployment_id"),
          manifest_version_id: Map.get(dto, "manifest_version_id"),
          manifest_content_hash: Map.get(dto, "manifest_content_hash"),
+         required_runner_release_id: required_runner_release_id,
          asset_ref: asset_ref,
          target_refs: decoded_target_refs(encoded_target_refs, plan),
          plan: plan,
@@ -318,7 +346,16 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     end
   end
 
-  defp dto_to_run(dto, _allowed_atom_strings), do: {:error, {:unsupported_run_snapshot_dto, dto}}
+  defp release_id_from_dto(_dto, 2), do: {:ok, nil}
+
+  defp release_id_from_dto(dto, 3) do
+    release_id = Map.get(dto, "required_runner_release_id")
+
+    case RunnerReleaseBinding.validate(release_id) do
+      :ok -> {:ok, release_id}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp plan_to_dto(nil), do: nil
 
@@ -1450,4 +1487,28 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          content_hash: manifest_hash
        }),
        do: {:error, {:run_manifest_content_hash_mismatch, manifest_hash, run_hash}}
+
+  defp validate_current_release_binding(%RunState{required_runner_release_id: release_id}) do
+    RunnerReleaseBinding.validate(release_id)
+  end
+
+  defp validate_run_release_binding(
+         %RunState{required_runner_release_id: release_id},
+         %{required_runner_release_id: release_id}
+       )
+       when is_binary(release_id),
+       do: :ok
+
+  defp validate_run_release_binding(
+         %RunState{required_runner_release_id: nil} = run,
+         _manifest_record
+       ) do
+    if RunState.finalized?(run), do: :ok, else: {:error, :legacy_runner_release_unbound}
+  end
+
+  defp validate_run_release_binding(%RunState{required_runner_release_id: run_release_id}, record) do
+    {:error,
+     {:run_manifest_runner_release_mismatch, Map.get(record, :required_runner_release_id),
+      run_release_id}}
+  end
 end

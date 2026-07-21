@@ -120,6 +120,7 @@ defmodule FavnOrchestrator.API.DTO do
       status: atom_name(run.status),
       submit_kind: atom_name(run.submit_kind),
       manifest_version_id: run.manifest_version_id,
+      required_runner_release_id: Map.get(run, :required_runner_release_id),
       event_seq: run.event_seq,
       started_at: datetime(run.started_at),
       finished_at: datetime(run.finished_at)
@@ -134,6 +135,7 @@ defmodule FavnOrchestrator.API.DTO do
       submit_kind: atom_name(run.submit_kind),
       manifest_version_id: run.manifest_version_id,
       manifest_content_hash: run.manifest_content_hash,
+      required_runner_release_id: Map.get(run, :required_runner_release_id),
       event_seq: run.event_seq,
       started_at: datetime(run.started_at),
       finished_at: datetime(run.finished_at),

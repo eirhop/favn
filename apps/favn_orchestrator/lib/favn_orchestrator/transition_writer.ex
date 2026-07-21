@@ -89,7 +89,8 @@ defmodule FavnOrchestrator.TransitionWriter do
       run_id: run_state.id,
       event_type: event_type,
       status: run_state.status,
-      submit_kind: run_state.submit_kind
+      submit_kind: run_state.submit_kind,
+      required_runner_release_id: run_state.required_runner_release_id
     })
   end
 
@@ -101,6 +102,7 @@ defmodule FavnOrchestrator.TransitionWriter do
         workspace_id: run_state.workspace_id,
         run_id: run_state.id,
         event_type: event_type,
+        required_runner_release_id: run_state.required_runner_release_id,
         reason: reason
       },
       level: :error

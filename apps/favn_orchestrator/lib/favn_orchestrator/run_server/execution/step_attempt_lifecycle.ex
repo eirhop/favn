@@ -92,6 +92,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
         run_started_at: lifecycle.run.inserted_at,
         manifest_version_id: node_identity.manifest_version_id,
         manifest_content_hash: lifecycle.version.content_hash,
+        required_runner_release_id: lifecycle.run.required_runner_release_id,
         node_identity: node_identity,
         asset_ref: lifecycle.asset_ref,
         asset_refs: [lifecycle.asset_ref],

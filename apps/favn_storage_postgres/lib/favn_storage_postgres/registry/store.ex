@@ -672,18 +672,21 @@ defmodule FavnStoragePostgres.Registry.Store do
           where: state.workspace_id == ^context.workspace_id,
           select:
             {state, deployment.manifest_version_id, manifest.content_hash,
-             manifest.schema_version, manifest.runner_contract_version, manifest.asset_count,
-             manifest.pipeline_count, manifest.schedule_count}
+             manifest.schema_version, manifest.runner_contract_version,
+             manifest.required_runner_release_id, manifest.asset_count, manifest.pipeline_count,
+             manifest.schedule_count}
         )
 
       case Repo.one(query) do
         {%WorkspaceRuntimeState{} = state, manifest_version_id, content_hash, schema_version,
-         runner_contract_version, asset_count, pipeline_count, schedule_count} ->
+         runner_contract_version, required_runner_release_id, asset_count, pipeline_count,
+         schedule_count} ->
           {:ok,
            runtime_result(state, manifest_version_id, %{
              content_hash: content_hash,
              schema_version: schema_version,
              runner_contract_version: runner_contract_version,
+             required_runner_release_id: required_runner_release_id,
              asset_count: asset_count,
              pipeline_count: pipeline_count,
              schedule_count: schedule_count
@@ -847,6 +850,18 @@ defmodule FavnStoragePostgres.Registry.Store do
   end
 
   defp decode_manifest_row(nil), do: {:error, Error.new(:not_found, "manifest release not found")}
+
+  defp decode_manifest_row(%ManifestVersion{schema_version: schema_version})
+       when schema_version < @current_manifest_schema do
+    {:error,
+     Error.new(:invalid, "historical manifest cannot be used as a current release",
+       details: %{
+         reason: :historical_manifest_not_activatable,
+         schema_version: schema_version,
+         current_schema_version: @current_manifest_schema
+       }
+     )}
+  end
 
   defp decode_manifest_row(%ManifestVersion{} = row) do
     manifest_json = Jason.encode!(row.manifest)
@@ -1201,6 +1216,8 @@ defmodule FavnStoragePostgres.Registry.Store do
       manifest_content_hash: manifest_summary_value(manifest_summary, :content_hash),
       schema_version: manifest_summary_value(manifest_summary, :schema_version),
       runner_contract_version: manifest_summary_value(manifest_summary, :runner_contract_version),
+      required_runner_release_id:
+        manifest_summary_value(manifest_summary, :required_runner_release_id),
       asset_count: manifest_summary_value(manifest_summary, :asset_count),
       pipeline_count: manifest_summary_value(manifest_summary, :pipeline_count),
       schedule_count: manifest_summary_value(manifest_summary, :schedule_count)
@@ -1223,6 +1240,7 @@ defmodule FavnStoragePostgres.Registry.Store do
       content_hash: version.content_hash,
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
+      required_runner_release_id: version.required_runner_release_id,
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
       schedule_count: length(List.wrap(version.manifest.schedules))
@@ -1241,6 +1259,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          "manifest_content_hash" => result.manifest_content_hash,
          "schema_version" => result.schema_version,
          "runner_contract_version" => result.runner_contract_version,
+         "required_runner_release_id" => result.required_runner_release_id,
          "asset_count" => result.asset_count,
          "pipeline_count" => result.pipeline_count,
          "schedule_count" => result.schedule_count
@@ -1268,6 +1287,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          manifest_content_hash: Map.get(response, "manifest_content_hash"),
          schema_version: Map.get(response, "schema_version"),
          runner_contract_version: Map.get(response, "runner_contract_version"),
+         required_runner_release_id: Map.get(response, "required_runner_release_id"),
          asset_count: Map.get(response, "asset_count"),
          pipeline_count: Map.get(response, "pipeline_count"),
          schedule_count: Map.get(response, "schedule_count")

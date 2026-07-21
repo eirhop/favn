@@ -216,8 +216,24 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, :invalid_sample_limit} ->
         validation_error(conn, "Invalid sample limit")
 
-      {:error, :runner_client_not_available} ->
+      {:error, reason}
+      when reason in [
+             :runner_client_not_available,
+             :runner_release_info_unavailable,
+             :runner_not_ready,
+             :runner_unavailable
+           ] ->
         Response.error(conn, 503, "service_unavailable", "Runner inspection is not available")
+
+      {:error, {:runner_release_mismatch, required, actual}} ->
+        Response.error(conn, 409, "runner_release_mismatch", "Runner release does not match", %{
+          required_runner_release_id: required,
+          runner_release_id: actual
+        })
+
+      {:error, reason}
+      when reason in [:invalid_runner_inspection_result, :invalid_runner_release_identity] ->
+        Response.error(conn, 502, "invalid_runner_response", "Runner returned an invalid result")
 
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
@@ -256,7 +272,22 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           "Runner has a different manifest for this version id"
         )
 
-      {:error, reason} when reason in [:runner_client_not_available, :runner_unavailable] ->
+      {:error, {:runner_release_mismatch, required, actual}} ->
+        Response.error(
+          conn,
+          409,
+          "runner_release_mismatch",
+          "Runner release does not match the manifest requirement",
+          %{required_runner_release_id: required, runner_release_id: actual}
+        )
+
+      {:error, reason}
+      when reason in [
+             :runner_client_not_available,
+             :runner_release_info_unavailable,
+             :runner_not_ready,
+             :runner_unavailable
+           ] ->
         Response.error(
           conn,
           503,
@@ -296,6 +327,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           resource_id: manifest_version_id,
           outcome: "accepted",
           workspace_id: runtime.workspace_id,
+          required_runner_release_id: runtime.required_runner_release_id,
           service_identity: Authentication.service_identity(conn)
         }
         |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "accepted"))
@@ -306,19 +338,179 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
            activated: true,
            manifest_version_id: manifest_version_id,
            deployment_id: runtime.deployment_id,
+           required_runner_release_id: runtime.required_runner_release_id,
            revision: runtime.revision
          }, "manifest", manifest_version_id}
 
       {:error, :manifest_version_not_found} ->
-        {:error, 404, "not_found", "Manifest version was not found", %{}}
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          404,
+          "not_found",
+          "Manifest version was not found",
+          %{}
+        )
+
+      {:error, %Error{kind: :not_found}} ->
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          404,
+          "not_found",
+          "Manifest version was not found",
+          %{}
+        )
+
+      {:error, %Error{details: %{reason: :historical_manifest_not_activatable}}} ->
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          422,
+          "validation_failed",
+          "Historical manifests cannot be activated",
+          %{},
+          "historical_manifest_not_activatable"
+        )
+
+      {:error, {:runner_release_mismatch, required, actual}} ->
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          409,
+          "runner_release_mismatch",
+          "Runner release does not match the manifest requirement",
+          %{
+            required_runner_release_id: required,
+            runner_release_id: actual
+          }
+        )
+
+      {:error, :runner_manifest_conflict} ->
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          409,
+          "runner_manifest_conflict",
+          "Runner has conflicting manifest content",
+          %{}
+        )
+
+      {:error, reason}
+      when reason in [
+             :runner_client_not_available,
+             :runner_release_info_unavailable,
+             :runner_not_ready,
+             :runner_unavailable
+           ] ->
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          503,
+          "runner_unavailable",
+          "Runner is not ready for activation",
+          %{}
+        )
 
       {:error, reason} ->
         Logger.error(
           "manifest.activate failed: #{inspect(Redaction.redact_operational_bounded(reason))}"
         )
 
-        {:error, 400, "bad_request", "Request failed", %{}}
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          400,
+          "bad_request",
+          "Request failed",
+          %{}
+        )
     end
+  end
+
+  defp activation_rejected(
+         conn,
+         context,
+         session,
+         actor,
+         manifest_version_id,
+         idempotency,
+         status,
+         code,
+         message,
+         details
+       ) do
+    activation_rejected(
+      conn,
+      context,
+      session,
+      actor,
+      manifest_version_id,
+      idempotency,
+      status,
+      code,
+      message,
+      details,
+      code
+    )
+  end
+
+  defp activation_rejected(
+         conn,
+         context,
+         session,
+         actor,
+         manifest_version_id,
+         idempotency,
+         status,
+         code,
+         message,
+         details,
+         rejection_reason
+       ) do
+    %{
+      action: "manifest.activate",
+      actor_id: actor.id,
+      session_id: session.id,
+      resource_type: "manifest",
+      resource_id: manifest_version_id,
+      outcome: "rejected",
+      rejection_reason: rejection_reason,
+      service_identity: Authentication.service_identity(conn)
+    }
+    |> Map.merge(details)
+    |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "rejected"))
+    |> then(&Audit.put_best_effort(context, &1))
+
+    {:error, status, code, message, details}
   end
 
   @doc false

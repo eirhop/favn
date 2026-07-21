@@ -165,11 +165,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
              workspace_id: query.workspace_context.workspace_id,
              root_run_id: root_run_id
            ),
-         %Run{} = root <-
-           Repo.get_by(Run,
-             workspace_id: query.workspace_context.workspace_id,
-             run_id: root_run_id
-           ),
+         %{} = root <-
+           get_run_summary(query.workspace_context.workspace_id, root_run_id),
          {:ok, runs} <-
            page_group_runs(%PageGroupRuns{
              workspace_context: query.workspace_context,
@@ -188,7 +185,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       {:ok,
        %OperatorRunOverviewResult{
          overview: group_result(overview),
-         root_run: root |> Map.take(@run_summary_fields) |> run_result(),
+         root_run: run_result(root),
          runs: runs.items,
          requested_windows: requested_windows.items,
          requested_windows_truncated?: requested_windows.has_more?,
@@ -222,7 +219,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         )
         |> after_group_run(page.after)
         |> order_by([run], desc: run.submitted_event_id, desc: run.run_id)
-        |> select([run], struct(run, ^@run_summary_fields))
+        |> select_run_summary()
         |> limit(^(page.limit + 1))
 
       rows = Repo.all(query)
@@ -300,13 +297,18 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         from(target in RunTarget,
           join: run in Run,
           on: run.workspace_id == target.workspace_id and run.run_id == target.run_id,
+          join: manifest in ManifestVersion,
+          on: manifest.manifest_version_id == run.manifest_version_id,
           where:
             target.workspace_id == ^workspace_id and
               target.deployment_id == ^page.deployment_id and
               target.target_kind == ^target_kind and target.target_id == ^page.target_id,
           order_by: [desc: target.submitted_event_id, desc: target.run_id],
           limit: ^(page.limit + 1),
-          select: struct(run, ^@run_summary_fields)
+          select:
+            merge(map(run, ^@run_summary_fields), %{
+              required_runner_release_id: manifest.required_runner_release_id
+            })
         )
         |> after_target_run(page.after)
 
@@ -392,9 +394,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
             run.root_execution_group_id == ^root_run_id and
             run.status in ["error", "cancelled", "timed_out"],
         order_by: [desc: run.latest_event_id, desc: run.run_id],
-        limit: ^(limit + 1),
-        select: struct(run, ^@run_summary_fields)
+        limit: ^(limit + 1)
       )
+      |> select_run_summary()
       |> Repo.all()
 
     run_page(rows, limit)
@@ -461,6 +463,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       parent_run_id: row.parent_run_id,
       deployment_id: row.deployment_id,
       manifest_version_id: row.manifest_version_id,
+      required_runner_release_id: row.required_runner_release_id,
       status: String.to_existing_atom(row.status),
       submit_kind: String.to_existing_atom(row.submit_kind),
       trigger_type: String.to_existing_atom(row.trigger_type),
@@ -472,6 +475,26 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       terminal_at: row.terminal_at,
       rerun_of_run_id: row.rerun_of_run_id
     }
+  end
+
+  defp get_run_summary(workspace_id, run_id) do
+    Run
+    |> where([run], run.workspace_id == ^workspace_id and run.run_id == ^run_id)
+    |> select_run_summary()
+    |> Repo.one()
+  end
+
+  defp select_run_summary(query) do
+    query
+    |> join(:inner, [run], manifest in ManifestVersion,
+      on: manifest.manifest_version_id == run.manifest_version_id
+    )
+    |> select(
+      [run, manifest],
+      merge(map(run, ^@run_summary_fields), %{
+        required_runner_release_id: manifest.required_runner_release_id
+      })
+    )
   end
 
   defp window_result(window) do

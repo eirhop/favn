@@ -13,6 +13,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
   """
 
   alias Favn.Manifest.Version
+  alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerResult
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.ExecutionAdmission
@@ -23,6 +25,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunnerManifestRegistration
+  alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RunnerLogBridge
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.FreshnessContext
@@ -77,7 +80,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     case RunState.execution_mode(run_state) do
       :pipeline ->
-        with :ok <- preflight_execution_identities(run_state),
+        with :ok <- RunnerReleaseCompatibility.verify_run_manifest(run_state, version),
+             :ok <-
+               RunnerReleaseCompatibility.verify_runner(
+                 runner_client,
+                 run_state.required_runner_release_id,
+                 runner_opts
+               ),
+             :ok <- preflight_execution_identities(run_state),
              :ok <- RunnerClientValidator.validate(runner_client),
              {:ok, manifest_index} <- ManifestIndexCache.fetch(version),
              execution_index <- execution_index(run_state, manifest_index),
@@ -112,7 +122,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
         end
 
       :sequential ->
-        with :ok <- preflight_execution_identities(run_state),
+        with :ok <- RunnerReleaseCompatibility.verify_run_manifest(run_state, version),
+             :ok <-
+               RunnerReleaseCompatibility.verify_runner(
+                 runner_client,
+                 run_state.required_runner_release_id,
+                 runner_opts
+               ),
+             :ok <- preflight_execution_identities(run_state),
              :ok <- RunnerClientValidator.validate(runner_client),
              {:ok, manifest_index} <- ManifestIndexCache.fetch(version),
              lease_id <- manifest_lease_id(run_state),
@@ -498,6 +515,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp process_await_result(%RunExecutionState{} = state, entry, result, :sequential) do
+    result = validate_await_result(state.run, result)
     state = elem(RunExecutionState.complete_work(state, entry.execution_id), 1)
 
     state
@@ -506,8 +524,30 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp process_await_result(%RunExecutionState{} = state, entry, result, :pipeline) do
-    handle_pipeline_await_result(state, entry, result)
+    handle_pipeline_await_result(state, entry, validate_await_result(state.run, result))
   end
+
+  defp validate_await_result(
+         %RunState{required_runner_release_id: required},
+         {:ok, %RunnerResult{} = result}
+       ) do
+    case RunnerReleaseCompatibility.verify_result(required, result) do
+      :ok ->
+        {:ok, result}
+
+      {:error, reason} ->
+        {:error,
+         RunnerError.new(
+           type: :runner_release_mismatch,
+           message: "Runner result release identity does not match the run",
+           reason: reason,
+           retryable?: false,
+           outcome: :unknown
+         )}
+    end
+  end
+
+  defp validate_await_result(%RunState{}, result), do: result
 
   defp resume_retry(%RunExecutionState{mode: :sequential} = state, retry) do
     state

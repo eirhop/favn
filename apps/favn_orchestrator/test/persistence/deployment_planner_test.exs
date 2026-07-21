@@ -16,17 +16,18 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlannerTest do
     assets = [source, private_stage, customer_output]
     {:ok, graph} = Graph.build(assets)
 
-    manifest = %Manifest{
-      assets: assets,
-      pipelines: [
-        %Pipeline{
-          module: MyApp.CustomerPipeline,
-          name: :daily,
-          selectors: [{:asset, customer_output.ref}]
-        }
-      ],
-      graph: graph
-    }
+    manifest =
+      FavnTestSupport.with_manifest_contract(%Manifest{
+        assets: assets,
+        pipelines: [
+          %Pipeline{
+            module: MyApp.CustomerPipeline,
+            name: :daily,
+            selectors: [{:asset, customer_output.ref}]
+          }
+        ],
+        graph: graph
+      })
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv-deployment-planner")
 
@@ -63,7 +64,8 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlannerTest do
     ref = {MyApp.Source, :source}
     asset = asset(ref, [])
     {:ok, graph} = Graph.build([asset])
-    {:ok, version} = Version.new(%Manifest{assets: [asset], graph: graph})
+    manifest = FavnTestSupport.with_manifest_contract(%Manifest{assets: [asset], graph: graph})
+    {:ok, version} = Version.new(manifest)
 
     selection = %DeploymentPlanner{
       common_assets: [ref],

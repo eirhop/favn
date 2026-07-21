@@ -311,6 +311,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
         deployment_id: fixture.deployment_id,
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: ref,
         target_refs: [ref],
         plan: plan
@@ -473,6 +474,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
         deployment_id: fixture.deployment_id,
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.PerformanceAsset, :asset},
         target_refs: [{MyApp.PerformanceAsset, :asset}]
       )
@@ -573,6 +575,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
         deployment_id: fixture.deployment_id,
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.PerformanceAsset, :asset},
         target_refs: [{MyApp.PerformanceAsset, :asset}]
       )

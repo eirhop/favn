@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
         id: "run_codec",
         manifest_version_id: "mv_codec",
         manifest_content_hash: "hash_codec",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Asset, :asset}
       )
 
@@ -25,6 +26,7 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
         id: "run_target_identity",
         manifest_version_id: "mv_codec",
         manifest_content_hash: "hash_codec",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Asset, :asset},
         target_refs: [{MyApp.Asset, :asset}]
       )
@@ -48,6 +50,7 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
         id: "run_codec_backfill",
         manifest_version_id: "mv_codec",
         manifest_content_hash: "hash_codec",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Asset, :asset},
         submit_kind: :backfill_pipeline
       )
@@ -66,6 +69,7 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
         id: "run_codec_backfill_asset",
         manifest_version_id: "mv_codec",
         manifest_content_hash: "hash_codec",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Asset, :asset},
         submit_kind: :backfill_asset
       )
@@ -79,6 +83,7 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
         id: "run_codec_terminal_metadata",
         manifest_version_id: "mv_codec",
         manifest_content_hash: "hash_codec",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Asset, :asset},
         metadata: %{"terminal_event_type" => "run_failed"}
       )
@@ -94,6 +99,7 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
         id: "run_codec_legacy_terminal",
         manifest_version_id: "mv_codec",
         manifest_content_hash: "hash_codec",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Asset, :asset}
       )
       |> RunState.transition(
@@ -116,6 +122,7 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
         id: "run_codec_intermediate_failure",
         manifest_version_id: "mv_codec",
         manifest_content_hash: "hash_codec",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Asset, :asset}
       )
       |> RunState.transition(status: :error, error: %{type: :step_failed})
@@ -134,6 +141,7 @@ defmodule FavnOrchestrator.Storage.RunStateCodecTest do
         id: "run_codec_invalid",
         manifest_version_id: "mv_codec",
         manifest_content_hash: "hash_codec",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Asset, :asset}
       )
 

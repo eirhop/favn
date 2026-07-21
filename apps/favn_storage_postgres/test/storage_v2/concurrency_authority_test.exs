@@ -1349,6 +1349,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
       deployment_id: fixture.deployment_id,
       manifest_version_id: fixture.version.manifest_version_id,
       manifest_content_hash: fixture.version.content_hash,
+      required_runner_release_id: fixture.version.required_runner_release_id,
       asset_ref: {MyApp.ConcurrentAsset, :asset},
       target_refs: [{MyApp.ConcurrentAsset, :asset}]
     )

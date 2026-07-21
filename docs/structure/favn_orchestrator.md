@@ -25,9 +25,24 @@ freshness, and execution coordination.
   deployment planning own
   immutable compact global releases, package-first publication, on-demand runtime
   package attachment, bounded compiled indexes, and exact workspace deployment
-  catalogs.
+  catalogs. Publication is runner-independent and leaves a manifest staged.
+  Activation loads that immutable version, requires an explicitly ready runner
+  reporting the exact `required_runner_release_id`, verifies or registers the
+  manifest in the runner cache, and only then commits the deployment pointer.
+  Runner outage returns a service-unavailable result; a release mismatch or
+  conflicting runner cache entry returns a conflict without changing the active
+  deployment. `Manifests` emits bounded publication and activation telemetry.
+  Runner diagnostic events include latency, status, manifest id when known, and
+  the required/actual release ids on mismatch. Rejected activation audit entries
+  contain only actor/service identity, stable reason codes, idempotency metadata,
+  and relevant release ids; selection and configuration are not copied into them.
 - `Runs`, `RunManager`, `RunServer`, and `TransitionWriter` own submission,
   execution, retry, cancellation, snapshots, events, and durable publication.
+  Submission derives the runner release only from the selected immutable manifest;
+  caller options cannot override it. The run's workspace, deployment, manifest id,
+  manifest content hash, and runner release id are one immutable identity. Dispatch,
+  relation inspection, runner results, recovery, events, diagnostics, and compact
+  operator summaries preserve or verify that identity.
   `RunManager` coordinates only bounded in-memory admission and process tracking;
   PostgreSQL work happens in callers or supervised recovery workers so one slow
   database operation cannot block unrelated manager calls.
@@ -65,6 +80,10 @@ freshness, and execution coordination.
 Run snapshots and append-only events are authoritative for run state. Compact
 operator projections are versioned, repairable, and updated through the durable
 outbox. PubSub and PostgreSQL notifications only reduce refresh latency.
+Current snapshots require the runner release binding and use storage format v3.
+Historical terminal v2 snapshots remain readable with a nil release id for audit.
+A non-terminal v2 snapshot cannot be recovered or dispatched and returns the stable
+`legacy_runner_release_unbound` reason.
 Catalogue and planning paths share the byte- and entry-bounded compiled manifest
 index cache; generated SQL execution
 trees are loaded only after execution admission for the selected runtime asset and

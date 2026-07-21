@@ -209,6 +209,17 @@ erDiagram
 its submitted/latest events, while every event points back to its run. This lets
 one transaction establish authoritative snapshot and event consistency.
 `RUN_PLANS` is immutable; `RUNS.snapshot` contains mutable state and the plan hash.
+The current run snapshot also pins `required_runner_release_id` beside the immutable
+deployment id, manifest version id, and manifest content hash. The value is checked
+against the referenced immutable manifest before insert and cannot change on a
+transition. It is intentionally stored inside the authoritative snapshot rather
+than duplicated as another relational run column; bounded run summaries derive it
+from `manifest_versions` through a join or one bounded batched lookup.
+
+Snapshot storage format v3 requires a canonical `rr_<64 lowercase hex>` binding.
+Format v2 is legacy: terminal rows may decode with a nil binding for audit display,
+but reading a non-terminal v2 row returns `legacy_runner_release_unbound`, preventing
+recovery or dispatch under an unproven runtime.
 
 ## Scheduling, admission, materialization, and backfills
 

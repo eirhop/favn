@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.Storage.RunStateCodec do
   @moduledoc false
 
   alias Favn.Plan
+  alias Favn.Contracts.RunnerReleaseBinding
   alias FavnOrchestrator.RunState
 
   @statuses [:pending, :running, :ok, :partial, :error, :cancelled, :timed_out]
@@ -9,7 +10,10 @@ defmodule FavnOrchestrator.Storage.RunStateCodec do
 
   @spec normalize(RunState.t()) :: {:ok, RunState.t()} | {:error, term()}
   def normalize(%RunState{} = run_state) do
+    run_state = normalize_legacy_finalized_snapshot(run_state)
+
     with :ok <- validate_identity(run_state),
+         :ok <- validate_runner_release_id(run_state.required_runner_release_id),
          :ok <- validate_asset_ref(run_state.asset_ref),
          :ok <- validate_refs(run_state.target_refs, :target_refs),
          :ok <- validate_plan(run_state.plan),
@@ -30,7 +34,7 @@ defmodule FavnOrchestrator.Storage.RunStateCodec do
          :ok <- validate_result(run_state.result),
          :ok <- validate_datetime(run_state.inserted_at, :inserted_at),
          :ok <- validate_datetime(run_state.updated_at, :updated_at) do
-      {:ok, run_state |> normalize_legacy_finalized_snapshot() |> RunState.with_snapshot_hash()}
+      {:ok, RunState.with_snapshot_hash(run_state)}
     end
   end
 
@@ -62,6 +66,9 @@ defmodule FavnOrchestrator.Storage.RunStateCodec do
         :ok
     end
   end
+
+  defp validate_runner_release_id(nil), do: :ok
+  defp validate_runner_release_id(value), do: RunnerReleaseBinding.validate(value)
 
   defp validate_asset_ref({module, name}) when is_atom(module) and is_atom(name), do: :ok
   defp validate_asset_ref(_value), do: {:error, :invalid_asset_ref}

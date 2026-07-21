@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptStateTest do
         id: "stage-attempt-state",
         manifest_version_id: "manifest-version",
         manifest_content_hash: "manifest-hash",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Assets.StageAttempt, :asset}
       )
 
@@ -41,6 +42,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptStateTest do
         id: "stage-admission-failure",
         manifest_version_id: "manifest-version",
         manifest_content_hash: "manifest-hash",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Assets.StageAttempt, :asset}
       )
 

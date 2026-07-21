@@ -76,29 +76,30 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
   test "round-trips compact manifest versions with package hashes" do
     asset_ref = {MyApp.SQLAssets.DailyOrders, :asset}
 
-    manifest = %Manifest{
-      assets: [
-        %Asset{
-          ref: asset_ref,
-          module: elem(asset_ref, 0),
-          name: :asset,
-          type: :sql,
-          relation: RelationRef.new!(%{connection: :warehouse, schema: "gold", name: "orders"}),
-          execution_package_hash: String.duplicate("b", 64)
-        }
-      ],
-      pipelines: [
-        %Pipeline{
-          module: MyApp.Pipelines.SQLDailyOrders,
-          name: :daily_orders,
-          selectors: [{:asset, asset_ref}],
-          deps: :all,
-          source: :dsl,
-          outputs: [:asset]
-        }
-      ],
-      graph: %Graph{nodes: [asset_ref], edges: [], topo_order: [asset_ref]}
-    }
+    manifest =
+      FavnTestSupport.with_manifest_contract(%Manifest{
+        assets: [
+          %Asset{
+            ref: asset_ref,
+            module: elem(asset_ref, 0),
+            name: :asset,
+            type: :sql,
+            relation: RelationRef.new!(%{connection: :warehouse, schema: "gold", name: "orders"}),
+            execution_package_hash: String.duplicate("b", 64)
+          }
+        ],
+        pipelines: [
+          %Pipeline{
+            module: MyApp.Pipelines.SQLDailyOrders,
+            name: :daily_orders,
+            selectors: [{:asset, asset_ref}],
+            deps: :all,
+            source: :dsl,
+            outputs: [:asset]
+          }
+        ],
+        graph: %Graph{nodes: [asset_ref], edges: [], topo_order: [asset_ref]}
+      })
 
     assert {:ok, version} = Version.new(manifest, manifest_version_id: "mv_sql_payload_codec")
     assert {:ok, encoded} = PayloadCodec.encode(version)
@@ -222,6 +223,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
         id: "run_payload_restart",
         manifest_version_id: "mv_payload_restart",
         manifest_content_hash: String.duplicate("a", 64),
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {existing_module, :asset},
         target_refs: [{existing_module, :asset}]
       )

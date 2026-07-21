@@ -145,6 +145,7 @@ defmodule FavnOrchestrator.Diagnostics do
             workspace_id: workspace_id,
             manifest_version_id: version.manifest_version_id,
             content_hash: version.content_hash,
+            required_runner_release_id: version.required_runner_release_id,
             asset_count: length(version.manifest.assets),
             pipeline_count: length(version.manifest.pipelines),
             schedule_count: length(version.manifest.schedules)
@@ -301,6 +302,7 @@ defmodule FavnOrchestrator.Diagnostics do
       run_id: run.run_id,
       status: run.status,
       manifest_version_id: run.manifest_version_id,
+      required_runner_release_id: run.required_runner_release_id,
       submit_kind: run.submit_kind,
       updated_at: run.updated_at,
       runner_execution_id: nil
@@ -312,6 +314,7 @@ defmodule FavnOrchestrator.Diagnostics do
       run_id: run.id,
       status: run.status,
       manifest_version_id: run.manifest_version_id,
+      required_runner_release_id: run.required_runner_release_id,
       submit_kind: run.submit_kind,
       updated_at: run.updated_at,
       runner_execution_id: run.runner_execution_id

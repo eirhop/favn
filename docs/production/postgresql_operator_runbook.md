@@ -153,6 +153,42 @@ Runtime nodes never migrate at boot.
 
 5. Start one canary and require readiness to report `ready?: true`.
 6. Check database errors, lock waits, pool queue time, projection lag, and outbox lag.
+
+## Manifest activation and runner alignment
+
+Manifest publication is safe while the runner is offline: it validates and stores
+an immutable staged release without changing any workspace deployment. Activation
+is the compatibility gate. For the exact staged manifest, the control plane:
+
+1. validates the requested workspace target selection;
+2. requires runner diagnostics to report both explicit readiness and a canonical
+   runner release id;
+3. requires that id to equal the manifest's `required_runner_release_id`;
+4. verifies or registers the manifest in the runner cache; and
+5. commits the immutable deployment and active pointer.
+
+A runner outage or incomplete diagnostics returns `runner_unavailable` and leaves
+the active deployment unchanged. A release mismatch returns
+`runner_release_mismatch` with only the required and actual release ids. A cache
+collision returns `runner_manifest_conflict`. Both are conflicts and also leave the
+active deployment unchanged. Audit records and operator responses include release
+ids, never runner paths, environment values, or secrets.
+
+Monitor `manifest_publication_succeeded`, `manifest_publication_rejected`,
+`manifest_activation_succeeded`, `manifest_activation_rejected`, and
+`runner_release_diagnostics_checked` on the orchestrator telemetry prefix. The
+diagnostic event reports bounded latency and readiness status. A mismatch reports
+only the required and actual release ids. Activation rejection audit records use a
+stable `rejection_reason`; they deliberately omit selection, deployment
+configuration, environment values, and raw runner errors.
+
+Every admitted run pins the deployment id, manifest id, manifest content hash, and
+runner release id. Recovery rechecks this tuple before starting a run server. After
+an upgrade, historical terminal snapshots without a release binding remain visible
+for audit; a pending or running legacy snapshot fails closed with
+`legacy_runner_release_unbound`. Do not edit those rows. Republish an aligned
+manifest for new work and resolve or terminate legacy work through an explicit
+maintenance decision before reopening admission.
 7. Roll out remaining nodes gradually.
 
 Readiness rejects PostgreSQL majors other than 18, a mismatched catalog-definition

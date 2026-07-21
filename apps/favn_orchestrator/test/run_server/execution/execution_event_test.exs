@@ -53,6 +53,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
         id: "continue-independent-siblings",
         manifest_version_id: "manifest-version",
         manifest_content_hash: "manifest-hash",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {__MODULE__, :asset}
       )
 

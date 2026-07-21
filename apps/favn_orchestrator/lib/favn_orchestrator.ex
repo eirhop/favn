@@ -10,6 +10,7 @@ defmodule FavnOrchestrator do
   """
 
   alias Favn.Contracts.RelationInspectionRequest
+  alias Favn.Contracts.RelationInspectionResult
   alias Favn.Contracts.RunnerClient
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
@@ -40,6 +41,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunnerManifestRegistration
+  alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
@@ -217,7 +219,8 @@ defmodule FavnOrchestrator do
     runner_opts = configured_runner_opts()
     manifest_version_id = version.manifest_version_id
 
-    with :ok <- validate_runner_client(runner_client) do
+    with :ok <- validate_runner_client(runner_client),
+         :ok <- RunnerReleaseCompatibility.verify_runner(runner_client, version, runner_opts) do
       content_hash = version.content_hash
 
       case RunnerManifestRegistration.ensure(runner_client, version, runner_opts) do
@@ -521,6 +524,12 @@ defmodule FavnOrchestrator do
          {:ok, asset_ref} <- ManifestTarget.resolve_asset_ref(version, target_id),
          :ok <- validate_runner_client(configured_runner_client()),
          :ok <-
+           RunnerReleaseCompatibility.verify_runner(
+             configured_runner_client(),
+             version,
+             configured_runner_opts()
+           ),
+         :ok <-
            RunnerManifestRegistration.ensure(
              configured_runner_client(),
              version,
@@ -529,11 +538,30 @@ defmodule FavnOrchestrator do
       request = %RelationInspectionRequest{
         manifest_version_id: manifest_version_id,
         manifest_content_hash: version.content_hash,
+        required_runner_release_id: version.required_runner_release_id,
         asset_ref: asset_ref,
         sample_limit: Keyword.get(opts, :sample_limit, 20)
       }
 
-      configured_runner_client().inspect_relation(request, configured_runner_opts())
+      case configured_runner_client().inspect_relation(request, configured_runner_opts()) do
+        {:ok, %RelationInspectionResult{} = result} ->
+          with :ok <-
+                 RunnerReleaseCompatibility.verify_inspection_result(
+                   version.required_runner_release_id,
+                   result
+                 ) do
+            {:ok, result}
+          end
+
+        {:ok, _invalid_result} ->
+          {:error, :invalid_runner_inspection_result}
+
+        {:error, _reason} = error ->
+          error
+
+        _invalid_response ->
+          {:error, :invalid_runner_inspection_result}
+      end
     end
   end
 

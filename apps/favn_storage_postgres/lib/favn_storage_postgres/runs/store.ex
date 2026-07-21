@@ -38,6 +38,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnStoragePostgres.Runs.Decoder
   alias FavnStoragePostgres.RuntimeInputKeys
   alias FavnStoragePostgres.Schemas.CapacityScope
+  alias FavnStoragePostgres.Schemas.ManifestVersion
   alias FavnStoragePostgres.Schemas.OutboxEvent
   alias FavnStoragePostgres.Schemas.Run
   alias FavnStoragePostgres.Schemas.RunEvent
@@ -56,6 +57,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   @max_runtime_input_pins 1_000
   @runtime_input_package_batch_size 500
   @max_cancel_reason_bytes 32 * 1_024
+  @snapshot_version 2
 
   @impl true
   def create_run(%CreateRun{} = command) do
@@ -170,7 +172,8 @@ defmodule FavnStoragePostgres.Runs.Store do
          ecto_query <- run_summaries_query(query),
          rows <- Repo.all(ecto_query),
          page_rows <- Enum.take(rows, query.limit),
-         runs <- Enum.map(page_rows, &run_summary/1),
+         runner_releases <- runner_releases(page_rows),
+         runs <- Enum.map(page_rows, &run_summary(&1, runner_releases)),
          has_more? <- length(rows) > query.limit do
       {:ok,
        %CursorPage{
@@ -893,6 +896,29 @@ defmodule FavnStoragePostgres.Runs.Store do
             manifest_version_id: command.run.manifest_version_id
           ) || Repo.rollback(Error.new(:constraint, "run deployment is not available"))
 
+        manifest = Repo.get!(ManifestVersion, deployment.manifest_version_id)
+        manifest_content_hash = Base.encode16(manifest.content_hash, case: :lower)
+
+        cond do
+          command.run.manifest_content_hash != manifest_content_hash ->
+            Repo.rollback(
+              Error.new(:constraint, "run manifest content does not match its deployment",
+                details: %{reason: :run_manifest_content_hash_mismatch}
+              )
+            )
+
+          not is_binary(command.run.required_runner_release_id) or
+              command.run.required_runner_release_id != manifest.required_runner_release_id ->
+            Repo.rollback(
+              Error.new(:constraint, "run runner release identity does not match its deployment",
+                details: %{reason: :run_manifest_runner_release_mismatch}
+              )
+            )
+
+          true ->
+            :ok
+        end
+
         _deployment = deployment
         SQL.query!(Repo, "SET CONSTRAINTS ALL DEFERRED", [])
         event_id = next_event_id!()
@@ -1006,6 +1032,7 @@ defmodule FavnStoragePostgres.Runs.Store do
               status: Atom.to_string(command.run.status),
               event_sequence: command.run.event_seq,
               latest_event_id: event_id,
+              snapshot_version: @snapshot_version,
               snapshot_hash: encoded.snapshot_hash,
               snapshot: encoded.snapshot,
               updated_at: command.run.updated_at || encoded.occurred_at,
@@ -1183,7 +1210,7 @@ defmodule FavnStoragePostgres.Runs.Store do
       event_sequence: run.event_seq,
       submitted_event_id: event_id,
       latest_event_id: event_id,
-      snapshot_version: 1,
+      snapshot_version: @snapshot_version,
       creation_hash: creation_hash,
       snapshot_hash: encoded.snapshot_hash,
       snapshot: encoded.snapshot,
@@ -1304,6 +1331,13 @@ defmodule FavnStoragePostgres.Runs.Store do
 
       existing.deployment_id != run.deployment_id ->
         Repo.rollback(Error.new(:conflict, "run deployment identity cannot change"))
+
+      Map.get(existing.snapshot, "manifest_content_hash") != run.manifest_content_hash ->
+        Repo.rollback(Error.new(:conflict, "run manifest content identity cannot change"))
+
+      Map.get(existing.snapshot, "required_runner_release_id") !=
+          run.required_runner_release_id ->
+        Repo.rollback(Error.new(:conflict, "run runner release identity cannot change"))
 
       true ->
         :ok
@@ -1518,11 +1552,12 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   defp published_event_scope(query, %PlatformContext{}), do: query
 
-  defp run_summary(row) do
+  defp run_summary(row, runner_releases) do
     %RunSummary{
       workspace_id: row.workspace_id,
       run_id: row.run_id,
       manifest_version_id: row.manifest_version_id,
+      required_runner_release_id: Map.get(runner_releases, row.manifest_version_id),
       submit_kind: String.to_existing_atom(row.submit_kind),
       status: String.to_existing_atom(row.status),
       event_sequence: row.event_sequence,
@@ -1537,6 +1572,17 @@ defmodule FavnStoragePostgres.Runs.Store do
       submitted_event_id: row.submitted_event_id,
       latest_event_id: row.latest_event_id
     }
+  end
+
+  defp runner_releases(rows) do
+    manifest_version_ids = rows |> Enum.map(& &1.manifest_version_id) |> Enum.uniq()
+
+    from(manifest in ManifestVersion,
+      where: manifest.manifest_version_id in ^manifest_version_ids,
+      select: {manifest.manifest_version_id, manifest.required_runner_release_id}
+    )
+    |> Repo.all()
+    |> Map.new()
   end
 
   defp decode_run(%Run{} = row), do: Decoder.decode(row)

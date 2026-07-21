@@ -20,6 +20,7 @@ defmodule FavnOrchestrator.RunManager do
   alias FavnOrchestrator.RunManager.PlanCapacity
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunnerClientValidator
+  alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunState
@@ -444,11 +445,15 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   defp load_run_manifest(%WorkspaceContext{} = context, %RunState{} = run) do
-    ManifestStore.get_deployment_manifest(
-      context,
-      run.deployment_id,
-      run.manifest_version_id
-    )
+    with {:ok, version} <-
+           ManifestStore.get_deployment_manifest(
+             context,
+             run.deployment_id,
+             run.manifest_version_id
+           ),
+         :ok <- RunnerReleaseCompatibility.verify_run_manifest(run, version) do
+      {:ok, version}
+    end
   end
 
   defp retry_wait?(%RunState{status: status, metadata: metadata})
