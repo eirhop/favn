@@ -4,7 +4,7 @@ defmodule FavnTestSupport.ManifestScalabilityMeasurement do
 
   Each sample runs in its own process. The caller samples that process while it
   builds, versions, serializes, compresses, hashes, decodes, and attributes the
-  compact schema-8 index. This module is deliberately test-only and is not a
+  compact current-schema index. This module is deliberately test-only and is not a
   production API.
   """
 

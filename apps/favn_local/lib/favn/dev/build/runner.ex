@@ -226,6 +226,7 @@ defmodule Favn.Dev.Build.Runner do
     |> Map.put("manifest", %{
       "manifest_version_id" => version.manifest_version_id,
       "content_hash" => version.content_hash,
+      "required_runner_release_id" => version.required_runner_release_id,
       "index_path" => "manifest-index.json",
       "execution_packages_path" => "execution-packages"
     })

@@ -15,6 +15,7 @@ defmodule Favn.Contracts.RunnerWork do
   """
 
   alias Favn.Plan.NodeIdentity
+  alias Favn.Contracts.RunnerReleaseBinding
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Ref
   alias Favn.Run.PipelineContext
@@ -25,6 +26,7 @@ defmodule Favn.Contracts.RunnerWork do
           run_started_at: DateTime.t() | nil,
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
+          required_runner_release_id: String.t(),
           manifest_lease_id: String.t() | nil,
           node_identity: NodeIdentity.t() | nil,
           asset_ref: Ref.t() | nil,
@@ -48,6 +50,7 @@ defmodule Favn.Contracts.RunnerWork do
             run_started_at: nil,
             manifest_version_id: nil,
             manifest_content_hash: nil,
+            required_runner_release_id: nil,
             manifest_lease_id: nil,
             node_identity: nil,
             asset_ref: nil,
@@ -135,7 +138,13 @@ defmodule Favn.Contracts.RunnerWork do
     |> Map.put(:window, window(work))
     |> Map.put(:execution_pool, execution_pool(work))
     |> Map.put(:deadline_at, work.deadline_at)
+    |> Map.put(:required_runner_release_id, work.required_runner_release_id)
   end
+
+  @doc "Validates the exact runner release identity pinned into this work request."
+  @spec validate_release_binding(t()) :: :ok | {:error, RunnerReleaseBinding.error()}
+  def validate_release_binding(%__MODULE__{required_runner_release_id: release_id}),
+    do: RunnerReleaseBinding.validate(release_id)
 
   @doc "Returns a fixed-size fingerprint for exact deterministic execution-ID replay."
   @spec replay_fingerprint(t()) :: <<_::256>>

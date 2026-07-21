@@ -103,6 +103,7 @@ defmodule FavnOrchestrator.Manifests do
       content_hash: version.content_hash,
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
+      required_runner_release_id: version.required_runner_release_id,
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
       schedule_count: length(List.wrap(version.manifest.schedules))

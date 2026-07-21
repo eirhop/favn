@@ -9,12 +9,14 @@ defmodule Favn.Contracts.RelationInspectionRequest do
   """
 
   alias Favn.RelationRef
+  alias Favn.Contracts.RunnerReleaseBinding
 
   @type include_item :: :relation | :columns | :row_count | :sample | :table_metadata
 
   @type t :: %__MODULE__{
           manifest_version_id: String.t(),
           manifest_content_hash: String.t() | nil,
+          required_runner_release_id: String.t(),
           asset_ref: Favn.Ref.t() | nil,
           relation: RelationRef.t() | nil,
           include: [include_item()],
@@ -23,8 +25,14 @@ defmodule Favn.Contracts.RelationInspectionRequest do
 
   defstruct manifest_version_id: nil,
             manifest_content_hash: nil,
+            required_runner_release_id: nil,
             asset_ref: nil,
             relation: nil,
             include: [:relation, :columns, :row_count, :sample, :table_metadata],
             sample_limit: 20
+
+  @doc "Validates the exact runner release identity required by this inspection."
+  @spec validate_release_binding(t()) :: :ok | {:error, RunnerReleaseBinding.error()}
+  def validate_release_binding(%__MODULE__{required_runner_release_id: release_id}),
+    do: RunnerReleaseBinding.validate(release_id)
 end

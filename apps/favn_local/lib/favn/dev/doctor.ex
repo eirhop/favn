@@ -187,27 +187,24 @@ defmodule Favn.Dev.Doctor do
   end
 
   defp manifest_check do
-    case FavnAuthoring.generate_manifest() do
-      {:ok, manifest} ->
-        ok(
-          "manifest",
-          "compiled #{length(manifest.assets)} asset(s) and #{length(manifest.pipelines)} pipeline(s)"
-        )
+    case FavnAuthoring.list_assets() do
+      {:ok, assets} ->
+        ok("manifest", "compiled #{length(assets)} asset(s) for manifest generation")
 
       {:error, reason} ->
-        error("manifest", "generation failed: #{inspect(reason)}")
+        error("manifest", "asset compilation failed: #{inspect(reason)}")
     end
   end
 
   defp relation_catalogs_check do
-    with {:manifest, {:ok, manifest}} <- {:manifest, FavnAuthoring.generate_manifest()},
-         requirements <- relation_catalog_requirements(manifest.assets),
+    with {:assets, {:ok, assets}} <- {:assets, FavnAuthoring.list_assets()},
+         requirements <- relation_catalog_requirements(assets),
          {:ok, connections} <- resolve_catalog_connections(requirements),
          :ok <- validate_relation_catalogs(requirements, connections) do
       ok("relation catalogs", relation_catalogs_ok_message(requirements, connections))
     else
-      {:manifest, {:error, reason}} ->
-        error("relation catalogs", "manifest generation failed: #{inspect(redact(reason))}")
+      {:assets, {:error, reason}} ->
+        error("relation catalogs", "asset compilation failed: #{inspect(redact(reason))}")
 
       {:error, {:connections, errors}} ->
         error("relation catalogs", "connection resolution failed: #{format_connection_errors(errors)}")

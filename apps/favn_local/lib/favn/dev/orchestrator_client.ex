@@ -764,6 +764,7 @@ defmodule Favn.Dev.OrchestratorClient do
         content_hash: version.content_hash,
         schema_version: version.schema_version,
         runner_contract_version: version.runner_contract_version,
+        required_runner_release_id: version.required_runner_release_id,
         serialization_format: version.serialization_format,
         manifest: canonical_json_value(version.manifest)
       },

@@ -74,6 +74,7 @@ defmodule Favn.Manifest.Rehydrate do
     %Manifest{
       schema_version: field_value(value, :schema_version),
       runner_contract_version: field_value(value, :runner_contract_version),
+      required_runner_release_id: field_value(value, :required_runner_release_id),
       assets: assets,
       pipelines: value |> field_value(:pipelines, []) |> build_pipelines(),
       schedules: value |> field_value(:schedules, []) |> build_schedules(),

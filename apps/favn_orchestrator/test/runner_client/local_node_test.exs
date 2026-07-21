@@ -35,15 +35,14 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
   end
 
   test "dispatches runner calls to configured runner module" do
-    manifest = %{
-      schema_version: 9,
-      runner_contract_version: 9,
-      assets: [],
-      pipelines: [],
-      schedules: [],
-      graph: %{},
-      metadata: %{}
-    }
+    manifest =
+      FavnTestSupport.with_manifest_contract(%{
+        assets: [],
+        pipelines: [],
+        schedules: [],
+        graph: %{},
+        metadata: %{}
+      })
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_local_node")
 

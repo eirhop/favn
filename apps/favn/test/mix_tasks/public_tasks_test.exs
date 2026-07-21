@@ -1450,15 +1450,15 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     File.write!(
       path,
-      JSON.encode_to_iodata!(%{
-        schema_version: 9,
-        runner_contract_version: 9,
-        assets: [],
-        pipelines: [],
-        schedules: [],
-        graph: %{},
-        metadata: %{}
-      })
+      JSON.encode_to_iodata!(
+        FavnTestSupport.with_manifest_contract(%{
+          assets: [],
+          pipelines: [],
+          schedules: [],
+          graph: %{},
+          metadata: %{}
+        })
+      )
     )
 
     path

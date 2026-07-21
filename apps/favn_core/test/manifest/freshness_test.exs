@@ -41,9 +41,7 @@ defmodule Favn.Manifest.FreshnessTest do
 
   test "manifest serialization and rehydration round-trips freshness policies" do
     manifest =
-      FavnTestSupport.with_manifest_graph(%Manifest{
-        schema_version: 9,
-        runner_contract_version: 9,
+      %Manifest{
         assets: [
           asset(:missing, nil),
           asset(:daily_oslo, %Policy{
@@ -58,7 +56,11 @@ defmodule Favn.Manifest.FreshnessTest do
         pipelines: [],
         schedules: [],
         metadata: %{}
-      })
+      }
+      |> Map.from_struct()
+      |> FavnTestSupport.with_manifest_contract()
+      |> then(&struct!(Manifest, &1))
+      |> FavnTestSupport.with_manifest_graph()
 
     assert {:ok, encoded} = Serializer.encode_manifest(manifest)
     assert {:ok, decoded} = Serializer.decode_manifest(encoded)

@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
           required(:content_hash) => String.t(),
           required(:schema_version) => pos_integer(),
           required(:runner_contract_version) => pos_integer(),
+          required(:required_runner_release_id) => String.t(),
           required(:serialization_format) => String.t(),
           required(:manifest_index_json) => String.t(),
           optional(:inserted_at) => DateTime.t() | nil
@@ -23,6 +24,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
          content_hash: version.content_hash,
          schema_version: version.schema_version,
          runner_contract_version: version.runner_contract_version,
+         required_runner_release_id: version.required_runner_release_id,
          serialization_format: version.serialization_format,
          manifest_index_json: manifest_index_json,
          inserted_at: version.inserted_at
@@ -34,6 +36,8 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
   def from_record(record) when is_map(record) do
     with {:ok, manifest_version_id} <- fetch_non_empty_binary(record, :manifest_version_id),
          {:ok, content_hash} <- fetch_non_empty_binary(record, :content_hash),
+         {:ok, required_runner_release_id} <-
+           fetch_non_empty_binary(record, :required_runner_release_id),
          {:ok, serialization_format} <- fetch_non_empty_binary(record, :serialization_format),
          {:ok, manifest_index_json} <- fetch_non_empty_binary(record, :manifest_index_json),
          {:ok, raw_manifest} <- Serializer.decode_manifest(manifest_index_json) do
@@ -42,6 +46,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
         content_hash: content_hash,
         schema_version: Map.get(record, :schema_version),
         runner_contract_version: Map.get(record, :runner_contract_version),
+        required_runner_release_id: required_runner_release_id,
         serialization_format: serialization_format,
         inserted_at: Map.get(record, :inserted_at)
       )

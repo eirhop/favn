@@ -28,12 +28,21 @@ defmodule Favn.Manifest.Generator do
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Pipeline, as: ManifestPipeline
+  alias Favn.Manifest.PlanningIndex
   alias Favn.Manifest.Schedule, as: ManifestSchedule
+  alias Favn.RunnerRelease
+
+  @type catalog_opts :: [
+          asset_modules: [module()],
+          pipeline_modules: [module()],
+          schedule_modules: [module()]
+        ]
 
   @type opts :: [
           asset_modules: [module()],
           pipeline_modules: [module()],
-          schedule_modules: [module()]
+          schedule_modules: [module()],
+          runner_release: RunnerRelease.t()
         ]
 
   @doc """
@@ -43,8 +52,9 @@ defmodule Favn.Manifest.Generator do
   """
   @spec generate(opts()) :: {:ok, Manifest.t()} | {:error, term()}
   def generate(opts \\ []) when is_list(opts) do
-    with {:ok, catalog} <- build_catalog(opts) do
-      manifest_from_catalog(catalog)
+    with {:ok, runner_release} <- fetch_runner_release(opts),
+         {:ok, catalog} <- opts |> Keyword.delete(:runner_release) |> build_catalog() do
+      manifest_from_catalog(catalog, runner_release.runner_release_id)
     end
   end
 
@@ -55,13 +65,31 @@ defmodule Favn.Manifest.Generator do
   """
   @spec build(opts()) :: {:ok, Build.t()} | {:error, term()}
   def build(opts \\ []) when is_list(opts) do
-    with {:ok, catalog} <- build_catalog(opts),
-         {:ok, manifest, execution_packages} <- manifest_and_packages_from_catalog(catalog) do
+    with {:ok, runner_release} <- fetch_runner_release(opts),
+         {:ok, catalog} <- opts |> Keyword.delete(:runner_release) |> build_catalog(),
+         {:ok, manifest, execution_packages} <-
+           manifest_and_packages_from_catalog(catalog, runner_release.runner_release_id) do
       {:ok,
        Build.new(manifest,
          diagnostics: catalog.diagnostics,
          execution_packages: execution_packages
        )}
+    end
+  end
+
+  @doc """
+  Builds the planning index for authored assets without creating a publishable manifest.
+
+  Planning does not depend on a runner release. Only canonical manifest generation
+  accepts and binds a runner descriptor.
+  """
+  @spec planning_index(catalog_opts()) :: {:ok, PlanningIndex.t()} | {:error, term()}
+  def planning_index(opts \\ []) when is_list(opts) do
+    with {:ok, catalog} <- build_catalog(opts),
+         {:ok, packages_by_ref} <- execution_packages_from_catalog(catalog),
+         assets <- manifest_assets_from_catalog(catalog, packages_by_ref),
+         {:ok, graph} <- Graph.build(assets) do
+      PlanningIndex.build(graph, assets)
     end
   end
 
@@ -72,7 +100,7 @@ defmodule Favn.Manifest.Generator do
   as asset diagnostics or the split between catalog assembly and final manifest
   graph construction.
   """
-  @spec build_catalog(opts()) :: {:ok, Catalog.t()} | {:error, term()}
+  @spec build_catalog(catalog_opts()) :: {:ok, Catalog.t()} | {:error, term()}
   def build_catalog(opts) when is_list(opts) do
     with :ok <- validate_opts(opts),
          {:ok, assets, diagnostics} <- compile_assets(resolve_modules(opts, :asset_modules)),
@@ -89,13 +117,14 @@ defmodule Favn.Manifest.Generator do
     end
   end
 
-  defp manifest_from_catalog(%Catalog{} = catalog) do
-    with {:ok, manifest, _packages} <- manifest_and_packages_from_catalog(catalog) do
+  defp manifest_from_catalog(%Catalog{} = catalog, required_runner_release_id) do
+    with {:ok, manifest, _packages} <-
+           manifest_and_packages_from_catalog(catalog, required_runner_release_id) do
       {:ok, manifest}
     end
   end
 
-  defp manifest_and_packages_from_catalog(%Catalog{} = catalog) do
+  defp manifest_and_packages_from_catalog(%Catalog{} = catalog, required_runner_release_id) do
     with {:ok, packages_by_ref} <- execution_packages_from_catalog(catalog) do
       assets = manifest_assets_from_catalog(catalog, packages_by_ref)
       pipelines = manifest_pipelines_from_catalog(catalog)
@@ -106,6 +135,7 @@ defmodule Favn.Manifest.Generator do
          %Manifest{
            schema_version: Compatibility.current_schema_version(),
            runner_contract_version: Compatibility.current_runner_contract_version(),
+           required_runner_release_id: required_runner_release_id,
            assets: assets,
            pipelines: pipelines,
            schedules: schedules,
@@ -163,6 +193,13 @@ defmodule Favn.Manifest.Generator do
     case Enum.find(opts, fn {key, _value} -> key not in allowed end) do
       nil -> :ok
       {key, _value} -> {:error, {:unknown_opt, key}}
+    end
+  end
+
+  defp fetch_runner_release(opts) do
+    case Keyword.fetch(opts, :runner_release) do
+      {:ok, runner_release} -> RunnerRelease.verify(runner_release)
+      :error -> {:error, :runner_release_required}
     end
   end
 

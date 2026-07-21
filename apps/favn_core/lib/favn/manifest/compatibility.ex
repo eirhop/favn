@@ -3,12 +3,16 @@ defmodule Favn.Manifest.Compatibility do
   Manifest schema and runner contract compatibility checks.
   """
 
-  @current_schema_version 9
-  @current_runner_contract_version 9
+  alias Favn.RunnerRelease
+
+  @current_schema_version 10
+  @current_runner_contract_version 10
 
   @type error ::
           {:invalid_manifest_input, term()}
-          | {:missing_manifest_field, :schema_version | :runner_contract_version}
+          | {:missing_manifest_field,
+             :schema_version | :runner_contract_version | :required_runner_release_id}
+          | {:invalid_required_runner_release_id, term()}
           | {:invalid_execution_package_hash, Favn.Ref.t(), term()}
           | {:duplicate_execution_package_hash, String.t(), [Favn.Ref.t()]}
           | {:missing_execution_package_hash, Favn.Ref.t()}
@@ -27,8 +31,11 @@ defmodule Favn.Manifest.Compatibility do
     with {:ok, schema_version} <- read_required_field(manifest, :schema_version),
          {:ok, runner_contract_version} <-
            read_required_field(manifest, :runner_contract_version),
+         {:ok, required_runner_release_id} <-
+           read_required_field(manifest, :required_runner_release_id),
          :ok <- validate_schema_version(schema_version),
-         :ok <- validate_runner_contract_version(runner_contract_version) do
+         :ok <- validate_runner_contract_version(runner_contract_version),
+         :ok <- validate_required_runner_release_id(required_runner_release_id) do
       validate_execution_package_refs(manifest)
     end
   end
@@ -46,6 +53,16 @@ defmodule Favn.Manifest.Compatibility do
 
   def validate_runner_contract_version(other),
     do: {:error, {:unsupported_runner_contract_version, other, @current_runner_contract_version}}
+
+  @doc "Validates the exact runner release identity required by a current manifest."
+  @spec validate_required_runner_release_id(term()) ::
+          :ok | {:error, {:invalid_required_runner_release_id, term()}}
+  def validate_required_runner_release_id(value) do
+    case RunnerRelease.validate_id(value) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, {:invalid_required_runner_release_id, value}}
+    end
+  end
 
   defp validate_execution_package_refs(manifest) do
     assets = Map.get(manifest, :assets, Map.get(manifest, "assets", []))

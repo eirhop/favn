@@ -112,6 +112,15 @@ defmodule Favn.RunnerRelease do
   @spec current_target() :: String.t()
   def current_target, do: @target
 
+  @doc "Validates the canonical `rr_` plus lowercase SHA-256 release ID syntax."
+  @spec validate_id(term()) ::
+          :ok | {:error, {:invalid_runner_release_field, :runner_release_id, :invalid_id}}
+  def validate_id(value), do: validate_id_syntax(value)
+
+  @doc "Returns whether a value has canonical runner release ID syntax."
+  @spec valid_id?(term()) :: boolean()
+  def valid_id?(value), do: validate_id(value) == :ok
+
   @doc "Returns the Favn application version used for compatibility checks."
   @spec current_favn_version() :: String.t()
   def current_favn_version do

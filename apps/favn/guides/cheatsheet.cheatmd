@@ -153,7 +153,8 @@ Generate a manifest from explicit modules:
 {:ok, manifest} =
   Favn.generate_manifest(
     asset_modules: [MyApp.Assets.Orders, MyApp.Assets.OrderSummary],
-    pipeline_modules: [MyApp.Pipelines.DailySales]
+    pipeline_modules: [MyApp.Pipelines.DailySales],
+    runner_release: runner_release
   )
 ```
 
@@ -163,7 +164,7 @@ Generate from configured discovery:
 config :favn,
   discovery: [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all]
 
-{:ok, manifest} = Favn.generate_manifest()
+{:ok, manifest} = Favn.generate_manifest(runner_release: runner_release)
 ```
 
 Pin, serialize, hash, and validate:

@@ -131,7 +131,8 @@ defmodule FavnAuthoring.ModuleDiscoveryTest do
     assert {:ok, manifest} =
              FavnAuthoring.generate_manifest(
                asset_modules: [ExplicitAsset],
-               pipeline_modules: []
+               pipeline_modules: [],
+               runner_release: FavnTestSupport.runner_release()
              )
 
     assert Enum.map(manifest.assets, & &1.ref) == [{ExplicitAsset, :asset}]
@@ -148,7 +149,9 @@ defmodule FavnAuthoring.ModuleDiscoveryTest do
       schedules: :all
     )
 
-    assert {:ok, manifest} = FavnAuthoring.generate_manifest()
+    assert {:ok, manifest} =
+             FavnAuthoring.generate_manifest(runner_release: FavnTestSupport.runner_release())
+
     assert Enum.map(manifest.schedules, &{&1.module, &1.name}) == [{DiscoverySchedules, :daily}]
   end
 

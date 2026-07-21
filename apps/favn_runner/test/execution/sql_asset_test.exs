@@ -1501,8 +1501,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 9,
-        runner_contract_version: 9,
+        schema_version: 10,
+        runner_contract_version: 10,
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         assets: [
           %Asset{
             ref: ref,
@@ -1561,8 +1562,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     package = execution_package!(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 9,
-      runner_contract_version: 9,
+      schema_version: 10,
+      runner_contract_version: 10,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: [
         %Asset{
           ref: ref,
@@ -1629,8 +1631,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     package = execution_package!(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 9,
-      runner_contract_version: 9,
+      schema_version: 10,
+      runner_contract_version: 10,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: [
         %Asset{
           ref: ref,
@@ -1798,8 +1801,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 9,
-        runner_contract_version: 9,
+        schema_version: 10,
+        runner_contract_version: 10,
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         assets: [
           %Asset{
             ref: ref,
@@ -1831,8 +1835,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 9,
-      runner_contract_version: 9,
+      schema_version: 10,
+      runner_contract_version: 10,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: [
         %Asset{
           ref: ref,

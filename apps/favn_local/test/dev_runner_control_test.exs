@@ -144,15 +144,13 @@ defmodule Favn.Dev.RunnerControlTest do
   end
 
   defp version_fixture do
-    manifest = %{
-      schema_version: 9,
-      runner_contract_version: 9,
+    manifest = FavnTestSupport.with_manifest_contract(%{
       assets: [],
       pipelines: [],
       schedules: [],
       graph: %{},
       metadata: %{}
-    }
+    })
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_runner_control_test")
 

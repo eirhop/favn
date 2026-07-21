@@ -66,15 +66,13 @@ defmodule Favn.Dev.OrchestratorClientTest do
         parent: parent
       )
 
-    manifest = %{
-      schema_version: 9,
-      runner_contract_version: 9,
+    manifest = FavnTestSupport.with_manifest_contract(%{
       assets: [],
       pipelines: [],
       schedules: [],
       graph: %{},
       metadata: %{}
-    }
+    })
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_orchestrator_client_test")
     {:ok, publication} = Publication.from_parts(version, [])
@@ -107,15 +105,13 @@ defmodule Favn.Dev.OrchestratorClientTest do
         {~s({"data":{"ok":true}}), 200, 5_100}
       ])
 
-    manifest = %{
-      schema_version: 9,
-      runner_contract_version: 9,
+    manifest = FavnTestSupport.with_manifest_contract(%{
       assets: [],
       pipelines: [],
       schedules: [],
       graph: %{},
       metadata: %{}
-    }
+    })
 
     {:ok, version} = Version.new(manifest)
     {:ok, publication} = Publication.from_parts(version, [])
@@ -130,15 +126,13 @@ defmodule Favn.Dev.OrchestratorClientTest do
     {:ok, base_url, _server} =
       start_server(missing_response([unknown_hash]), 200)
 
-    manifest = %{
-      schema_version: 9,
-      runner_contract_version: 9,
+    manifest = FavnTestSupport.with_manifest_contract(%{
       assets: [],
       pipelines: [],
       schedules: [],
       graph: %{},
       metadata: %{}
-    }
+    })
 
     {:ok, version} = Version.new(manifest)
     {:ok, publication} = Publication.from_parts(version, [])

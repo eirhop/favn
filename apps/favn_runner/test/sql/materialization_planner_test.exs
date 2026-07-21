@@ -217,6 +217,7 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
     ref = {__MODULE__, :asset}
 
     manifest = %Manifest{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: [
         %Asset{
           ref: ref,

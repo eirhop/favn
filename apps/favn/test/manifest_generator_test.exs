@@ -84,11 +84,13 @@ defmodule Favn.Manifest.GeneratorTest do
              Favn.generate_manifest(
                asset_modules: [TestAsset, TestSQLAsset],
                pipeline_modules: [TestPipeline],
-               schedule_modules: [TestSchedules]
+               schedule_modules: [TestSchedules],
+               runner_release: runner_release()
              )
 
-    assert manifest.schema_version == 9
-    assert manifest.runner_contract_version == 9
+    assert manifest.schema_version == 10
+    assert manifest.runner_contract_version == 10
+    assert manifest.required_runner_release_id == FavnTestSupport.runner_release_id()
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1
     assert length(manifest.schedules) == 1
@@ -104,7 +106,8 @@ defmodule Favn.Manifest.GeneratorTest do
              Favn.build_manifest(
                asset_modules: [TestAsset, TestSQLAsset],
                pipeline_modules: [TestPipeline],
-               schedule_modules: [TestSchedules]
+               schedule_modules: [TestSchedules],
+               runner_release: runner_release()
              )
 
     assert {:ok, publication} = Favn.prepare_manifest_publication(build)
@@ -135,7 +138,8 @@ defmodule Favn.Manifest.GeneratorTest do
                  RelationRaw.Orders,
                  RelationRaw.Customers,
                  RelationGold.Customer360
-               ]
+               ],
+               runner_release: runner_release()
              )
 
     downstream = Enum.find(manifest.assets, &(&1.ref == {RelationGold.Customer360, :asset}))
@@ -183,7 +187,8 @@ defmodule Favn.Manifest.GeneratorTest do
        """}
     ])
 
-    assert {:ok, %Manifest{} = manifest} = Favn.generate_manifest(asset_modules: [asset])
+    assert {:ok, %Manifest{} = manifest} =
+             Favn.generate_manifest(asset_modules: [asset], runner_release: runner_release())
 
     assert [manifest_asset] = manifest.assets
     assert manifest_asset.ref == {asset, :asset}
@@ -213,7 +218,8 @@ defmodule Favn.Manifest.GeneratorTest do
              Favn.build_manifest(
                asset_modules: [TestAsset],
                pipeline_modules: [TestPipeline],
-               schedule_modules: [TestSchedules]
+               schedule_modules: [TestSchedules],
+               runner_release: runner_release()
              )
 
     assert is_map(build.manifest)
@@ -224,10 +230,7 @@ defmodule Favn.Manifest.GeneratorTest do
     assert byte_size(hash) == 64
 
     assert :ok =
-             Favn.validate_manifest_compatibility(%{
-               schema_version: 9,
-               runner_contract_version: 9
-             })
+             Favn.validate_manifest_compatibility(FavnTestSupport.with_manifest_contract(%{}))
 
     assert {:ok, version} =
              Favn.pin_manifest_version(build,
@@ -272,12 +275,20 @@ defmodule Favn.Manifest.GeneratorTest do
     end
 
     compile_namespace.("platform-v1")
-    assert {:ok, first_descendant} = Favn.generate_manifest(asset_modules: [descendant])
-    assert {:ok, first_unrelated} = Favn.generate_manifest(asset_modules: [unrelated])
+
+    assert {:ok, first_descendant} =
+             Favn.generate_manifest(asset_modules: [descendant], runner_release: runner_release())
+
+    assert {:ok, first_unrelated} =
+             Favn.generate_manifest(asset_modules: [unrelated], runner_release: runner_release())
 
     compile_namespace.("platform-v2")
-    assert {:ok, second_descendant} = Favn.generate_manifest(asset_modules: [descendant])
-    assert {:ok, second_unrelated} = Favn.generate_manifest(asset_modules: [unrelated])
+
+    assert {:ok, second_descendant} =
+             Favn.generate_manifest(asset_modules: [descendant], runner_release: runner_release())
+
+    assert {:ok, second_unrelated} =
+             Favn.generate_manifest(asset_modules: [unrelated], runner_release: runner_release())
 
     assert {:ok, first_descendant_hash} = Favn.hash_manifest(first_descendant)
     assert {:ok, second_descendant_hash} = Favn.hash_manifest(second_descendant)
@@ -291,6 +302,28 @@ defmodule Favn.Manifest.GeneratorTest do
     assert first_asset.metadata.owner == "platform-v1"
     assert second_asset.metadata.owner == "platform-v2"
   end
+
+  test "requires a verified runner release descriptor" do
+    assert {:error, :runner_release_required} = Favn.generate_manifest(asset_modules: [TestAsset])
+
+    assert {:error, {:runner_release_id_mismatch, _expected, "rr_" <> _rest}} =
+             Favn.generate_manifest(
+               asset_modules: [TestAsset],
+               runner_release: %{
+                 runner_release()
+                 | runner_release_id: "rr_" <> String.duplicate("0", 64)
+               }
+             )
+
+    assert {:error, {:unknown_opt, :required_runner_release_id}} =
+             Favn.generate_manifest(
+               asset_modules: [TestAsset],
+               runner_release: runner_release(),
+               required_runner_release_id: FavnTestSupport.runner_release_id(:alternate)
+             )
+  end
+
+  defp runner_release, do: FavnTestSupport.runner_release()
 
   defp compile_modules_to_path!(entries) when is_list(entries) do
     dir =

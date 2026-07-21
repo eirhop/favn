@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
 
     assert {:ok, record} = ManifestCodec.to_record(version)
     assert record.manifest_version_id == "mv_codec"
+    assert record.required_runner_release_id == FavnTestSupport.runner_release_id()
 
     assert {:ok, decoded} = ManifestCodec.from_record(record)
     assert decoded.manifest_version_id == version.manifest_version_id
@@ -35,6 +36,27 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
              ManifestCodec.from_record(mismatch)
 
     assert expected == String.duplicate("0", 64)
+  end
+
+  test "requires the envelope runner release identity and matches it to the manifest" do
+    version = manifest_version("mv_codec_release_binding")
+    assert {:ok, record} = ManifestCodec.to_record(version)
+
+    assert {:error, {:invalid_manifest_record_field, :required_runner_release_id, nil}} =
+             record
+             |> Map.delete(:required_runner_release_id)
+             |> ManifestCodec.from_record()
+
+    assert {:error, {:manifest_required_runner_release_id_mismatch, alternate_id, required_id}} =
+             record
+             |> Map.put(
+               :required_runner_release_id,
+               FavnTestSupport.runner_release_id(:alternate)
+             )
+             |> ManifestCodec.from_record()
+
+    assert alternate_id == FavnTestSupport.runner_release_id(:alternate)
+    assert required_id == FavnTestSupport.runner_release_id()
   end
 
   test "preserves content hash invariant across raw decode and rehydration" do
@@ -57,7 +79,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
     }
 
     {:ok, version} =
-      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+      Version.new(current_manifest(manifest),
         manifest_version_id: manifest_version_id
       )
 
@@ -68,8 +90,6 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
     ref = {MyApp.Assets.SalesSummary, :asset}
 
     manifest = %Manifest{
-      schema_version: 9,
-      runner_contract_version: 9,
       assets: [
         %Asset{
           ref: ref,
@@ -116,10 +136,16 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
     }
 
     {:ok, version} =
-      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+      Version.new(current_manifest(manifest),
         manifest_version_id: manifest_version_id
       )
 
     version
+  end
+
+  defp current_manifest(manifest) do
+    manifest
+    |> FavnTestSupport.with_manifest_contract()
+    |> FavnTestSupport.with_manifest_graph()
   end
 end

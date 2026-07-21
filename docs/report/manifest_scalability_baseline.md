@@ -22,8 +22,9 @@ evidence rather than a description of the current manifest shape.
   and field attribution. Storage-adapter persistence and runner registration
   remain separate end-to-end measurements for the package-design phase.
 
-The current harness uses schema 8. Running it after compiling the repository
-measures the compact index rather than reproducing the historical table:
+The current harness uses schema 10, including its runner release binding.
+Running it after compiling the repository measures the current compact index
+rather than reproducing the historical schema-8 table:
 
 ```bash
 MIX_ENV=test mix run --no-compile scripts/measure_manifest_scalability.exs \
@@ -125,4 +126,4 @@ Current regression gates are:
 
 Production retention, garbage collection, cold package-read measurements, and
 whether a bounded runner-local cache is worthwhile remain explicit follow-up
-work rather than compatibility layers in schema 8.
+work rather than compatibility layers for historical manifest schemas.

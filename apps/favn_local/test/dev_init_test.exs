@@ -160,7 +160,8 @@ defmodule Favn.Dev.InitTest do
     assert {:ok, manifest} =
              FavnAuthoring.generate_manifest(
                asset_modules: [raw_orders, order_summary],
-               pipeline_modules: [pipeline]
+               pipeline_modules: [pipeline],
+               runner_release: FavnTestSupport.runner_release()
              )
 
     assert length(manifest.assets) == 2

@@ -78,6 +78,12 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, {:manifest_runner_contract_version_mismatch, _expected, _actual}} ->
         validation_error(conn, "Manifest runner contract version does not match payload")
 
+      {:error, {:invalid_required_runner_release_id, _value}} ->
+        validation_error(conn, "Invalid required runner release id")
+
+      {:error, {:manifest_required_runner_release_id_mismatch, _expected, _actual}} ->
+        validation_error(conn, "Manifest runner release id does not match payload")
+
       {:error, :manifest_version_conflict} ->
         Response.error(
           conn,
@@ -315,7 +321,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     end
   end
 
-  defp build_version(params) do
+  @doc false
+  @spec build_version(map()) :: {:ok, Version.t()} | {:error, term()}
+  def build_version(params) when is_map(params) do
     with %{} = manifest <- Map.get(params, "manifest"),
          {:ok, version} <- Version.from_published(manifest, version_options(params)) do
       {:ok, version}
@@ -352,6 +360,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     |> put_option(:content_hash, Map.get(params, "content_hash"))
     |> put_option(:schema_version, Map.get(params, "schema_version"))
     |> put_option(:runner_contract_version, Map.get(params, "runner_contract_version"))
+    |> put_option(:required_runner_release_id, Map.get(params, "required_runner_release_id"))
     |> put_option(:serialization_format, Map.get(params, "serialization_format"))
   end
 

@@ -142,11 +142,9 @@ defmodule Favn.RuntimeConfigDSLTest do
     manifest_asset = Favn.Manifest.Asset.from_asset(asset)
 
     assert {:ok, encoded} =
-             Serializer.encode_manifest(%{
-               schema_version: 9,
-               runner_contract_version: 9,
-               assets: [manifest_asset]
-             })
+             Serializer.encode_manifest(
+               FavnTestSupport.with_manifest_contract(%{assets: [manifest_asset]})
+             )
 
     assert encoded =~ ~s|"required?":false|
     assert encoded =~ ~s|"secret?":true|

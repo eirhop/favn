@@ -160,6 +160,10 @@ defmodule Favn.Dev.Bootstrap.Single do
       []
       |> put_metadata_opt(:manifest_version_id, Map.get(manifest_metadata, "manifest_version_id"))
       |> put_metadata_opt(:content_hash, Map.get(manifest_metadata, "content_hash"))
+      |> put_metadata_opt(
+        :required_runner_release_id,
+        Map.get(manifest_metadata, "required_runner_release_id")
+      )
     else
       _other -> []
     end
@@ -189,6 +193,7 @@ defmodule Favn.Dev.Bootstrap.Single do
         Keyword.get(metadata_opts, :content_hash) || Map.get(envelope, "content_hash"),
       schema_version: Map.get(envelope, "schema_version"),
       runner_contract_version: Map.get(envelope, "runner_contract_version"),
+      required_runner_release_id: Map.get(envelope, "required_runner_release_id"),
       serialization_format: Map.get(envelope, "serialization_format", "json-v1")
     )
   end
@@ -213,7 +218,8 @@ defmodule Favn.Dev.Bootstrap.Single do
   defp runner_payload(%Version{} = version) do
     %{
       manifest_version_id: version.manifest_version_id,
-      runner_contract_version: version.runner_contract_version
+      runner_contract_version: version.runner_contract_version,
+      required_runner_release_id: version.required_runner_release_id
     }
   end
 
