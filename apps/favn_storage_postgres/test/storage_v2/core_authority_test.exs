@@ -3117,7 +3117,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert entry.detail["password"] == "[REDACTED]"
   end
 
-  test "HTTP manifest activation is idempotent and writes one durable audit record", fixture do
+  test "service-token manifest activation is idempotent and durably audited", fixture do
     configure_release_runner_client!(fixture.version.required_runner_release_id)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
@@ -3128,8 +3128,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         platform_roles: [:platform_operator]
       }
     ])
-
-    identity = api_identity(fixture, [:admin])
 
     body = %{
       "selection" => %{
@@ -3150,14 +3148,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     first =
       api_request(:post, path, body,
         fixture: fixture,
-        identity: identity,
         idempotency_key: "activate-once"
       )
 
     replay =
       api_request(:post, path, body,
         fixture: fixture,
-        identity: identity,
         idempotency_key: "activate-once"
       )
 

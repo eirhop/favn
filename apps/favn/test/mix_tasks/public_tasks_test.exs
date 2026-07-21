@@ -1277,11 +1277,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     output =
       capture_io(fn ->
-        BuildRunnerTask.run([])
+        BuildRunnerTask.run_build(allow_non_prod_build: true, allow_unpinned_favn: true)
       end)
 
     assert output =~ "Favn runner build complete"
-    assert output =~ "build id:"
+    assert output =~ "runner release:"
     assert output =~ "/.favn/dist/runner/"
   end
 
@@ -1294,7 +1294,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert_raise Mix.Error,
                  ~r/runner build is rooted in the current Mix project only/,
                  fn ->
-                   BuildRunnerTask.run(["--root-dir", root_dir])
+                   BuildRunnerTask.run_build(
+                     root_dir: root_dir,
+                     allow_non_prod_build: true,
+                     allow_unpinned_favn: true
+                   )
                  end
   end
 

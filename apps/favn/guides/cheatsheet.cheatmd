@@ -248,7 +248,10 @@ Packaging commands:
 
 | Command | Use it for |
 | --- | --- |
-| `mix favn.build.runner` | Build runner artifact metadata/output. |
+| `mix favn.build.runner` | Build an immutable customer runner OCI context plus its aligned manifest. |
+| `mix favn.build.manifest --runner-release PATH` | Build a manifest-only release after proving exact runner alignment. |
+| `mix favn.publish --manifest PATH` | Publish missing packages and stage one immutable manifest. |
+| `mix favn.activate --manifest-version ID --workspace-id ID` | Activate an exact staged manifest after runner verification. |
 | `mix favn.build.web` | Build web artifact metadata/output. |
 | `mix favn.build.orchestrator` | Build orchestrator artifact metadata/output. |
 | `mix favn.build.single` | Build the single-node local deployment artifact. |

@@ -283,16 +283,13 @@ defmodule Favn.Dev.Run do
   defp maybe_put(payload, key, value), do: Map.put(payload, key, value)
 
   defp unwrap_submit_error(%{operation: :submit_run, reason: {:http_error, 422, payload}}) do
-    case get_in(payload, ["error", "message"]) do
-      message when is_binary(message) and message != "" ->
-        {:orchestrator_validation_failed, message}
-
-      _other ->
-        {:orchestrator_validation_failed, inspect(payload)}
-    end
+    {:orchestrator_validation_failed, validation_error_code(payload)}
   end
 
   defp unwrap_submit_error(reason), do: reason
+
+  defp validation_error_code(%{error_code: code}) when is_binary(code) and code != "", do: code
+  defp validation_error_code(_payload), do: "validation_failed"
 
   defp run_idempotency_key(opts) do
     case Keyword.fetch(opts, :idempotency_key) do

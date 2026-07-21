@@ -594,7 +594,13 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     end
   end
 
-  defp activation_context(conn), do: Authentication.workspace_context(conn, :admin)
+  defp activation_context(conn) do
+    case Authentication.workspace_context(conn, :admin) do
+      {:ok, _session, _actor, _context} = context -> context
+      {:error, :unauthenticated} -> Authentication.service_workspace_context(conn)
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp run_activation(
          conn,

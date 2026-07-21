@@ -28,6 +28,7 @@ defmodule Favn.RunnerRelease.ModuleClosure do
           | {:duplicate_available_module, String.t()}
           | {:beam_module_name_mismatch, String.t(), String.t()}
           | {:missing_runtime_root_module, String.t()}
+          | {:invalid_runtime_module, String.t(), BeamDigest.error()}
           | BeamDigest.error()
           | {:invalid_runner_release_field, atom(), atom()}
 
@@ -118,7 +119,16 @@ defmodule Favn.RunnerRelease.ModuleClosure do
     protocol_implementations =
       available
       |> Enum.flat_map(fn {name, metadata} ->
-        if metadata.protocol_implementation, do: [name], else: []
+        case metadata do
+          {:ok, %{protocol_implementation: implementation}} when not is_nil(implementation) ->
+            [name]
+
+          {:error, _reason, implementation} when not is_nil(implementation) ->
+            [name]
+
+          _not_an_implementation ->
+            []
+        end
       end)
       |> Enum.sort()
 
@@ -135,33 +145,59 @@ defmodule Favn.RunnerRelease.ModuleClosure do
     if Map.has_key?(selected, name) do
       visit(rest, available, selected, queued)
     else
-      metadata = Map.fetch!(available, name)
+      case Map.fetch!(available, name) do
+        {:ok, metadata} ->
+          imports =
+            metadata.imports
+            |> Enum.filter(&Map.has_key?(available, &1))
+            |> Enum.reject(&MapSet.member?(queued, &1))
+            |> Enum.uniq()
+            |> Enum.sort()
 
-      imports =
-        metadata.imports
-        |> Enum.filter(&Map.has_key?(available, &1))
-        |> Enum.reject(&MapSet.member?(queued, &1))
-        |> Enum.uniq()
-        |> Enum.sort()
+          visit(
+            rest ++ imports,
+            available,
+            Map.put(selected, name, metadata),
+            Enum.reduce(imports, MapSet.put(queued, name), &MapSet.put(&2, &1))
+          )
 
-      visit(
-        rest ++ imports,
-        available,
-        Map.put(selected, name, metadata),
-        Enum.reduce(imports, MapSet.put(queued, name), &MapSet.put(&2, &1))
-      )
+        {:error, reason, _implementation} ->
+          invalid_module_error(name, reason)
+
+        {:error, reason} ->
+          invalid_module_error(name, reason)
+      end
     end
   end
 
+  defp invalid_module_error(_name, {:beam_module_name_mismatch, _declared, _actual} = reason),
+    do: {:error, reason}
+
+  defp invalid_module_error(name, reason),
+    do: {:error, {:invalid_runtime_module, name, reason}}
+
   defp analyze_available(available) do
-    Enum.reduce_while(available, {:ok, %{}}, fn {name, beam}, {:ok, acc} ->
-      with {:ok, metadata} <- BeamDigest.metadata(beam),
-           :ok <- match_module_name(name, metadata.module) do
-        {:cont, {:ok, Map.put(acc, name, metadata)}}
-      else
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+    analyzed =
+      Map.new(available, fn {name, beam} ->
+        result = analyze_module(name, beam)
+
+        {name, result}
+      end)
+
+    {:ok, analyzed}
+  end
+
+  defp analyze_module(name, beam) do
+    with {:ok, metadata} <- BeamDigest.metadata(beam),
+         :ok <- match_module_name(name, metadata.module) do
+      {:ok, metadata}
+    else
+      {:error, reason} ->
+        case BeamDigest.protocol_implementation_metadata(beam) do
+          {:ok, implementation} -> {:error, reason, implementation}
+          {:error, _attribute_reason} -> {:error, reason}
+        end
+    end
   end
 
   defp match_module_name(name, name), do: :ok

@@ -221,6 +221,18 @@ defmodule Favn.RunnerRelease.BeamDigestTest do
     unload(FavnImproperPathProbe)
   end
 
+  test "handles struct literals without requiring Enumerable" do
+    beam =
+      compile_one(
+        "defmodule FavnStructLiteralProbe, do: def(value(), do: %URI{scheme: \"https\", host: \"example.com\"})",
+        "struct_literal.ex"
+      )
+
+    assert {:ok, digest} = BeamDigest.digest(beam)
+    assert digest =~ ~r/\A[0-9a-f]{64}\z/
+    unload(FavnStructLiteralProbe)
+  end
+
   defp compile_one(source, file) do
     assert [{_module, beam}] = Code.compile_string(source, file)
     beam

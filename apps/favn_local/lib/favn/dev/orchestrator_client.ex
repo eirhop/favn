@@ -1,7 +1,7 @@
 defmodule Favn.Dev.OrchestratorClient do
   @moduledoc false
 
-  alias Favn.Dev.LocalHttpClient
+  alias Favn.Dev.HttpClient
   alias Favn.Dev.ExecutionPackageBatches
   alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
@@ -12,7 +12,12 @@ defmodule Favn.Dev.OrchestratorClient do
 
   @spec publish_manifest(String.t(), String.t(), Publication.t(), session_context() | nil) ::
           {:ok, map()} | {:error, term()}
-  def publish_manifest(base_url, service_token, %Publication{} = publication, session_context \\ nil)
+  def publish_manifest(
+        base_url,
+        service_token,
+        %Publication{} = publication,
+        session_context \\ nil
+      )
       when is_binary(base_url) and is_binary(service_token) do
     with {:ok, missing, batch_limits} <-
            missing_execution_packages(base_url, service_token, publication, session_context),
@@ -73,6 +78,34 @@ defmodule Favn.Dev.OrchestratorClient do
       session_context,
       idempotency_key(:activate_manifest, session_context, %{
         manifest_version_id: manifest_version_id
+      })
+    )
+  end
+
+  @spec activate_manifest_service(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def activate_manifest_service(base_url, service_token, manifest_version_id, workspace_id)
+      when is_binary(base_url) and is_binary(service_token) and is_binary(manifest_version_id) and
+             is_binary(workspace_id) and workspace_id != "" do
+    context = %{"workspace_id" => workspace_id}
+
+    request_post(
+      :activate_manifest,
+      base_url <> "/api/orchestrator/v1/manifests/#{URI.encode(manifest_version_id)}/activate",
+      service_token,
+      %{
+        selection: %{
+          common_assets: "all",
+          common_pipelines: "all",
+          workspace_assets: [],
+          workspace_pipelines: []
+        },
+        configuration: %{}
+      },
+      context,
+      idempotency_key(:activate_manifest, context, %{
+        manifest_version_id: manifest_version_id,
+        workspace_id: workspace_id
       })
     )
   end
@@ -476,7 +509,7 @@ defmodule Favn.Dev.OrchestratorClient do
   def health(base_url) when is_binary(base_url) do
     url = base_url <> "/api/orchestrator/v1/health"
 
-    case LocalHttpClient.request(:get, url, [], nil, connect_timeout_ms: 1_000, timeout_ms: 2_000) do
+    case HttpClient.request(:get, url, [], nil, connect_timeout_ms: 1_000, timeout_ms: 2_000) do
       {:ok, %{"data" => %{"status" => "ok"}}} ->
         :ok
 
@@ -563,7 +596,7 @@ defmodule Favn.Dev.OrchestratorClient do
       |> add_idempotency_header(idempotency_key)
       |> Kernel.++(extra_headers)
 
-    case LocalHttpClient.request(method, url, headers, body, request_opts) do
+    case HttpClient.request(method, url, headers, body, request_opts) do
       {:ok, decoded} -> {:ok, decoded}
       {:error, reason} -> {:error, operation_error(operation, method, url, reason)}
     end
@@ -658,7 +691,22 @@ defmodule Favn.Dev.OrchestratorClient do
     do: %{"__type__" => "atom", "value" => Atom.to_string(value)}
 
   defp operation_error(operation, method, url, reason) do
-    %{operation: operation, method: method, url: url, reason: reason}
+    %{operation: operation, method: method, url: sanitized_url(url), reason: reason}
+  end
+
+  defp sanitized_url(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} = uri
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        uri
+        |> Map.put(:userinfo, nil)
+        |> Map.put(:query, nil)
+        |> Map.put(:fragment, nil)
+        |> URI.to_string()
+
+      _invalid ->
+        :redacted
+    end
   end
 
   defp missing_execution_packages(base_url, service_token, publication, session_context) do
@@ -683,8 +731,11 @@ defmodule Favn.Dev.OrchestratorClient do
           {:ok, missing, batch_limits}
         end
 
-      {:ok, _response} -> {:error, :invalid_missing_execution_packages_response}
-      {:error, reason} -> {:error, reason}
+      {:ok, _response} ->
+        {:error, :invalid_missing_execution_packages_response}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

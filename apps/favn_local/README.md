@@ -16,8 +16,8 @@ for Favn.
 - local run investigation and cancellation (`runs`, `logs RUN_ID`)
 - local SQL data inspection and read-only querying (`inspect`, `query`)
 - local operational-backfill submission, planning, inspection, rerun, and repair
-- project-local packaging flows (`build.runner`, `build.web`,
-  `build.orchestrator`, `build.single`, `bootstrap.single`)
+- runner/manifest release construction and deployment operations
+  (`build.runner`, `build.manifest`, `publish`, `activate`)
 - project-local filesystem state under `.favn/`
 
 `favn_local` does not define public authoring APIs. Authoring and manifest
@@ -43,6 +43,9 @@ These tasks are exposed by `apps/favn` and implemented by `favn_local`:
 - `mix favn.stop`
 - `mix favn.reset`
 - `mix favn.build.runner`
+- `mix favn.build.manifest`
+- `mix favn.publish`
+- `mix favn.activate`
 - `mix favn.build.web`
 - `mix favn.build.orchestrator`
 - `mix favn.build.single`
@@ -115,10 +118,42 @@ mix favn.reset
 
 ```bash
 mix favn.build.runner
-mix favn.build.web
-mix favn.build.orchestrator
-mix favn.build.single
+mix favn.build.manifest \
+  --runner-release .favn/dist/runner/rr_.../runner-release.json
+FAVN_ORCHESTRATOR_SERVICE_TOKEN=... mix favn.publish \
+  --manifest .favn/dist/manifest/mv_.../manifest-index.json \
+  --orchestrator-url http://control-plane.internal:4101
+FAVN_ORCHESTRATOR_SERVICE_TOKEN=... mix favn.activate \
+  --manifest-version mv_... --workspace-id production \
+  --orchestrator-url http://control-plane.internal:4101
 ```
+
+Runner and manifest builds automatically re-run in `MIX_ENV=prod`. The Favn
+path checkout must be clean and checked out at a detached tag or commit; a
+floating branch is rejected because it cannot identify the packaged Favn
+source. The generated context vendors the customer OTP application, its `priv`
+files, and its exact runtime dependency closure.
+
+Declare modules or applications reached only through dynamic dispatch:
+
+```elixir
+config :favn,
+  runner_build: [
+    extra_modules: [MyApp.DynamicHelper],
+    extra_applications: [:my_runtime_app]
+  ]
+```
+
+Changing either list requires a new runner release. SQL, pipeline, and schedule
+modules are not executable roots unless they are also Elixir assets or are
+reached from another runtime root.
+
+The production compile preserves the exact `Application.compile_env/3` values
+recorded by selected runtime applications and imports the customer
+`config/runtime.exs` in the final release. It does not import arbitrary
+development or manifest-only config into the runner. Unselected customer BEAMs
+are removed from the release, so SQL-only and authoring-only modules cannot
+escape the runner fingerprint.
 
 ## Configuration contract
 
@@ -331,8 +366,27 @@ is out of sync.
 
 ### Packaging targets
 
-- `build.runner`: project-specific runner artifact with user code + pinned
-  manifest + plugin inventory metadata
+- `build.runner`: immutable
+  `.favn/dist/runner/<runner_release_id>/` OCI context containing the verified
+  descriptor, aligned manifest release, vendored release inputs, digest-pinned
+  Dockerfile, bundle hashes, and operator notes. The task neither invokes
+  Docker nor pushes an image.
+- `build.manifest --runner-release PATH`: recomputes the executable fingerprint
+  and writes an immutable manifest release only when it exactly matches the
+  supplied descriptor. Code/dependency/plugin/toolchain drift fails with
+  `runner_rebuild_required` and bounded changed categories.
+- `publish`: uploads missing execution packages and stages the exact manifest.
+- `activate`: activates an exact staged manifest for an explicit workspace after
+  the control plane verifies the connected runner release.
+
+`publish` and `activate` accept the private URL through
+`--orchestrator-url` or `FAVN_ORCHESTRATOR_URL`. Their service credential is
+read only from `FAVN_ORCHESTRATOR_SERVICE_TOKEN`; it is not a CLI option or an
+artifact field.
+
+The older packaging commands below remain temporarily available while the
+Docker-first local lifecycle is replaced:
+
 - `build.web`: Phoenix/LiveView UI artifact metadata and bundle contract
 - `build.orchestrator`: orchestrator artifact metadata and storage contract
 - `build.single`: assembles a project-local backend-only PostgreSQL launcher with

@@ -157,6 +157,45 @@ defmodule Favn.RunnerRelease.ModuleClosureTest do
     unload_all(modules)
   end
 
+  test "does not reject an invalid unrelated BEAM outside the selected closure" do
+    modules = compile_modules("defmodule FavnClosureValidRoot, do: def(value(), do: :ok)")
+
+    assert {:ok, closure} =
+             ModuleClosure.build(
+               [FavnClosureValidRoot],
+               Map.put(modules, "Elixir.UnrelatedInvalid", "not a beam")
+             )
+
+    assert Enum.map(closure.modules, & &1.module) == ["Elixir.FavnClosureValidRoot"]
+    unload_all(modules)
+  end
+
+  test "rejects an invalid project-local protocol implementation even when it is dynamically selected" do
+    protocol_modules =
+      compile_modules("""
+      defprotocol FavnInvalidDependencyProtocol do
+        def value(input)
+      end
+      """)
+
+    project_modules =
+      compile_modules("""
+      defimpl FavnInvalidDependencyProtocol, for: Integer do
+        def value(_input), do: "/tmp/favn-runtime-path"
+      end
+
+      defmodule FavnInvalidProtocolRoot, do: def(value(), do: :root)
+      """)
+
+    assert {:error,
+            {:invalid_runtime_module, "Elixir.FavnInvalidDependencyProtocol.Integer",
+             {:invalid_beam, {:absolute_path_literal, _index}}}} =
+             ModuleClosure.build([FavnInvalidProtocolRoot], project_modules)
+
+    unload_all(project_modules)
+    unload_all(protocol_modules)
+  end
+
   test "normalizes root order deterministically" do
     modules =
       compile_modules("""

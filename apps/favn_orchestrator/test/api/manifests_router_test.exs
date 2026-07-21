@@ -8,8 +8,16 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
   alias Favn.Manifest.Version
   alias FavnOrchestrator.API.ManifestsRouter
   alias FavnOrchestrator.Auth.ServiceTokens
+  alias FavnOrchestrator.Persistence.{Runtime, Stores}
 
   @token "manifest-router-test-token-with-32-bytes"
+
+  defmodule MissingManifestStore do
+    alias FavnOrchestrator.Persistence.Error
+
+    def get_manifest(_query), do: {:error, Error.new(:not_found, "manifest not found")}
+    def record_audit(_command), do: :ok
+  end
 
   setup do
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
@@ -18,7 +26,8 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
       [
         service_identity: "manifest_router_test",
         token_hash: ServiceTokens.hash_token(@token),
-        enabled: true
+        enabled: true,
+        platform_roles: [:platform_operator]
       ]
     ])
 
@@ -61,6 +70,48 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
                }
              } = Jason.decode!(response.resp_body)
     end
+  end
+
+  test "service-token activation reaches the persisted manifest boundary without actor headers" do
+    stores = %Stores{
+      registry: MissingManifestStore,
+      runs: MissingManifestStore,
+      run_ownership: MissingManifestStore,
+      scheduler: MissingManifestStore,
+      admission: MissingManifestStore,
+      resource_circuits: MissingManifestStore,
+      materialization: MissingManifestStore,
+      backfills: MissingManifestStore,
+      operator_reads: MissingManifestStore,
+      logs: MissingManifestStore,
+      identity: MissingManifestStore,
+      maintenance: MissingManifestStore
+    }
+
+    assert {:ok, runtime} =
+             Runtime.start_link(%Runtime{backend: __MODULE__, options: [], stores: stores})
+
+    on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
+
+    response =
+      :post
+      |> conn("/mv_service_missing/activate", "")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> put_req_header("idempotency-key", "service-activation-missing")
+      |> Map.put(:body_params, %{
+        "selection" => %{
+          "common_assets" => "all",
+          "common_pipelines" => "all",
+          "workspace_assets" => [],
+          "workspace_pipelines" => []
+        },
+        "configuration" => %{}
+      })
+      |> ManifestsRouter.call(ManifestsRouter.init([]))
+
+    assert response.status == 404
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "not_found"
   end
 
   defp valid_envelope do

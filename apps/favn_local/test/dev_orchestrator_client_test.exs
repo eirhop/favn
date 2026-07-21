@@ -54,6 +54,18 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert url == base_url <> "/api/orchestrator/v1/runs/in-flight"
   end
 
+  test "operation errors never echo URL credentials or query values" do
+    assert {:error, error} =
+             OrchestratorClient.health(
+               "https://operator:embedded-secret@control.internal?token=query-secret"
+             )
+
+    rendered = inspect(error)
+    refute rendered =~ "embedded-secret"
+    refute rendered =~ "query-secret"
+    assert error.url == "https://control.internal"
+  end
+
   test "publish_manifest/3 serializes manifest structs before JSON encoding" do
     parent = self()
 
@@ -66,13 +78,14 @@ defmodule Favn.Dev.OrchestratorClientTest do
         parent: parent
       )
 
-    manifest = FavnTestSupport.with_manifest_contract(%{
-      assets: [],
-      pipelines: [],
-      schedules: [],
-      graph: %{},
-      metadata: %{}
-    })
+    manifest =
+      FavnTestSupport.with_manifest_contract(%{
+        assets: [],
+        pipelines: [],
+        schedules: [],
+        graph: %{},
+        metadata: %{}
+      })
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_orchestrator_client_test")
     {:ok, publication} = Publication.from_parts(version, [])
@@ -83,6 +96,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert_receive {:request_path, "/api/orchestrator/v1/execution-packages/missing"}
     assert_receive {:request_headers, headers}
     assert headers["content-encoding"] == "gzip"
+    assert headers["content-type"] == "application/json"
 
     assert_receive {:request_body, missing_body}
     assert JSON.decode!(:zlib.gunzip(missing_body)) == %{"hashes" => []}
@@ -90,6 +104,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert_receive {:request_path, "/api/orchestrator/v1/manifests"}
     assert_receive {:request_headers, publish_headers}
     assert publish_headers["content-encoding"] == "gzip"
+    assert publish_headers["content-type"] == "application/json"
 
     assert_receive {:request_body, compressed_body}
     body = :zlib.gunzip(compressed_body)
@@ -105,13 +120,14 @@ defmodule Favn.Dev.OrchestratorClientTest do
         {~s({"data":{"ok":true}}), 200, 5_100}
       ])
 
-    manifest = FavnTestSupport.with_manifest_contract(%{
-      assets: [],
-      pipelines: [],
-      schedules: [],
-      graph: %{},
-      metadata: %{}
-    })
+    manifest =
+      FavnTestSupport.with_manifest_contract(%{
+        assets: [],
+        pipelines: [],
+        schedules: [],
+        graph: %{},
+        metadata: %{}
+      })
 
     {:ok, version} = Version.new(manifest)
     {:ok, publication} = Publication.from_parts(version, [])
@@ -126,13 +142,14 @@ defmodule Favn.Dev.OrchestratorClientTest do
     {:ok, base_url, _server} =
       start_server(missing_response([unknown_hash]), 200)
 
-    manifest = FavnTestSupport.with_manifest_contract(%{
-      assets: [],
-      pipelines: [],
-      schedules: [],
-      graph: %{},
-      metadata: %{}
-    })
+    manifest =
+      FavnTestSupport.with_manifest_contract(%{
+        assets: [],
+        pipelines: [],
+        schedules: [],
+        graph: %{},
+        metadata: %{}
+      })
 
     {:ok, version} = Version.new(manifest)
     {:ok, publication} = Publication.from_parts(version, [])
@@ -213,6 +230,30 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert body == "{}"
     assert_receive {:request_headers, headers}
     assert headers["x-favn-workspace-id"] == "workspace-1"
+  end
+
+  test "activate_manifest_service/4 sends workspace authority without actor credentials" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"activated":true}}), 200, parent: parent)
+
+    assert {:ok, %{"data" => %{"activated" => true}}} =
+             OrchestratorClient.activate_manifest_service(
+               base_url,
+               "service-token",
+               "mv_service",
+               "workspace-service"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/manifests/mv_service/activate"}
+    assert_receive {:request_body, _body}
+    assert_receive {:request_headers, headers}
+    assert headers["x-favn-workspace-id"] == "workspace-service"
+    assert headers["authorization"] == "Bearer service-token"
+    refute Map.has_key?(headers, "x-favn-actor-id")
+    refute Map.has_key?(headers, "x-favn-session-token")
+    assert is_binary(headers["idempotency-key"])
   end
 
   test "bootstrap_active_manifest/3 reads the workspace active manifest" do
@@ -560,7 +601,10 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
     {:ok, version} =
       Version.new(
-        %Manifest{assets: assets, graph: %Graph{nodes: refs, topo_order: refs}},
+        FavnTestSupport.with_manifest_contract(%Manifest{
+          assets: assets,
+          graph: %Graph{nodes: refs, topo_order: refs}
+        }),
         manifest_version_id: "mv_orchestrator_client_packages"
       )
 

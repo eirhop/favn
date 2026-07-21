@@ -34,15 +34,17 @@ defmodule Favn.Dev do
   - `run/2`: submit an asset or pipeline run with optional dependency and refresh intent
   - `list_runs/1`, `get_run/2`, `cancel_run/2`, `list_run_events/2`: inspect
     and control local runs through HTTP APIs
-  - `build_runner/1`, `build_web/1`, `build_orchestrator/1`, `build_single/1`:
-    project-local packaging flows
-  - `bootstrap_single/1`: API-driven single-node backend bootstrap
+  - `build_runner/1`, `build_manifest/1`: immutable runner and aligned manifest releases
+  - `publish/1`, `activate/1`: topology-neutral staged deployment operations
+  - legacy packaging/bootstrap functions remain only until Docker-first local
+    lifecycle replacement is complete
 
   See `apps/favn_local/README.md` for the full local-tooling contract and `.favn/`
   layout details.
   """
 
   alias Favn.Dev.Backfill
+  alias Favn.Dev.Activate
   alias Favn.Dev.Bootstrap.Single, as: SingleBootstrap
   alias Favn.Dev.Build.Orchestrator, as: OrchestratorBuild
   alias Favn.Dev.Build.Runner, as: RunnerBuild
@@ -54,6 +56,7 @@ defmodule Favn.Dev do
   alias Favn.Dev.Init
   alias Favn.Dev.Install
   alias Favn.Dev.Logs
+  alias Favn.Dev.Publish
   alias Favn.Dev.Reload
   alias Favn.Dev.Reset
   alias Favn.Dev.Run
@@ -125,6 +128,18 @@ defmodule Favn.Dev do
   """
   @spec build_runner(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
   def build_runner(opts \\ []) when is_list(opts), do: RunnerBuild.run(opts)
+
+  @doc "Builds a manifest release aligned with an explicit runner descriptor."
+  @spec build_manifest(keyword()) :: {:ok, map()} | {:error, term()}
+  def build_manifest(opts) when is_list(opts), do: Favn.Dev.Build.Manifest.run(opts)
+
+  @doc "Publishes an immutable manifest release as staged/inactive."
+  @spec publish(keyword()) :: {:ok, map()} | {:error, term()}
+  def publish(opts) when is_list(opts), do: Publish.run(opts)
+
+  @doc "Activates one exact staged manifest for one workspace."
+  @spec activate(keyword()) :: {:ok, map()} | {:error, term()}
+  def activate(opts) when is_list(opts), do: Activate.run(opts)
 
   @doc """
   Builds the project-local web packaging target.

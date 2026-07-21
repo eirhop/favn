@@ -1,6 +1,7 @@
 defmodule Mix.Tasks.Favn.Build.Single do
   use Mix.Task
 
+  @requirements ["app.config"]
   @shortdoc "Builds the project-local single-node bundle"
 
   @moduledoc """
@@ -9,12 +10,22 @@ defmodule Mix.Tasks.Favn.Build.Single do
 
   alias Favn.Dev
   alias Mix.Tasks.Favn.CLIArgs
+  alias Mix.Tasks.Favn.ProductionBuild
 
   @impl Mix.Task
   def run(args) do
     opts = CLIArgs.parse_no_args!("favn.build.single", args, root_dir: :string, storage: :string)
     opts = normalize_storage(opts)
 
+    if Mix.env() == :test do
+      run_build(opts)
+    else
+      ProductionBuild.run("favn.build.single", args, fn -> run_build(opts) end)
+    end
+  end
+
+  @doc false
+  def run_build(opts) do
     case Dev.build_single(opts) do
       {:ok, %{build_id: build_id, dist_dir: dist_dir}} ->
         IO.puts("Favn single build complete")

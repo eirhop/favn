@@ -1,5 +1,7 @@
 defmodule Favn.Dev.Build.SingleTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
+
+  @moduletag timeout: 180_000
 
   import Bitwise
 

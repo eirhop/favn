@@ -27,8 +27,17 @@ defmodule Favn.ConsumerDependencyInstallTest do
     refute :favn in dep_apps
     refute Enum.any?(deps, fn dep -> Keyword.has_key?(dep_opts(dep), :in_umbrella) end)
 
-    assert runtime_deps(deps) == [:favn_authoring, :favn_local, :favn_sql_runtime]
-    assert test_only_deps(deps) == [:favn_orchestrator, :favn_runner, :favn_test_support]
+    assert runtime_deps(deps) == [:favn_sql_runtime]
+    assert build_only_deps(deps) == [:favn_authoring, :favn_local]
+    assert test_only_deps(deps) == [:favn_orchestrator, :favn_test_support]
+
+    local_deps = FavnLocal.MixProject.project()[:deps]
+    refute :favn_runner in runtime_deps(local_deps)
+    assert :favn_runner in build_only_deps(local_deps)
+
+    app_file = Path.join([Mix.Project.build_path(), "lib/favn_local/ebin/favn_local.app"])
+    assert {:ok, [{:application, :favn_local, properties}]} = :file.consult(app_file)
+    refute :favn_runner in Keyword.fetch!(properties, :applications)
 
     assert Enum.all?(internal_path_deps(deps), fn dep ->
              opts = dep_opts(dep)
@@ -133,6 +142,14 @@ defmodule Favn.ConsumerDependencyInstallTest do
     deps
     |> internal_path_deps()
     |> Enum.reject(fn dep -> Keyword.get(dep_opts(dep), :only) == :test end)
+    |> Enum.reject(fn dep -> Keyword.get(dep_opts(dep), :runtime, true) == false end)
+    |> Enum.map(&elem(&1, 0))
+  end
+
+  defp build_only_deps(deps) do
+    deps
+    |> internal_path_deps()
+    |> Enum.filter(fn dep -> Keyword.get(dep_opts(dep), :runtime, true) == false end)
     |> Enum.map(&elem(&1, 0))
   end
 

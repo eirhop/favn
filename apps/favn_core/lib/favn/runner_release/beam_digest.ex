@@ -90,6 +90,17 @@ defmodule Favn.RunnerRelease.BeamDigest do
 
   def imports(_beam), do: {:error, {:invalid_beam, :malformed}}
 
+  @doc false
+  @spec protocol_implementation_metadata(binary()) ::
+          {:ok, nil | %{protocol: String.t(), for: String.t()}} | {:error, error()}
+  def protocol_implementation_metadata(beam) when is_binary(beam) do
+    with {:ok, attributes} <- optional_attributes(beam) do
+      {:ok, protocol_implementation(attributes)}
+    end
+  end
+
+  def protocol_implementation_metadata(_beam), do: {:error, {:invalid_beam, :malformed}}
+
   @doc "Returns the canonical executable chunk representation used for hashing."
   @spec canonical_binary(binary()) :: {:ok, binary()} | {:error, error()}
   def canonical_binary(beam) when is_binary(beam) do
@@ -190,7 +201,10 @@ defmodule Favn.RunnerRelease.BeamDigest do
          acc
        )
        when count > 0 do
-    literal = :erlang.binary_to_term(encoded, [:safe])
+    # These BEAMs have already been compiled into the caller's trusted Mix
+    # project. OTP 28 may keep literal-only atoms out of the atom chunk, so the
+    # `:safe` decoder incorrectly rejects valid struct and typespec literals.
+    literal = :erlang.binary_to_term(encoded)
     decode_literal_entries(count - 1, rest, [literal | acc])
   rescue
     ArgumentError -> {:error, {:invalid_beam, :invalid_literal_table}}
@@ -239,7 +253,9 @@ defmodule Favn.RunnerRelease.BeamDigest do
   end
 
   defp contains_absolute_path?(value) when is_map(value) do
-    Enum.any?(value, fn {key, child} ->
+    value
+    |> Map.to_list()
+    |> Enum.any?(fn {key, child} ->
       contains_absolute_path?(key) or contains_absolute_path?(child)
     end)
   end

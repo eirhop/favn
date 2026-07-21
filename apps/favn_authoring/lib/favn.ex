@@ -33,6 +33,7 @@ defmodule FavnAuthoring do
   alias Favn.ModuleDiscovery
   alias Favn.Pipeline
   alias Favn.Pipeline.Resolver
+  alias FavnAuthoring.RuntimeRoots
   alias Favn.Triggers.Schedules, as: PipelineSchedules
 
   @type asset_ref :: Favn.Ref.t()
@@ -208,6 +209,17 @@ defmodule FavnAuthoring do
   def prepare_manifest_publication(%Build{} = build, opts \\ []) when is_list(opts) do
     Publication.new(build, opts)
   end
+
+  @doc """
+  Collects the authoring-owned executable roots required by one manifest build.
+
+  Runner build tooling extends these roots with configured plugins, supervised
+  children, and dependency applications before calculating the release identity.
+  """
+  @spec runtime_roots(Build.t()) ::
+          {:ok, Favn.RunnerRelease.RuntimeRoots.t()}
+          | {:error, Favn.RunnerRelease.RuntimeRoots.error()}
+  def runtime_roots(%Build{} = build), do: RuntimeRoots.collect(build)
 
   defp with_default_manifest_modules(opts) when is_list(opts) do
     with {:ok, opts} <-

@@ -17,12 +17,14 @@ defmodule Favn.Dev.Build.Single do
 
   @spec run(root_opt()) :: {:ok, map()} | {:error, term()}
   def run(opts \\ []) when is_list(opts) do
+    runner_opts = legacy_runner_opts(opts)
+
     with storage <- storage_mode(opts),
          :ok <- validate_storage(storage),
          :ok <- Install.ensure_ready(opts),
          :ok <- State.ensure_layout(opts),
          {:ok, orchestrator} <- Orchestrator.run(opts),
-         {:ok, runner} <- Runner.run(opts),
+         {:ok, runner} <- Runner.run(runner_opts),
          {build_id, root_dir} <- {build_id(), Paths.root_dir(opts)},
          build_dir <- Paths.build_single_dir(root_dir, build_id),
          dist_dir <- Paths.dist_single_dir(root_dir, build_id),
@@ -33,7 +35,7 @@ defmodule Favn.Dev.Build.Single do
          :ok <- File.mkdir_p(Path.join(dist_dir, "env")),
          :ok <- File.mkdir_p(Path.join(dist_dir, "bin")),
          :ok <- copy_target_outputs(orchestrator.dist_dir, Path.join(dist_dir, "orchestrator")),
-         :ok <- copy_target_outputs(runner.dist_dir, Path.join(dist_dir, "runner")),
+         :ok <- copy_runner_identity(runner, Path.join(dist_dir, "runner")),
          assembly <- assembly_json(build_id, orchestrator, runner, storage),
          :ok <-
            write_json(Path.join(build_dir, "build.json"), build_json(build_id, assembly, opts)),
@@ -48,6 +50,16 @@ defmodule Favn.Dev.Build.Single do
          :ok <- write_scripts(dist_dir, orchestrator),
          :ok <- write_operator_notes(dist_dir) do
       {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
+    end
+  end
+
+  defp legacy_runner_opts(opts) do
+    if Mix.env() == :test do
+      opts
+      |> Keyword.put(:allow_non_prod_build, true)
+      |> Keyword.put(:allow_unpinned_favn, true)
+    else
+      opts
     end
   end
 
@@ -78,6 +90,10 @@ defmodule Favn.Dev.Build.Single do
       {:error, reason} ->
         {:error, {:read_dist_failed, source_dir, reason}}
     end
+  end
+
+  defp copy_runner_identity(runner, target_dir) do
+    File.cp(runner.descriptor_path, Path.join(target_dir, "runner-release.json"))
   end
 
   defp copy_entry(source, destination) do

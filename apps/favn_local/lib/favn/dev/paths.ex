@@ -72,6 +72,10 @@ defmodule Favn.Dev.Paths do
   def dist_runner_dir(root_dir, build_id),
     do: Path.join(dist_target_dir(root_dir, "runner"), build_id)
 
+  @spec dist_manifest_dir(Path.t(), String.t()) :: Path.t()
+  def dist_manifest_dir(root_dir, manifest_version_id),
+    do: Path.join(dist_target_dir(root_dir, "manifest"), manifest_version_id)
+
   @spec dist_web_dir(Path.t(), String.t()) :: Path.t()
   def dist_web_dir(root_dir, build_id), do: Path.join(dist_target_dir(root_dir, "web"), build_id)
 

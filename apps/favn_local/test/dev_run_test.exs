@@ -45,7 +45,7 @@ defmodule Favn.Dev.RunTest do
     }
 
     assert {:error, {:pipeline_not_found, "Missing.Pipeline", ["Other"]}} =
-              Run.resolve_pipeline_target(active_manifest, "Missing.Pipeline")
+             Run.resolve_pipeline_target(active_manifest, "Missing.Pipeline")
   end
 
   test "resolve_run_target/2 finds active manifest asset by ref" do
@@ -347,8 +347,7 @@ defmodule Favn.Dev.RunTest do
                root_dir: root_dir
              )
 
-    assert {:error,
-            {:orchestrator_validation_failed, "Pipeline requires an explicit month window"}} =
+    assert {:error, {:orchestrator_validation_failed, "validation_failed"}} =
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
   end
 
@@ -385,7 +384,7 @@ defmodule Favn.Dev.RunTest do
     write_running_runtime!(root_dir, base_url)
 
     assert {:error, {:run_failed, %{"id" => "run_timed_out", "status" => "timed_out"}}} =
-              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
   end
 
   test "runs cancel wait treats partial as terminal", %{root_dir: root_dir} do

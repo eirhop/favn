@@ -86,7 +86,12 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - `mix favn.init`, `doctor`, `install`, `dev`, `run`, `backfill`, `runs`, `logs`,
   `inspect`, `query`, `diagnostics`, `reload`, `status`, `stop`, and `reset` provide
   the private local developer loop against PostgreSQL.
-- `build.runner` creates project-specific runner output.
+- `build.runner` creates an immutable, relocatable customer runner OCI context
+  keyed by the deterministic runner release ID; Favn does not push it.
+- `build.manifest` allows manifest-only deployment only after exact runner
+  fingerprint alignment. `publish` stages content-addressed artifacts and
+  `activate` selects one exact version for one workspace using a service token
+  read only from the environment.
 - `build.single` creates an operational but project-local, non-relocatable backend
   launcher containing orchestrator, scheduler, and one runner.
 - `build.web` and `build.orchestrator` currently produce metadata, not deployable

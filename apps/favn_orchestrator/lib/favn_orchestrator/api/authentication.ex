@@ -60,6 +60,29 @@ defmodule FavnOrchestrator.API.Authentication do
     end
   end
 
+  @doc "Builds workspace authority for a platform-operator service request."
+  @spec service_workspace_context(Plug.Conn.t()) ::
+          {:ok, %{id: String.t()}, %{id: String.t()}, WorkspaceContext.t()}
+          | {:error, :service_unauthorized | :forbidden | :unauthenticated}
+  def service_workspace_context(conn) do
+    with {:ok, workspace_id} <- workspace_id(conn),
+         {:ok, principal} <- authenticate_platform_service(conn),
+         true <- :platform_operator in principal.platform_roles,
+         identity = principal.service_identity,
+         actor_id = "service:" <> identity,
+         session_id = "api-service:" <> identity,
+         {:ok, context} <-
+           WorkspaceContext.new(workspace_id, actor_id, [:workspace_admin],
+             request_id: session_id
+           ) do
+      {:ok, %{id: session_id}, %{id: actor_id}, context}
+    else
+      false -> {:error, :forbidden}
+      {:error, :invalid_context} -> {:error, :forbidden}
+      {:error, _reason} = error -> error
+    end
+  end
+
   @doc "Returns the one explicit workspace selected by the request."
   @spec workspace_id(Plug.Conn.t()) :: {:ok, String.t()} | {:error, :unauthenticated}
   def workspace_id(conn) do

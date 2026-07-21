@@ -148,10 +148,15 @@ defmodule Favn.Dev.Bootstrap.Single do
   end
 
   defp packaged_manifest_opts(path) when is_binary(path) do
-    path
-    |> Path.dirname()
-    |> Path.join("metadata.json")
-    |> read_manifest_metadata_opts()
+    directory = Path.dirname(path)
+
+    ["bundle.json", "metadata.json"]
+    |> Enum.find_value([], fn filename ->
+      case read_manifest_metadata_opts(Path.join(directory, filename)) do
+        [] -> nil
+        opts -> opts
+      end
+    end)
   end
 
   defp read_manifest_metadata_opts(metadata_path) do

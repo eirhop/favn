@@ -52,6 +52,8 @@ defmodule FavnRunner.ReleaseVerifier do
   @doc "Verifies and installs only the descriptor at the fixed packaged-release path."
   @spec verify_startup() :: :ok | {:error, error()}
   def verify_startup do
+    :ok = install_packaged_customer_code_path()
+
     case verified_release() do
       {:ok, %RunnerRelease{}} ->
         ensure_prepared_plugins()
@@ -104,7 +106,24 @@ defmodule FavnRunner.ReleaseVerifier do
   @doc "Reads and verifies one descriptor file against the current release."
   @spec verify_file(Path.t()) :: {:ok, RunnerRelease.t()} | {:error, error()}
   def verify_file(path) when is_binary(path) do
+    :ok = install_packaged_customer_code_path()
     verify_file(path, runtime_facts())
+  end
+
+  defp install_packaged_customer_code_path do
+    path = Application.app_dir(:favn_runner, Path.join("priv", "customer_ebin"))
+
+    if File.dir?(path) do
+      case Code.prepend_path(path, cache: true) do
+        true ->
+          :ok
+
+        false ->
+          :ok
+      end
+    else
+      :ok
+    end
   end
 
   defp verify_file(path, runtime_facts) do
