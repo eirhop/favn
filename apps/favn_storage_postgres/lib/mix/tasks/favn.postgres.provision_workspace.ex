@@ -3,11 +3,8 @@ defmodule Mix.Tasks.Favn.Postgres.ProvisionWorkspace do
 
   use Mix.Task
 
-  alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
-  alias FavnOrchestrator.Persistence.PlatformContext
-  alias FavnStoragePostgres.Config
-  alias FavnStoragePostgres.Registry.Store
-  alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.Release
+  alias Mix.Tasks.Favn.Postgres.ReleaseHelpers
 
   @shortdoc "Provisions a PostgreSQL Storage V2 workspace"
 
@@ -28,34 +25,12 @@ defmodule Mix.Tasks.Favn.Postgres.ProvisionWorkspace do
     slug = Keyword.get(options, :slug, workspace_id)
     display_name = Keyword.get(options, :name, workspace_id)
 
-    {:ok, _applications} = Application.ensure_all_started(:ecto_sql)
-    {:ok, _applications} = Application.ensure_all_started(:postgrex)
-
-    {:ok, context} =
-      PlatformContext.new("mix:workspace-provisioner", "local-cli", [:platform_admin])
-
-    {:ok, repo} = Repo.start_link(repo_options!())
-
-    try do
-      command = %ProvisionWorkspace{
-        platform_context: context,
-        workspace_id: workspace_id,
-        slug: slug,
-        display_name: display_name,
-        occurred_at: DateTime.utc_now()
-      }
-
-      case Store.provision_workspace(command) do
-        :ok ->
-          Mix.shell().info("Workspace #{workspace_id} is provisioned")
-          Mix.shell().info("Add it to runtime configuration: FAVN_WORKSPACE_IDS=#{workspace_id}")
-
-        {:error, error} ->
-          Mix.raise("workspace provisioning failed: #{inspect(error)}")
-      end
-    after
-      GenServer.stop(repo)
-    end
+    Release.provision_workspace(%{
+      workspace_id: workspace_id,
+      slug: slug,
+      display_name: display_name
+    })
+    |> ReleaseHelpers.report("Workspace is provisioned")
   end
 
   defp required_option!(options, key) do
@@ -67,12 +42,5 @@ defmodule Mix.Tasks.Favn.Postgres.ProvisionWorkspace do
 
   defp usage! do
     Mix.raise("usage: mix favn.postgres.provision_workspace --id ID [--slug SLUG] [--name NAME]")
-  end
-
-  defp repo_options! do
-    case Config.repo_options() do
-      {:ok, options} -> options
-      {:error, reason} -> Mix.raise("invalid PostgreSQL configuration: #{inspect(reason)}")
-    end
   end
 end

@@ -842,6 +842,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
 
   defp manifest_version(manifest_version_id) do
     manifest = %Manifest{
+      metadata: %{"fixture_id" => manifest_version_id},
       assets: [
         %Favn.Manifest.Asset{
           ref: {MyApp.PerformanceAsset, :asset},
@@ -852,7 +853,10 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     }
 
     {:ok, version} =
-      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+      Version.new(
+        manifest
+        |> FavnTestSupport.with_manifest_contract()
+        |> FavnTestSupport.with_manifest_graph(),
         manifest_version_id: manifest_version_id
       )
 

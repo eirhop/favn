@@ -14,6 +14,10 @@ PostgreSQL 18 control-plane persistence.
 - Ecto schemas live under `schemas/`; concurrency-critical mutations use focused
   SQL where row locks, `SKIP LOCKED`, or database-time lease checks are required.
 - Reset-baseline migrations create the dedicated `favn_control` schema.
+- `FavnStoragePostgres.Release` owns release-safe migration, schema/grant
+  verification, workspace provisioning, key inventory/compaction, restore
+  verification, and upgrade preflight behavior. Mix tasks are development
+  wrappers around that module.
 
 The app implements transactional persistence and database invariants. Product
 lifecycle decisions remain in `favn_orchestrator`.
@@ -26,15 +30,33 @@ lifecycle decisions remain in `favn_orchestrator`.
 - Every tenant operation carries an explicit workspace or platform context.
 - PostgreSQL `NOTIFY` is only a wake-up optimization; durable outbox publications
   and cursors provide replay correctness.
+- Current manifest rows store a database-validated `required_runner_release_id`.
+  Historical pre-contract rows retain `NULL` for audit display and cannot be
+  activated.
 
-## Commands
+## Development commands
 
 ```bash
 mix favn.postgres.migrate
+mix favn.postgres.verify_schema
 mix favn.postgres.grant_runtime --role favn_runtime
 mix favn.postgres.provision_workspace --id CUSTOMER --slug CUSTOMER --name "Customer"
+mix favn.postgres.preflight_upgrade
+mix favn.postgres.runtime_input_key_inventory
+mix favn.postgres.compact_runtime_input_keys --version 1
 mix favn.postgres.verify_restore
 ```
+
+Production one-off containers call the same operations without Mix, for example:
+
+```bash
+bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.migrate())'
+bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.verify_schema())'
+```
+
+All release functions return `{:ok, %{status: :ok, ...}}` or a redacted
+`{:error, %{status: :error, code: ...}}`. Migration and grant operations reject
+the configured restricted runtime role.
 
 Use `scripts/postgres/setup` for the local container. See the production runbook
 before configuring TLS, roles, connection budgets, backups, restore drills,

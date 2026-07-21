@@ -79,6 +79,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
           content_hash: manifest.content_hash,
           schema_version: manifest.schema_version,
           runner_contract_version: manifest.runner_contract_version,
+          required_runner_release_id: manifest.required_runner_release_id,
           inserted_at: manifest.inserted_at
         })
 
@@ -431,6 +432,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       content_hash: Base.encode16(manifest.content_hash, case: :lower),
       schema_version: manifest.schema_version,
       runner_contract_version: manifest.runner_contract_version,
+      required_runner_release_id: manifest.required_runner_release_id,
       inserted_at: manifest.inserted_at
     }
   end

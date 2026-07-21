@@ -33,8 +33,10 @@ Favn's PostgreSQL 18 control-plane persistence.
   full manifest.
 - Reset-baseline migrations live under `migrations/` and create the dedicated
   `favn_control` schema.
-- Mix tasks under `lib/mix/` own migration, workspace provisioning, runtime grants,
-  restore verification, and bounded operational commands.
+- `FavnStoragePostgres.Release` owns migration, exact-schema verification,
+  workspace provisioning, runtime grants, restore verification, key inventory,
+  explicit key compaction, and upgrade preflight behavior. Mix tasks under
+  `lib/mix/` are thin development wrappers.
 - Platform maintenance can remove old execution packages only when no manifest link
   references them; the global content-addressed registry cannot be purged by
   workspace.
@@ -49,6 +51,9 @@ database-enforced invariants.
 - Runtime startup validates the exact schema and fails closed.
 - Production requires verified TLS and a least-privilege runtime role.
 - Runtime nodes never migrate at boot.
+- `manifest_versions.required_runner_release_id` is non-null and format-checked
+  for current manifest schemas. It is null only on historical pre-contract rows,
+  which remain available to bounded audit reads but cannot be activated.
 - Tenant access requires explicit workspace/platform context.
 - The storage-owned node-local manifest cache contains only decoded compact immutable
   releases and is bounded by entry and byte budgets. The orchestrator and runner own

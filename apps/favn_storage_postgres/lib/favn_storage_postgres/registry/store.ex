@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL
+  alias Favn.Manifest.Compatibility
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
@@ -61,6 +62,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   @max_deployment_schedules 2_000
   @max_capacity_scopes 1_000
   @bulk_insert_size 500
+  @current_manifest_schema Compatibility.current_schema_version()
 
   @impl true
   def provision_workspace(%ProvisionWorkspace{} = command) do
@@ -487,6 +489,29 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
+  defp get_activatable_manifest(manifest_version_id) do
+    case Repo.get(ManifestVersion, manifest_version_id) do
+      nil ->
+        {:error, Error.new(:not_found, "manifest release not found")}
+
+      %ManifestVersion{schema_version: schema_version}
+      when schema_version < @current_manifest_schema ->
+        {:error,
+         Error.new(:invalid, "historical manifest cannot be activated",
+           details: %{
+             reason: :historical_manifest_not_activatable,
+             schema_version: schema_version,
+             current_schema_version: @current_manifest_schema
+           }
+         )}
+
+      %ManifestVersion{} = row ->
+        row
+        |> decode_manifest_row()
+        |> cache_manifest()
+    end
+  end
+
   defp cache_manifest({:ok, %Version{} = version} = result) do
     :ok = ManifestCache.put(version)
     result
@@ -498,7 +523,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   def deploy_manifest(%DeployManifest{} = command) do
     with :ok <- validate_deploy_command(command),
          {:ok, configuration} <- validate_configuration(command.configuration),
-         {:ok, manifest} <- get_manifest(%ById{manifest_version_id: command.manifest_version_id}),
+         {:ok, manifest} <- get_activatable_manifest(command.manifest_version_id),
          :ok <- validate_targets(command.targets, manifest),
          schedules <- normalize_schedules(command.schedules),
          capacities <- normalize_capacities(command.capacity_scopes),
@@ -782,6 +807,7 @@ defmodule FavnStoragePostgres.Registry.Store do
       content_hash: hash,
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
+      required_runner_release_id: version.required_runner_release_id,
       payload_version: 1,
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
@@ -832,6 +858,7 @@ defmodule FavnStoragePostgres.Registry.Store do
              content_hash: Base.encode16(row.content_hash, case: :lower),
              schema_version: row.schema_version,
              runner_contract_version: row.runner_contract_version,
+             required_runner_release_id: row.required_runner_release_id,
              serialization_format: "json-v1",
              inserted_at: row.inserted_at
            ) do

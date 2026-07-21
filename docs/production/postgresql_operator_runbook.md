@@ -102,9 +102,40 @@ only with both `FAVN_DATABASE_SSL_MODE=disable` and
 
 Runtime nodes never migrate at boot.
 
-1. Confirm a current backup/PITR recovery point and recent successful restore drill.
-2. Prevent rollout of runtime code that requires the new schema.
-3. Run the migration artifact with the migrator identity:
+1. Record the current image and active manifest IDs, then run candidate-image
+   preflight with a read-capable database role:
+
+   ```bash
+   bin/favn_control_plane eval \
+     'IO.inspect(FavnStoragePostgres.Release.preflight_upgrade())'
+   ```
+
+   `:active_legacy_manifests` means an active deployment still points at a
+   pre-runner-identity manifest. Republish and activate an aligned current
+   manifest during the maintenance window before completing the upgrade. The
+   result reports the total blocker count and at most 100 identifying samples,
+   with `truncated?: true` when more remain.
+2. Confirm a current backup/PITR recovery point and recent successful restore drill.
+3. Prevent rollout of runtime code that requires the new schema.
+4. Run the candidate image with the migrator identity to apply migrations and
+   grants:
+
+   ```bash
+   bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.migrate())'
+   bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.grant_runtime())'
+   ```
+
+   Then run exact schema verification from a separate one-off process configured
+   with the runtime database identity. Production verification deliberately
+   rejects a connection whose current database user is not the configured runtime
+   role:
+
+   ```bash
+   bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.verify_schema())'
+   ```
+
+   Until the control-plane release is assembled, the equivalent development
+   wrappers are:
 
    ```bash
    FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" mix favn.postgres.migrate
@@ -120,9 +151,9 @@ Runtime nodes never migrate at boot.
        --id salmon-one --slug salmon-one --name "Salmon One"
    ```
 
-4. Start one canary and require readiness to report `ready?: true`.
-5. Check database errors, lock waits, pool queue time, projection lag, and outbox lag.
-6. Roll out remaining nodes gradually.
+5. Start one canary and require readiness to report `ready?: true`.
+6. Check database errors, lock waits, pool queue time, projection lag, and outbox lag.
+7. Roll out remaining nodes gradually.
 
 Readiness rejects PostgreSQL majors other than 18, a mismatched catalog-definition
 fingerprint (column types/nullability/defaults plus every constraint and index on
@@ -140,18 +171,35 @@ Do not remove a key version merely because a newer version is current. A persist
 pin remains encrypted with the version recorded on its row, and exact command replay
 returns that canonical pin without rewriting it.
 
+First inspect version numbers and pin counts. Neither command reads key material:
+
+```bash
+bin/favn_control_plane eval \
+  'IO.inspect(FavnStoragePostgres.Release.runtime_input_key_inventory())'
+```
+
 After the retention workflow has purged or re-encrypted every pin using the old
-version, compact the inventory with the migrator identity:
+version, compact that explicit non-current version:
+
+```bash
+bin/favn_control_plane eval \
+  'IO.inspect(FavnStoragePostgres.Release.compact_runtime_input_keys([1]))'
+```
+
+The equivalent development wrappers are:
 
 ```bash
 FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
-  mix favn.postgres.compact_runtime_input_keys
+  mix favn.postgres.runtime_input_key_inventory
+FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
+  mix favn.postgres.compact_runtime_input_keys --version 1
 ```
 
-The task briefly locks runtime-input pin writes while it removes only inventory
-versions with no referencing pin. Confirm readiness remains healthy, then remove
-the retired version from `FAVN_RUNTIME_INPUT_PIN_KEYS`. The task reports version
-numbers only and never reads or prints key material.
+Compaction briefly locks runtime-input pin writes. It atomically rejects the whole
+request if any requested version still has a pin, rejects the configured current
+version, and treats an already-absent version as a successful retry. Confirm
+readiness remains healthy, then remove the retired version from the configured
+keyring.
 
 ## Runtime privileges
 
@@ -180,11 +228,19 @@ physical backups.
 At least monthly, and before a major upgrade or destructive migration:
 
 1. Restore the provider backup/PITR point into a new isolated server or database.
-2. Run schema and authority verification:
+2. Apply the normal runtime grants, then run schema and authority verification
+   with a read-capable restored runtime identity:
 
    ```bash
-   FAVN_DATABASE_URL="$RESTORED_DATABASE_URL" mix favn.postgres.verify_restore
+   bin/favn_control_plane eval \
+     'IO.inspect(FavnStoragePostgres.Release.verify_restore())'
    ```
+
+   The development wrapper is
+   `FAVN_DATABASE_URL="$RESTORED_DATABASE_URL" mix favn.postgres.verify_restore`.
+   Restore verification gives its checked-out database session a bounded
+   ten-minute statement/client timeout for large authority scans and restores
+   the normal session timeout before returning the connection.
 
 3. Start an isolated canary with external dispatch disabled.
 4. Backfill missing disposable projection rows in bounded batches and compare

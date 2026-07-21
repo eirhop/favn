@@ -33,6 +33,7 @@ defmodule FavnStoragePostgres.Schemas.ManifestVersion do
     field(:content_hash, :binary)
     field(:schema_version, :integer)
     field(:runner_contract_version, :integer)
+    field(:required_runner_release_id, :string)
     field(:payload_version, :integer)
     field(:asset_count, :integer)
     field(:pipeline_count, :integer)

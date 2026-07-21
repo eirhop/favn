@@ -22,6 +22,9 @@ erDiagram
     MANIFEST_VERSIONS {
         text manifest_version_id PK
         bytea content_hash UK
+        int schema_version
+        int runner_contract_version
+        text required_runner_release_id
         jsonb manifest
         int asset_count
         int pipeline_count
@@ -72,6 +75,10 @@ erDiagram
 Manifests and execution packages are global, immutable, content-addressed data.
 Deployments bind a manifest plus workspace configuration to one customer. The
 target table is the exact asset/pipeline authorization list for that deployment.
+The immutable manifest row is also the authority for the runner release required
+by that deployment; the value is not duplicated on `workspace_deployments`.
+Historical manifests from schema versions before the runner-release contract keep
+a null binding for audit only and cannot become active.
 
 ## Runs, events, execution, logs, and outbox
 
