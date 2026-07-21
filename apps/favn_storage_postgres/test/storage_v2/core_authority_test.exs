@@ -2,6 +2,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   use ExUnit.Case, async: false
 
   import Ecto.Query
+  import ExUnit.CaptureLog
 
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
@@ -98,6 +99,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.API.SSE
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Identity
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.Operator.Catalogue
   alias FavnOrchestrator.RunExecutionOwnership
@@ -146,6 +148,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       )
 
     start_supervised!({Repo, options})
+    start_supervised!({Lifecycle, shutdown_drain_timeout_ms: 120_000})
+    :ok = Lifecycle.mark_accepting()
     :ok = Migrations.migrate!(Repo)
     Sandbox.mode(Repo, :manual)
 
@@ -358,15 +362,74 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
   test "release-safe operations return redacted stable results and report upgrade blockers",
        fixture do
-    assert {:ok,
-            %{
-              operation: :verify_schema,
-              status: :ok,
-              schema: "favn_control",
-              definition_fingerprint: fingerprint
-            }} = Release.verify_schema()
+    telemetry_handler = "release-operation-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :ok =
+      :telemetry.attach_many(
+        telemetry_handler,
+        [
+          [:favn, :storage_postgres, :release_operation, :start],
+          [:favn, :storage_postgres, :release_operation, :stop]
+        ],
+        fn event, measurements, metadata, _config ->
+          send(parent, {event, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> _ = :telemetry.detach(telemetry_handler) end)
+
+    previous_keyring = System.get_env("FAVN_RUNTIME_INPUT_PIN_KEYS")
+    previous_key_version = System.get_env("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION")
+
+    System.put_env(
+      "FAVN_RUNTIME_INPUT_PIN_KEYS",
+      JSON.encode!(%{
+        "1" => "0123456789abcdef0123456789abcdef",
+        "2" => "abcdef0123456789abcdef0123456789"
+      })
+    )
+
+    System.put_env("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "2")
+
+    on_exit(fn ->
+      restore_system_env("FAVN_RUNTIME_INPUT_PIN_KEYS", previous_keyring)
+      restore_system_env("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", previous_key_version)
+    end)
+
+    database_url = System.fetch_env!("FAVN_DATABASE_URL")
+
+    log =
+      capture_log(fn ->
+        send(parent, {:release_result, Release.verify_schema()})
+      end)
+
+    assert_receive {:release_result,
+                    {:ok,
+                     %{
+                       operation: :verify_schema,
+                       status: :ok,
+                       schema: "favn_control",
+                       definition_fingerprint: fingerprint
+                     }}}
 
     assert byte_size(fingerprint) == 64
+    refute log =~ database_url
+
+    if database_userinfo = URI.parse(database_url).userinfo do
+      refute log =~ database_userinfo
+    end
+
+    assert_receive {[:favn, :storage_postgres, :release_operation, :start],
+                    %{system_time: system_time}, %{operation: :verify_schema}}
+
+    assert is_integer(system_time)
+
+    assert_receive {[:favn, :storage_postgres, :release_operation, :stop],
+                    %{duration_ms: duration_ms}, %{operation: :verify_schema, status: :ok}}
+
+    assert is_integer(duration_ms) and duration_ms >= 0
 
     Repo.checkout(fn ->
       %{rows: [[previous_timeout]]} = SQL.query!(Repo, "SHOW statement_timeout", [])
@@ -410,7 +473,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             %{
               operation: :runtime_input_key_inventory,
               status: :ok,
-              inventory: inventory
+              inventory: inventory,
+              current_version: 2,
+              retained_versions: [1, 2],
+              invalid_versions: []
             }} = Release.runtime_input_key_inventory()
 
     assert Enum.any?(inventory, &(&1.key_version == 98 and &1.pin_count == 0))
@@ -420,8 +486,24 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
               operation: :compact_runtime_input_keys,
               status: :error,
               code: :current_key_version_requested,
-              current_version: 1
-            }} = Release.compact_runtime_input_keys(1)
+              current_version: 2
+            }} = Release.compact_runtime_input_keys(2)
+
+    assert_receive {[:favn, :storage_postgres, :release_operation, :start],
+                    %{system_time: rejected_system_time},
+                    %{operation: :compact_runtime_input_keys}}
+
+    assert is_integer(rejected_system_time)
+
+    assert_receive {[:favn, :storage_postgres, :release_operation, :stop],
+                    %{duration_ms: rejected_duration_ms},
+                    %{
+                      operation: :compact_runtime_input_keys,
+                      status: :error,
+                      code: :current_key_version_requested
+                    }}
+
+    assert is_integer(rejected_duration_ms) and rejected_duration_ms >= 0
 
     assert {:ok,
             %{
@@ -443,7 +525,20 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:error, %{operation: :grant_runtime, status: :error, code: :restricted_runtime_role}} =
              Release.grant_runtime()
 
-    baseline_blocker_count = preflight_blocker_count()
+    assert_receive {[:favn, :storage_postgres, :release_operation, :stop],
+                    %{duration_ms: failed_duration_ms},
+                    %{
+                      operation: :migrate,
+                      status: :error,
+                      code: :restricted_runtime_role
+                    }}
+
+    assert is_integer(failed_duration_ms) and failed_duration_ms >= 0
+    :ok = :telemetry.detach(telemetry_handler)
+
+    baseline = preflight_blockers()
+    {run_command, legacy_run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(run_command)
 
     SQL.query!(
       Repo,
@@ -460,21 +555,36 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             %{
               operation: :preflight_upgrade,
               status: :error,
-              code: :active_legacy_manifests,
+              code: :runner_identity_upgrade_blocked,
               blocker_count: blocker_count,
+              active_manifest_blocker_count: active_manifest_blocker_count,
+              nonterminal_legacy_run_count: nonterminal_legacy_run_count,
               blocker_sample_limit: 100,
               truncated?: truncated?,
-              active_legacy_manifests: blockers
+              active_legacy_manifests: manifest_blockers,
+              nonterminal_legacy_runs: run_blockers
             }} = Release.preflight_upgrade()
 
-    assert blocker_count == baseline_blocker_count + 1
-    assert length(blockers) <= 100
-    assert truncated? == blocker_count > length(blockers)
+    assert blocker_count == baseline.blocker_count + 2
+    assert active_manifest_blocker_count == baseline.active_manifest_blocker_count + 1
+    assert nonterminal_legacy_run_count == baseline.nonterminal_legacy_run_count + 1
+    assert length(manifest_blockers) <= 100
+    assert length(run_blockers) <= 100
+
+    assert truncated? ==
+             (active_manifest_blocker_count > length(manifest_blockers) or
+                nonterminal_legacy_run_count > length(run_blockers))
 
     if not truncated? do
-      assert Enum.any?(blockers, fn blocker ->
+      assert Enum.any?(manifest_blockers, fn blocker ->
                blocker.workspace_id == fixture.workspace_id and
                  blocker.deployment_id == fixture.deployment_id and
+                 blocker.manifest_version_id == fixture.version.manifest_version_id and
+                 blocker.schema_version == 9
+             end)
+
+      assert Enum.any?(run_blockers, fn blocker ->
+               blocker.workspace_id == fixture.workspace_id and blocker.run_id == legacy_run.id and
                  blocker.manifest_version_id == fixture.version.manifest_version_id and
                  blocker.schema_version == 9
              end)
@@ -4660,10 +4770,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   defp restore_app_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
   defp restore_app_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)
 
-  defp preflight_blocker_count do
+  defp preflight_blockers do
     case Release.preflight_upgrade() do
-      {:ok, %{blocker_count: count}} -> count
-      {:error, %{blocker_count: count}} -> count
+      {:ok, blockers} -> blockers
+      {:error, blockers} -> blockers
     end
   end
 
@@ -4708,6 +4818,7 @@ defmodule FavnStoragePostgres.TestReleaseRunnerClient do
        available?: true,
        ready?: Keyword.get(opts, :ready?, true),
        status: if(Keyword.get(opts, :ready?, true), do: :ready, else: :not_ready),
+       self_verified?: true,
        runner_release_id: Keyword.fetch!(opts, :runner_release_id),
        favn_version: Favn.RunnerRelease.current_favn_version(),
        runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
@@ -4773,6 +4884,7 @@ defmodule FavnStoragePostgres.TestRestartedRunnerClient do
        available?: true,
        ready?: true,
        status: :ready,
+       self_verified?: true,
        runner_release_id: Keyword.fetch!(opts, :runner_release_id),
        favn_version: Favn.RunnerRelease.current_favn_version(),
        runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
@@ -4866,6 +4978,7 @@ defmodule FavnStoragePostgres.TestPipelineRunnerClient do
        available?: true,
        ready?: true,
        status: :ready,
+       self_verified?: true,
        runner_release_id: Keyword.fetch!(opts, :runner_release_id),
        favn_version: Favn.RunnerRelease.current_favn_version(),
        runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),

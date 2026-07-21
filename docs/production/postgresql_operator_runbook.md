@@ -110,11 +110,14 @@ Runtime nodes never migrate at boot.
      'IO.inspect(FavnStoragePostgres.Release.preflight_upgrade())'
    ```
 
-   `:active_legacy_manifests` means an active deployment still points at a
-   pre-runner-identity manifest. Republish and activate an aligned current
-   manifest during the maintenance window before completing the upgrade. The
-   result reports the total blocker count and at most 100 identifying samples,
-   with `truncated?: true` when more remain.
+   An error has code `:runner_identity_upgrade_blocked`. Its
+   `:active_legacy_manifests` sample field identifies active deployments that
+   still point at pre-runner-identity manifests; `:nonterminal_legacy_runs`
+   identifies unfinished runs still bound to them. Republish and activate an
+   aligned current manifest, then explicitly finish or terminate every listed
+   legacy run during the maintenance window before completing the upgrade. The
+   result reports total and per-category blocker counts and at most 100 samples
+   from each category, with `truncated?: true` when more remain.
 2. Confirm a current backup/PITR recovery point and recent successful restore drill.
 3. Prevent rollout of runtime code that requires the new schema.
 4. Run the candidate image with the migrator identity to apply migrations and
@@ -134,8 +137,7 @@ Runtime nodes never migrate at boot.
    bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.verify_schema())'
    ```
 
-   Until the control-plane release is assembled, the equivalent development
-   wrappers are:
+   The equivalent development wrappers are:
 
    ```bash
    FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" mix favn.postgres.migrate
@@ -143,7 +145,16 @@ Runtime nodes never migrate at boot.
      mix favn.postgres.grant_runtime --role favn_runtime
    ```
 
-   Provision a workspace before adding it to a runtime's allowed workspace set:
+   Provision a workspace before adding it to a runtime's allowed workspace set.
+   Production uses the candidate release image with the elevated database
+   identity:
+
+   ```bash
+   bin/favn_control_plane eval \
+     'IO.inspect(FavnStoragePostgres.Release.provision_workspace(%{workspace_id: "salmon-one", slug: "salmon-one", display_name: "Salmon One"}))'
+   ```
+
+   The development wrapper is:
 
    ```bash
    FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
@@ -153,6 +164,12 @@ Runtime nodes never migrate at boot.
 
 5. Start one canary and require readiness to report `ready?: true`.
 6. Check database errors, lock waits, pool queue time, projection lag, and outbox lag.
+
+Release operations emit start/stop telemetry at
+`[:favn, :storage_postgres, :release_operation, :start | :stop]`. Completion
+events contain a bounded duration measurement and metadata limited to operation,
+status, and a stable error code; logs must never contain database URLs,
+credentials, TLS material, or key values.
 
 ## Manifest activation and runner alignment
 
@@ -213,6 +230,11 @@ First inspect version numbers and pin counts. Neither command reads key material
 bin/favn_control_plane eval \
   'IO.inspect(FavnStoragePostgres.Release.runtime_input_key_inventory())'
 ```
+
+The one-off process validates the complete keyring directly from
+`FAVN_RUNTIME_INPUT_PIN_KEYS` and protects the version selected by
+`FAVN_RUNTIME_INPUT_PIN_KEY_VERSION`; it does not depend on control-plane startup
+having populated application state.
 
 After the retention workflow has purged or re-encrypted every pin using the old
 version, compact that explicit non-current version:

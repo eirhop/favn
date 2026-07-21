@@ -10,14 +10,13 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   alias FavnOrchestrator.Auth.Credentials
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
+  alias Favn.RuntimeInput.KeyringConfig
 
   @max_session_ttl_seconds 30 * 24 * 60 * 60
   @max_postgres_pool_size 200
   @max_postgres_timeout_ms 120_000
   @max_scheduler_tick_ms 24 * 60 * 60 * 1_000
   @max_missed_occurrences 100_000
-  @max_runtime_input_pin_keys 32
-  @max_runtime_input_pin_keys_bytes 8 * 1_024
   @default_active_run_plan_max_bytes 512 * 1_024 * 1_024
   @min_active_run_plan_max_bytes 64 * 1_024 * 1_024
   @max_active_run_plan_max_bytes 8 * 1_024 * 1_024 * 1_024
@@ -283,7 +282,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
            int(env, "FAVN_DATABASE_QUEUE_INTERVAL_MS", "1000", 1, @max_postgres_timeout_ms),
          {:ok, timeout} <-
            int(env, "FAVN_DATABASE_TIMEOUT_MS", "15000", 1, @max_postgres_timeout_ms),
-         {:ok, runtime_input_pin} <- runtime_input_pin(env) do
+         {:ok, runtime_input_pin} <- KeyringConfig.from_env(env) do
       {:ok,
        {
          [
@@ -321,81 +320,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         {:error, {:invalid_env, "FAVN_DATABASE_SSL_MODE", "verify-full"}}
     end
   end
-
-  defp runtime_input_pin(env) do
-    with {:ok, encoded_keys} <- required_secret(env, "FAVN_RUNTIME_INPUT_PIN_KEYS"),
-         {:ok, keys} <- runtime_input_pin_keys(encoded_keys),
-         {:ok, current_version} <-
-           int(env, "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "1", 1, nil),
-         true <- Map.has_key?(keys, current_version) do
-      {:ok, %{keys: keys, current_version: current_version}}
-    else
-      false ->
-        {:error,
-         {:invalid_env, "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", :redacted,
-          "version present in FAVN_RUNTIME_INPUT_PIN_KEYS"}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp runtime_input_pin_keys(encoded_keys) do
-    if byte_size(encoded_keys) <= @max_runtime_input_pin_keys_bytes do
-      case Jason.decode(encoded_keys, objects: :ordered_objects) do
-        {:ok, %Jason.OrderedObject{values: keys}}
-        when length(keys) > 0 and length(keys) <= @max_runtime_input_pin_keys ->
-          decode_runtime_input_pin_keys(keys)
-
-        _invalid ->
-          invalid_runtime_input_pin_keys(:invalid_keyring)
-      end
-    else
-      invalid_runtime_input_pin_keys(:invalid_keyring)
-    end
-  end
-
-  defp decode_runtime_input_pin_keys(keys) do
-    Enum.reduce_while(keys, {:ok, %{}}, fn {encoded_version, encoded_key}, {:ok, decoded} ->
-      with {:ok, version} <- runtime_input_pin_key_version(encoded_version),
-           {:ok, key} <- runtime_input_pin_key(encoded_key),
-           false <- Map.has_key?(decoded, version) do
-        {:cont, {:ok, Map.put(decoded, version, key)}}
-      else
-        true -> {:halt, invalid_runtime_input_pin_keys(:duplicate_version)}
-        {:error, reason} -> {:halt, invalid_runtime_input_pin_keys(reason)}
-      end
-    end)
-  end
-
-  defp runtime_input_pin_key_version(encoded_version) when is_binary(encoded_version) do
-    case Integer.parse(encoded_version) do
-      {version, ""} when version > 0 ->
-        if Integer.to_string(version) == encoded_version,
-          do: {:ok, version},
-          else: {:error, :invalid_version}
-
-      _invalid ->
-        {:error, :invalid_version}
-    end
-  end
-
-  defp runtime_input_pin_key_version(_encoded_version), do: {:error, :invalid_version}
-
-  defp runtime_input_pin_key(key) when is_binary(key) and byte_size(key) == 32,
-    do: {:ok, key}
-
-  defp runtime_input_pin_key(encoded) when is_binary(encoded) do
-    case Base.decode64(encoded) do
-      {:ok, key} when byte_size(key) == 32 -> {:ok, key}
-      _invalid -> {:error, :invalid_key}
-    end
-  end
-
-  defp runtime_input_pin_key(_encoded), do: {:error, :invalid_key}
-
-  defp invalid_runtime_input_pin_keys(reason),
-    do: {:error, {:invalid_secret_env, "FAVN_RUNTIME_INPUT_PIN_KEYS", reason}}
 
   defp api_server(env) do
     with {:ok, host} <- required_or_default(env, "FAVN_ORCHESTRATOR_API_BIND_HOST", "0.0.0.0"),

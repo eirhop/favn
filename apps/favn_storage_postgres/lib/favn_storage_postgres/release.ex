@@ -12,15 +12,16 @@ defmodule FavnStoragePostgres.Release do
 
   alias Ecto.Adapters.SQL
   alias Favn.Manifest.Compatibility
+  alias Favn.RuntimeInput.KeyringConfig
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Redaction
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Privileges
   alias FavnStoragePostgres.Registry.Store
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RuntimeInputKeyInventory
-  alias FavnStoragePostgres.RuntimeInputKeys
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @current_manifest_schema Compatibility.current_schema_version()
@@ -55,7 +56,7 @@ defmodule FavnStoragePostgres.Release do
   @doc "Applies every known Storage V2 migration with an elevated database role."
   @spec migrate() :: result()
   def migrate do
-    with_repo(:migrate, fn ->
+    database_operation(:migrate, fn ->
       with :ok <- require_elevated_role(:migrate),
            :ok <- Migrations.migrate!(Repo) do
         versions = Migrations.expected_versions()
@@ -68,7 +69,7 @@ defmodule FavnStoragePostgres.Release do
   @doc "Verifies the exact PostgreSQL schema, migration, projection, and grant contract."
   @spec verify_schema() :: result()
   def verify_schema do
-    with_repo(:verify_schema, fn ->
+    database_operation(:verify_schema, fn ->
       case Migrations.diagnostics(Repo) do
         {:ok, %{ready?: true} = diagnostics} ->
           ok(:verify_schema,
@@ -89,7 +90,7 @@ defmodule FavnStoragePostgres.Release do
   @doc "Verifies exact schema readiness plus authoritative restore relationships."
   @spec verify_restore() :: result()
   def verify_restore do
-    with_repo(:verify_restore, fn ->
+    database_operation(:verify_restore, fn ->
       with_restore_timeout(fn ->
         verify_restore_contract()
       end)
@@ -119,7 +120,7 @@ defmodule FavnStoragePostgres.Release do
   @doc "Converges least-privilege grants for the configured runtime role."
   @spec grant_runtime() :: result()
   def grant_runtime do
-    with_repo(:grant_runtime, fn ->
+    database_operation(:grant_runtime, fn ->
       role = System.get_env("FAVN_DATABASE_RUNTIME_ROLE", @default_runtime_role)
 
       with :ok <- require_elevated_role(:grant_runtime),
@@ -134,7 +135,7 @@ defmodule FavnStoragePostgres.Release do
   @doc "Idempotently provisions one workspace from an atom-keyed map or keyword list."
   @spec provision_workspace(map() | keyword()) :: result()
   def provision_workspace(input) when is_map(input) or is_list(input) do
-    with_repo(:provision_workspace, fn ->
+    database_operation(:provision_workspace, fn ->
       with {:ok, workspace} <- normalize_workspace(input),
            {:ok, context} <-
              PlatformContext.new(
@@ -169,26 +170,33 @@ defmodule FavnStoragePostgres.Release do
     end)
   end
 
-  def provision_workspace(_input),
-    do: error(:provision_workspace, :invalid_workspace, reason: :map_or_keyword_required)
+  def provision_workspace(_input) do
+    release_operation(:provision_workspace, fn ->
+      error(:provision_workspace, :invalid_workspace, reason: :map_or_keyword_required)
+    end)
+  end
 
   @doc "Lists persisted key versions, pin counts, and redacted configured-version metadata."
   @spec runtime_input_key_inventory() :: result()
   def runtime_input_key_inventory do
-    with_repo(:runtime_input_key_inventory, fn ->
-      case RuntimeInputKeyInventory.list(Repo) do
-        {:ok, inventory} ->
-          configured = RuntimeInputKeys.diagnostics()
+    release_operation(:runtime_input_key_inventory, fn ->
+      with {:ok, keyring} <- runtime_input_keyring(:runtime_input_key_inventory) do
+        with_repo(:runtime_input_key_inventory, fn ->
+          case RuntimeInputKeyInventory.list(Repo) do
+            {:ok, inventory} ->
+              configured = KeyringConfig.diagnostics(keyring)
 
-          ok(:runtime_input_key_inventory,
-            inventory: inventory,
-            current_version: configured.current_version,
-            retained_versions: configured.retained_versions,
-            invalid_versions: configured.invalid_versions
-          )
+              ok(:runtime_input_key_inventory,
+                inventory: inventory,
+                current_version: configured.current_version,
+                retained_versions: configured.retained_versions,
+                invalid_versions: []
+              )
 
-        {:error, reason} ->
-          database_error(:runtime_input_key_inventory, reason)
+            {:error, reason} ->
+              database_error(:runtime_input_key_inventory, reason)
+          end
+        end)
       end
     end)
   end
@@ -196,99 +204,203 @@ defmodule FavnStoragePostgres.Release do
   @doc "Removes explicitly requested unreferenced, non-current key versions."
   @spec compact_runtime_input_keys(pos_integer() | [pos_integer()]) :: result()
   def compact_runtime_input_keys(versions) do
-    with {:ok, requested} <- normalize_versions(versions),
-         :ok <- reject_current_key_version(requested) do
-      with_repo(:compact_runtime_input_keys, fn ->
-        case RuntimeInputKeyInventory.compact(Repo, requested) do
-          {:ok, removed} ->
-            Logger.info(
-              "favn.release.runtime_input_keys_compacted removed_versions=#{inspect(removed)}"
-            )
+    release_operation(:compact_runtime_input_keys, fn ->
+      with {:ok, requested} <- normalize_versions(versions),
+           {:ok, keyring} <- runtime_input_keyring(:compact_runtime_input_keys),
+           :ok <- reject_current_key_version(requested, keyring.current_version) do
+        with_repo(:compact_runtime_input_keys, fn ->
+          case RuntimeInputKeyInventory.compact(Repo, requested) do
+            {:ok, removed} ->
+              Logger.info(
+                "favn.release.runtime_input_keys_compacted removed_versions=#{inspect(removed)}"
+              )
 
-            ok(:compact_runtime_input_keys,
-              requested_versions: requested,
-              removed_versions: removed
-            )
+              ok(:compact_runtime_input_keys,
+                requested_versions: requested,
+                removed_versions: removed
+              )
 
-          {:error, {:runtime_input_key_versions_still_referenced, referenced}} ->
-            error(:compact_runtime_input_keys, :key_versions_still_referenced,
-              referenced_versions: referenced
-            )
+            {:error, {:runtime_input_key_versions_still_referenced, referenced}} ->
+              error(:compact_runtime_input_keys, :key_versions_still_referenced,
+                referenced_versions: referenced
+              )
 
-          {:error, reason} ->
-            database_error(:compact_runtime_input_keys, reason)
-        end
-      end)
+            {:error, reason} ->
+              database_error(:compact_runtime_input_keys, reason)
+          end
+        end)
+      end
+    end)
+  end
+
+  @doc "Reports active manifests or non-terminal runs that predate runner release identity."
+  @spec preflight_upgrade() :: result()
+  def preflight_upgrade do
+    database_operation(:preflight_upgrade, fn ->
+      with {:ok, active_manifests} <- active_legacy_manifest_blockers(),
+           {:ok, nonterminal_runs} <- nonterminal_legacy_run_blockers() do
+        preflight_result(active_manifests, nonterminal_runs)
+      else
+        {:error, reason} -> database_error(:preflight_upgrade, reason)
+      end
+    end)
+  end
+
+  defp active_legacy_manifest_blockers do
+    case SQL.query(
+           Repo,
+           """
+           WITH blockers AS (
+             SELECT runtime.workspace_id, deployment.deployment_id,
+                    manifest.manifest_version_id, manifest.schema_version
+             FROM favn_control.workspace_runtime_state AS runtime
+             JOIN favn_control.workspace_deployments AS deployment
+               ON deployment.workspace_id = runtime.workspace_id
+              AND deployment.deployment_id = runtime.active_deployment_id
+             JOIN favn_control.manifest_versions AS manifest
+               ON manifest.manifest_version_id = deployment.manifest_version_id
+             WHERE runtime.active_deployment_id IS NOT NULL
+               AND manifest.schema_version < $1
+           )
+           SELECT workspace_id, deployment_id, manifest_version_id, schema_version,
+                  count(*) OVER () AS blocker_count
+           FROM blockers
+           ORDER BY workspace_id
+           LIMIT $2
+           """,
+           [@current_manifest_schema, @preflight_blocker_sample_limit]
+         ) do
+      {:ok, %{rows: rows}} ->
+        {:ok,
+         blocker_summary(rows, fn [
+                                    workspace_id,
+                                    deployment_id,
+                                    manifest_version_id,
+                                    schema_version,
+                                    _blocker_count
+                                  ] ->
+           %{
+             workspace_id: workspace_id,
+             deployment_id: deployment_id,
+             manifest_version_id: manifest_version_id,
+             schema_version: schema_version
+           }
+         end)}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  @doc "Reports active deployments that still use a pre-runner-identity manifest schema."
-  @spec preflight_upgrade() :: result()
-  def preflight_upgrade do
-    with_repo(:preflight_upgrade, fn ->
-      case SQL.query(
-             Repo,
-             """
-             WITH blockers AS (
-               SELECT runtime.workspace_id, deployment.deployment_id,
-                      manifest.manifest_version_id, manifest.schema_version
-               FROM favn_control.workspace_runtime_state AS runtime
-               JOIN favn_control.workspace_deployments AS deployment
-                 ON deployment.workspace_id = runtime.workspace_id
-                AND deployment.deployment_id = runtime.active_deployment_id
-               JOIN favn_control.manifest_versions AS manifest
-                 ON manifest.manifest_version_id = deployment.manifest_version_id
-               WHERE runtime.active_deployment_id IS NOT NULL
-                 AND manifest.schema_version < $1
-             )
-             SELECT workspace_id, deployment_id, manifest_version_id, schema_version,
-                    count(*) OVER () AS blocker_count
-             FROM blockers
-             ORDER BY workspace_id
-             LIMIT $2
-             """,
-             [@current_manifest_schema, @preflight_blocker_sample_limit]
-           ) do
-        {:ok, %{rows: []}} ->
-          ok(:preflight_upgrade,
-            current_manifest_schema: @current_manifest_schema,
-            blocker_count: 0,
-            blocker_sample_limit: @preflight_blocker_sample_limit,
-            truncated?: false,
-            active_legacy_manifests: []
-          )
+  defp nonterminal_legacy_run_blockers do
+    case SQL.query(
+           Repo,
+           """
+           WITH blockers AS (
+             SELECT run.workspace_id, run.run_id, run.deployment_id,
+                    run.manifest_version_id, manifest.schema_version
+             FROM favn_control.runs AS run
+             JOIN favn_control.manifest_versions AS manifest
+               ON manifest.manifest_version_id = run.manifest_version_id
+             WHERE run.terminal_at IS NULL
+               AND manifest.schema_version < $1
+           )
+           SELECT workspace_id, run_id, deployment_id, manifest_version_id, schema_version,
+                  count(*) OVER () AS blocker_count
+           FROM blockers
+           ORDER BY workspace_id, run_id
+           LIMIT $2
+           """,
+           [@current_manifest_schema, @preflight_blocker_sample_limit]
+         ) do
+      {:ok, %{rows: rows}} ->
+        {:ok,
+         blocker_summary(rows, fn [
+                                    workspace_id,
+                                    run_id,
+                                    deployment_id,
+                                    manifest_version_id,
+                                    schema_version,
+                                    _blocker_count
+                                  ] ->
+           %{
+             workspace_id: workspace_id,
+             run_id: run_id,
+             deployment_id: deployment_id,
+             manifest_version_id: manifest_version_id,
+             schema_version: schema_version
+           }
+         end)}
 
-        {:ok, %{rows: rows}} ->
-          blocker_count = rows |> hd() |> List.last()
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
-          blockers =
-            Enum.map(rows, fn [
-                                workspace_id,
-                                deployment_id,
-                                manifest_version_id,
-                                schema_version,
-                                _blocker_count
-                              ] ->
-              %{
-                workspace_id: workspace_id,
-                deployment_id: deployment_id,
-                manifest_version_id: manifest_version_id,
-                schema_version: schema_version
-              }
-            end)
+  defp blocker_summary([], _mapper), do: %{count: 0, sample: []}
 
-          error(:preflight_upgrade, :active_legacy_manifests,
-            current_manifest_schema: @current_manifest_schema,
-            blocker_count: blocker_count,
-            blocker_sample_limit: @preflight_blocker_sample_limit,
-            truncated?: blocker_count > length(blockers),
-            active_legacy_manifests: blockers
-          )
+  defp blocker_summary(rows, mapper) do
+    %{count: rows |> hd() |> List.last(), sample: Enum.map(rows, mapper)}
+  end
 
-        {:error, reason} ->
-          database_error(:preflight_upgrade, reason)
+  defp preflight_result(
+         %{count: 0, sample: []},
+         %{count: 0, sample: []}
+       ) do
+    ok(:preflight_upgrade,
+      current_manifest_schema: @current_manifest_schema,
+      blocker_count: 0,
+      active_manifest_blocker_count: 0,
+      nonterminal_legacy_run_count: 0,
+      blocker_sample_limit: @preflight_blocker_sample_limit,
+      truncated?: false,
+      active_legacy_manifests: [],
+      nonterminal_legacy_runs: []
+    )
+  end
+
+  defp preflight_result(active_manifests, nonterminal_runs) do
+    error(:preflight_upgrade, :runner_identity_upgrade_blocked,
+      current_manifest_schema: @current_manifest_schema,
+      blocker_count: active_manifests.count + nonterminal_runs.count,
+      active_manifest_blocker_count: active_manifests.count,
+      nonterminal_legacy_run_count: nonterminal_runs.count,
+      blocker_sample_limit: @preflight_blocker_sample_limit,
+      truncated?:
+        active_manifests.count > length(active_manifests.sample) or
+          nonterminal_runs.count > length(nonterminal_runs.sample),
+      active_legacy_manifests: active_manifests.sample,
+      nonterminal_legacy_runs: nonterminal_runs.sample
+    )
+  end
+
+  defp database_operation(operation, function) do
+    release_operation(operation, fn -> with_repo(operation, function) end)
+  end
+
+  defp release_operation(operation, function) do
+    started_at = System.monotonic_time(:millisecond)
+
+    :telemetry.execute(
+      [:favn, :storage_postgres, :release_operation, :start],
+      %{system_time: System.system_time()},
+      %{operation: operation}
+    )
+
+    Logger.info("favn.release.postgres_operation_started operation=#{operation}")
+
+    result =
+      try do
+        function.()
+      rescue
+        exception -> database_error(operation, exception)
+      catch
+        kind, reason ->
+          error(operation, :operation_failed, failure_kind: kind, reason: safe_reason(reason))
       end
-    end)
+
+    emit_operation_completed(operation, result, started_at)
+    result
   end
 
   defp with_repo(operation, function) do
@@ -306,6 +418,29 @@ defmodule FavnStoragePostgres.Release do
         stop_repo(repo_state)
       end
     end
+  end
+
+  defp emit_operation_completed(operation, result, started_at) do
+    duration_ms = max(System.monotonic_time(:millisecond) - started_at, 0)
+
+    metadata =
+      case result do
+        {:ok, _success} -> %{operation: operation, status: :ok}
+        {:error, failure} -> %{operation: operation, status: :error, code: failure.code}
+      end
+
+    :telemetry.execute(
+      [:favn, :storage_postgres, :release_operation, :stop],
+      %{duration_ms: duration_ms},
+      metadata
+    )
+
+    Logger.log(
+      if(metadata.status == :ok, do: :info, else: :warning),
+      "favn.release.postgres_operation_completed operation=#{operation} " <>
+        "status=#{metadata.status} duration_ms=#{duration_ms}" <>
+        if(Map.has_key?(metadata, :code), do: " code=#{metadata.code}", else: "")
+    )
   end
 
   defp ensure_dependencies(operation) do
@@ -390,11 +525,18 @@ defmodule FavnStoragePostgres.Release do
   defp normalize_versions(_versions),
     do: error(:compact_runtime_input_keys, :invalid_key_versions)
 
-  defp reject_current_key_version(versions) do
-    current = RuntimeInputKeys.diagnostics().current_version
+  defp runtime_input_keyring(operation) do
+    case KeyringConfig.from_env() do
+      {:ok, keyring} -> {:ok, keyring}
+      {:error, _reason} -> error(operation, :invalid_runtime_input_key_configuration)
+    end
+  end
 
-    if current in versions do
-      error(:compact_runtime_input_keys, :current_key_version_requested, current_version: current)
+  defp reject_current_key_version(versions, current_version) do
+    if current_version in versions do
+      error(:compact_runtime_input_keys, :current_key_version_requested,
+        current_version: current_version
+      )
     else
       :ok
     end
@@ -502,7 +644,7 @@ defmodule FavnStoragePostgres.Release do
   defp persistence_error(operation, %PersistenceError{} = failure) do
     error(operation, failure.kind,
       retryable?: failure.retryable?,
-      details: failure.details
+      details: Redaction.redact_operational_bounded(failure.details)
     )
   end
 
