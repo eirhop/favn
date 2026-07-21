@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.RunRecovery do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunOwnership
+  alias FavnOrchestrator.RuntimeConfig
 
   @default_interval_ms 5_000
   @default_batch_size 100
@@ -109,7 +110,7 @@ defmodule FavnOrchestrator.RunRecovery do
   end
 
   defp recovery_owner_id(workspace_id) do
-    instance = System.get_env("FAVN_INSTANCE_ID", Atom.to_string(node()))
+    instance = RuntimeConfig.instance_id()
     "#{String.slice(instance, 0, 96)}:run-recovery:#{short_hash(workspace_id)}"
   end
 

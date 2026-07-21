@@ -3,6 +3,8 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
 
   @min_token_bytes 32
   @max_token_bytes 4_096
+  @max_token_count 100
+  @max_env_bytes 512 * 1_024
   @max_identity_bytes 128
   @weak_fragments ~w(replace change placeholder example secret password test token todo)
   @identity_pattern ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
@@ -26,13 +28,15 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
 
   @spec from_env_string(String.t()) :: {:ok, [token_config()]} | {:error, term()}
   def from_env_string(raw) when is_binary(raw) do
-    tokens =
-      raw
-      |> String.split(",", trim: true)
-      |> Enum.map(&String.trim/1)
+    if byte_size(raw) <= @max_env_bytes do
+      tokens = raw |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
 
-    with :ok <- ensure_present(tokens) do
-      parse_env_tokens(tokens)
+      with :ok <- validate_env_bounds(tokens),
+           :ok <- ensure_present(tokens) do
+        parse_env_tokens(tokens)
+      end
+    else
+      too_many_tokens()
     end
   end
 
@@ -134,6 +138,17 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
 
   defp ensure_present([]), do: {:error, {:missing_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"}}
   defp ensure_present(_tokens), do: :ok
+
+  defp validate_env_bounds(tokens) do
+    if length(tokens) <= @max_token_count do
+      :ok
+    else
+      too_many_tokens()
+    end
+  end
+
+  defp too_many_tokens,
+    do: {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_many_tokens}}
 
   defp parse_env_tokens(tokens) do
     tokens

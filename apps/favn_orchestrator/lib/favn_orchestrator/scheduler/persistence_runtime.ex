@@ -491,7 +491,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
   end
 
   defp owner_id do
-    instance = System.get_env("FAVN_INSTANCE_ID", Atom.to_string(node()))
+    instance = FavnOrchestrator.RuntimeConfig.instance_id()
     "scheduler:#{String.slice(instance, 0, 96)}:#{digest({node(), self()})}"
   end
 

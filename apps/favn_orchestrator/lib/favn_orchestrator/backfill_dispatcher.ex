@@ -337,7 +337,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
     do: Integer.to_string(System.unique_integer([:positive, :monotonic]))
 
   defp owner_id do
-    instance = System.get_env("FAVN_INSTANCE_ID", Atom.to_string(node())) |> String.slice(0, 160)
+    instance = FavnOrchestrator.RuntimeConfig.instance_id() |> String.slice(0, 160)
     instance <> ":backfills:" <> String.slice(unique_identity(), 0, 40)
   end
 

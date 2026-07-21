@@ -318,7 +318,7 @@ defmodule FavnStoragePostgres.Release do
   end
 
   defp configured_repo_options(operation) do
-    case Config.repo_options() do
+    case Config.repo_options_from_env() do
       {:ok, options} ->
         {:ok, options}
 

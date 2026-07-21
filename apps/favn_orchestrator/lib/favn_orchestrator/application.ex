@@ -8,13 +8,13 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.BackfillDispatcher
   alias FavnOrchestrator.BoundedDispatcher
+  alias FavnOrchestrator.ControlPlaneRuntimeConfig
   alias FavnOrchestrator.ExecutionAdmission.Coordinator, as: AdmissionCoordinator
   alias FavnOrchestrator.LocalDevBootstrap
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
-  alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunRecovery
   alias FavnOrchestrator.RuntimeConfig
@@ -30,7 +30,7 @@ defmodule FavnOrchestrator.Application do
   end
 
   defp start_runtime do
-    with :ok <- ProductionRuntimeConfig.apply_from_env_if_configured(),
+    with :ok <- ControlPlaneRuntimeConfig.apply_from_env_if_configured(),
          _timezone_database <- Favn.Timezone.database!(),
          :ok <- APIConfig.validate(),
          runtime_config <- RuntimeConfig.from_app_env(),

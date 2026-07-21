@@ -52,6 +52,10 @@ freshness, and execution coordination.
   to one validated static long node name, performs bounded `:erpc` calls, and
   never loads or calls `favn_runner` inside the control-plane BEAM. Readiness
   accepts only connected runner diagnostics with a ready verified release ID.
+- `ControlPlaneRuntimeConfig` reads the production environment once and validates
+  both same-BEAM applications before either supervisor starts. Production always
+  installs the PostgreSQL backend; there is no storage selector. `RuntimeConfig`
+  freezes runner, instance, HTTP, and shutdown values for hot runtime paths.
 - `ResourceCircuits` resolves configured execution-pool and SQL-connection
   resources before ordinary capacity admission. It records only explicit runner
   resource outcomes, while `ResourceRecovery` submits linked targeted runs for

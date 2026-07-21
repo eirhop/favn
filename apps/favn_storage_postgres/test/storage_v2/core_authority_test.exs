@@ -3390,10 +3390,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     Application.put_env(:favn_orchestrator, :workspace_ids, [fixture.workspace_id])
     assert :ok = Auth.bootstrap_configured_actor()
+    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_password) == nil
 
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, password)
     Application.put_env(:favn_orchestrator, :workspace_ids, [second_workspace_id])
     assert :ok = Auth.bootstrap_configured_actor()
+    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_password) == nil
+
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, password)
     assert :ok = Auth.bootstrap_configured_actor()
+    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_password) == nil
 
     {:ok, first_login_context} =
       WorkspaceContext.new(fixture.workspace_id, "auth:password", [:customer_reader])
@@ -4701,7 +4707,11 @@ defmodule FavnStoragePostgres.TestReleaseRunnerClient do
      %{
        available?: true,
        ready?: Keyword.get(opts, :ready?, true),
-       runner_release_id: Keyword.fetch!(opts, :runner_release_id)
+       status: if(Keyword.get(opts, :ready?, true), do: :ready, else: :not_ready),
+       runner_release_id: Keyword.fetch!(opts, :runner_release_id),
+       favn_version: Favn.RunnerRelease.current_favn_version(),
+       runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
+       node_name: "runner@runner.internal"
      }}
   end
 end
@@ -4762,7 +4772,11 @@ defmodule FavnStoragePostgres.TestRestartedRunnerClient do
      %{
        available?: true,
        ready?: true,
-       runner_release_id: Keyword.fetch!(opts, :runner_release_id)
+       status: :ready,
+       runner_release_id: Keyword.fetch!(opts, :runner_release_id),
+       favn_version: Favn.RunnerRelease.current_favn_version(),
+       runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
+       node_name: "runner@runner.internal"
      }}
   end
 end
@@ -4851,7 +4865,11 @@ defmodule FavnStoragePostgres.TestPipelineRunnerClient do
      %{
        available?: true,
        ready?: true,
-       runner_release_id: Keyword.fetch!(opts, :runner_release_id)
+       status: :ready,
+       runner_release_id: Keyword.fetch!(opts, :runner_release_id),
+       favn_version: Favn.RunnerRelease.current_favn_version(),
+       runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
+       node_name: "runner@runner.internal"
      }}
   end
 

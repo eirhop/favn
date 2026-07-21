@@ -87,11 +87,11 @@ defmodule FavnOrchestrator.API.ManifestPublicationTest do
     json = Jason.encode!(%{"manifest" => %{"padding" => String.duplicate("a", 128)}})
     size = byte_size(json)
 
-    put_limits(1024, size)
+    put_limits(size, size)
     accepted = request(json)
     refute accepted.halted
 
-    put_limits(1024, size - 1)
+    put_limits(size - 1, size - 1)
     rejected = request(json)
 
     assert rejected.status == 413
@@ -115,7 +115,7 @@ defmodule FavnOrchestrator.API.ManifestPublicationTest do
 
   test "accepts an exact-limit chunked HTTP/1 body and rejects one extra byte" do
     json = Jason.encode!(%{"manifest" => %{"padding" => String.duplicate("a", 128)}})
-    put_limits(1024, byte_size(json))
+    put_limits(byte_size(json), byte_size(json))
 
     {:ok, server} =
       Bandit.start_link(

@@ -1,6 +1,8 @@
 defmodule FavnOrchestrator.Auth.Session do
   @moduledoc false
 
+  alias FavnOrchestrator.RuntimeConfig
+
   @default_ttl_seconds 43_200
   @max_ttl_seconds 2_592_000
   @providers ["password_local", "trusted_local_dev"]
@@ -91,7 +93,7 @@ defmodule FavnOrchestrator.Auth.Session do
   end
 
   defp configured_default_ttl do
-    case Application.get_env(:favn_orchestrator, :auth_session_ttl_seconds, @default_ttl_seconds) do
+    case RuntimeConfig.auth_session_ttl_seconds() do
       ttl when is_integer(ttl) and ttl >= 1 and ttl <= @max_ttl_seconds -> ttl
       _invalid -> @default_ttl_seconds
     end

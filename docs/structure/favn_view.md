@@ -35,6 +35,10 @@ Ownership rules:
 - Production web readiness calls the public `FavnOrchestrator` facade in the same
   BEAM. It must not use orchestrator HTTP, service-token shortcuts, storage
   access, scheduler runtime access, or runner internals.
+- Production View configuration is applied by the unified control-plane loader.
+  View has no storage-adapter dependency. It trusts forwarded scheme, host, port,
+  and client IP only from the configured private proxy CIDRs, uses the public
+  origin as URL authority, and applies boot-frozen listener and body-read limits.
 - Browser auth calls only public `FavnOrchestrator` facade functions. It must not
   call `FavnOrchestrator.Auth`, auth storage, password hashing internals, audit
   storage, service-token internals, storage adapters, scheduler internals, or

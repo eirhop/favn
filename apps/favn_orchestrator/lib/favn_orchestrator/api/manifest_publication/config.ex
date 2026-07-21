@@ -9,8 +9,8 @@ defmodule FavnOrchestrator.API.ManifestPublication.Config do
 
   @default_compressed_limit_bytes 8 * 1024 * 1024
   @default_decompressed_limit_bytes 32 * 1024 * 1024
-  @maximum_compressed_limit_bytes 64 * 1024 * 1024
-  @maximum_decompressed_limit_bytes 256 * 1024 * 1024
+  @maximum_compressed_limit_bytes 32 * 1024 * 1024
+  @maximum_decompressed_limit_bytes 128 * 1024 * 1024
   @allowed_keys [:compressed_limit_bytes, :decompressed_limit_bytes]
 
   @enforce_keys [:compressed_limit_bytes, :decompressed_limit_bytes]
@@ -53,7 +53,8 @@ defmodule FavnOrchestrator.API.ManifestPublication.Config do
              :decompressed_limit_bytes,
              @default_decompressed_limit_bytes,
              @maximum_decompressed_limit_bytes
-           ) do
+           ),
+         :ok <- validate_limit_relationship(compressed_limit_bytes, decompressed_limit_bytes) do
       {:ok,
        %__MODULE__{
          compressed_limit_bytes: compressed_limit_bytes,
@@ -111,4 +112,11 @@ defmodule FavnOrchestrator.API.ManifestPublication.Config do
         {:error, {:invalid_manifest_publication_limit, key, value, maximum}}
     end
   end
+
+  defp validate_limit_relationship(compressed, decompressed)
+       when decompressed >= compressed,
+       do: :ok
+
+  defp validate_limit_relationship(_compressed, _decompressed),
+    do: {:error, {:invalid_manifest_publication_config, :decompressed_limit_too_small}}
 end

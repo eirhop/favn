@@ -89,6 +89,13 @@ defmodule FavnOrchestrator.Auth.ServiceTokensTest do
              ServiceTokens.runtime_config()
   end
 
+  test "environment token sets are bounded before entries are parsed" do
+    raw = Enum.map_join(1..101, ",", &"service-#{&1}:#{@token_a}")
+
+    assert {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_many_tokens}} =
+             ServiceTokens.from_env_string(raw)
+  end
+
   test "raw application token config is validated consistently" do
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
       [service_identity: "favn_web", token: @token_a, enabled: true, platform_roles: []]

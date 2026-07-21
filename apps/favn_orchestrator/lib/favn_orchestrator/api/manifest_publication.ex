@@ -13,10 +13,9 @@ defmodule FavnOrchestrator.API.ManifestPublication do
   import Plug.Conn,
     only: [get_req_header: 2, halt: 1, put_resp_header: 3, read_body: 2]
 
-  require Logger
-
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.ManifestPublication.Config
+  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.API.Response
 
   @publication_paths %{
@@ -25,7 +24,6 @@ defmodule FavnOrchestrator.API.ManifestPublication do
     "/api/orchestrator/v1/execution-packages/missing" => true
   }
   @read_length_bytes 1 * 1024 * 1024
-  @read_timeout_ms 15_000
   @gzip_window_bits 16 + 15
 
   @impl true
@@ -50,8 +48,9 @@ defmodule FavnOrchestrator.API.ManifestPublication do
   def call(conn, _opts), do: conn
 
   defp parse_authenticated(conn) do
-    with {:ok, config} <- Config.from_app_env(),
-         :ok <- validate_content_type(conn),
+    config = RuntimeConfig.manifest_publication()
+
+    with :ok <- validate_content_type(conn),
          {:ok, encoding} <- content_encoding(conn),
          :ok <- validate_declared_size(conn, encoding, config) do
       read_and_parse(conn, encoding, config)
@@ -64,9 +63,6 @@ defmodule FavnOrchestrator.API.ManifestPublication do
 
       {:error, {:too_large, kind, size, limit, source, encoding}} ->
         payload_too_large(conn, kind, size, limit, source, encoding)
-
-      {:error, reason} ->
-        invalid_config(conn, reason)
     end
   end
 
@@ -77,7 +73,7 @@ defmodule FavnOrchestrator.API.ManifestPublication do
     case read_body(conn,
            length: read_limit,
            read_length: min(read_limit, @read_length_bytes),
-           read_timeout: @read_timeout_ms
+           read_timeout: RuntimeConfig.http_server().request_timeout_ms
          ) do
       {:ok, body, conn} when byte_size(body) <= limit ->
         decode_and_parse(conn, body, encoding, config)
@@ -321,15 +317,6 @@ defmodule FavnOrchestrator.API.ManifestPublication do
     conn
     |> close_connection()
     |> Response.error(401, "service_unauthorized", "Invalid service credentials")
-    |> halt()
-  end
-
-  defp invalid_config(conn, reason) do
-    Logger.error("manifest publication configuration is invalid: #{inspect(reason)}")
-
-    conn
-    |> close_connection()
-    |> Response.error(500, "invalid_server_config", "Manifest publication is unavailable")
     |> halt()
   end
 

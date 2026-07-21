@@ -3,11 +3,12 @@ defmodule FavnOrchestrator.Persistence.SystemContext do
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.RuntimeConfig
 
   @spec workspace(String.t(), atom(), keyword()) :: WorkspaceContext.t()
   def workspace(workspace_id, purpose, opts \\ [])
       when is_binary(workspace_id) and is_atom(purpose) and is_list(opts) do
-    instance_id = System.get_env("FAVN_INSTANCE_ID", "local")
+    instance_id = RuntimeConfig.instance_id()
     principal = "favn:#{String.slice(instance_id, 0, 96)}:#{purpose}"
 
     {:ok, context} =
@@ -20,7 +21,7 @@ defmodule FavnOrchestrator.Persistence.SystemContext do
 
   @spec platform(atom(), keyword()) :: PlatformContext.t()
   def platform(purpose, opts \\ []) when is_atom(purpose) and is_list(opts) do
-    instance_id = System.get_env("FAVN_INSTANCE_ID", "local")
+    instance_id = RuntimeConfig.instance_id()
     principal = "favn:#{String.slice(instance_id, 0, 96)}:#{purpose}"
 
     {:ok, context} =

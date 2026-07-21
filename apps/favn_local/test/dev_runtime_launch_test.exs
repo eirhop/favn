@@ -198,6 +198,15 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     assert code =~ "persistence_options"
     assert code =~ "FAVN_DATABASE_URL"
+
+    assert before?(
+             code,
+             ":runtime_input_pin_keys",
+             "Application.ensure_all_started(:favn_orchestrator)"
+           )
+
+    assert code =~ "FAVN_RUNTIME_INPUT_PIN_KEY"
+    assert code =~ ":runtime_input_pin_current_key_version"
   end
 
   test "consumer code path excludes runtime-owned favn apps" do

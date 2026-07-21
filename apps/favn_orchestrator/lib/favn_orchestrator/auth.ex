@@ -20,11 +20,18 @@ defmodule FavnOrchestrator.Auth do
 
     roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
 
-    if is_binary(username) and username != "" and is_binary(password) and password != "" do
-      bootstrap_workspace_actor(username, password, display_name, roles)
-    else
-      :ok
+    result =
+      if is_binary(username) and username != "" and is_binary(password) and password != "" do
+        bootstrap_workspace_actor(username, password, display_name, roles)
+      else
+        :ok
+      end
+
+    if result == :ok do
+      Application.delete_env(:favn_orchestrator, :auth_bootstrap_password)
     end
+
+    result
   end
 
   @doc "Authenticates and issues a session within one explicit workspace."

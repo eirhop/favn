@@ -134,6 +134,16 @@ defmodule Favn.Dev.RuntimeLaunch do
       )
 
       Application.put_env(:favn_storage_postgres, :environment, :dev)
+      Application.put_env(
+        :favn_storage_postgres,
+        :runtime_input_pin_keys,
+        %{1 => System.fetch_env!("FAVN_RUNTIME_INPUT_PIN_KEY")}
+      )
+      Application.put_env(
+        :favn_storage_postgres,
+        :runtime_input_pin_current_key_version,
+        1
+      )
 
       validate_runner_node_name! = fn node_name ->
         valid_part? = fn part ->

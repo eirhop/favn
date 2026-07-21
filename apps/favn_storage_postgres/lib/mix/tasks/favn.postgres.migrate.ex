@@ -89,7 +89,7 @@ defmodule Mix.Tasks.Favn.Postgres.Reset do
     {:ok, _applications} = Application.ensure_all_started(:ecto_sql)
     {:ok, _applications} = Application.ensure_all_started(:postgrex)
 
-    {:ok, options} = Config.repo_options()
+    {:ok, options} = Config.repo_options_from_env()
     {:ok, repo} = Repo.start_link(options)
 
     try do

@@ -90,10 +90,15 @@ defmodule FavnOrchestrator.API.ConfigTest do
   end
 
   test "server_options/1 defaults to loopback and validates the port" do
-    assert {:ok, [port: 4101, ip: {127, 0, 0, 1}]} = Config.server_options([])
+    assert {:ok, default_options} = Config.server_options([])
+    assert default_options[:port] == 4101
+    assert default_options[:ip] == {127, 0, 0, 1}
+    assert default_options[:thousand_island_options][:num_connections] == 1_024
+    assert default_options[:thousand_island_options][:read_timeout] == 60_000
 
-    assert {:ok, [port: 4444, ip: {0, 0, 0, 0}]} =
-             Config.server_options(host: "0.0.0.0", port: 4444)
+    assert {:ok, explicit_options} = Config.server_options(host: "0.0.0.0", port: 4444)
+    assert explicit_options[:port] == 4444
+    assert explicit_options[:ip] == {0, 0, 0, 0}
 
     assert {:error, {:invalid_port, 0}} = Config.server_options(port: 0)
     assert {:error, {:invalid_port, "4101"}} = Config.server_options(port: "4101")

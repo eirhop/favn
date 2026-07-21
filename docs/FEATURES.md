@@ -41,6 +41,10 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
 
 - `favn_orchestrator` owns manifests, deployments, runs, events, schedules, logs,
   backfills, admission, circuits, auth, audit, idempotency, and operator read models.
+- View and Orchestrator run in one control-plane BEAM. One boot loader validates
+  their environment together before supervision starts; PostgreSQL is the fixed
+  production backend, deployment settings are runtime-only, forwarded headers are
+  accepted only from private allowlisted proxies, and diagnostics redact secrets.
 - Every customer operation carries explicit workspace authority. Platform actions
   use a separate authority boundary.
 - Mutating HTTP commands atomically commit idempotency state, domain mutation,

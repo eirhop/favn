@@ -37,6 +37,8 @@ not a gate for the first supported single-node target.
 
 ## Canonical documents
 
+- [`control_plane_environment.md`](control_plane_environment.md) defines the
+  implemented same-BEAM environment, proxy, HTTP, and secret contract.
 - [`../storage/postgresql/architecture.md`](../storage/postgresql/architecture.md)
   defines the implemented storage architecture.
 - [`../storage/postgresql/data-model.md`](../storage/postgresql/data-model.md)

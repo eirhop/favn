@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.API.ExecutionPackagesRouter
   alias FavnOrchestrator.API.ManifestPublication
   alias FavnOrchestrator.API.ManifestsRouter
+  alias FavnOrchestrator.API.Parsers
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.API.RunsRouter
   alias FavnOrchestrator.API.SchedulesRouter
@@ -33,12 +34,7 @@ defmodule FavnOrchestrator.API.Router do
 
   plug(ManifestPublication)
 
-  plug(Plug.Parsers,
-    parsers: [:json],
-    pass: ["application/json"],
-    length: 1_000_000,
-    json_decoder: Jason
-  )
+  plug(Parsers)
 
   plug(:match)
   plug(:dispatch)

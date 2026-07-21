@@ -7,7 +7,7 @@ defmodule FavnView.Application do
 
   @impl true
   def start(_type, _args) do
-    with :ok <- FavnView.ProductionRuntimeConfig.apply_from_env_if_configured() do
+    with :ok <- ensure_runtime_config() do
       start_storybook()
 
       children = [
@@ -22,6 +22,14 @@ defmodule FavnView.Application do
       # for other strategies and supported options
       opts = [strategy: :one_for_one, name: FavnView.Supervisor]
       Supervisor.start_link(children, opts)
+    end
+  end
+
+  defp ensure_runtime_config do
+    if Application.get_env(:favn_view, :production_runtime_config, false) do
+      FavnOrchestrator.ControlPlaneRuntimeConfig.ensure_applied()
+    else
+      :ok
     end
   end
 

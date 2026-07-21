@@ -6,6 +6,11 @@ defmodule FavnView.Endpoint do
   # server-side. Cookies are HTTP-only and encrypted, and production config must
   # set `secure: true`.
   @session_options Application.compile_env!(:favn_view, :session_cookie_options)
+  @trusted_proxy_force_ssl Application.compile_env(
+                             :favn_view,
+                             :trusted_proxy_force_ssl,
+                             false
+                           )
 
   @doc false
   def session_options, do: @session_options
@@ -45,11 +50,12 @@ defmodule FavnView.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
-  plug Plug.Parsers,
-    parsers: [:urlencoded, :json],
-    pass: ["*/*"],
-    length: 1_000_000,
-    json_decoder: Phoenix.json_library()
+  if @trusted_proxy_force_ssl do
+    plug FavnView.Plugs.TrustedProxyHeaders
+    plug Plug.SSL, host: nil, hsts: true
+  end
+
+  plug FavnView.Plugs.RequestParsers
 
   plug Plug.MethodOverride
   plug Plug.Head

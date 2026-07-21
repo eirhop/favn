@@ -21,7 +21,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
   test "validate/1 accepts the PostgreSQL production defaults", %{ca_file: ca_file} do
     assert {:ok, config} = ProductionRuntimeConfig.validate(base_env(ca_file))
 
-    assert config.storage == :postgres
+    assert config.instance_id == "control@control-plane.internal"
     assert config.postgres[:url] == "ecto://favn:secret@postgres.example/favn"
     assert config.postgres[:ssl_mode] == :verify_full
     assert config.postgres[:ssl_ca_file] == ca_file
@@ -32,7 +32,16 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              current_version: 1
            }
 
-    assert config.api_server == [enabled: true, host: "127.0.0.1", port: 4101]
+    assert config.api_server == [enabled: true, host: "0.0.0.0", port: 4101]
+
+    assert config.http_server == %{
+             max_connections: 1_024,
+             request_timeout_ms: 30_000,
+             idle_timeout_ms: 60_000,
+             body_limit_bytes: 1_048_576
+           }
+
+    assert config.shutdown_drain_timeout_ms == 120_000
     assert config.active_run_plan_max_bytes == 512 * 1_024 * 1_024
 
     assert config.api_service_tokens == [
@@ -76,7 +85,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       ca_file
       |> base_env()
       |> Map.merge(%{
-        "FAVN_STORAGE" => "postgresql",
         "FAVN_DATABASE_POOL_SIZE" => "32",
         "FAVN_DATABASE_QUEUE_TARGET_MS" => "75",
         "FAVN_DATABASE_QUEUE_INTERVAL_MS" => "1500",
@@ -121,15 +129,27 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.runner_client_opts[:runner_await_timeout_buffer_ms] == 500
   end
 
-  test "validate/1 rejects missing and unsupported storage", %{ca_file: ca_file} do
-    assert {:error, %{error: {:missing_env, "FAVN_STORAGE"}}} =
+  test "production composition is always PostgreSQL and requires no storage selector", %{
+    ca_file: ca_file
+  } do
+    assert {:error, %{error: {:missing_env, "FAVN_CONTROL_PLANE_NODE"}}} =
              ProductionRuntimeConfig.validate(%{})
 
-    assert {:error, %{error: {:invalid_env, "FAVN_STORAGE", "postgres"}}} =
-             ca_file
-             |> base_env()
-             |> Map.put("FAVN_STORAGE", "sqlite")
-             |> ProductionRuntimeConfig.validate()
+    assert {:ok, config} = ProductionRuntimeConfig.validate(base_env(ca_file))
+
+    assert config.postgres[:url] == "ecto://favn:secret@postgres.example/favn"
+  end
+
+  test "shared and release config defer deployment parsing to the typed loader" do
+    root = Path.expand("../../..", __DIR__)
+    shared_config = File.read!(Path.join(root, "config/config.exs"))
+    runtime_config = File.read!(Path.join(root, "config/runtime.exs"))
+
+    refute shared_config =~ "System.get_env("
+    refute shared_config =~ "System.fetch_env("
+    refute runtime_config =~ "System.get_env("
+    refute runtime_config =~ "System.fetch_env("
+    assert runtime_config =~ "control_plane_runtime_config: true"
   end
 
   test "validate/1 rejects unsafe PostgreSQL configuration", %{ca_file: ca_file} do
@@ -138,6 +158,19 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert {:error, %{error: {:invalid_env, "FAVN_DATABASE_URL", "PostgreSQL connection URL"}}} =
              base
              |> Map.put("FAVN_DATABASE_URL", "sqlite:///tmp/favn.db")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_DATABASE_URL",
+                 "PostgreSQL connection URL without query parameters; use dedicated FAVN_DATABASE_* variables"}
+            }} =
+             base
+             |> Map.put(
+               "FAVN_DATABASE_URL",
+               "ecto://favn:secret@postgres.example/favn?ssl=false&pool_size=1000000"
+             )
              |> ProductionRuntimeConfig.validate()
 
     assert {:error,
@@ -166,6 +199,16 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> Map.put("FAVN_RUNTIME_INPUT_PIN_KEYS", Jason.encode!(%{"1" => "not-a-key"}))
              |> ProductionRuntimeConfig.validate()
 
+    duplicate_keyring = ~s({"1":"#{@old_pin_key}","1":"#{@pin_key}"})
+
+    assert {:error,
+            %{
+              error: {:invalid_secret_env, "FAVN_RUNTIME_INPUT_PIN_KEYS", :duplicate_version}
+            }} =
+             base
+             |> Map.put("FAVN_RUNTIME_INPUT_PIN_KEYS", duplicate_keyring)
+             |> ProductionRuntimeConfig.validate()
+
     assert {:error,
             %{
               error:
@@ -178,9 +221,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
     assert {:error,
             %{
-              error:
-                {:invalid_env, "FAVN_DATABASE_SSL_MODE",
-                 "verify-full or explicit loopback plaintext interlock"}
+              error: {:invalid_env, "FAVN_DATABASE_SSL_MODE", "verify-full"}
             }} =
              base
              |> Map.put("FAVN_DATABASE_SSL_MODE", "disable")
@@ -188,14 +229,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> ProductionRuntimeConfig.validate()
   end
 
-  test "validate/1 permits plaintext only for loopback with the explicit interlock", %{
+  test "validate/1 rejects plaintext even for loopback production deployments", %{
     ca_file: ca_file
   } do
     assert {:error,
             %{
-              error:
-                {:invalid_env, "FAVN_DATABASE_SSL_MODE",
-                 "verify-full or explicit loopback plaintext interlock"}
+              error: {:invalid_env, "FAVN_DATABASE_SSL_MODE", "verify-full"}
             }} =
              ca_file
              |> base_env()
@@ -212,9 +251,20 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       |> Map.put("FAVN_DATABASE_SSL_MODE", "disable")
       |> Map.put("FAVN_UNSAFE_ALLOW_PLAINTEXT_DATABASE", "true")
 
-    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
-    assert config.postgres[:ssl_mode] == :disable
-    assert config.postgres[:allow_insecure_database?]
+    assert {:error, %{error: {:invalid_env, "FAVN_DATABASE_SSL_MODE", "verify-full"}}} =
+             ProductionRuntimeConfig.validate(env)
+  end
+
+  test "validate/1 uses the system trust store when no CA file override is supplied", %{
+    ca_file: ca_file
+  } do
+    assert {:ok, config} =
+             ca_file
+             |> base_env()
+             |> Map.delete("FAVN_DATABASE_SSL_CA_FILE")
+             |> ProductionRuntimeConfig.validate()
+
+    assert config.postgres[:ssl_mode] == :verify_full
     refute Keyword.has_key?(config.postgres, :ssl_ca_file)
   end
 
@@ -272,6 +322,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     orchestrator_keys = [
       :persistence_backend,
       :persistence_options,
+      :instance_id,
+      :http_server,
+      :shutdown_drain_timeout_ms,
       :api_server,
       :api_service_tokens,
       :api_service_tokens_env,
@@ -289,7 +342,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :local_dev_mode
     ]
 
-    postgres_keys = [:runtime_input_pin_keys, :runtime_input_pin_current_key_version]
+    postgres_keys = [
+      Module.concat(["FavnStoragePostgres.Repo"]),
+      :runtime_input_pin_keys,
+      :runtime_input_pin_current_key_version
+    ]
+
     previous_orchestrator = snapshot_env(:favn_orchestrator, orchestrator_keys)
     previous_postgres = snapshot_env(:favn_storage_postgres, postgres_keys)
 
@@ -306,7 +364,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
                Jason.encode!(%{"1" => @old_pin_key, "2" => @pin_key})
              )
              |> Map.put("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "2")
-             |> Map.put("FAVN_SCHEDULER_ENABLED", "0")
+             |> Map.put("FAVN_SCHEDULER_ENABLED", "false")
              |> ProductionRuntimeConfig.apply_from_env()
 
     assert Application.get_env(:favn_orchestrator, :persistence_backend) ==
@@ -314,6 +372,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
     options = Application.get_env(:favn_orchestrator, :persistence_options)
     assert options[:url] == "ecto://favn:secret@postgres.example/favn"
+    assert options[:instance_id] == "control@control-plane.internal"
+
+    assert Application.get_env(
+             :favn_storage_postgres,
+             Module.concat(["FavnStoragePostgres.Repo"])
+           ) == options
 
     assert Application.get_env(:favn_storage_postgres, :runtime_input_pin_keys) == %{
              1 => :binary.copy(<<6>>, 32),
@@ -331,6 +395,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == [:admin]
     assert Application.get_env(:favn_orchestrator, :local_dev_mode) == false
 
+    assert Application.get_env(:favn_orchestrator, :instance_id) ==
+             "control@control-plane.internal"
+
+    assert Application.get_env(:favn_orchestrator, :shutdown_drain_timeout_ms) == 120_000
+
     assert Application.get_env(:favn_orchestrator, :active_run_plan_max_bytes) ==
              512 * 1_024 * 1_024
 
@@ -347,6 +416,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     refute inspect(diagnostics) =~ @old_pin_key
     assert diagnostics.runtime_input_pin == %{current_version: 2, retained_versions: [1, 2]}
     assert diagnostics.active_run_plan == %{max_bytes: 512 * 1_024 * 1_024}
+    assert diagnostics.api_service_tokens.ids == ["favn_web"]
 
     assert diagnostics.runner == %{
              topology: :beam_node,
@@ -358,12 +428,28 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
            }
 
     refute inspect(diagnostics) =~ Map.fetch!(base_env(ca_file), "FAVN_DISTRIBUTION_COOKIE")
+
+    frozen = FavnOrchestrator.RuntimeConfig.from_app_env()
+    frozen_name = :"runtime_config_#{System.unique_integer([:positive])}"
+    start_supervised!({FavnOrchestrator.RuntimeConfig, config: frozen, name: frozen_name})
+
+    Application.put_env(:favn_orchestrator, :auth_session_ttl_seconds, 1)
+
+    Application.put_env(:favn_orchestrator, :manifest_publication,
+      compressed_limit_bytes: 1,
+      decompressed_limit_bytes: 1
+    )
+
+    assert FavnOrchestrator.RuntimeConfig.current(frozen_name).auth_session_ttl_seconds == 43_200
+
+    assert FavnOrchestrator.RuntimeConfig.current(frozen_name).manifest_publication ==
+             frozen.manifest_publication
   end
 
   defp base_env(ca_file) do
     %{
-      "FAVN_STORAGE" => "postgres",
       "FAVN_DATABASE_URL" => "ecto://favn:secret@postgres.example/favn",
+      "FAVN_DATABASE_SSL_MODE" => "verify-full",
       "FAVN_DATABASE_SSL_CA_FILE" => ca_file,
       "FAVN_RUNTIME_INPUT_PIN_KEYS" => Jason.encode!(%{"1" => @pin_key}),
       "FAVN_WORKSPACE_IDS" => "salmon-one,salmon-two",

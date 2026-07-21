@@ -27,6 +27,12 @@ defmodule FavnOrchestrator.API.ManifestPublication.ConfigTest do
              Config.new(decompressed_limit_bytes: Config.maximum_decompressed_limit_bytes() + 1)
 
     assert too_large == maximum + 1
+
+    assert {:error, {:invalid_manifest_publication_config, :decompressed_limit_too_small}} =
+             Config.new(
+               compressed_limit_bytes: 2 * 1_024 * 1_024,
+               decompressed_limit_bytes: 1 * 1_024 * 1_024
+             )
   end
 
   test "rejects unknown and malformed configuration" do

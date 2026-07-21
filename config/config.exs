@@ -62,11 +62,6 @@ config :tailwind,
     cd: Path.expand("../apps/favn_view", __DIR__)
   ]
 
-service_token_env_default =
-  if Mix.env() == :test,
-    do: "favn_view:favn-view-local-credential-1234567890abcdef",
-    else: ""
-
 config :argon2_elixir,
   argon2_type: 2,
   t_cost: if(Mix.env() == :test, do: 1, else: 2),
@@ -75,25 +70,21 @@ config :argon2_elixir,
 
 config :favn_orchestrator,
   api_server: [
-    enabled: System.get_env("FAVN_ORCHESTRATOR_API_ENABLED") in ["1", "true", "TRUE"],
-    port: String.to_integer(System.get_env("FAVN_ORCHESTRATOR_API_PORT", "4101"))
+    enabled: false,
+    host: "127.0.0.1",
+    port: 4101
   ],
   manifest_publication: [
     compressed_limit_bytes: 8 * 1024 * 1024,
     decompressed_limit_bytes: 32 * 1024 * 1024
   ],
   api_service_tokens: [],
-  api_service_tokens_env:
-    System.get_env("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", service_token_env_default),
-  auth_session_ttl_seconds:
-    String.to_integer(System.get_env("FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "43200")),
-  auth_bootstrap_username: System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME", ""),
-  auth_bootstrap_password: System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", ""),
-  auth_bootstrap_display_name:
-    System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME", "Favn Admin"),
-  auth_bootstrap_roles:
-    System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "admin")
-    |> String.split(",", trim: true)
+  api_service_tokens_env: "",
+  auth_session_ttl_seconds: 43_200,
+  auth_bootstrap_username: "",
+  auth_bootstrap_password: "",
+  auth_bootstrap_display_name: "Favn Admin",
+  auth_bootstrap_roles: [:admin]
 
 # Sample configuration:
 #

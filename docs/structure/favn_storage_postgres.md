@@ -50,6 +50,10 @@ database-enforced invariants.
 - PostgreSQL major 18 is required.
 - Runtime startup validates the exact schema and fails closed.
 - Production requires verified TLS and a least-privilege runtime role.
+- The production loader supplies a frozen Repo configuration. Runtime storage
+  code does not select a backend or reread database/key environment variables.
+  Verified TLS uses an explicit CA bundle when configured and otherwise uses the
+  Erlang system trust store; plaintext is rejected in production.
 - Runtime nodes never migrate at boot.
 - `manifest_versions.required_runner_release_id` is non-null and format-checked
   for current manifest schemas. It is null only on historical pre-contract rows,
