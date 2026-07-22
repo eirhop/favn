@@ -48,38 +48,61 @@ defmodule FavnOrchestrator.TargetGenerations do
         %Index{} = index,
         %Plan{} = plan,
         %DateTime{} = occurred_at
+      ),
+      do: pin_plan(context, version, index, plan, occurred_at, [])
+
+  @doc "Pins plan generations and optionally requires one exact output generation."
+  @spec pin_plan(
+          WorkspaceContext.t(),
+          Version.t(),
+          Index.t(),
+          Plan.t(),
+          DateTime.t(),
+          keyword()
+        ) :: {:ok, Plan.t()} | {:error, term()}
+  def pin_plan(
+        %WorkspaceContext{} = context,
+        %Version{} = version,
+        %Index{} = index,
+        %Plan{} = plan,
+        %DateTime{} = occurred_at,
+        opts
       ) do
-    refs = plan.nodes |> Map.values() |> Enum.map(& &1.ref) |> Enum.uniq()
+    with :ok <- validate_pin_options(opts) do
+      refs = plan.nodes |> Map.values() |> Enum.map(& &1.ref) |> Enum.uniq()
 
-    with {:ok, identities} <- pin_identities(refs, context, version, index, occurred_at) do
-      nodes =
-        Map.new(plan.nodes, fn {node_key, node} ->
-          identity = Map.fetch!(identities, node.ref)
+      with {:ok, identities} <- pin_identities(refs, context, version, index, occurred_at) do
+        nodes =
+          Map.new(plan.nodes, fn {node_key, node} ->
+            identity = Map.fetch!(identities, node.ref)
 
-          input_generations =
-            node
-            |> Map.get(:upstream, [])
-            |> Enum.map(fn upstream_key ->
-              upstream_ref = plan.nodes |> Map.fetch!(upstream_key) |> Map.fetch!(:ref)
-              Map.fetch!(identities, upstream_ref)
-            end)
-            |> Enum.uniq_by(&{&1.target_id, &1.evidence_generation_id})
-            |> Enum.sort_by(& &1.target_id)
+            input_generations =
+              node
+              |> Map.get(:upstream, [])
+              |> Enum.map(fn upstream_key ->
+                upstream_ref = plan.nodes |> Map.fetch!(upstream_key) |> Map.fetch!(:ref)
+                Map.fetch!(identities, upstream_ref)
+              end)
+              |> Enum.uniq_by(&{&1.target_id, &1.evidence_generation_id})
+              |> Enum.sort_by(& &1.target_id)
 
-          pinned =
-            identity
-            |> Map.take([
-              :target_id,
-              :target_generation_id,
-              :evidence_generation_id,
-              :physical_relation
-            ])
-            |> Map.put(:input_generations, input_generations)
+            pinned =
+              identity
+              |> Map.take([
+                :target_id,
+                :target_generation_id,
+                :evidence_generation_id,
+                :physical_relation
+              ])
+              |> Map.put(:input_generations, input_generations)
 
-          {node_key, Map.merge(node, pinned)}
-        end)
+            {node_key, Map.merge(node, pinned)}
+          end)
 
-      {:ok, %{plan | nodes: nodes}}
+        plan
+        |> Map.put(:nodes, nodes)
+        |> require_generation(Keyword.get(opts, :required_generation))
+      end
     end
   end
 
@@ -222,6 +245,42 @@ defmodule FavnOrchestrator.TargetGenerations do
       end
     end)
   end
+
+  defp validate_pin_options(opts) do
+    if Keyword.keyword?(opts) and Keyword.keys(opts) -- [:required_generation] == [],
+      do: :ok,
+      else: {:error, :invalid_generation_pin_options}
+  end
+
+  defp require_generation(%Plan{} = plan, nil), do: {:ok, plan}
+
+  defp require_generation(
+         %Plan{} = plan,
+         %{
+           target_id: target_id,
+           evidence_generation_id: evidence_generation_id,
+           target_generation_id: target_generation_id
+         }
+       )
+       when is_binary(target_id) and is_binary(evidence_generation_id) and
+              (is_nil(target_generation_id) or is_binary(target_generation_id)) do
+    matching_nodes =
+      plan.nodes
+      |> Map.values()
+      |> Enum.filter(&(&1.target_id == target_id))
+
+    if matching_nodes != [] and
+         Enum.all?(matching_nodes, fn node ->
+           node.evidence_generation_id == evidence_generation_id and
+             node.target_generation_id == target_generation_id
+         end) do
+      {:ok, plan}
+    else
+      {:error, :coverage_selection_stale}
+    end
+  end
+
+  defp require_generation(%Plan{}, _invalid), do: {:error, :invalid_required_generation}
 
   defp command_id(workspace_id, manifest_id, target_id, descriptor_hash) do
     digest =

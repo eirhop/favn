@@ -473,6 +473,58 @@ defmodule Favn.Dev.OrchestratorClientTest do
     end)
   end
 
+  test "missing coverage helpers preserve the reviewed plan and command identity" do
+    parent = self()
+    plan = %{"plan_id" => "coverage_plan_1", "plan_hash" => String.duplicate("a", 64)}
+
+    {:ok, base_url, _server} =
+      start_server_sequence(
+        [
+          {JSON.encode!(%{data: %{plan: plan}}), 200, 0},
+          {JSON.encode!(%{data: %{run_id: "run_coverage_1"}}), 202, 0}
+        ],
+        parent: parent
+      )
+
+    context = session_context()
+    target_id = "asset:Elixir.MyApp.Orders:orders"
+
+    assert {:ok, ^plan} =
+             OrchestratorClient.plan_missing_coverage_backfill(
+               base_url,
+               "token",
+               context,
+               target_id,
+               limit: 250
+             )
+
+    encoded_target = URI.encode(target_id)
+    plan_path = "/api/orchestrator/v1/coverage/assets/#{encoded_target}/backfill/plan"
+
+    assert_receive {:request_path, ^plan_path}
+
+    assert_receive {:request_headers, _plan_headers}
+    assert_receive {:request_body, plan_body}
+    assert JSON.decode!(plan_body) == %{"limit" => 250}
+
+    assert {:ok, "run_coverage_1"} =
+             OrchestratorClient.submit_missing_coverage_backfill(
+               base_url,
+               "token",
+               context,
+               target_id,
+               plan
+             )
+
+    submit_path = "/api/orchestrator/v1/coverage/assets/#{encoded_target}/backfill"
+    assert_receive {:request_path, ^submit_path}
+
+    assert_receive {:request_headers, submit_headers}
+    assert_idempotency_header(submit_headers)
+    assert_receive {:request_body, submit_body}
+    assert JSON.decode!(submit_body) == %{"plan" => plan}
+  end
+
   test "separate activation invocations use fresh command identities across renewed sessions" do
     parent = self()
 

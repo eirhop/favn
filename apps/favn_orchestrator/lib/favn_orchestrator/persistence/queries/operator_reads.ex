@@ -175,6 +175,44 @@ defmodule FavnOrchestrator.Persistence.Queries.GetAssetWindowStates do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Queries.CountSuccessfulAssetWindows do
+  @moduledoc "Counts successful windows in one exact evidence-generation range."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :evidence_generation_id,
+    :target_id,
+    :first_window_start,
+    :last_window_start
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          evidence_generation_id: String.t(),
+          target_id: String.t(),
+          first_window_start: DateTime.t(),
+          last_window_start: DateTime.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.GetSuccessfulAssetWindowKeys do
+  @moduledoc "Batch-fetches successful keys for one exact evidence generation."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  @enforce_keys [:workspace_context, :evidence_generation_id, :target_id, :window_keys]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          evidence_generation_id: String.t(),
+          target_id: String.t(),
+          window_keys: [String.t()]
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Results.ManifestSummary do
   @moduledoc "Compact immutable manifest release metadata."
   @enforce_keys [:manifest_version_id, :content_hash, :inserted_at]

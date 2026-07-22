@@ -630,6 +630,10 @@ their lack of an FK is not permission to perform unscoped reads.
 - Fencing tokens and claim generations are monotonically increasing scalars.
 - JSONB payloads are bounded and versioned; queryable lifecycle fields are scalar.
 - Growing histories use identity keys plus workspace-aware keyset indexes.
+- Coverage counts and exact-key lookups read `asset_window_states` only through
+  workspace, active evidence generation, target, successful status, and bounded
+  range/key predicates. A zero-row successful materialization remains a
+  successful window state.
 - Derived projections retain a source publication cursor and are repairable.
 - Deletion is conservative: most operational relationships use `RESTRICT` and
   retention runs through explicit maintenance operations.

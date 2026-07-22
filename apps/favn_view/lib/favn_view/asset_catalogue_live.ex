@@ -295,6 +295,7 @@ defmodule FavnView.AssetCatalogueLive do
       catalogue: relation_field(relation, :catalog) || "uncatalogued",
       type: entry[:type] || "asset",
       status: entry[:status] || :unknown,
+      coverage_status: get_in(entry, [:coverage, Access.key(:status)]) || :unknown,
       last_run_label: last_run_label(entry[:latest_run_at])
     }
   end

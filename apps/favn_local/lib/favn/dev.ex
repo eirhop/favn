@@ -227,6 +227,18 @@ defmodule Favn.Dev do
   def plan_backfill(pipeline_module, opts \\ []) when is_list(opts),
     do: Backfill.plan_pipeline(pipeline_module, opts)
 
+  @doc "Plans exact currently missing windows for one active asset."
+  @spec plan_missing_asset_backfill(module() | String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_missing_asset_backfill(asset, opts \\ []) when is_list(opts),
+    do: Backfill.plan_missing_asset(asset, opts)
+
+  @doc "Submits one previously reviewed exact missing-window plan."
+  @spec submit_missing_asset_backfill(module() | String.t(), map(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def submit_missing_asset_backfill(asset, plan, opts \\ []) when is_list(opts),
+    do: Backfill.submit_missing_asset(asset, plan, opts)
+
   @doc """
   Lists child window rows for a backfill parent run.
   """

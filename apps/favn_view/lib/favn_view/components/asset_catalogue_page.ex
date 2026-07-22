@@ -166,6 +166,7 @@ defmodule FavnView.Components.AssetCataloguePage do
             <th class="font-medium">Catalogue</th>
             <th class="font-medium">Type</th>
             <th class="font-medium">Status</th>
+            <th class="font-medium">Coverage</th>
             <th class="font-medium">Last run</th>
             <th class="sr-only">Open</th>
           </tr>
@@ -206,6 +207,7 @@ defmodule FavnView.Components.AssetCataloguePage do
       <td class="text-base-content/70">{@asset.catalogue}</td>
       <td class="text-base-content/70">{@asset.type}</td>
       <td><.status_badge status={@asset.status} /></td>
+      <td><.coverage_badge status={coverage_status(@asset)} /></td>
       <td class="text-base-content/70">{@asset.last_run_label}</td>
       <td class="text-right">
         <.icon_button
@@ -254,6 +256,7 @@ defmodule FavnView.Components.AssetCataloguePage do
           </div>
           <div class="flex flex-wrap items-center gap-3 text-xs text-base-content/65">
             <.status_badge status={@asset.status} />
+            <.coverage_badge status={coverage_status(@asset)} />
             <span>{@asset.last_run_label}</span>
           </div>
         </div>
@@ -270,6 +273,19 @@ defmodule FavnView.Components.AssetCataloguePage do
     <span class={["badge badge-sm badge-soft gap-2", status_badge_class(@status)]}>
       <span class={["status", status_dot_class(@status)]}></span>
       {status_label(@status)}
+    </span>
+    """
+  end
+
+  attr :status, :atom, required: true
+
+  def coverage_badge(assigns) do
+    ~H"""
+    <span
+      class={["badge badge-sm badge-outline", coverage_badge_class(@status)]}
+      data-testid="asset-coverage-status"
+    >
+      Coverage {coverage_status_label(@status)}
     </span>
     """
   end
@@ -371,6 +387,7 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "sales",
         type: "table",
         status: :healthy,
+        coverage_status: :complete,
         last_run_label: "6m ago"
       },
       %{
@@ -380,6 +397,7 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "sales",
         type: "view",
         status: :healthy,
+        coverage_status: :incomplete,
         last_run_label: "12m ago"
       },
       %{
@@ -389,6 +407,7 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "sales",
         type: "view",
         status: :healthy,
+        coverage_status: :unknown,
         last_run_label: "18m ago"
       },
       %{
@@ -500,6 +519,15 @@ defmodule FavnView.Components.AssetCataloguePage do
   defp status_label(:missed), do: "Missed"
   defp status_label(:unknown), do: "Unknown"
   defp status_label(_status), do: "Unknown"
+
+  defp coverage_status(asset), do: Map.get(asset, :coverage_status, :unknown)
+  defp coverage_badge_class(:complete), do: "badge-success"
+  defp coverage_badge_class(:incomplete), do: "badge-warning"
+  defp coverage_badge_class(:unknown), do: "badge-neutral"
+  defp coverage_badge_class(_status), do: "badge-neutral"
+  defp coverage_status_label(:complete), do: "complete"
+  defp coverage_status_label(:incomplete), do: "incomplete"
+  defp coverage_status_label(_status), do: "unknown"
 
   defp asset_route_id(asset), do: Map.get(asset, :route_id, asset.id)
 

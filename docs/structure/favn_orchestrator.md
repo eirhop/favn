@@ -85,6 +85,11 @@ freshness, and execution coordination.
   treating a static node environment list as persistence authority.
 - `Backfills` and `BackfillDispatcher` own range expansion, parent/child state,
   dispatch, and compensation.
+- `Coverage` owns explicit-time expected-window evaluation, active-generation
+  evidence counts, opaque gap pagination, and immutable exact-gap backfill
+  plans. Coverage reads are bounded and remain independent from freshness;
+  submission revalidates every pinned identity before calling `Backfills` with
+  the reviewed non-contiguous window set.
 - `Identity` and `Auth` own accounts, memberships, sessions, service identities,
   policy enforcement, and audit intent.
 - `Operator.Catalogue`, `Operator.Lineage`, `Operator.Schedules`, `Logs`, and the

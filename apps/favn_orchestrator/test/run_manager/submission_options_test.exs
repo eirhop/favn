@@ -72,4 +72,25 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptionsTest do
     assert {:error, :ambiguous_window_selection} =
              SubmissionOptions.new(window_selection: selection, anchor_window: anchor)
   end
+
+  test "validates an exact required generation for delayed admission" do
+    required_generation = %{
+      target_id: "asset:orders",
+      evidence_generation_id: "generation-1",
+      target_generation_id: "generation-1"
+    }
+
+    assert {:ok, options} =
+             SubmissionOptions.new(required_generation: required_generation)
+
+    assert options.required_generation == required_generation
+
+    assert {:error, :invalid_required_generation} =
+             SubmissionOptions.new(
+               required_generation: %{
+                 required_generation
+                 | target_generation_id: "generation-2"
+               }
+             )
+  end
 end

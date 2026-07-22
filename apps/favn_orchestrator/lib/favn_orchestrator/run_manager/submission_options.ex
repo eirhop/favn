@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
     :timeout_ms,
     :dependencies,
     :exact_windows,
+    :required_generation,
     :lineage_depth
   ]
   defstruct @enforce_keys ++
@@ -38,6 +39,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
           anchor_window: Anchor.t() | nil,
           window_selection: Selection.t() | nil,
           exact_windows: map(),
+          required_generation: map() | nil,
           parent_run_id: String.t() | nil,
           root_run_id: String.t() | nil,
           lineage_depth: non_neg_integer(),
@@ -69,6 +71,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
         anchor_window: option(opts, defaults, :anchor_window, nil),
         window_selection: window_selection,
         exact_windows: option(opts, defaults, :exact_windows, %{}),
+        required_generation: option(opts, defaults, :required_generation, nil),
         parent_run_id: option(opts, defaults, :parent_run_id, nil),
         root_run_id: option(opts, defaults, :root_run_id, nil),
         lineage_depth: option(opts, defaults, :lineage_depth, 0),
@@ -85,6 +88,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
            :ok <- anchor(values.anchor_window),
            :ok <- window_input(values.anchor_window, values.window_selection),
            :ok <- map(values.exact_windows, :invalid_exact_windows),
+           :ok <- required_generation(values.required_generation),
            :ok <- optional_string(values.parent_run_id, :invalid_parent_run_id),
            :ok <- optional_string(values.root_run_id, :invalid_root_run_id),
            :ok <- optional_string(values.workspace_id, :invalid_workspace_id),
@@ -119,6 +123,23 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
 
   defp map(value, _error) when is_map(value), do: :ok
   defp map(_value, error), do: {:error, error}
+
+  defp required_generation(nil), do: :ok
+
+  defp required_generation(%{
+         target_id: target_id,
+         evidence_generation_id: evidence_generation_id,
+         target_generation_id: target_generation_id
+       }) do
+    if non_empty_binary?(target_id) and non_empty_binary?(evidence_generation_id) and
+         (is_nil(target_generation_id) or target_generation_id == evidence_generation_id),
+       do: :ok,
+       else: {:error, :invalid_required_generation}
+  end
+
+  defp required_generation(_value), do: {:error, :invalid_required_generation}
+
+  defp non_empty_binary?(value), do: is_binary(value) and value != ""
 
   defp positive_integer(value, _error) when is_integer(value) and value > 0, do: :ok
   defp positive_integer(_value, error), do: {:error, error}

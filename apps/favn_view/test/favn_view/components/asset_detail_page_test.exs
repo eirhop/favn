@@ -56,6 +56,19 @@ defmodule FavnView.Components.AssetDetailPageTest do
     refute submit_socket.assigns.submitting_window_run?
   end
 
+  test "ignores duplicate missing-coverage submissions while one is in flight" do
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        submitting_coverage?: true,
+        coverage_plan: %{plan_hash: String.duplicate("a", 64)}
+      }
+    }
+
+    assert {:noreply, ^socket} =
+             AssetDetailLive.handle_event("submit_missing_coverage", %{}, socket)
+  end
+
   test "surfaces ambiguous pipeline context and renders stable selection links" do
     contexts = [
       %{
@@ -86,6 +99,87 @@ defmodule FavnView.Components.AssetDetailPageTest do
     assert html =~ "Select one before running it"
     assert html =~ "run_context=pipeline%3Amanual"
     assert html =~ "run_context=pipeline%3Ascheduled"
+  end
+
+  test "renders coverage independently and requires review before exact submission" do
+    gaps = [
+      %{window_key: "day:Etc/UTC:2026-07-01"},
+      %{window_key: "day:Etc/UTC:2026-07-03"}
+    ]
+
+    html =
+      render_component(&AssetDetailPage.coverage_summary_panel/1,
+        coverage: %{
+          status: :incomplete,
+          evaluated_at: ~U[2026-07-22 12:00:00Z],
+          active_target_generation_id: "generation-orders-v2",
+          expected_count: 3,
+          covered_count: 1,
+          missing_count: 2,
+          last_expected_window: %{start_at: ~U[2026-07-03 00:00:00Z]}
+        },
+        policy: %{
+          timezone: "Etc/UTC",
+          timezone_source: :application_default,
+          declared_from: ~U[2026-07-01 00:00:00Z],
+          effective_from: ~U[2026-07-01 00:00:00Z],
+          availability_delay_seconds: 21_600
+        },
+        gaps: gaps,
+        pagination: %{limit: 2, has_more: true, next_cursor: "opaque-next-cursor"},
+        page_cursor: "opaque-current-cursor",
+        can_plan?: true,
+        plan: %{
+          plan_hash: String.duplicate("a", 64),
+          window_count: 2,
+          windows: gaps
+        }
+      )
+
+    assert html =~ ~s(data-testid="asset-coverage-summary")
+    assert html =~ "Incomplete"
+    assert html =~ "Expected 6 hours after the window closes"
+    assert html =~ "Evaluated at"
+    assert html =~ "generation-orders-v2"
+    assert html =~ ~s(data-testid="coverage-plan-review")
+    assert html =~ ~s(data-testid="submit-missing-coverage")
+    assert html =~ ~s(data-testid="coverage-gap-pagination")
+    assert html =~ ~s(data-testid="previous-coverage-gap-page")
+    assert html =~ ~s(data-testid="next-coverage-gap-page")
+    assert html =~ ~s(phx-value-direction="previous")
+    assert html =~ ~s(phx-value-direction="next")
+    assert html =~ "2 gaps on this page"
+    assert html =~ "day:Etc/UTC:2026-07-01"
+  end
+
+  test "only offers a backfill plan for missing windows displayed on the current page" do
+    html =
+      render_component(&AssetDetailPage.coverage_summary_panel/1,
+        coverage: %{
+          status: :incomplete,
+          expected_count: 4,
+          covered_count: 3,
+          missing_count: 1
+        },
+        gaps: [],
+        pagination: %{limit: 2, has_more: true, next_cursor: "opaque-next-cursor"},
+        can_plan?: true
+      )
+
+    assert html =~ "No missing windows in this page."
+    assert html =~ ~s(data-testid="next-coverage-gap-page")
+    refute html =~ ~s(data-testid="plan-missing-coverage")
+  end
+
+  test "renders an explicit unknown coverage reason without counts" do
+    html =
+      render_component(&AssetDetailPage.coverage_summary_panel/1,
+        coverage: %{status: :unknown, unknown_reason: :coverage_not_declared}
+      )
+
+    assert html =~ "Unknown"
+    assert html =~ "coverage not declared"
+    refute html =~ "Expected</dt>"
   end
 
   test "renders every ordered row-count claim in the assurance contract" do

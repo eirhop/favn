@@ -276,6 +276,8 @@ Backfills are advanced local/operator workflows.
 ```bash
 mix favn.backfill submit MyApp.Pipelines.Daily --from 2026-04-01 --to 2026-04-07 --kind day
 mix favn.backfill submit MyApp.Pipelines.Daily --window day:2026-04-01..2026-04-07 --dry-run
+mix favn.backfill missing-plan MyApp.Assets.Orders --plan-file coverage-plan.json
+mix favn.backfill missing-submit MyApp.Assets.Orders --plan-file coverage-plan.json
 mix favn.backfill windows RUN_ID
 mix favn.backfill rerun-window RUN_ID --window-key day:2026-04-01
 mix favn.backfill repair --all --apply
@@ -291,6 +293,15 @@ Common submit options:
 | `--dry-run` | Plan without creating runs. |
 | `--refresh force` | Recompute selected windows. |
 | `--wait` / `--no-wait` | Wait is default. |
+
+Missing-window repair has a separate review and submit workflow. `missing-plan`
+evaluates the active asset generation, prints every exact selected window and
+the coverage checksum, and optionally writes the complete immutable plan to
+`--plan-file`. `missing-submit` requires that file, prints the same selection
+again, revalidates its manifest, generation, evaluation, and window keys, and
+then submits it. A stale plan is rejected; the command never silently fills a
+different gap. Use `--limit 1..500` and, when shown by an operator surface,
+`--cursor CURSOR` to plan one bounded page instead of all missing windows.
 
 ## Packaging Commands
 

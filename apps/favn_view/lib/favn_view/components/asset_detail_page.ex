@@ -37,7 +37,17 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :data_coverage_timeline, :list, default: nil
   attr :active_mode, :atom, default: :timeline
   attr :freshness, :map, default: nil
+  attr :coverage, :any, default: nil
+  attr :coverage_policy, :map, default: nil
+  attr :coverage_gaps, :list, default: []
+  attr :coverage_pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
+
+  attr :coverage_page_cursor, :string, default: nil
   attr :assurance, :map, default: nil
+  attr :coverage_plan, :map, default: nil
+  attr :coverage_action_error, :string, default: nil
+  attr :planning_coverage?, :boolean, default: false
+  attr :submitting_coverage?, :boolean, default: false
   attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
@@ -80,7 +90,16 @@ defmodule FavnView.Components.AssetDetailPage do
         freshness_timeline={@freshness_timeline}
         data_coverage_timeline={@data_coverage_timeline}
         freshness={@freshness}
+        coverage={@coverage}
+        coverage_policy={@coverage_policy}
+        coverage_gaps={@coverage_gaps}
+        coverage_pagination={@coverage_pagination}
+        coverage_page_cursor={@coverage_page_cursor}
         assurance={@assurance}
+        coverage_plan={@coverage_plan}
+        coverage_action_error={@coverage_action_error}
+        planning_coverage?={@planning_coverage?}
+        submitting_coverage?={@submitting_coverage?}
         selected_window={@selected_window}
         run_config_open?={@run_config_open?}
         run_config={@run_config}
@@ -120,7 +139,17 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :freshness_timeline, :list, default: nil
   attr :data_coverage_timeline, :list, default: nil
   attr :freshness, :map, default: nil
+  attr :coverage, :any, default: nil
+  attr :coverage_policy, :map, default: nil
+  attr :coverage_gaps, :list, default: []
+  attr :coverage_pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
+
+  attr :coverage_page_cursor, :string, default: nil
   attr :assurance, :map, default: nil
+  attr :coverage_plan, :map, default: nil
+  attr :coverage_action_error, :string, default: nil
+  attr :planning_coverage?, :boolean, default: false
+  attr :submitting_coverage?, :boolean, default: false
   attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
@@ -132,6 +161,20 @@ defmodule FavnView.Components.AssetDetailPage do
 
   def central_view(assigns) do
     ~H"""
+    <.coverage_summary_panel
+      :if={@active_mode == :timeline && @coverage}
+      coverage={@coverage}
+      policy={@coverage_policy}
+      gaps={@coverage_gaps}
+      pagination={@coverage_pagination}
+      page_cursor={@coverage_page_cursor}
+      plan={@coverage_plan}
+      action_error={@coverage_action_error}
+      planning?={@planning_coverage?}
+      submitting?={@submitting_coverage?}
+      can_plan?={@can_submit_runs? && @can_run_asset?}
+    />
+
     <.window_timeline_panel
       :if={@active_mode == :timeline}
       window_kind_label={@window_kind_label}
@@ -172,6 +215,187 @@ defmodule FavnView.Components.AssetDetailPage do
     <div :if={@active_mode == :details} class="mx-auto w-full max-w-6xl space-y-6">
       <.assurance_panel :if={@assurance} assurance={@assurance} />
       <.freshness_detail_panel freshness={@freshness} />
+    </div>
+    """
+  end
+
+  attr :coverage, :any, required: true
+  attr :policy, :map, default: nil
+  attr :gaps, :list, default: []
+  attr :pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
+  attr :page_cursor, :string, default: nil
+  attr :plan, :map, default: nil
+  attr :action_error, :string, default: nil
+  attr :planning?, :boolean, default: false
+  attr :submitting?, :boolean, default: false
+  attr :can_plan?, :boolean, default: false
+
+  def coverage_summary_panel(assigns) do
+    ~H"""
+    <GlassPanel.glass_panel
+      class="mx-auto mb-6 w-full max-w-[120rem] p-6 sm:p-8"
+      data-testid="asset-coverage-summary"
+    >
+      <div class="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+        <div class="min-w-0 space-y-3">
+          <div class="flex flex-wrap items-center gap-2">
+            <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Coverage</p>
+            <span class={coverage_badge_class(field(@coverage, :status))}>
+              {coverage_status_label(field(@coverage, :status))}
+            </span>
+          </div>
+
+          <p class="text-sm text-base-content/70">
+            {coverage_explanation(@coverage)}
+          </p>
+
+          <dl :if={field(@coverage, :status) != :unknown} class="grid gap-3 sm:grid-cols-3">
+            <.coverage_metric label="Expected" value={field(@coverage, :expected_count, 0)} />
+            <.coverage_metric label="Covered" value={field(@coverage, :covered_count, 0)} />
+            <.coverage_metric label="Missing" value={field(@coverage, :missing_count, 0)} />
+          </dl>
+
+          <dl class="grid gap-x-6 gap-y-2 text-xs text-base-content/65 sm:grid-cols-2">
+            <div>
+              <dt class="text-base-content/40">Evaluated at</dt>
+              <dd>{coverage_time(field(@coverage, :evaluated_at))}</dd>
+            </div>
+            <div>
+              <dt class="text-base-content/40">Active target generation</dt>
+              <dd class="break-all font-mono">
+                {coverage_generation_label(field(@coverage, :active_target_generation_id))}
+              </dd>
+            </div>
+          </dl>
+
+          <dl :if={@policy} class="grid gap-x-6 gap-y-2 text-xs text-base-content/65 sm:grid-cols-2">
+            <div>
+              <dt class="text-base-content/40">Timezone</dt>
+              <dd class="font-mono">
+                {field(@policy, :timezone)} ({humanize(field(@policy, :timezone_source))})
+              </dd>
+            </div>
+            <div>
+              <dt class="text-base-content/40">Coverage starts</dt>
+              <dd>
+                {coverage_time(field(@policy, :declared_from))} declared · {coverage_time(
+                  field(@policy, :effective_from)
+                )} effective
+              </dd>
+            </div>
+            <div>
+              <dt class="text-base-content/40">Expected through</dt>
+              <dd>{coverage_window_label(field(@coverage, :last_expected_window))}</dd>
+            </div>
+            <div>
+              <dt class="text-base-content/40">Availability</dt>
+              <dd>{availability_label(field(@policy, :availability_delay_seconds, 0))}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="w-full space-y-3 xl:max-w-xl">
+          <div
+            :if={field(@coverage, :status) == :incomplete}
+            class="rounded-box border border-warning/20 bg-warning/5 p-4"
+          >
+            <p class="text-xs font-medium uppercase tracking-[0.16em] text-warning">Exact gaps</p>
+            <div class="mt-2 max-h-32 space-y-1 overflow-y-auto font-mono text-xs text-base-content/70">
+              <p :for={gap <- @gaps}>{field(gap, :window_key)}</p>
+              <p :if={@gaps == []} class="font-sans text-base-content/50">
+                No missing windows in this page.
+              </p>
+            </div>
+            <div
+              :if={@page_cursor || field(@pagination, :has_more, false)}
+              class="mt-3 flex items-center justify-between gap-3"
+              data-testid="coverage-gap-pagination"
+            >
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs"
+                phx-click="page_missing_coverage"
+                phx-value-direction="previous"
+                disabled={is_nil(@page_cursor)}
+                data-testid="previous-coverage-gap-page"
+              >
+                Previous
+              </button>
+              <span class="text-center font-sans text-xs text-base-content/45">
+                {length(@gaps)} gaps on this page
+              </span>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs"
+                phx-click="page_missing_coverage"
+                phx-value-direction="next"
+                disabled={!field(@pagination, :has_more, false)}
+                data-testid="next-coverage-gap-page"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+
+          <button
+            :if={field(@coverage, :status) == :incomplete && @gaps != [] && is_nil(@plan)}
+            type="button"
+            class="btn btn-warning btn-soft btn-sm"
+            phx-click="plan_missing_coverage"
+            disabled={!@can_plan? || @planning?}
+            data-testid="plan-missing-coverage"
+          >
+            <span :if={@planning?} class="loading loading-spinner loading-xs"></span>
+            Review missing-window backfill
+          </button>
+
+          <div
+            :if={@plan}
+            class="rounded-box border border-primary/25 bg-primary/5 p-4"
+            data-testid="coverage-plan-review"
+          >
+            <p class="text-sm font-medium">Review immutable plan</p>
+            <p class="mt-1 break-all font-mono text-xs text-base-content/55">
+              {field(@plan, :plan_hash)}
+            </p>
+            <div class="mt-3 max-h-36 space-y-1 overflow-y-auto font-mono text-xs text-base-content/70">
+              <p :for={window <- field(@plan, :windows, [])}>{field(window, :window_key)}</p>
+            </div>
+            <button
+              type="button"
+              class="btn btn-primary btn-sm mt-4"
+              phx-click="submit_missing_coverage"
+              disabled={@submitting?}
+              data-testid="submit-missing-coverage"
+            >
+              <span :if={@submitting?} class="loading loading-spinner loading-xs"></span>
+              Submit exact {field(@plan, :window_count, 0)} windows
+            </button>
+          </div>
+
+          <p
+            :if={!@can_plan? && field(@coverage, :status) == :incomplete}
+            class="text-xs text-warning"
+          >
+            Select a valid run context and use an operator account to plan this backfill.
+          </p>
+          <p :if={@action_error} class="text-sm text-error" data-testid="coverage-action-error">
+            {@action_error}
+          </p>
+        </div>
+      </div>
+    </GlassPanel.glass_panel>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :value, :integer, required: true
+
+  defp coverage_metric(assigns) do
+    ~H"""
+    <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
+      <dt class="text-xs uppercase tracking-[0.14em] text-base-content/40">{@label}</dt>
+      <dd class="mt-1 text-xl font-medium">{@value}</dd>
     </div>
     """
   end
@@ -1074,6 +1298,66 @@ defmodule FavnView.Components.AssetDetailPage do
     |> to_string()
     |> String.replace("_", " ")
   end
+
+  defp coverage_badge_class(:complete), do: "badge badge-success badge-soft badge-sm"
+  defp coverage_badge_class(:incomplete), do: "badge badge-warning badge-soft badge-sm"
+  defp coverage_badge_class(_status), do: "badge badge-neutral badge-soft badge-sm"
+
+  defp coverage_status_label(:complete), do: "Complete"
+  defp coverage_status_label(:incomplete), do: "Incomplete"
+  defp coverage_status_label(_status), do: "Unknown"
+
+  defp coverage_explanation(coverage) do
+    case field(coverage, :status) do
+      :complete ->
+        "Every window expected at this evaluation time has successful evidence."
+
+      :incomplete ->
+        "Some expected windows do not have successful evidence in the active generation."
+
+      :unknown ->
+        "Coverage is unavailable: #{humanize(field(coverage, :unknown_reason))}."
+
+      _other ->
+        "Coverage is unavailable."
+    end
+  end
+
+  defp coverage_time(%DateTime{} = value),
+    do: Calendar.strftime(value, "%b %-d, %Y %H:%M %Z")
+
+  defp coverage_time(value) when is_binary(value), do: value
+  defp coverage_time(_value), do: "-"
+
+  defp coverage_window_label(nil), do: "No windows expected yet"
+
+  defp coverage_window_label(window) do
+    case field(window, :start_at) do
+      %DateTime{} = start_at -> coverage_time(start_at)
+      value when is_binary(value) -> value
+      _other -> "-"
+    end
+  end
+
+  defp coverage_generation_label(value) when is_binary(value), do: value
+  defp coverage_generation_label(_value), do: "No persisted generation"
+
+  defp availability_label(0), do: "Available at the window boundary"
+
+  defp availability_label(seconds) when is_integer(seconds) and rem(seconds, 3_600) == 0,
+    do: "Expected #{div(seconds, 3_600)} hours after the window closes"
+
+  defp availability_label(seconds) when is_integer(seconds),
+    do: "Expected #{seconds} seconds after the window closes"
+
+  defp availability_label(_value), do: "Availability unknown"
+
+  defp field(value, key, default \\ nil)
+
+  defp field(value, key, default) when is_map(value),
+    do: Map.get(value, key, Map.get(value, Atom.to_string(key), default))
+
+  defp field(_value, _key, default), do: default
 
   defp value(map, key, default \\ nil) when is_map(map),
     do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))

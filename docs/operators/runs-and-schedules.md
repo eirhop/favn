@@ -107,6 +107,54 @@ Reruns and retry-remaining submissions preserve the original selection so the
 same effective anchors are planned again. Inspect `window_selection` in run
 detail or API output when verifying which anchors were requested and executed.
 
+### Inspect And Repair Asset Coverage
+
+Coverage answers a different question from freshness: coverage checks whether
+every window expected at one recorded evaluation time has successful evidence
+in the asset's active evidence generation. A successful zero-row result counts
+as covered. Failed, running, skipped, retired-generation, and candidate-generation
+results do not.
+
+The asset catalogue and detail page show coverage as `complete`, `incomplete`,
+or `unknown` independently from run health and freshness. Unknown responses name
+the reason: coverage is undeclared, the asset is not windowed, a persisted target
+has no active generation, or authoritative state is unavailable. The detail page
+shows the declared and environment-effective start, expected-through boundary,
+availability delay, counts, and a bounded page of exact gaps.
+
+To repair gaps from the CLI:
+
+```bash
+mix favn.backfill missing-plan MyApp.Assets.Orders --plan-file coverage-plan.json
+# Review the printed checksum and every exact window key.
+mix favn.backfill missing-submit MyApp.Assets.Orders --plan-file coverage-plan.json
+```
+
+The plan pins the active manifest, deployment, evidence generation, target
+generation when present, evaluation time, checksum, and exact keys. Submission
+re-evaluates that same selection. If any pinned identity or gap changes, it
+returns `coverage_selection_stale`; create and review a new plan. One submission
+is limited to 10,000 windows. Use a page selection of at most 500 windows when
+the complete missing set is larger. Coverage evaluation itself stops above
+100,000 expected windows rather than loading an unbounded history.
+
+The accepted backfill retains the approved generation pin. Each delayed child
+checks it again before planning, so a generation change after submission fails
+as `coverage_selection_stale` instead of writing the newer generation.
+
+The private operator API exposes the same contract at:
+
+```text
+GET  /api/orchestrator/v1/coverage/assets/:target_id
+GET  /api/orchestrator/v1/coverage/assets/:target_id/missing
+POST /api/orchestrator/v1/coverage/assets/:target_id/backfill/plan
+POST /api/orchestrator/v1/coverage/assets/:target_id/backfill
+```
+
+Missing-window pages default to 100 and accept at most 500. Their opaque cursor
+pins the evaluated boundary, manifest, evidence generation, target generation,
+and checksum; stale cursors return a conflict instead of mixing evaluations.
+
 Common failures:
 
 | Failure | Action |

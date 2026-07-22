@@ -2,9 +2,11 @@ defmodule FavnOrchestrator.API.DTO do
   @moduledoc false
 
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Coverage.Summary
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
   alias Favn.Window.Policy
+  alias Favn.Window.Key, as: WindowKey
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -16,6 +18,50 @@ defmodule FavnOrchestrator.API.DTO do
 
   @spec normalize(term()) :: term()
   def normalize(value), do: JsonSafe.data(value)
+
+  @spec coverage_summary(Summary.t()) :: map()
+  def coverage_summary(%Summary{} = summary) do
+    %{
+      status: summary.status,
+      unknown_reason: summary.unknown_reason,
+      evaluated_at: summary.evaluated_at,
+      manifest_version_id: summary.manifest_version_id,
+      target_id: summary.target_id,
+      first_window: coverage_window(summary.first_window),
+      last_expected_window: coverage_window(summary.last_expected_window),
+      expected_count: summary.expected_count,
+      covered_count: summary.covered_count,
+      missing_count: summary.missing_count,
+      evidence_generation_id: summary.evidence_generation_id,
+      active_target_generation_id: summary.active_target_generation_id,
+      evaluation_checksum: summary.evaluation_checksum
+    }
+    |> normalize()
+  end
+
+  @spec coverage_page(map()) :: map()
+  def coverage_page(%{summary: %Summary{} = summary, items: items, pagination: pagination}) do
+    %{
+      summary: coverage_summary(summary),
+      items: normalize(items),
+      pagination: normalize(pagination)
+    }
+  end
+
+  @spec coverage_plan(map()) :: map()
+  def coverage_plan(plan) when is_map(plan), do: normalize(plan)
+
+  defp coverage_window(nil), do: nil
+
+  defp coverage_window(window) do
+    %{
+      window_key: WindowKey.encode(window.key),
+      kind: window.kind,
+      timezone: window.timezone,
+      start_at: window.start_at,
+      end_at: window.end_at
+    }
+  end
 
   @spec actor(map()) :: map()
   def actor(actor) when is_map(actor) do

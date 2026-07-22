@@ -1471,6 +1471,63 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert Enum.all?(page.items, &(&1.status == :ready))
   end
 
+  test "asset backfills preserve an exact non-contiguous window selection", fixture do
+    anchors = [
+      Favn.Window.Anchor.new!(
+        :day,
+        ~U[2026-07-01 00:00:00Z],
+        ~U[2026-07-02 00:00:00Z],
+        timezone: "Etc/UTC"
+      ),
+      Favn.Window.Anchor.new!(
+        :day,
+        ~U[2026-07-03 00:00:00Z],
+        ~U[2026-07-04 00:00:00Z],
+        timezone: "Etc/UTC"
+      )
+    ]
+
+    assert {:ok, %{window_count: 2, window_keys: window_keys}} =
+             Backfills.plan_asset_windows(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.target_id,
+               anchors,
+               dependencies: :none
+             )
+
+    assert window_keys == Enum.map(anchors, &Favn.Window.Key.encode(&1.key))
+
+    required_generation = %{
+      target_id: fixture.target_id,
+      evidence_generation_id: "coverage-generation-v1",
+      target_generation_id: nil
+    }
+
+    assert {:ok, backfill} =
+             Backfills.submit_asset_windows(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.target_id,
+               anchors,
+               root_run_id: "run-exact-asset-backfill-#{System.unique_integer([:positive])}",
+               required_generation: required_generation,
+               dependencies: :none
+             )
+
+    assert backfill.metadata["required_generation"] == %{
+             "target_id" => fixture.target_id,
+             "evidence_generation_id" => "coverage-generation-v1",
+             "target_generation_id" => nil
+           }
+
+    assert {:ok, page} =
+             Backfills.page_windows(fixture.workspace_context, backfill.backfill_id, limit: 10)
+
+    assert Enum.map(page.items, & &1.window_key) ==
+             Enum.map(anchors, &Favn.Window.Key.encode(&1.key))
+  end
+
   test "reports exact backend capabilities and schema readiness" do
     assert :ok = Backend.stores() |> Stores.validate()
     assert {:ok, %{ready?: true, status: :ready}} = Backend.readiness([])

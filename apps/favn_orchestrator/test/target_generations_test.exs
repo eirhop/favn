@@ -56,6 +56,31 @@ defmodule FavnOrchestrator.TargetGenerationsTest do
     assert [input] = target.input_generations
     assert input.target_id == upstream.target_id
     assert input.evidence_generation_id == upstream.evidence_generation_id
+
+    required_generation =
+      Map.take(target, [:target_id, :evidence_generation_id, :target_generation_id])
+
+    assert {:ok, _plan} =
+             TargetGenerations.pin_plan(
+               context,
+               version,
+               index,
+               plan,
+               ~U[2026-07-22 10:00:00Z],
+               required_generation: required_generation
+             )
+
+    stale_generation = %{required_generation | evidence_generation_id: "stale-generation"}
+
+    assert {:error, :coverage_selection_stale} =
+             TargetGenerations.pin_plan(
+               context,
+               version,
+               index,
+               plan,
+               ~U[2026-07-22 10:00:00Z],
+               required_generation: stale_generation
+             )
   end
 
   defp asset({module, name} = ref) do

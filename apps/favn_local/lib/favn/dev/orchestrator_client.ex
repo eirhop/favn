@@ -400,6 +400,90 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
+  @spec plan_missing_coverage_backfill(
+          String.t(),
+          String.t(),
+          session_context(),
+          String.t(),
+          keyword()
+        ) :: {:ok, map()} | {:error, term()}
+  def plan_missing_coverage_backfill(
+        base_url,
+        service_token,
+        session_context,
+        target_id,
+        opts \\ []
+      )
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(target_id) and is_list(opts) do
+    url =
+      base_url <>
+        "/api/orchestrator/v1/coverage/assets/#{URI.encode(target_id)}/backfill/plan"
+
+    payload =
+      opts
+      |> Keyword.take([:cursor, :limit])
+      |> Map.new()
+
+    case request_post(
+           :plan_missing_coverage_backfill,
+           url,
+           service_token,
+           payload,
+           session_context
+         ) do
+      {:ok, %{"data" => %{"plan" => plan}}} when is_map(plan) ->
+        {:ok, plan}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:plan_missing_coverage_backfill, :post, url, :invalid_response)}
+    end
+  end
+
+  @spec submit_missing_coverage_backfill(
+          String.t(),
+          String.t(),
+          session_context(),
+          String.t(),
+          map()
+        ) :: {:ok, String.t()} | {:error, term()}
+  def submit_missing_coverage_backfill(
+        base_url,
+        service_token,
+        session_context,
+        target_id,
+        plan
+      )
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(target_id) and is_map(plan) do
+    url =
+      base_url <> "/api/orchestrator/v1/coverage/assets/#{URI.encode(target_id)}/backfill"
+
+    payload = %{plan: plan}
+
+    case request_post(
+           :submit_missing_coverage_backfill,
+           url,
+           service_token,
+           payload,
+           session_context,
+           idempotency_key(:submit_missing_coverage_backfill, session_context, payload)
+         ) do
+      {:ok, %{"data" => %{"run_id" => run_id}}} when is_binary(run_id) ->
+        {:ok, run_id}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error,
+         operation_error(:submit_missing_coverage_backfill, :post, url, :invalid_response)}
+    end
+  end
+
   @spec list_backfill_windows(String.t(), String.t(), session_context(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def list_backfill_windows(

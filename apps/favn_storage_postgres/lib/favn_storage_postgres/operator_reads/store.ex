@@ -9,11 +9,13 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.FreshnessIdentity
+  alias FavnOrchestrator.Persistence.Queries.CountSuccessfulAssetWindows
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
   alias FavnOrchestrator.Persistence.Queries.GetFreshnessMany
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
+  alias FavnOrchestrator.Persistence.Queries.GetSuccessfulAssetWindowKeys
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageGroupRuns
   alias FavnOrchestrator.Persistence.Queries.PageGroupWindows
@@ -388,6 +390,47 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         |> Enum.map(&asset_window_result/1)
 
       {:ok, window_states}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def count_successful_asset_windows(%CountSuccessfulAssetWindows{} = query) do
+    with :ok <- validate_coverage_count(query) do
+      count =
+        from(state in AssetWindowState,
+          where:
+            state.workspace_id == ^query.workspace_context.workspace_id and
+              state.evidence_generation_id == ^query.evidence_generation_id and
+              state.target_id == ^query.target_id and state.status == "succeeded" and
+              state.window_start >= ^query.first_window_start and
+              state.window_start <= ^query.last_window_start,
+          select: count(state.window_key)
+        )
+        |> Repo.one()
+
+      {:ok, count}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_successful_asset_window_keys(%GetSuccessfulAssetWindowKeys{} = query) do
+    with :ok <- validate_coverage_keys(query) do
+      keys =
+        from(state in AssetWindowState,
+          where:
+            state.workspace_id == ^query.workspace_context.workspace_id and
+              state.evidence_generation_id == ^query.evidence_generation_id and
+              state.target_id == ^query.target_id and state.status == "succeeded" and
+              state.window_key in ^query.window_keys,
+          select: state.window_key
+        )
+        |> Repo.all()
+
+      {:ok, keys}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -944,6 +987,24 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     if workspace_context?(query.workspace_context) and
          valid_id?(query.evidence_generation_id) and valid_id?(query.target_id) and
          valid_limit?(query.limit),
+       do: :ok,
+       else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp validate_coverage_count(query) do
+    if workspace_context?(query.workspace_context) and
+         valid_id?(query.evidence_generation_id) and valid_id?(query.target_id) and
+         match?(%DateTime{}, query.first_window_start) and
+         match?(%DateTime{}, query.last_window_start) and
+         DateTime.compare(query.first_window_start, query.last_window_start) != :gt,
+       do: :ok,
+       else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp validate_coverage_keys(query) do
+    if workspace_context?(query.workspace_context) and
+         valid_id?(query.evidence_generation_id) and valid_id?(query.target_id) and
+         valid_id_list?(query.window_keys),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
   end

@@ -456,6 +456,34 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert message == "invalid option for mix favn.backfill submit"
   end
 
+  test "mix favn.backfill separates missing-window plan and submission" do
+    assert {:ok, {:missing_plan, "Example.Asset", opts}} =
+             BackfillTask.parse_args([
+               "missing-plan",
+               "Example.Asset",
+               "--plan-file",
+               "coverage-plan.json",
+               "--limit",
+               "250"
+             ])
+
+    assert Keyword.fetch!(opts, :plan_file) == "coverage-plan.json"
+    assert Keyword.fetch!(opts, :limit) == 250
+
+    assert {:ok, {:missing_submit, "Example.Asset", opts}} =
+             BackfillTask.parse_args([
+               "missing-submit",
+               "Example.Asset",
+               "--plan-file",
+               "coverage-plan.json"
+             ])
+
+    assert Keyword.fetch!(opts, :plan_file) == "coverage-plan.json"
+
+    assert {:error, "missing required option: --plan-file"} =
+             BackfillTask.parse_args(["missing-submit", "Example.Asset"])
+  end
+
   test "mix favn.backfill parses read and rerun commands" do
     assert {:ok, {:windows, "run_1", opts}} =
              BackfillTask.parse_args([

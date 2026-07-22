@@ -148,12 +148,14 @@ defmodule Favn.AI do
     `:previous_complete_period | :current_period`; schedule cadence does not
     change pipeline window granularity.
   - To work with operational backfill ranges, dry-run planning, compact
-    `--window kind:FROM..TO` input, forced refresh repair, or successful-window
-    backfill reruns, read `Favn.Backfill.RangeRequest`,
+    `--window kind:FROM..TO` input, forced refresh repair, successful-window
+    reruns, or immutable missing-coverage plans, read `Favn.Backfill.RangeRequest`,
     `Favn.Backfill.RangeResolver`, and `FavnOrchestrator.RefreshPolicy`. If you
-    are wiring orchestrator-side submission, planning, or projection, then read
-    `FavnOrchestrator`, `FavnOrchestrator.BackfillManager`, and the internal
-    modules under `FavnOrchestrator.Backfill.*`. If you are changing the
+    are wiring coverage, read `Favn.Coverage.Summary` and the coverage section
+    of `apps/favn/guides/local-development.md`. For orchestrator-side submission,
+    planning, or projection, read `FavnOrchestrator`,
+    `FavnOrchestrator.BackfillManager`, and the internal modules under
+    `FavnOrchestrator.Backfill.*`. If you are changing the
     private service HTTP surface for backfills, also read
     `FavnOrchestrator.API.Router`. For the local operator CLI, read
     `Favn.Dev.Backfill`, `Favn.Dev.Run`, `Mix.Tasks.Favn.Backfill`, and

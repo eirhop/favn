@@ -58,6 +58,11 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   `NOTIFY` are wake-ups, never correctness authorities.
 - Resource circuits, recovery candidates, schedule occurrences, execution
   ownership, claims, leases, and fencing are durable coordination state.
+- Asset coverage is evaluated against bounded canonical expected windows and
+  successful evidence from only the active semantic or physical generation.
+  Catalogue/API reads distinguish complete, incomplete, and explicit unknown
+  states; operators can review and manually submit an immutable exact-gap
+  backfill plan, with stale selections rejected before mutation.
 - Both runtime BEAMs expose monotonic lifecycle state and reject new mutation or
   execution admission while draining. Readiness flips before bounded shutdown;
   admitted work may settle until the configured deadline, after which ordinary

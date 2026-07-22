@@ -16,6 +16,7 @@ defmodule FavnOrchestrator do
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.ControlPlaneRuntimeConfig
+  alias FavnOrchestrator.Coverage
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.Logs
@@ -83,6 +84,8 @@ defmodule FavnOrchestrator do
   @type asset_detail :: Catalogue.asset_detail()
   @type asset_freshness_reason :: Catalogue.asset_freshness_reason()
   @type asset_freshness_detail :: Catalogue.asset_freshness_detail()
+  @type coverage_summary :: Favn.Coverage.Summary.t()
+  @type missing_coverage_page :: Coverage.missing_page()
 
   @doc "Returns a customer-visible lineage graph after operator reauthorization."
   @spec get_operator_lineage_graph(OperatorContext.t(), keyword()) ::
@@ -315,6 +318,72 @@ defmodule FavnOrchestrator do
       when is_binary(target_id) and is_list(opts) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
       Catalogue.active_asset_detail(context, target_id, opts)
+    end
+  end
+
+  @doc "Returns generation-aware coverage for one active asset after reauthorization."
+  @spec get_asset_coverage(OperatorContext.t(), String.t()) ::
+          {:ok, coverage_summary()} | {:error, term()}
+  def get_asset_coverage(%OperatorContext{} = operator_context, target_id)
+      when is_binary(target_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Coverage.summary(context, target_id)
+    end
+  end
+
+  @doc "Returns one cursor-paged set of missing coverage windows after reauthorization."
+  @spec page_asset_missing_coverage(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, missing_coverage_page()} | {:error, term()}
+  def page_asset_missing_coverage(%OperatorContext{} = operator_context, target_id, opts \\ [])
+      when is_binary(target_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Coverage.missing_windows(context, target_id, opts)
+    end
+  end
+
+  @doc "Plans an exact backfill for all or one page of missing windows."
+  @spec plan_missing_coverage_backfill(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_missing_coverage_backfill(%OperatorContext{} = operator_context, target_id, opts \\ [])
+      when is_binary(target_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator) do
+      Coverage.plan_missing_backfill(context, target_id, opts)
+    end
+  end
+
+  @doc "Submits an exact, revalidated missing-window backfill plan."
+  @spec submit_missing_coverage_backfill(
+          OperatorContext.t(),
+          String.t(),
+          map(),
+          keyword()
+        ) :: {:ok, run_id()} | {:error, term()}
+  def submit_missing_coverage_backfill(
+        %OperatorContext{} = operator_context,
+        target_id,
+        plan,
+        opts \\ []
+      )
+      when is_binary(target_id) and is_map(plan) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         metadata <- %{
+           actor_id: actor.id,
+           session_id: operator_context.session_id,
+           requested_by: :operator
+         },
+         {:ok, opts} <- merge_coverage_metadata(opts, metadata),
+         {:ok, backfill} <- Coverage.submit_missing_backfill(context, target_id, plan, opts) do
+      {:ok, backfill.root_run_id}
+    end
+  end
+
+  defp merge_coverage_metadata(opts, required) do
+    case Keyword.get(opts, :metadata, %{}) do
+      metadata when is_map(metadata) ->
+        {:ok, Keyword.put(opts, :metadata, Map.merge(metadata, required))}
+
+      _invalid ->
+        {:error, :invalid_coverage_backfill_options}
     end
   end
 

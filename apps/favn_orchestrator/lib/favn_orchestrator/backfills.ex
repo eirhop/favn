@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.Backfills do
   alias Favn.Manifest.PipelineResolver
   alias Favn.Retry.Policy
   alias Favn.Window.Key
+  alias Favn.Window.Anchor
   alias Favn.Window.Selection
   alias FavnOrchestrator.Backfills.Submission
   alias FavnOrchestrator.Lifecycle
@@ -192,6 +193,82 @@ defmodule FavnOrchestrator.Backfills do
                submission.batches,
                submission.batch_hashes
              ) do
+        activate(context, appended)
+      end
+    end)
+  end
+
+  @doc "Plans an asset backfill from an exact ordered set of canonical windows."
+  @spec plan_asset_windows(
+          WorkspaceContext.t(),
+          String.t(),
+          String.t(),
+          [Anchor.t()],
+          keyword()
+        ) :: {:ok, plan()} | {:error, term()}
+  def plan_asset_windows(context, manifest_version_id, target_id, anchors, opts \\ [])
+
+  def plan_asset_windows(
+        %WorkspaceContext{} = context,
+        manifest_version_id,
+        target_id,
+        anchors,
+        opts
+      )
+      when is_binary(manifest_version_id) and is_binary(target_id) and is_list(anchors) and
+             is_list(opts) do
+    with :ok <- authorize(context),
+         :ok <- validate_options(opts),
+         {:ok, runtime, _version, _asset} <-
+           active_asset(context, manifest_version_id, target_id),
+         {:ok, range} <- exact_range(anchors),
+         :ok <- validate_window_count(range.requested_count, opts),
+         {:ok, selection} <- Selection.backfill(range.anchors, range.timezone) do
+      {:ok, plan_map(runtime.deployment_id, manifest_version_id, target_id, range, selection)}
+    end
+  end
+
+  @doc "Persists an asset backfill from an exact ordered set of canonical windows."
+  @spec submit_asset_windows(
+          WorkspaceContext.t(),
+          String.t(),
+          String.t(),
+          [Anchor.t()],
+          keyword()
+        ) :: {:ok, Backfill.t()} | {:error, term()}
+  def submit_asset_windows(context, manifest_version_id, target_id, anchors, opts \\ [])
+
+  def submit_asset_windows(
+        %WorkspaceContext{} = context,
+        manifest_version_id,
+        target_id,
+        anchors,
+        opts
+      )
+      when is_binary(manifest_version_id) and is_binary(target_id) and is_list(anchors) and
+             is_list(opts) do
+    Lifecycle.with_admission(fn ->
+      with :ok <- authorize(context),
+           :ok <- validate_options(opts),
+           {:ok, runtime, version, asset} <- active_asset(context, manifest_version_id, target_id),
+           {:ok, range} <- exact_range(anchors),
+           :ok <- validate_window_count(range.requested_count, opts),
+           {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
+           submission <-
+             build_submission(
+               context,
+               runtime,
+               version,
+               {:asset, asset},
+               target_id,
+               range,
+               selection,
+               opts
+             ),
+           {:ok, _root} <- ensure_root_run(submission),
+           {:ok, planning} <- start_plan(submission),
+           {:ok, appended} <-
+             append_batches(context, planning, submission.batches, submission.batch_hashes) do
         activate(context, appended)
       end
     end)
@@ -504,6 +581,8 @@ defmodule FavnOrchestrator.Backfills do
     %{
       "asset_module" => asset.ref |> elem(0) |> Atom.to_string(),
       "asset_name" => asset.ref |> elem(1) |> Atom.to_string(),
+      "required_generation" =>
+        encode_required_generation(Keyword.get(opts, :required_generation)),
       "dependencies" => encode_atom(Keyword.get(opts, :dependencies, :all)),
       "refresh" => encode_refresh(Keyword.get(opts, :refresh)),
       "retry_policy" => encode_struct(Keyword.get(opts, :retry_policy)),
@@ -537,6 +616,45 @@ defmodule FavnOrchestrator.Backfills do
     }
   end
 
+  defp exact_range([]), do: {:error, :missing_backfill_windows}
+
+  defp exact_range(anchors) do
+    with {:ok, anchors} <- normalize_anchors(anchors),
+         [first | _rest] <- anchors,
+         last <- List.last(anchors),
+         true <-
+           Enum.all?(anchors, &(&1.kind == first.kind and &1.timezone == first.timezone)),
+         true <- anchors == Enum.sort_by(anchors, &DateTime.to_unix(&1.start_at, :microsecond)),
+         true <- length(anchors) == length(Enum.uniq_by(anchors, &Key.encode(&1.key))) do
+      {:ok,
+       %{
+         kind: first.kind,
+         timezone: first.timezone,
+         anchors: anchors,
+         window_keys: Enum.map(anchors, & &1.key),
+         range_start_at: first.start_at,
+         range_end_at: last.end_at,
+         requested_count: length(anchors),
+         reference: :missing_coverage
+       }}
+    else
+      _invalid -> {:error, :invalid_exact_backfill_windows}
+    end
+  end
+
+  defp normalize_anchors(anchors) do
+    Enum.reduce_while(anchors, {:ok, []}, fn anchor, {:ok, acc} ->
+      case Anchor.from_value(anchor) do
+        {:ok, %Anchor{} = normalized} -> {:cont, {:ok, [normalized | acc]}}
+        {:error, _reason} -> {:halt, {:error, :invalid_exact_backfill_windows}}
+      end
+    end)
+    |> then(fn
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      error -> error
+    end)
+  end
+
   defp validate_window_count(count, opts) do
     max = Keyword.get(opts, :max_windows, @default_max_windows)
 
@@ -567,6 +685,7 @@ defmodule FavnOrchestrator.Backfills do
            validate_optional_id(opts, :root_run_id, :invalid_backfill_root_run_id),
          :ok <- validate_idempotency(Keyword.get(opts, :idempotency)),
          :ok <- validate_metadata(Keyword.get(opts, :metadata, %{})),
+         :ok <- validate_required_generation(Keyword.get(opts, :required_generation)),
          :ok <- validate_timeout(Keyword.get(opts, :timeout_ms)),
          :ok <- validate_dependencies(Keyword.get(opts, :dependencies, :all)) do
       validate_retry_policy(Keyword.get(opts, :retry_policy))
@@ -580,6 +699,7 @@ defmodule FavnOrchestrator.Backfills do
       :idempotency,
       :max_windows,
       :metadata,
+      :required_generation,
       :dependencies,
       :refresh,
       :retry_policy,
@@ -605,6 +725,21 @@ defmodule FavnOrchestrator.Backfills do
 
   defp validate_metadata(value) when is_map(value), do: :ok
   defp validate_metadata(_value), do: {:error, :invalid_backfill_metadata}
+
+  defp validate_required_generation(nil), do: :ok
+
+  defp validate_required_generation(%{
+         target_id: target_id,
+         evidence_generation_id: evidence_generation_id,
+         target_generation_id: target_generation_id
+       }) do
+    if valid_id?(target_id) and valid_id?(evidence_generation_id) and
+         (is_nil(target_generation_id) or target_generation_id == evidence_generation_id),
+       do: :ok,
+       else: {:error, :invalid_required_generation}
+  end
+
+  defp validate_required_generation(_value), do: {:error, :invalid_required_generation}
 
   defp validate_timeout(nil), do: :ok
   defp validate_timeout(value) when is_integer(value) and value > 0, do: :ok
@@ -634,6 +769,16 @@ defmodule FavnOrchestrator.Backfills do
   defp encode_atom(nil), do: nil
   defp encode_atom(value) when is_atom(value), do: Atom.to_string(value)
   defp encode_atom(value), do: value
+
+  defp encode_required_generation(nil), do: nil
+
+  defp encode_required_generation(generation) do
+    %{
+      "target_id" => generation.target_id,
+      "evidence_generation_id" => generation.evidence_generation_id,
+      "target_generation_id" => generation.target_generation_id
+    }
+  end
 
   defp encode_refresh({:force_assets, refs}) when is_list(refs),
     do: %{

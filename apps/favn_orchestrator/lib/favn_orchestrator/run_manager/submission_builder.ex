@@ -542,14 +542,20 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     Planner.plan(targets, opts)
   end
 
-  defp pin_plan(%SubmissionOptions{workspace_id: workspace_id}, version, index, plan)
+  defp pin_plan(
+         %SubmissionOptions{workspace_id: workspace_id, required_generation: required_generation},
+         version,
+         index,
+         plan
+       )
        when is_binary(workspace_id) do
     TargetGenerations.pin_plan(
       SystemContext.workspace(workspace_id, :run_generation_planning),
       version,
       index,
       plan,
-      DateTime.utc_now()
+      DateTime.utc_now(),
+      required_generation: required_generation
     )
   end
 
