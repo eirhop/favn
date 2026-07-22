@@ -219,8 +219,8 @@ Local setup:
 | --- | --- |
 | `mix favn.init` | Generate local Favn files and optional samples. |
 | `mix favn.doctor` | Check local configuration. |
-| `mix favn.install` | Prepare the local runtime workspace. |
-| `mix favn.dev` | Start local runtime processes. |
+| `mix favn.install` | Verify Docker/Compose and install the prebuilt control-plane digest. |
+| `mix favn.dev` | Start PostgreSQL, control plane, and runner as Compose services. |
 | `mix favn.stop` | Stop the local runtime stack. |
 
 Run and inspect work:
@@ -252,10 +252,6 @@ Packaging commands:
 | `mix favn.build.manifest --runner-release PATH` | Build a manifest-only release after proving exact runner alignment. |
 | `mix favn.publish --manifest PATH` | Publish missing packages and stage one immutable manifest. |
 | `mix favn.activate --manifest-version ID --workspace-id ID` | Activate an exact staged manifest after runner verification. |
-| `mix favn.build.web` | Build web artifact metadata/output. |
-| `mix favn.build.orchestrator` | Build orchestrator artifact metadata/output. |
-| `mix favn.build.single` | Build the single-node local deployment artifact. |
-| `mix favn.bootstrap.single` | Bootstrap a single-node backend from a manifest JSON file. |
 
 ## Common Rules
 

@@ -79,11 +79,10 @@ The stable `v1` API should focus on the parts users build authored projects on:
 load `.env` before consumer runtime config and start only the SQL runtime before
 connecting. They do not start the consumer app or configured plugins.
 
-Packaging commands such as `mix favn.build.runner`, `mix favn.build.web`,
-`mix favn.build.orchestrator`, and `mix favn.build.single` are public command
-entrypoints, but their production artifact behavior is still being hardened and
-should follow `docs/production/single_node_contract.md` before being described as
-fully production-stable.
+The public deployment command surface is `mix favn.build.runner`,
+`mix favn.build.manifest`, `mix favn.publish`, and `mix favn.activate`. Favn
+publishes the control-plane image; the customer builds and publishes the runner
+image from the generated immutable OCI context.
 
 ## Authoring APIs
 
@@ -112,8 +111,8 @@ external contract.
 
 - `docs/architecture/postgresql-control-plane-storage-v2.md` defines production
   persistence and the multi-node runtime foundation.
-- `docs/production/single_node_contract.md` defines the PostgreSQL-backed
-  one-node developer and controlled-deployment topology.
+- `docs/production/README.md` routes the PostgreSQL-backed production topology,
+  image, environment, and operator contracts.
 - `docs/FEATURES.md` tracks implemented behavior and maturity labels.
 - `docs/ROADMAP.md` tracks remaining implementation work to align code, tests,
   examples, and publishing with this boundary.

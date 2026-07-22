@@ -101,10 +101,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   fingerprint alignment. `publish` stages content-addressed artifacts and
   `activate` selects one exact version for one workspace using a service token
   read only from the environment.
-- `build.single` creates an operational but project-local, non-relocatable backend
-  launcher containing orchestrator, scheduler, and one runner.
-- Docker-first installation and Compose lifecycle replacement of the older local
-  source launcher are still in progress.
+- `mix favn.install` resolves the version-matched prebuilt control plane to an
+  immutable digest. `mix favn.dev` runs PostgreSQL, that control plane, and the
+  customer-built runner as project-scoped Docker Compose services.
 
 ## Operator web UI
 
@@ -119,8 +118,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 
 ## Production limits
 
-- The relocatable control-plane and runner artifacts exist, but the complete
-  Docker Compose and production-container acceptance evidence is not yet finished.
+- The first supported topology is one control-plane node and one runner node on
+  a trusted private network. Multi-node control-plane/runner scaling is deferred.
+- Secrets are environment-only and rotate through an operator-controlled restart.
 - PostgreSQL production-size restore, provider PITR, failover/load evidence,
   dashboards, and alert wiring remain release gates.
 - PostgreSQL backup does not recover DuckDB files, DuckLake metadata, object

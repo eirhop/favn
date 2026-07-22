@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.Diagnostics do
   @moduledoc """
-  Operator-facing diagnostics for the single-node orchestrator runtime.
+  Operator-facing diagnostics for the orchestrator inside the control-plane
+  runtime.
   """
 
   alias FavnOrchestrator.ManifestStore

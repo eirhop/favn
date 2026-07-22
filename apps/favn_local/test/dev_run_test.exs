@@ -4,7 +4,7 @@ defmodule Favn.Dev.RunTest do
   alias Favn.Dev
   alias Favn.Dev.Run
   alias Favn.Dev.Runs
-  alias Favn.Dev.State
+  alias Favn.Local.ComposeSessionFixture
 
   setup do
     root_dir =
@@ -81,20 +81,7 @@ defmodule Favn.Dev.RunTest do
         {200, ~s({"data":{"run":{"id":"run_1","status":"ok","manifest_version_id":"mv_1"}}})}
       ])
 
-    pid = :os.getpid() |> List.to_string() |> String.to_integer()
-
-    assert :ok =
-             State.write_runtime(
-               %{
-                 "orchestrator_base_url" => base_url,
-                 "services" => %{
-                   "web" => %{"pid" => pid},
-                   "orchestrator" => %{"pid" => pid},
-                   "runner" => %{"pid" => pid}
-                 }
-               },
-               root_dir: root_dir
-             )
+    assert :ok = write_running_runtime!(root_dir, base_url)
 
     assert {:ok, %{"id" => "run_1", "status" => "ok"}} =
              Dev.run_pipeline(MyApp.Pipeline,
@@ -332,20 +319,7 @@ defmodule Favn.Dev.RunTest do
          ~s({"error":{"code":"validation_failed","message":"Pipeline requires an explicit month window"}})}
       ])
 
-    pid = :os.getpid() |> List.to_string() |> String.to_integer()
-
-    assert :ok =
-             State.write_runtime(
-               %{
-                 "orchestrator_base_url" => base_url,
-                 "services" => %{
-                   "web" => %{"pid" => pid},
-                   "orchestrator" => %{"pid" => pid},
-                   "runner" => %{"pid" => pid}
-                 }
-               },
-               root_dir: root_dir
-             )
+    assert :ok = write_running_runtime!(root_dir, base_url)
 
     assert {:error, {:orchestrator_validation_failed, "validation_failed"}} =
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
@@ -452,20 +426,7 @@ defmodule Favn.Dev.RunTest do
   end
 
   defp write_running_runtime!(root_dir, base_url) do
-    pid = :os.getpid() |> List.to_string() |> String.to_integer()
-
-    assert :ok =
-             State.write_runtime(
-               %{
-                 "orchestrator_base_url" => base_url,
-                 "services" => %{
-                   "web" => %{"pid" => pid},
-                   "orchestrator" => %{"pid" => pid},
-                   "runner" => %{"pid" => pid}
-                 }
-               },
-               root_dir: root_dir
-             )
+    ComposeSessionFixture.put!(root_dir, base_url)
   end
 
   defp submit_idempotency_key do

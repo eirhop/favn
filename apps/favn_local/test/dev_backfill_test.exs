@@ -2,7 +2,7 @@ defmodule Favn.Dev.BackfillTest do
   use ExUnit.Case, async: true
 
   alias Favn.Dev.Backfill
-  alias Favn.Dev.State
+  alias Favn.Local.ComposeSessionFixture
 
   setup do
     root_dir =
@@ -272,22 +272,7 @@ defmodule Favn.Dev.BackfillTest do
   end
 
   defp write_running_state(root_dir, base_url) do
-    pid = :os.getpid() |> List.to_string() |> String.to_integer()
-
-    assert :ok =
-             State.write_runtime(
-               %{
-                 "orchestrator_base_url" => base_url,
-                 "services" => %{
-                   "web" => %{"pid" => pid},
-                   "orchestrator" => %{"pid" => pid},
-                   "runner" => %{"pid" => pid}
-                 }
-               },
-               root_dir: root_dir
-             )
-
-    :ok
+    ComposeSessionFixture.put!(root_dir, base_url)
   end
 
   defp start_server(responses, opts) when is_list(responses) do

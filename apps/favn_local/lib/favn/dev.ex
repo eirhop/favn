@@ -27,7 +27,7 @@ defmodule Favn.Dev do
   - `inspect_relation/2`, `inspect_partitions/2`, `query/2`: inspect local SQL data
   - `init/1`: generate a local DuckDB sample project scaffold
   - `doctor/1`: validate local project setup before running
-  - `dev/1`: start a local runner process plus one operator process for orchestrator and web
+  - `dev/1`: start the production-like local Docker Compose topology
   - `status/1`: inspect current stack state
   - `diagnostics/1`: fetch service-authenticated operator diagnostics
   - `reload/1`: rebuild and republish the manifest
@@ -36,8 +36,6 @@ defmodule Favn.Dev do
     and control local runs through HTTP APIs
   - `build_runner/1`, `build_manifest/1`: immutable runner and aligned manifest releases
   - `publish/1`, `activate/1`: topology-neutral staged deployment operations
-  - legacy packaging/bootstrap functions remain only until Docker-first local
-    lifecycle replacement is complete
 
   See `apps/favn_local/README.md` for the full local-tooling contract and `.favn/`
   layout details.
@@ -45,11 +43,7 @@ defmodule Favn.Dev do
 
   alias Favn.Dev.Backfill
   alias Favn.Dev.Activate
-  alias Favn.Dev.Bootstrap.Single, as: SingleBootstrap
-  alias Favn.Dev.Build.Orchestrator, as: OrchestratorBuild
   alias Favn.Dev.Build.Runner, as: RunnerBuild
-  alias Favn.Dev.Build.Single, as: SingleBuild
-  alias Favn.Dev.Build.Web, as: WebBuild
   alias Favn.Dev.ComposeLifecycle
   alias Favn.Dev.DataInspection
   alias Favn.Dev.Doctor
@@ -136,30 +130,6 @@ defmodule Favn.Dev do
   @doc "Activates one exact staged manifest for one workspace."
   @spec activate(keyword()) :: {:ok, map()} | {:error, term()}
   def activate(opts) when is_list(opts), do: Activate.run(opts)
-
-  @doc """
-  Builds the project-local web packaging target.
-  """
-  @spec build_web(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
-  def build_web(opts \\ []) when is_list(opts), do: WebBuild.run(opts)
-
-  @doc """
-  Builds the project-local orchestrator packaging target.
-  """
-  @spec build_orchestrator(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
-  def build_orchestrator(opts \\ []) when is_list(opts), do: OrchestratorBuild.run(opts)
-
-  @doc """
-  Builds the project-local single-node assembly target.
-  """
-  @spec build_single(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
-  def build_single(opts \\ []) when is_list(opts), do: SingleBuild.run(opts)
-
-  @doc """
-  Bootstraps a single-node backend through orchestrator HTTP APIs.
-  """
-  @spec bootstrap_single(keyword()) :: {:ok, map()} | {:error, term()}
-  def bootstrap_single(opts \\ []) when is_list(opts), do: SingleBootstrap.run(opts)
 
   @doc """
   Starts local stack in foreground mode.

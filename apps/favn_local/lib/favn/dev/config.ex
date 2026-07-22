@@ -4,66 +4,28 @@ defmodule Favn.Dev.Config do
   """
 
   @enforce_keys [
-    :postgres,
     :workspace_id,
-    :orchestrator_api_enabled,
     :orchestrator_port,
     :web_port,
-    :orchestrator_base_url,
-    :web_base_url,
-    :scheduler_enabled,
-    :service_token,
-    :web_session_secret
+    :scheduler_enabled
   ]
   defstruct [
-    :postgres,
     :workspace_id,
-    :orchestrator_api_enabled,
     :orchestrator_port,
     :web_port,
-    :orchestrator_base_url,
-    :web_base_url,
-    :scheduler_enabled,
-    :service_token,
-    :web_session_secret
+    :scheduler_enabled
   ]
 
-  @type postgres_opts :: %{
-          hostname: String.t(),
-          port: pos_integer(),
-          username: String.t(),
-          password: String.t(),
-          database: String.t(),
-          ssl: boolean(),
-          pool_size: pos_integer(),
-          url: String.t()
-        }
-
   @type t :: %__MODULE__{
-          postgres: postgres_opts(),
           workspace_id: String.t(),
-          orchestrator_api_enabled: boolean(),
           orchestrator_port: pos_integer(),
           web_port: pos_integer(),
-          orchestrator_base_url: String.t(),
-          web_base_url: String.t(),
-          scheduler_enabled: boolean(),
-          service_token: String.t() | nil,
-          web_session_secret: String.t() | nil
+          scheduler_enabled: boolean()
         }
 
   @typedoc "Keyword overrides used by local tooling tasks."
   @type opts :: keyword()
 
-  @default_postgres %{
-    hostname: "127.0.0.1",
-    port: 5432,
-    username: "postgres",
-    password: "postgres",
-    database: "favn",
-    ssl: false,
-    pool_size: 10
-  }
   @default_orchestrator_port 4101
   @default_web_port 4173
 
@@ -86,63 +48,13 @@ defmodule Favn.Dev.Config do
       |> Keyword.get(:web_port, @default_web_port)
       |> normalize_int(@default_web_port)
 
-    postgres =
-      case Keyword.fetch(merged, :postgres) do
-        {:ok, explicit} -> explicit
-        :error -> Map.put(@default_postgres, :url, System.get_env("FAVN_DATABASE_URL"))
-      end
-
     %__MODULE__{
-      postgres: normalize_postgres(postgres),
       workspace_id: normalize_workspace_id(Keyword.get(merged, :workspace_id, "local-dev")),
-      orchestrator_api_enabled: Keyword.get(merged, :orchestrator_api_enabled, true),
       orchestrator_port: orchestrator_port,
       web_port: web_port,
-      orchestrator_base_url:
-        Keyword.get(merged, :orchestrator_base_url, "http://127.0.0.1:#{orchestrator_port}"),
-      web_base_url: Keyword.get(merged, :web_base_url, "http://127.0.0.1:#{web_port}"),
-      scheduler_enabled: normalize_bool(Keyword.get(merged, :scheduler, false), false),
-      service_token: Keyword.get(merged, :service_token),
-      web_session_secret: Keyword.get(merged, :web_session_secret)
+      scheduler_enabled: normalize_bool(Keyword.get(merged, :scheduler, false), false)
     }
   end
-
-  defp normalize_postgres(value) when is_list(value),
-    do: value |> Enum.into(%{}) |> normalize_postgres()
-
-  defp normalize_postgres(value) when is_map(value) do
-    map = for {k, v} <- value, into: %{}, do: {normalize_postgres_key(k), v}
-    url = postgres_url(map)
-    uri = URI.parse(url)
-
-    %{
-      hostname: uri.host || to_string(Map.get(map, :hostname, @default_postgres.hostname)),
-      port: uri.port || normalize_int(Map.get(map, :port), @default_postgres.port),
-      username: to_string(Map.get(map, :username, @default_postgres.username)),
-      password: to_string(Map.get(map, :password, @default_postgres.password)),
-      database: to_string(Map.get(map, :database, @default_postgres.database)),
-      ssl: normalize_bool(Map.get(map, :ssl, @default_postgres.ssl), @default_postgres.ssl),
-      pool_size:
-        normalize_int(
-          Map.get(map, :pool_size, @default_postgres.pool_size),
-          @default_postgres.pool_size
-        ),
-      url: url
-    }
-  end
-
-  defp normalize_postgres(_other), do: @default_postgres
-
-  defp normalize_postgres_key(key) when is_atom(key), do: key
-  defp normalize_postgres_key("hostname"), do: :hostname
-  defp normalize_postgres_key("port"), do: :port
-  defp normalize_postgres_key("username"), do: :username
-  defp normalize_postgres_key("password"), do: :password
-  defp normalize_postgres_key("database"), do: :database
-  defp normalize_postgres_key("ssl"), do: :ssl
-  defp normalize_postgres_key("pool_size"), do: :pool_size
-  defp normalize_postgres_key("url"), do: :url
-  defp normalize_postgres_key(_key), do: :unknown
 
   defp normalize_int(value, _default) when is_integer(value) and value > 0, do: value
 
@@ -170,24 +82,4 @@ defmodule Favn.Dev.Config do
   defp normalize_workspace_id(_value),
     do: raise(ArgumentError, "local workspace_id must be a string")
 
-  defp postgres_url(map) do
-    case Map.get(map, :url) do
-      url when is_binary(url) and url != "" ->
-        url
-
-      _missing ->
-        username = Map.get(map, :username, @default_postgres.username) |> encode_url_component()
-        password = Map.get(map, :password, @default_postgres.password) |> encode_url_component()
-        hostname = Map.get(map, :hostname, @default_postgres.hostname)
-        port = normalize_int(Map.get(map, :port, @default_postgres.port), @default_postgres.port)
-        database = Map.get(map, :database, @default_postgres.database) |> encode_url_component()
-        "ecto://#{username}:#{password}@#{hostname}:#{port}/#{database}"
-    end
-  end
-
-  defp encode_url_component(value) do
-    value
-    |> to_string()
-    |> URI.encode(&URI.char_unreserved?/1)
-  end
 end

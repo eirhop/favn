@@ -16,8 +16,8 @@ or backfill child. The orchestrator records the run before the runner starts
 execution.
 
 For production database startup, backup, and restore, use
-`docs/production/postgresql_operator_runbook.md`. The single-node launcher adds
-only the process steps in `docs/production/single_node_operator_runbook.md`.
+`docs/production/postgresql_operator_runbook.md`. Image deployment, upgrade,
+and rollback procedures are in `docs/production/control_plane_image.md`.
 
 ## Assumptions
 
@@ -225,8 +225,9 @@ If readiness fails, fix the failing check before submitting more work. If an
 operation has an unknown outcome, re-read run state and diagnostics before retrying
 so you do not create duplicate work.
 
-Production command examples are in
-`docs/production/single_node_operator_runbook.md`.
+Production deployment commands are documented in
+`docs/production/control_plane_image.md` and
+`docs/production/postgresql_operator_runbook.md`.
 
 ## Boundaries To Preserve
 

@@ -61,13 +61,15 @@ mix favn.doctor
 
 Fix any reported config or dependency issues before continuing.
 
-## 4. Install Local Runtime Files
+## 4. Install The Local Compose Application
 
 ```bash
 mix favn.install
 ```
 
-This prepares Favn's local runtime workspace under `.favn/install`.
+This verifies Docker Engine and Compose v2, resolves the version-matched
+prebuilt control-plane image to an immutable digest, and writes project-scoped
+Compose state under `.favn/`. It does not compile the control plane.
 
 ## 5. Start Favn Locally
 

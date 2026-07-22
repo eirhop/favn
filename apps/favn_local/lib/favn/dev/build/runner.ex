@@ -26,8 +26,7 @@ defmodule Favn.Dev.Build.Runner do
     :runner_build,
     :runner_plugins,
     :skip_compile,
-    :skip_project_root_check,
-    :skip_tool_checks
+    :skip_project_root_check
   ]
 
   @type result :: %{

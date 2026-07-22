@@ -224,9 +224,7 @@ defmodule Favn.AI do
     `mix favn.runs`, `mix favn.status`, `mix favn.logs`, `mix favn.inspect`,
     `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
     `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
-    `mix favn.build.manifest`, `mix favn.publish`, `mix favn.activate`,
-    `mix favn.build.web`, `mix favn.build.orchestrator`,
-    `mix favn.build.single`, `mix favn.bootstrap.single`, and
+    `mix favn.build.manifest`, `mix favn.publish`, `mix favn.activate`, and
     `mix favn.read_doc`. Dev and reload load the project `.env` before evaluating
     `config/runtime.exs`; existing shell values take precedence.
     `mix favn.run` resolves asset and pipeline targets from the active manifest.

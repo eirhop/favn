@@ -1,8 +1,7 @@
 defmodule Favn.Dev.Publish do
   @moduledoc "Publishes one immutable manifest release as staged/inactive."
 
-  alias Favn.Dev.Bootstrap.Single
-  alias Favn.Dev.OrchestratorClient
+  alias Favn.Dev.{ManifestPublication, OrchestratorClient}
 
   @type summary :: %{
           manifest_version_id: String.t(),
@@ -18,7 +17,7 @@ defmodule Favn.Dev.Publish do
     with {:ok, manifest_path} <- required(opts, :manifest_path),
          {:ok, orchestrator_url} <- required(opts, :orchestrator_url),
          {:ok, service_token} <- required_env(env, "FAVN_ORCHESTRATOR_SERVICE_TOKEN"),
-         {:ok, publication} <- Single.read_manifest_publication(manifest_path),
+         {:ok, publication} <- ManifestPublication.read(manifest_path),
          {:ok, response} <-
            client.publish_manifest(
              orchestrator_url,

@@ -155,9 +155,6 @@ defmodule Mix.Tasks.Favn.Runs do
 
   defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
 
-  defp error_message(:stack_not_healthy),
-    do: "stack not healthy; use mix favn.stop then mix favn.dev"
-
   defp error_message(reason), do: "run inspection failed: #{inspect(reason)}"
 
   defp cancel_error_message({:invalid_option, :timeout_ms}),
@@ -179,7 +176,6 @@ defmodule Mix.Tasks.Favn.Runs do
   end
 
   defp cancel_error_message(:stack_not_running), do: error_message(:stack_not_running)
-  defp cancel_error_message(:stack_not_healthy), do: error_message(:stack_not_healthy)
   defp cancel_error_message(reason), do: "run cancellation failed: #{inspect(reason)}"
 
   defp operation_label(operation) when is_atom(operation),

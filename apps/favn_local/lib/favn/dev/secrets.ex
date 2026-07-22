@@ -2,7 +2,6 @@ defmodule Favn.Dev.Secrets do
   @moduledoc false
 
   alias Favn.Dev.Config
-  alias Favn.Dev.DistributedErlang
   alias Favn.Dev.State
 
   @schema_version 2
@@ -10,14 +9,12 @@ defmodule Favn.Dev.Secrets do
   @type root_opt :: [root_dir: Path.t()]
 
   @spec resolve(Config.t(), root_opt()) :: {:ok, map()} | {:error, term()}
-  def resolve(%Config{} = config, opts \\ []) when is_list(opts) do
+  def resolve(%Config{}, opts \\ []) when is_list(opts) do
     with :ok <- State.ensure_layout(opts),
          {:ok, stored} <- read_or_initialize(opts),
          :ok <- validate(stored),
-         secrets <- apply_configured_overrides(stored, config),
-         :ok <- validate(secrets),
-         :ok <- persist(secrets, opts) do
-      {:ok, Map.drop(secrets, ["schema_version"])}
+         :ok <- persist(stored, opts) do
+      {:ok, Map.drop(stored, ["schema_version"])}
     end
   end
 
@@ -61,15 +58,6 @@ defmodule Favn.Dev.Secrets do
     |> Map.put_new_lazy("bootstrap_password", fn -> random_secret(32) end)
   end
 
-  defp apply_configured_overrides(secrets, config) do
-    secrets
-    |> maybe_put("service_token", config.service_token)
-    |> maybe_put("web_session_secret", config.web_session_secret)
-  end
-
-  defp maybe_put(secrets, _key, nil), do: secrets
-  defp maybe_put(secrets, key, value), do: Map.put(secrets, key, value)
-
   defp validate(secrets) do
     with token when is_binary(token) and token != "" <- secrets["service_token"],
          session when is_binary(session) and byte_size(session) >= 32 <-
@@ -82,11 +70,16 @@ defmodule Favn.Dev.Secrets do
            secrets["postgres_runtime_password"],
          bootstrap when is_binary(bootstrap) and byte_size(bootstrap) >= 15 <-
            secrets["bootstrap_password"],
-         :ok <- DistributedErlang.validate_cookie(secrets["rpc_cookie"]) do
+         cookie when is_binary(cookie) <- secrets["rpc_cookie"],
+         true <- valid_cookie?(cookie) do
       :ok
     else
       _invalid -> {:error, :invalid_local_secrets}
     end
+  end
+
+  defp valid_cookie?(cookie) do
+    byte_size(cookie) in 1..255 and String.match?(cookie, ~r/\A[A-Za-z0-9_]+\z/)
   end
 
   defp persist(secrets, opts) do

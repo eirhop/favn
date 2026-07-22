@@ -534,7 +534,6 @@ defmodule Favn.Dev.Build.RunnerTest do
              Dev.build_runner(
                root_dir: root_dir,
                skip_compile: true,
-               skip_tool_checks: true,
                skip_project_root_check: true
              )
   end
@@ -719,7 +718,6 @@ defmodule Favn.Dev.Build.RunnerTest do
              Dev.build_runner(
                root_dir: root_dir,
                skip_compile: true,
-               skip_tool_checks: true,
                allow_non_prod_build: true
              )
   end
@@ -743,7 +741,6 @@ defmodule Favn.Dev.Build.RunnerTest do
         [
           root_dir: root_dir,
           skip_compile: true,
-          skip_tool_checks: true,
           skip_project_root_check: true,
           allow_non_prod_build: true,
           allow_unpinned_favn: true,

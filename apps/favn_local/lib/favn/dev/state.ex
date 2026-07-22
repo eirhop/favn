@@ -24,15 +24,11 @@ defmodule Favn.Dev.State do
       Paths.install_dir(root_dir),
       Paths.compose_dir(root_dir),
       Paths.build_dir(root_dir),
-      Paths.build_target_dir(root_dir, "web"),
-      Paths.build_target_dir(root_dir, "orchestrator"),
+      Paths.build_target_dir(root_dir, "control-plane"),
       Paths.build_target_dir(root_dir, "runner"),
-      Paths.build_target_dir(root_dir, "single"),
       Paths.dist_dir(root_dir),
-      Paths.dist_target_dir(root_dir, "web"),
-      Paths.dist_target_dir(root_dir, "orchestrator"),
       Paths.dist_target_dir(root_dir, "runner"),
-      Paths.dist_target_dir(root_dir, "single"),
+      Paths.dist_target_dir(root_dir, "manifest"),
       Paths.data_dir(root_dir),
       Paths.manifests_dir(root_dir),
       Paths.manifest_cache_dir(root_dir),
@@ -134,42 +130,6 @@ defmodule Favn.Dev.State do
       |> Paths.root_dir()
       |> Paths.runner_latest_path()
       |> write_json(runner)
-    end
-  end
-
-  @spec read_install_runtime(root_opt()) :: {:ok, map()} | {:error, read_error()}
-  def read_install_runtime(opts \\ []) when is_list(opts) do
-    opts
-    |> Paths.root_dir()
-    |> Paths.install_runtime_path()
-    |> read_json()
-  end
-
-  @spec write_install_runtime(map(), root_opt()) :: :ok | {:error, term()}
-  def write_install_runtime(runtime, opts \\ []) when is_map(runtime) and is_list(opts) do
-    with :ok <- ensure_layout(opts) do
-      opts
-      |> Paths.root_dir()
-      |> Paths.install_runtime_path()
-      |> write_json(runtime)
-    end
-  end
-
-  @spec read_toolchain(root_opt()) :: {:ok, map()} | {:error, read_error()}
-  def read_toolchain(opts \\ []) when is_list(opts) do
-    opts
-    |> Paths.root_dir()
-    |> Paths.toolchain_path()
-    |> read_json()
-  end
-
-  @spec write_toolchain(map(), root_opt()) :: :ok | {:error, term()}
-  def write_toolchain(toolchain, opts \\ []) when is_map(toolchain) and is_list(opts) do
-    with :ok <- ensure_layout(opts) do
-      opts
-      |> Paths.root_dir()
-      |> Paths.toolchain_path()
-      |> write_json(toolchain)
     end
   end
 

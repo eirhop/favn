@@ -93,9 +93,6 @@ defmodule Mix.Tasks.Favn.Run do
 
   def error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
 
-  def error_message(:stack_not_healthy),
-    do: "stack not healthy; use mix favn.stop then mix favn.dev"
-
   def error_message({:run_wait_timeout, run_id, timeout_ms}) do
     "local wait timed out after #{timeout_ms}ms while run #{run_id} is still in flight; " <>
       "check status with mix favn.status or rerun with a larger --wait-timeout-ms"

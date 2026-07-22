@@ -220,10 +220,11 @@ defmodule Favn.Dev.ComposeLifecycle do
   @doc "Reads bounded, prefixed service logs through Docker Compose."
   @spec logs(keyword()) :: :ok | {:error, term()}
   def logs(opts \\ []) when is_list(opts) do
-    with {:ok, project} <- project_from_state(opts) do
+    with {:ok, project} <- project_from_state(opts),
+         {:ok, services} <- selected_services(opts) do
       args = ["logs", "--tail", Integer.to_string(log_tail(opts)), "--no-color"]
       args = if Keyword.get(opts, :follow, false), do: args ++ ["--follow"], else: args
-      args = args ++ selected_services(opts)
+      args = args ++ services
 
       {output, status} =
         Docker.compose(
@@ -1267,16 +1268,19 @@ defmodule Favn.Dev.ComposeLifecycle do
   defp selected_services(opts) do
     case Keyword.get(opts, :service, :all) do
       :postgres ->
-        ["postgres"]
+        {:ok, ["postgres"]}
 
       :runner ->
-        ["runner"]
+        {:ok, ["runner"]}
 
-      service when service in [:operator, :web, :orchestrator, :control_plane] ->
-        ["control-plane"]
+      :control_plane ->
+        {:ok, ["control-plane"]}
 
-      _other ->
-        @services
+      :all ->
+        {:ok, @services}
+
+      unsupported ->
+        {:error, {:invalid_service, unsupported}}
     end
   end
 

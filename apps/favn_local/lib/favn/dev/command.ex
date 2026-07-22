@@ -1,7 +1,7 @@
 defmodule Favn.Dev.Command do
   @moduledoc false
 
-  alias Favn.Dev.Process, as: DevProcess
+  alias Favn.Dev.CommandTermination
 
   @default_timeout_ms 300_000
   @max_output_bytes 64 * 1024
@@ -80,7 +80,7 @@ defmodule Favn.Dev.Command do
 
   defp terminate(port) do
     case Port.info(port, :os_pid) do
-      {:os_pid, pid} when is_integer(pid) and pid > 0 -> DevProcess.stop_pid(pid, 1_000)
+      {:os_pid, pid} when is_integer(pid) and pid > 0 -> CommandTermination.stop(pid)
       _other -> :ok
     end
 

@@ -64,15 +64,6 @@ defmodule Mix.Tasks.Favn.Logs do
       nil ->
         opts
 
-      "operator" ->
-        Keyword.put(opts, :service, :operator)
-
-      "web" ->
-        Keyword.put(opts, :service, :web)
-
-      "orchestrator" ->
-        Keyword.put(opts, :service, :orchestrator)
-
       "runner" ->
         Keyword.put(opts, :service, :runner)
 
@@ -129,9 +120,6 @@ defmodule Mix.Tasks.Favn.Logs do
   defp atom_key("asset_ref"), do: :asset_ref
 
   defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
-
-  defp error_message(:stack_not_healthy),
-    do: "stack not healthy; use mix favn.stop then mix favn.dev"
 
   defp error_message(reason), do: "run events unavailable: #{inspect(reason)}"
 end

@@ -44,10 +44,5 @@ defmodule Mix.Tasks.Favn.Diagnostics do
     IO.puts("runtime: #{inspect(report["runtime"], limit: 50, printable_limit: 4_096)}")
   end
 
-  defp error_message(:stack_not_running), do: "local stack is not running; run mix favn.dev first"
-
-  defp error_message(:orchestrator_not_running),
-    do: "local orchestrator is not running; run mix favn.status for details"
-
   defp error_message(reason), do: inspect(reason)
 end

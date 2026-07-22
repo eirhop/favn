@@ -1,7 +1,7 @@
 defmodule Favn.Dev.InstallTest do
   use ExUnit.Case, async: true
 
-  alias Favn.Dev.{Install, Lock, Paths, State}
+  alias Favn.Dev.{Install, Lock, State}
 
   @version "0.5.0-dev"
   @build_id String.duplicate("a", 64)
@@ -74,7 +74,7 @@ defmodule Favn.Dev.InstallTest do
     refute compose =~ "4369:4369"
     refute compose =~ "9100:9100"
     refute compose =~ root_dir
-    refute File.exists?(Paths.install_runtime_root_dir(root_dir))
+    refute File.exists?(Path.join(root_dir, ".favn/install/runtime_root"))
 
     env_path = project["env_path"]
     assert Bitwise.band(File.stat!(env_path).mode, 0o777) == 0o600

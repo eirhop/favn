@@ -509,6 +509,25 @@ defmodule Favn.Dev.ComposeLifecycleTest do
            end)
   end
 
+  test "logs accepts only services in the installed Compose topology", context do
+    opts = lifecycle_opts(context)
+
+    assert :ok = ComposeLifecycle.logs(Keyword.put(opts, :service, :control_plane))
+
+    assert Enum.any?(commands(context.state), fn command ->
+             command_suffix?(command, [
+               "logs",
+               "--tail",
+               "100",
+               "--no-color",
+               "control-plane"
+             ])
+           end)
+
+    assert {:error, {:invalid_service, :orchestrator}} =
+             ComposeLifecycle.logs(Keyword.put(opts, :service, :orchestrator))
+  end
+
   test "start rejects full and partial running stacks before runtime mutation", context do
     {:ok, install} = State.read_install(root_dir: context.root_dir)
     env_path = install["compose"]["env_path"]

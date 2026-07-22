@@ -16,11 +16,12 @@ Tests:
   package-boundary check while full fresh-project dependency resolution runs in
   the `:slow` tier
 - public Mix task tests under `apps/favn/test/mix_tasks/`
-- bootstrap and diagnostics task argument/default coverage in `apps/favn/test/mix_tasks/public_tasks_test.exs`
+- lifecycle, deployment, and diagnostics task argument coverage in
+  `apps/favn/test/mix_tasks/public_tasks_test.exs`
 
 Use when changing public APIs, public docs breadcrumbs, public SQL client access,
 or public Mix task argument/dispatch behavior, including `mix favn.runs cancel`,
-`mix favn.bootstrap.single`, and `mix favn.diagnostics`.
+`mix favn.publish`, `mix favn.activate`, and `mix favn.diagnostics`.
 
 Public SQL output-contract authoring is documented in
 `apps/favn/guides/sql-output-contracts.md` and routed from `Favn.AI`.

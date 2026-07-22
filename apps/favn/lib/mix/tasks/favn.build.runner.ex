@@ -50,16 +50,6 @@ defmodule Mix.Tasks.Favn.Build.Runner do
       {:error, {:missing_tool, tool}} ->
         Mix.raise("build blocked: missing required tool #{tool}; run mix favn.install")
 
-      {:error, {:tool_check_failed, tool, status, output}} ->
-        Mix.raise(
-          "build blocked: required tool #{tool} check failed (status=#{status}): #{output}; rerun mix favn.install"
-        )
-
-      {:error, :missing_install_runtime_input} ->
-        Mix.raise(
-          "build blocked: install runtime input missing; run mix favn.install to refresh, or mix favn.install --force to rebuild"
-        )
-
       {:error, {:unsupported_root_dir, requested, current}} ->
         Mix.raise(
           "runner build is rooted in the current Mix project only; got --root-dir=#{requested}, current=#{current}"

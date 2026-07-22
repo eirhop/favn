@@ -8,8 +8,8 @@ validation starts neither supervision tree. The release evaluates
 `config/runtime.exs` to enable this loader; that file does not parse deployment
 values itself.
 
-PostgreSQL is the only production persistence composition. There is no storage
-selector and `FAVN_STORAGE` has no meaning.
+PostgreSQL is the only production persistence composition; the runtime exposes
+no storage selector.
 
 ## PostgreSQL and durable secrets
 

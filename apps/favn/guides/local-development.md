@@ -31,17 +31,15 @@ mix favn.stop
 | --- | --- | --- |
 | `mix favn.init --duckdb --sample` | Generate local Favn files and a sample DuckDB pipeline. | `--duckdb`, `--sample` |
 | `mix favn.doctor` | Check local configuration before running. | `--skip-compile` |
-| `mix favn.install` | Prepare `.favn/install`, including Phoenix asset binaries. | `--force`, `--skip-runtime-deps-install`, `--skip-web-install`, `--root-dir PATH` |
-| `mix favn.dev` | Start PostgreSQL-backed local runtime processes and the UI. | `--scheduler`, `--root-dir PATH` |
+| `mix favn.install` | Pull and verify the version-matched control-plane image and generate the local Compose contract. | `--force`, `--root-dir PATH` |
+| `mix favn.dev` | Start PostgreSQL, the prebuilt control plane, and the customer runner with Docker Compose. | `--scheduler`, `--root-dir PATH` |
 
 `mix favn.dev` stays in the foreground. It prints service logs and URLs. Stop it
 with `mix favn.stop` from another terminal or by ending the foreground process.
-Startup compiles only stale runtime and project modules. A clean Git runtime
-source uses Git tree metadata for install validation; dirty or non-Git sources
-fall back to content hashing. Use `mix favn.install --force` when you explicitly
-need a clean runtime workspace rebuild.
-Runner and operator processes reuse that compiled runtime with `--no-compile`;
-they do not serialize startup on Mix's build lock.
+Install never compiles the control plane. Startup builds or reuses only the
+customer runner image, then runs release-safe database operations and starts the
+same two-BEAM topology used in production. Use `mix favn.install --force` to
+repull and revalidate the version-matched control-plane tag.
 
 Before startup, `mix favn.dev` loads the project `.env` and starts a fresh Mix
 process that evaluates `config/runtime.exs`. This means runtime config can branch
@@ -203,10 +201,6 @@ These are deployment/operator commands, not needed for the first local run:
 | `mix favn.build.manifest --runner-release PATH` | Build a manifest-only release after proving the runner fingerprint is unchanged. |
 | `mix favn.publish --manifest PATH` | Upload missing execution packages and stage the immutable manifest. |
 | `mix favn.activate --manifest-version ID --workspace-id ID` | Activate an exact staged manifest after runner verification. |
-| `mix favn.build.web` | Build web artifact metadata/output. |
-| `mix favn.build.orchestrator` | Build orchestrator artifact metadata/output. |
-| `mix favn.build.single` | Build the single-node local deployment artifact. |
-| `mix favn.bootstrap.single` | Bootstrap a single-node backend from a manifest JSON file. |
 
 `publish` and `activate` use `--orchestrator-url` or
 `FAVN_ORCHESTRATOR_URL`. Set `FAVN_ORCHESTRATOR_SERVICE_TOKEN` in the process

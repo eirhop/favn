@@ -98,9 +98,9 @@ Non-terminal run states are `:pending` and `:running`. Terminal run states are
 
 ## Schedule Lifecycle
 
-Schedules come from the active manifest. In the supported single-node topology,
-one scheduler runtime evaluates them and submits due work through orchestrator run
-admission.
+Schedules come from the active manifest. In the first supported production
+topology, the single control-plane container owns one scheduler runtime that
+evaluates them and submits due work through orchestrator run admission.
 
 Schedule activation state means:
 
@@ -167,8 +167,8 @@ of being marked as success.
 - Keep runner work pinned with `manifest_version_id` and content hash.
 - Keep operator reads bounded.
 - Treat storage adapters as persistence mechanisms, not policy owners.
-- Keep local development and single-node production packaging separate from these
-  ownership rules.
+- Keep local development and production packaging separate from these ownership
+  rules.
 
 ## Related Docs
 
@@ -177,5 +177,5 @@ of being marked as success.
 - `docs/structure/favn_orchestrator.md` maps orchestrator-owned areas.
 - `docs/structure/favn_runner.md` maps runner-owned areas.
 - `docs/structure/favn_view.md` maps UI ownership rules.
-- `docs/production/single_node_contract.md` defines the supported single-node
-  production topology.
+- `docs/production/README.md` routes the supported production topology and
+  operational contracts.

@@ -69,7 +69,7 @@ freshness, and execution coordination.
   restarted dependencies are alive. Lifecycle, `RunManager`, `RunSupervisor`,
   and active run servers therefore cannot survive or restart independently and
   lose ownership visibility; a critical child failure restarts the whole
-  single-node runtime for fenced PostgreSQL recovery.
+  control-plane runtime for fenced PostgreSQL recovery.
 - `ResourceCircuits` resolves configured execution-pool and SQL-connection
   resources before ordinary capacity admission. It records only explicit runner
   resource outcomes, while `ResourceRecovery` submits linked targeted runs for
@@ -140,8 +140,9 @@ latest bounded check result; `favn_view` does not reconstruct this state.
   `apps/favn_orchestrator/test/`.
 - PostgreSQL transaction, concurrency, authority, tenancy, and query tests:
   `apps/favn_storage_postgres/test/storage_v2/`.
-- Product-level one-node workflow:
-  `apps/favn_local/test/acceptance/single_node_production_acceptance_test.exs`.
+- Product-level container workflows:
+  `apps/favn_local/test/acceptance/local_compose_acceptance_test.exs` and
+  `apps/favn_local/test/acceptance/local_compose_execution_acceptance_test.exs`.
 
 Use this app when changing lifecycle semantics, persistence contracts, workspace
 authorization, private API behavior, live-event DTOs, backfills, scheduling,

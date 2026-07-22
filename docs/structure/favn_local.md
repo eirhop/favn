@@ -1,103 +1,91 @@
 # favn_local
 
-Purpose: implementation behind local developer tooling, local stack lifecycle,
-install/reset/logs/status/diagnostics/reload/run/backfill flows, local run and
-SQL data inspection, PostgreSQL-backed single-node bootstrap, and packaging
-commands.
+Purpose: customer-side artifact building and production-like local Docker
+Compose lifecycle implementation behind the public `mix favn.*` tasks.
 
-Code:
-- `apps/favn/lib/mix/tasks/favn.dev.ex` and `favn.reload.ex` load only the code
-  paths needed for a lightweight env bootstrap before delegating configured work
-  to guarded internal tasks whose `app.config` requirement evaluates consumer
-  runtime configuration in a fresh Mix process
-- `apps/favn_local/lib/favn/dev.ex`
-- `apps/favn_local/lib/favn/dev/`
-- `apps/favn_local/lib/favn/dev/local_distribution.ex` for local distributed Erlang
-  loopback and EPMD preflight
-- `apps/favn_local/lib/favn/dev/local_context.ex` for the shared trusted local-dev
-  API context used by local CLI commands
-- local orchestrator startup provisions each configured development workspace
-  idempotently after the PostgreSQL backend starts and before auth/API children;
-  this is local-only and never creates the database or applies migrations
-- `apps/favn_local/lib/favn/dev/run.ex`, `apps/favn_local/lib/favn/dev/runs.ex`,
-  and `apps/favn_local/lib/favn/dev/backfill.ex` for local operator run/backfill
-  payloads and run operations, including target-aware dependency scope,
-  refresh-mode validation, timeout, cancellation, successful-window rerun, and
-  concurrency option forwarding
-- `apps/favn_local/lib/favn/dev/init.ex` for generated local sample files; keep
-  its lakehouse sample aligned with the convention that connections are
-  server/session/auth, catalogs are phases, schemas are segments/domains, and
-  tables/views are assets. The bundled DuckDB smoke path attaches local `raw`
-  and `mart` catalog files during connection bootstrap.
-- `apps/favn_local/lib/favn/dev/env_file.ex` for local `.env` parsing/loading
-  and `env_bootstrap.ex` for the bounded key-only handoff into the configured
-  dev/reload process before compile, manifest, and service launch work
-- `apps/favn_local/lib/favn/dev/consumer_config_transport.ex` for the bounded,
-  tagged local-runner handoff. It has explicit forms for
-  `Favn.RuntimeConfig.Ref` and secret `Favn.RuntimeValue.Ref` values; provider
-  requests remain inert bounded data and resolved credentials never enter the
-  transport payload
-- single-node bootstrap implementation under `apps/favn_local/lib/favn/dev/bootstrap/`
-- `apps/favn_local/lib/favn_local.ex`
-- single-node artifact integration test harness under `apps/favn_local/test_support/`
-- canonical single-node acceptance sample generator under `apps/favn_local/test_support/canonical_sample_project.exs`
-- `apps/favn_local/lib/favn/dev/build/control_plane_inputs.ex` for the selective,
-  deterministic official-image input closure and
-  `apps/favn_local/lib/favn/dev/build/control_plane.ex` for the repository-only,
-  integrity-checked OCI context/candidate builder
-- `apps/favn_local/lib/favn/dev/control_plane_image.ex` for canonical GHCR tags,
-  digest references, and exact RepoDigest selection
+## Ownership
 
-Tests:
-- `apps/favn_local/test/`
-- integration-style local tooling tests under `apps/favn_local/test/integration/`
-- product-level single-node acceptance coverage under `apps/favn_local/test/acceptance/single_node_production_acceptance_test.exs`
-- single-node bootstrap tests under `apps/favn_local/test/dev_bootstrap_single_test.exs`
-- orchestrator bootstrap HTTP client tests under `apps/favn_local/test/dev_orchestrator_client_test.exs`
-- env-file parser/loader and configured-process bootstrap coverage under
-  `apps/favn_local/test/dev_env_file_test.exs` and
-  `apps/favn_local/test/dev_env_bootstrap_test.exs`
+`favn_local` owns:
 
-Test tiers:
-- `:integration` means a test crosses an app, process, storage, or runtime boundary;
-  it is not excluded from fast CI by itself.
-- `:acceptance` means a product E2E workflow through a public user/operator path.
-- `:slow` marks tests excluded from fast PR CI by default.
-- `:browser` marks browser automation or browser smoke coverage excluded from fast
-  PR CI by default.
+- Docker Engine and Compose prerequisite checks;
+- official control-plane image resolution, digest verification, and install
+  state;
+- project-scoped Compose, environment, secret, network, volume, and port
+  generation;
+- customer runner and aligned manifest build orchestration;
+- local start, reload, status, logs, diagnostics, stop, and reset operations;
+- manifest publication and activation clients;
+- local run, backfill, and SQL inspection command implementation.
 
-Useful commands:
-- Fast local-tooling slice: `MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser`
-- Local acceptance suite: `MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --only acceptance`
-- Full fast umbrella suite: `mix test --no-compile --timeout 1200000`.
-- Full acceptance suite: `mix test.acceptance`
-- Non-acceptance slow suite: `mix test.slow`
-- Test tag coverage guard: `elixir scripts/check_test_tag_tiers.exs`
+It does not compile, copy, or launch Favn View, Orchestrator, or PostgreSQL
+storage from source. It has no runtime dependency on those applications. It
+treats the installed control plane as an external OCI artifact and reaches it
+through release commands and authenticated HTTP contracts.
 
-The root fast runner forwards ExUnit arguments to every app and reports all
-failing app slices. On Unix it runs children with native `/tmp` storage so WSL
-Windows-mounted temporary directories cannot change POSIX filesystem behavior.
-Dependency installation, generated-consumer execution, split-root lifecycle,
-and production artifact tests live only in the explicit slow or acceptance
-tiers.
+## Primary code
 
-Single-node artifact invariant:
-- `dist_dir` is immutable after build. Runtime state must be written outside the
-  artifact tree, including `runtime_home`, DuckDB files, logs, and pid paths.
-- The control plane is an externally managed PostgreSQL database. Bootstrap
-  requires an explicit workspace and operator credentials; it never creates a
-  database or silently selects a tenant.
+- `apps/favn_local/lib/favn/dev.ex`: public implementation facade used by the
+  task wrappers in `apps/favn`.
+- `apps/favn_local/lib/favn/dev/install.ex`: immutable control-plane install.
+- `apps/favn_local/lib/favn/dev/compose_project.ex`: generated topology and
+  owner-only environment files.
+- `apps/favn_local/lib/favn/dev/compose_lifecycle.ex`: lifecycle, migration,
+  deployment, reload, recovery, logs, status, and diagnostics.
+- `apps/favn_local/lib/favn/dev/compose_session.ex`: authenticated local API
+  session derived from installed Compose state.
+- `apps/favn_local/lib/favn/dev/runner_image.ex`: runner image cache keyed by
+  `runner_release_id`.
+- `apps/favn_local/lib/favn/dev/build/runner.ex` and `manifest.ex`: immutable
+  customer build contracts.
+- `apps/favn_local/lib/favn/dev/publish.ex` and `activate.ex`: staged deployment
+  operations.
+- `apps/favn_local/lib/favn/dev/run.ex`, `runs.ex`, and `backfill.ex`: local
+  operator workflows through the private orchestrator API.
+- `apps/favn_local/lib/favn/dev/data_inspection.ex`: direct local SQL inspection
+  without starting the control plane.
 
-Use when changing `mix favn.*` local behavior, local runtime state, local HTTP
-client behavior, consumer config transport, install/runtime workspaces,
-single-node bootstrap, operator diagnostics, local run/data inspection, local run
-cancellation, local run/backfill admission options, or local packaging outputs.
+The small `Favn.Dev.Command` boundary runs bounded Docker and release commands.
+It is not an application-process launcher.
 
-Breadcrumbs:
-- `Mix.Tasks.Favn.Inspect` and `Mix.Tasks.Favn.Query` own the guarded `.env`
-  bootstrap for direct local SQL inspection before delegating to
-  `Favn.Dev.DataInspection`; they do not start the consumer application.
-- `Favn.Dev.DataInspection` owns relation parsing, connection resolution, and the
-  read-only SQL guardrail used by `mix favn.inspect` and `mix favn.query`. It
-  must start `:favn_sql_runtime` before opening SQL client sessions so
-  `Favn.SQL.SessionPool` is supervised without requiring manual `app.start`.
+## Tests
+
+- Fast owning-layer tests: `apps/favn_local/test/`.
+- Compose contract tests: `compose_project`, `compose_lifecycle`, install,
+  runner-image, reload, and command tests in the same directory.
+- Golden real-image acceptance:
+  `apps/favn_local/test/acceptance/local_compose_acceptance_test.exs` and
+  `local_compose_execution_acceptance_test.exs`.
+- Shared canonical customer project:
+  `apps/favn_local/test_support/canonical_sample_project.exs`.
+
+The real-image cases carry both `:acceptance` and `:container`. They run through
+`mix test.container`; ordinary acceptance excludes them deliberately.
+
+## Invariants
+
+- Public install resolves official GHCR releases and has no source-build or
+  arbitrary-image fallback.
+- Local PostgreSQL, EPMD, and BEAM distribution ports remain private to the
+  Compose network; only View and private API ports bind to loopback.
+- Secrets never appear in process arguments, Compose YAML, install metadata,
+  diagnostics, or persisted failure output.
+- SQL-only changes do not rebuild either image. Runtime-code changes rebuild and
+  replace only the customer runner after a recoverable drain boundary.
+- `runtime.json` describes only the current Compose/deployment identity. There
+  is no local source workspace, PID file, or host-node state.
+- The production deployment command surface is `build.runner`,
+  `build.manifest`, `publish`, and `activate`; local lifecycle commands are not
+  production artifacts.
+
+## Verification
+
+From the umbrella root:
+
+```bash
+MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser --exclude container
+FAVN_CONTROL_PLANE_CANDIDATE=<loaded-candidate> mix test.container
+```
+
+Use this document when changing public local tooling, customer artifacts,
+Compose lifecycle state, or the boundary between customer code and the prebuilt
+control plane.

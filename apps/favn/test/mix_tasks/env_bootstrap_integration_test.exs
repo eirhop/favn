@@ -87,7 +87,7 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
     {reload_output, 1} =
       run_mix(consumer_dir, ["favn.reload", "--root-dir", consumer_dir], capture_path)
 
-    assert reload_output =~ "stack not running; use mix favn.dev"
+    assert reload_output =~ "install required; run mix favn.install then mix favn.dev"
 
     assert %{database: "local.duckdb", evaluation_count: 2, mode: "local"} =
              read_capture!(capture_path)

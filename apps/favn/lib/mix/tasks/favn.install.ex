@@ -28,11 +28,6 @@ defmodule Mix.Tasks.Favn.Install do
       {:error, {:missing_tool, tool}} ->
         Mix.raise("install failed: missing required tool #{tool}")
 
-      {:error, {:tool_check_failed, tool, status, output}} ->
-        Mix.raise(
-          "install failed: required tool #{tool} check failed (status=#{status}): #{output}"
-        )
-
       {:error, {:docker_engine_unavailable, _status, _output}} ->
         Mix.raise(
           "install failed: Docker Engine is not reachable; start a Linux-container Docker daemon and retry"

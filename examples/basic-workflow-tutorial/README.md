@@ -223,7 +223,7 @@ mix favn.install
 mix favn.dev
 mix favn.run FavnReferenceWorkload.Pipelines.ReferenceWorkloadDaily
 mix favn.status
-mix favn.logs --service orchestrator --tail 200
+mix favn.logs --service control-plane --tail 200
 mix favn.reload
 mix favn.stop
 mix favn.reset
@@ -274,24 +274,23 @@ These values are resolved by the runner into `ctx.runtime_config`; they are not 
 in the manifest. The returned run metadata includes only a hash of the segment
 identity, never the raw segment ID or token.
 
-Then open the web URL printed by `mix favn.dev` and log in with that username
-and password. If you change `.env` while the stack is running, restart it with
-`mix favn.stop` and `mix favn.dev` so the orchestrator process receives the new
-bootstrap values. The web login page always uses orchestrator-owned password
-auth; it does not create local web-only admin sessions.
+Then open the View URL printed by `mix favn.dev`. The generated local operator
+username is `admin`; its owner-only generated password is the
+`bootstrap_password` value in `.favn/secrets.json`. The login page always uses
+orchestrator-owned password authentication.
 
 Install freshness notes:
-- `mix favn.install` materializes the Favn runtime under `.favn/install/runtime_root`
-- source-only Favn runtime updates are detected through the install fingerprint,
-  so rerunning `mix favn.install` refreshes stale installed runtime code
-- `mix favn.install --force` remains available when you want an unconditional
-  rebuild of the installed runtime workspace
+- `mix favn.install` pulls and verifies the version-matched prebuilt control
+  plane, then records its immutable digest under `.favn/install`
+- repeating install reuses the exact valid local digest
+- `mix favn.install --force` repulls, revalidates, and regenerates Compose state
 
-The default `mix favn.dev` path uses the PostgreSQL connection from
-`FAVN_DATABASE_URL` and keeps the scheduler disabled so one-time local ETL does
-not run active schedules unexpectedly. Run `scripts/postgres/setup` from the Favn
-source checkout before the first start. To exercise the tutorial's 15-second
-scheduled smoke flow, start the stack with `mix favn.dev --scheduler` instead.
+The generated Compose application owns PostgreSQL and its credentials; no host
+database setup or `FAVN_DATABASE_URL` is required. The scheduler is disabled by
+default so one-time local ETL does not run active schedules unexpectedly. To
+exercise the tutorial's 15-second scheduled smoke flow, start the stack with
+`mix favn.dev --scheduler` instead. After changing `.env`, use `mix favn.reload`
+for runner/runtime changes or restart the stack when changing service settings.
 
 ## Alternative configurations you can try
 
@@ -322,7 +321,7 @@ config :favn,
   ]
 ```
 
-### 2) Change the local PostgreSQL connection
+### 2) Understand the local PostgreSQL boundary
 
 PostgreSQL is the only supported control-plane backend. The tutorial selects the
 workspace in application config:
@@ -332,15 +331,15 @@ config :favn, :local,
   workspace_id: "local-dev"
 ```
 
-Set the runtime-role URL in the project `.env` or shell:
+The generated Compose application owns its PostgreSQL image, volume, database,
+roles, and credentials. A consumer project cannot select another local
+control-plane database through `config :favn`, `.env`, or
+`FAVN_DATABASE_URL`. Do not add `:favn_storage_postgres` to the consumer
+project's `mix.exs`.
 
-```bash
-FAVN_DATABASE_URL=ecto://favn_runtime:favn_runtime_local@127.0.0.1:5432/favn_dev
-```
-
-Do not add `:favn_storage_postgres` to this consumer project's `mix.exs`.
-PostgreSQL persistence is a Favn-owned runtime component materialized by
-`mix favn.install`.
+Production database configuration is a separate deployment concern and is
+supplied to the prebuilt control plane through its documented runtime
+environment contract.
 
 ### 3) Change DuckDB execution placement
 
@@ -379,19 +378,16 @@ For beginners, keep `deps(:all)` until you are comfortable with graph behavior.
 Data plane (DuckDB):
 - `.favn/data/reference_workload.duckdb`
 
-Local tooling runtime state (when `mix favn.*` starts normally):
+Local Compose runtime state (when `mix favn.*` starts normally):
 - `.favn/runtime.json`
-- `.favn/logs/*.log`
+- `.favn/compose/compose.yml`
 
 ## Troubleshooting
 
-- `install failed: web dependency install failed`
-  - use hyphenated flags (`--skip-web-install`, not `--skip_web_install`)
-- `runner_node_unreachable` with host errors
-  - known issue: distributed node host validation can reject current host value
-  - tracked in issue #107
-- partial stack state message from `mix favn.dev`
-  - run `mix favn.stop` and retry
+- Docker Engine or Compose is unavailable
+  - start the Linux-container Docker daemon and verify `docker compose version`
+- a Compose service is partial or unhealthy
+  - inspect `mix favn.status` and `mix favn.logs`, then run `mix favn.stop` before retrying
 
 ## Where to look in code
 
