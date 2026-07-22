@@ -6,6 +6,7 @@ defmodule Favn.Dev.Build.RunnerInputs do
   alias Favn.RunnerRelease.{ApplicationFingerprint, ModuleClosure, PluginFingerprint}
   alias Favn.RunnerRelease.RuntimeRoots
   alias Favn.Dev.Build.{RunnerConfig, RunnerReleaseInput}
+  alias Favn.Dev.Maintainer.{RunnerBuildCapability, Source}
 
   @required_runner_applications [:favn_core, :favn_runner, :favn_sql_runtime]
   @build_only_favn_applications [:favn, :favn_authoring, :favn_local]
@@ -42,7 +43,7 @@ defmodule Favn.Dev.Build.RunnerInputs do
          {:ok, authoring_roots} <- FavnAuthoring.runtime_roots(build),
          {:ok, packaged_config} <- RunnerConfig.collect(opts),
          {:ok, runner_build} <- runner_build_config(opts),
-         {:ok, favn_source_revision} <- pinned_favn_source_revision(opts),
+         {:ok, favn_source} <- favn_source_identity(opts),
          {:ok, plugin_entries} <- plugin_entries(opts),
          {:ok, roots} <-
            extend_roots(authoring_roots, plugin_entries, runner_build, packaged_config, opts),
@@ -71,7 +72,7 @@ defmodule Favn.Dev.Build.RunnerInputs do
              runtime_applications: applications,
              plugins: plugins,
              build_profile: "prod",
-             build_metadata: build_metadata(opts, favn_source_revision)
+             build_metadata: build_metadata(opts, favn_source)
            }) do
       build_sources = build_dependency_sources(opts)
       release_sources = Map.merge(build_sources, sources)
@@ -800,42 +801,73 @@ defmodule Favn.Dev.Build.RunnerInputs do
     |> reverse_ok()
   end
 
-  defp pinned_favn_source_revision(opts) do
+  defp favn_source_identity(opts) do
     sources = dependency_sources(opts)
 
     case Map.get(sources, :favn_core) do
-      source when is_binary(source) -> verify_favn_checkout(source, opts)
+      source when is_binary(source) -> verify_favn_checkout_identity(source, opts)
       _missing -> {:error, :favn_source_revision_unidentifiable}
     end
   end
 
   @doc false
-  @spec verify_favn_checkout(Path.t(), keyword()) :: {:ok, String.t()} | {:error, atom()}
+  @spec verify_favn_checkout(Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def verify_favn_checkout(source, opts \\ []) when is_binary(source) and is_list(opts) do
+    with {:ok, identity} <- verify_favn_checkout_identity(source, opts) do
+      {:ok, identity.revision}
+    end
+  end
+
+  defp verify_favn_checkout_identity(source, opts) do
     with {root, 0} <- git(source, ["rev-parse", "--show-toplevel"]),
          root = String.trim(root),
          {revision, 0} <- git(root, ["rev-parse", "--verify", "HEAD"]),
          revision = String.trim(revision),
-         true <- revision =~ ~r/\A[0-9a-f]{40}\z/,
-         :ok <- verify_pinned_checkout(root, opts) do
-      {:ok, revision}
+         true <- revision =~ ~r/\A[0-9a-f]{40,64}\z/,
+         {status, 0} <- git(root, ["status", "--porcelain", "--untracked-files=normal"]),
+         dirty = String.trim(status) != "",
+         {:ok, fingerprint} <- Source.fingerprint(root),
+         :ok <- verify_checkout_state(root, revision, dirty, fingerprint, opts) do
+      {:ok, %{root: root, revision: revision, dirty: dirty, fingerprint: fingerprint}}
     else
       {:error, _reason} = error -> error
       _invalid -> {:error, :favn_source_revision_unidentifiable}
     end
   end
 
-  defp verify_pinned_checkout(root, opts) do
-    if Mix.env() == :test and Keyword.get(opts, :allow_unpinned_favn, false) do
-      :ok
-    else
-      with {_branch, 1} <- git(root, ["symbolic-ref", "-q", "HEAD"]),
-           {status, 0} <- git(root, ["status", "--porcelain", "--untracked-files=all"]),
-           true <- String.trim(status) == "" do
+  defp verify_checkout_state(root, revision, dirty, fingerprint, opts) do
+    case Keyword.get(opts, :maintainer_runner_build) do
+      %RunnerBuildCapability{} = capability ->
+        verify_maintainer_checkout(capability, root, revision, dirty, fingerprint)
+
+      nil ->
+        verify_production_checkout(root, dirty, opts)
+
+      _invalid ->
+        {:error, :invalid_maintainer_runner_build}
+    end
+  end
+
+  defp verify_maintainer_checkout(capability, root, revision, dirty, fingerprint) do
+    if capability.checkout == Path.expand(root) and capability.revision == revision and
+         capability.dirty == dirty and capability.fingerprint == fingerprint,
+       do: :ok,
+       else: {:error, :favn_maintainer_checkout_changed}
+  end
+
+  defp verify_production_checkout(root, dirty, opts) do
+    cond do
+      Mix.env() == :test and Keyword.get(opts, :allow_unpinned_favn, false) ->
         :ok
-      else
-        _floating_or_dirty -> {:error, :favn_checkout_not_pinned}
-      end
+
+      dirty ->
+        {:error, :favn_checkout_not_pinned}
+
+      true ->
+        case git(root, ["symbolic-ref", "-q", "HEAD"]) do
+          {_branch, 1} -> :ok
+          _floating -> {:error, :favn_checkout_not_pinned}
+        end
     end
   end
 
@@ -845,10 +877,12 @@ defmodule Favn.Dev.Build.RunnerInputs do
     _error -> {"", 1}
   end
 
-  defp build_metadata(opts, favn_source_revision) do
+  defp build_metadata(opts, favn_source) do
     %{}
     |> maybe_put("source_revision", Keyword.get(opts, :source_revision, git_revision()))
-    |> Map.put("favn_source_revision", favn_source_revision)
+    |> Map.put("favn_source_revision", favn_source.revision)
+    |> Map.put("favn_source_dirty", favn_source.dirty)
+    |> Map.put("favn_source_fingerprint", favn_source.fingerprint)
   end
 
   defp git_revision do

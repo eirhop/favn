@@ -168,6 +168,19 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
            ) == "deploy/compose.team.yml"
   end
 
+  test "mix favn.build.runner rejects a caller-supplied maintainer token", %{
+    root_dir: root_dir
+  } do
+    variable = "FAVN_INTERNAL_MAINTAINER_RUNNER_BUILD"
+    System.put_env(variable, String.duplicate("a", 64))
+
+    assert_raise Mix.Error, ~r/invalid_maintainer_runner_build/, fn ->
+      BuildRunnerTask.run_build(root_dir: root_dir)
+    end
+
+    assert System.get_env(variable) == nil
+  end
+
   test "no-positional public mix favn tasks reject invalid options and unexpected args" do
     tasks = [
       {BuildControlPlaneTask, "favn.build.control_plane"},

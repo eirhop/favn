@@ -21,7 +21,8 @@ defmodule Favn.Dev.Maintainer.Candidate do
     :image_source_dirty,
     :checkout,
     :checkout_revision,
-    :checkout_dirty
+    :checkout_dirty,
+    :checkout_fingerprint
   ]
   defstruct @enforce_keys
 
@@ -34,7 +35,8 @@ defmodule Favn.Dev.Maintainer.Candidate do
           image_source_dirty: boolean(),
           checkout: Path.t(),
           checkout_revision: String.t(),
-          checkout_dirty: boolean()
+          checkout_dirty: boolean(),
+          checkout_fingerprint: String.t()
         }
 
   @doc "Validates one builder result and its persisted candidate descriptor."
@@ -68,7 +70,8 @@ defmodule Favn.Dev.Maintainer.Candidate do
          image_source_dirty: image_dirty,
          checkout: source.checkout,
          checkout_revision: source.revision,
-         checkout_dirty: source.dirty
+         checkout_dirty: source.dirty,
+         checkout_fingerprint: source.fingerprint
        }}
     else
       _invalid -> {:error, :invalid_maintainer_candidate}

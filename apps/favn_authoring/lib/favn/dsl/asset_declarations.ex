@@ -152,6 +152,7 @@ defmodule Favn.DSL.AssetDeclarations do
 
   defmacro runtime_config(scope, fields) do
     caller = __CALLER__
+    file = Favn.DSL.Compiler.normalize_file(caller.file)
 
     quote do
       Favn.DSL.AssetDeclarations.put(
@@ -159,7 +160,7 @@ defmodule Favn.DSL.AssetDeclarations do
         :runtime_config,
         Favn.RuntimeConfig.Bundle.inline!(unquote(scope), unquote(fields),
           module: unquote(caller.module),
-          file: unquote(caller.file),
+          file: unquote(file),
           line: unquote(caller.line)
         )
       )

@@ -35,13 +35,17 @@ defmodule Favn.Dev.Maintainer.Source do
     favn_view: "apps/favn_view"
   }
 
-  @enforce_keys [:checkout, :revision, :dirty]
+  @ignored_root_directories [".favn", ".git", "_build", "deps", "docs", "test"]
+  @ignored_app_directories [".favn", ".git", "_build", "deps", "test"]
+
+  @enforce_keys [:checkout, :revision, :dirty, :fingerprint]
   defstruct @enforce_keys
 
   @type t :: %__MODULE__{
           checkout: Path.t(),
           revision: String.t(),
-          dirty: boolean()
+          dirty: boolean(),
+          fingerprint: String.t()
         }
 
   @doc "Resolves and validates the checkout selected through `FAVN_CHECKOUT`."
@@ -53,9 +57,35 @@ defmodule Favn.Dev.Maintainer.Source do
          checkout <- Path.expand(value, root_dir),
          :ok <- validate_checkout(checkout),
          :ok <- validate_dependencies(checkout, dependency_paths(opts)),
-         {:ok, revision, dirty} <- git_identity(checkout, opts) do
-      {:ok, %__MODULE__{checkout: checkout, revision: revision, dirty: dirty}}
+         {:ok, revision, dirty} <- git_identity(checkout, opts),
+         {:ok, fingerprint} <- fingerprint(checkout) do
+      {:ok,
+       %__MODULE__{
+         checkout: checkout,
+         revision: revision,
+         dirty: dirty,
+         fingerprint: fingerprint
+       }}
     end
+  end
+
+  @doc false
+  @spec fingerprint(Path.t()) :: {:ok, String.t()} | {:error, term()}
+  def fingerprint(checkout) when is_binary(checkout) do
+    with {:ok, entries} <- fingerprint_entries(checkout, "") do
+      digest =
+        entries
+        |> Enum.sort()
+        |> :erlang.term_to_binary([:deterministic])
+        |> then(&:crypto.hash(:sha256, &1))
+        |> Base.encode16(case: :lower)
+
+      {:ok, digest}
+    else
+      _invalid -> {:error, {:maintainer_checkout_fingerprint_failed, checkout}}
+    end
+  rescue
+    _error -> {:error, {:maintainer_checkout_fingerprint_failed, checkout}}
   end
 
   @doc "Returns the environment variable used by consumer `mix.exs` files."
@@ -149,5 +179,55 @@ defmodule Favn.Dev.Maintainer.Source do
     end
   rescue
     error -> {:error, {:maintainer_checkout_git_unavailable, Exception.message(error)}}
+  end
+
+  defp fingerprint_entries(root, relative) do
+    directory = if relative == "", do: root, else: Path.join(root, relative)
+
+    with {:ok, names} <- File.ls(directory) do
+      names
+      |> Enum.sort()
+      |> Enum.reject(&ignored_fingerprint_directory?(relative, &1))
+      |> Enum.reduce_while({:ok, []}, fn name, {:ok, entries} ->
+        child_relative = if relative == "", do: name, else: Path.join(relative, name)
+        child = Path.join(root, child_relative)
+
+        case File.lstat(child) do
+          {:ok, %{type: :directory}} ->
+            case fingerprint_entries(root, child_relative) do
+              {:ok, children} -> {:cont, {:ok, children ++ entries}}
+              {:error, _reason} = error -> {:halt, error}
+            end
+
+          {:ok, %{type: :regular, mode: mode}} ->
+            case File.read(child) do
+              {:ok, contents} ->
+                executable = if Bitwise.band(mode, 0o111) == 0, do: 0, else: 1
+                {:cont, {:ok, [{child_relative, executable, contents} | entries]}}
+
+              {:error, reason} ->
+                {:halt, {:error, reason}}
+            end
+
+          {:ok, %{type: :symlink}} ->
+            case File.read_link(child) do
+              {:ok, target} -> {:cont, {:ok, [{child_relative, :symlink, target} | entries]}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+
+          _invalid ->
+            {:halt, {:error, :invalid_checkout_entry}}
+        end
+      end)
+    end
+  end
+
+  defp ignored_fingerprint_directory?("", name), do: name in @ignored_root_directories
+
+  defp ignored_fingerprint_directory?(relative, name) do
+    case Path.split(relative) do
+      ["apps", _app] -> name in @ignored_app_directories
+      _other -> false
+    end
   end
 end

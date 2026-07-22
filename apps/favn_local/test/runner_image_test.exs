@@ -2,6 +2,7 @@ defmodule Favn.Dev.RunnerImageTest do
   use ExUnit.Case, async: true
 
   alias Favn.Dev.RunnerImage
+  alias Favn.Dev.Maintainer.RunnerBuildCapability
 
   setup do
     root_dir =
@@ -45,5 +46,73 @@ defmodule Favn.Dev.RunnerImageTest do
     assert returned =~ "[REDACTED_URL]"
     refute returned =~ secret
     refute returned =~ database_url
+  end
+
+  test "maintainer runner builds receive the scoped internal capability", %{root_dir: root_dir} do
+    parent = self()
+    revision = String.duplicate("a", 40)
+
+    capability = %RunnerBuildCapability{
+      consumer_root: root_dir,
+      checkout: Path.join(root_dir, "favn"),
+      revision: revision,
+      dirty: true,
+      fingerprint: String.duplicate("b", 64)
+    }
+
+    command_runner = fn _mix, args, command_opts ->
+      send(parent, {:runner_build, args, Keyword.fetch!(command_opts, :env)})
+      {"stopped after capability capture", 9}
+    end
+
+    assert {:error, {:runner_release_build_failed, 9, _output}} =
+             RunnerImage.ensure(
+               %{"project_name" => "maintainer-capability"},
+               root_dir: root_dir,
+               maintainer_runner_build: capability,
+               runner_command_runner: command_runner
+             )
+
+    assert_receive {:runner_build, ["favn.build.runner", "--root-dir", ^root_dir], environment}
+    assert {"MIX_ENV", "prod"} in environment
+
+    assert Enum.any?(environment, fn
+             {"FAVN_INTERNAL_MAINTAINER_RUNNER_BUILD", value} -> value != ""
+             _other -> false
+           end)
+
+    token =
+      environment
+      |> Enum.find_value(fn
+        {"FAVN_INTERNAL_MAINTAINER_RUNNER_BUILD", value} -> value
+        _other -> nil
+      end)
+
+    capability_path =
+      Path.join([root_dir, ".favn", "build", "maintainer-runner-capabilities", token])
+
+    refute File.exists?(capability_path)
+    refute File.exists?(capability_path <> ".consuming")
+  end
+
+  test "ordinary runner builds explicitly unset an inherited maintainer capability", %{
+    root_dir: root_dir
+  } do
+    parent = self()
+
+    command_runner = fn _mix, _args, command_opts ->
+      send(parent, {:environment, Keyword.fetch!(command_opts, :env)})
+      {"stopped after environment capture", 9}
+    end
+
+    assert {:error, {:runner_release_build_failed, 9, _output}} =
+             RunnerImage.ensure(
+               %{"project_name" => "ordinary-capability-scrub"},
+               root_dir: root_dir,
+               runner_command_runner: command_runner
+             )
+
+    assert_receive {:environment, environment}
+    assert {"FAVN_INTERNAL_MAINTAINER_RUNNER_BUILD", nil} in environment
   end
 end

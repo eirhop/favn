@@ -255,7 +255,8 @@ defmodule Favn.Dev.InstallTest do
       image_source_dirty: false,
       checkout: Path.join(root_dir, "favn"),
       checkout_revision: String.duplicate("d", 40),
-      checkout_dirty: false
+      checkout_dirty: false,
+      checkout_fingerprint: String.duplicate("e", 64)
     }
   end
 

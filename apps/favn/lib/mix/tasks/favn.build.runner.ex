@@ -15,6 +15,7 @@ defmodule Mix.Tasks.Favn.Build.Runner do
   """
 
   alias Favn.Dev
+  alias Favn.Dev.Maintainer.RunnerBuildCapability
   alias Mix.Tasks.Favn.CLIArgs
   alias Mix.Tasks.Favn.ProductionBuild
 
@@ -27,7 +28,15 @@ defmodule Mix.Tasks.Favn.Build.Runner do
 
   @doc false
   def run_build(opts) when is_list(opts) do
-    case Dev.build_runner(opts) do
+    with {:ok, opts} <- RunnerBuildCapability.consume(opts) do
+      finish_build(Dev.build_runner(opts))
+    else
+      {:error, reason} -> Mix.raise("runner build failed: #{inspect(reason)}")
+    end
+  end
+
+  defp finish_build(result) do
+    case result do
       {:ok,
        %{
          runner_release_id: release_id,

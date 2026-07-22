@@ -8,6 +8,7 @@ defmodule Favn.Dev.RunnerImage do
   """
 
   alias Favn.Dev.Build.Manifest
+  alias Favn.Dev.Maintainer.RunnerBuildCapability
   alias Favn.Dev.{Command, ComposeProject, Docker, OutputRedactor, Paths, State}
 
   @release_id_pattern ~r/\Arr_[0-9a-f]{64}\z/
@@ -64,6 +65,8 @@ defmodule Favn.Dev.RunnerImage do
 
       _other ->
         with {:ok, command_runner} <- command_runner(opts),
+             {:ok, maintainer_environment, capability_paths} <-
+               RunnerBuildCapability.environment(Keyword.get(opts, :maintainer_runner_build)),
              mix when is_binary(mix) <- System.find_executable("mix") do
           root_dir = opts |> Paths.root_dir() |> Path.expand()
           sink = Keyword.get(opts, :progress_fun, fn _chunk -> :ok end)
@@ -75,13 +78,14 @@ defmodule Favn.Dev.RunnerImage do
                 mix,
                 ["favn.build.runner", "--root-dir", root_dir],
                 cd: root_dir,
-                env: [{"MIX_ENV", "prod"}],
+                env: [{"MIX_ENV", "prod"} | maintainer_environment],
                 stderr_to_stdout: true,
                 timeout_ms: Keyword.get(opts, :runner_release_build_timeout_ms, 1_200_000),
                 output_writer: output_writer
               )
             after
               flush_output.()
+              RunnerBuildCapability.cleanup(capability_paths)
             end
 
           output = OutputRedactor.redact(output, opts)
