@@ -39,6 +39,9 @@ Ownership rules:
   View has no storage-adapter dependency. It trusts forwarded scheme, host, port,
   and client IP only from the configured private proxy CIDRs, uses the public
   origin as URL authority, and applies boot-frozen listener and body-read limits.
+  `docs/production/network_and_proxy.md` is the operator-facing exposure and
+  reverse-proxy contract; the private Orchestrator listener is never a browser
+  route.
 - Browser auth calls only public `FavnOrchestrator` facade functions. It must not
   call `FavnOrchestrator.Auth`, auth storage, password hashing internals, audit
   storage, service-token internals, storage adapters, scheduler internals, or

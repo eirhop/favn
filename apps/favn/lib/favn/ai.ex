@@ -219,6 +219,11 @@ defmodule Favn.AI do
     runtime config without starting the consumer app, and
     `Favn.Dev.DataInspection` starts `:favn_sql_runtime` before connecting.
   - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
+    Docker Engine and Compose v2 are mandatory. The supported topology is
+    PostgreSQL, the digest-pinned prebuilt control plane, and one customer-built
+    runner on a project-scoped private Compose network; install never builds the
+    control plane. Linux amd64 and amd64 WSL2 with Linux containers are the only
+    supported v1 hosts.
     The public local command surface is `mix favn.install`, `mix favn.init`,
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
     `mix favn.runs`, `mix favn.status`, `mix favn.logs`, `mix favn.inspect`,

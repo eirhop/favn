@@ -1,10 +1,17 @@
 defmodule Mix.Tasks.Favn.Install do
   use Mix.Task
 
-  @shortdoc "Resolves project-local Favn install inputs"
+  @shortdoc "Installs the prebuilt Favn control-plane image"
 
   @moduledoc """
-  Resolves and validates project-local install inputs under `.favn/install`.
+  Requires Docker Engine and Compose v2, pulls the version-matched official
+  control-plane image, verifies its platform and Favn contract labels, records
+  its immutable repository digest, and writes the project-scoped Compose inputs
+  under `.favn/`.
+
+  The task never compiles the control plane and cannot select an arbitrary or
+  unpublished candidate image. `--force` repulls and revalidates the official
+  version tag without changing a valid digest unnecessarily.
   """
 
   alias Favn.Dev

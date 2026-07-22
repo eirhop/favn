@@ -8,11 +8,13 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
 ## Production release path
 
 1. [#522 — runnable release artifacts and supported deployment topology](https://github.com/eirhop/favn/issues/522)
-   - Ship relocatable web, orchestrator, and runner artifacts.
-   - Finalize topology, configuration, secrets, health, packaging, upgrades, and
-     clean-machine acceptance.
-   - Validate the manifest, runner, and public package boundary against at least
-     six representative real customer projects.
+   - Ship one reusable Favn control-plane image and one relocatable
+     customer-built runner context with an aligned manifest release.
+   - Qualify the one-control-plane/one-runner topology, runtime-only
+     configuration, environment-only secrets, health, packaging, upgrades, and
+     clean-container acceptance.
+   - Validate the manifest, runner, and public package boundary through the clean
+     canonical customer-project fixture.
 2. [#525 — durable scheduling and asynchronous orchestration](https://github.com/eirhop/favn/issues/525)
    - Persist submission intent, move work outside scheduler/RunManager critical
      paths, and add bounded workers, recovery, fairness, cancellation, and visibility.
@@ -27,9 +29,11 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
      plans, least privilege, dashboards, alerts, and incident response.
 
 Observability and drill tooling from #523 should start alongside #522; #523 closes
-last as release qualification. The initial supported target is one application
-node with PostgreSQL. Multi-node application acceptance may follow without
-weakening PostgreSQL's durable coordination contracts.
+last as release qualification. The initial supported target is one control-plane
+node, one separate runner node, and PostgreSQL. Multi-node control-plane/runner
+scaling is tracked in [#529](https://github.com/eirhop/favn/issues/529).
+Deployments without a fully isolated trusted BEAM network are tracked in
+[#530](https://github.com/eirhop/favn/issues/530).
 
 The first supported release is ready only when these epics are complete or a
 remaining item is explicitly removed from the supported product contract.
@@ -41,3 +45,7 @@ remaining item is explicitly removed from the supported product contract.
 - A smaller development-only storage adapter only if PostgreSQL developer-loop
   measurements justify a second implementation.
 - Native Windows CI when Windows becomes a supported platform.
+- Multi-node control-plane and runner clusters after the single-node roles are
+  proven in production.
+- Encrypted or least-privilege runner transport, runtime secret providers, and
+  automatic rotation for less isolated deployments.

@@ -72,8 +72,8 @@ The stable `v1` API should focus on the parts users build authored projects on:
 - supported local commands: `mix favn.init`, `mix favn.doctor`,
   `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
   `mix favn.runs`, `mix favn.reload`, `mix favn.status`, `mix favn.logs`,
-  `mix favn.inspect`, `mix favn.query`, `mix favn.stop`, `mix favn.reset`, and
-  `mix favn.read_doc`
+  `mix favn.inspect`, `mix favn.query`, `mix favn.diagnostics`, `mix favn.stop`,
+  `mix favn.reset`, and `mix favn.read_doc`
 
 `mix favn.inspect` and `mix favn.query` are direct local command boundaries: they
 load `.env` before consumer runtime config and start only the SQL runtime before
@@ -83,6 +83,9 @@ The public deployment command surface is `mix favn.build.runner`,
 `mix favn.build.manifest`, `mix favn.publish`, and `mix favn.activate`. Favn
 publishes the control-plane image; the customer builds and publishes the runner
 image from the generated immutable OCI context.
+The supported production topology and artifact ownership are documented in
+[`deployment_topology.md`](deployment_topology.md) and
+[`runner_releases.md`](runner_releases.md).
 
 ## Authoring APIs
 

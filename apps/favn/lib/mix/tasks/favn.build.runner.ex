@@ -44,7 +44,7 @@ defmodule Mix.Tasks.Favn.Build.Runner do
 
       {:error, :install_stale} ->
         Mix.raise(
-          "build blocked: install stale; run mix favn.install to refresh, or mix favn.install --force to rebuild"
+          "build blocked: install stale; run mix favn.install to refresh, or mix favn.install --force to repull and revalidate"
         )
 
       {:error, {:missing_tool, tool}} ->

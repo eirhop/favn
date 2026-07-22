@@ -35,17 +35,18 @@ In a new or existing Mix project, generate a DuckDB sample:
 
 ```bash
 mix favn.init --duckdb --sample
-mix favn.doctor
 mix favn.install
+mix favn.doctor
 mix favn.dev
 ```
 
 Open the printed local UI URL, usually `http://127.0.0.1:4173`.
-Subsequent unchanged starts validate the installed source from Git metadata when
-available and use incremental Mix compilation; `mix favn.install --force`
-remains the explicit clean rebuild path.
-The runner and operator then share the precompiled runtime without contending
-for Mix's build lock or compiling generated bootstrap code per process.
+Install pulls and verifies the version-matched prebuilt control-plane image;
+it never compiles the control plane. Dev builds or reuses only the customer
+runner, then starts PostgreSQL, control plane, and runner as isolated Docker
+Compose services. Subsequent unchanged starts reuse the pinned control-plane
+digest and runner release. Use `mix favn.install --force` to repull and
+revalidate the control-plane tag.
 
 In another terminal, run the generated sample pipeline:
 

@@ -147,3 +147,6 @@ latest bounded check result; `favn_view` does not reconstruct this state.
 Use this app when changing lifecycle semantics, persistence contracts, workspace
 authorization, private API behavior, live-event DTOs, backfills, scheduling,
 admission, ownership, retries, cancellation, readiness, or operator read models.
+The supported one-control-plane/one-runner deployment and private network contract
+are documented under `docs/production/`; multi-node routing and failover are not
+part of this release.

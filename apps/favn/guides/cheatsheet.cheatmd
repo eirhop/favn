@@ -8,8 +8,8 @@ First local run:
 
 ```bash
 mix favn.init --duckdb --sample
-mix favn.doctor
 mix favn.install
+mix favn.doctor
 mix favn.dev
 mix favn.run MyApp.Pipelines.LocalSmoke
 ```
@@ -218,8 +218,8 @@ Local setup:
 | Command | Use it for |
 | --- | --- |
 | `mix favn.init` | Generate local Favn files and optional samples. |
-| `mix favn.doctor` | Check local configuration. |
 | `mix favn.install` | Verify Docker/Compose and install the prebuilt control-plane digest. |
+| `mix favn.doctor` | Check the installed local configuration. |
 | `mix favn.dev` | Start PostgreSQL, control plane, and runner as Compose services. |
 | `mix favn.stop` | Stop the local runtime stack. |
 
@@ -240,8 +240,8 @@ Manage local runtime:
 
 | Command | Use it for |
 | --- | --- |
-| `mix favn.reload` | Reload manifest or scheduler state where supported. |
-| `mix favn.reset` | Reset local runtime state. Use with care. |
+| `mix favn.reload` | Publish a manifest-only change or replace only the runner for executable changes. |
+| `mix favn.reset` | Preview project-scoped cleanup; add `--yes` to remove it. |
 | `mix favn.read_doc` | Read compiled Favn docs locally. |
 
 Packaging commands:
@@ -257,7 +257,7 @@ Packaging commands:
 
 - Depend on `:favn` from application code.
 - Add optional plugin packages only when you need them, such as DuckDB support.
-- Use `mix favn.init`, `mix favn.doctor`, `mix favn.install`, and `mix favn.dev`
+- Use `mix favn.init`, `mix favn.install`, `mix favn.doctor`, and `mix favn.dev`
   for first local setup.
 - Do not depend on Favn runtime, storage, or UI implementation apps directly.
 - Use public `mix favn.*` commands for local runtime work.

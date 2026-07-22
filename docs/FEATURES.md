@@ -131,5 +131,6 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - SQL adapter-native cancellation and broader DuckDB/DuckLake failure-injection
   coverage remain incomplete.
 
-CI runs fast, acceptance, and slow suites against PostgreSQL. Dependency advisory,
-documentation-link, ExDoc, and stale-document checks are not yet automated CI gates.
+CI runs fast, acceptance, and slow suites against PostgreSQL and enforces Hex and
+dependency advisory audits. Documentation-link, ExDoc, and stale-document checks
+are not yet automated CI gates.

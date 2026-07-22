@@ -5,12 +5,17 @@ Favn exposes local development through `mix favn.*` tasks.
 Use these commands from your application project. Do not depend on Favn runtime,
 storage, or UI implementation apps directly.
 
+Docker Engine and Docker Compose v2 are mandatory. Favn supports Linux amd64 and
+amd64 WSL2 using Linux containers. Native Windows, arm64, macOS emulation, and
+Podman are not supported in v1. Authenticate Docker to the private GHCR package
+with a pull-only credential before `mix favn.install`.
+
 ## First Local Flow
 
 ```bash
 mix favn.init --duckdb --sample
-mix favn.doctor
 mix favn.install
+mix favn.doctor
 mix favn.dev
 ```
 
@@ -121,7 +126,7 @@ Options:
 
 | Option | Meaning |
 | --- | --- |
-| `--service operator|web|orchestrator|runner|all` | Select service logs. |
+| `--service postgres|control-plane|runner|all` | Select service logs. |
 | `--tail N` | Number of lines or events. Default is 100. |
 | `--follow` | Follow service logs. Cannot be used with `RUN_ID`. |
 
@@ -164,9 +169,14 @@ mix favn.reset
 | --- | --- |
 | `mix favn.status` | Show whether the local stack is running, stopped, partial, stale, or unknown. |
 | `mix favn.diagnostics` | Show storage, scheduler, runner, and recent failure checks. |
-| `mix favn.reload` | Rebuild and reload authored modules into a running local stack. Blocks when runs are in flight. |
+| `mix favn.reload` | Publish a manifest-only change, or drain and replace only the runner for executable changes. |
 | `mix favn.stop` | Stop the local stack. |
-| `mix favn.reset` | Delete local `.favn/` install/build/runtime artifacts. Use with care. |
+| `mix favn.reset` | Print the project-scoped deletion plan and refuse to mutate without `--yes`. |
+
+`mix favn.stop` preserves PostgreSQL state and images. `mix favn.reset --yes`
+removes only the current project's Compose containers, network, PostgreSQL
+volume, generated runner images, and `.favn/` state; it does not remove the
+official control-plane image.
 
 ## Backfills
 

@@ -159,6 +159,8 @@ The production environment and network requirements are defined in
 [`control_plane_environment.md`](control_plane_environment.md). Database commands
 and privilege separation are defined in
 [`postgresql_operator_runbook.md`](postgresql_operator_runbook.md).
+Artifact ownership, deployment order, and topology limits are defined in
+[`deployment_topology.md`](deployment_topology.md).
 
 `scripts/control_plane_image_contract.sh` is the canonical static/content
 qualification. Release promotion additionally verifies the registry digest,

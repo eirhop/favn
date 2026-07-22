@@ -17,9 +17,10 @@ Vault contents, or runner/plugin-owned data.
 - One Favn-owned database and one `favn_control` schema.
 - One migrator identity with DDL authority and a separate `favn_runtime` identity.
 - Verified TLS with hostname checking on every production connection.
-- At least two orchestrator nodes are required for application-node failure
-  tolerance after the deployable multi-node topology in #522 exists. The database
-  coordination foundation alone is not a supported deployment artifact.
+- The first supported deployment has one control-plane node and one separate
+  runner node. Application-node failure tolerance requires the deferred
+  multi-node topology in #529; the database coordination foundation alone does
+  not provide failover.
 - Provider-managed high availability and point-in-time recovery (PITR).
 - Customer isolation through explicit workspace context and composite workspace
   keys; customers never receive database credentials.
@@ -73,9 +74,14 @@ free for failover, migrations, monitoring, and incident response. PgBouncer may
 protect connection count, but it cannot replace database capacity. This pool is
 unrelated to DuckLake metadata connection or write-concurrency budgets.
 
-## Local development
+## Repository storage development
 
-Docker and PostgreSQL client tools are prerequisites.
+These scripts are for Favn repository contributors working on the storage layer.
+Customer projects use the production-like `mix favn.install` and `mix favn.dev`
+Compose workflow documented in
+[`local_docker_compose.md`](local_docker_compose.md).
+
+Docker and PostgreSQL client tools are prerequisites for the repository scripts.
 
 ```bash
 scripts/postgres/setup
@@ -93,14 +99,15 @@ scripts/postgres/reset
 Developers using another service set `FAVN_DATABASE_MIGRATOR_URL` before setup.
 Credentials in `compose.postgres.yml` are local-only.
 
-The local container does not enable TLS. Local development uses its explicit dev
-configuration. A production-config acceptance launcher may use plaintext loopback
-only with both `FAVN_DATABASE_SSL_MODE=disable` and
-`FAVN_UNSAFE_ALLOW_PLAINTEXT_DATABASE=true`; never deploy that interlock.
+The repository-only local container does not enable TLS and uses explicit dev/test
+configuration. The production loader always requires verified PostgreSQL TLS and
+has no plaintext interlock.
 
 ## Deployment and migrations
 
 Runtime nodes never migrate at boot.
+Use this database procedure together with the immutable runtime sequence in
+[`upgrade_and_rollback.md`](upgrade_and_rollback.md).
 
 1. Record the current image and active manifest IDs, then run candidate-image
    preflight with a read-capable database role:

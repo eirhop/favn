@@ -125,6 +125,8 @@ Only an immediate peer inside `FAVN_VIEW_TRUSTED_PROXY_CIDRS` may supply
 untrusted peers before routing. The reverse proxy must terminate TLS, forward
 LiveView WebSocket upgrades, remove client-supplied forwarded headers, and have
 no public route to the orchestrator API, EPMD, BEAM distribution, or PostgreSQL.
+The complete exposure and trusted-network checklist is
+[`network_and_proxy.md`](network_and_proxy.md).
 
 ## Secret rotation
 
@@ -165,3 +167,6 @@ For a runtime-input encryption key:
 Changing `FAVN_VIEW_SECRET_KEY_BASE` requires a control-plane restart and
 invalidates all existing browser sessions. Operators must announce that users
 will sign in again; PostgreSQL application state is unaffected.
+
+The consolidated operator procedures, including distribution-cookie and database
+credential handling, are in [`secret_rotation.md`](secret_rotation.md).

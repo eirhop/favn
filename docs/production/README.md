@@ -45,8 +45,20 @@ Multi-node application failover is a later topology claim.
 - [`control_plane_environment.md`](control_plane_environment.md) defines the
   implemented same-BEAM environment, proxy, HTTP, lifecycle, shutdown, and secret
   contract.
+- [`deployment_topology.md`](deployment_topology.md) defines artifact ownership,
+  operator-owned infrastructure, startup order, and runtime limitations.
 - [`control_plane_image.md`](control_plane_image.md) defines the immutable OCI
   image, GHCR publishing, selective build identity, and maintainer candidate path.
+- [`runner_releases.md`](runner_releases.md) defines runner/manifest identities,
+  rebuild classification, customer image ownership, publication, and activation.
+- [`upgrade_and_rollback.md`](upgrade_and_rollback.md) defines control-plane,
+  runner-plus-manifest, and manifest-only procedures.
+- [`network_and_proxy.md`](network_and_proxy.md) defines the trusted network,
+  private ports, distributed-Erlang limitations, and reverse-proxy contract.
+- [`secret_rotation.md`](secret_rotation.md) defines environment-only manual
+  overlap, restart, inventory, and invalidation procedures.
+- [`local_docker_compose.md`](local_docker_compose.md) defines prerequisites,
+  private GHCR access, Compose parity, reload classification, and cleanup.
 - [`issue_522_acceptance_matrix.md`](issue_522_acceptance_matrix.md) maps the
   portable production contract to executable container evidence.
 - [`../storage/postgresql/architecture.md`](../storage/postgresql/architecture.md)
@@ -55,8 +67,6 @@ Multi-node application failover is a later topology claim.
   documents the schema.
 - [`postgresql_operator_runbook.md`](postgresql_operator_runbook.md) defines
   PostgreSQL operations.
-- [`control_plane_environment.md`](control_plane_environment.md) defines the
-  runtime configuration and secret contract.
 - [`../FEATURES.md`](../FEATURES.md) lists shipped capability and current limits.
 - [`../ROADMAP.md`](../ROADMAP.md) lists only the remaining production work.
 
