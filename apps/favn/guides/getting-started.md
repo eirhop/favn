@@ -10,6 +10,7 @@ local commands build and load what they need from your DSL modules.
 - An Elixir Mix project.
 - Linux amd64, or amd64 WSL2 with Linux containers.
 - Docker Engine and Docker Compose v2.
+- Elixir 1.20.2 on Erlang/OTP 29 for runner packaging.
 - Pull access to Favn's private GHCR control-plane package.
 - The Favn monorepo or private package source available to your project.
 
@@ -42,6 +43,11 @@ def deps do
 end
 ```
 
+Favn maintainers who need to switch a real consumer project between this
+approved checkout and an active local checkout should use the
+[`FAVN_CHECKOUT` dependency switch and `mix favn.maintainer.dev`](local-development.md#testing-a-local-favn-checkout).
+The normal checkout remains the default.
+
 ## 2. Generate The Local Sample
 
 Run this from your project root:
@@ -59,17 +65,27 @@ This creates a small local setup with:
 - a sample pipeline, usually `MyApp.Pipelines.LocalSmoke`
 - local Favn config
 
-## 3. Install The Local Compose Application
+## 3. Create The Local Compose File
+
+```bash
+mix favn.init --target compose
+```
+
+This writes `deploy/compose.local.yml` and a secret-free environment example.
+Commit and customize the Compose file as ordinary project configuration. Favn
+will validate its labeled service roles but will not overwrite it.
+
+## 4. Install The Control Plane Image
 
 ```bash
 mix favn.install
 ```
 
-This verifies Docker Engine and Compose v2, resolves the version-matched
-prebuilt control-plane image to an immutable digest, and writes project-scoped
-Compose state under `.favn/`. It does not compile the control plane.
+This verifies Docker Engine, resolves the version-matched prebuilt control-plane
+image to an immutable digest, and writes image-only install state under
+`.favn/`. It does not compile the control plane or own the Compose file.
 
-## 4. Check The Installed Setup
+## 5. Check The Installed Setup
 
 ```bash
 mix favn.doctor
@@ -77,7 +93,7 @@ mix favn.doctor
 
 Fix any reported config, dependency, image, or Compose issue before continuing.
 
-## 5. Start Favn Locally
+## 6. Start Favn Locally
 
 ```bash
 mix favn.dev
@@ -91,7 +107,7 @@ http://127.0.0.1:4173
 
 Keep `mix favn.dev` running.
 
-## 6. Run The Sample Pipeline
+## 7. Run The Sample Pipeline
 
 In another terminal:
 
@@ -102,7 +118,7 @@ mix favn.run MyApp.Pipelines.LocalSmoke
 If your generated pipeline has a different module name, use the name printed by
 `mix favn.init`.
 
-## 7. Inspect The Result
+## 8. Inspect The Result
 
 List recent runs:
 
@@ -128,7 +144,7 @@ Run a local read-only SQL query:
 mix favn.query "select * from mart.sales.order_summary" --connection important_lakehouse
 ```
 
-## 8. Stop Favn
+## 9. Stop Favn
 
 ```bash
 mix favn.stop
@@ -153,6 +169,8 @@ The generated files show the main authoring pieces you will use in real projects
 | --- | --- |
 | `mix favn.doctor` reports missing config | Check `config/config.exs` and the generated connection modules. |
 | `mix favn.install` fails | Fix the reported dependency, tool, or filesystem issue and run it again. |
+| `mix favn.dev` reports a missing Compose file | Run `mix favn.init --target compose`, review the template, and retry. |
+| `mix favn.dev` reports a Compose contract error | Keep one labeled service for each required Favn role; extra unlabeled services are allowed. |
 | `mix favn.dev` starts but UI does not load | Check the printed web URL, then run `mix favn.status` and `mix favn.diagnostics`. |
 | `mix favn.run` cannot find the pipeline | Use the generated pipeline module name printed by `mix favn.init`. |
 | Query or inspect cannot choose a connection | Pass `--connection important_lakehouse` or your configured connection name. |

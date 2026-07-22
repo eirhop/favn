@@ -168,6 +168,13 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     assert image_workflow =~ "control_plane_qualification_id.exs"
     assert image_workflow =~ "runtime_qualification_changed"
     assert image_workflow =~ "security_scan_changed"
+    assert image_workflow =~ "workflow_dispatch:"
+    refute image_workflow =~ "workflow_run:"
+    assert image_workflow =~ "Require current green main revision"
+    assert image_workflow =~ ~s(gh run list --workflow CI --branch main --commit "$HEAD_SHA")
+
+    assert image_workflow =~
+             "Manual publication always runs complete runtime and security qualification."
 
     [discover_job, _rest] = String.split(image_workflow, "  pr-candidate:", parts: 2)
     assert discover_job =~ "Enforce vulnerability exception review deadline"
@@ -192,7 +199,7 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     assert pr_job =~ "runtime_qualification_changed == 'true'"
     assert pr_job =~ "pr-security-scan:"
     assert pr_job =~ "security_scan_changed == 'true'"
-    assert pr_job =~ "Scan unchanged official control plane"
+    assert pr_job =~ "Scan resolved control plane"
     refute image_workflow =~ "apps/favn_azure/*"
     assert pr_job =~ ~s(ref="$IMAGE_REPOSITORY:build-$BUILD_ID")
 
@@ -212,6 +219,9 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
              ~s(control_plane_image_contract.sh "$IMAGE_REPOSITORY@$digest" "$BUILD_ID")
 
     assert pr_job =~ "FAVN_CONTROL_PLANE_CANDIDATE: ${{ steps.image.outputs.reference }}"
+    assert length(Regex.scan(~r/Resolve verified or unpublished control plane/, pr_job)) == 2
+    assert pr_job =~ "MIX_ENV=prod mix favn.build.control_plane --load"
+    assert pr_job =~ "elif [[ $lookup_status -eq 3 ]]"
 
     assert image_workflow =~
              "needs: [discover, pr-candidate, pr-runtime-acceptance, pr-security-scan, main-image, verify-published, record-main-verification]"
@@ -227,11 +237,17 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
       |> List.last()
       |> String.split("  record-main-verification:", parts: 2)
 
-    assert main_job =~
+    assert main_job =~ "- name: Run complete pre-publish container acceptance"
+
+    refute main_job =~
+             "- name: Compile production container acceptance tests\n        if: steps.lookup.outputs.exists == 'false'"
+
+    refute main_job =~
              "- name: Run complete pre-publish container acceptance\n        if: steps.lookup.outputs.exists == 'false'"
 
     assert main_job =~ "Scan reused official control plane"
     assert main_job =~ "needs.discover.outputs.security_scan_changed == 'true'"
+    assert main_job =~ ~s(image="$IMAGE_REPOSITORY@${{ steps.lookup.outputs.digest }}")
 
     [record_job, _rest] =
       image_workflow
@@ -243,6 +259,9 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     assert record_job =~ "docker/setup-buildx-action@"
     assert record_job =~ ~s($IMAGE_REPOSITORY:build-$BUILD_ID)
     assert record_job =~ "control_plane_registry.sh record-alias"
+
+    assert record_job =~
+             "[[ $(git rev-parse --verify 'origin/main^{commit}') == \"$HEAD_SHA\" ]]"
 
     assert release_workflow =~ "require-github-release-absent"
     assert release_workflow =~ "require-digest \"$IMAGE_REPOSITORY:sha-$TAGGED_SHA\""

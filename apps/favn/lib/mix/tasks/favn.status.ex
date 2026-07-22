@@ -18,11 +18,19 @@ defmodule Mix.Tasks.Favn.Status do
 
     IO.puts("Favn local Docker Compose stack")
     IO.puts("status: #{status.stack_status}")
-    IO.puts("project: #{status.compose_project || "not installed"}")
+    IO.puts("project: #{status.compose_project || "not running"}")
 
-    Enum.each(["postgres", "runner", "control-plane"], fn name ->
-      IO.puts("#{name}: #{format_service(status.services[name])}")
-    end)
+    if status[:compose_file] do
+      IO.puts("compose file: #{status.compose_file}")
+      IO.puts("compose contract: v#{status.compose_contract_version} #{status.compose_profile}")
+    end
+
+    Enum.each(
+      [{:postgres, "postgres"}, {:runner, "runner"}, {:control_plane, "control-plane"}],
+      fn {role, label} ->
+        IO.puts("#{label}: #{format_service(status.services[role])}")
+      end
+    )
 
     runner = status.runner || %{}
     IO.puts("runner release: #{runner["runner_release_id"] || "none"}")
@@ -41,6 +49,6 @@ defmodule Mix.Tasks.Favn.Status do
   defp format_service(nil), do: "stopped"
 
   defp format_service(service) do
-    "#{service.status} health=#{service.health} image=#{service.image || "unknown"}"
+    "#{service.status} service=#{service.service} health=#{service.health} image=#{service.image || "unknown"}"
   end
 end

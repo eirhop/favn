@@ -2,25 +2,26 @@ defmodule Favn.Dev.Install do
   @moduledoc """
   Installs the version-matched prebuilt control plane for local development.
 
-  Installation verifies Docker Engine and Compose v2, resolves the official
+  Installation verifies Docker Engine, resolves the official
   Favn version tag to one immutable GHCR RepoDigest, validates the image
-  contract, and writes project-scoped Compose state. It never compiles the
-  control plane and never accepts registry credentials.
+  contract, and writes image-only project state. It never probes Compose,
+  compiles the control plane, or accepts registry credentials.
   """
 
   alias Favn.Dev.{
-    ComposeProject,
-    Config,
     ControlPlaneImage,
     Docker,
     Lock,
     OutputRedactor,
-    Secrets,
     State
   }
+
+  alias Favn.Dev.Maintainer.Candidate
+
   alias Favn.RunnerRelease
 
-  @schema_version 4
+  @schema_version 5
+  @legacy_schema_version 4
 
   @type opts :: keyword()
 
@@ -40,8 +41,27 @@ defmodule Favn.Dev.Install do
 
   @spec ensure_ready(opts()) :: :ok | {:error, term()}
   def ensure_ready(opts \\ []) when is_list(opts) do
-    with {:ok, _probe} <- Docker.probe(opts) do
+    with {:ok, _probe} <- Docker.probe_engine(opts) do
       ensure_installed(opts)
+    end
+  end
+
+  @doc false
+  @spec select_maintainer(Candidate.t(), opts()) :: :ok | {:error, term()}
+  def select_maintainer(%Candidate{} = candidate, opts \\ []) when is_list(opts) do
+    with :ok <- maintainer_environment(opts),
+         {:ok, _probe} <- Docker.probe_engine(opts),
+         {:ok, image} <- Docker.inspect_image(candidate.image_id, opts),
+         true <- image.id == candidate.image_id,
+         {:ok, metadata} <- ControlPlaneImage.validate_install_image(image),
+         true <- metadata.control_plane_build_id == candidate.control_plane_build_id,
+         install <- maintainer_install_state(candidate, metadata, opts),
+         :ok <- State.write_install(install, opts) do
+      :ok
+    else
+      false -> {:error, :maintainer_control_plane_identity_mismatch}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, :invalid_maintainer_candidate}
     end
   end
 
@@ -63,7 +83,7 @@ defmodule Favn.Dev.Install do
 
   defp do_run(opts) do
     with :ok <- State.ensure_layout(opts),
-         {:ok, _probe} <- Docker.probe(opts),
+         {:ok, _probe} <- Docker.probe_engine(opts),
          version <- current_favn_version(opts),
          {:ok, decision} <- install_decision(version, opts) do
       case decision do
@@ -84,6 +104,12 @@ defmodule Favn.Dev.Install do
       {:ok, {:install, previous}}
     else
       case previous do
+        %{"schema_version" => @legacy_schema_version} ->
+          {:ok, {:install, previous}}
+
+        %{"source" => "maintainer"} ->
+          {:ok, {:install, previous}}
+
         %{} = install ->
           case validate_existing(install, version, opts) do
             :ok -> {:ok, :already_installed}
@@ -98,12 +124,8 @@ defmodule Favn.Dev.Install do
 
   defp install(version, previous, opts) do
     with {:ok, resolution} <- resolve_image(version, previous, opts),
-         config = Config.resolve(opts),
-         {:ok, secrets} <- Secrets.resolve(config, opts),
          install = install_state(version, resolution),
-         {:ok, project} <- ComposeProject.write(install, secrets, config, opts),
-         :ok <- validate_compose(project, opts),
-         :ok <- State.write_install(Map.put(install, "compose", project), opts) do
+         :ok <- State.write_install(install, opts) do
       {:ok, :installed}
     end
   end
@@ -157,8 +179,8 @@ defmodule Favn.Dev.Install do
 
   defp offline_reuse(previous, version, pull_error, opts) do
     case previous do
-      %{} = install ->
-        case validate_existing(install, version, opts) do
+      %{"source" => "official"} = install ->
+        case validate_reusable(install, version, opts) do
           :ok ->
             {:ok,
              install
@@ -180,7 +202,7 @@ defmodule Favn.Dev.Install do
             pull_error
         end
 
-      _missing ->
+      _missing_or_maintainer ->
         pull_error
     end
   end
@@ -215,19 +237,17 @@ defmodule Favn.Dev.Install do
            "schema_version" => @schema_version,
            "favn_version" => version,
            "image_reference" => reference,
-           "image_id" => image_id,
-           "compose" => compose
+           "image_id" => image_id
          } = install,
          version,
          opts
        )
-       when is_binary(reference) and is_binary(image_id) and is_map(compose) do
-    with :ok <- validate_source(install),
+       when is_binary(reference) and is_binary(image_id) do
+    with :ok <- validate_source(install, opts),
          {:ok, image} <- Docker.inspect_image(reference, opts),
          true <- image.id == image_id,
          {:ok, metadata} <- ControlPlaneImage.validate_install_image(image),
-         true <- compatible_metadata?(install, metadata),
-         :ok <- validate_compose_files(compose) do
+         true <- compatible_metadata?(install, metadata) do
       :ok
     else
       _invalid -> {:error, :install_stale}
@@ -236,7 +256,32 @@ defmodule Favn.Dev.Install do
 
   defp validate_existing(_install, _version, _opts), do: {:error, :install_stale}
 
-  defp validate_source(%{"source" => "official", "image_reference" => reference}) do
+  defp validate_reusable(
+         %{
+           "schema_version" => schema_version,
+           "favn_version" => version,
+           "image_reference" => reference,
+           "image_id" => image_id
+         } = install,
+         version,
+         opts
+       )
+       when schema_version in [@legacy_schema_version, @schema_version] and
+              is_binary(reference) and is_binary(image_id) do
+    with :ok <- validate_source(install, opts),
+         {:ok, image} <- Docker.inspect_image(reference, opts),
+         true <- image.id == image_id,
+         {:ok, metadata} <- ControlPlaneImage.validate_install_image(image),
+         true <- compatible_metadata?(install, metadata) do
+      :ok
+    else
+      _invalid -> {:error, :install_stale}
+    end
+  end
+
+  defp validate_reusable(_install, _version, _opts), do: {:error, :install_stale}
+
+  defp validate_source(%{"source" => "official", "image_reference" => reference}, _opts) do
     prefix = ControlPlaneImage.repository() <> "@sha256:"
 
     if String.starts_with?(reference, prefix),
@@ -244,11 +289,28 @@ defmodule Favn.Dev.Install do
       else: {:error, :invalid_official_reference}
   end
 
-  defp validate_source(%{"source" => "candidate"}) do
+  defp validate_source(%{"source" => "candidate"}, _opts) do
     if Mix.env() == :test, do: :ok, else: {:error, :candidate_control_plane_not_allowed}
   end
 
-  defp validate_source(_install), do: {:error, :invalid_control_plane_install_source}
+  defp validate_source(
+         %{
+           "source" => "maintainer",
+           "image_reference" => image_reference,
+           "checkout" => checkout,
+           "checkout_revision" => revision,
+           "checkout_dirty" => dirty
+         },
+         opts
+       )
+       when is_binary(image_reference) and is_binary(checkout) and is_binary(revision) and
+              is_boolean(dirty) do
+    if Regex.match?(~r/\Asha256:[0-9a-f]{64}\z/, image_reference),
+      do: maintainer_environment(opts),
+      else: {:error, :invalid_maintainer_control_plane}
+  end
+
+  defp validate_source(_install, _opts), do: {:error, :invalid_control_plane_install_source}
 
   defp compatible_metadata?(install, metadata) do
     install["control_plane_build_id"] == metadata.control_plane_build_id and
@@ -258,33 +320,6 @@ defmodule Favn.Dev.Install do
       install["target"] == metadata.target
   end
 
-  defp validate_compose(project, opts) do
-    case Docker.compose(project, ["config", "--quiet"], opts) do
-      {_output, 0} -> :ok
-      {output, status} -> {:error, {:invalid_generated_compose, status, bounded(output)}}
-    end
-  end
-
-  defp validate_compose_files(%{
-         "compose_path" => compose_path,
-         "env_path" => env_path,
-         "runner_env_path" => runner_env_path,
-         "postgres_init_path" => init_path,
-         "compose_sha256" => expected_hash
-       }) do
-    with {:ok, compose} <- File.read(compose_path),
-         true <- sha256(compose) == expected_hash,
-         true <- File.regular?(env_path),
-         true <- File.regular?(runner_env_path),
-         true <- File.regular?(init_path) do
-      :ok
-    else
-      _invalid -> {:error, :invalid_compose_files}
-    end
-  end
-
-  defp validate_compose_files(_project), do: {:error, :invalid_compose_files}
-
   defp install_state(version, resolution) do
     resolution
     |> Map.merge(%{
@@ -292,6 +327,34 @@ defmodule Favn.Dev.Install do
       "favn_version" => version,
       "installed_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     })
+  end
+
+  defp maintainer_install_state(candidate, metadata, opts) do
+    resolution =
+      metadata
+      |> stringify_metadata()
+      |> Map.merge(%{
+        "source" => "maintainer",
+        "lookup_reference" => candidate.image_tag,
+        "image_reference" => candidate.image_id,
+        "image_id" => candidate.image_id,
+        "candidate_path" => candidate.candidate_path,
+        "image_source_revision" => candidate.image_source_revision,
+        "image_source_dirty" => candidate.image_source_dirty,
+        "checkout" => candidate.checkout,
+        "checkout_revision" => candidate.checkout_revision,
+        "checkout_dirty" => candidate.checkout_dirty
+      })
+
+    install_state(current_favn_version(opts), resolution)
+  end
+
+  defp maintainer_environment(opts) do
+    cond do
+      Mix.env() == :dev -> :ok
+      Mix.env() == :test and Keyword.get(opts, :allow_maintainer_install, false) -> :ok
+      true -> {:error, {:maintainer_environment_forbidden, Mix.env()}}
+    end
   end
 
   defp stringify_metadata(metadata) do
@@ -318,11 +381,4 @@ defmodule Favn.Dev.Install do
       opts
     )
   end
-
-  defp bounded(output) when is_binary(output),
-    do: output |> String.trim() |> String.slice(-4_096, 4_096)
-
-  defp bounded(output), do: inspect(output, limit: 20, printable_limit: 1_024)
-
-  defp sha256(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
 end

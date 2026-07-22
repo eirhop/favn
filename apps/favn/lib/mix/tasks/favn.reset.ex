@@ -4,8 +4,9 @@ defmodule Mix.Tasks.Favn.Reset do
   @shortdoc "Deletes project-local Favn state"
 
   @moduledoc """
-  Stops and removes only the current project's Compose containers, network,
-  PostgreSQL volume, generated runner images, and `.favn/` state.
+  Removes generated local state and verified local runner image tags after proving
+  known Favn roles are stopped. It preserves the consumer Compose file,
+  services, containers, networks, volumes, and `.favn/data`.
 
       mix favn.reset --yes
 
@@ -39,9 +40,10 @@ defmodule Mix.Tasks.Favn.Reset do
         images -> Enum.join(images, ", ")
       end
 
-    "reset requires --yes and would remove only: " <>
-      "Compose project #{resources.compose_project}, " <>
-      "PostgreSQL volume #{resources.postgres_volume}, " <>
-      "runner images #{runner_images}, and #{resources.local_state}"
+    compose_file = resources.preserved_compose_file || "the selected consumer Compose file"
+
+    "reset requires --yes and would remove generated state below " <>
+      "#{resources.generated_state} (except #{resources.preserved_data}) and verified runner image tags #{runner_images}. " <>
+      "It will not delete #{compose_file}, containers, services, networks, volumes, or data."
   end
 end

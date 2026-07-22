@@ -13,7 +13,7 @@ recovery.
 | PostgreSQL Storage V2 | Implemented | Prove it against a production-sized restored snapshot and managed-provider PITR. |
 | Workspace isolation, fencing, idempotency, bounded reads | Implemented | Record load, contention, failover, and recovery evidence. |
 | Lifecycle, readiness, bounded drain | Implemented | Container acceptance covers idle/active SIGTERM, bounded cancellation, and recovery. |
-| Control-plane release image | Implemented | Main CI publishes a changed verified build to GHCR after merge. |
+| Control-plane release image | Implemented | A manual workflow publishes an exact current, green `main` revision to GHCR. Ordinary merges publish nothing. |
 | Customer runner and manifest releases | Implemented | Container acceptance covers execution, alignment, restart, upgrade, and rollback. |
 | Operator UI | Prototype | Finish core flows, audit mutations, and add browser acceptance. |
 | DuckDB/DuckLake data plane | Prototype | Define and verify backup, recovery, cancellation, and failure behavior. |
@@ -23,6 +23,12 @@ Favn has deterministic release inputs, runnable OCI artifacts, Docker-first
 installation, and executable upgrade, rotation, and production-container
 qualification. Operators still own the platform network, firewall, reverse
 proxy, database service, and immutable deployment configuration.
+
+Local development now uses the same ownership boundary: install selects only
+the immutable control-plane image, while the customer commits and may extend a
+versioned, labeled Compose template. Favn-generated credentials and image
+selections stay under `.favn/`; stop and reset never delete consumer Compose
+resources or durable data.
 
 ## Release gates
 

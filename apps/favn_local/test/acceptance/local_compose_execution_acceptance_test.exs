@@ -3,16 +3,20 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
   alias Favn.Dev.{
     Activate,
+    ComposeDeployment,
     ComposeEnv,
     ComposeLifecycle,
     ComposeProject,
     Docker,
     Install,
     OrchestratorClient,
+    Paths,
     Publish,
     Reset,
     State
   }
+
+  alias Favn.Dev.Init.Compose, as: ComposeInit
 
   @moduletag :integration
   @moduletag :container
@@ -20,9 +24,10 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
   @pipeline_id "pipeline:Elixir.FavnIssue262Sample.Pipelines.ProductionSmoke:production_smoke"
   @elixir_asset_id "asset:Elixir.FavnIssue262Sample.Assets.SourceCheck:asset"
+  @generated_pipeline_id "pipeline:Elixir.FavnGeneratedSample.Pipelines.LocalSmoke:local_smoke"
   @runner_environment %{
     "FAVN_CANONICAL_DELAY_MS" => "0",
-    "FAVN_CANONICAL_DUCKDB_PATH" => "/tmp/favn/canonical-acceptance.duckdb",
+    "FAVN_CANONICAL_DUCKDB_PATH" => "/var/lib/favn/data/canonical-acceptance.duckdb",
     "FAVN_CANONICAL_MISSING_SECRET" => "compose-acceptance-present-secret",
     "FAVN_CANONICAL_SOURCE_NAME" => "compose-acceptance",
     "FAVN_CANONICAL_SOURCE_TOKEN" => "compose-acceptance-source-token",
@@ -36,7 +41,9 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
     {:ok, image} = Docker.inspect_image(candidate)
     root_dir = Favn.Local.CanonicalSampleProject.create!("favn_local_compose_execution")
+    scaffold_generated_sample!(root_dir)
     run_mix!(root_dir, ["deps.get"])
+    assert {:ok, _scaffold} = ComposeInit.run(root_dir: root_dir)
 
     opts = [
       root_dir: root_dir,
@@ -54,10 +61,12 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     ]
 
     assert {:ok, :installed} = Install.run(opts)
+    project_name = ComposeProject.project_name(root_dir)
 
     on_exit(fn ->
       _ = ComposeLifecycle.stop(opts)
       _ = Reset.run(Keyword.put(opts, :yes, true))
+      cleanup_project_resources(project_name)
       File.rm_rf(root_dir)
     end)
 
@@ -66,6 +75,7 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
   test "canonical customer runner executes Elixir and SQL assets", context do
     assert {:ok, started} = ComposeLifecycle.start(context.opts)
+    deployment = deployment!(context.opts)
     assert {:ok, secrets} = State.read_secrets(root_dir: context.root_dir)
 
     assert {:ok, session} =
@@ -126,8 +136,49 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     assert get_in(summary, ["output_metadata", "materialized", "schema"]) == "mart"
     assert get_in(summary, ["output_metadata", "materialized", "name"]) == "order_summary"
 
+    generated_payload =
+      put_in(payload, [:target], %{type: "pipeline", id: @generated_pipeline_id})
+
+    assert {:ok, generated_run} =
+             OrchestratorClient.submit_run(
+               started.orchestrator_url,
+               secrets["service_token"],
+               session,
+               generated_payload
+             )
+
+    generated_terminal =
+      await_terminal_run!(
+        started.orchestrator_url,
+        secrets,
+        session,
+        generated_run["id"],
+        context.opts
+      )
+
+    assert generated_terminal["status"] == "ok", compose_logs(context.opts)
+
+    generated_outcomes =
+      generated_terminal["asset_results"]
+      |> Enum.map(&{&1["asset_ref"], &1["status"]})
+      |> Map.new()
+
+    assert generated_outcomes[
+             "Elixir.FavnGeneratedSample.Lakehouse.Raw.Sales.Orders:asset"
+           ] == "ok"
+
+    assert generated_outcomes[
+             "Elixir.FavnGeneratedSample.Lakehouse.Mart.Sales.OrderSummary:asset"
+           ] == "ok"
+
+    sample_paths = generated_sample_paths(context.root_dir)
+    assert Enum.all?(sample_paths, &File.regular?/1)
+    sample_sizes = Map.new(sample_paths, &{&1, File.stat!(&1).size})
+
     assert :ok = ComposeLifecycle.stop(context.opts)
+    assert Enum.all?(sample_sizes, fn {path, size} -> File.stat!(path).size == size end)
     assert {:ok, restarted} = ComposeLifecycle.start(context.opts)
+    assert Enum.all?(sample_sizes, fn {path, size} -> File.stat!(path).size == size end)
 
     assert {:ok, restarted_session} =
              OrchestratorClient.password_login(
@@ -179,17 +230,14 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
     assert restarted_terminal["status"] == "ok", compose_logs(context.opts)
 
-    assert {:ok, install} = State.read_install(root_dir: context.root_dir)
-    project = install["compose"]
-
     assert_control_plane_upgrade_and_rollback!(
-      project,
+      deployment,
       context.opts,
       secrets,
       payload
     )
 
-    before_sql_only = inspect_services(project)
+    before_sql_only = inspect_services(deployment)
     assert {:ok, before_sql_latest} = State.read_runner_latest(root_dir: context.root_dir)
 
     replace_source!(
@@ -200,7 +248,7 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     )
 
     assert :ok = ComposeLifecycle.reload(context.opts)
-    after_sql_only = inspect_services(project)
+    after_sql_only = inspect_services(deployment)
     assert {:ok, sql_latest} = State.read_runner_latest(root_dir: context.root_dir)
     assert sql_latest["runner_release_id"] == before_sql_latest["runner_release_id"]
     assert sql_latest["image_id"] == before_sql_latest["image_id"]
@@ -240,7 +288,7 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
              Activate.run(
                orchestrator_url: restarted.orchestrator_url,
                manifest_version_id: staged.manifest_version_id,
-               workspace_id: project["workspace_id"],
+               workspace_id: deployment.workspace_id,
                env: %{"FAVN_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"]}
              )
 
@@ -261,11 +309,101 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     assert activated_latest["runner_release_id"] == changed_latest["runner_release_id"]
 
     assert_shutdown_and_dependency_recovery!(
-      project,
+      deployment,
       context.opts,
       secrets,
       restarted_session,
       payload
+    )
+  end
+
+  defp scaffold_generated_sample!(root_dir) do
+    assert {:ok, result} =
+             Favn.Dev.init(
+               root_dir: root_dir,
+               app: :favn_issue262_sample,
+               base_module: "FavnGeneratedSample",
+               duckdb: true,
+               sample: true
+             )
+
+    assert result.pipeline_module == "FavnGeneratedSample.Pipelines.LocalSmoke"
+
+    File.write!(
+      Path.join(root_dir, "config/config.exs"),
+      """
+
+      config :favn,
+        asset_modules: :all,
+        pipeline_modules: :all,
+        connection_modules: :all,
+        schedule_modules: :all,
+        connections: [
+          issue262_warehouse: [
+            open: [
+              database: %{
+                __struct__: Favn.RuntimeConfig.Ref,
+                provider: :env,
+                key: "FAVN_CANONICAL_DUCKDB_PATH",
+                secret?: false,
+                required?: true
+              }
+            ],
+            duckdb: []
+          ],
+          important_lakehouse: [
+            open: [
+              database: %{
+                __struct__: Favn.RuntimeConfig.Ref,
+                provider: :env,
+                key: "FAVN_LOCAL_SAMPLE_DATABASE_PATH",
+                secret?: false,
+                required?: true
+              }
+            ],
+            duckdb: [
+              resources: [
+                raw_catalog: [
+                  file: {:priv, :favn_issue262_sample, "duckdb/raw_catalog.sql"},
+                  params: [
+                    database_path: %{
+                      __struct__: Favn.RuntimeConfig.Ref,
+                      provider: :env,
+                      key: "FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH",
+                      secret?: false,
+                      required?: true
+                    }
+                  ]
+                ],
+                mart_catalog: [
+                  file: {:priv, :favn_issue262_sample, "duckdb/mart_catalog.sql"},
+                  params: [
+                    database_path: %{
+                      __struct__: Favn.RuntimeConfig.Ref,
+                      provider: :env,
+                      key: "FAVN_LOCAL_SAMPLE_MART_CATALOG_PATH",
+                      secret?: false,
+                      required?: true
+                    }
+                  ]
+                ]
+              ],
+              catalogs: [
+                raw: [resource: :raw_catalog, write_concurrency: 1],
+                mart: [resource: :mart_catalog, write_concurrency: 1]
+              ]
+            ]
+          ]
+        ]
+      """,
+      [:append]
+    )
+  end
+
+  defp generated_sample_paths(root_dir) do
+    Enum.map(
+      ["local_smoke.duckdb", "raw.duckdb", "mart.duckdb"],
+      &Path.join(root_dir, ".favn/data/#{&1}")
     )
   end
 
@@ -329,11 +467,11 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     assert output =~ ":runtime_code"
   end
 
-  defp assert_control_plane_upgrade_and_rollback!(project, opts, secrets, payload) do
-    original_reference = project["control_plane_image"]
+  defp assert_control_plane_upgrade_and_rollback!(deployment, opts, secrets, payload) do
+    original_reference = deployment.control_plane_image
     upgrade_reference = acceptance_image_reference("upgrade")
     base_reference = acceptance_image_reference("base")
-    context_dir = Path.join(Path.dirname(project["compose_path"]), "upgrade-context")
+    context_dir = Path.join(Path.dirname(deployment.compose_file), "upgrade-context")
 
     File.mkdir_p!(context_dir)
 
@@ -364,33 +502,33 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
                stderr_to_stdout: true
              )
 
-    release_operation!(project, "preflight-upgrade", opts)
-    stop_control_plane!(project, opts)
-    downgrade_runner_identity_schema!(project)
-    put_compose_environment!(project, %{"FAVN_CONTROL_PLANE_IMAGE" => upgrade_reference})
-    release_operation!(project, "preflight-upgrade", opts)
-    release_operation!(project, "migrate", opts)
-    release_operation!(project, "grant-runtime", opts)
-    release_operation!(project, "verify-schema", opts)
-    recreate_control_plane!(project, opts)
+    release_operation!(deployment, "preflight-upgrade", opts)
+    stop_control_plane!(deployment, opts)
+    downgrade_runner_identity_schema!(deployment)
+    put_compose_environment!(deployment, %{"FAVN_CONTROL_PLANE_IMAGE" => upgrade_reference})
+    release_operation!(deployment, "preflight-upgrade", opts)
+    release_operation!(deployment, "migrate", opts)
+    release_operation!(deployment, "grant-runtime", opts)
+    release_operation!(deployment, "verify-schema", opts)
+    recreate_control_plane!(deployment, opts)
     await_stack_ready!(opts)
-    assert_control_plane_smoke!(project, opts, secrets, payload)
+    assert_control_plane_smoke!(deployment, opts, secrets, payload)
 
-    put_compose_environment!(project, %{"FAVN_CONTROL_PLANE_IMAGE" => original_reference})
-    release_operation!(project, "preflight-upgrade", opts)
-    recreate_control_plane!(project, opts)
-    release_operation!(project, "verify-schema", opts)
+    put_compose_environment!(deployment, %{"FAVN_CONTROL_PLANE_IMAGE" => original_reference})
+    release_operation!(deployment, "preflight-upgrade", opts)
+    recreate_control_plane!(deployment, opts)
+    release_operation!(deployment, "verify-schema", opts)
     await_stack_ready!(opts)
-    assert_control_plane_smoke!(project, opts, secrets, payload)
+    assert_control_plane_smoke!(deployment, opts, secrets, payload)
   end
 
   defp acceptance_image_reference(kind) do
     "favn-control-plane-acceptance-#{kind}:#{System.unique_integer([:positive])}"
   end
 
-  defp downgrade_runner_identity_schema!(project) do
-    assert {:ok, environment} = ComposeEnv.read(project["env_path"])
-    postgres = inspect_service(project, "postgres")
+  defp downgrade_runner_identity_schema!(deployment) do
+    assert {:ok, environment} = ComposeEnv.read(deployment.env_file)
+    postgres = inspect_service(deployment, "postgres")
 
     sql = """
     ALTER TABLE favn_control.manifest_versions
@@ -422,13 +560,13 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     assert output =~ "DELETE 1"
   end
 
-  defp release_operation!(project, operation, opts) do
+  defp release_operation!(deployment, operation, opts) do
     service =
       if operation == "verify-schema", do: "control-plane-verify", else: "control-plane-ops"
 
     assert {output, 0} =
              Docker.compose(
-               project,
+               deployment,
                ["--profile", "operations", "run", "--rm", service, operation],
                Keyword.put(opts, :compose_command_timeout_ms, 600_000)
              )
@@ -436,59 +574,59 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     assert output =~ "status=ok"
   end
 
-  defp stop_control_plane!(project, opts) do
+  defp stop_control_plane!(deployment, opts) do
     assert {_output, 0} =
              Docker.compose(
-               project,
+               deployment,
                ["stop", "--timeout", "180", "control-plane"],
                Keyword.put(opts, :compose_command_timeout_ms, 300_000)
              )
   end
 
-  defp recreate_control_plane!(project, opts) do
+  defp recreate_control_plane!(deployment, opts) do
     assert {_output, 0} =
              Docker.compose(
-               project,
+               deployment,
                ["up", "--detach", "--wait", "--no-deps", "--force-recreate", "control-plane"],
                Keyword.put(opts, :compose_command_timeout_ms, 300_000)
              )
   end
 
-  defp assert_control_plane_smoke!(project, opts, secrets, payload) do
+  defp assert_control_plane_smoke!(deployment, opts, secrets, payload) do
     assert {:ok, session} =
              OrchestratorClient.password_login(
-               project["orchestrator_url"],
+               deployment.orchestrator_url,
                secrets["service_token"],
                "local-dev",
                "admin",
                secrets["bootstrap_password"]
              )
 
-    run_id = submit_active_pipeline!(project, secrets, session, payload)
+    run_id = submit_active_pipeline!(deployment, secrets, session, payload)
 
-    assert await_terminal_run!(project["orchestrator_url"], secrets, session, run_id, opts)[
+    assert await_terminal_run!(deployment.orchestrator_url, secrets, session, run_id, opts)[
              "status"
            ] == "ok"
   end
 
-  defp assert_shutdown_and_dependency_recovery!(project, opts, secrets, session, payload) do
+  defp assert_shutdown_and_dependency_recovery!(deployment, opts, secrets, session, payload) do
     asset_payload = put_in(payload, [:target], %{type: "asset", id: @elixir_asset_id})
 
-    configure_runner!(project, opts, %{
+    configure_runner!(deployment, opts, %{
       "FAVN_CANONICAL_DELAY_MS" => "1500",
       "FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS" => "5000"
     })
 
-    control_plane_run = submit_active_pipeline!(project, secrets, session, payload)
+    control_plane_run = submit_active_pipeline!(deployment, secrets, session, payload)
 
     assert %{"status" => "running"} =
-             await_run_status!(project, secrets, session, control_plane_run)
+             await_run_status!(deployment, secrets, session, control_plane_run)
 
-    await_runner_active!(project)
-    control_plane_before = inspect_service(project, "control-plane")
+    await_runner_active!(deployment)
+    control_plane_before = inspect_service(deployment, "control-plane")
 
     signal_and_restart!(
-      project,
+      deployment,
       "control-plane",
       control_plane_before["Id"],
       control_plane_before["State"]["StartedAt"]
@@ -496,7 +634,7 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
     control_plane_terminal =
       await_terminal_run!(
-        project["orchestrator_url"],
+        deployment.orchestrator_url,
         secrets,
         session,
         control_plane_run,
@@ -511,36 +649,39 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
     await_stack_ready!(opts)
 
-    runner_run = submit_active_pipeline!(project, secrets, session, asset_payload)
-    assert %{"status" => "running"} = await_run_status!(project, secrets, session, runner_run)
-    await_runner_active!(project)
-    runner_before = inspect_service(project, "runner")
+    runner_run = submit_active_pipeline!(deployment, secrets, session, asset_payload)
+    assert %{"status" => "running"} = await_run_status!(deployment, secrets, session, runner_run)
+    await_runner_active!(deployment)
+    runner_before = inspect_service(deployment, "runner")
 
     signal_and_restart!(
-      project,
+      deployment,
       "runner",
       runner_before["Id"],
       runner_before["State"]["StartedAt"]
     )
 
-    assert await_terminal_run!(project["orchestrator_url"], secrets, session, runner_run, opts)[
+    assert await_terminal_run!(deployment.orchestrator_url, secrets, session, runner_run, opts)[
              "status"
            ] == "ok"
 
     await_stack_ready!(opts)
 
-    configure_runner!(project, opts, %{
+    configure_runner!(deployment, opts, %{
       "FAVN_CANONICAL_DELAY_MS" => "3500",
       "FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS" => "1000"
     })
 
-    deadline_run = submit_active_pipeline!(project, secrets, session, asset_payload)
-    assert %{"status" => "running"} = await_run_status!(project, secrets, session, deadline_run)
-    await_runner_active!(project)
-    deadline_runner = inspect_service(project, "runner")
+    deadline_run = submit_active_pipeline!(deployment, secrets, session, asset_payload)
+
+    assert %{"status" => "running"} =
+             await_run_status!(deployment, secrets, session, deadline_run)
+
+    await_runner_active!(deployment)
+    deadline_runner = inspect_service(deployment, "runner")
 
     signal_and_restart!(
-      project,
+      deployment,
       "runner",
       deadline_runner["Id"],
       deadline_runner["State"]["StartedAt"]
@@ -548,7 +689,7 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
     assert %{"status" => deadline_status} =
              await_terminal_run!(
-               project["orchestrator_url"],
+               deployment.orchestrator_url,
                secrets,
                session,
                deadline_run,
@@ -558,23 +699,26 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     assert deadline_status in ["error", "cancelled", "timed_out"]
     await_stack_ready!(opts)
 
-    configure_runner!(project, opts, %{
+    configure_runner!(deployment, opts, %{
       "FAVN_CANONICAL_DELAY_MS" => "1500",
       "FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS" => "5000"
     })
 
-    completion_run = submit_active_pipeline!(project, secrets, session, asset_payload)
-    assert %{"status" => "running"} = await_run_status!(project, secrets, session, completion_run)
-    await_runner_active!(project)
-    control_plane = inspect_service(project, "control-plane")
+    completion_run = submit_active_pipeline!(deployment, secrets, session, asset_payload)
+
+    assert %{"status" => "running"} =
+             await_run_status!(deployment, secrets, session, completion_run)
+
+    await_runner_active!(deployment)
+    control_plane = inspect_service(deployment, "control-plane")
     stop_container_abruptly!(control_plane["Id"])
     Process.sleep(2_000)
     start_container!(control_plane["Id"])
-    await_service_restart!(project, "control-plane", control_plane["State"]["StartedAt"])
+    await_service_restart!(deployment, "control-plane", control_plane["State"]["StartedAt"])
 
     completion_terminal =
       await_terminal_run!(
-        project["orchestrator_url"],
+        deployment.orchestrator_url,
         secrets,
         session,
         completion_run,
@@ -586,15 +730,18 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
     await_stack_ready!(opts)
 
-    dependency_run = submit_active_pipeline!(project, secrets, session, asset_payload)
-    assert %{"status" => "running"} = await_run_status!(project, secrets, session, dependency_run)
-    await_runner_active!(project)
-    runner = inspect_service(project, "runner")
+    dependency_run = submit_active_pipeline!(deployment, secrets, session, asset_payload)
+
+    assert %{"status" => "running"} =
+             await_run_status!(deployment, secrets, session, dependency_run)
+
+    await_runner_active!(deployment)
+    runner = inspect_service(deployment, "runner")
     stop_container_abruptly!(runner["Id"])
 
     assert %{"status" => dependency_status} =
              await_terminal_run!(
-               project["orchestrator_url"],
+               deployment.orchestrator_url,
                secrets,
                session,
                dependency_run,
@@ -603,13 +750,13 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
     assert dependency_status in ["error", "cancelled", "timed_out"]
     start_container!(runner["Id"])
-    await_service_restart!(project, "runner", runner["State"]["StartedAt"])
+    await_service_restart!(deployment, "runner", runner["State"]["StartedAt"])
     await_stack_ready!(opts)
 
-    idle_control_plane = inspect_service(project, "control-plane")
+    idle_control_plane = inspect_service(deployment, "control-plane")
 
     signal_and_restart!(
-      project,
+      deployment,
       "control-plane",
       idle_control_plane["Id"],
       idle_control_plane["State"]["StartedAt"]
@@ -618,13 +765,18 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     await_stack_ready!(opts)
   end
 
-  defp configure_runner!(project, opts, updates) do
+  defp configure_runner!(deployment, opts, updates) do
     environment = Map.merge(@runner_environment, updates)
-    assert :ok = ComposeProject.put_runner_environment(project, environment)
+
+    assert :ok =
+             ComposeProject.put_runner_environment(
+               %{"runner_env_path" => Paths.compose_runner_env_path(deployment.root_dir)},
+               environment
+             )
 
     assert {_output, 0} =
              Docker.compose(
-               project,
+               deployment,
                ["up", "--detach", "--wait", "--no-deps", "--force-recreate", "runner"],
                Keyword.put(opts, :compose_command_timeout_ms, 300_000)
              )
@@ -632,17 +784,17 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     await_stack_ready!(opts)
   end
 
-  defp put_compose_environment!(project, updates) do
-    assert {:ok, environment} = ComposeEnv.read(project["env_path"])
+  defp put_compose_environment!(deployment, updates) do
+    assert {:ok, environment} = ComposeEnv.read(deployment.env_file)
     assert {:ok, encoded} = ComposeEnv.encode(Map.merge(environment, updates))
-    assert :ok = File.write(project["env_path"], encoded)
-    assert :ok = File.chmod(project["env_path"], 0o600)
+    assert :ok = File.write(deployment.env_file, encoded)
+    assert :ok = File.chmod(deployment.env_file, 0o600)
   end
 
-  defp submit_active_pipeline!(project, secrets, session, payload) do
+  defp submit_active_pipeline!(deployment, secrets, session, payload) do
     assert {:ok, %{"manifest" => active}} =
              OrchestratorClient.bootstrap_active_manifest(
-               project["orchestrator_url"],
+               deployment.orchestrator_url,
                secrets["service_token"],
                session
              )
@@ -656,7 +808,7 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
     assert {:ok, run} =
              OrchestratorClient.submit_run(
-               project["orchestrator_url"],
+               deployment.orchestrator_url,
                secrets["service_token"],
                session,
                active_payload
@@ -665,11 +817,11 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     run["id"]
   end
 
-  defp await_run_status!(project, secrets, session, run_id, attempts \\ 120)
+  defp await_run_status!(deployment, secrets, session, run_id, attempts \\ 120)
 
-  defp await_run_status!(project, secrets, session, run_id, attempts) when attempts > 0 do
+  defp await_run_status!(deployment, secrets, session, run_id, attempts) when attempts > 0 do
     case OrchestratorClient.get_run(
-           project["orchestrator_url"],
+           deployment.orchestrator_url,
            secrets["service_token"],
            session,
            run_id
@@ -683,17 +835,17 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
       _pending_or_unavailable ->
         Process.sleep(100)
-        await_run_status!(project, secrets, session, run_id, attempts - 1)
+        await_run_status!(deployment, secrets, session, run_id, attempts - 1)
     end
   end
 
   defp await_run_status!(_project, _secrets, _session, run_id, 0),
     do: flunk("run #{run_id} never reached running")
 
-  defp await_runner_active!(project, attempts \\ 120)
+  defp await_runner_active!(deployment, attempts \\ 120)
 
-  defp await_runner_active!(project, attempts) when attempts > 0 do
-    runner = inspect_service(project, "runner")
+  defp await_runner_active!(deployment, attempts) when attempts > 0 do
+    runner = inspect_service(deployment, "runner")
 
     expression =
       "case FavnRunner.diagnostics() do {:ok, value} -> IO.puts(value.admission.active_worker_count); other -> raise inspect(other) end"
@@ -708,12 +860,12 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
           :ok
         else
           Process.sleep(100)
-          await_runner_active!(project, attempts - 1)
+          await_runner_active!(deployment, attempts - 1)
         end
 
       {_output, _status} ->
         Process.sleep(100)
-        await_runner_active!(project, attempts - 1)
+        await_runner_active!(deployment, attempts - 1)
     end
   end
 
@@ -723,11 +875,11 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     assert {_output, 0} = System.cmd("docker", ["kill", "--signal", signal, container_id])
   end
 
-  defp signal_and_restart!(project, service, container_id, previous_started_at) do
+  defp signal_and_restart!(deployment, service, container_id, previous_started_at) do
     signal_container!(container_id, "TERM")
     await_container_stopped!(container_id)
     start_container!(container_id)
-    await_service_restart!(project, service, previous_started_at)
+    await_service_restart!(deployment, service, previous_started_at)
   end
 
   defp await_container_stopped!(container_id, attempts \\ 240)
@@ -765,11 +917,11 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
              System.cmd("docker", ["update", "--restart", "unless-stopped", container_id])
   end
 
-  defp await_service_restart!(project, service, previous_started_at, attempts \\ 240)
+  defp await_service_restart!(deployment, service, previous_started_at, attempts \\ 240)
 
-  defp await_service_restart!(project, service, previous_started_at, attempts)
+  defp await_service_restart!(deployment, service, previous_started_at, attempts)
        when attempts > 0 do
-    inspection = inspect_service(project, service)
+    inspection = inspect_service(deployment, service)
 
     if inspection["State"]["Running"] and
          inspection["State"]["StartedAt"] != previous_started_at and
@@ -777,11 +929,11 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
       inspection
     else
       Process.sleep(250)
-      await_service_restart!(project, service, previous_started_at, attempts - 1)
+      await_service_restart!(deployment, service, previous_started_at, attempts - 1)
     end
   end
 
-  defp await_service_restart!(_project, service, _previous_started_at, 0),
+  defp await_service_restart!(_deployment, service, _previous_started_at, 0),
     do: flunk("#{service} did not restart healthy")
 
   defp await_stack_ready!(opts, attempts \\ 240)
@@ -799,14 +951,16 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
 
   defp await_stack_ready!(_opts, 0), do: flunk("Compose stack did not recover readiness")
 
-  defp inspect_services(project) do
+  defp inspect_services(deployment) do
     Map.new(["runner", "control-plane"], fn service ->
-      {service, inspect_service(project, service)}
+      {service, inspect_service(deployment, service)}
     end)
   end
 
-  defp inspect_service(project, service) do
-    assert {container, 0} = Docker.compose(project, ["ps", "--all", "--quiet", service])
+  defp inspect_service(deployment, service) do
+    assert {container, 0} =
+             Docker.compose(deployment, ["ps", "--all", "--quiet", service])
+
     container = String.trim(container)
     assert container != ""
     assert {encoded, 0} = System.cmd("docker", ["container", "inspect", container])
@@ -847,6 +1001,33 @@ defmodule Favn.Local.ComposeExecutionAcceptanceTest do
     ExUnit.CaptureIO.capture_io(fn ->
       _ = ComposeLifecycle.logs(Keyword.put(opts, :tail, 300))
     end)
+  end
+
+  defp deployment!(opts) do
+    assert {:ok, runtime} = State.read_runtime(opts)
+    assert {:ok, deployment} = ComposeDeployment.from_runtime(runtime, opts)
+    deployment
+  end
+
+  defp cleanup_project_resources(project_name) do
+    {containers, 0} =
+      System.cmd("docker", [
+        "container",
+        "ls",
+        "--all",
+        "--quiet",
+        "--filter",
+        "label=com.docker.compose.project=#{project_name}"
+      ])
+
+    case String.split(containers, "\n", trim: true) do
+      [] -> :ok
+      ids -> _ = System.cmd("docker", ["container", "rm", "--force" | ids])
+    end
+
+    _ = System.cmd("docker", ["network", "rm", project_name <> "-network"])
+    _ = System.cmd("docker", ["volume", "rm", "--force", project_name <> "-postgres-data"])
+    :ok
   end
 
   defp run_mix!(root_dir, args) do

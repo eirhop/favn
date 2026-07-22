@@ -27,4 +27,5 @@ favn-*.tar
 /.playwright-mcp/
 .favn/
 .env
+.env.local
 .vscode/

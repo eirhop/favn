@@ -8,7 +8,10 @@ defmodule Mix.Tasks.Favn.Build.Runner do
   Builds `.favn/dist/runner/<runner_release_id>` as a relocatable OCI context.
 
   The runner build is rooted in the current Mix project. `--root-dir` controls
-  artifact location only when it matches the current project root.
+  artifact location only when it matches the current project root. It does not
+  require install, Docker, or Compose. The generated Dockerfile keeps dependency
+  compilation in a stable BuildKit layer and rebuilds the immutable release
+  layer when customer code changes.
   """
 
   alias Favn.Dev
@@ -39,16 +42,8 @@ defmodule Mix.Tasks.Favn.Build.Runner do
         IO.puts("aligned manifest: #{manifest_dir}")
         IO.puts("note: see #{Path.join(dist_dir, "operator-notes.md")}")
 
-      {:error, :install_required} ->
-        Mix.raise("build blocked: install required; run mix favn.install")
-
-      {:error, :install_stale} ->
-        Mix.raise(
-          "build blocked: install stale; run mix favn.install to refresh, or mix favn.install --force to repull and revalidate"
-        )
-
       {:error, {:missing_tool, tool}} ->
-        Mix.raise("build blocked: missing required tool #{tool}; run mix favn.install")
+        Mix.raise("build blocked: missing required tool #{tool}")
 
       {:error, {:unsupported_root_dir, requested, current}} ->
         Mix.raise(

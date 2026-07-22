@@ -52,7 +52,7 @@ defmodule Favn.Dev.Build.RunnerTest do
     expected = %{elixir_version: "1.20.2", otp_release: "29"}
 
     assert RunnerReleaseInput.expected_toolchain() == expected
-    assert :ok = RunnerReleaseInput.validate_host_toolchain()
+    assert :ok = RunnerReleaseInput.validate_toolchain(expected)
 
     assert {:error,
             {:runner_build_toolchain_mismatch, ^expected,
@@ -83,12 +83,15 @@ defmodule Favn.Dev.Build.RunnerTest do
       "operator-notes.md",
       "manifest/bundle.json",
       "manifest/manifest-index.json",
-      "release-input/mix.exs",
-      "release-input/mix.lock",
-      "release-input/dependency-lock.json",
-      "release-input/stamp_apps.exs",
-      "release-input/apps/favn_local/mix.exs",
-      "release-input/apps/favn_runner/priv/runner-release.json"
+      "dependency-input/mix.exs",
+      "dependency-input/mix.lock",
+      "dependency-input/dependency-input.json",
+      "dependency-input/apps/favn_runner/mix.exs",
+      "application-input/mix.exs",
+      "application-input/dependency-lock.json",
+      "application-input/stamp_apps.exs",
+      "application-input/apps/favn_local/mix.exs",
+      "application-input/runner-priv/runner-release.json"
     ]
 
     assert Enum.all?(expected, &File.exists?(Path.join(result.dist_dir, &1)))
@@ -98,6 +101,15 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert {:ok, descriptor} = RunnerRelease.decode(descriptor_bytes)
     assert descriptor.runner_release_id == result.runner_release_id
     assert Enum.any?(descriptor.runtime_applications, &(&1.application == "favn_local"))
+
+    dependency_identity =
+      result.dist_dir
+      |> Path.join("dependency-input/dependency-input.json")
+      |> File.read!()
+      |> JSON.decode!()
+
+    assert dependency_identity["digest"] =~ ~r/\A[0-9a-f]{64}\z/
+    refute Enum.any?(dependency_identity["files"], &String.contains?(&1["path"], "favn_local"))
 
     assert {:ok, bundle_bytes} = File.read(Path.join(result.dist_dir, "bundle.json"))
     assert {:ok, bundle} = JSON.decode(bundle_bytes)
@@ -109,7 +121,11 @@ defmodule Favn.Dev.Build.RunnerTest do
 
     dockerfile = File.read!(Path.join(result.dist_dir, "Dockerfile"))
     assert dockerfile =~ "@sha256:"
-    assert length(Regex.scan(~r/FROM --platform=linux\/amd64 /, dockerfile)) == 2
+    assert dockerfile =~ "FROM --platform=linux/amd64 "
+    assert dockerfile =~ "AS toolchain"
+    assert dockerfile =~ "FROM toolchain AS dependencies"
+    assert dockerfile =~ "FROM dependencies AS builder"
+    assert length(Regex.scan(~r/^FROM /m, dockerfile)) == 4
     assert dockerfile =~ "USER 10001:10001"
     assert dockerfile =~ ~s(ENTRYPOINT ["/opt/favn/bin/favn_runner"])
     assert dockerfile =~ "RUN rm -f /opt/favn/releases/COOKIE"
@@ -117,6 +133,11 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert dockerfile =~ "mix local.hex 2.5.1 --force"
     assert dockerfile =~ "rebar3/releases/download/3.27.0/rebar3"
     assert dockerfile =~ "mix deps.get --only prod --check-locked"
+    assert dockerfile =~ "--mount=type=cache,target=/root/.hex"
+    assert dockerfile =~ "COPY dependency-input/ ./"
+    assert dockerfile =~ "COPY application-input/apps/ ./apps/"
+    assert dockerfile =~ "mkdir -p /var/lib/favn/data"
+    refute dockerfile =~ "VOLUME [\"/var/lib/favn/data\"]"
     assert dockerfile =~ "io.favn.elixir-version=\"1.20.2\""
     assert dockerfile =~ "io.favn.otp-version=\"29.0.3\""
     assert dockerfile =~ "LANG=C.UTF-8 LC_ALL=C.UTF-8"
@@ -140,7 +161,7 @@ defmodule Favn.Dev.Build.RunnerTest do
              "URIs: http://snapshot.debian.org/archive/debian/20260713T000000Z\n" <>
                "URIs: http://snapshot.debian.org/archive/debian-security/20260713T000000Z\n"
 
-    release_env = Path.join(result.dist_dir, "release-input/rel/env.sh.eex")
+    release_env = Path.join(result.dist_dir, "application-input/rel/env.sh.eex")
     valid_cookie = "favn-runner-cookie-7A9c2D4e6F8h0J1k"
 
     assert {"", 0} =
@@ -225,9 +246,10 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert output =~ "invalid ERL_EPMD_PORT"
 
     for relative <- [
-          "release-input/mix.exs",
-          "release-input/config/config.exs",
-          "release-input/stamp_apps.exs"
+          "dependency-input/mix.exs",
+          "dependency-input/config/config.exs",
+          "application-input/mix.exs",
+          "application-input/stamp_apps.exs"
         ] do
       assert {:ok, _quoted} =
                result.dist_dir
@@ -238,12 +260,13 @@ defmodule Favn.Dev.Build.RunnerTest do
 
     evaluated_config =
       result.dist_dir
-      |> Path.join("release-input/config/config.exs")
+      |> Path.join("dependency-input/config/config.exs")
       |> Config.Reader.read!()
 
     assert is_list(Keyword.get(evaluated_config, :favn))
 
-    assert File.read!(Path.join(result.dist_dir, "release-input/mix.exs")) =~ "runtime: false"
+    assert File.read!(Path.join(result.dist_dir, "application-input/mix.exs")) =~
+             "runtime: false"
 
     assert {:ok, same} = build(root_dir)
     assert same.status == :already_built
@@ -256,7 +279,8 @@ defmodule Favn.Dev.Build.RunnerTest do
                runner_release: result.descriptor_path,
                skip_compile: true,
                allow_non_prod_build: true,
-               allow_unpinned_favn: true
+               allow_unpinned_favn: true,
+               host_toolchain: RunnerReleaseInput.expected_toolchain()
              )
 
     assert manifest_result.required_runner_release_id == result.runner_release_id
@@ -317,7 +341,8 @@ defmodule Favn.Dev.Build.RunnerTest do
                runner_release: result.descriptor_path,
                skip_compile: true,
                allow_non_prod_build: true,
-               allow_unpinned_favn: true
+               allow_unpinned_favn: true,
+               host_toolchain: RunnerReleaseInput.expected_toolchain()
              )
 
     assert :runtime_code in categories
@@ -409,6 +434,7 @@ defmodule Favn.Dev.Build.RunnerTest do
                skip_compile: true,
                allow_non_prod_build: true,
                allow_unpinned_favn: true,
+               host_toolchain: RunnerReleaseInput.expected_toolchain(),
                lock: second_lock
              )
 
@@ -448,41 +474,41 @@ defmodule Favn.Dev.Build.RunnerTest do
 
     assert {:ok, result} = build(root_dir, current_app_source: customer)
 
-    refute File.read!(Path.join(result.dist_dir, "release-input/config/config.exs")) =~
+    refute File.read!(Path.join(result.dist_dir, "dependency-input/config/config.exs")) =~
              "import_config"
 
-    assert File.read!(Path.join(result.dist_dir, "release-input/config/runtime.exs")) =~
+    assert File.read!(Path.join(result.dist_dir, "application-input/config/runtime.exs")) =~
              ~s(import_config "customer_config/runtime.exs")
 
     assert File.exists?(
              Path.join(
                result.dist_dir,
-               "release-input/rel/overlays/releases/1.0.0/customer_config/runtime.exs"
+               "application-input/rel/overlays/releases/1.0.0/customer_config/runtime.exs"
              )
            )
 
     refute File.exists?(
              Path.join(
                result.dist_dir,
-               "release-input/rel/overlays/releases/1.0.0/customer_config/dev.exs"
+               "application-input/rel/overlays/releases/1.0.0/customer_config/dev.exs"
              )
            )
 
     assert File.read!(
-             Path.join(result.dist_dir, "release-input/apps/favn_local/priv/resource.txt")
+             Path.join(result.dist_dir, "application-input/apps/favn_local/priv/resource.txt")
            ) == "customer-resource"
 
     assert File.exists?(
              Path.join(
                result.dist_dir,
-               "release-input/apps/favn_local/priv/docs/schema.json"
+               "application-input/apps/favn_local/priv/docs/schema.json"
              )
            )
 
     assert File.exists?(
              Path.join(
                result.dist_dir,
-               "release-input/apps/favn_local/priv/test/fixture.bin"
+               "application-input/apps/favn_local/priv/test/fixture.bin"
              )
            )
 
@@ -491,8 +517,13 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert {:ok, executable_result} = build(root_dir, current_app_source: customer)
     refute executable_result.runner_release_id == result.runner_release_id
 
+    assert dependency_input_digest(executable_result) == dependency_input_digest(result)
+
     copied_resource =
-      Path.join(executable_result.dist_dir, "release-input/apps/favn_local/priv/resource.txt")
+      Path.join(
+        executable_result.dist_dir,
+        "application-input/apps/favn_local/priv/resource.txt"
+      )
 
     assert Bitwise.band(File.stat!(copied_resource).mode, 0o111) != 0
 
@@ -505,10 +536,32 @@ defmodule Favn.Dev.Build.RunnerTest do
                current_app_source: customer,
                skip_compile: true,
                allow_non_prod_build: true,
-               allow_unpinned_favn: true
+               allow_unpinned_favn: true,
+               host_toolchain: RunnerReleaseInput.expected_toolchain()
              )
 
     assert :runtime_dependencies in categories
+  end
+
+  test "dependency source changes invalidate the deterministic dependency input", %{
+    root_dir: root_dir
+  } do
+    sources = dependency_sources()
+    original = Map.fetch!(sources, :favn_runner)
+    changed = Path.join(root_dir, "changed-favn-runner")
+    assert :ok = Artifact.copy_tree(original, changed)
+
+    assert {:ok, first} =
+             build(root_dir, dependency_sources: Map.put(sources, :favn_runner, changed))
+
+    File.mkdir_p!(Path.join(changed, "priv"))
+    File.write!(Path.join(changed, "priv/dependency-cache-key"), "changed")
+
+    assert {:ok, second} =
+             build(root_dir, dependency_sources: Map.put(sources, :favn_runner, changed))
+
+    refute first.runner_release_id == second.runner_release_id
+    refute dependency_input_digest(first) == dependency_input_digest(second)
   end
 
   test "rejects secret-bearing source files before writing a context", %{root_dir: root_dir} do
@@ -578,14 +631,17 @@ defmodule Favn.Dev.Build.RunnerTest do
                runner_release: result.descriptor_path,
                skip_compile: true,
                allow_non_prod_build: true,
-               allow_unpinned_favn: true
+               allow_unpinned_favn: true,
+               host_toolchain: RunnerReleaseInput.expected_toolchain()
              )
 
     assert :plugins in categories
   end
 
-  test "build_runner/1 requires install", %{root_dir: root_dir} do
-    assert {:error, :install_required} = build(root_dir)
+  test "build_runner/1 is independent of installation and Compose", %{root_dir: root_dir} do
+    assert {:ok, result} = build(root_dir)
+    assert result.status == :built
+    refute File.exists?(Path.join(root_dir, ".favn/install.json"))
   end
 
   @tag :slow
@@ -708,7 +764,8 @@ defmodule Favn.Dev.Build.RunnerTest do
                runner_release: descriptor_path,
                skip_compile: true,
                allow_non_prod_build: true,
-               allow_unpinned_favn: true
+               allow_unpinned_favn: true,
+               host_toolchain: RunnerReleaseInput.expected_toolchain()
              )
 
     assert Path.wildcard(Path.join(root_dir, ".favn/dist/manifest/*")) == []
@@ -759,12 +816,31 @@ defmodule Favn.Dev.Build.RunnerTest do
           skip_project_root_check: true,
           allow_non_prod_build: true,
           allow_unpinned_favn: true,
+          host_toolchain: RunnerReleaseInput.expected_toolchain(),
           docker_executable: "docker",
           docker_command_runner: &docker_runner/3
         ],
         opts
       )
     )
+  end
+
+  defp dependency_sources do
+    Mix.Dep.load_and_cache()
+    |> Enum.reduce(%{}, fn dependency, sources ->
+      case Keyword.get(dependency.opts, :dest) do
+        path when is_binary(path) -> Map.put(sources, dependency.app, path)
+        _missing -> sources
+      end
+    end)
+  end
+
+  defp dependency_input_digest(result) do
+    result.dist_dir
+    |> Path.join("dependency-input/dependency-input.json")
+    |> File.read!()
+    |> JSON.decode!()
+    |> Map.fetch!("digest")
   end
 
   defp docker_runner("docker", args, _opts) do

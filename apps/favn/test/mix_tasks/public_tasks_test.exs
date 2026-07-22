@@ -22,6 +22,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Install, as: InstallTask
   alias Mix.Tasks.Favn.Inspect, as: InspectTask
   alias Mix.Tasks.Favn.Logs, as: LogsTask
+  alias Mix.Tasks.Favn.Maintainer.Dev, as: MaintainerDevTask
   alias Mix.Tasks.Favn.Query, as: QueryTask
   alias Mix.Tasks.Favn.Reload, as: ReloadTask
   alias Mix.Tasks.Favn.Reload.Configured, as: ConfiguredReloadTask
@@ -123,6 +124,10 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   end
 
   test "mix favn.dev raises when install is missing", %{root_dir: root_dir} do
+    compose_file = Path.join(root_dir, "deploy/compose.local.yml")
+    File.mkdir_p!(Path.dirname(compose_file))
+    File.write!(compose_file, "services: {}\n")
+
     capture_io(fn ->
       assert_raise Mix.Error, ~r/install required; run mix favn.install/, fn ->
         run_configured_dev(["--root-dir", root_dir])
@@ -131,6 +136,10 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   end
 
   test "Dev.dev stays quiet unless progress callback is provided", %{root_dir: root_dir} do
+    compose_file = Path.join(root_dir, "deploy/compose.local.yml")
+    File.mkdir_p!(Path.dirname(compose_file))
+    File.write!(compose_file, "services: {}\n")
+
     output =
       capture_io(fn ->
         assert {:error, :install_required} = Favn.Dev.dev(root_dir: root_dir)
@@ -139,10 +148,24 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output == ""
   end
 
-  test "mix favn.dev parses scheduler flags" do
+  test "mix favn.dev parses scheduler and Compose selection flags" do
     assert Keyword.get(DevTask.parse_args(["--scheduler"]), :scheduler) == true
     assert Keyword.get(DevTask.parse_args(["--no-scheduler"]), :scheduler) == false
     assert Keyword.get(DevTask.parse_args([]), :scheduler) == nil
+
+    assert Keyword.fetch!(
+             DevTask.parse_args(["--compose-file", "deploy/compose.team.yml"]),
+             :compose_file
+           ) == "deploy/compose.team.yml"
+  end
+
+  test "mix favn.maintainer.dev uses normal local Compose selection flags" do
+    assert Keyword.get(MaintainerDevTask.parse_args(["--scheduler"]), :scheduler) == true
+
+    assert Keyword.fetch!(
+             MaintainerDevTask.parse_args(["--compose-file", "deploy/compose.team.yml"]),
+             :compose_file
+           ) == "deploy/compose.team.yml"
   end
 
   test "no-positional public mix favn tasks reject invalid options and unexpected args" do
@@ -152,6 +175,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       {DiagnosticsTask, "favn.diagnostics"},
       {DevTask, "favn.dev"},
       {InstallTask, "favn.install"},
+      {MaintainerDevTask, "favn.maintainer.dev"},
       {ReloadTask, "favn.reload"},
       {ResetTask, "favn.reset"},
       {StatusTask, "favn.status"},
@@ -517,7 +541,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   test "mix favn.init rejects root-dir because it targets the current Mix project", %{
     root_dir: root_dir
   } do
-    assert_raise Mix.Error, ~r/usage: mix favn.init --duckdb --sample/, fn ->
+    assert_raise Mix.Error, ~r/mix favn.init --duckdb --sample/, fn ->
       InitTask.run(["--root-dir", root_dir, "--duckdb", "--sample"])
     end
   end
@@ -556,6 +580,34 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "Favn local bootstrap complete"
     assert output =~ "pipeline: Favn.Pipelines.LocalSmoke"
     assert File.exists?(Path.join(root_dir, "lib/favn/pipelines/local_smoke.ex"))
+  end
+
+  test "mix favn.init prints the generated Compose deployment summary", %{root_dir: root_dir} do
+    File.write!(
+      Path.join(root_dir, "mix.exs"),
+      """
+      defmodule PublicTaskCompose.MixProject do
+        use Mix.Project
+
+        def project do
+          [app: :public_task_compose, version: "0.1.0"]
+        end
+      end
+      """
+    )
+
+    output =
+      File.cd!(root_dir, fn ->
+        capture_io(fn ->
+          InitTask.run(["--target", "compose"])
+        end)
+      end)
+
+    assert output =~ "Favn Compose template ready"
+    assert output =~ "profile: local"
+    assert output =~ "deployment: deploy/compose.local.yml"
+    assert output =~ "environment reference: deploy/compose.local.env.example"
+    assert File.regular?(Path.join(root_dir, "deploy/compose.local.yml"))
   end
 
   test "mix favn.doctor rejects root-dir because it checks the current Mix project", %{
@@ -715,9 +767,13 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "partitions: [%{month: \"2026-05\"}]"
   end
 
-  test "mix favn.reset removes .favn when stack is not running", %{root_dir: root_dir} do
+  test "mix favn.reset removes generated state but preserves .favn/data", %{root_dir: root_dir} do
     assert :ok = State.ensure_layout(root_dir: root_dir)
-    assert File.dir?(Path.join(root_dir, ".favn"))
+    data_file = Path.join(root_dir, ".favn/data/local.db")
+    generated_file = Path.join(root_dir, ".favn/logs/generated.txt")
+    File.mkdir_p!(Path.dirname(data_file))
+    File.write!(data_file, "consumer data")
+    File.write!(generated_file, "generated state")
 
     output =
       capture_io(fn ->
@@ -725,7 +781,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       end)
 
     assert output =~ "Favn local state reset complete"
-    refute File.exists?(Path.join(root_dir, ".favn"))
+    assert File.read!(data_file) == "consumer data"
+    refute File.exists?(generated_file)
   end
 
   defp run_configured_dev(args) do

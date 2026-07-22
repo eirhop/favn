@@ -7,10 +7,11 @@ defmodule Favn.Dev.Docker do
   arguments.
   """
 
-  alias Favn.Dev.{Command, OutputRedactor}
+  alias Favn.Dev.{Command, ComposeDeployment, OutputRedactor}
 
   @default_timeout_ms 120_000
   @max_output_bytes 8_192
+  @favn_compose_roles ~w(postgres control-plane-ops control-plane-verify runner control-plane)
 
   @type image :: %{
           id: String.t(),
@@ -26,11 +27,19 @@ defmodule Favn.Dev.Docker do
   @doc "Verifies a reachable Linux amd64 Docker Engine and Compose v2 plugin."
   @spec probe(opts()) :: {:ok, map()} | {:error, term()}
   def probe(opts \\ []) when is_list(opts) do
+    with {:ok, engine} <- probe_engine(opts),
+         {:ok, compose_version} <- compose_version(engine.executable, opts) do
+      {:ok, Map.put(engine, :compose_version, compose_version)}
+    end
+  end
+
+  @doc "Verifies only the Docker Engine target required for image installation."
+  @spec probe_engine(opts()) :: {:ok, map()} | {:error, term()}
+  def probe_engine(opts \\ []) when is_list(opts) do
     with {:ok, host} <- supported_host(opts),
          {:ok, executable} <- executable(opts),
          {:ok, server} <- docker_server(executable, opts),
-         :ok <- supported_server(server),
-         {:ok, compose_version} <- compose_version(executable, opts) do
+         :ok <- supported_server(server) do
       {:ok,
        %{
          executable: executable,
@@ -38,9 +47,17 @@ defmodule Favn.Dev.Docker do
          host_architecture: host.architecture,
          server_os: server["Os"],
          server_architecture: server["Arch"],
-         server_version: server["Version"],
-         compose_version: compose_version
+         server_version: server["Version"]
        }}
+    end
+  end
+
+  @doc "Verifies only the Docker Compose v2 command required by local deployment."
+  @spec probe_compose(opts()) :: :ok | {:error, term()}
+  def probe_compose(opts \\ []) when is_list(opts) do
+    with {:ok, executable} <- executable(opts),
+         {:ok, _version} <- compose_version(executable, opts) do
+      :ok
     end
   end
 
@@ -106,10 +123,82 @@ defmodule Favn.Dev.Docker do
     end
   end
 
-  @doc "Runs Docker Compose with the generated project/file/env identity."
-  @spec compose(map(), [String.t()], opts()) :: {String.t(), non_neg_integer() | :timeout}
-  def compose(project, args, opts \\ [])
-      when is_map(project) and is_list(args) and is_list(opts) do
+  @doc false
+  @spec project_role_containers(String.t(), opts()) :: {:ok, [map()]} | {:error, term()}
+  def project_role_containers(project_name, opts \\ [])
+      when is_binary(project_name) and project_name != "" and is_list(opts) do
+    with {:ok, executable} <- executable(opts),
+         {output, 0} <-
+           command(
+             executable,
+             [
+               "container",
+               "ls",
+               "--all",
+               "--quiet",
+               "--filter",
+               "label=com.docker.compose.project=#{project_name}",
+               "--filter",
+               "label=io.favn.compose.contract-version=1",
+               "--filter",
+               "label=io.favn.compose.profile=local",
+               "--filter",
+               "label=io.favn.compose.role"
+             ],
+             opts,
+             Keyword.get(opts, :docker_inspect_timeout_ms, 30_000)
+           ),
+         ids <- String.split(output, "\n", trim: true),
+         {:ok, containers} <- inspect_project_role_containers(executable, project_name, ids, opts) do
+      {:ok, containers}
+    else
+      {output, status} when is_integer(status) ->
+        {:error, {:project_role_discovery_failed, status, safe_bounded(output, opts)}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @spec stop_containers([map()], non_neg_integer(), opts()) :: :ok | {:error, term()}
+  def stop_containers(containers, timeout_seconds, opts \\ [])
+      when is_list(containers) and is_integer(timeout_seconds) and timeout_seconds >= 0 and
+             is_list(opts) do
+    ids =
+      containers
+      |> Enum.filter(& &1.running?)
+      |> Enum.map(& &1.id)
+      |> Enum.uniq()
+
+    case {ids, executable(opts)} do
+      {[], _result} ->
+        :ok
+
+      {ids, {:ok, executable}} ->
+        case command(
+               executable,
+               ["container", "stop", "--time", Integer.to_string(timeout_seconds) | ids],
+               opts,
+               Keyword.get(opts, :compose_command_timeout_ms, @default_timeout_ms)
+             ) do
+          {_output, 0} ->
+            :ok
+
+          {output, status} ->
+            {:error, {:project_role_stop_failed, status, safe_bounded(output, opts)}}
+        end
+
+      {_ids, {:error, _reason} = error} ->
+        error
+    end
+  end
+
+  @doc "Runs Docker Compose with one typed, validated deployment identity."
+  @spec compose(ComposeDeployment.t(), [String.t()], opts()) ::
+          {String.t(), non_neg_integer() | :timeout}
+  def compose(%ComposeDeployment{} = deployment, args, opts \\ [])
+      when is_list(args) and is_list(opts) do
     result =
       case executable(opts) do
         {:ok, executable} ->
@@ -118,12 +207,48 @@ defmodule Favn.Dev.Docker do
             [
               "compose",
               "--project-name",
-              Map.fetch!(project, "project_name"),
+              deployment.project_name,
               "--file",
-              Map.fetch!(project, "compose_path"),
+              deployment.compose_file,
               "--env-file",
-              Map.fetch!(project, "env_path")
+              deployment.env_file
               | args
+            ],
+            opts,
+            Keyword.get(opts, :compose_command_timeout_ms, @default_timeout_ms)
+          )
+
+        {:error, reason} ->
+          {inspect(reason), 127}
+      end
+
+    redact_result(result, opts)
+  end
+
+  @doc false
+  @spec render_compose(String.t(), Path.t(), Path.t(), opts()) ::
+          {String.t(), non_neg_integer() | :timeout}
+  def render_compose(project_name, compose_file, env_file, opts \\ [])
+      when is_binary(project_name) and is_binary(compose_file) and is_binary(env_file) and
+             is_list(opts) do
+    result =
+      case executable(opts) do
+        {:ok, executable} ->
+          command(
+            executable,
+            [
+              "compose",
+              "--project-name",
+              project_name,
+              "--file",
+              compose_file,
+              "--env-file",
+              env_file,
+              "--profile",
+              "*",
+              "config",
+              "--format",
+              "json"
             ],
             opts,
             Keyword.get(opts, :compose_command_timeout_ms, @default_timeout_ms)
@@ -147,7 +272,9 @@ defmodule Favn.Dev.Docker do
              opts,
              Keyword.get(opts, :docker_build_timeout_ms, 1_200_000)
            ) do
-        {_output, 0} -> :ok
+        {_output, 0} ->
+          :ok
+
         {output, status} ->
           {:error, {:runner_image_build_failed, status, safe_bounded(output, opts)}}
       end
@@ -166,11 +293,13 @@ defmodule Favn.Dev.Docker do
       {references, {:ok, executable}} ->
         case command(
                executable,
-               ["image", "rm" | references],
+               ["image", "rm", "--force" | references],
                opts,
                Keyword.get(opts, :docker_image_remove_timeout_ms, 120_000)
              ) do
-          {_output, 0} -> :ok
+          {_output, 0} ->
+            :ok
+
           {output, status} ->
             {:error, {:runner_image_remove_failed, status, safe_bounded(output, opts)}}
         end
@@ -179,6 +308,82 @@ defmodule Favn.Dev.Docker do
         error
     end
   end
+
+  defp inspect_project_role_containers(_executable, _project_name, [], _opts), do: {:ok, []}
+
+  defp inspect_project_role_containers(executable, project_name, ids, opts) do
+    with {output, 0} <-
+           command(
+             executable,
+             ["container", "inspect" | ids],
+             opts,
+             Keyword.get(opts, :docker_inspect_timeout_ms, 30_000)
+           ),
+         {:ok, inspections} when is_list(inspections) <- JSON.decode(output),
+         {:ok, containers} <- normalize_project_role_containers(inspections, project_name, ids) do
+      {:ok, containers}
+    else
+      {output, status} when is_integer(status) ->
+        {:error, {:project_role_inspection_failed, status, safe_bounded(output, opts)}}
+
+      _invalid ->
+        {:error, :invalid_project_role_containers}
+    end
+  end
+
+  defp normalize_project_role_containers(inspections, project_name, expected_ids) do
+    Enum.reduce_while(inspections, {:ok, []}, fn inspection, {:ok, containers} ->
+      case normalize_project_role_container(inspection, project_name) do
+        {:ok, container} -> {:cont, {:ok, [container | containers]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, containers} ->
+        actual_ids = Enum.map(containers, & &1.id)
+
+        if length(Enum.uniq(actual_ids)) == length(expected_ids) and
+             Enum.all?(expected_ids, fn expected ->
+               Enum.any?(actual_ids, &String.starts_with?(&1, expected))
+             end),
+           do: {:ok, Enum.sort_by(containers, &{&1.role, &1.name})},
+           else: {:error, :invalid_project_role_containers}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp normalize_project_role_container(
+         %{
+           "Id" => id,
+           "Name" => name,
+           "Config" => %{"Labels" => labels},
+           "State" => %{"Running" => running?}
+         },
+         project_name
+       )
+       when is_binary(id) and id != "" and is_binary(name) and is_map(labels) and
+              is_boolean(running?) do
+    role = labels["io.favn.compose.role"]
+
+    if labels["com.docker.compose.project"] == project_name and
+         labels["io.favn.compose.contract-version"] == "1" and
+         labels["io.favn.compose.profile"] == "local" and role in @favn_compose_roles do
+      {:ok,
+       %{
+         id: id,
+         name: String.trim_leading(name, "/"),
+         role: role,
+         running?: running?
+       }}
+    else
+      {:error, :invalid_project_role_containers}
+    end
+  end
+
+  defp normalize_project_role_container(_inspection, _project_name),
+    do: {:error, :invalid_project_role_containers}
 
   defp executable(opts) do
     executable =

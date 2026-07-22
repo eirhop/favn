@@ -1,22 +1,31 @@
 defmodule Favn.Dev.Reset do
   @moduledoc """
-  Removes only the current project's Compose resources and generated state.
+  Removes generated local Favn state without deleting consumer-owned resources.
 
-  Cleanup is destructive and requires the explicit `yes: true` confirmation.
-  The control-plane image is never removed because it is shared and installed
-  independently from customer runner images.
+  Reset never runs Compose `down`, removes volumes or networks, stops consumer
+  services, deletes the selected Compose file, or deletes `.favn/data`.
   """
 
-  alias Favn.Dev.{ComposeProject, Docker, Lock, Paths, RunnerImage, State}
+  alias Favn.Dev.{
+    ComposeDeployment,
+    ComposeProject,
+    Config,
+    Docker,
+    Lock,
+    Paths,
+    RunnerImage,
+    State
+  }
 
   @type resource_plan :: %{
           compose_project: String.t(),
-          postgres_volume: String.t(),
-          local_state: Path.t(),
+          generated_state: Path.t(),
+          preserved_data: Path.t(),
+          preserved_compose_file: Path.t() | nil,
           runner_images: [String.t()]
         }
 
-  @doc "Returns the exact project-scoped resources that reset would remove."
+  @doc "Returns the exact generated resources reset would remove and preserve."
   @spec plan(keyword()) :: resource_plan()
   def plan(opts \\ []) when is_list(opts) do
     root_dir = opts |> Paths.root_dir() |> Path.expand()
@@ -24,104 +33,125 @@ defmodule Favn.Dev.Reset do
 
     %{
       compose_project: project_name,
-      postgres_volume: project_name <> "-postgres-data",
-      local_state: Paths.favn_dir(root_dir),
+      generated_state: Paths.favn_dir(root_dir),
+      preserved_data: Paths.data_dir(root_dir),
+      preserved_compose_file: selected_compose_file(opts),
       runner_images: runner_images(root_dir, project_name)
     }
   end
 
-  @doc "Removes the confirmed project-scoped Compose application and `.favn` state."
+  @doc "Removes confirmed generated state after proving known Favn roles are stopped."
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts \\ []) when is_list(opts) do
     if Keyword.get(opts, :yes, false) do
-      Lock.with_lock(opts, fn -> confirmed_reset(plan(opts), opts) end)
+      favn_dir = opts |> Paths.root_dir() |> Path.expand() |> Paths.favn_dir()
+
+      with :ok <- ensure_safe_state_root(favn_dir) do
+        Lock.with_lock(opts, fn -> confirmed_reset(plan(opts), opts) end)
+      end
     else
       {:error, {:confirmation_required, plan(opts)}}
     end
   end
 
   defp confirmed_reset(resources, opts) do
-    with :ok <- remove_compose_resources(opts),
-         :ok <- Docker.remove_images(resources.runner_images, opts),
-         :ok <- remove_favn_dir(resources.local_state) do
+    with :ok <- ensure_safe_state_root(resources.generated_state),
+         :ok <- ensure_known_roles_stopped(opts),
+         {:ok, verified_images} <- verified_runner_images(resources.runner_images, opts),
+         :ok <- Docker.remove_images(verified_images, opts),
+         :ok <- remove_generated_state(resources) do
       :ok
     end
   end
 
-  defp remove_compose_resources(opts) do
-    case State.read_install(opts) do
-      {:ok, %{"compose" => %{} = project}} ->
-        with {:ok, canonical_project} <- canonical_compose_project(project, opts) do
-          case Docker.compose(
-                 canonical_project,
-                 ["down", "--volumes", "--remove-orphans", "--timeout", "180"],
-                 Keyword.put_new(opts, :compose_command_timeout_ms, 240_000)
-               ) do
-            {_output, 0} -> :ok
-            {output, status} -> {:error, {:compose_reset_failed, status, bounded(output)}}
-          end
+  defp ensure_known_roles_stopped(opts) do
+    case State.read_runtime(opts) do
+      {:error, :not_found} ->
+        ensure_unrecorded_roles_stopped(opts)
+
+      {:ok, runtime} ->
+        with {:ok, deployment} <- ComposeDeployment.from_runtime(runtime, opts),
+             {output, 0} <-
+               Docker.compose(deployment, ["ps", "--status", "running", "--services"], opts) do
+          running = output |> String.split("\n", trim: true) |> MapSet.new()
+          favn = deployment.services |> Map.values() |> MapSet.new()
+          active = MapSet.intersection(running, favn) |> MapSet.to_list() |> Enum.sort()
+
+          if active == [], do: :ok, else: {:error, {:reset_roles_running, active}}
+        else
+          {_output, status} when is_integer(status) ->
+            {:error, {:reset_role_status_unavailable, status}}
+
+          {:error, _reason} = error ->
+            error
         end
 
-      {:error, :not_found} ->
-        :ok
-
-      _invalid ->
-        {:error, :install_stale}
+      {:error, reason} ->
+        {:error, {:local_runtime_state_unavailable, reason}}
     end
   end
 
-  defp canonical_compose_project(project, opts) do
-    root_dir = opts |> Paths.root_dir() |> Path.expand()
-    project_name = ComposeProject.project_name(root_dir)
-    compose_path = Paths.compose_path(root_dir)
-    env_path = Paths.compose_env_path(root_dir)
+  defp ensure_unrecorded_roles_stopped(opts) do
+    project_name = opts |> Paths.root_dir() |> Path.expand() |> ComposeProject.project_name()
 
-    expected = %{
-      "project_name" => project_name,
-      "network_name" => project_name <> "-network",
-      "postgres_volume_name" => project_name <> "-postgres-data",
-      "compose_path" => compose_path,
-      "env_path" => env_path,
-      "runner_env_path" => Paths.compose_runner_env_path(root_dir),
-      "postgres_init_path" => Paths.compose_postgres_init_path(root_dir)
-    }
+    case Docker.project_role_containers(project_name, opts) do
+      {:ok, containers} ->
+        active =
+          containers
+          |> Enum.filter(& &1.running?)
+          |> Enum.map(& &1.name)
+          |> Enum.sort()
 
-    with 1 <- project["schema_version"],
-         true <- canonical_fields?(project, expected),
-         :ok <- regular_file(compose_path),
-         :ok <- regular_file(env_path),
-         :ok <- regular_file(expected["runner_env_path"]),
-         :ok <- regular_file(expected["postgres_init_path"]),
-         {:ok, compose} <- File.read(compose_path),
-         true <- project["compose_sha256"] == sha256(compose) do
-      {:ok, Map.take(expected, ["project_name", "compose_path", "env_path"])}
-    else
-      _invalid -> {:error, :install_stale}
+        if active == [], do: :ok, else: {:error, {:reset_roles_running, active}}
+
+      {:error, reason} ->
+        {:error, {:reset_role_status_unavailable, reason}}
     end
   end
 
-  defp canonical_fields?(project, expected) do
-    Enum.all?(expected, fn {key, expected_value} ->
-      case Map.get(project, key) do
-        value
-        when key in ["compose_path", "env_path", "runner_env_path", "postgres_init_path"] and
-               is_binary(value) ->
-          Path.expand(value) == expected_value
+  defp verified_runner_images(references, opts) do
+    references
+    |> Enum.reduce_while({:ok, []}, fn reference, {:ok, verified} ->
+      release_id = reference |> String.split(":") |> List.last()
 
-        value ->
-          value == expected_value
+      case Docker.inspect_image(reference, opts) do
+        {:ok, %{labels: %{"io.favn.runner-release-id" => ^release_id}}} ->
+          {:cont, {:ok, [reference | verified]}}
+
+        {:error, {:docker_image_unavailable, ^reference}} ->
+          {:cont, {:ok, verified}}
+
+        {:ok, _forged} ->
+          {:halt, {:error, {:unverified_runner_image, reference}}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
       end
     end)
-  end
-
-  defp regular_file(path) do
-    case File.lstat(path) do
-      {:ok, %{type: :regular}} -> :ok
-      _missing_or_unsafe -> {:error, :install_stale}
+    |> case do
+      {:ok, verified} -> {:ok, Enum.reverse(verified)}
+      {:error, _reason} = error -> error
     end
   end
 
-  defp sha256(contents), do: :crypto.hash(:sha256, contents) |> Base.encode16(case: :lower)
+  defp selected_compose_file(opts) do
+    case State.read_runtime(opts) do
+      {:ok, %{"compose_file" => path}} when is_binary(path) ->
+        path
+
+      _unavailable ->
+        case State.read_compose_selection(opts) do
+          {:ok, %{"compose_file" => path}} when is_binary(path) ->
+            path
+
+          _unavailable ->
+            case Config.resolve_compose_file(opts) do
+              {:ok, path} -> path
+              {:error, _reason} -> nil
+            end
+        end
+    end
+  end
 
   defp runner_images(root_dir, project_name) do
     root_dir
@@ -140,15 +170,122 @@ defmodule Favn.Dev.Reset do
     |> Enum.sort()
   end
 
-  defp remove_favn_dir(path) do
-    case File.rm_rf(path) do
-      {:ok, _entries} -> :ok
-      {:error, reason, failed_path} -> {:error, {:reset_failed, reason, failed_path}}
+  defp ensure_safe_state_root(favn_dir) do
+    case File.lstat(favn_dir) do
+      {:ok, %{type: :directory}} -> :ok
+      {:error, :enoent} -> :ok
+      {:ok, _unsafe} -> {:error, {:unsafe_generated_state, favn_dir}}
+      {:error, reason} -> {:error, {:reset_failed, reason, favn_dir}}
     end
   end
 
-  defp bounded(output) when is_binary(output),
-    do: output |> String.trim() |> String.slice(-8_192, 8_192)
+  defp remove_generated_state(resources) do
+    favn_dir = resources.generated_state
+    root_dir = Path.dirname(favn_dir)
+    protected = protected_consumer_paths(resources, favn_dir)
 
-  defp bounded(output), do: inspect(output, limit: 20, printable_limit: 1_024)
+    generated_files = [
+      Paths.runtime_path(root_dir),
+      Paths.secrets_path(root_dir),
+      Paths.maintenance_path(root_dir)
+    ]
+
+    generated_directories = [
+      Paths.install_dir(root_dir),
+      Paths.compose_dir(root_dir),
+      Paths.build_dir(root_dir),
+      Paths.dist_dir(root_dir),
+      Paths.manifests_dir(root_dir),
+      Paths.history_dir(root_dir),
+      Paths.logs_dir(root_dir)
+    ]
+
+    (generated_files ++ generated_directories)
+    |> Enum.reduce_while(:ok, fn path, :ok ->
+      case remove_generated_path(path, protected) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp protected_consumer_paths(resources, favn_dir) do
+    case resources.preserved_compose_file do
+      path when is_binary(path) ->
+        compose = Path.expand(path)
+        companion = Path.rootname(compose) <> ".env.example"
+
+        [compose, companion]
+        |> Enum.filter(&inside?(&1, favn_dir))
+        |> MapSet.new()
+
+      _unavailable ->
+        MapSet.new()
+    end
+  end
+
+  defp remove_generated_path(path, protected) do
+    cond do
+      MapSet.member?(protected, path) ->
+        :ok
+
+      true ->
+        case File.lstat(path) do
+          {:error, :enoent} ->
+            :ok
+
+          {:ok, %{type: :regular}} ->
+            remove_file(path)
+
+          {:ok, %{type: :directory}} ->
+            remove_generated_directory(path, protected)
+
+          {:ok, _unsafe} ->
+            {:error, {:unsafe_generated_state, path}}
+
+          {:error, reason} ->
+            {:error, {:reset_failed, reason, path}}
+        end
+    end
+  end
+
+  defp remove_generated_directory(path, protected) do
+    with {:ok, entries} <- File.ls(path),
+         :ok <- remove_generated_entries(path, entries, protected) do
+      case File.rmdir(path) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        {:error, reason} when reason in [:eexist, :enotempty] -> :ok
+        {:error, reason} -> {:error, {:reset_failed, reason, path}}
+      end
+    else
+      {:error, {:reset_failed, _reason, _path}} = error -> error
+      {:error, {:unsafe_generated_state, _path}} = error -> error
+      {:error, reason} -> {:error, {:reset_failed, reason, path}}
+    end
+  end
+
+  defp remove_generated_entries(path, entries, protected) do
+    Enum.reduce_while(entries, :ok, fn entry, :ok ->
+      child = Path.join(path, entry)
+
+      case remove_generated_path(child, protected) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp inside?(path, parent) do
+    relative = Path.relative_to(path, parent)
+    relative != path and relative != ".." and not String.starts_with?(relative, "../")
+  end
+
+  defp remove_file(path) do
+    case File.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, {:reset_failed, reason, path}}
+    end
+  end
 end

@@ -4,10 +4,10 @@ defmodule Mix.Tasks.Favn.Install do
   @shortdoc "Installs the prebuilt Favn control-plane image"
 
   @moduledoc """
-  Requires Docker Engine and Compose v2, pulls the version-matched official
+  Requires Docker Engine, pulls the version-matched official
   control-plane image, verifies its platform and Favn contract labels, records
-  its immutable repository digest, and writes the project-scoped Compose inputs
-  under `.favn/`.
+  its immutable repository digest, and writes image-only install metadata under
+  `.favn/`. Compose is selected and validated by `mix favn.dev`, not install.
 
   The task never compiles the control plane and cannot select an arbitrary or
   unpublished candidate image. `--force` repulls and revalidates the official
@@ -38,16 +38,6 @@ defmodule Mix.Tasks.Favn.Install do
       {:error, {:docker_engine_unavailable, _status, _output}} ->
         Mix.raise(
           "install failed: Docker Engine is not reachable; start a Linux-container Docker daemon and retry"
-        )
-
-      {:error, {:docker_compose_unavailable, _status, _output}} ->
-        Mix.raise(
-          "install failed: the Docker Compose plugin is unavailable; install Docker Compose v2 or newer and retry"
-        )
-
-      {:error, {:unsupported_compose_version, version}} ->
-        Mix.raise(
-          "install failed: unsupported Docker Compose version #{version}; Compose v2 or newer is required"
         )
 
       {:error, {:unsupported_docker_server, os, architecture}} ->

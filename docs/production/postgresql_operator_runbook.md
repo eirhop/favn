@@ -80,6 +80,10 @@ These scripts are for Favn repository contributors working on the storage layer.
 Customer projects use the production-like `mix favn.install` and `mix favn.dev`
 Compose workflow documented in
 [`local_docker_compose.md`](local_docker_compose.md).
+Their committed Compose file owns the local PostgreSQL service and the labeled
+one-shot operation roles. `mix favn.dev` discovers those roles, starts
+PostgreSQL, and invokes `migrate`, `grant-runtime`, `verify-schema`, and
+`provision-workspace`; install owns only the control-plane image selection.
 
 Docker and PostgreSQL client tools are prerequisites for the repository scripts.
 

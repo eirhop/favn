@@ -3,7 +3,7 @@ defmodule Favn.Dev.Doctor do
   Local project setup validation for Favn development workflows.
   """
 
-  alias Favn.Dev.{ComposeLifecycle, Docker, Install, LocalHttpClient, Paths, State}
+  alias Favn.Dev.{ComposeLifecycle, Config, Docker, Install, LocalHttpClient, Paths, State}
   alias Favn.ModuleDiscovery
 
   @type check :: %{name: String.t(), status: :ok | :error, message: String.t()}
@@ -15,7 +15,7 @@ defmodule Favn.Dev.Doctor do
     checks = [
       safe_check("docker", fn -> docker_check(opts) end),
       safe_check("control-plane install", fn -> install_check(opts) end),
-      safe_check("compose isolation", fn -> compose_isolation_check(opts) end),
+      safe_check("compose deployment", fn -> compose_deployment_check(opts) end),
       safe_check("compose runtime", fn -> compose_runtime_check(opts) end),
       safe_check("mix project", fn -> mix_project_check(root_dir) end),
       safe_check("config", fn -> config_file_check(root_dir) end),
@@ -63,18 +63,19 @@ defmodule Favn.Dev.Doctor do
     end
   end
 
-  defp compose_isolation_check(opts) do
-    with {:ok, %{"compose" => project}} <- State.read_install(opts),
-         {_output, 0} <- Docker.compose(project, ["config", "--quiet"], opts),
-         {:ok, compose} <- File.read(project["compose_path"]),
-         true <- compose =~ ~s("127.0.0.1:${FAVN_VIEW_PORT}:4000"),
-         true <- compose =~ ~s("127.0.0.1:${FAVN_ORCHESTRATOR_PORT}:4101"),
-         false <- compose =~ ~s("${FAVN_POSTGRES_PORT}:5432"),
-         false <- compose =~ ~s("${FAVN_BEAM_DISTRIBUTION_PORT}") do
-      ok("compose isolation", "only View and private API ports bind to loopback")
+  defp compose_deployment_check(opts) do
+    with {:ok, path} <- Config.resolve_compose_file(opts),
+         :ok <- Docker.probe_compose(opts) do
+      ok(
+        "compose deployment",
+        "consumer-owned Compose file selected: #{Path.relative_to(path, Paths.root_dir(opts))}"
+      )
     else
-      _invalid ->
-        error("compose isolation", "generated Compose network contract is missing or invalid")
+      {:error, {:compose_file_missing, _path}} ->
+        error("compose deployment", "run mix favn.init --target compose")
+
+      {:error, reason} ->
+        error("compose deployment", docker_error(reason))
     end
   end
 
@@ -97,17 +98,14 @@ defmodule Favn.Dev.Doctor do
             error("compose runtime", "running services are not fully ready or aligned")
         end
 
-      %{stack_status: :not_installed} ->
-        error("compose runtime", "run mix favn.install")
-
       %{stack_status: state} ->
         error("compose runtime", "project stack state is #{state}")
     end
   end
 
   defp services_ready?(services) do
-    Enum.all?(["postgres", "runner", "control-plane"], fn service ->
-      case Map.get(services, service) do
+    Enum.all?([:postgres, :runner, :control_plane], fn role ->
+      case Map.get(services, role) do
         %{status: :running, health: health} when health in [:healthy, :none] -> true
         _unavailable -> false
       end

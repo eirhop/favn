@@ -61,7 +61,8 @@ Minimal local configuration:
 config :favn,
   local: [
     workspace_id: "local-dev",
-    scheduler: false
+    scheduler: false,
+    compose_file: "deploy/compose.local.yml"
   ]
 ```
 
@@ -73,12 +74,31 @@ Common local options:
 | `:orchestrator_port` | `4101` | Local API port. |
 | `:web_port` | `4173` | Local UI port. |
 | `:scheduler` | `false` | Enable with config or `mix favn.dev --scheduler`. |
+| `:compose_file` | `"deploy/compose.local.yml"` | Project-relative consumer-owned Compose file. `mix favn.dev --compose-file PATH` overrides it. |
+
+Compose selection is explicit and deterministic: the command-line
+`--compose-file` value wins over `config :favn, :local`, which wins over the
+default above. The path must be a regular non-symlink file inside the project.
+Run `mix favn.init --target compose` to create the default starting template.
 
 The local tooling generates PostgreSQL credentials, service authentication,
 the View session secret, and the distribution cookie into owner-only files
 under `.favn/`. PostgreSQL and all control-plane storage configuration belong
-to the generated Compose application; a customer does not supply a host
-database URL or select a storage adapter.
+to the selected consumer Compose application; a customer does not supply a host
+database URL or select a storage adapter through Favn config.
+
+The generated DuckDB sample uses runtime path references instead of embedding a
+host path in the manifest:
+
+| Variable | Host default | Local runner value |
+| --- | --- | --- |
+| `FAVN_LOCAL_SAMPLE_DATABASE_PATH` | `.favn/data/local_smoke.duckdb` | `/var/lib/favn/data/local_smoke.duckdb` |
+| `FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH` | `.favn/data/raw.duckdb` | `/var/lib/favn/data/raw.duckdb` |
+| `FAVN_LOCAL_SAMPLE_MART_CATALOG_PATH` | `.favn/data/mart.duckdb` | `/var/lib/favn/data/mart.duckdb` |
+
+An existing shell value wins over `.env`; an `.env` value wins over these host
+defaults. The local Compose service supplies the container paths. If you change
+the runner data mount, update those service environment values together.
 
 ## SQL Connection Modules
 

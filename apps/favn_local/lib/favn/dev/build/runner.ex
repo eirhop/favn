@@ -9,7 +9,7 @@ defmodule Favn.Dev.Build.Runner do
   """
 
   alias Favn.Dev.Build.{Artifact, Manifest, RunnerInputs, RunnerReleaseInput}
-  alias Favn.Dev.{Install, Paths, State}
+  alias Favn.Dev.{Paths, State}
   alias Favn.RunnerRelease
 
   @test_only_options [
@@ -21,6 +21,7 @@ defmodule Favn.Dev.Build.Runner do
     :dependency_sources,
     :extra_applications,
     :extra_modules,
+    :host_toolchain,
     :lock,
     :module_inventory,
     :runner_build,
@@ -45,8 +46,7 @@ defmodule Favn.Dev.Build.Runner do
     with :ok <- validate_test_only_options(opts),
          :ok <- ensure_production_build(opts),
          :ok <- ensure_project_root(opts),
-         :ok <- RunnerReleaseInput.validate_host_toolchain(),
-         :ok <- Install.ensure_ready(opts),
+         :ok <- RunnerReleaseInput.validate_host_toolchain(opts),
          :ok <- State.ensure_layout(opts),
          :ok <- Manifest.compile_project(opts),
          {:ok, seed} <- seed_descriptor(),

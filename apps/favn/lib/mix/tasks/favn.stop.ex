@@ -4,7 +4,8 @@ defmodule Mix.Tasks.Favn.Stop do
   @shortdoc "Stops local Favn dev stack"
 
   @moduledoc """
-  Stops local project-scoped Favn runtime services.
+  Stops only the recorded Favn control-plane, runner, and local PostgreSQL
+  roles. Consumer services and all Compose resources remain untouched.
   """
 
   alias Favn.Dev

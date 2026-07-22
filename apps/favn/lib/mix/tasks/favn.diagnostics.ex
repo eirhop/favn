@@ -4,7 +4,8 @@ defmodule Mix.Tasks.Favn.Diagnostics do
   @shortdoc "Shows local Favn operator diagnostics"
 
   @moduledoc """
-  Shows service-authenticated operator diagnostics from the running local stack.
+  Separates Docker/image installation, the selected deployment contract,
+  Favn-role Compose state, and service-authenticated runtime readiness.
 
       mix favn.diagnostics
       mix favn.diagnostics --json
@@ -28,6 +29,7 @@ defmodule Mix.Tasks.Favn.Diagnostics do
   defp print_report(report, false) do
     docker = report["docker"] || %{}
     control = report["control_plane"] || %{}
+    deployment = report["deployment_contract"] || %{}
     compose = report["compose"] || %{}
 
     IO.puts("Favn local Docker diagnostics")
@@ -39,8 +41,20 @@ defmodule Mix.Tasks.Favn.Diagnostics do
 
     IO.puts("compose: #{docker[:compose_version]}")
     IO.puts("project status: #{compose[:stack_status]}")
+    IO.puts("control-plane source: #{control["source"]}")
     IO.puts("control-plane image: #{control["image_reference"]}")
     IO.puts("control-plane build: #{control["build_id"]}")
+
+    if control["source"] == "maintainer" do
+      dirty = if control["checkout_dirty"], do: "dirty", else: "clean"
+      IO.puts("maintainer checkout: #{control["checkout"]}")
+      IO.puts("maintainer revision: #{control["checkout_revision"]} (#{dirty})")
+    end
+
+    IO.puts("deployment contract: #{deployment["status"]}")
+
+    if deployment["error"], do: IO.puts("deployment error: #{deployment["error"]}")
+
     IO.puts("runtime: #{inspect(report["runtime"], limit: 50, printable_limit: 4_096)}")
   end
 

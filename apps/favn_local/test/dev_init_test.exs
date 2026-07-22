@@ -103,12 +103,17 @@ defmodule Favn.Dev.InitTest do
     assert config =~ "connections: :all"
     assert config =~ "important_lakehouse: ["
     assert config =~ "resources: ["
-    assert config =~ "raw_catalog: [file: {:priv, #{inspect(app)}, \"duckdb/raw_catalog.sql\"}]"
+    assert config =~ "FAVN_LOCAL_SAMPLE_DATABASE_PATH"
+    assert config =~ "FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH"
+    assert config =~ "FAVN_LOCAL_SAMPLE_MART_CATALOG_PATH"
+    assert config =~ "raw_catalog: ["
+    assert config =~ "file: {:priv, #{inspect(app)}, \"duckdb/raw_catalog.sql\"}"
+    assert config =~ "params: ["
     assert config =~ "catalogs: ["
     assert config =~ "raw: [resource: :raw_catalog, write_concurrency: 1]"
 
     assert File.read!(Path.join(root_dir, "priv/duckdb/raw_catalog.sql")) =~
-             "ATTACH '.favn/data/raw.duckdb' AS raw"
+             "ATTACH @database_path AS raw"
 
     assert config =~ "runner_plugins: ["
     assert config =~ "FavnDuckdb"
@@ -196,6 +201,126 @@ defmodule Favn.Dev.InitTest do
 
   test "requires explicit duckdb and sample flags", %{root_dir: root_dir} do
     assert {:error, {:missing_required_flags, [:duckdb, :sample]}} = Init.run(root_dir: root_dir)
+  end
+
+  test "scaffolds an idempotent consumer-owned local Compose template", %{root_dir: root_dir} do
+    assert {:ok, first} = Init.run(root_dir: root_dir, target: :compose)
+
+    assert first.profile == :local
+    assert first.output == "deploy/compose.local.yml"
+    assert first.env_example == "deploy/compose.local.env.example"
+
+    assert Enum.sort(first.created) ==
+             ["deploy/compose.local.env.example", "deploy/compose.local.yml"]
+
+    compose = File.read!(Path.join(root_dir, first.output))
+    assert compose =~ ~s(io.favn.compose.contract-version: "1")
+    assert compose =~ "io.favn.compose.profile: local"
+    assert compose =~ "io.favn.compose.role: runner"
+    assert compose =~ "source: ${FAVN_RUNNER_DATA_SOURCE}"
+    assert compose =~ "target: /var/lib/favn/data"
+    assert compose =~ "user: ${FAVN_RUNNER_UID}:${FAVN_RUNNER_GID}"
+    assert compose =~ ~s(env_file: ["${FAVN_RUNNER_ENV_FILE}"])
+
+    assert compose =~
+             "../.favn/compose/postgres-init.sh:/docker-entrypoint-initdb.d/10-favn-runtime-role.sh:ro"
+
+    assert {:ok, second} = Init.run(root_dir: root_dir, target: :compose)
+    assert second.created == []
+    assert Enum.sort(second.existing) == Enum.sort(first.created)
+  end
+
+  test "refuses a modified scaffold without partially writing its companion", %{
+    root_dir: root_dir
+  } do
+    output = Path.join(root_dir, "deploy/compose.team.yml")
+    env_example = Path.rootname(output) <> ".env.example"
+    File.mkdir_p!(Path.dirname(output))
+    File.write!(output, "# team owned\n")
+
+    assert {:error, {:compose_scaffold_modified, ^output}} =
+             Init.run(root_dir: root_dir, target: :compose, output: "deploy/compose.team.yml")
+
+    assert File.read!(output) == "# team owned\n"
+    refute File.exists?(env_example)
+  end
+
+  test "never follows or overwrites the former predictable temporary path", %{
+    root_dir: root_dir
+  } do
+    output = Path.join(root_dir, "deploy/compose.safe.yml")
+    victim = Path.join(root_dir, "consumer-owned.txt")
+    predictable_temporary = output <> ".favn-new"
+    File.mkdir_p!(Path.dirname(output))
+    File.write!(victim, "keep me\n")
+    File.ln_s!(victim, predictable_temporary)
+
+    assert {:ok, result} =
+             Init.run(root_dir: root_dir, target: :compose, output: "deploy/compose.safe.yml")
+
+    assert result.output == "deploy/compose.safe.yml"
+    assert File.read!(victim) == "keep me\n"
+    assert File.lstat!(predictable_temporary).type == :symlink
+  end
+
+  test "scaffolds the external PostgreSQL single-host reference", %{root_dir: root_dir} do
+    assert {:ok, result} =
+             Init.run(root_dir: root_dir, target: :compose, profile: :single_host)
+
+    compose = File.read!(Path.join(root_dir, result.output))
+    assert result.output == "deploy/compose.single-host.yml"
+    assert compose =~ "io.favn.compose.profile: single-host"
+    refute compose =~ "io.favn.compose.role: postgres"
+    assert compose =~ "FAVN_POSTGRES_ADMIN_DATABASE_URL"
+    assert compose =~ "FAVN_POSTGRES_RUNTIME_DATABASE_URL"
+    refute compose =~ "internal: true"
+  end
+
+  @tag :container
+  test "single-host reference renders through Docker Compose with every profile", %{
+    root_dir: root_dir
+  } do
+    assert {:ok, result} =
+             Init.run(root_dir: root_dir, target: :compose, profile: :single_host)
+
+    compose_file = Path.join(root_dir, result.output)
+    env_file = Path.join(root_dir, result.env_example)
+
+    assert {rendered, 0} =
+             System.cmd(
+               "docker",
+               [
+                 "compose",
+                 "--file",
+                 compose_file,
+                 "--env-file",
+                 env_file,
+                 "--profile",
+                 "*",
+                 "config",
+                 "--format",
+                 "json"
+               ],
+               stderr_to_stdout: true
+             )
+
+    assert {:ok, %{"services" => services}} = JSON.decode(rendered)
+
+    assert Enum.sort(Map.keys(services)) ==
+             ["control-plane", "control-plane-ops", "control-plane-verify", "runner"]
+  end
+
+  test "supports a fresh alternate output inside the project", %{root_dir: root_dir} do
+    assert {:ok, result} =
+             Init.run(
+               root_dir: root_dir,
+               target: :compose,
+               output: "ops/team/compose.custom.yaml"
+             )
+
+    assert result.output == "ops/team/compose.custom.yaml"
+    assert File.regular?(Path.join(root_dir, result.output))
+    assert File.regular?(Path.join(root_dir, "ops/team/compose.custom.env.example"))
   end
 
   defp unique_app do
