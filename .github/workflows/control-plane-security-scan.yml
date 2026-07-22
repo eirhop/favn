@@ -1,0 +1,103 @@
+name: Control-plane security scan
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: favn-control-plane-security-scan
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+  attestations: read
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/eirhop/favn-control-plane
+
+jobs:
+  scan:
+    name: Scan current verified image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Setup Elixir and Erlang
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: '1.20.2'
+          otp-version: '29.0.3'
+
+      - name: Compute current identities
+        id: metadata
+        run: |
+          elixir scripts/control_plane_build_id.exs --metadata >> "$GITHUB_OUTPUT"
+          build_id=$(elixir scripts/control_plane_build_id.exs)
+          elixir scripts/control_plane_qualification_id.exs \
+            --control-plane-build-id "$build_id" \
+            --metadata >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull current verified control plane
+        id: image
+        env:
+          BUILD_ID: ${{ steps.metadata.outputs.control_plane_build_id }}
+        run: |
+          set -euo pipefail
+          build_ref="$IMAGE_REPOSITORY:build-$BUILD_ID"
+          docker pull "$build_ref"
+          digest=$(scripts/control_plane_registry.sh lookup-digest "$build_ref")
+          scripts/control_plane_registry.sh require-digest "$IMAGE_REPOSITORY:verified-build-$BUILD_ID" "$digest"
+          scripts/control_plane_image_contract.sh "$IMAGE_REPOSITORY@$digest" "$BUILD_ID"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "reference=$IMAGE_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: >-
+          gh attestation verify
+          "oci://$IMAGE_REPOSITORY@$DIGEST"
+          --repo "${{ github.repository }}"
+          --predicate-type https://slsa.dev/provenance/v1
+
+      - name: Enforce vulnerability exception review deadline
+        env:
+          VULNERABILITY_EXCEPTION_REVIEW_BY: '2026-08-22'
+        run: |
+          today=$(date -u +%F)
+          [[ "$today" < "$VULNERABILITY_EXCEPTION_REVIEW_BY" || "$today" == "$VULNERABILITY_EXCEPTION_REVIEW_BY" ]]
+
+      - name: Scan high and critical vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ steps.image.outputs.reference }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          grype-version: v0.116.0
+          config: security/control-plane-grype.yaml
+          output-format: sarif
+          output-file: control-plane-grype.sarif
+
+      - name: Record scanned identity
+        env:
+          SECURITY_SCAN_ID: ${{ steps.metadata.outputs.security_scan_id }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          echo "Security scan identity: $SECURITY_SCAN_ID" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image digest: $DIGEST" >> "$GITHUB_STEP_SUMMARY"

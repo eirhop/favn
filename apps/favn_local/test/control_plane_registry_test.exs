@@ -115,6 +115,9 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     release_workflow =
       File.read!(Path.join(@repo_root, ".github/workflows/control-plane-release.yml"))
 
+    scheduled_scan_workflow =
+      File.read!(Path.join(@repo_root, ".github/workflows/control-plane-security-scan.yml"))
+
     grype_policy = File.read!(Path.join(@repo_root, "security/control-plane-grype.yaml"))
 
     assert Regex.scan(
@@ -131,22 +134,23 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     assert image_workflow =~ "mix local.hex 2.5.1 --force"
     refute ci_workflow =~ "mix local.hex --force"
     refute ci_workflow =~ "mix local.rebar --force"
-    assert length(Regex.scan(~r/mix local\.hex 2\.5\.1 --force/, ci_workflow)) == 3
+    assert length(Regex.scan(~r/mix local\.hex 2\.5\.1 --force/, ci_workflow)) == 5
 
     assert length(
              Regex.scan(
                ~r{mix local\.rebar rebar3 https://github\.com/erlang/rebar3/releases/download/3\.27\.0/rebar3},
                ci_workflow
              )
-           ) == 3
+           ) == 5
 
     assert length(Regex.scan(~r/grype-version: v0\.116\.0/, image_workflow)) == 4
     assert length(Regex.scan(~r/grype-version: v0\.116\.0/, release_workflow)) == 1
-    assert length(Regex.scan(~r/config: security\/control-plane-grype\.yaml/, image_workflow)) == 4
 
-    assert length(
-             Regex.scan(~r/config: security\/control-plane-grype\.yaml/, release_workflow)
-           ) == 1
+    assert length(Regex.scan(~r/config: security\/control-plane-grype\.yaml/, image_workflow)) ==
+             4
+
+    assert length(Regex.scan(~r/config: security\/control-plane-grype\.yaml/, release_workflow)) ==
+             1
 
     assert length(Regex.scan(~r/only-fixed: false/, image_workflow)) == 4
     assert length(Regex.scan(~r/only-fixed: false/, release_workflow)) == 1
@@ -156,12 +160,14 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     assert length(
              Regex.scan(
                ~r/VULNERABILITY_EXCEPTION_REVIEW_BY: '2026-08-22'/,
-             image_workflow
+               image_workflow
              )
            ) == 4
 
     assert release_workflow =~ "VULNERABILITY_EXCEPTION_REVIEW_BY: '2026-08-22'"
-    assert image_workflow =~ "security/control-plane-grype.yaml|.github/workflows/control-plane-image.yml"
+    assert image_workflow =~ "control_plane_qualification_id.exs"
+    assert image_workflow =~ "runtime_qualification_changed"
+    assert image_workflow =~ "security_scan_changed"
 
     [discover_job, _rest] = String.split(image_workflow, "  pr-candidate:", parts: 2)
     assert discover_job =~ "Enforce vulnerability exception review deadline"
@@ -183,10 +189,21 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     assert pr_job =~ "permissions:\n      contents: read"
     refute pr_job =~ "packages: write"
     assert pr_job =~ "pr-runtime-acceptance:"
-    assert pr_job =~ "runtime_acceptance_changed == 'true'"
-    assert pr_job =~ "Scan current official control plane"
-    assert image_workflow =~ "apps/favn_azure/*"
+    assert pr_job =~ "runtime_qualification_changed == 'true'"
+    assert pr_job =~ "pr-security-scan:"
+    assert pr_job =~ "security_scan_changed == 'true'"
+    assert pr_job =~ "Scan unchanged official control plane"
+    refute image_workflow =~ "apps/favn_azure/*"
     assert pr_job =~ ~s(ref="$IMAGE_REPOSITORY:build-$BUILD_ID")
+
+    [runtime_job, security_job] =
+      pr_job
+      |> String.split("  pr-runtime-acceptance:", parts: 2)
+      |> List.last()
+      |> String.split("  pr-security-scan:", parts: 2)
+
+    refute runtime_job =~ "anchore/scan-action@"
+    assert security_job =~ "anchore/scan-action@"
 
     assert pr_job =~
              ~s(require-digest "$IMAGE_REPOSITORY:verified-build-$BUILD_ID" "$digest")
@@ -197,10 +214,12 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     assert pr_job =~ "FAVN_CONTROL_PLANE_CANDIDATE: ${{ steps.image.outputs.reference }}"
 
     assert image_workflow =~
-             "needs: [discover, pr-candidate, pr-runtime-acceptance, main-image, verify-published, record-main-verification]"
+             "needs: [discover, pr-candidate, pr-runtime-acceptance, pr-security-scan, main-image, verify-published, record-main-verification]"
 
     assert image_workflow =~ "PR_RUNTIME_RESULT: ${{ needs.pr-runtime-acceptance.result }}"
+    assert image_workflow =~ "PR_SECURITY_RESULT: ${{ needs.pr-security-scan.result }}"
     assert image_workflow =~ ~s([[ "$PR_RUNTIME_RESULT" == success ]])
+    assert image_workflow =~ ~s([[ "$PR_SECURITY_RESULT" == success ]])
 
     [main_job, _rest] =
       image_workflow
@@ -212,6 +231,7 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
              "- name: Run complete pre-publish container acceptance\n        if: steps.lookup.outputs.exists == 'false'"
 
     assert main_job =~ "Scan reused official control plane"
+    assert main_job =~ "needs.discover.outputs.security_scan_changed == 'true'"
 
     [record_job, _rest] =
       image_workflow
@@ -227,6 +247,11 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     assert release_workflow =~ "require-github-release-absent"
     assert release_workflow =~ "require-digest \"$IMAGE_REPOSITORY:sha-$TAGGED_SHA\""
     assert release_workflow =~ "record-alias"
+    assert scheduled_scan_workflow =~ "cron: '17 4 * * *'"
+    assert scheduled_scan_workflow =~ "Scan current verified image"
+    assert scheduled_scan_workflow =~ "verified-build-$BUILD_ID"
+    assert scheduled_scan_workflow =~ "Verify build provenance"
+    assert scheduled_scan_workflow =~ "grype-version: v0.116.0"
   end
 
   test "new image publication exposes no immutable cache key before qualification" do

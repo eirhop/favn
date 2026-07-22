@@ -29,7 +29,7 @@ credential is required. Authority is scoped by event and job:
 
 | Event | Expensive work | Registry/repository authority | Required result |
 | --- | --- | --- | --- |
-| Pull request to `main` | Build, inspect, scan, and create an SBOM only when the control-plane identity changes | `contents: read`; no package or release writes | Unpublished candidate evidence |
+| Pull request to `main` | Build, inspect, scan, and create an SBOM only when the control-plane identity changes; otherwise run only changed runtime-compatibility or scan qualification | `contents: read`; no package or release writes | Unpublished candidate or exact verified-image evidence |
 | Successful exact `main` CI revision | Reuse a compatible digest, or build, scan, push, attest, and cleanly verify it | `contents: read`, `packages: write`, `attestations: write`, `id-token: write` | `build-<id>`, `verified-build-<id>`, and `sha-<git-sha>` all name the verified digest |
 | Semantic `v<release_version>` tag | Qualify an existing digest; never rebuild | `actions: read`, `contents: write`, `packages: write`, `attestations: read` | Exact main-SHA and verified-build markers match before the immutable version alias and GitHub Release are created |
 
@@ -91,6 +91,44 @@ For CI-readable metadata:
 elixir scripts/control_plane_build_id.exs --metadata
 ```
 
+## Qualification identities
+
+Image construction, runtime compatibility, and vulnerability scanning have
+separate deterministic identities. CI compares each identity between the base
+and head revisions instead of using one broad changed-path boolean:
+
+- `control_plane_build_id` covers the exact image bytes and build contract
+  described above. Only a changed build ID creates a candidate image.
+- `runtime_qualification_id` combines that build ID with runner, authoring,
+  in-process DuckDB, SQL runtime, runner-build, Compose, container-acceptance,
+  root test configuration, lockfile, registry, image-contract, and qualification
+  workflow inputs. A changed runtime ID with an unchanged build ID pulls the
+  existing verified image and runs compatibility acceptance without rebuilding
+  or rescanning it.
+- `security_scan_id` combines the build ID with the Grype policy, pinned scan
+  behavior, image contract, and scheduled-scan workflow. A changed scan ID with
+  an unchanged build ID rescans the existing verified image without running
+  runner/Compose acceptance.
+
+The runtime identity deliberately excludes ordinary application tests,
+documentation, Azure and ADBC adapter code covered by their owning CI slices,
+and local-only backfill, inspection, initialization, run, and run-list commands.
+New or unclassified repository paths fail safe by selecting runtime
+qualification. The focused routing contract is executable through:
+
+```bash
+elixir scripts/control_plane_qualification_test.exs
+```
+
+For CI-readable identities:
+
+```bash
+build_id=$(elixir scripts/control_plane_build_id.exs)
+elixir scripts/control_plane_qualification_id.exs \
+  --control-plane-build-id "$build_id" \
+  --metadata
+```
+
 ## Maintainer candidate build
 
 From the Favn repository root:
@@ -109,16 +147,18 @@ repository, platform, source root, or output root.
 
 Official images are built only by protected GitHub Actions. Pull requests build,
 inspect, scan, and generate an SBOM for an unpublished candidate when the exact
-input identity changed. After the main CI workflow succeeds, the image workflow
-either reuses the existing immutable build digest or builds and pushes a
-run-scoped staging tag. Only after both attestations and clean-runner image
-qualification succeed does it add the immutable build, verified-build, and
-exact-SHA aliases. An interruption before either attestation therefore leaves no
-official build cache key and the next run safely rebuilds. A build tag without
-its matching verified-build marker is re-verified rather than trusted. Both the
-build marker and exact-SHA marker are required by release promotion. Registry
-lookup and validation errors fail the workflow; they are not interpreted as a
-cache miss.
+image identity changed. Runtime-only changes qualify the existing verified
+digest, and scan-only changes rescan that digest. After the main CI workflow
+succeeds, the image workflow either reuses the existing immutable build digest
+or builds and pushes a run-scoped staging tag. A reused digest is rescanned only
+when its security scan identity changed. Only after both attestations and clean
+runner image qualification succeed does CI add the immutable build,
+verified-build, and exact-SHA aliases. An interruption before either attestation
+therefore leaves no official build cache key and the next run safely rebuilds.
+A build tag without its matching verified-build marker is re-verified rather
+than trusted. Both the build marker and exact-SHA marker are required by release
+promotion. Registry lookup and validation errors fail the workflow; they are not
+interpreted as a cache miss.
 
 Candidate and newly published images are scanned with pinned Grype `0.116.0`.
 Any high or critical finding with an available fix fails the build. The tracked
@@ -129,8 +169,11 @@ also rejects image qualification and release promotion after the explicit
 review deadline until maintainers upgrade the base snapshot or review each
 remaining exception. Scan policy is not an image-byte input and therefore does
 not change `control_plane_build_id`; policy-only pull requests instead pull and
-rescan the exact verified digest, while reused main and release images are
-rescanned before aliases are added.
+rescan the exact verified digest. Reused main images are rescanned only when the
+security scan identity changes. Release promotion always rescans, and the
+trusted-default-branch `Control-plane security scan` workflow scans the current
+verified digest daily so vulnerability-database freshness is not coupled to
+unrelated pull requests.
 
 ## Runtime contract
 
@@ -210,10 +253,13 @@ in the ordinary CI test suite.
 Pull requests that change control-plane build inputs build and scan a candidate
 and run this tier without registry write permission. After required CI succeeds
 on `main`, the image workflow runs the same tier before its run-scoped staging
-push. Runner-only and local-tooling pull requests skip that build, pull the
-current official build digest, and run the runner/Compose tier against it;
-documentation-only pull requests run neither image job. A main revision whose
-control-plane build ID already exists verifies and reuses that digest without
-repeating image acceptance. Release promotion repeats qualification against the
-immutable registry digest before adding the version alias. A failing required
-qualification can therefore never publish or promote an untested image.
+push. Runner, in-process DuckDB, runner-build, and Compose changes skip that
+build, pull the current official build digest, and run the runner/Compose tier
+against it without repeating the vulnerability scan. Scan-policy changes run
+only the exact verified-image scan. Unrelated local commands, ADBC, Azure,
+ordinary tests, and documentation run neither heavy image job. A main revision
+whose control-plane build ID already exists verifies and reuses that digest
+without repeating image acceptance or an unchanged scan. Release promotion
+repeats qualification against the immutable registry digest before adding the
+version alias. A failing required qualification can therefore never publish or
+promote an untested image.

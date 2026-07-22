@@ -27,8 +27,11 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     outputs:
       changed: ${{ steps.identity.outputs.changed }}
-      runtime_acceptance_changed: ${{ steps.runtime_acceptance.outputs.changed }}
+      runtime_qualification_changed: ${{ steps.qualification.outputs.runtime_qualification_changed }}
+      security_scan_changed: ${{ steps.qualification.outputs.security_scan_changed }}
       control_plane_build_id: ${{ steps.metadata.outputs.control_plane_build_id }}
+      runtime_qualification_id: ${{ steps.qualification.outputs.runtime_qualification_id }}
+      security_scan_id: ${{ steps.qualification.outputs.security_scan_id }}
       control_plane_version: ${{ steps.metadata.outputs.control_plane_version }}
       release_version: ${{ steps.metadata.outputs.release_version }}
       elixir_version: ${{ steps.metadata.outputs.elixir_version }}
@@ -89,19 +92,16 @@ jobs:
           BASE_SHA: ${{ steps.revisions.outputs.base_sha }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT_NAME" != pull_request ]]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Main publication will resolve the exact build ID through GHCR."
-            exit 0
-          fi
           base_dir="$RUNNER_TEMP/favn-control-plane-base"
           git worktree add --detach "$base_dir" "$BASE_SHA"
           if [[ ! -f "$base_dir/scripts/control_plane_build_id.exs" ]]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "base_control_plane_build_id=" >> "$GITHUB_OUTPUT"
             echo "Base revision predates deterministic control-plane identity; candidate build is required."
             exit 0
           fi
           base_id=$(elixir "$base_dir/scripts/control_plane_build_id.exs" --root "$base_dir")
+          echo "base_control_plane_build_id=$base_id" >> "$GITHUB_OUTPUT"
           if [[ "$base_id" == "$HEAD_ID" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "Control-plane inputs are unchanged ($HEAD_ID)."
@@ -110,23 +110,68 @@ jobs:
             echo "Control-plane inputs changed: $base_id -> $HEAD_ID"
           fi
 
-      - name: Classify runner and local Compose acceptance inputs
-        id: runtime_acceptance
+      - name: Compute qualification identities
+        id: qualification
         env:
+          HEAD_ID: ${{ steps.metadata.outputs.control_plane_build_id }}
+          BASE_ID: ${{ steps.identity.outputs.base_control_plane_build_id }}
           BASE_SHA: ${{ steps.revisions.outputs.base_sha }}
           HEAD_SHA: ${{ steps.revisions.outputs.head_sha }}
         run: |
           set -euo pipefail
-          changed=false
-          while IFS= read -r path; do
-            case "$path" in
-              mix.exs|mix.lock|config/*|apps/favn/*|apps/favn_local/*|apps/favn_runner/*|apps/favn_core/*|apps/favn_authoring/*|apps/favn_sql_runtime/*|apps/favn_duckdb/*|apps/favn_duckdb_adbc/*|apps/favn_azure/*|apps/favn_test_support/*|scripts/runner_*|security/control-plane-grype.yaml|.github/workflows/control-plane-image.yml)
-                changed=true
-                break
-                ;;
-            esac
-          done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
-          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          head_metadata="$RUNNER_TEMP/favn-head-qualification"
+          elixir scripts/control_plane_qualification_id.exs \
+            --control-plane-build-id "$HEAD_ID" \
+            --metadata > "$head_metadata"
+          cat "$head_metadata" >> "$GITHUB_OUTPUT"
+          head_runtime=$(sed -n 's/^runtime_qualification_id=//p' "$head_metadata")
+          head_scan=$(sed -n 's/^security_scan_id=//p' "$head_metadata")
+
+          classification="$RUNNER_TEMP/favn-path-classification"
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
+            | elixir scripts/control_plane_qualification_id.exs --classify-paths \
+            > "$classification"
+          unknown_runtime=$(sed -n 's/^unknown_runtime_changed=//p' "$classification")
+          unknown_paths=$(sed -n 's/^unknown_runtime_paths=//p' "$classification")
+
+          base_dir="$RUNNER_TEMP/favn-control-plane-base"
+          base_metadata="$RUNNER_TEMP/favn-base-qualification"
+          set +e
+          elixir scripts/control_plane_qualification_id.exs \
+            --root "$base_dir" \
+            --control-plane-build-id "$BASE_ID" \
+            --metadata > "$base_metadata"
+          base_status=$?
+          set -e
+
+          if [[ $base_status -ne 0 ]]; then
+            echo "runtime_qualification_changed=true" >> "$GITHUB_OUTPUT"
+            echo "security_scan_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Base revision predates complete qualification identities; all qualification is required."
+            exit 0
+          fi
+
+          base_runtime=$(sed -n 's/^runtime_qualification_id=//p' "$base_metadata")
+          base_scan=$(sed -n 's/^security_scan_id=//p' "$base_metadata")
+
+          if [[ "$head_runtime" == "$base_runtime" && "$unknown_runtime" != true ]]; then
+            echo "runtime_qualification_changed=false" >> "$GITHUB_OUTPUT"
+            echo "Runtime compatibility inputs are unchanged ($head_runtime)."
+          else
+            echo "runtime_qualification_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Runtime compatibility inputs changed: $base_runtime -> $head_runtime"
+            if [[ -n "$unknown_paths" ]]; then
+              echo "Unknown paths conservatively selected runtime qualification: $unknown_paths"
+            fi
+          fi
+
+          if [[ "$head_scan" == "$base_scan" ]]; then
+            echo "security_scan_changed=false" >> "$GITHUB_OUTPUT"
+            echo "Security scan inputs are unchanged ($head_scan)."
+          else
+            echo "security_scan_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Security scan inputs changed: $base_scan -> $head_scan"
+          fi
 
   pr-candidate:
     name: PR control-plane candidate
@@ -235,7 +280,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       needs.discover.outputs.changed == 'false' &&
-      needs.discover.outputs.runtime_acceptance_changed == 'true'
+      needs.discover.outputs.runtime_qualification_changed == 'true'
     timeout-minutes: 90
     permissions:
       contents: read
@@ -291,6 +336,45 @@ jobs:
           MIX_ENV: test
         run: mix test.container
 
+  pr-security-scan:
+    name: PR existing control-plane security scan
+    runs-on: ubuntu-latest
+    needs: discover
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.discover.outputs.changed == 'false' &&
+      needs.discover.outputs.security_scan_changed == 'true'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout exact pull-request revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.discover.outputs.head_sha }}
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull exact current official control plane
+        id: image
+        env:
+          BUILD_ID: ${{ needs.discover.outputs.control_plane_build_id }}
+        run: |
+          set -euo pipefail
+          ref="$IMAGE_REPOSITORY:build-$BUILD_ID"
+          docker pull "$ref"
+          digest=$(scripts/control_plane_registry.sh lookup-digest "$ref")
+          scripts/control_plane_registry.sh require-digest "$IMAGE_REPOSITORY:verified-build-$BUILD_ID" "$digest"
+          scripts/control_plane_image_contract.sh "$IMAGE_REPOSITORY@$digest" "$BUILD_ID"
+          echo "reference=$IMAGE_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+
       - name: Enforce vulnerability exception review deadline
         env:
           VULNERABILITY_EXCEPTION_REVIEW_BY: '2026-08-22'
@@ -298,7 +382,7 @@ jobs:
           today=$(date -u +%F)
           [[ "$today" < "$VULNERABILITY_EXCEPTION_REVIEW_BY" || "$today" == "$VULNERABILITY_EXCEPTION_REVIEW_BY" ]]
 
-      - name: Scan current official control plane
+      - name: Scan unchanged official control plane
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           image: ${{ steps.image.outputs.reference }}
@@ -419,7 +503,9 @@ jobs:
           --predicate-type https://spdx.dev/Document/v2.3
 
       - name: Scan reused official control plane
-        if: steps.lookup.outputs.exists == 'true'
+        if: >-
+          steps.lookup.outputs.exists == 'true' &&
+          needs.discover.outputs.security_scan_changed == 'true'
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           image: ${{ env.IMAGE_REPOSITORY }}@${{ steps.lookup.outputs.digest }}
@@ -668,7 +754,7 @@ jobs:
   control-plane-image:
     name: Control-plane image result
     runs-on: ubuntu-latest
-    needs: [discover, pr-candidate, pr-runtime-acceptance, main-image, verify-published, record-main-verification]
+    needs: [discover, pr-candidate, pr-runtime-acceptance, pr-security-scan, main-image, verify-published, record-main-verification]
     if: always()
 
     steps:
@@ -677,9 +763,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           DISCOVER_RESULT: ${{ needs.discover.result }}
           INPUTS_CHANGED: ${{ needs.discover.outputs.changed }}
-          RUNTIME_ACCEPTANCE_CHANGED: ${{ needs.discover.outputs.runtime_acceptance_changed }}
+          RUNTIME_QUALIFICATION_CHANGED: ${{ needs.discover.outputs.runtime_qualification_changed }}
+          SECURITY_SCAN_CHANGED: ${{ needs.discover.outputs.security_scan_changed }}
           PR_RESULT: ${{ needs.pr-candidate.result }}
           PR_RUNTIME_RESULT: ${{ needs.pr-runtime-acceptance.result }}
+          PR_SECURITY_RESULT: ${{ needs.pr-security-scan.result }}
           MAIN_RESULT: ${{ needs.main-image.result }}
           PUBLISHED: ${{ needs.main-image.outputs.published }}
           VERIFICATION_REQUIRED: ${{ needs.main-image.outputs.verification_required }}
@@ -692,12 +780,18 @@ jobs:
             if [[ "$INPUTS_CHANGED" == true ]]; then
               [[ "$PR_RESULT" == success ]]
               [[ "$PR_RUNTIME_RESULT" == skipped ]]
+              [[ "$PR_SECURITY_RESULT" == skipped ]]
             else
               [[ "$PR_RESULT" == skipped ]]
-              if [[ "$RUNTIME_ACCEPTANCE_CHANGED" == true ]]; then
+              if [[ "$RUNTIME_QUALIFICATION_CHANGED" == true ]]; then
                 [[ "$PR_RUNTIME_RESULT" == success ]]
               else
                 [[ "$PR_RUNTIME_RESULT" == skipped ]]
+              fi
+              if [[ "$SECURITY_SCAN_CHANGED" == true ]]; then
+                [[ "$PR_SECURITY_RESULT" == success ]]
+              else
+                [[ "$PR_SECURITY_RESULT" == skipped ]]
               fi
             fi
           else
