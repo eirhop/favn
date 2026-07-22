@@ -7,7 +7,7 @@ defmodule Favn.Dev.ComposeProject do
   PostgreSQL role bootstrap below `.favn/`.
   """
 
-  alias Favn.Dev.{ComposeEnv, Config, Paths}
+  alias Favn.Dev.{ComposeDeployment, ComposeEnv, Config, Paths}
 
   @postgres_image "postgres@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
   @safe_identifier ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\z/
@@ -62,7 +62,8 @@ defmodule Favn.Dev.ComposeProject do
   end
 
   @doc "Atomically changes only the generated local runner image reference."
-  @spec put_runner_image(project(), String.t()) :: :ok | {:error, term()}
+  @spec put_runner_image(project() | ComposeDeployment.t(), String.t()) ::
+          :ok | {:error, term()}
   def put_runner_image(project, image)
       when is_map(project) and is_binary(image) and image != "" do
     replace_env_file(project, "FAVN_RUNNER_IMAGE", image)

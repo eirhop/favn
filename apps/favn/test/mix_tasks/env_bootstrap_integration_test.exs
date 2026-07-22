@@ -71,7 +71,10 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
   test "public dev and reload evaluate runtime config once with current .env", context do
     %{capture_path: capture_path, consumer_dir: consumer_dir} = context
     env_path = Path.join(consumer_dir, ".env")
+    compose_path = Path.join(consumer_dir, "deploy/compose.local.yml")
 
+    File.mkdir_p!(Path.dirname(compose_path))
+    File.write!(compose_path, "services: {}\n")
     File.write!(env_path, "#{@mode_env}=cloud\n")
 
     {dev_output, 1} =
@@ -87,7 +90,7 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
     {reload_output, 1} =
       run_mix(consumer_dir, ["favn.reload", "--root-dir", consumer_dir], capture_path)
 
-    assert reload_output =~ "install required; run mix favn.install then mix favn.dev"
+    assert reload_output =~ "reload failed: :stack_not_running"
 
     assert %{database: "local.duckdb", evaluation_count: 2, mode: "local"} =
              read_capture!(capture_path)

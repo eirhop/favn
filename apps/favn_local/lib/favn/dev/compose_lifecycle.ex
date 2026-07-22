@@ -1511,7 +1511,7 @@ defmodule Favn.Dev.ComposeLifecycle do
         running == [] ->
           :ok
 
-        running_roles == runtime_roles ->
+        MapSet.equal?(running_roles, runtime_roles) ->
           {:error, :stack_already_running}
 
         true ->
