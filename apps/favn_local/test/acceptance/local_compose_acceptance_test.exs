@@ -17,6 +17,8 @@ defmodule Favn.Local.ComposeAcceptanceTest do
   @moduletag :container
   @moduletag timeout: 1_200_000
 
+  @reference_proxy_image "nginx@sha256:123827f4a105eee4054d59a0080f7860b2a7e29fe138d132af7850843b54c833"
+
   @runner_environment %{
     "FAVN_ACCEPTANCE_DOLLARS" => "$HOME and ${UNSET_VALUE}",
     "FAVN_ACCEPTANCE_QUOTES" => "\"double\" and 'single'",
@@ -125,6 +127,8 @@ defmodule Favn.Local.ComposeAcceptanceTest do
              inspection["HostConfig"]["NetworkMode"] == project["network_name"]
            end)
 
+    assert_liveview_websocket_through_proxy!(project, context.root_dir)
+
     assert :ok = ComposeLifecycle.reload(context.opts)
     reloaded = inspect_services(project)
 
@@ -225,6 +229,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     assert second.manifest_version_id == first.manifest_version_id
 
     assert_runtime_input_key_rotation!(project, context.opts)
+    assert_view_session_key_rotation!(project, context.opts)
     assert_service_token_rotation!(project, context.opts)
 
     assert %{stack_status: :running, runtime: %{"status" => "ok"}} =
@@ -387,6 +392,254 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     end
 
     refute Enum.any?(secret_keys, &String.contains?(output, &1))
+  end
+
+  defp assert_view_session_key_rotation!(project, opts) do
+    assert {:ok, secrets} = State.read_secrets(opts)
+    cookie = login_browser_session!(project, secrets)
+    assert_browser_session_status!(project["view_url"], cookie, 200)
+
+    new_secret = :crypto.strong_rand_bytes(48) |> Base.url_encode64(padding: false)
+
+    put_compose_environment!(project, %{"FAVN_VIEW_SECRET_KEY_BASE" => new_secret})
+    assert :ok = State.write_secrets(Map.put(secrets, "web_session_secret", new_secret), opts)
+    recreate_control_plane!(project, opts)
+
+    assert_browser_session_redirected_to_login!(project["view_url"], cookie)
+  end
+
+  defp login_browser_session!(project, secrets) do
+    :ok = ensure_inets_started!()
+    login_url = project["view_url"] <> "/login"
+    %{status: 200, headers: get_headers, body: body} = http_request!(:get, login_url)
+    csrf_token = csrf_token!(body)
+    get_cookies = response_cookies(get_headers)
+
+    form =
+      URI.encode_query([
+        {"_csrf_token", csrf_token},
+        {"operator[workspace_id]", project["workspace_id"]},
+        {"operator[username]", "admin"},
+        {"operator[password]", secrets["bootstrap_password"]}
+      ])
+
+    headers = [{"cookie", encode_cookie_header(get_cookies)}]
+
+    %{status: 302, headers: post_headers} =
+      http_request!(:post, login_url, headers, form)
+
+    assert response_header(post_headers, "location") == "/assets"
+
+    cookies = Map.merge(get_cookies, response_cookies(post_headers))
+
+    if map_size(cookies) == 0 do
+      flunk("operator login did not issue a browser session cookie")
+    end
+
+    encode_cookie_header(cookies)
+  end
+
+  defp assert_browser_session_status!(view_url, cookie, expected_status) do
+    %{status: status} = http_request!(:get, view_url <> "/assets", [{"cookie", cookie}])
+    assert status == expected_status
+  end
+
+  defp assert_browser_session_redirected_to_login!(view_url, cookie) do
+    %{status: status, headers: headers} =
+      http_request!(:get, view_url <> "/assets", [{"cookie", cookie}])
+
+    assert status == 302
+    assert response_header(headers, "location") == "/login?return_to=%2Fassets"
+  end
+
+  defp http_request!(method, url, headers \\ [], body \\ nil) do
+    request_headers =
+      Enum.map(headers, fn {name, value} -> {to_charlist(name), to_charlist(value)} end)
+
+    request =
+      case {method, body} do
+        {:get, nil} ->
+          {to_charlist(url), request_headers}
+
+        {:post, encoded} when is_binary(encoded) ->
+          {to_charlist(url), request_headers, ~c"application/x-www-form-urlencoded", encoded}
+      end
+
+    case :httpc.request(method, request, [autoredirect: false, timeout: 15_000],
+           body_format: :binary
+         ) do
+      {:ok, {{_version, status, _reason}, response_headers, response_body}} ->
+        %{status: status, headers: response_headers, body: response_body}
+
+      {:error, _reason} ->
+        flunk("container browser request failed")
+    end
+  end
+
+  defp ensure_inets_started! do
+    case Application.ensure_all_started(:inets) do
+      {:ok, _started} -> :ok
+      {:error, _reason} -> flunk("could not start the HTTP client")
+    end
+  end
+
+  defp csrf_token!(body) do
+    case Regex.run(~r/name="_csrf_token"[^>]*value="([^"]+)"/, body) do
+      [_, token] -> token
+      _missing -> flunk("login form did not include a CSRF token")
+    end
+  end
+
+  defp response_cookies(headers) do
+    headers
+    |> Enum.filter(fn {name, _value} -> String.downcase(to_string(name)) == "set-cookie" end)
+    |> Map.new(fn {_name, value} ->
+      [cookie | _attributes] = value |> to_string() |> String.split(";", trim: true)
+      [name, encoded] = String.split(cookie, "=", parts: 2)
+      {name, encoded}
+    end)
+  end
+
+  defp encode_cookie_header(cookies) do
+    cookies
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map_join("; ", fn {name, value} -> name <> "=" <> value end)
+  end
+
+  defp response_header(headers, expected_name) do
+    Enum.find_value(headers, fn {name, value} ->
+      if String.downcase(to_string(name)) == expected_name, do: to_string(value)
+    end)
+  end
+
+  defp assert_liveview_websocket_through_proxy!(project, root_dir) do
+    proxy_port = free_port()
+    proxy_name = "favn-reference-proxy-#{System.unique_integer([:positive])}"
+    config_path = Path.join(root_dir, "reference-proxy.nginx.conf")
+    File.write!(config_path, reference_proxy_config())
+
+    try do
+      assert {container_id, 0} =
+               System.cmd(
+                 "docker",
+                 [
+                   "run",
+                   "--detach",
+                   "--rm",
+                   "--name",
+                   proxy_name,
+                   "--network",
+                   project["network_name"],
+                   "--publish",
+                   "127.0.0.1:#{proxy_port}:8080",
+                   "--volume",
+                   "#{config_path}:/etc/nginx/nginx.conf:ro",
+                   @reference_proxy_image
+                 ],
+                 stderr_to_stdout: true
+               )
+
+      assert String.trim(container_id) != ""
+      assert_websocket_upgrade_ready!(proxy_port, project["view_url"])
+    after
+      _ =
+        System.cmd(
+          "docker",
+          ["container", "rm", "--force", proxy_name],
+          stderr_to_stdout: true
+        )
+    end
+  end
+
+  defp reference_proxy_config do
+    """
+    events {}
+
+    http {
+      server {
+        listen 8080;
+
+        location / {
+          proxy_pass http://control-plane.favn.internal:4000;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          proxy_set_header Host $http_host;
+          proxy_set_header Origin $http_origin;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-Host $http_host;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+      }
+    }
+    """
+  end
+
+  defp assert_websocket_upgrade_ready!(proxy_port, public_origin, attempts \\ 60)
+
+  defp assert_websocket_upgrade_ready!(proxy_port, public_origin, attempts) when attempts > 0 do
+    case websocket_upgrade(proxy_port, public_origin) do
+      {:ok, response} ->
+        normalized = String.downcase(response)
+        assert normalized =~ ~r/^http\/1\.[01] 101 /m
+        assert normalized =~ ~r/^upgrade: websocket\r?$/m
+
+      {:error, _reason} ->
+        Process.sleep(250)
+        assert_websocket_upgrade_ready!(proxy_port, public_origin, attempts - 1)
+    end
+  end
+
+  defp assert_websocket_upgrade_ready!(_proxy_port, _public_origin, 0),
+    do: flunk("reference proxy never completed a LiveView WebSocket upgrade")
+
+  defp websocket_upgrade(proxy_port, public_origin) do
+    uri = URI.parse(public_origin)
+    public_host = uri.host <> ":" <> Integer.to_string(uri.port)
+    websocket_key = :crypto.strong_rand_bytes(16) |> Base.encode64()
+
+    request =
+      [
+        "GET /live/websocket?vsn=2.0.0 HTTP/1.1\r\n",
+        "Host: ",
+        public_host,
+        "\r\n",
+        "Origin: ",
+        public_origin,
+        "\r\n",
+        "Upgrade: websocket\r\n",
+        "Connection: Upgrade\r\n",
+        "Sec-WebSocket-Key: ",
+        websocket_key,
+        "\r\n",
+        "Sec-WebSocket-Version: 13\r\n\r\n"
+      ]
+
+    with {:ok, socket} <-
+           :gen_tcp.connect({127, 0, 0, 1}, proxy_port, [:binary, active: false], 2_000) do
+      try do
+        with :ok <- :gen_tcp.send(socket, request),
+             {:ok, response} <- receive_http_headers(socket, "") do
+          {:ok, response}
+        end
+      after
+        :gen_tcp.close(socket)
+      end
+    end
+  end
+
+  defp receive_http_headers(_socket, response) when byte_size(response) > 65_536,
+    do: {:error, :response_headers_too_large}
+
+  defp receive_http_headers(socket, response) do
+    if String.contains?(response, "\r\n\r\n") do
+      {:ok, response}
+    else
+      case :gen_tcp.recv(socket, 0, 2_000) do
+        {:ok, chunk} -> receive_http_headers(socket, response <> chunk)
+        {:error, reason} -> {:error, reason}
+      end
+    end
   end
 
   defp put_compose_environment!(project, updates) do

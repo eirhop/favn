@@ -20,9 +20,9 @@ not substitute in-memory or SQLite persistence.
 | Manifest-only update | Publishes and activates a SQL-only change without changing the runner image or restarting either runtime service. |
 | Durable restart | Restarts control plane and runner independently and proves persisted deployment and run state remain usable. |
 | Shutdown honesty | Exercises idle and active SIGTERM, bounded drain, cancellation, abrupt loss, and recovery without invented success. |
-| Manual rotation | Rotates service tokens, runtime-input keys, and the View session key through controlled container recreation. |
+| Manual rotation | Authenticates a browser session, rotates service tokens, runtime-input keys, and the View session key through controlled container recreation, then proves the old browser cookie is rejected. |
 | Upgrade/rollback | Qualifies a compatible control-plane upgrade and rollback against the preserved PostgreSQL authority. |
-| Security | Checks non-root/read-only containers, secret redaction, private BEAM/PostgreSQL ports, immutable image identity, and the absence of unexpected applications. |
+| Security | Checks non-root/read-only containers, secret redaction, private BEAM/PostgreSQL ports, immutable image identity, the absence of unexpected applications, and a real LiveView WebSocket upgrade through the pinned Nginx reference proxy. |
 
 Fast CI also runs the warning-grade Credo baseline, whole-umbrella Dialyzer,
 and strict Sobelow scans for both Phoenix boundaries. Dialyzer uses the tracked
