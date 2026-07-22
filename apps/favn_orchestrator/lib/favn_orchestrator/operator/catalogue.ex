@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   alias FavnOrchestrator.Operator.Catalogue.Timeline
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
+  alias FavnOrchestrator.Persistence.Queries.GetTargetBindings
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: PersistenceTargetStatus
@@ -67,7 +68,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
           required(:latest_run_at) => DateTime.t() | nil,
-          required(:coverage) => Favn.Coverage.Summary.t()
+          required(:coverage) => Favn.Coverage.Summary.t(),
+          required(:compatibility) => map()
         }
 
   @type pipeline_catalogue_entry :: %{
@@ -162,6 +164,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:coverage_policy) => map() | nil,
           required(:coverage_gaps) => [map()],
           required(:coverage_pagination) => map(),
+          required(:compatibility) => map(),
           required(:assurance) => map() | nil,
           required(:timeline) => [asset_timeline_window()]
         }
@@ -191,10 +194,11 @@ defmodule FavnOrchestrator.Operator.Catalogue do
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
          {:ok, targets} <- deployment_target_descriptors(grants, :asset),
          {:ok, statuses} <- target_statuses(context, runtime, :asset, targets),
+         {:ok, compatibilities} <- target_compatibilities(context, targets),
          {:ok, coverages} <-
            Coverage.summaries(context, Enum.map(targets, & &1.target_id)),
          :ok <- coverage_snapshot(coverages, runtime.manifest_version_id) do
-      {:ok, catalogue_entries(targets, statuses, coverages)}
+      {:ok, catalogue_entries(targets, statuses, coverages, compatibilities)}
     end
   end
 
@@ -251,6 +255,10 @@ defmodule FavnOrchestrator.Operator.Catalogue do
          {:ok, coverage_page} <-
            Coverage.missing_windows(context, target_id, evaluated_at: now, limit: 100),
          :ok <- coverage_snapshot(coverage_page.summary, runtime.manifest_version_id),
+         {:ok, compatibilities} <-
+           target_compatibilities(context, [
+             %{target_id: target_id, persisted?: not is_nil(asset.target_descriptor)}
+           ]),
          freshness_opts <- freshness_opts(opts, run_context_selection),
          {:ok, freshness_plan} <- AssetFreshness.plan(asset, version, now, freshness_opts),
          {:ok, loaded_freshness} <-
@@ -289,6 +297,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
         |> Map.put(:coverage_policy, coverage_policy(asset.coverage))
         |> Map.put(:coverage_gaps, coverage_page.items)
         |> Map.put(:coverage_pagination, coverage_page.pagination)
+        |> Map.put(:compatibility, Map.fetch!(compatibilities, target_id))
 
       {:ok, detail}
     else
@@ -527,7 +536,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     end
   end
 
-  defp catalogue_entries(targets, statuses, coverages \\ %{}) do
+  defp catalogue_entries(targets, statuses, coverages \\ %{}, compatibilities \\ %{}) do
     targets
     |> Enum.map(fn target ->
       status = Map.fetch!(statuses, target.target_id)
@@ -535,8 +544,96 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       target
       |> Status.put(status)
       |> maybe_put_coverage(coverages)
+      |> maybe_put_compatibility(compatibilities)
     end)
     |> Enum.sort_by(& &1.label)
+  end
+
+  defp maybe_put_compatibility(target, compatibilities) do
+    Map.put(
+      target,
+      :compatibility,
+      Map.get(compatibilities, target.target_id, non_persisted_compatibility())
+    )
+  end
+
+  defp target_compatibilities(context, targets) do
+    target_ids = targets |> Enum.map(& &1.target_id) |> Enum.uniq()
+
+    target_ids
+    |> Enum.chunk_every(500)
+    |> Enum.reduce_while({:ok, %{}}, fn chunk, {:ok, acc} ->
+      case Persistence.stores().target_generations.get_bindings(%GetTargetBindings{
+             workspace_context: context,
+             target_ids: chunk
+           }) do
+        {:ok, bindings} ->
+          next = Map.new(bindings, &{&1.target_id, compatibility_view(&1)})
+          {:cont, {:ok, Map.merge(acc, next)}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, compatibilities} ->
+        {:ok,
+         Map.new(targets, fn target ->
+           fallback =
+             if Map.get(target, :persisted?, false),
+               do: missing_binding_compatibility(),
+               else: non_persisted_compatibility()
+
+           {target.target_id, Map.get(compatibilities, target.target_id, fallback)}
+         end)}
+
+      error ->
+        error
+    end)
+  end
+
+  defp compatibility_view(binding) do
+    %{
+      status: binding.compatibility_status,
+      reason_code: binding.reason_code,
+      diff: binding.compatibility_diff,
+      active_generation_id: binding.active_generation_id,
+      desired_descriptor_hash: binding.desired_descriptor_hash,
+      physical_fingerprint: binding.active_physical_fingerprint,
+      persisted?: true,
+      blocks_writes?:
+        binding.compatibility_status in [
+          :rebuild_required,
+          :unexpected_drift,
+          :operator_decision
+        ]
+    }
+  end
+
+  defp non_persisted_compatibility do
+    %{
+      status: :ready,
+      reason_code: "not_persisted",
+      diff: %{},
+      active_generation_id: nil,
+      desired_descriptor_hash: nil,
+      physical_fingerprint: nil,
+      persisted?: false,
+      blocks_writes?: false
+    }
+  end
+
+  defp missing_binding_compatibility do
+    %{
+      status: :operator_decision,
+      reason_code: "target_binding_missing",
+      diff: %{},
+      active_generation_id: nil,
+      desired_descriptor_hash: nil,
+      physical_fingerprint: nil,
+      persisted?: true,
+      blocks_writes?: true
+    }
   end
 
   defp maybe_put_coverage(target, coverages) do

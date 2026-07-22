@@ -155,6 +155,35 @@ Missing-window pages default to 100 and accept at most 500. Their opaque cursor
 pins the evaluated boundary, manifest, evidence generation, target generation,
 and checksum; stale cursors return a conflict instead of mixing evaluations.
 
+### Inspect Target Compatibility
+
+For every persisted SQL table, deployment compares the desired manifest target
+descriptor with the active generation and an inspection of the physical
+relation. The result is persisted with the deployment and appears separately
+from health, freshness, and coverage in the asset catalogue and asset detail.
+
+| Status | Ordinary writes | Meaning |
+| --- | --- | --- |
+| `ready` | Allowed | The desired descriptor and physical relation are compatible. |
+| `uninitialized` | Allowed | No managed relation exists yet; the first successful materialization may establish it. |
+| `rebuild_available` | Allowed | Transformation semantics changed, but the physical write contract remains compatible. |
+| `rebuild_required` | Blocked | The desired contract, grain, materialization, relation, connection, or window identity is incompatible with the active generation. |
+| `unexpected_drift` | Blocked | The observed physical relation no longer matches the recorded active fingerprint. |
+| `operator_decision` | Blocked | Favn cannot prove ownership or safe compatibility, including an unmanaged pre-existing relation. |
+
+A deployment containing a blocked target remains active so operators can inspect
+it, and stable reads continue against the active relation. Before an ordinary
+run starts, the orchestrator checks every persisted target on the selected
+dependency path. It returns the exact blocked target and structured reason
+instead of attempting a write. Assets outside that path remain runnable.
+
+For `rebuild_required`, review the desired-versus-active field diff before
+changing the target. For `unexpected_drift`, compare the observed relation with
+the recorded generation and investigate out-of-band DDL. For
+`operator_decision`, establish ownership explicitly; Favn never adopts an
+unmanaged relation automatically. Repeated ordinary runs cannot clear any of
+these blocking states.
+
 Common failures:
 
 | Failure | Action |
@@ -167,6 +196,9 @@ Common failures:
 | Duplicate command key | Re-read the existing command result instead of submitting the same side effect again. |
 | Invalid dependency/refresh combination | Use `dependencies=all` with `force_selected_upstream`, or choose a target-only refresh mode. |
 | Resource circuit open | Inspect the blocking execution pool or SQL connection, consecutive count, threshold, and next probe time. Unrelated branches continue. |
+| Rebuild required | Inspect the compatibility diff. Do not retry the ordinary write against the incompatible active generation. |
+| Target drift | Investigate the observed physical fingerprint and any out-of-band DDL before changing control-plane state. |
+| Operator decision required | Confirm ownership and impact explicitly. Do not adopt or overwrite the relation automatically. |
 
 ## Inspect A Run
 

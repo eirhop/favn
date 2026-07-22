@@ -182,6 +182,51 @@ defmodule FavnView.Components.AssetDetailPageTest do
     refute html =~ "Expected</dt>"
   end
 
+  test "renders structured target compatibility and a blocking explanation" do
+    html =
+      render_component(&AssetDetailPage.compatibility_panel/1,
+        compatibility: %{
+          status: :rebuild_required,
+          reason_code: "incompatible_descriptor",
+          diff: %{
+            descriptor: [
+              %{field: :window_identity, active: %{kind: :day}, desired: %{kind: :month}}
+            ]
+          },
+          active_generation_id: "generation-orders-v1",
+          desired_descriptor_hash: String.duplicate("a", 64),
+          physical_fingerprint: String.duplicate("b", 64),
+          persisted?: true,
+          blocks_writes?: true
+        }
+      )
+
+    assert html =~ ~s(data-testid="asset-compatibility-panel")
+    assert html =~ "Rebuild required"
+    assert html =~ "generation-orders-v1"
+    assert html =~ "Compatibility differences"
+    assert html =~ ~s(data-testid="asset-compatibility-blocked")
+    assert html =~ "Runs and backfills are blocked"
+  end
+
+  test "keeps ordinary writes available when only a rebuild is optional" do
+    html =
+      render_component(&AssetDetailPage.compatibility_panel/1,
+        compatibility: %{
+          status: :rebuild_available,
+          reason_code: "execution_package_changed",
+          diff: %{},
+          active_generation_id: "generation-orders-v1",
+          persisted?: true,
+          blocks_writes?: false
+        }
+      )
+
+    assert html =~ "Rebuild available"
+    assert html =~ "ordinary writes remain allowed"
+    refute html =~ ~s(data-testid="asset-compatibility-blocked")
+  end
+
   test "renders every ordered row-count claim in the assurance contract" do
     html =
       render_component(&AssetDetailPage.assurance_panel/1,

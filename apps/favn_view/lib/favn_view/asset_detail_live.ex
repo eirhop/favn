@@ -101,6 +101,10 @@ defmodule FavnView.AssetDetailLive do
       !socket.assigns.can_submit_runs? ->
         {:noreply, assign(socket, :coverage_action_error, "Operator role required.")}
 
+      asset && Map.get(asset.compatibility, :blocks_writes?, false) ->
+        {:noreply,
+         assign(socket, :coverage_action_error, "Target compatibility blocks this backfill.")}
+
       is_nil(asset) or !asset.can_run_asset? ->
         {:noreply, assign(socket, :coverage_action_error, "Select a valid run context first.")}
 
@@ -466,6 +470,7 @@ defmodule FavnView.AssetDetailLive do
       coverage_gaps={@asset.coverage_gaps}
       coverage_pagination={@asset.coverage_pagination}
       coverage_page_cursor={@coverage_page_cursor}
+      compatibility={@asset.compatibility}
       assurance={@asset.assurance}
       coverage_plan={@coverage_plan}
       coverage_action_error={@coverage_action_error}
@@ -568,11 +573,19 @@ defmodule FavnView.AssetDetailLive do
       |> Map.get(:run_contexts, [])
       |> Enum.map(&Map.put(&1, :href, run_context_path(asset_id, &1.id)))
 
+    compatibility =
+      Map.get(detail, :compatibility, %{
+        status: :operator_decision,
+        reason_code: "compatibility_unavailable",
+        diff: %{},
+        blocks_writes?: true
+      })
+
     %{
       manifest_version_id: detail.manifest_version_id,
       target_id: detail.target_id,
       canonical_asset_ref: detail.canonical_asset_ref,
-      can_run_asset?: detail.can_run_asset?,
+      can_run_asset?: detail.can_run_asset? and !Map.get(compatibility, :blocks_writes?, true),
       run_contexts: run_contexts,
       selected_run_context: Map.get(detail, :selected_run_context),
       run_context_status: Map.get(detail, :run_context_status, :unavailable),
@@ -587,6 +600,7 @@ defmodule FavnView.AssetDetailLive do
       coverage_gaps: Map.get(detail, :coverage_gaps, []),
       coverage_pagination:
         Map.get(detail, :coverage_pagination, %{limit: 100, has_more: false, next_cursor: nil}),
+      compatibility: compatibility,
       assurance: Map.get(detail, :assurance),
       window_kind_label: window_kind_label(Map.get(detail, :window)),
       refresh_timeline_label: Map.get(detail, :refresh_timeline_label, "Refresh periods"),

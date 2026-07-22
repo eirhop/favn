@@ -20,6 +20,7 @@ defmodule FavnOrchestrator.Manifests do
   alias FavnOrchestrator.RunnerManifestRegistration
   alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.TargetCompatibilityPlanner
 
   @type details :: %{required(:manifest) => map(), required(:targets) => map()}
 
@@ -50,13 +51,17 @@ defmodule FavnOrchestrator.Manifests do
         with true <- platform_deployer?(platform_context),
              {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
              {:ok, planner} <- deployment_selection(version, selection),
-             :ok <- prepare_runner(version) do
+             :ok <- prepare_runner(version),
+             {:ok, target_compatibilities} <-
+               TargetCompatibilityPlanner.plan(platform_context, context, version, planner) do
           ManifestStore.deploy_manifest(
             platform_context,
             context,
             manifest_version_id,
             planner,
-            Keyword.put_new(opts, :configuration, %{})
+            opts
+            |> Keyword.put_new(:configuration, %{})
+            |> Keyword.put(:target_compatibilities, target_compatibilities)
           )
         else
           false -> {:error, :platform_operator_required}

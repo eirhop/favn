@@ -32,6 +32,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.CreateSession
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
   alias FavnOrchestrator.Persistence.Commands.DeploymentTarget
+  alias FavnOrchestrator.Persistence.Commands.DeploymentTargetCompatibility
   alias FavnOrchestrator.Persistence.Commands.DeploymentSchedule
   alias FavnOrchestrator.Persistence.Commands.DeploymentCapacityScope
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
@@ -44,6 +45,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
   alias FavnOrchestrator.Persistence.Commands.FinishMaterialization
   alias FavnOrchestrator.Persistence.Commands.EnsureWritableTargetGeneration
+  alias FavnOrchestrator.Persistence.Commands.ReconcileInitialTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.AppendLogBatch
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
   alias FavnOrchestrator.Persistence.Commands.LogEntry
@@ -221,7 +223,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       )
   end
 
-  test "creates one replay-safe building generation and leaves activation to reconciliation",
+  test "reconciles one replay-safe building generation from exact successful evidence",
        fixture do
     descriptor = target_descriptor(fixture)
     occurred_at = DateTime.utc_now()
@@ -313,7 +315,50 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert after_success.compatibility_status == :uninitialized
     assert is_nil(after_success.active_generation_id)
 
-    assert %{rows: [["building", nil]]} =
+    assert {:error,
+            %{
+              kind: :conflict,
+              details: %{
+                reason_code: "initial_target_generation_reconciliation_required",
+                target_id: target_id,
+                target_generation_id: target_generation_id
+              }
+            }} = TargetGenerationStore.ensure_writable(command)
+
+    assert target_id == fixture.target_id
+    assert target_generation_id == first.generation.target_generation_id
+
+    fingerprint = String.duplicate("a", 64)
+
+    reconciliation = %ReconcileInitialTargetGeneration{
+      workspace_context: fixture.workspace_context,
+      command_id: "generation:reconcile:" <> run.id,
+      target_id: fixture.target_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      target_generation_id: first.generation.target_generation_id,
+      materialization_id: "generation:materialization:" <> run.id,
+      physical_schema_fingerprint: fingerprint,
+      data_plane_marker: nil,
+      occurred_at: DateTime.add(occurred_at, 2, :second)
+    }
+
+    assert {:error, %{kind: :conflict}} =
+             TargetGenerationStore.reconcile_initial(%{
+               reconciliation
+               | materialization_id: reconciliation.materialization_id <> ":missing"
+             })
+
+    assert {:ok, reconciled} = TargetGenerationStore.reconcile_initial(reconciliation)
+    assert reconciled.materialization_id == reconciliation.materialization_id
+    assert reconciled.generation.status == :active
+    assert reconciled.generation.physical_schema_fingerprint == fingerprint
+    assert reconciled.binding.active_generation_id == first.generation.target_generation_id
+    assert reconciled.binding.compatibility_status == :ready
+    assert reconciled.binding.reason_code == "initial_materialization_reconciled"
+
+    assert {:ok, ^reconciled} = TargetGenerationStore.reconcile_initial(reconciliation)
+
+    assert %{rows: [["active", ^fingerprint]]} =
              SQL.query!(
                Repo,
                "SELECT status, physical_schema_fingerprint FROM favn_control.asset_target_generations WHERE workspace_id = $1 AND target_id = $2 AND target_generation_id::text = $3",
@@ -367,6 +412,183 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                "SELECT conname FROM pg_constraint WHERE conname IN ('rebuild_plan_actions_child_operation_fk', 'rebuild_windows_materialization_fk') ORDER BY conname",
                []
              )
+  end
+
+  test "persists frozen compatibility before activation and rolls back stale decisions",
+       fixture do
+    asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
+
+    persisted_asset =
+      %{
+        asset
+        | relation: RelationRef.new!(connection: :warehouse, schema: "analytics", name: "asset"),
+          materialization: :table,
+          semantic_generation_id: nil
+      }
+      |> FavnTestSupport.with_target_descriptor()
+
+    manifest =
+      %{
+        fixture.version.manifest
+        | assets: [persisted_asset | tl(fixture.version.manifest.assets)]
+      }
+      |> FavnTestSupport.with_manifest_graph()
+      |> FavnTestSupport.with_manifest_contract()
+
+    {:ok, compatibility_version} =
+      Version.new(manifest,
+        manifest_version_id: "mv-compatibility-" <> fixture.deployment_id
+      )
+
+    assert {:ok, ^compatibility_version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: compatibility_version
+             })
+
+    descriptor = persisted_asset.target_descriptor
+    deployment_id = "compatibility-" <> fixture.deployment_id
+
+    decision = %DeploymentTargetCompatibility{
+      target_id: fixture.target_id,
+      desired_descriptor_hash: descriptor.descriptor_hash,
+      compatibility_status: :uninitialized,
+      reason_code: "no_active_generation",
+      compatibility_diff: %{"physical_relation" => %{"actual" => nil}},
+      expected_binding_version: nil,
+      expected_active_generation_id: nil,
+      active_physical_fingerprint: nil
+    }
+
+    command = %{
+      fixture.deploy_command
+      | deployment_id: deployment_id,
+        manifest_version_id: compatibility_version.manifest_version_id,
+        target_compatibilities: [decision],
+        occurred_at: DateTime.utc_now()
+    }
+
+    assert {:error, %{kind: :invalid}} =
+             RegistryStore.deploy_manifest(%{
+               command
+               | deployment_id: "missing-" <> deployment_id,
+                 target_compatibilities: []
+             })
+
+    private_target_id = TargetStatus.target_id_for_asset({MyApp.PrivateAsset, :private})
+
+    private_target = %DeploymentTarget{
+      target_kind: :asset,
+      target_id: private_target_id,
+      selection_source: :dependency,
+      customer_visible: false,
+      descriptor: %{"target_id" => private_target_id, "label" => private_target_id}
+    }
+
+    assert {:error, %{kind: :invalid}} =
+             RegistryStore.deploy_manifest(%{
+               command
+               | deployment_id: "extra-" <> deployment_id,
+                 targets: command.targets ++ [private_target],
+                 target_compatibilities: [
+                   decision,
+                   %{
+                     decision
+                     | target_id: private_target_id,
+                       desired_descriptor_hash: String.duplicate("f", 64)
+                   }
+                 ]
+             })
+
+    assert {:ok, runtime} = RegistryStore.deploy_manifest(command)
+    assert runtime.deployment_id == deployment_id
+
+    assert {:ok, binding} =
+             TargetGenerationStore.get_binding(%GetTargetBinding{
+               workspace_context: fixture.workspace_context,
+               target_id: fixture.target_id
+             })
+
+    assert binding.desired_manifest_id == compatibility_version.manifest_version_id
+    assert binding.desired_descriptor_hash == descriptor.descriptor_hash
+    assert binding.compatibility_status == :uninitialized
+    assert binding.compatibility_diff == decision.compatibility_diff
+    assert binding.version == 1
+
+    reclassified_after_commit = %{
+      command
+      | target_compatibilities: [%{decision | expected_binding_version: binding.version}]
+    }
+
+    assert {:ok, replayed_runtime} = RegistryStore.deploy_manifest(reclassified_after_commit)
+    assert replayed_runtime.revision == runtime.revision
+
+    blocked_id = "blocked-" <> deployment_id
+
+    blocked_decision = %{
+      decision
+      | compatibility_status: :rebuild_required,
+        reason_code: "contract_changed",
+        compatibility_diff: %{"contract" => %{"changed" => true}},
+        expected_binding_version: binding.version
+    }
+
+    assert {:ok, blocked_runtime} =
+             RegistryStore.deploy_manifest(%{
+               command
+               | deployment_id: blocked_id,
+                 target_compatibilities: [blocked_decision]
+             })
+
+    assert blocked_runtime.deployment_id == blocked_id
+
+    assert {:ok, blocked_binding} =
+             TargetGenerationStore.get_binding(%GetTargetBinding{
+               workspace_context: fixture.workspace_context,
+               target_id: fixture.target_id
+             })
+
+    assert blocked_binding.compatibility_status == :rebuild_required
+    assert blocked_binding.reason_code == "contract_changed"
+    assert blocked_binding.version == 2
+
+    stale_id = "stale-" <> deployment_id
+
+    stale_decision = %{
+      blocked_decision
+      | compatibility_status: :operator_decision,
+        reason_code: "inspection_changed",
+        expected_binding_version: 99
+    }
+
+    assert {:error, %{kind: :conflict}} =
+             RegistryStore.deploy_manifest(%{
+               command
+               | deployment_id: stale_id,
+                 target_compatibilities: [stale_decision]
+             })
+
+    assert {:ok, active_runtime} =
+             RegistryStore.get_runtime_state(%GetRuntimeState{
+               workspace_context: fixture.workspace_context
+             })
+
+    assert active_runtime.deployment_id == blocked_id
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.workspace_deployments WHERE workspace_id = $1 AND deployment_id = $2",
+               [fixture.workspace_id, stale_id]
+             )
+
+    assert {:ok, unchanged_binding} =
+             TargetGenerationStore.get_binding(%GetTargetBinding{
+               workspace_context: fixture.workspace_context,
+               target_id: fixture.target_id
+             })
+
+    assert unchanged_binding == blocked_binding
   end
 
   test "keeps projected window evidence isolated by generation", fixture do

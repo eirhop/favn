@@ -249,7 +249,9 @@ defmodule FavnOrchestrator.MaterializationClaims do
   defp validate_authority(%RunState{}),
     do: {:error, :materialization_run_authority_required}
 
-  defp materialization_id(claim), do: "mat:" <> key(claim)
+  @doc false
+  @spec materialization_id(claim()) :: String.t()
+  def materialization_id(claim), do: "mat:" <> key(claim)
 
   defp command_id(operation, first, second) do
     digest =

@@ -63,6 +63,10 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   Catalogue/API reads distinguish complete, incomplete, and explicit unknown
   states; operators can review and manually submit an immutable exact-gap
   backfill plan, with stale selections rejected before mutation.
+- Manifest activation inspects persisted SQL relations through the runner and
+  records desired, active-generation, and physical compatibility per target.
+  Incompatible, drifted, and ownership-unknown targets reject ordinary writes
+  on affected dependency paths; compatible and unrelated paths remain runnable.
 - Both runtime BEAMs expose monotonic lifecycle state and reject new mutation or
   execution admission while draining. Readiness flips before bounded shutdown;
   admitted work may settle until the configured deadline, after which ordinary
@@ -136,6 +140,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - Workspace-scoped live updates reread durable state after notification.
 - Asset and run detail distinguish requested anchors from exact effective runtime
   windows and use compact projections; event payloads load only on the Events view.
+- The asset catalogue and detail page show persisted target compatibility apart
+  from health, freshness, and coverage. Blocking states include a stable reason,
+  bounded structured diff, active generation, and desired/physical fingerprints.
 - The UI remains a prototype: some asset-detail modes are placeholders, mutation
   audit is incomplete, actor/session/audit administration is absent, and there is
   no production browser acceptance suite.

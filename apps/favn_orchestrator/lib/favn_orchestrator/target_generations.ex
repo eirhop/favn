@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.TargetGenerations do
   alias FavnOrchestrator.Persistence.Queries.GetTargetBindings
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.TargetAdmission
 
   @type identity :: %{
           required(:target_id) => String.t(),
@@ -68,7 +69,8 @@ defmodule FavnOrchestrator.TargetGenerations do
         %DateTime{} = occurred_at,
         opts
       ) do
-    with :ok <- validate_pin_options(opts) do
+    with :ok <- validate_pin_options(opts),
+         :ok <- TargetAdmission.preflight(context, index, plan) do
       refs = plan.nodes |> Map.values() |> Enum.map(& &1.ref) |> Enum.uniq()
 
       with {:ok, identities} <- pin_identities(refs, context, version, index, occurred_at) do

@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.API.CoverageRouter do
 
   alias FavnOrchestrator.API.Audit
   alias FavnOrchestrator.API.Authentication
+  alias FavnOrchestrator.API.CommandErrors
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.Response
@@ -242,6 +243,13 @@ defmodule FavnOrchestrator.API.CoverageRouter do
 
   def error_response(:coverage_window_limit_exceeded),
     do: {409, "coverage_window_limit_exceeded", "Coverage exceeds the evaluation limit", %{}}
+
+  def error_response(reason) when is_tuple(reason) do
+    case CommandErrors.admission(reason) do
+      {:error, status, code, message, details} -> {status, code, message, details}
+      nil -> {500, "internal_error", "Coverage request failed", %{}}
+    end
+  end
 
   def error_response(reason)
       when reason in [

@@ -43,6 +43,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :coverage_pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
 
   attr :coverage_page_cursor, :string, default: nil
+  attr :compatibility, :map, default: nil
   attr :assurance, :map, default: nil
   attr :coverage_plan, :map, default: nil
   attr :coverage_action_error, :string, default: nil
@@ -95,6 +96,7 @@ defmodule FavnView.Components.AssetDetailPage do
         coverage_gaps={@coverage_gaps}
         coverage_pagination={@coverage_pagination}
         coverage_page_cursor={@coverage_page_cursor}
+        compatibility={@compatibility}
         assurance={@assurance}
         coverage_plan={@coverage_plan}
         coverage_action_error={@coverage_action_error}
@@ -145,6 +147,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :coverage_pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
 
   attr :coverage_page_cursor, :string, default: nil
+  attr :compatibility, :map, default: nil
   attr :assurance, :map, default: nil
   attr :coverage_plan, :map, default: nil
   attr :coverage_action_error, :string, default: nil
@@ -161,6 +164,11 @@ defmodule FavnView.Components.AssetDetailPage do
 
   def central_view(assigns) do
     ~H"""
+    <.compatibility_panel
+      :if={@active_mode == :timeline && @compatibility}
+      compatibility={@compatibility}
+    />
+
     <.coverage_summary_panel
       :if={@active_mode == :timeline && @coverage}
       coverage={@coverage}
@@ -216,6 +224,87 @@ defmodule FavnView.Components.AssetDetailPage do
       <.assurance_panel :if={@assurance} assurance={@assurance} />
       <.freshness_detail_panel freshness={@freshness} />
     </div>
+    """
+  end
+
+  attr :compatibility, :map, required: true
+
+  def compatibility_panel(assigns) do
+    ~H"""
+    <GlassPanel.glass_panel
+      :if={field(@compatibility, :persisted?, false)}
+      class={[
+        "mx-auto mb-6 w-full max-w-[120rem] border p-5 sm:p-6",
+        compatibility_panel_class(field(@compatibility, :status))
+      ]}
+      data-testid="asset-compatibility-panel"
+    >
+      <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">
+              Target compatibility
+            </p>
+            <span class={compatibility_badge_class(field(@compatibility, :status))}>
+              {compatibility_status_label(field(@compatibility, :status))}
+            </span>
+          </div>
+          <p class="mt-2 text-sm text-base-content/70">
+            {compatibility_explanation(@compatibility)}
+          </p>
+        </div>
+
+        <dl class="grid min-w-0 gap-x-6 gap-y-2 text-xs text-base-content/65 sm:grid-cols-2 xl:max-w-3xl">
+          <div>
+            <dt class="text-base-content/40">Active generation</dt>
+            <dd class="break-all font-mono">
+              {coverage_generation_label(field(@compatibility, :active_generation_id))}
+            </dd>
+          </div>
+          <div>
+            <dt class="text-base-content/40">Reason</dt>
+            <dd>{humanize(field(@compatibility, :reason_code))}</dd>
+          </div>
+          <div>
+            <dt class="text-base-content/40">Desired descriptor</dt>
+            <dd class="break-all font-mono">
+              {field(@compatibility, :desired_descriptor_hash) || "-"}
+            </dd>
+          </div>
+          <div>
+            <dt class="text-base-content/40">Physical fingerprint</dt>
+            <dd class="break-all font-mono">
+              {field(@compatibility, :physical_fingerprint) || "-"}
+            </dd>
+          </div>
+        </dl>
+      </div>
+
+      <div
+        :if={compatibility_diff_entries(field(@compatibility, :diff, %{})) != []}
+        class="mt-4 rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
+      >
+        <p class="text-xs font-medium uppercase tracking-[0.14em] text-base-content/50">
+          Compatibility differences
+        </p>
+        <dl class="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+          <div :for={{name, change} <- compatibility_diff_entries(field(@compatibility, :diff, %{}))}>
+            <dt class="text-base-content/45">{humanize(name)}</dt>
+            <dd class="break-all font-mono text-base-content/75">
+              {compatibility_change_label(change)}
+            </dd>
+          </div>
+        </dl>
+      </div>
+
+      <p
+        :if={field(@compatibility, :blocks_writes?, false)}
+        class="mt-4 text-sm font-medium text-error"
+        data-testid="asset-compatibility-blocked"
+      >
+        Runs and backfills are blocked until this target is resolved.
+      </p>
+    </GlassPanel.glass_panel>
     """
   end
 
@@ -1341,6 +1430,71 @@ defmodule FavnView.Components.AssetDetailPage do
 
   defp coverage_generation_label(value) when is_binary(value), do: value
   defp coverage_generation_label(_value), do: "No persisted generation"
+
+  defp compatibility_panel_class(status)
+       when status in [:rebuild_required, :unexpected_drift, :operator_decision],
+       do: "border-error/35 bg-error/5"
+
+  defp compatibility_panel_class(:rebuild_available), do: "border-info/30 bg-info/5"
+  defp compatibility_panel_class(_status), do: "border-base-content/10"
+
+  defp compatibility_badge_class(status)
+       when status in [:rebuild_required, :unexpected_drift, :operator_decision],
+       do: "badge badge-error badge-soft badge-sm"
+
+  defp compatibility_badge_class(:rebuild_available),
+    do: "badge badge-info badge-soft badge-sm"
+
+  defp compatibility_badge_class(:ready), do: "badge badge-success badge-soft badge-sm"
+  defp compatibility_badge_class(_status), do: "badge badge-neutral badge-soft badge-sm"
+
+  defp compatibility_status_label(:ready), do: "Compatible"
+  defp compatibility_status_label(:uninitialized), do: "Not initialized"
+  defp compatibility_status_label(:rebuild_available), do: "Rebuild available"
+  defp compatibility_status_label(:rebuild_required), do: "Rebuild required"
+  defp compatibility_status_label(:unexpected_drift), do: "Target drift"
+  defp compatibility_status_label(:operator_decision), do: "Operator decision"
+  defp compatibility_status_label(_status), do: "Unknown"
+
+  defp compatibility_explanation(compatibility) do
+    case field(compatibility, :status) do
+      :ready -> "The desired descriptor and active physical target are compatible."
+      :uninitialized -> "The first successful materialization will initialize this target."
+      :rebuild_available -> "Transformation semantics changed; ordinary writes remain allowed."
+      :rebuild_required -> "The desired target is incompatible with the active generation."
+      :unexpected_drift -> "The physical target changed outside the recorded generation."
+      :operator_decision -> "Favn cannot prove target ownership or safe compatibility."
+      _other -> "Target compatibility is unavailable."
+    end
+  end
+
+  defp compatibility_diff_entries(diff) when is_map(diff) do
+    diff
+    |> Enum.sort_by(fn {name, _change} -> to_string(name) end)
+    |> Enum.take(50)
+  end
+
+  defp compatibility_diff_entries(_diff), do: []
+
+  defp compatibility_change_label(change) when is_map(change) do
+    previous = field(change, :previous, field(change, :active))
+    desired = field(change, :desired, field(change, :observed))
+
+    cond do
+      !is_nil(previous) or !is_nil(desired) ->
+        "#{bounded_value(previous)} → #{bounded_value(desired)}"
+
+      true ->
+        bounded_value(change)
+    end
+  end
+
+  defp compatibility_change_label(change), do: bounded_value(change)
+
+  defp bounded_value(nil), do: "-"
+  defp bounded_value(value) when is_binary(value), do: String.slice(value, 0, 200)
+  defp bounded_value(value) when is_atom(value) or is_number(value), do: to_string(value)
+  defp bounded_value(value), do: inspect(value, limit: 10, printable_limit: 200)
 
   defp availability_label(0), do: "Available at the window boundary"
 

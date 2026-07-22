@@ -20,7 +20,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
   @descriptor_keys ~w(
     target_id label asset_ref type relation metadata execution_pool runtime_config
     depends_on materialization window max_concurrency can_run_without_window?
-    can_backfill? name selected_assets dependencies
+    can_backfill? name selected_assets dependencies persisted?
   )a
 
   @doc "Returns sorted asset targets for a manifest version."
@@ -48,7 +48,8 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
       runtime_config: normalize_data(asset.runtime_config),
       depends_on: Enum.map(List.wrap(asset.depends_on), &ref_string/1),
       materialization: normalize_data(asset.materialization),
-      window: normalize_data(asset.window)
+      window: normalize_data(asset.window),
+      persisted?: not is_nil(asset.target_descriptor)
     }
   end
 

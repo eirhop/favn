@@ -99,6 +99,39 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           })
       },
       %Variation{
+        id: :rebuild_available,
+        attributes:
+          base_attributes()
+          |> Map.put(:compatibility, compatibility(:rebuild_available))
+      },
+      %Variation{
+        id: :rebuild_required,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            can_run_asset?: false,
+            compatibility: compatibility(:rebuild_required)
+          })
+      },
+      %Variation{
+        id: :unexpected_target_drift,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            can_run_asset?: false,
+            compatibility: compatibility(:unexpected_drift)
+          })
+      },
+      %Variation{
+        id: :operator_decision_required,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            can_run_asset?: false,
+            compatibility: compatibility(:operator_decision)
+          })
+      },
+      %Variation{
         id: :active_composite_freshness_timeline,
         attributes:
           base_attributes()
@@ -256,6 +289,7 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
       coverage_policy: coverage_policy(),
       coverage_gaps: [],
       coverage_pagination: coverage_pagination(false),
+      compatibility: compatibility(:ready),
       active_mode: :timeline,
       selected_window: nil,
       run_config_open?: false,
@@ -319,6 +353,75 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
       window_count: 2,
       windows: coverage_gaps()
     }
+  end
+
+  defp compatibility(:ready) do
+    %{
+      status: :ready,
+      reason_code: "compatible",
+      diff: %{},
+      active_generation_id: "generation-orders-v1",
+      desired_descriptor_hash: String.duplicate("a", 64),
+      physical_fingerprint: String.duplicate("b", 64),
+      persisted?: true,
+      blocks_writes?: false
+    }
+  end
+
+  defp compatibility(:rebuild_available) do
+    compatibility(:ready)
+    |> Map.merge(%{
+      status: :rebuild_available,
+      reason_code: "execution_package_changed",
+      diff: %{
+        execution_package_hash: %{
+          active: String.duplicate("c", 64),
+          desired: String.duplicate("d", 64)
+        }
+      }
+    })
+  end
+
+  defp compatibility(:rebuild_required) do
+    compatibility(:ready)
+    |> Map.merge(%{
+      status: :rebuild_required,
+      reason_code: "incompatible_descriptor",
+      diff: %{
+        window_identity: %{
+          active: %{kind: :day, timezone: "Europe/Oslo"},
+          desired: %{kind: :month, timezone: "Europe/Oslo"}
+        }
+      },
+      blocks_writes?: true
+    })
+  end
+
+  defp compatibility(:unexpected_drift) do
+    compatibility(:ready)
+    |> Map.merge(%{
+      status: :unexpected_drift,
+      reason_code: "physical_fingerprint_mismatch",
+      diff: %{
+        physical_fingerprint: %{
+          active: String.duplicate("b", 64),
+          observed: String.duplicate("e", 64)
+        }
+      },
+      blocks_writes?: true
+    })
+  end
+
+  defp compatibility(:operator_decision) do
+    compatibility(:ready)
+    |> Map.merge(%{
+      status: :operator_decision,
+      reason_code: "unmanaged_physical_target",
+      active_generation_id: nil,
+      physical_fingerprint: nil,
+      diff: %{},
+      blocks_writes?: true
+    })
   end
 
   defp run_contexts do

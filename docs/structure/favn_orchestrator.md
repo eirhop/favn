@@ -52,7 +52,11 @@ freshness, and execution coordination.
   generation and non-persisted assets to a deterministic semantic generation.
   Materialization claims pin that identity before execution; freshness and window
   reads first resolve the active binding so retired-generation evidence is not
-  presented as current.
+  presented as current. `TargetCompatibilityPlanner` inspects persisted relations
+  through the runner during deployment, classifies desired/active/physical state,
+  and freezes the result into the target binding. `TargetAdmission` rejects only
+  selected dependency paths containing a rebuild-required, drifted, or
+  ownership-unknown target before ordinary mutation.
 - `RunnerClient.BeamNode` is the sole production runner transport. It connects
   to one validated static long node name, performs bounded `:erpc` calls, and
   never loads or calls `favn_runner` inside the control-plane BEAM. Readiness
@@ -95,11 +99,13 @@ freshness, and execution coordination.
 - `Operator.Catalogue`, `Operator.Lineage`, `Operator.Schedules`, `Logs`, and the
   facade expose bounded read models to thin clients. Asset catalogue detail
   decodes freshness keys structurally and projects run anchors, exact coverage,
-  and aggregated calendar freshness separately; only anchor and exact-window
-  projections carry submission intent. `AssetRunContext` binds a manifest-pinned
-  asset to one selecting pipeline policy and timezone. Catalogue reads and operator
-  commands share its stable id, reject forged or stale contexts, and surface
-  multi-pipeline ambiguity instead of depending on manifest order.
+  aggregated calendar freshness, and persisted target compatibility separately;
+  only anchor and exact-window projections carry submission intent. Compatibility
+  DTOs expose bounded structured differences and generation/fingerprint identity,
+  never adapter sessions or connection secrets. `AssetRunContext` binds a
+  manifest-pinned asset to one selecting pipeline policy and timezone. Catalogue
+  reads and operator commands share its stable id, reject forged or stale contexts,
+  and surface multi-pipeline ambiguity instead of depending on manifest order.
 - `RunReadModel` keeps requested backfill anchors distinct from exact effective
   asset windows. Its default operator detail path expands compact relational
   projections; the events view is the explicit bounded snapshot/event path.

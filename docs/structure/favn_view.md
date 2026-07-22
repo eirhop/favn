@@ -58,6 +58,11 @@ Ownership rules:
   data-window submission intent. When the orchestrator reports multiple pipeline
   run contexts, the view keeps the selected stable context id in the asset route
   and includes it in run requests; run actions stay disabled until one is selected.
+- Asset catalogue and detail render the orchestrator-owned target compatibility
+  status independently from health, freshness, and coverage. The detail page may
+  present the bounded reason, structured diff, generation, and fingerprints, and
+  must disable ordinary run/backfill actions when `blocks_writes?` is true. It
+  does not reclassify compatibility from manifest or physical target metadata.
 - Operator run cancellation controls must call the public `FavnOrchestrator`
   facade only. UI state may disable buttons, show confirmations, and map stable
   error atoms to labels, but cancellation lifecycle, audit, idempotency, runner

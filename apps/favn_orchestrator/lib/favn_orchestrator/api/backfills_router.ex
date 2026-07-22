@@ -44,7 +44,11 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
         validation_error(conn, "Invalid backfill range request")
 
       {:error, reason} when is_tuple(reason) ->
-        send_command_error(conn, CommandErrors.operator(reason), reason)
+        send_command_error(
+          conn,
+          CommandErrors.admission(reason) || CommandErrors.operator(reason),
+          reason
+        )
 
       {:error, :active_manifest_not_set} ->
         Response.error(conn, 404, "not_found", "Active manifest is not set")
@@ -115,7 +119,8 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
         command_validation_error("Invalid backfill range request")
 
       {:error, reason} when is_tuple(reason) ->
-        CommandErrors.operator(reason) || CommandErrors.backfill(reason)
+        CommandErrors.admission(reason) || CommandErrors.operator(reason) ||
+          CommandErrors.backfill(reason)
 
       {:error, _reason} ->
         {:error, 400, "bad_request", "Request failed", %{}}

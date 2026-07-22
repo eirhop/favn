@@ -44,6 +44,21 @@ defmodule FavnOrchestrator.API.CoverageRouterTest do
              CoverageRouter.error_response(:coverage_window_limit_exceeded)
   end
 
+  test "maps target admission failures to stable conflicts" do
+    details = %{
+      target_id: "asset-a",
+      selected_target_id: "asset-b",
+      blocked_path: ["asset-a", "asset-b"],
+      blocked_path_target_count: 2,
+      blocked_path_truncated: false,
+      compatibility_status: :rebuild_required,
+      reason_code: "contract_changed"
+    }
+
+    assert {409, "rebuild_required", _message, ^details} =
+             CoverageRouter.error_response({:rebuild_required, details})
+  end
+
   test "audit detail identifies the target and bounded immutable plan" do
     conn =
       :post

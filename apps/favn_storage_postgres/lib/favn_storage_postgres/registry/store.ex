@@ -10,11 +10,13 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
+  alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
   alias FavnOrchestrator.Persistence.Commands.DeploymentCapacityScope
   alias FavnOrchestrator.Persistence.Commands.DeploymentSchedule
   alias FavnOrchestrator.Persistence.Commands.DeploymentTarget
+  alias FavnOrchestrator.Persistence.Commands.DeploymentTargetCompatibility
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
@@ -41,6 +43,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnStoragePostgres.Registry.ManifestCache
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.AuthPlatformAuditEntry
+  alias FavnStoragePostgres.Schemas.AssetTargetBinding
   alias FavnStoragePostgres.Schemas.ExecutionPackage, as: ExecutionPackageRecord
   alias FavnStoragePostgres.Schemas.ManifestExecutionPackage
   alias FavnStoragePostgres.Schemas.ManifestVersion
@@ -525,6 +528,12 @@ defmodule FavnStoragePostgres.Registry.Store do
          {:ok, configuration} <- validate_configuration(command.configuration),
          {:ok, manifest} <- get_activatable_manifest(command.manifest_version_id),
          :ok <- validate_targets(command.targets, manifest),
+         :ok <-
+           validate_target_compatibilities(
+             command.target_compatibilities,
+             command.targets,
+             manifest
+           ),
          schedules <- normalize_schedules(command.schedules),
          capacities <- normalize_capacities(command.capacity_scopes),
          {:ok, configuration_fingerprint} <-
@@ -534,7 +543,14 @@ defmodule FavnStoragePostgres.Registry.Store do
              "capacity_scopes" => capacities
            }),
          targets <- normalize_targets(command.targets),
-         {:ok, target_fingerprint} <- CanonicalJSON.hash(targets),
+         target_compatibilities <-
+           normalize_target_compatibilities(command.target_compatibilities),
+         {:ok, target_fingerprint} <-
+           CanonicalJSON.hash(%{
+             "targets" => targets,
+             "target_compatibilities" =>
+               Enum.map(target_compatibilities, &Map.delete(&1, "expected_binding_version"))
+           }),
          {:ok, result} <-
            Repo.transaction(fn ->
              IdempotencyTransaction.execute!(
@@ -547,6 +563,7 @@ defmodule FavnStoragePostgres.Registry.Store do
                    configuration_fingerprint,
                    target_fingerprint,
                    targets,
+                   target_compatibilities,
                    manifest_summary(manifest)
                  )
                end,
@@ -610,6 +627,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          configuration_fingerprint,
          target_fingerprint,
          targets,
+         target_compatibilities,
          manifest_summary
        ) do
     locked_runtime_state = lock_runtime_state!(command.workspace_context.workspace_id)
@@ -637,6 +655,8 @@ defmodule FavnStoragePostgres.Registry.Store do
         )
       )
     end
+
+    persist_target_compatibilities!(command, target_compatibilities)
 
     runtime_state = activate_deployment!(command, deployment)
 
@@ -947,6 +967,86 @@ defmodule FavnStoragePostgres.Registry.Store do
     |> Enum.sort_by(&{&1["target_kind"], &1["target_id"]})
   end
 
+  defp validate_target_compatibilities(decisions, targets, manifest) when is_list(decisions) do
+    asset_target_ids =
+      targets
+      |> Enum.filter(&(&1.target_kind == :asset))
+      |> MapSet.new(& &1.target_id)
+
+    target_ids = Enum.map(decisions, &Map.get(&1, :target_id))
+    target_id_set = MapSet.new(target_ids)
+    decisions_by_target = Map.new(decisions, &{&1.target_id, &1})
+
+    required_descriptors =
+      manifest.manifest.assets
+      |> Enum.filter(&MapSet.member?(asset_target_ids, TargetIdentity.for_asset(&1.ref)))
+      |> Enum.flat_map(fn
+        %{target_descriptor: %TargetDescriptor{} = descriptor} ->
+          [{descriptor.target_id, descriptor.descriptor_hash}]
+
+        _asset ->
+          []
+      end)
+
+    required_target_ids = MapSet.new(required_descriptors, &elem(&1, 0))
+
+    if length(decisions) <= @max_deployment_targets and
+         Enum.all?(decisions, &valid_target_compatibility?/1) and
+         length(target_ids) == length(Enum.uniq(target_ids)) and
+         target_id_set == required_target_ids and
+         Enum.all?(required_descriptors, fn {target_id, descriptor_hash} ->
+           match?(
+             %DeploymentTargetCompatibility{desired_descriptor_hash: ^descriptor_hash},
+             Map.get(decisions_by_target, target_id)
+           )
+         end) do
+      :ok
+    else
+      {:error, Error.new(:invalid, "deployment target compatibility catalog is invalid")}
+    end
+  end
+
+  defp validate_target_compatibilities(_decisions, _targets, _manifest),
+    do: {:error, Error.new(:invalid, "deployment target compatibility catalog is invalid")}
+
+  defp valid_target_compatibility?(%DeploymentTargetCompatibility{} = decision) do
+    valid_id?(decision.target_id) and canonical_hash?(decision.desired_descriptor_hash) and
+      decision.compatibility_status in [
+        :ready,
+        :uninitialized,
+        :rebuild_available,
+        :rebuild_required,
+        :unexpected_drift,
+        :operator_decision
+      ] and
+      valid_id?(decision.reason_code) and is_map(decision.compatibility_diff) and
+      bounded_json?(decision.compatibility_diff, 262_144) and
+      (is_nil(decision.expected_binding_version) or
+         (is_integer(decision.expected_binding_version) and
+            decision.expected_binding_version > 0)) and
+      valid_optional_uuid?(decision.expected_active_generation_id) and
+      valid_optional_hash?(decision.active_physical_fingerprint)
+  end
+
+  defp valid_target_compatibility?(_decision), do: false
+
+  defp normalize_target_compatibilities(decisions) do
+    decisions
+    |> Enum.map(fn decision ->
+      %{
+        "target_id" => decision.target_id,
+        "desired_descriptor_hash" => decision.desired_descriptor_hash,
+        "compatibility_status" => Atom.to_string(decision.compatibility_status),
+        "reason_code" => decision.reason_code,
+        "compatibility_diff" => canonical_json_value(decision.compatibility_diff),
+        "expected_binding_version" => decision.expected_binding_version,
+        "expected_active_generation_id" => decision.expected_active_generation_id,
+        "active_physical_fingerprint" => decision.active_physical_fingerprint
+      }
+    end)
+    |> Enum.sort_by(& &1["target_id"])
+  end
+
   defp valid_schedules?(schedules, targets) when is_list(schedules) do
     pipeline_ids =
       targets
@@ -1127,6 +1227,82 @@ defmodule FavnStoragePostgres.Registry.Store do
         Error.new(:conflict, "deployment target catalog conflicts with committed state")
       )
     end
+  end
+
+  defp persist_target_compatibilities!(_command, []), do: :ok
+
+  defp persist_target_compatibilities!(command, decisions) do
+    Enum.each(decisions, &persist_target_compatibility!(command, &1))
+  end
+
+  defp persist_target_compatibility!(command, decision) do
+    workspace_id = command.workspace_context.workspace_id
+    target_id = decision["target_id"]
+
+    binding =
+      from(binding in AssetTargetBinding,
+        where: binding.workspace_id == ^workspace_id and binding.target_id == ^target_id,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    cond do
+      is_nil(binding) ->
+        insert_target_compatibility!(command, decision)
+
+      exact_target_compatibility_replay?(binding, command, decision) ->
+        :ok
+
+      binding.version != decision["expected_binding_version"] or
+          binding.active_generation_id != decision["expected_active_generation_id"] ->
+        Repo.rollback(Error.new(:conflict, "target compatibility decision is stale"))
+
+      true ->
+        binding
+        |> Ecto.Changeset.change(%{
+          desired_manifest_id: command.manifest_version_id,
+          desired_descriptor_hash: decision["desired_descriptor_hash"],
+          compatibility_status: decision["compatibility_status"],
+          reason_code: decision["reason_code"],
+          compatibility_diff: decision["compatibility_diff"],
+          active_physical_fingerprint: decision["active_physical_fingerprint"],
+          version: binding.version + 1,
+          updated_at: command.occurred_at
+        })
+        |> Repo.update!()
+    end
+  end
+
+  defp insert_target_compatibility!(command, decision) do
+    if is_nil(decision["expected_binding_version"]) and
+         is_nil(decision["expected_active_generation_id"]) do
+      %AssetTargetBinding{
+        workspace_id: command.workspace_context.workspace_id,
+        target_id: decision["target_id"],
+        active_generation_id: nil,
+        desired_manifest_id: command.manifest_version_id,
+        desired_descriptor_hash: decision["desired_descriptor_hash"],
+        compatibility_status: decision["compatibility_status"],
+        reason_code: decision["reason_code"],
+        compatibility_diff: decision["compatibility_diff"],
+        active_physical_fingerprint: decision["active_physical_fingerprint"],
+        version: 1,
+        updated_at: command.occurred_at
+      }
+      |> Repo.insert!()
+    else
+      Repo.rollback(Error.new(:conflict, "target compatibility decision expected a binding"))
+    end
+  end
+
+  defp exact_target_compatibility_replay?(binding, command, decision) do
+    binding.active_generation_id == decision["expected_active_generation_id"] and
+      binding.desired_manifest_id == command.manifest_version_id and
+      binding.desired_descriptor_hash == decision["desired_descriptor_hash"] and
+      binding.compatibility_status == decision["compatibility_status"] and
+      binding.reason_code == decision["reason_code"] and
+      binding.compatibility_diff == decision["compatibility_diff"] and
+      binding.active_physical_fingerprint == decision["active_physical_fingerprint"]
   end
 
   defp insert_schedules!(%DeployManifest{schedules: []}), do: :ok
@@ -1623,6 +1799,8 @@ defmodule FavnStoragePostgres.Registry.Store do
   defp database_datetime(%DateTime{} = datetime),
     do: DateTime.add(datetime, 0, :microsecond)
 
+  defp canonical_json_value(value), do: value |> Jason.encode!() |> Jason.decode!()
+
   defp valid_id?(value), do: is_binary(value) and value != "" and byte_size(value) <= 255
 
   defp decode_hash(hash) when is_binary(hash) and byte_size(hash) == 64 do
@@ -1633,6 +1811,12 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp canonical_hash?(hash) when is_binary(hash), do: Regex.match?(~r/\A[0-9a-f]{64}\z/, hash)
   defp canonical_hash?(_hash), do: false
+
+  defp valid_optional_hash?(nil), do: true
+  defp valid_optional_hash?(hash), do: canonical_hash?(hash)
+
+  defp valid_optional_uuid?(nil), do: true
+  defp valid_optional_uuid?(value), do: match?({:ok, _uuid}, Ecto.UUID.cast(value))
 
   defp changeset_error(changeset) do
     if changeset.errors[:slug] do

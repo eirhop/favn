@@ -169,6 +169,7 @@ defmodule FavnOrchestrator.ManifestStore do
       :configuration_version,
       :schedules,
       :capacity_scopes,
+      :target_compatibilities,
       :idempotency,
       :occurred_at
     ]
@@ -194,6 +195,7 @@ defmodule FavnOrchestrator.ManifestStore do
             CapacityConfiguration.deployment_scopes(context.workspace_id),
             Keyword.get(opts, :capacity_scopes, [])
           ),
+        target_compatibilities: Keyword.get(opts, :target_compatibilities, []),
         idempotency: Keyword.get(opts, :idempotency),
         occurred_at: occurred_at
       }
