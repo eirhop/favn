@@ -204,7 +204,7 @@ jobs:
           fail-build: true
           severity-cutoff: high
           only-fixed: false
-          grype-version: 0.116.0
+          grype-version: v0.116.0
           config: security/control-plane-grype.yaml
           output-format: sarif
           output-file: control-plane-grype.sarif
@@ -305,7 +305,7 @@ jobs:
           fail-build: true
           severity-cutoff: high
           only-fixed: false
-          grype-version: 0.116.0
+          grype-version: v0.116.0
           config: security/control-plane-grype.yaml
           output-format: sarif
           output-file: control-plane-grype.sarif
@@ -426,7 +426,7 @@ jobs:
           fail-build: true
           severity-cutoff: high
           only-fixed: false
-          grype-version: 0.116.0
+          grype-version: v0.116.0
           config: security/control-plane-grype.yaml
           output-format: sarif
           output-file: control-plane-grype.sarif
@@ -475,7 +475,7 @@ jobs:
           fail-build: true
           severity-cutoff: high
           only-fixed: false
-          grype-version: 0.116.0
+          grype-version: v0.116.0
           config: security/control-plane-grype.yaml
           output-format: sarif
           output-file: control-plane-grype.sarif

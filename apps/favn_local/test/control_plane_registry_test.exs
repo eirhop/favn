@@ -140,8 +140,8 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
              )
            ) == 3
 
-    assert length(Regex.scan(~r/grype-version: 0\.116\.0/, image_workflow)) == 4
-    assert length(Regex.scan(~r/grype-version: 0\.116\.0/, release_workflow)) == 1
+    assert length(Regex.scan(~r/grype-version: v0\.116\.0/, image_workflow)) == 4
+    assert length(Regex.scan(~r/grype-version: v0\.116\.0/, release_workflow)) == 1
     assert length(Regex.scan(~r/config: security\/control-plane-grype\.yaml/, image_workflow)) == 4
 
     assert length(
