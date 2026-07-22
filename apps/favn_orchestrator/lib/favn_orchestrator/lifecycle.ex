@@ -13,12 +13,22 @@ defmodule FavnOrchestrator.Lifecycle do
   alias FavnOrchestrator.OperationalEvents
 
   @type state_name :: :starting | :accepting | :draining | :stopping
-  @type admission_error :: :runtime_starting | :runtime_draining | :runtime_not_accepting
+  @type admission_error ::
+          :runtime_starting
+          | :runtime_draining
+          | :runtime_maintenance
+          | :runtime_not_accepting
+
+  @type maintenance_error ::
+          :runtime_not_accepting | :maintenance_active | :invalid_maintenance_token
+
+  @maintenance_token ~r/\A[A-Za-z0-9_-]{43}\z/
 
   @type state :: %{
           status: state_name(),
           admissions: %{optional(reference()) => {pid(), reference()}},
           monitors: %{optional(reference()) => reference()},
+          maintenance: nil | %{kind: atom(), token: String.t(), started_at: DateTime.t()},
           changed_at: DateTime.t(),
           shutdown_drain_timeout_ms: pos_integer(),
           shutdown: :not_started | {:in_progress, pid(), reference()} | {:complete, map()},
@@ -76,9 +86,42 @@ defmodule FavnOrchestrator.Lifecycle do
   @spec acquire_admission(GenServer.server()) ::
           {:ok, reference()} | {:error, admission_error()}
   def acquire_admission(server \\ __MODULE__) do
-    GenServer.call(server, {:acquire, self()})
+    GenServer.call(server, {:acquire, self(), nil})
   catch
     :exit, _reason -> {:error, :runtime_not_accepting}
+  end
+
+  @doc "Acquires admission for the owner of the active maintenance lease."
+  @spec acquire_maintenance_admission(String.t(), GenServer.server()) ::
+          {:ok, reference()} | {:error, admission_error()}
+  def acquire_maintenance_admission(token, server \\ __MODULE__)
+      when is_binary(token) and token != "" do
+    GenServer.call(server, {:acquire, self(), token})
+  catch
+    :exit, _reason -> {:error, :runtime_not_accepting}
+  end
+
+  @doc "Begins or resumes one maintenance boundary using an opaque owner token."
+  @spec begin_maintenance(atom(), String.t(), GenServer.server()) ::
+          {:ok, String.t()} | {:error, maintenance_error()}
+  def begin_maintenance(kind, token, server \\ __MODULE__)
+      when is_atom(kind) and is_binary(token) do
+    if Regex.match?(@maintenance_token, token) do
+      GenServer.call(server, {:begin_maintenance, kind, token})
+    else
+      {:error, :invalid_maintenance_token}
+    end
+  catch
+    :exit, _reason -> {:error, :runtime_not_accepting}
+  end
+
+  @doc "Ends the active maintenance boundary when the opaque owner token matches."
+  @spec end_maintenance(String.t(), GenServer.server()) ::
+          :ok | {:error, :invalid_maintenance_token}
+  def end_maintenance(token, server \\ __MODULE__) when is_binary(token) and token != "" do
+    GenServer.call(server, {:end_maintenance, token})
+  catch
+    :exit, _reason -> {:error, :invalid_maintenance_token}
   end
 
   @doc "Releases a previously acquired admission permit."
@@ -134,6 +177,7 @@ defmodule FavnOrchestrator.Lifecycle do
        status: :starting,
        admissions: %{},
        monitors: %{},
+       maintenance: nil,
        changed_at: DateTime.utc_now(),
        shutdown_drain_timeout_ms: Keyword.fetch!(opts, :shutdown_drain_timeout_ms),
        shutdown: :not_started,
@@ -208,18 +252,63 @@ defmodule FavnOrchestrator.Lifecycle do
   def handle_call(:ensure_accepting, _from, state),
     do: {:reply, admission_error(state.status), state}
 
-  def handle_call({:acquire, owner}, _from, %{status: :accepting} = state) do
-    admit(owner, state)
+  def handle_call(
+        {:acquire, owner, token},
+        _from,
+        %{status: :accepting, maintenance: maintenance} = state
+      ) do
+    if maintenance_admitted?(maintenance, token) or admitted_owner?(state, owner),
+      do: admit(owner, state),
+      else: {:reply, {:error, :runtime_maintenance}, state}
   end
 
-  def handle_call({:acquire, owner}, _from, %{status: :draining} = state) do
+  def handle_call({:acquire, owner, _token}, _from, %{status: :draining} = state) do
     if admitted_owner?(state, owner),
       do: admit(owner, state),
       else: {:reply, admission_error(:draining), state}
   end
 
-  def handle_call({:acquire, _owner}, _from, state),
+  def handle_call({:acquire, _owner, _token}, _from, state),
     do: {:reply, admission_error(state.status), state}
+
+  def handle_call({:begin_maintenance, kind, token}, _from, %{status: :accepting} = state) do
+    case state.maintenance do
+      nil ->
+        maintenance = %{
+          kind: kind,
+          token: token,
+          started_at: DateTime.utc_now()
+        }
+
+        OperationalEvents.emit(:maintenance_started, %{}, %{kind: kind})
+        {:reply, {:ok, maintenance.token}, %{state | maintenance: maintenance}}
+
+      %{kind: ^kind, token: ^token} ->
+        {:reply, {:ok, token}, state}
+
+      _active ->
+        {:reply, {:error, :maintenance_active}, state}
+    end
+  end
+
+  def handle_call({:begin_maintenance, _kind, _token}, _from, state),
+    do: {:reply, {:error, :runtime_not_accepting}, state}
+
+  def handle_call({:end_maintenance, token}, _from, state) do
+    case state.maintenance do
+      %{token: ^token, kind: kind, started_at: started_at} ->
+        OperationalEvents.emit(
+          :maintenance_completed,
+          %{duration_ms: max(DateTime.diff(DateTime.utc_now(), started_at, :millisecond), 0)},
+          %{kind: kind}
+        )
+
+        {:reply, :ok, %{state | maintenance: nil}}
+
+      _missing_or_different ->
+        {:reply, {:error, :invalid_maintenance_token}, state}
+    end
+  end
 
   def handle_call({:release, permit}, _from, state) do
     {:reply, :ok, release_permit(state, permit)}
@@ -229,10 +318,13 @@ defmodule FavnOrchestrator.Lifecycle do
     {:reply,
      %{
        status: state.status,
-       ready?: state.status == :accepting,
-       accepting?: state.status == :accepting,
+       ready?: state.status == :accepting and is_nil(state.maintenance),
+       accepting?: state.status == :accepting and is_nil(state.maintenance),
        available?: true,
        active_admissions: map_size(state.admissions),
+       maintenance?: not is_nil(state.maintenance),
+       maintenance_kind: maintenance_kind(state.maintenance),
+       maintenance_started_at: maintenance_started_at(state.maintenance),
        changed_at: state.changed_at
      }, state}
   end
@@ -289,6 +381,16 @@ defmodule FavnOrchestrator.Lifecycle do
       admitted_owner == owner
     end)
   end
+
+  defp maintenance_admitted?(nil, _token), do: true
+  defp maintenance_admitted?(%{token: token}, token), do: true
+  defp maintenance_admitted?(_maintenance, _token), do: false
+
+  defp maintenance_kind(nil), do: nil
+  defp maintenance_kind(maintenance), do: maintenance.kind
+
+  defp maintenance_started_at(nil), do: nil
+  defp maintenance_started_at(maintenance), do: maintenance.started_at
 
   defp transition(%{status: status} = state, status), do: state
 

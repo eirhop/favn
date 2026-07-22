@@ -22,14 +22,10 @@ defmodule Favn.Dev.StateTest do
     assert File.dir?(Path.join(root_dir, ".favn"))
     assert File.dir?(Path.join(root_dir, ".favn/logs"))
     assert File.dir?(Path.join(root_dir, ".favn/install"))
-    assert File.dir?(Path.join(root_dir, ".favn/install/cache"))
-    assert File.dir?(Path.join(root_dir, ".favn/install/runtimes"))
-    assert File.dir?(Path.join(root_dir, ".favn/install/runtime_root"))
-    assert File.dir?(Path.join(root_dir, ".favn/install/runtimes/web"))
-    assert File.dir?(Path.join(root_dir, ".favn/install/runtimes/orchestrator"))
-    assert File.dir?(Path.join(root_dir, ".favn/install/runtimes/runner"))
+    assert File.dir?(Path.join(root_dir, ".favn/compose"))
     assert File.dir?(Path.join(root_dir, ".favn/build"))
     assert File.dir?(Path.join(root_dir, ".favn/dist"))
+    assert File.dir?(Path.join(root_dir, ".favn/dist/runner"))
     assert File.dir?(Path.join(root_dir, ".favn/data"))
     assert File.dir?(Path.join(root_dir, ".favn/manifests"))
     assert File.dir?(Path.join(root_dir, ".favn/manifests/cache"))
@@ -55,7 +51,8 @@ defmodule Favn.Dev.StateTest do
   end
 
   test "state writes replace files without leaving partial temporaries", %{root_dir: root_dir} do
-    assert :ok = State.write_runtime(%{"schema_version" => 1, "value" => "first"}, root_dir: root_dir)
+    assert :ok =
+             State.write_runtime(%{"schema_version" => 1, "value" => "first"}, root_dir: root_dir)
 
     assert :ok =
              State.write_runtime(%{"schema_version" => 1, "value" => "second"},
@@ -85,6 +82,25 @@ defmodule Favn.Dev.StateTest do
     assert {:ok, ^install} = State.read_install(root_dir: root_dir)
     assert {:ok, ^runtime} = State.read_install_runtime(root_dir: root_dir)
     assert {:ok, ^toolchain} = State.read_toolchain(root_dir: root_dir)
+  end
+
+  test "maintenance lease is private, durable, and explicitly cleared", %{root_dir: root_dir} do
+    maintenance = %{
+      "schema_version" => 1,
+      "kind" => "runner_replacement",
+      "token" => String.duplicate("a", 43)
+    }
+
+    assert :ok = State.write_maintenance(maintenance, root_dir: root_dir)
+    assert {:ok, ^maintenance} = State.read_maintenance(root_dir: root_dir)
+
+    if match?({:unix, _}, :os.type()) do
+      assert {:ok, %{mode: mode}} = File.stat(Paths.maintenance_path(root_dir))
+      assert Bitwise.band(mode, 0o077) == 0
+    end
+
+    assert :ok = State.clear_maintenance(root_dir: root_dir)
+    assert {:error, :not_found} = State.read_maintenance(root_dir: root_dir)
   end
 
   defp native_tmp_dir do

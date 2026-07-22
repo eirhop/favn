@@ -26,34 +26,23 @@ defmodule Mix.Tasks.Favn.Diagnostics do
   defp print_report(report, true), do: IO.puts(JSON.encode!(report))
 
   defp print_report(report, false) do
-    IO.puts("Favn operator diagnostics")
-    IO.puts("status: #{report["status"] || report[:status]}")
-    IO.puts("generated_at: #{report["generated_at"] || report[:generated_at]}")
-    IO.puts("checks:")
+    docker = report["docker"] || %{}
+    control = report["control_plane"] || %{}
+    compose = report["compose"] || %{}
 
-    report
-    |> checks()
-    |> Enum.each(fn check ->
-      IO.puts(
-        "- #{check["check"] || check[:check]}: #{check["status"] || check[:status]} - #{check["summary"] || check[:summary]}"
-      )
+    IO.puts("Favn local Docker diagnostics")
+    IO.puts("status: #{report["status"]}")
 
-      if non_ok?(check) do
-        print_optional("  reason", check["reason"] || check[:reason])
-        print_optional("  details", check["details"] || check[:details])
-      end
-    end)
+    IO.puts(
+      "docker: #{docker[:server_os]}/#{docker[:server_architecture]} #{docker[:server_version]}"
+    )
+
+    IO.puts("compose: #{docker[:compose_version]}")
+    IO.puts("project status: #{compose[:stack_status]}")
+    IO.puts("control-plane image: #{control["image_reference"]}")
+    IO.puts("control-plane build: #{control["build_id"]}")
+    IO.puts("runtime: #{inspect(report["runtime"], limit: 50, printable_limit: 4_096)}")
   end
-
-  defp checks(%{"checks" => checks}) when is_list(checks), do: checks
-  defp checks(%{checks: checks}) when is_list(checks), do: checks
-  defp checks(_report), do: []
-
-  defp non_ok?(check), do: (check["status"] || check[:status]) not in ["ok", :ok]
-
-  defp print_optional(_label, nil), do: :ok
-  defp print_optional(_label, value) when value == %{}, do: :ok
-  defp print_optional(label, value), do: IO.puts("#{label}: #{inspect(value)}")
 
   defp error_message(:stack_not_running), do: "local stack is not running; run mix favn.dev first"
 

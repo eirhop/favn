@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
   alias Favn.RuntimeInput.KeyringConfig
+  alias Favn.DeploymentMode
 
   @max_session_ttl_seconds 30 * 24 * 60 * 60
   @max_postgres_pool_size 200
@@ -39,6 +40,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         }
 
   @type config :: %{
+          deployment_mode: DeploymentMode.t(),
           instance_id: String.t(),
           postgres: keyword(),
           runtime_input_pin: runtime_input_pin_config(),
@@ -153,7 +155,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       Keyword.fetch!(config.auth_bootstrap, :roles)
     )
 
-    Application.put_env(:favn_orchestrator, :local_dev_mode, false)
+    Application.put_env(
+      :favn_orchestrator,
+      :local_dev_mode,
+      config.deployment_mode == :local_development
+    )
 
     Application.put_env(
       :favn_orchestrator,
@@ -190,9 +196,10 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   """
   @spec validate(map()) :: {:ok, config()} | {:error, map()}
   def validate(env) when is_map(env) do
-    with {:ok, {runner, runner_client_opts}} <- runner(env),
+    with {:ok, deployment_mode} <- DeploymentMode.from_env(env),
+         {:ok, {runner, runner_client_opts}} <- runner(env),
          {:ok, instance_id} <- instance_id(env, runner.control_plane_node),
-         {:ok, {postgres, runtime_input_pin}} <- postgres(env),
+         {:ok, {postgres, runtime_input_pin}} <- postgres(env, deployment_mode),
          {:ok, api_server} <- api_server(env),
          {:ok, http_server} <- http_server(env),
          {:ok, manifest_publication} <- manifest_publication(env),
@@ -205,6 +212,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, shutdown_drain_timeout_ms} <- shutdown_drain_timeout_ms(env) do
       {:ok,
        %{
+         deployment_mode: deployment_mode,
          instance_id: instance_id,
          postgres: postgres,
          runtime_input_pin: runtime_input_pin,
@@ -234,6 +242,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   def diagnostics(config) when is_map(config) do
     %{
       status: :ok,
+      deployment_mode: config.deployment_mode,
       instance: %{configured?: true},
       storage: %{backend: :postgres, database: %{configured?: true, url: :redacted}},
       postgres: %{
@@ -271,10 +280,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @spec postgres_backend() :: module()
   def postgres_backend, do: @postgres_backend
 
-  defp postgres(env) do
+  defp postgres(env, deployment_mode) do
     with {:ok, url} <- required_secret(env, "FAVN_DATABASE_URL"),
          :ok <- postgres_url("FAVN_DATABASE_URL", url),
-         {:ok, tls_options} <- postgres_tls(env, url),
+         :ok <- deployment_database_url(url, deployment_mode),
+         {:ok, tls_options} <- postgres_tls(env, deployment_mode),
          {:ok, pool_size} <- int(env, "FAVN_DATABASE_POOL_SIZE", "15", 1, @max_postgres_pool_size),
          {:ok, queue_target} <-
            int(env, "FAVN_DATABASE_QUEUE_TARGET_MS", "50", 1, @max_postgres_timeout_ms),
@@ -297,7 +307,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     end
   end
 
-  defp postgres_tls(env, _url) do
+  defp postgres_tls(env, :production) do
     case fetch(env, "FAVN_DATABASE_SSL_MODE") do
       :error ->
         {:error, {:missing_env, "FAVN_DATABASE_SSL_MODE"}}
@@ -318,6 +328,33 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
       {:ok, _mode} ->
         {:error, {:invalid_env, "FAVN_DATABASE_SSL_MODE", "verify-full"}}
+    end
+  end
+
+  defp postgres_tls(env, :local_development) do
+    case fetch(env, "FAVN_DATABASE_SSL_MODE") do
+      {:ok, "disable"} ->
+        {:ok, [ssl_mode: :disable, deployment_mode: :local_development]}
+
+      {:ok, _mode} ->
+        {:error, {:invalid_env, "FAVN_DATABASE_SSL_MODE", "disable in local-development"}}
+
+      :error ->
+        {:error, {:missing_env, "FAVN_DATABASE_SSL_MODE"}}
+    end
+  end
+
+  defp deployment_database_url(_url, :production), do: :ok
+
+  defp deployment_database_url(url, :local_development) do
+    case URI.parse(url) do
+      %URI{host: "postgres.favn.internal", port: port} when port in [nil, 5432] ->
+        :ok
+
+      _invalid ->
+        {:error,
+         {:invalid_env, "FAVN_DATABASE_URL", :redacted,
+          "postgres.favn.internal:5432 in local-development"}}
     end
   end
 

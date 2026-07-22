@@ -12,6 +12,8 @@ defmodule FavnStoragePostgres.Config do
   @max_production_pool_size 200
   @max_production_timeout_ms 120_000
 
+  alias Favn.DeploymentMode
+
   @doc "Returns validated repo options from application configuration and overrides."
   @spec repo_options(keyword()) :: {:ok, keyword()} | {:error, term()}
   def repo_options(overrides \\ []) when is_list(overrides) do
@@ -20,6 +22,7 @@ defmodule FavnStoragePostgres.Config do
 
     with {:ok, url} <- fetch_url(options),
          :ok <- validate_url(url),
+         :ok <- validate_deployment_url(url, options),
          {:ok, pool_size} <- positive_integer(options, :pool_size, 15),
          {:ok, queue_target} <- positive_integer(options, :queue_target, 50),
          {:ok, queue_interval} <- positive_integer(options, :queue_interval, 1_000),
@@ -28,7 +31,13 @@ defmodule FavnStoragePostgres.Config do
          {:ok, ssl} <- ssl_options(options, url) do
       {:ok,
        options
-       |> Keyword.drop([:ssl_mode, :ssl_ca_file, :allow_insecure_database?, :instance_id])
+       |> Keyword.drop([
+         :ssl_mode,
+         :ssl_ca_file,
+         :allow_insecure_database?,
+         :deployment_mode,
+         :instance_id
+       ])
        |> Keyword.put(:url, url)
        |> Keyword.put(:pool_size, pool_size)
        |> Keyword.put(:queue_target, queue_target)
@@ -44,7 +53,8 @@ defmodule FavnStoragePostgres.Config do
   @spec repo_options_from_env(map()) :: {:ok, keyword()} | {:error, term()}
   def repo_options_from_env(env \\ System.get_env()) when is_map(env) do
     with {:ok, url} <- required_env(env, "FAVN_DATABASE_URL"),
-         {:ok, ssl_options} <- env_ssl_options(env),
+         {:ok, deployment_mode} <- DeploymentMode.from_env(env),
+         {:ok, ssl_options} <- env_ssl_options(env, deployment_mode),
          {:ok, pool_size} <-
            env_bounded_integer(env, "FAVN_DATABASE_POOL_SIZE", 15, @max_production_pool_size),
          {:ok, queue_target} <-
@@ -152,6 +162,17 @@ defmodule FavnStoragePostgres.Config do
 
   defp valid_postgres_url?(_uri), do: false
 
+  defp validate_deployment_url(url, options) do
+    if Keyword.get(options, :deployment_mode) == :local_development do
+      case URI.parse(url) do
+        %URI{host: "postgres.favn.internal", port: port} when port in [nil, 5432] -> :ok
+        _invalid -> {:error, :invalid_local_development_database_url}
+      end
+    else
+      :ok
+    end
+  end
+
   defp positive_integer(options, key, default) do
     case Keyword.get(options, key, default) do
       value when is_integer(value) and value > 0 -> {:ok, value}
@@ -166,7 +187,7 @@ defmodule FavnStoragePostgres.Config do
     end
   end
 
-  defp env_ssl_options(env) do
+  defp env_ssl_options(env, deployment_mode) do
     default = if production?(), do: nil, else: "disable"
 
     case Map.get(env, "FAVN_DATABASE_SSL_MODE", default) do
@@ -176,7 +197,9 @@ defmodule FavnStoragePostgres.Config do
          |> maybe_put(:ssl_ca_file, Map.get(env, "FAVN_DATABASE_SSL_CA_FILE"))}
 
       "disable" ->
-        {:ok, [ssl_mode: :disable]}
+        if deployment_mode == :local_development or not production?(),
+          do: {:ok, [ssl_mode: :disable, deployment_mode: deployment_mode]},
+          else: {:error, :production_tls_required}
 
       nil ->
         {:error, :database_ssl_mode_required}
@@ -210,7 +233,7 @@ defmodule FavnStoragePostgres.Config do
 
     case mode do
       :disable ->
-        if production?(),
+        if production?() and Keyword.get(options, :deployment_mode) != :local_development,
           do: {:error, :production_tls_required},
           else: {:ok, false}
 

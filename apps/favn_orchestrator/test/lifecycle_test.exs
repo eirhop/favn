@@ -63,6 +63,44 @@ defmodule FavnOrchestrator.LifecycleTest do
     assert_eventually(fn -> Lifecycle.diagnostics(name).active_admissions == 0 end)
   end
 
+  test "runner maintenance is resumable and admits only the opaque lease owner" do
+    name = unique_name()
+    start_supervised!({Lifecycle, name: name, shutdown_drain_timeout_ms: 5_000})
+    :ok = Lifecycle.mark_accepting(name)
+    token = String.duplicate("a", 43)
+
+    assert {:ok, ^token} = Lifecycle.begin_maintenance(:runner_replacement, token, name)
+
+    assert {:ok, ^token} =
+             Lifecycle.begin_maintenance(:runner_replacement, token, name)
+
+    assert {:error, :maintenance_active} =
+             Lifecycle.begin_maintenance(:runner_replacement, String.duplicate("b", 43), name)
+
+    assert {:error, :invalid_maintenance_token} =
+             Lifecycle.begin_maintenance(:runner_replacement, "short", name)
+
+    assert %{
+             status: :accepting,
+             ready?: false,
+             accepting?: false,
+             maintenance?: true,
+             maintenance_kind: :runner_replacement,
+             active_admissions: 0
+           } = Lifecycle.diagnostics(name)
+
+    assert {:error, :runtime_maintenance} = Lifecycle.acquire_admission(name)
+
+    assert {:error, :runtime_maintenance} =
+             Task.async(fn -> Lifecycle.acquire_admission(name) end) |> Task.await()
+
+    assert {:ok, permit} = Lifecycle.acquire_maintenance_admission(token, name)
+    assert :ok = Lifecycle.release_admission(permit, name)
+    assert {:error, :invalid_maintenance_token} = Lifecycle.end_maintenance("wrong", name)
+    assert :ok = Lifecycle.end_maintenance(token, name)
+    assert %{ready?: true, accepting?: true, maintenance?: false} = Lifecycle.diagnostics(name)
+  end
+
   test "beginning shutdown cannot regress an already stopping lifecycle" do
     name = unique_name()
     start_supervised!({Lifecycle, name: name, shutdown_drain_timeout_ms: 5_000})

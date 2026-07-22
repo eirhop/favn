@@ -46,6 +46,24 @@ defmodule Favn.Dev.PublishActivateTest do
       do: {:ok, %{"data" => %{"activated" => false}}}
   end
 
+  defmodule AlreadyPublishedClient do
+    def publish_manifest(_url, _token, publication, nil) do
+      {:ok,
+       %{
+         "data" => %{
+           "manifest" => %{
+             "required_runner_release_id" => publication.version.required_runner_release_id
+           },
+           "registration" => %{
+             "status" => "already_published",
+             "manifest_version_id" => publication.version.manifest_version_id,
+             "canonical_manifest_version_id" => "mv_canonical"
+           }
+         }
+       }}
+    end
+  end
+
   defmodule MismatchClient do
     def publish_manifest(_url, _token, publication, nil) do
       {:ok,
@@ -119,6 +137,19 @@ defmodule Favn.Dev.PublishActivateTest do
              )
   end
 
+  test "publish returns the canonical content-addressed version on replay", context do
+    assert {:ok, summary} =
+             Publish.run(
+               manifest_path: context.manifest_path,
+               orchestrator_url: "http://orchestrator.internal",
+               client: AlreadyPublishedClient,
+               env: %{"FAVN_ORCHESTRATOR_SERVICE_TOKEN" => "environment-token"}
+             )
+
+    assert summary.status == "already_published"
+    assert summary.manifest_version_id == "mv_canonical"
+  end
+
   test "activate sends one exact manifest and workspace with the environment token" do
     assert {:ok, summary} =
              Activate.run(
@@ -139,7 +170,7 @@ defmodule Favn.Dev.PublishActivateTest do
   test "successful HTTP responses must contain successful operation DTOs", context do
     env = %{"FAVN_ORCHESTRATOR_SERVICE_TOKEN" => "environment-token"}
 
-    assert {:error, :invalid_publication_response} =
+    assert {:error, {:invalid_publication_response, _details}} =
              Publish.run(
                manifest_path: context.manifest_path,
                orchestrator_url: "https://orchestrator.internal",
@@ -160,7 +191,7 @@ defmodule Favn.Dev.PublishActivateTest do
   test "successful DTOs must echo the exact immutable manifest identity", context do
     env = %{"FAVN_ORCHESTRATOR_SERVICE_TOKEN" => "environment-token"}
 
-    assert {:error, :invalid_publication_response} =
+    assert {:error, {:invalid_publication_response, _details}} =
              Publish.run(
                manifest_path: context.manifest_path,
                orchestrator_url: "https://orchestrator.internal",

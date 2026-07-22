@@ -22,12 +22,7 @@ defmodule Favn.Dev.State do
       Paths.favn_dir(root_dir),
       Paths.logs_dir(root_dir),
       Paths.install_dir(root_dir),
-      Paths.install_cache_dir(root_dir),
-      Paths.install_runtimes_dir(root_dir),
-      Paths.install_runtime_root_dir(root_dir),
-      Paths.install_runtime_web_dir(root_dir),
-      Paths.install_runtime_orchestrator_dir(root_dir),
-      Paths.install_runtime_runner_dir(root_dir),
+      Paths.compose_dir(root_dir),
       Paths.build_dir(root_dir),
       Paths.build_target_dir(root_dir, "web"),
       Paths.build_target_dir(root_dir, "orchestrator"),
@@ -122,6 +117,26 @@ defmodule Favn.Dev.State do
     |> delete_if_exists()
   end
 
+  @doc false
+  @spec read_runner_latest(root_opt()) :: {:ok, map()} | {:error, read_error()}
+  def read_runner_latest(opts \\ []) when is_list(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Paths.runner_latest_path()
+    |> read_json()
+  end
+
+  @doc false
+  @spec write_runner_latest(map(), root_opt()) :: :ok | {:error, term()}
+  def write_runner_latest(runner, opts \\ []) when is_map(runner) and is_list(opts) do
+    with :ok <- ensure_layout(opts) do
+      opts
+      |> Paths.root_dir()
+      |> Paths.runner_latest_path()
+      |> write_json(runner)
+    end
+  end
+
   @spec read_install_runtime(root_opt()) :: {:ok, map()} | {:error, read_error()}
   def read_install_runtime(opts \\ []) when is_list(opts) do
     opts
@@ -174,6 +189,35 @@ defmodule Favn.Dev.State do
       |> Paths.secrets_path()
       |> write_json(secrets)
     end
+  end
+
+  @doc "Reads the durable runner/manifest recovery snapshot and maintenance lease."
+  @spec read_maintenance(root_opt()) :: {:ok, map()} | {:error, read_error()}
+  def read_maintenance(opts \\ []) when is_list(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Paths.maintenance_path()
+    |> read_json()
+  end
+
+  @doc "Persists runner/manifest recovery state before build or maintenance mutation."
+  @spec write_maintenance(map(), root_opt()) :: :ok | {:error, term()}
+  def write_maintenance(maintenance, opts \\ []) when is_map(maintenance) and is_list(opts) do
+    with :ok <- ensure_layout(opts) do
+      opts
+      |> Paths.root_dir()
+      |> Paths.maintenance_path()
+      |> write_json(maintenance)
+    end
+  end
+
+  @doc "Clears recovery state after completion or verified maintenance release."
+  @spec clear_maintenance(root_opt()) :: :ok | {:error, term()}
+  def clear_maintenance(opts \\ []) when is_list(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Paths.maintenance_path()
+    |> delete_if_exists()
   end
 
   @spec read_last_failure(root_opt()) :: {:ok, map()} | {:error, read_error()}

@@ -4,9 +4,16 @@ defmodule Mix.Tasks.Favn.Reload do
   @shortdoc "Rebuilds and reloads manifest into running local stack"
 
   @moduledoc """
-  Recompiles the project, rebuilds the manifest, publishes it to orchestrator,
-  and activates it without restarting orchestrator. The project's `.env` is
-  loaded before the consumer project's `config/runtime.exs` is reevaluated.
+  Rebuilds the customer release contract and applies one Docker Compose change.
+
+  Manifest-only changes publish and activate without restarting containers.
+  Runner changes first persist the verified runner/manifest pair, acquire a
+  recoverable maintenance lease, drain admitted work, replace and verify only
+  the runner, and then activate the aligned manifest. Rollback restores
+  admission only after both the previous runner and active manifest are
+  verified.
+  The project's `.env` is loaded before the consumer `config/runtime.exs` is
+  evaluated for the production runner build.
   """
 
   alias Favn.Dev
@@ -59,14 +66,27 @@ defmodule Mix.Tasks.Favn.Reload do
       :ok ->
         :ok
 
-      {:error, :stack_not_running} ->
-        Mix.raise("stack not running; use mix favn.dev")
+      {:error, :install_required} ->
+        Mix.raise("reload failed: install required; run mix favn.install then mix favn.dev")
 
-      {:error, :stack_not_healthy} ->
-        Mix.raise("stack not healthy; use mix favn.stop then mix favn.dev")
+      {:error, {:lock_failed, :timeout}} ->
+        Mix.raise("reload failed: another Favn lifecycle command is active; retry after it exits")
 
       {:error, {:in_flight_runs, run_ids}} ->
         Mix.raise(in_flight_runs_message(run_ids))
+
+      {:error, {:runner_replacement_rollback_failed, reason, rollback_reason}} ->
+        Mix.raise(
+          "reload failed and the previous runner could not be verified after rollback; " <>
+            "maintenance remains active so fix the Docker runner failure and retry: " <>
+            "#{inspect({reason, rollback_reason})}"
+        )
+
+      {:error, {:runner_replacement_finish_failed, reason, finish_reason}} ->
+        Mix.raise(
+          "reload changed or restored the runner but maintenance completion was not confirmed; " <>
+            "retry to resume the persisted lease: #{inspect({reason, finish_reason})}"
+        )
 
       {:error, reason} ->
         Mix.raise("reload failed: #{inspect(reason)}")

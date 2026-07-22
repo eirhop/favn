@@ -238,12 +238,12 @@ defmodule Favn.RunnerRelease.BeamDigest do
   end
 
   defp contains_absolute_path?(value) when is_binary(value) do
-    String.valid?(value) and Path.type(value) == :absolute
+    String.valid?(value) and absolute_path_literal?(value)
   end
 
   defp contains_absolute_path?(value) when is_list(value) do
     case charlist_to_string(value) do
-      {:ok, string} -> Path.type(string) == :absolute
+      {:ok, string} -> absolute_path_literal?(string)
       :error -> contains_absolute_path_in_cons?(value)
     end
   end
@@ -261,6 +261,12 @@ defmodule Favn.RunnerRelease.BeamDigest do
   end
 
   defp contains_absolute_path?(_value), do: false
+
+  # SQL scanners commonly retain the block-comment opener as a literal. It is
+  # syntax, not a filesystem root, even though `Path.type/1` classifies every
+  # slash-prefixed string as absolute on Unix.
+  defp absolute_path_literal?(value) when value in ["/", "/*"], do: false
+  defp absolute_path_literal?(value), do: Path.type(value) == :absolute
 
   defp charlist_to_string([]), do: :error
 

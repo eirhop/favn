@@ -20,11 +20,13 @@ defmodule Favn.Dev.Activate do
          {:ok, workspace_id} <- required(opts, :workspace_id),
          {:ok, service_token} <- required_env(env, "FAVN_ORCHESTRATOR_SERVICE_TOKEN"),
          {:ok, response} <-
-           client.activate_manifest_service(
+           activate_manifest(
+             client,
              orchestrator_url,
              service_token,
              manifest_version_id,
-             workspace_id
+             workspace_id,
+             Keyword.get(opts, :maintenance_token)
            ),
          {:ok, data} <- activation_data(response, manifest_version_id) do
       {:ok,
@@ -74,5 +76,39 @@ defmodule Favn.Dev.Activate do
       value when is_binary(value) and value != "" -> {:ok, value}
       _missing -> {:error, {:missing_required_env, name}}
     end
+  end
+
+  defp activate_manifest(
+         client,
+         orchestrator_url,
+         service_token,
+         manifest_version_id,
+         workspace_id,
+         maintenance_token
+       )
+       when is_binary(maintenance_token) and maintenance_token != "" do
+    client.activate_manifest_service(
+      orchestrator_url,
+      service_token,
+      manifest_version_id,
+      workspace_id,
+      maintenance_token: maintenance_token
+    )
+  end
+
+  defp activate_manifest(
+         client,
+         orchestrator_url,
+         service_token,
+         manifest_version_id,
+         workspace_id,
+         _maintenance_token
+       ) do
+    client.activate_manifest_service(
+      orchestrator_url,
+      service_token,
+      manifest_version_id,
+      workspace_id
+    )
   end
 end

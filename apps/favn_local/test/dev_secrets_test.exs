@@ -43,10 +43,13 @@ defmodule Favn.Dev.SecretsTest do
     assert secrets["web_session_secret"] == String.duplicate("s", 64)
 
     persisted = Paths.secrets_path(root_dir) |> File.read!()
-    refute persisted =~ "configured-service-token"
-    refute persisted =~ String.duplicate("s", 64)
-  end
+    assert persisted =~ "configured-service-token"
+    assert persisted =~ String.duplicate("s", 64)
 
+    assert {:ok, restarted} = Secrets.resolve(Config.resolve(), root_dir: root_dir)
+    assert restarted["service_token"] == "configured-service-token"
+    assert restarted["web_session_secret"] == String.duplicate("s", 64)
+  end
 
   defp native_tmp_dir do
     if match?({:unix, _}, :os.type()) and File.dir?("/tmp"), do: "/tmp", else: System.tmp_dir!()

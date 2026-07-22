@@ -8,7 +8,8 @@ defmodule Favn.Dev.EnvFile do
   @type load_result :: %{
           path: Path.t(),
           values: %{optional(String.t()) => String.t()},
-          loaded: %{optional(String.t()) => String.t()}
+          loaded: %{optional(String.t()) => String.t()},
+          effective: %{optional(String.t()) => String.t()}
         }
 
   @spec load(keyword()) :: {:ok, load_result()} | {:error, term()}
@@ -19,14 +20,14 @@ defmodule Favn.Dev.EnvFile do
       File.exists?(path) ->
         with {:ok, parsed} <- parse_file(path) do
           loaded = put_missing_env(parsed)
-          {:ok, %{path: path, values: parsed, loaded: loaded}}
+          {:ok, %{path: path, values: parsed, loaded: loaded, effective: effective_env(parsed)}}
         end
 
       explicit_env_file?() ->
         {:error, {:env_file_not_found, path}}
 
       true ->
-        {:ok, %{path: path, values: %{}, loaded: %{}}}
+        {:ok, %{path: path, values: %{}, loaded: %{}, effective: %{}}}
     end
   end
 
@@ -94,6 +95,10 @@ defmodule Favn.Dev.EnvFile do
         loaded
       end
     end)
+  end
+
+  defp effective_env(values) do
+    Map.new(values, fn {key, file_value} -> {key, System.get_env(key) || file_value} end)
   end
 
   defp parse_line(line) do

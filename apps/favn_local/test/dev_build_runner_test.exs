@@ -3,8 +3,12 @@ defmodule Favn.Dev.Build.RunnerTest do
 
   alias Favn.Dev
   alias Favn.Dev.Build.Artifact
+  alias Favn.Dev.Build.RunnerInputs
   alias Favn.Dev.Build.RunnerReleaseInput
   alias Favn.RunnerRelease
+
+  @control_build_id String.duplicate("a", 64)
+  @control_image_id "sha256:" <> String.duplicate("b", 64)
 
   defmodule SQLVersionOne do
     use Favn.SQLAsset
@@ -52,6 +56,11 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert result.build_id == result.runner_release_id
     assert Path.basename(result.dist_dir) == result.runner_release_id
 
+    assert {:ok, latest} = Favn.Dev.State.read_runner_latest(root_dir: root_dir)
+    assert latest["runner_release_id"] == result.runner_release_id
+    assert latest["descriptor_path"] == result.descriptor_path
+    assert latest["manifest_dir"] == result.manifest_dir
+
     expected = [
       "Dockerfile",
       "bundle.json",
@@ -60,6 +69,7 @@ defmodule Favn.Dev.Build.RunnerTest do
       "manifest/bundle.json",
       "manifest/manifest-index.json",
       "release-input/mix.exs",
+      "release-input/mix.lock",
       "release-input/dependency-lock.json",
       "release-input/stamp_apps.exs",
       "release-input/apps/favn_local/mix.exs",
@@ -127,6 +137,27 @@ defmodule Favn.Dev.Build.RunnerTest do
                ],
                stderr_to_stdout: true
              )
+
+    for {release_command, expected} <- [
+          {"start", "-kernel inet_dist_listen_min 9100 inet_dist_listen_max 9100"},
+          {"rpc", ""}
+        ] do
+      assert {erl_aflags, 0} =
+               System.cmd(
+                 "sh",
+                 ["-c", ~s(. "$1"; printf '%s' "${ERL_AFLAGS:-}"), "sh", release_env],
+                 env: [
+                   {"RELEASE_COMMAND", release_command},
+                   {"ERL_AFLAGS", ""},
+                   {"FAVN_RUNNER_NODE", "runner@runner.internal"},
+                   {"FAVN_DISTRIBUTION_COOKIE", valid_cookie},
+                   {"FAVN_BEAM_DISTRIBUTION_PORT", "9100"}
+                 ],
+                 stderr_to_stdout: true
+               )
+
+      assert String.trim(erl_aflags) == expected
+    end
 
     for invalid_node <- ["runner@localhost", "runner@127.0.0.2", "runner@@internal", "runner"] do
       assert {output, 1} =
@@ -220,6 +251,26 @@ defmodule Favn.Dev.Build.RunnerTest do
 
     assert {:error, :artifact_bundle_invalid} =
              Artifact.verify_bundle(manifest_result.dist_dir, "favn_manifest_release")
+  end
+
+  test "runner lock keeps non-vendored transitive build dependencies only" do
+    lock = Mix.Dep.Lock.read()
+
+    selected =
+      Map.take(lock, [:duckdbex, :cc_precompiler, :elixir_make, :phoenix])
+
+    assert {:ok, release_lock} =
+             RunnerInputs.select_dependency_lock(
+               selected,
+               ["duckdbex"],
+               %{
+                 "duckdbex" => ["cc_precompiler"],
+                 "cc_precompiler" => ["elixir_make"],
+                 "elixir_make" => []
+               }
+             )
+
+    assert Map.keys(release_lock) |> Enum.sort() == ["cc_precompiler", "elixir_make"]
   end
 
   test "build_runner/1 fails closed when an immutable artifact was modified", %{
@@ -331,7 +382,10 @@ defmodule Favn.Dev.Build.RunnerTest do
 
   test "a customer lock change conservatively requires a new runner", %{root_dir: root_dir} do
     install!(root_dir)
-    assert {:ok, result} = build(root_dir, lock: %{authoring_only: {:hex, :one}})
+    first_lock = Map.put(Mix.Dep.Lock.read(), :authoring_only, {:hex, :one})
+    second_lock = Map.put(Mix.Dep.Lock.read(), :authoring_only, {:hex, :two})
+
+    assert {:ok, result} = build(root_dir, lock: first_lock)
 
     assert {:error, {:runner_rebuild_required, categories}} =
              Dev.build_manifest(
@@ -340,7 +394,7 @@ defmodule Favn.Dev.Build.RunnerTest do
                skip_compile: true,
                allow_non_prod_build: true,
                allow_unpinned_favn: true,
-               lock: %{authoring_only: {:hex, :two}}
+               lock: second_lock
              )
 
     assert :runtime_dependencies in categories
@@ -674,9 +728,12 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert {:ok, :installed} =
              Dev.install(
                root_dir: root_dir,
-               skip_web_install: true,
-               skip_tool_checks: true,
-               skip_runtime_deps_install: true
+               docker_executable: "docker",
+               docker_command_runner: &docker_runner/3,
+               candidate_control_plane: %{
+                 "reference" => "favn-control-plane-candidate:#{@control_build_id}",
+                 "image_id" => @control_image_id
+               }
              )
   end
 
@@ -689,11 +746,63 @@ defmodule Favn.Dev.Build.RunnerTest do
           skip_tool_checks: true,
           skip_project_root_check: true,
           allow_non_prod_build: true,
-          allow_unpinned_favn: true
+          allow_unpinned_favn: true,
+          docker_executable: "docker",
+          docker_command_runner: &docker_runner/3
         ],
         opts
       )
     )
+  end
+
+  defp docker_runner("docker", args, _opts) do
+    case args do
+      ["version", "--format", "{{json .Server}}"] ->
+        {JSON.encode!(%{"Os" => "linux", "Arch" => "amd64", "Version" => "28.3.0"}), 0}
+
+      ["compose", "version", "--short"] ->
+        {"2.39.1\n", 0}
+
+      ["image", "inspect", _reference] ->
+        {JSON.encode!([control_image_inspection()]), 0}
+
+      [
+        "compose",
+        "--project-name",
+        _name,
+        "--file",
+        _file,
+        "--env-file",
+        _env,
+        "config",
+        "--quiet"
+      ] ->
+        {"", 0}
+
+      other ->
+        {"unexpected docker command: #{inspect(other)}", 97}
+    end
+  end
+
+  defp control_image_inspection do
+    %{
+      "Id" => @control_image_id,
+      "RepoDigests" => [],
+      "Architecture" => "amd64",
+      "Os" => "linux",
+      "Config" => %{
+        "User" => "10001:10001",
+        "Labels" => %{
+          "org.opencontainers.image.version" => RunnerRelease.current_favn_version(),
+          "io.favn.control-plane.build-id" => @control_build_id,
+          "io.favn.manifest-schema-version" =>
+            Favn.Manifest.Compatibility.current_schema_version() |> Integer.to_string(),
+          "io.favn.runner-contract-version" =>
+            Favn.Manifest.Compatibility.current_runner_contract_version() |> Integer.to_string(),
+          "io.favn.target" => "linux/amd64"
+        }
+      }
+    }
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)

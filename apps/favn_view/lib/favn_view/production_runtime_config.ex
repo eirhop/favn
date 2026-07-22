@@ -14,7 +14,10 @@ defmodule FavnView.ProductionRuntimeConfig do
   @max_proxy_cidrs_bytes 4_096
   @persistent_key {__MODULE__, :config}
 
+  alias Favn.DeploymentMode
+
   @type config :: %{
+          deployment_mode: DeploymentMode.t(),
           public_origin: String.t(),
           orchestrator_readiness_timeout_ms: pos_integer(),
           secret_key_base: String.t(),
@@ -23,13 +26,18 @@ defmodule FavnView.ProductionRuntimeConfig do
           port: :inet.port_number(),
           trusted_proxy_cidrs: [map()],
           http_server: map(),
-          shutdown_drain_timeout_ms: pos_integer()
+          shutdown_drain_timeout_ms: pos_integer(),
+          session_cookie_options: keyword(),
+          force_ssl?: boolean()
         }
 
   @type runtime_config :: %{
+          deployment_mode: DeploymentMode.t(),
           trusted_proxy_cidrs: [map()],
           http_server: map(),
-          orchestrator_readiness_timeout_ms: pos_integer()
+          orchestrator_readiness_timeout_ms: pos_integer(),
+          session_cookie_options: keyword(),
+          force_ssl?: boolean()
         }
 
   @doc """
@@ -81,7 +89,8 @@ defmodule FavnView.ProductionRuntimeConfig do
   """
   @spec validate(map()) :: {:ok, config()} | {:error, map()}
   def validate(env) when is_map(env) do
-    with {:ok, public_origin} <- public_origin(env),
+    with {:ok, deployment_mode} <- DeploymentMode.from_env(env),
+         {:ok, public_origin} <- public_origin(env, deployment_mode),
          {:ok, timeout_ms} <- timeout_ms(env),
          {:ok, secret_key_base} <- secret_key_base(env),
          {:ok, {bind_host, bind_ip}} <- bind_host(env),
@@ -89,9 +98,10 @@ defmodule FavnView.ProductionRuntimeConfig do
          {:ok, trusted_proxy_cidrs} <- trusted_proxy_cidrs(env),
          {:ok, http_server} <- http_server(env),
          {:ok, shutdown_drain_timeout_ms} <- shutdown_drain_timeout_ms(env),
-         :ok <- secure_cookie_config() do
+         {:ok, session_cookie_options} <- session_cookie_options(deployment_mode) do
       {:ok,
        %{
+         deployment_mode: deployment_mode,
          public_origin: public_origin,
          orchestrator_readiness_timeout_ms: timeout_ms,
          secret_key_base: secret_key_base,
@@ -100,7 +110,9 @@ defmodule FavnView.ProductionRuntimeConfig do
          port: port,
          trusted_proxy_cidrs: trusted_proxy_cidrs,
          http_server: http_server,
-         shutdown_drain_timeout_ms: shutdown_drain_timeout_ms
+         shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
+         session_cookie_options: session_cookie_options,
+         force_ssl?: deployment_mode == :production
        }}
     else
       {:error, reason} -> {:error, %{status: :invalid, error: redact(reason)}}
@@ -114,6 +126,7 @@ defmodule FavnView.ProductionRuntimeConfig do
   def diagnostics(config) when is_map(config) do
     %{
       status: :ok,
+      deployment_mode: config.deployment_mode,
       public_origin: %{
         configured?: true,
         redacted: true
@@ -143,6 +156,27 @@ defmodule FavnView.ProductionRuntimeConfig do
     end
   end
 
+  @doc "Returns the frozen session-cookie contract for HTTP and LiveView sockets."
+  @spec session_cookie_options() :: keyword()
+  def session_cookie_options do
+    case :persistent_term.get(@persistent_key, :missing) do
+      %{session_cookie_options: options} ->
+        options
+
+      :missing ->
+        Application.get_env(:favn_view, :session_cookie_options, [])
+    end
+  end
+
+  @doc "Returns whether the current runtime requires proxy-aware HTTPS redirects."
+  @spec force_ssl?() :: boolean()
+  def force_ssl? do
+    case :persistent_term.get(@persistent_key, :missing) do
+      %{force_ssl?: force_ssl?} -> force_ssl?
+      :missing -> Application.get_env(:favn_view, :trusted_proxy_force_ssl, false)
+    end
+  end
+
   @doc "Returns whether a socket peer belongs to the configured private proxy allowlist."
   @spec trusted_proxy?(:inet.ip_address()) :: boolean()
   def trusted_proxy?(address) when is_tuple(address) do
@@ -160,17 +194,17 @@ defmodule FavnView.ProductionRuntimeConfig do
     end
   end
 
-  defp public_origin(env) do
+  defp public_origin(env, deployment_mode) do
     case fetch(env, "FAVN_VIEW_PUBLIC_ORIGIN") do
       {:ok, origin} ->
-        validate_public_origin(origin, env)
+        validate_public_origin(origin, deployment_mode)
 
       :error ->
         {:error, {:missing_env, "FAVN_VIEW_PUBLIC_ORIGIN"}}
     end
   end
 
-  defp validate_public_origin(origin, _env) do
+  defp validate_public_origin(origin, :production) do
     case URI.parse(origin) do
       %URI{
         scheme: "https",
@@ -187,6 +221,26 @@ defmodule FavnView.ProductionRuntimeConfig do
 
       _other ->
         {:error, {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", "absolute https origin"}}
+    end
+  end
+
+  defp validate_public_origin(origin, :local_development) do
+    case URI.parse(origin) do
+      %URI{
+        scheme: "http",
+        host: "127.0.0.1",
+        path: path,
+        query: nil,
+        fragment: nil,
+        userinfo: nil,
+        port: port
+      }
+      when path in [nil, ""] and port in 1..65_535 ->
+        {:ok, origin}
+
+      _other ->
+        {:error,
+         {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", "loopback http origin in local-development"}}
     end
   end
 
@@ -213,14 +267,23 @@ defmodule FavnView.ProductionRuntimeConfig do
     end
   end
 
-  defp secure_cookie_config do
-    if Application.get_env(:favn_view, :require_secure_cookies, false) do
-      case Application.fetch_env(:favn_view, :session_cookie_options) do
-        {:ok, options} -> validate_session_cookie_options(options)
-        :error -> {:error, {:invalid_session_cookie, :missing_options}}
-      end
-    else
-      :ok
+  defp session_cookie_options(deployment_mode) do
+    options = Application.get_env(:favn_view, :session_cookie_options, [])
+
+    case deployment_mode do
+      :production ->
+        if Application.get_env(:favn_view, :require_secure_cookies, false) do
+          with :ok <- validate_session_cookie_options(options), do: {:ok, options}
+        else
+          {:ok, options}
+        end
+
+      :local_development ->
+        options = Keyword.put(options, :secure, false)
+
+        if Keyword.get(options, :http_only) == true and Keyword.get(options, :same_site) == "Lax",
+          do: {:ok, options},
+          else: {:error, {:invalid_session_cookie, :invalid_local_options}}
     end
   end
 
@@ -410,9 +473,12 @@ defmodule FavnView.ProductionRuntimeConfig do
 
   defp runtime_config(config) do
     Map.take(config, [
+      :deployment_mode,
       :trusted_proxy_cidrs,
       :http_server,
-      :orchestrator_readiness_timeout_ms
+      :orchestrator_readiness_timeout_ms,
+      :session_cookie_options,
+      :force_ssl?
     ])
   end
 

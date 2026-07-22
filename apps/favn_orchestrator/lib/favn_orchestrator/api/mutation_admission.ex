@@ -8,7 +8,7 @@ defmodule FavnOrchestrator.API.MutationAdmission do
 
   @behaviour Plug
 
-  import Plug.Conn, only: [halt: 1, register_before_send: 2]
+  import Plug.Conn, only: [get_req_header: 2, halt: 1, register_before_send: 2]
 
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Lifecycle
@@ -24,7 +24,7 @@ defmodule FavnOrchestrator.API.MutationAdmission do
   def call(conn, opts) do
     lifecycle = Keyword.get(opts, :lifecycle, Lifecycle)
 
-    case Lifecycle.acquire_admission(lifecycle) do
+    case acquire(conn, lifecycle) do
       {:ok, permit} ->
         register_before_send(conn, fn conn ->
           :ok = Lifecycle.release_admission(permit, lifecycle)
@@ -40,8 +40,18 @@ defmodule FavnOrchestrator.API.MutationAdmission do
     end
   end
 
+  defp acquire(conn, lifecycle) do
+    case get_req_header(conn, "x-favn-maintenance-token") do
+      [token] when token != "" -> Lifecycle.acquire_maintenance_admission(token, lifecycle)
+      _missing_or_ambiguous -> Lifecycle.acquire_admission(lifecycle)
+    end
+  end
+
   defp error(:runtime_starting),
     do: {"runtime_starting", "Control plane is not accepting mutations yet"}
+
+  defp error(:runtime_maintenance),
+    do: {"runtime_maintenance", "Control plane is in a bounded maintenance window"}
 
   defp error(_reason),
     do: {"runtime_draining", "Control plane is draining and is not accepting mutations"}

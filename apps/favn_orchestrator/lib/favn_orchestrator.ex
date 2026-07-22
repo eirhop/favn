@@ -44,6 +44,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunnerManifestRegistration
   alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.RunnerReleaseCompatibility
+  alias FavnOrchestrator.RunnerReplacement
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
@@ -153,6 +154,23 @@ defmodule FavnOrchestrator do
   @doc "Returns bounded lifecycle state for operator and release tooling."
   @spec lifecycle() :: map()
   def lifecycle, do: Lifecycle.diagnostics()
+
+  @doc "Begins or resumes an authenticated runner-replacement boundary."
+  @spec begin_runner_replacement(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def begin_runner_replacement(token), do: RunnerReplacement.begin(token)
+
+  @doc "Returns bounded runner-replacement drain state."
+  @spec runner_replacement_status() :: map()
+  def runner_replacement_status, do: RunnerReplacement.status()
+
+  @doc "Verifies that the connected runner advertises one exact release ID."
+  @spec verify_replacement_runner(String.t()) :: {:ok, map()} | {:error, term()}
+  def verify_replacement_runner(runner_release_id),
+    do: RunnerReplacement.verify_runner(runner_release_id)
+
+  @doc "Ends a runner-replacement boundary owned by the opaque token."
+  @spec finish_runner_replacement(String.t()) :: :ok | {:error, term()}
+  def finish_runner_replacement(token), do: RunnerReplacement.finish(token)
 
   @doc "Begins the irreversible bounded drain used before a controlled shutdown."
   @spec drain(keyword()) :: {:ok, map()}

@@ -132,7 +132,7 @@ defmodule FavnOrchestrator.Readiness do
 
   defp lifecycle_check do
     case Lifecycle.diagnostics() do
-      %{status: :accepting} = diagnostics -> ok(:lifecycle, diagnostics)
+      %{status: :accepting, ready?: true} = diagnostics -> ok(:lifecycle, diagnostics)
       diagnostics -> error(:lifecycle, diagnostics)
     end
   end

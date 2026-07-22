@@ -10,6 +10,7 @@ defmodule Favn.Dev.ControlPlaneImage do
   @digest ~r/\Asha256:[0-9a-f]{64}\z/
   @build_id ~r/\A[0-9a-f]{64}\z/
   @version_tag ~r/\Av[0-9A-Za-z_.-]{1,127}\z/
+  @image_id ~r/\Asha256:[0-9a-f]{64}\z/
 
   @doc "Returns the canonical official image repository."
   @spec repository() :: String.t()
@@ -75,4 +76,45 @@ defmodule Favn.Dev.ControlPlaneImage do
   end
 
   def repo_digest(_repo_digests), do: {:error, :repo_digest_unavailable}
+
+  @doc "Validates the installed image's platform, user, and Favn compatibility labels."
+  @spec validate_install_image(map()) :: {:ok, map()} | {:error, term()}
+  def validate_install_image(%{
+        id: id,
+        architecture: "amd64",
+        os: "linux",
+        user: "10001:10001",
+        labels: labels
+      })
+      when is_binary(id) and is_map(labels) do
+    manifest_schema =
+      Favn.Manifest.Compatibility.current_schema_version() |> Integer.to_string()
+
+    runner_contract =
+      Favn.Manifest.Compatibility.current_runner_contract_version() |> Integer.to_string()
+
+    build_id = labels["io.favn.control-plane.build-id"]
+    version = labels["org.opencontainers.image.version"]
+
+    with true <- Regex.match?(@image_id, id),
+         true <- is_binary(build_id) and Regex.match?(@build_id, build_id),
+         {:ok, _version} <- Version.parse(version),
+         ^manifest_schema <- labels["io.favn.manifest-schema-version"],
+         ^runner_contract <- labels["io.favn.runner-contract-version"],
+         "linux/amd64" <- labels["io.favn.target"] do
+      {:ok,
+       %{
+         image_id: id,
+         control_plane_build_id: build_id,
+         control_plane_version: version,
+         manifest_schema_version: String.to_integer(manifest_schema),
+         runner_contract_version: String.to_integer(runner_contract),
+         target: "linux/amd64"
+       }}
+    else
+      _invalid -> {:error, :incompatible_control_plane_image}
+    end
+  end
+
+  def validate_install_image(_image), do: {:error, :incompatible_control_plane_image}
 end

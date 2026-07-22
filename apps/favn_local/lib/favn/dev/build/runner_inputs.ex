@@ -26,6 +26,7 @@ defmodule Favn.Dev.Build.RunnerInputs do
           inventory: %{String.t() => inventory_entry()},
           applications: [ApplicationFingerprint.t()],
           application_sources: %{String.t() => Path.t()},
+          dependency_lock: %{String.t() => term()},
           build_only_applications: [String.t()],
           packaged_config: RunnerConfig.t(),
           plugins: [PluginFingerprint.t()],
@@ -79,19 +80,51 @@ defmodule Favn.Dev.Build.RunnerInputs do
         |> Enum.reject(&Map.has_key?(sources, &1))
         |> Enum.sort()
 
-      {:ok,
-       %{
-         descriptor: descriptor,
-         current_application: Atom.to_string(current_app),
-         closure: closure,
-         inventory: inventory,
-         applications: applications,
-         application_sources: release_sources,
-         build_only_applications: build_only_applications,
-         packaged_config: packaged_config,
-         plugins: plugins,
-         plugin_entries: plugin_entries
-       }}
+      with {:ok, dependency_lock} <- release_dependency_lock(release_sources, opts) do
+        {:ok,
+         %{
+           descriptor: descriptor,
+           current_application: Atom.to_string(current_app),
+           closure: closure,
+           inventory: inventory,
+           applications: applications,
+           application_sources: release_sources,
+           dependency_lock: dependency_lock,
+           build_only_applications: build_only_applications,
+           packaged_config: packaged_config,
+           plugins: plugins,
+           plugin_entries: plugin_entries
+         }}
+      end
+    end
+  end
+
+  @doc false
+  @spec select_dependency_lock(map(), [String.t()], %{String.t() => [String.t()]}) ::
+          {:ok, %{String.t() => term()}} | {:error, term()}
+  def select_dependency_lock(lock, vendored_apps, dependency_graph)
+      when is_map(lock) and is_list(vendored_apps) and is_map(dependency_graph) do
+    normalized_lock = Map.new(lock, fn {app, entry} -> {to_string(app), entry} end)
+    vendored = MapSet.new(vendored_apps)
+    selected = expand_dependency_graph(vendored_apps, dependency_graph, MapSet.new())
+
+    unresolved =
+      selected
+      |> MapSet.difference(vendored)
+      |> Enum.reject(&Map.has_key?(normalized_lock, &1))
+      |> Enum.sort()
+
+    case unresolved do
+      [] ->
+        lock_apps =
+          selected
+          |> MapSet.difference(vendored)
+          |> MapSet.to_list()
+
+        {:ok, Map.take(normalized_lock, lock_apps)}
+
+      _missing ->
+        {:error, {:runner_dependency_lock_incomplete, unresolved}}
     end
   end
 
@@ -530,6 +563,37 @@ defmodule Favn.Dev.Build.RunnerInputs do
             _missing -> acc
           end
         end)
+    end
+  end
+
+  defp release_dependency_lock(release_sources, opts) do
+    lock = Keyword.get_lazy(opts, :lock, &Mix.Dep.Lock.read/0)
+
+    dependency_graph =
+      Mix.Dep.load_and_cache()
+      |> Map.new(fn dependency ->
+        children =
+          dependency.deps
+          |> Enum.filter(&production_dependency?/1)
+          |> Enum.reject(&Keyword.get(&1.opts, :optional, false))
+          |> Enum.map(&Atom.to_string(&1.app))
+          |> Enum.uniq()
+          |> Enum.sort()
+
+        {Atom.to_string(dependency.app), children}
+      end)
+
+    select_dependency_lock(lock, Map.keys(release_sources), dependency_graph)
+  end
+
+  defp expand_dependency_graph([], _graph, selected), do: selected
+
+  defp expand_dependency_graph([app | rest], graph, selected) do
+    if MapSet.member?(selected, app) do
+      expand_dependency_graph(rest, graph, selected)
+    else
+      children = Map.get(graph, app, [])
+      expand_dependency_graph(rest ++ children, graph, MapSet.put(selected, app))
     end
   end
 

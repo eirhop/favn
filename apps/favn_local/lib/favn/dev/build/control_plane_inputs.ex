@@ -117,19 +117,24 @@ defmodule Favn.Dev.Build.ControlPlaneInputs do
 
     with {:module, FavnControlPlane.Release} <-
            Code.ensure_compiled(FavnControlPlane.Release) do
-      {:ok, FavnControlPlane.Release.applications(), FavnControlPlane.Release.dependency_roots()}
+      {:ok, release_applications(), release_dependency_roots()}
     else
       _unavailable ->
         case Code.require_file(release_file) do
           [{FavnControlPlane.Release, _binary}] ->
-            {:ok, FavnControlPlane.Release.applications(),
-             FavnControlPlane.Release.dependency_roots()}
+            {:ok, release_applications(), release_dependency_roots()}
 
           _invalid ->
             {:error, :control_plane_release_contract_unavailable}
         end
     end
   end
+
+  defp release_applications,
+    do: apply(FavnControlPlane.Release, :applications, [])
+
+  defp release_dependency_roots,
+    do: apply(FavnControlPlane.Release, :dependency_roots, [])
 
   defp validate_project_dependency_roots(root_dir, applications, expected) do
     with :ok <- ensure_project_modules(root_dir) do
@@ -164,27 +169,46 @@ defmodule Favn.Dev.Build.ControlPlaneInputs do
 
   defp ensure_project_modules(root_dir) do
     Mix.start()
+    active_project = Mix.Project.get()
 
-    Enum.reduce_while(@project_files, :ok, fn {module, relative}, :ok ->
-      if Code.ensure_loaded?(module) do
-        {:cont, :ok}
-      else
-        path = Path.join(root_dir, relative)
+    try do
+      Enum.reduce_while(@project_files, :ok, fn {module, relative}, :ok ->
+        if Code.ensure_loaded?(module) do
+          {:cont, :ok}
+        else
+          path = Path.join(root_dir, relative)
 
-        try do
-          Code.require_file(path)
+          try do
+            Code.require_file(path)
 
-          if Code.ensure_loaded?(module) do
-            {:cont, :ok}
-          else
-            {:halt, {:error, {:control_plane_project_module_unavailable, relative}}}
+            if Code.ensure_loaded?(module) do
+              {:cont, :ok}
+            else
+              {:halt, {:error, {:control_plane_project_module_unavailable, relative}}}
+            end
+          rescue
+            _exception ->
+              {:halt, {:error, {:control_plane_project_module_unavailable, relative}}}
           end
-        rescue
-          _exception ->
-            {:halt, {:error, {:control_plane_project_module_unavailable, relative}}}
         end
-      end
-    end)
+      end)
+    after
+      restore_active_project(active_project)
+    end
+  end
+
+  defp restore_active_project(active_project) do
+    case Mix.Project.get() do
+      ^active_project ->
+        :ok
+
+      nil ->
+        :ok
+
+      _required_project ->
+        Mix.Project.pop()
+        restore_active_project(active_project)
+    end
   end
 
   defp production_dependency?(dependency) do

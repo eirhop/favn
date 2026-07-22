@@ -5,7 +5,7 @@ defmodule Favn.Dev.Secrets do
   alias Favn.Dev.DistributedErlang
   alias Favn.Dev.State
 
-  @schema_version 1
+  @schema_version 2
 
   @type root_opt :: [root_dir: Path.t()]
 
@@ -14,9 +14,9 @@ defmodule Favn.Dev.Secrets do
     with :ok <- State.ensure_layout(opts),
          {:ok, stored} <- read_or_initialize(opts),
          :ok <- validate(stored),
-         :ok <- persist_if_missing(stored, opts),
          secrets <- apply_configured_overrides(stored, config),
-         :ok <- validate(secrets) do
+         :ok <- validate(secrets),
+         :ok <- persist(secrets, opts) do
       {:ok, Map.drop(secrets, ["schema_version"])}
     end
   end
@@ -24,7 +24,10 @@ defmodule Favn.Dev.Secrets do
   defp read_or_initialize(opts) do
     case State.read_secrets(opts) do
       {:ok, %{"schema_version" => @schema_version} = secrets} ->
-        {:ok, Map.put_new_lazy(secrets, "runtime_input_pin_key", &runtime_input_pin_key/0)}
+        {:ok, complete_secrets(secrets)}
+
+      {:ok, %{"schema_version" => 1} = secrets} ->
+        {:ok, secrets |> Map.put("schema_version", @schema_version) |> complete_secrets()}
 
       {:ok, _invalid} ->
         {:error, :invalid_local_secrets}
@@ -43,8 +46,19 @@ defmodule Favn.Dev.Secrets do
       "service_token" => random_secret(24),
       "web_session_secret" => random_secret(48),
       "rpc_cookie" => random_cookie(32),
-      "runtime_input_pin_key" => runtime_input_pin_key()
+      "runtime_input_pin_key" => runtime_input_pin_key(),
+      "postgres_admin_password" => random_secret(32),
+      "postgres_runtime_password" => random_secret(32),
+      "bootstrap_password" => random_secret(32)
     }
+  end
+
+  defp complete_secrets(secrets) do
+    secrets
+    |> Map.put_new_lazy("runtime_input_pin_key", &runtime_input_pin_key/0)
+    |> Map.put_new_lazy("postgres_admin_password", fn -> random_secret(32) end)
+    |> Map.put_new_lazy("postgres_runtime_password", fn -> random_secret(32) end)
+    |> Map.put_new_lazy("bootstrap_password", fn -> random_secret(32) end)
   end
 
   defp apply_configured_overrides(secrets, config) do
@@ -62,6 +76,12 @@ defmodule Favn.Dev.Secrets do
            secrets["web_session_secret"],
          {:ok, pin_key} <- Base.decode64(secrets["runtime_input_pin_key"]),
          32 <- byte_size(pin_key),
+         admin when is_binary(admin) and byte_size(admin) >= 32 <-
+           secrets["postgres_admin_password"],
+         runtime when is_binary(runtime) and byte_size(runtime) >= 32 <-
+           secrets["postgres_runtime_password"],
+         bootstrap when is_binary(bootstrap) and byte_size(bootstrap) >= 15 <-
+           secrets["bootstrap_password"],
          :ok <- DistributedErlang.validate_cookie(secrets["rpc_cookie"]) do
       :ok
     else
@@ -69,7 +89,7 @@ defmodule Favn.Dev.Secrets do
     end
   end
 
-  defp persist_if_missing(secrets, opts) do
+  defp persist(secrets, opts) do
     case State.read_secrets(opts) do
       {:ok, ^secrets} -> :ok
       _other -> State.write_secrets(secrets, opts)

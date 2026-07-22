@@ -20,13 +20,18 @@ defmodule Favn.Dev.Publish do
          {:ok, service_token} <- required_env(env, "FAVN_ORCHESTRATOR_SERVICE_TOKEN"),
          {:ok, publication} <- Single.read_manifest_publication(manifest_path),
          {:ok, response} <-
-           client.publish_manifest(orchestrator_url, service_token, publication, nil),
-         {:ok, status} <- validate_registration(response, publication.version) do
+           client.publish_manifest(
+             orchestrator_url,
+             service_token,
+             publication,
+             maintenance_context(opts)
+           ),
+         {:ok, registration} <- validate_registration(response, publication.version) do
       {:ok,
        %{
-         manifest_version_id: publication.version.manifest_version_id,
+         manifest_version_id: registration.manifest_version_id,
          required_runner_release_id: publication.version.required_runner_release_id,
-         status: status
+         status: registration.status
        }}
     end
   end
@@ -44,15 +49,58 @@ defmodule Favn.Dev.Publish do
     required_runner_release_id =
       get_in(response, ["data", "manifest", "required_runner_release_id"])
 
-    if status in ["published", "already_published"] and
-         manifest_version_id == version.manifest_version_id and
-         canonical_manifest_version_id == version.manifest_version_id and
-         required_runner_release_id == version.required_runner_release_id do
-      {:ok, status}
+    if valid_registration?(
+         status,
+         manifest_version_id,
+         canonical_manifest_version_id,
+         required_runner_release_id,
+         version
+       ) do
+      {:ok, %{status: status, manifest_version_id: canonical_manifest_version_id}}
     else
-      {:error, :invalid_publication_response}
+      {:error,
+       {:invalid_publication_response,
+        %{
+          status: status,
+          manifest_version_id: manifest_version_id,
+          canonical_manifest_version_id: canonical_manifest_version_id,
+          required_runner_release_id: required_runner_release_id
+        }}}
     end
   end
+
+  defp valid_registration?(
+         "published",
+         manifest_version_id,
+         canonical_manifest_version_id,
+         required_runner_release_id,
+         version
+       ) do
+    manifest_version_id == version.manifest_version_id and
+      canonical_manifest_version_id == version.manifest_version_id and
+      required_runner_release_id == version.required_runner_release_id
+  end
+
+  defp valid_registration?(
+         "already_published",
+         manifest_version_id,
+         canonical_manifest_version_id,
+         required_runner_release_id,
+         version
+       ) do
+    manifest_version_id == version.manifest_version_id and
+      is_binary(canonical_manifest_version_id) and canonical_manifest_version_id != "" and
+      required_runner_release_id == version.required_runner_release_id
+  end
+
+  defp valid_registration?(
+         _status,
+         _manifest_version_id,
+         _canonical_manifest_version_id,
+         _required_runner_release_id,
+         _version
+       ),
+       do: false
 
   defp required(opts, key) do
     case Keyword.get(opts, key) do
@@ -65,6 +113,13 @@ defmodule Favn.Dev.Publish do
     case Map.get(env, name) do
       value when is_binary(value) and value != "" -> {:ok, value}
       _missing -> {:error, {:missing_required_env, name}}
+    end
+  end
+
+  defp maintenance_context(opts) do
+    case Keyword.get(opts, :maintenance_token) do
+      token when is_binary(token) and token != "" -> %{"maintenance_token" => token}
+      _missing -> nil
     end
   end
 end

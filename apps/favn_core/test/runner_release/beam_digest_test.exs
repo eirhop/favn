@@ -84,6 +84,18 @@ defmodule Favn.RunnerRelease.BeamDigestTest do
     unload(FavnHardCodedPathProbe)
   end
 
+  test "digest accepts SQL block-comment syntax that is not a filesystem path" do
+    beam =
+      compile_one(
+        "defmodule FavnSQLCommentLiteralProbe, do: def(value(), do: \"/*\")",
+        "/tmp/favn-release-a/lib/sql_comment_literal.ex"
+      )
+
+    assert {:ok, digest} = BeamDigest.digest(beam)
+    assert digest =~ ~r/\A[0-9a-f]{64}\z/
+    unload(FavnSQLCommentLiteralProbe)
+  end
+
   test "digest ignores strip-removable source paths in persisted attributes" do
     source = """
     defmodule FavnSourceAttributeProbe do

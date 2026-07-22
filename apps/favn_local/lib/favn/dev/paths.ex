@@ -104,7 +104,7 @@ defmodule Favn.Dev.Paths do
   def runtime_path(root_dir), do: Path.join(favn_dir(root_dir), "runtime.json")
 
   @spec lock_path(Path.t()) :: Path.t()
-  def lock_path(root_dir), do: Path.join(favn_dir(root_dir), "lock")
+  def lock_path(root_dir), do: Path.join(root_dir, ".favn.lock")
 
   @spec latest_manifest_path(Path.t()) :: Path.t()
   def latest_manifest_path(root_dir), do: Path.join(manifests_dir(root_dir), "latest.json")
@@ -119,13 +119,36 @@ defmodule Favn.Dev.Paths do
   def failures_dir(root_dir), do: Path.join(history_dir(root_dir), "failures")
 
   @spec install_path(Path.t()) :: Path.t()
-  def install_path(root_dir), do: Path.join(install_dir(root_dir), "install.json")
+  def install_path(root_dir), do: Path.join(install_dir(root_dir), "control-plane.json")
+
+  @spec compose_dir(Path.t()) :: Path.t()
+  def compose_dir(root_dir), do: Path.join(favn_dir(root_dir), "compose")
+
+  @spec compose_path(Path.t()) :: Path.t()
+  def compose_path(root_dir), do: Path.join(compose_dir(root_dir), "compose.yml")
+
+  @spec compose_env_path(Path.t()) :: Path.t()
+  def compose_env_path(root_dir), do: Path.join(compose_dir(root_dir), ".env")
+
+  @spec compose_runner_env_path(Path.t()) :: Path.t()
+  def compose_runner_env_path(root_dir), do: Path.join(compose_dir(root_dir), "runner.env")
+
+  @spec compose_postgres_init_path(Path.t()) :: Path.t()
+  def compose_postgres_init_path(root_dir),
+    do: Path.join(compose_dir(root_dir), "postgres-init.sh")
+
+  @spec runner_latest_path(Path.t()) :: Path.t()
+  def runner_latest_path(root_dir),
+    do: Path.join(dist_target_dir(root_dir, "runner"), "latest.json")
 
   @spec toolchain_path(Path.t()) :: Path.t()
   def toolchain_path(root_dir), do: Path.join(install_dir(root_dir), "toolchain.json")
 
   @spec secrets_path(Path.t()) :: Path.t()
   def secrets_path(root_dir), do: Path.join(favn_dir(root_dir), "secrets.json")
+
+  @spec maintenance_path(Path.t()) :: Path.t()
+  def maintenance_path(root_dir), do: Path.join(favn_dir(root_dir), "maintenance.json")
 
   @spec web_log_path(Path.t()) :: Path.t()
   def web_log_path(root_dir), do: Path.join(logs_dir(root_dir), "web.log")
@@ -138,4 +161,7 @@ defmodule Favn.Dev.Paths do
 
   @spec runner_log_path(Path.t()) :: Path.t()
   def runner_log_path(root_dir), do: Path.join(logs_dir(root_dir), "runner.log")
+
+  @spec compose_failure_log_path(Path.t()) :: Path.t()
+  def compose_failure_log_path(root_dir), do: Path.join(logs_dir(root_dir), "compose-failure.log")
 end

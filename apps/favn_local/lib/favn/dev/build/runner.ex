@@ -59,11 +59,13 @@ defmodule Favn.Dev.Build.Runner do
       dist_dir = Paths.dist_runner_dir(root_dir, release_id)
 
       with {:ok, runner_result} <- write_artifact(dist_dir, aligned_inputs, publication, opts),
-           {:ok, manifest_result} <- Manifest.write_release(root_dir, publication) do
-        {:ok,
-         runner_result
-         |> Map.put(:manifest_dir, manifest_result.dist_dir)
-         |> Map.put(:manifest_status, manifest_result.status)}
+           {:ok, manifest_result} <- Manifest.write_release(root_dir, publication),
+           result <-
+             runner_result
+             |> Map.put(:manifest_dir, manifest_result.dist_dir)
+             |> Map.put(:manifest_status, manifest_result.status),
+           :ok <- write_latest(result, publication, opts) do
+        {:ok, result}
       end
     end
   end
@@ -201,5 +203,19 @@ defmodule Favn.Dev.Build.Runner do
     """
 
     File.write(Path.join(directory, "operator-notes.md"), notes)
+  end
+
+  defp write_latest(result, publication, opts) do
+    State.write_runner_latest(
+      %{
+        "schema_version" => 1,
+        "runner_release_id" => result.runner_release_id,
+        "dist_dir" => result.dist_dir,
+        "descriptor_path" => result.descriptor_path,
+        "manifest_dir" => result.manifest_dir,
+        "manifest_version_id" => publication.version.manifest_version_id
+      },
+      opts
+    )
   end
 end

@@ -50,19 +50,15 @@ defmodule Favn.Dev do
   alias Favn.Dev.Build.Runner, as: RunnerBuild
   alias Favn.Dev.Build.Single, as: SingleBuild
   alias Favn.Dev.Build.Web, as: WebBuild
-  alias Favn.Dev.Diagnostics
+  alias Favn.Dev.ComposeLifecycle
   alias Favn.Dev.DataInspection
   alias Favn.Dev.Doctor
   alias Favn.Dev.Init
   alias Favn.Dev.Install
-  alias Favn.Dev.Logs
   alias Favn.Dev.Publish
-  alias Favn.Dev.Reload
   alias Favn.Dev.Reset
   alias Favn.Dev.Run
   alias Favn.Dev.Runs
-  alias Favn.Dev.Stack
-  alias Favn.Dev.Status
 
   @type status_opts :: [root_dir: Path.t()]
   @type lifecycle_opts :: [root_dir: Path.t()]
@@ -120,8 +116,8 @@ defmodule Favn.Dev do
   @doc """
   Prints local service logs.
   """
-  @spec logs(keyword()) :: :ok
-  def logs(opts \\ []) when is_list(opts), do: Logs.run(opts)
+  @spec logs(keyword()) :: :ok | {:error, term()}
+  def logs(opts \\ []) when is_list(opts), do: ComposeLifecycle.logs(opts)
 
   @doc """
   Builds the project-local runner packaging target.
@@ -169,19 +165,19 @@ defmodule Favn.Dev do
   Starts local stack in foreground mode.
   """
   @spec dev(lifecycle_opts()) :: :ok | {:error, term()}
-  def dev(opts \\ []) when is_list(opts), do: Stack.start_foreground(opts)
+  def dev(opts \\ []) when is_list(opts), do: ComposeLifecycle.start_foreground(opts)
 
   @doc """
   Stops local stack using project-local runtime metadata.
   """
   @spec stop(lifecycle_opts()) :: :ok | {:error, term()}
-  def stop(opts \\ []) when is_list(opts), do: Stack.stop(opts)
+  def stop(opts \\ []) when is_list(opts), do: ComposeLifecycle.stop(opts)
 
   @doc """
   Rebuilds and republishes the manifest to the running local orchestrator.
   """
   @spec reload(lifecycle_opts()) :: :ok | {:error, term()}
-  def reload(opts \\ []) when is_list(opts), do: Reload.run(opts)
+  def reload(opts \\ []) when is_list(opts), do: ComposeLifecycle.reload(opts)
 
   @doc """
   Submits an asset or pipeline run to the running local stack.
@@ -283,11 +279,11 @@ defmodule Favn.Dev do
   Fetches operator diagnostics from the running local stack.
   """
   @spec diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
-  def diagnostics(opts \\ []) when is_list(opts), do: Diagnostics.fetch(opts)
+  def diagnostics(opts \\ []) when is_list(opts), do: ComposeLifecycle.diagnostics(opts)
 
   @doc """
   Returns local stack status for the current project.
   """
   @spec status(status_opts()) :: map()
-  def status(opts \\ []) when is_list(opts), do: Status.inspect_stack(opts)
+  def status(opts \\ []) when is_list(opts), do: ComposeLifecycle.status(opts)
 end

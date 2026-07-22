@@ -17,10 +17,16 @@ defmodule Favn.Dev.HttpClient do
           | {:error, {:invalid_response, term()}}
           | {:error, {:response_too_large, pos_integer()}}
 
-  @spec request(:get | :post, String.t(), [{String.t(), String.t()}], iodata() | nil, keyword()) ::
+  @spec request(
+          :delete | :get | :post,
+          String.t(),
+          [{String.t(), String.t()}],
+          iodata() | nil,
+          keyword()
+        ) ::
           response()
   def request(method, url, headers \\ [], body \\ nil, opts \\ [])
-      when method in [:get, :post] and is_binary(url) and is_list(headers) do
+      when method in [:delete, :get, :post] and is_binary(url) and is_list(headers) do
     with {:ok, uri} <- validate_url(url),
          {:ok, limits} <- limits(opts),
          {:ok, response} <- perform(method, uri, headers, body, limits) do
@@ -109,6 +115,7 @@ defmodule Favn.Dev.HttpClient do
   end
 
   defp request_headers(:get, headers), do: headers
+  defp request_headers(:delete, headers), do: headers
 
   defp transport_options(:https, timeout) do
     [timeout: timeout, cacerts: :public_key.cacerts_get(), verify: :verify_peer]

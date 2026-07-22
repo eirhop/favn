@@ -20,6 +20,71 @@ defmodule Favn.Dev.OrchestratorClientTest do
              })
   end
 
+  test "runner replacement methods carry the opaque maintenance lease" do
+    parent = self()
+    runner_release_id = "rr_" <> String.duplicate("a", 64)
+
+    {:ok, base_url, _server} =
+      start_server_sequence(
+        [
+          {~s({"data":{"maintenance_token":"lease-token"}}), 200, 0},
+          {~s({"data":{"maintenance?":true,"maintenance_kind":"runner_replacement","active_admissions":0}}),
+           200, 0},
+          {JSON.encode!(%{data: %{runner_release_id: runner_release_id, ready?: true}}), 200, 0},
+          {~s({"data":{"status":"accepting"}}), 200, 0}
+        ],
+        parent: parent
+      )
+
+    assert {:ok, "lease-token"} =
+             OrchestratorClient.begin_runner_replacement(
+               base_url,
+               "service-token",
+               "lease-token"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/maintenance/runner-replacement"}
+    assert_receive {:request_headers, begin_headers}
+    assert begin_headers["authorization"] == "Bearer service-token"
+    assert begin_headers["x-favn-maintenance-token"] == "lease-token"
+    assert_receive {:request_body, "{}"}
+
+    assert {:ok, %{"active_admissions" => 0}} =
+             OrchestratorClient.runner_replacement_status(base_url, "service-token")
+
+    assert_receive {:request_path, "/api/orchestrator/v1/maintenance/runner-replacement"}
+    assert_receive {:request_headers, _status_headers}
+    assert_receive {:request_body, ""}
+
+    assert {:ok, %{"runner_release_id" => ^runner_release_id}} =
+             OrchestratorClient.verify_replacement_runner(
+               base_url,
+               "service-token",
+               "lease-token",
+               runner_release_id
+             )
+
+    assert_receive {:request_path,
+                    "/api/orchestrator/v1/maintenance/runner-replacement/verify-runner"}
+
+    assert_receive {:request_headers, verify_headers}
+    assert verify_headers["x-favn-maintenance-token"] == "lease-token"
+    assert_receive {:request_body, verify_body}
+    assert JSON.decode!(verify_body)["runner_release_id"] == runner_release_id
+
+    assert :ok =
+             OrchestratorClient.finish_runner_replacement(
+               base_url,
+               "service-token",
+               "lease-token"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/maintenance/runner-replacement"}
+    assert_receive {:request_headers, finish_headers}
+    assert finish_headers["x-favn-maintenance-token"] == "lease-token"
+    assert_receive {:request_body, ""}
+  end
+
   test "in_flight_runs/3 returns operation context on non-2xx response" do
     {:ok, base_url, _server} = start_server(~s({"error":{"code":"bad_request"}}), 400)
 

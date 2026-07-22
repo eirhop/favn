@@ -6,11 +6,10 @@ defmodule Mix.Tasks.Favn.Dev do
   @shortdoc "Starts local Favn dev stack"
 
   @moduledoc """
-  Starts local `favn_view + favn_orchestrator + favn_runner` in foreground mode.
-
-  The project's `.env` is loaded before the consumer project's
-  `config/runtime.exs` is evaluated. Local runtime configuration is then
-  collected for the runner.
+  Starts digest-pinned PostgreSQL, the installed prebuilt control plane, and
+  the customer-built runner as project-scoped Docker Compose services. The
+  stack uses the production release topology and streams container logs in the
+  foreground.
   """
 
   alias Favn.Dev
@@ -71,6 +70,9 @@ defmodule Mix.Tasks.Favn.Dev do
 
   defp error_message(:stack_already_running), do: "local stack already running"
 
+  defp error_message({:lock_failed, :timeout}),
+    do: "another Favn lifecycle command is active for this project; retry after it exits"
+
   defp error_message(:install_required), do: "install required; run mix favn.install"
 
   defp error_message(:install_stale),
@@ -89,6 +91,27 @@ defmodule Mix.Tasks.Favn.Dev do
 
   defp error_message({:tool_check_failed, tool, status, output}),
     do: "required tool #{tool} check failed (status=#{status}): #{output}; rerun mix favn.install"
+
+  defp error_message({:docker_engine_unavailable, _status, _output}),
+    do: "Docker Engine is not reachable; start the Linux-container daemon and retry"
+
+  defp error_message({:docker_compose_unavailable, _status, _output}),
+    do: "Docker Compose is unavailable; install the Compose v2 plugin or newer and retry"
+
+  defp error_message({:unsupported_docker_server, os, architecture}),
+    do: "unsupported Docker target #{os}/#{architecture}; Linux amd64 is required"
+
+  defp error_message({:unsupported_docker_host, os, architecture}),
+    do: "unsupported Docker host #{os}/#{architecture}; Linux amd64 or WSL2 amd64 is required"
+
+  defp error_message({:runner_release_build_failed, status, output}),
+    do: "customer runner release build failed (status=#{inspect(status)}): #{output}"
+
+  defp error_message({:runner_image_build_failed, status, output}),
+    do: "customer runner image build failed (status=#{inspect(status)}): #{output}"
+
+  defp error_message({:compose_command_failed, phase, status, output}),
+    do: "Docker Compose phase #{inspect(phase)} failed (status=#{inspect(status)}): #{output}"
 
   defp error_message({:port_conflict, service, port}),
     do: "port conflict: #{service} cannot bind port #{port}; free the port and retry"

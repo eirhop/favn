@@ -22,7 +22,9 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
   end
 
   test "collector includes only control-plane source and reachable production lock entries" do
+    active_project = Mix.Project.get()
     assert {:ok, collected} = ControlPlaneInputs.collect(@repo_root)
+    assert Mix.Project.get() == active_project
 
     paths = Enum.map(collected.descriptor.inputs, & &1.path)
     dependencies = collected.dependency_lock_apps
@@ -311,6 +313,27 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
                stderr_to_stdout: true
              )
 
+    for {release_command, expected} <- [
+          {"start", "-kernel inet_dist_listen_min 9101 inet_dist_listen_max 9101"},
+          {"eval", ""}
+        ] do
+      assert {erl_aflags, 0} =
+               System.cmd(
+                 "sh",
+                 ["-c", ~s(. "$1"; printf '%s' "${ERL_AFLAGS:-}"), "sh", release_env],
+                 env: [
+                   {"RELEASE_COMMAND", release_command},
+                   {"ERL_AFLAGS", ""},
+                   {"FAVN_CONTROL_PLANE_NODE", "control@control.internal"},
+                   {"FAVN_DISTRIBUTION_COOKIE", valid_cookie},
+                   {"FAVN_BEAM_DISTRIBUTION_PORT", "9101"}
+                 ],
+                 stderr_to_stdout: true
+               )
+
+      assert String.trim(erl_aflags) == expected
+    end
+
     for invalid_node <- ["control@localhost", "control@127.2.3.4", "control@@internal", "control"] do
       assert {output, 1} =
                System.cmd("sh", [release_env],
@@ -336,6 +359,16 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
              )
 
     assert output =~ "invalid FAVN_DISTRIBUTION_COOKIE"
+  end
+
+  test "control-plane health queries the running release node" do
+    health =
+      File.read!(
+        Path.join(@repo_root, "rel/control_plane/overlays/bin/favn_control_plane_health")
+      )
+
+    assert health =~ "favn_control_plane rpc 'FavnOrchestrator.ReleaseHealth.run!()'"
+    refute health =~ "favn_control_plane eval"
   end
 
   @tag :slow
@@ -383,7 +416,7 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
     test "$(cat /app/runtime-versions/ELIXIR_VERSION)" = 1.20.2
     test "$(cat /app/runtime-versions/OTP_VERSION)" = 28.3.3
     test ! -e /app/releases/COOKIE
-    ! find /app -type f \( -name COOKIE -o -name .erlang.cookie \) | grep -q .
+    ! find /app -type f '(' -name COOKIE -o -name .erlang.cookie ')' | grep -q .
     test -d /app/lib/favn_view-0.1.0
     test -d /app/lib/favn_orchestrator-0.5.0-dev
     test -d /app/lib/favn_storage_postgres-0.5.0-dev
@@ -392,7 +425,7 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
     ! find /app/lib -maxdepth 1 -type d -name 'favn_authoring-*' | grep -q .
     ! find /app -type f -name '*.ex' | grep -q .
     ! find /app -type f -name '*.exs' ! -path '/app/releases/*/runtime.exs' | grep -q .
-    ! find /app -type f \( -name '*.eex' -o -name '*.heex' \) | grep -q .
+    ! find /app -type f '(' -name '*.eex' -o -name '*.heex' ')' | grep -q .
     ! find /app -type f -name '*.map' | grep -q .
     ! grep -R -l '"sourcesContent"' /app | grep -q .
     ! find /app/lib -path '*/phoenix-*/priv/templates' -type d | grep -q .

@@ -22,6 +22,7 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
          :ok <- copy_customer_beams(release_input, inputs),
          :ok <- copy_descriptor(release_input, artifact_dir),
          :ok <- write_mix_project(release_input, inputs),
+         :ok <- write_mix_lock(release_input, inputs.dependency_lock),
          :ok <- write_dependency_lock(release_input, inputs),
          :ok <-
            write_runtime_config(
@@ -34,6 +35,26 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
          :ok <- write_dockerfile(artifact_dir, inputs.descriptor) do
       :ok
     end
+  end
+
+  defp write_mix_lock(release_input, dependency_lock) do
+    entries =
+      dependency_lock
+      |> Enum.sort_by(fn {app, _entry} -> app end)
+      |> Enum.map(fn {app, entry} ->
+        encoded =
+          inspect(entry,
+            pretty: false,
+            limit: :infinity,
+            printable_limit: :infinity,
+            width: :infinity,
+            charlists: :as_lists
+          )
+
+        ~s(  "#{app}": #{encoded},\n)
+      end)
+
+    File.write(Path.join(release_input, "mix.lock"), ["%{\n", entries, "}\n"])
   end
 
   defp write_dependency_lock(release_input, inputs) do
@@ -363,7 +384,12 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
         export RELEASE_DISTRIBUTION=name
         export RELEASE_NODE="$FAVN_RUNNER_NODE"
         export RELEASE_COOKIE="$FAVN_DISTRIBUTION_COOKIE"
-        export ERL_AFLAGS="${ERL_AFLAGS:-} -kernel inet_dist_listen_min $FAVN_BEAM_DISTRIBUTION_PORT inet_dist_listen_max $FAVN_BEAM_DISTRIBUTION_PORT"
+
+        case "${RELEASE_COMMAND:-}" in
+          start|start_iex|daemon|daemon_iex)
+            export ERL_AFLAGS="${ERL_AFLAGS:-} -kernel inet_dist_listen_min $FAVN_BEAM_DISTRIBUTION_PORT inet_dist_listen_max $FAVN_BEAM_DISTRIBUTION_PORT"
+            ;;
+        esac
         """
       )
     end

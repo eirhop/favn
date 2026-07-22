@@ -308,9 +308,15 @@ defmodule FavnOrchestrator.API.RunsRouter do
   defp actor_context(conn, role), do: Authentication.workspace_context(conn, role)
 
   defp in_flight_context(conn) do
-    case Authentication.workspace_context(conn, :viewer) do
-      {:ok, _session, _actor, context} -> {:ok, context}
-      {:error, _reason} = error -> error
+    case Authentication.service_workspace_context(conn) do
+      {:ok, _session, _actor, context} ->
+        {:ok, context}
+
+      {:error, _service_reason} ->
+        case Authentication.workspace_context(conn, :viewer) do
+          {:ok, _session, _actor, context} -> {:ok, context}
+          {:error, _reason} = error -> error
+        end
     end
   end
 

@@ -313,6 +313,43 @@ defmodule FavnView.WebReadinessTest do
              })
   end
 
+  test "local-development mode permits loopback HTTP and freezes non-secure local cookies" do
+    secure_options =
+      FavnView.Endpoint.session_options()
+      |> Keyword.put(:secure, true)
+      |> Keyword.put(:http_only, true)
+      |> Keyword.put(:same_site, "Lax")
+      |> Keyword.put(:encryption_salt, "test-encryption-salt")
+
+    Application.put_env(:favn_view, :session_cookie_options, secure_options)
+
+    env = %{
+      "FAVN_DEPLOYMENT_MODE" => "local-development",
+      "FAVN_VIEW_PUBLIC_ORIGIN" => "http://127.0.0.1:4173",
+      "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+      "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "127.0.0.1/32"
+    }
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+    assert config.deployment_mode == :local_development
+    assert config.force_ssl? == false
+    assert config.session_cookie_options[:secure] == false
+
+    assert :ok = ProductionRuntimeConfig.apply(config)
+    assert ProductionRuntimeConfig.force_ssl?() == false
+    assert ProductionRuntimeConfig.session_cookie_options()[:secure] == false
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN",
+                 "loopback http origin in local-development"}
+            }} =
+             env
+             |> Map.put("FAVN_VIEW_PUBLIC_ORIGIN", "http://0.0.0.0:4173")
+             |> ProductionRuntimeConfig.validate()
+  end
+
   test "production runtime config rejects public proxy networks and bounds HTTP settings" do
     base = %{
       "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
