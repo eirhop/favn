@@ -76,6 +76,9 @@ defmodule Favn.Dev.Paths do
   @spec compose_env_path(Path.t()) :: Path.t()
   def compose_env_path(root_dir), do: Path.join(compose_dir(root_dir), ".env")
 
+  @spec compose_selection_path(Path.t()) :: Path.t()
+  def compose_selection_path(root_dir), do: Path.join(compose_dir(root_dir), "selection.json")
+
   @spec compose_runner_env_path(Path.t()) :: Path.t()
   def compose_runner_env_path(root_dir), do: Path.join(compose_dir(root_dir), "runner.env")
 

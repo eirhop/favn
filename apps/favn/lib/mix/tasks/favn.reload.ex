@@ -6,14 +6,17 @@ defmodule Mix.Tasks.Favn.Reload do
   @moduledoc """
   Rebuilds the customer release contract and applies one Docker Compose change.
 
-  Manifest-only changes publish and activate without restarting containers.
-  Runner changes first persist the verified runner/manifest pair, acquire a
+  Manifest-only and exact-image-reuse changes publish and activate without
+  restarting containers. Runner environment changes recreate only the runner
+  with its existing image. Executable changes build a new immutable image using
+  cached dependency layers, then acquire a
   recoverable maintenance lease, drain admitted work, replace and verify only
   the runner, and then activate the aligned manifest. Rollback restores
   admission only after both the previous runner and active manifest are
   verified.
   The project's `.env` is loaded before the consumer `config/runtime.exs` is
-  evaluated for the production runner build.
+  evaluated for the production runner build. Reload always revalidates the
+  Compose file recorded by the successful start; it cannot switch deployments.
   """
 
   alias Favn.Dev

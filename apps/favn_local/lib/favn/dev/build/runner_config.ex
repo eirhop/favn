@@ -1,7 +1,10 @@
 defmodule Favn.Dev.Build.RunnerConfig do
   @moduledoc false
 
+  alias Favn.ModuleDiscovery
+
   @config_keys [
+    :discovery,
     :connection_modules,
     :connections,
     :execution_pools,
@@ -25,7 +28,8 @@ defmodule Favn.Dev.Build.RunnerConfig do
         end
       end)
 
-    with {:ok, config} <- validate(config, root_dir) do
+    with {:ok, config} <- resolve_discovered_connections(config),
+         {:ok, config} <- validate(config, root_dir) do
       {:ok, %{favn: config, compile_env: []}}
     end
   end
@@ -113,6 +117,31 @@ defmodule Favn.Dev.Build.RunnerConfig do
     end
   rescue
     _error -> {:error, :unsupported_runner_config_term}
+  end
+
+  defp resolve_discovered_connections(config) do
+    discovery = Keyword.get(config, :discovery, [])
+
+    if discover_connections?(config, discovery) do
+      case ModuleDiscovery.discover(:connections, discovery) do
+        {:ok, modules} when modules != [] ->
+          {:ok, Keyword.put(config, :connection_modules, modules)}
+
+        {:ok, []} ->
+          {:error, {:runner_connection_discovery_empty, Keyword.get(discovery, :apps, [])}}
+
+        {:error, reason} ->
+          {:error, {:runner_connection_discovery_failed, reason}}
+      end
+    else
+      {:ok, config}
+    end
+  end
+
+  defp discover_connections?(config, discovery) do
+    Keyword.get(config, :connection_modules) == :all or
+      (not Keyword.has_key?(config, :connection_modules) and
+         Keyword.get(discovery, :connections) == :all)
   end
 
   defp unsafe_config(%Favn.RuntimeConfig.Ref{}, _path, _root_dir), do: nil

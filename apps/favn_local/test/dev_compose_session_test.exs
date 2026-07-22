@@ -1,7 +1,7 @@
 defmodule Favn.Dev.ComposeSessionTest do
   use ExUnit.Case, async: true
 
-  alias Favn.Dev.{ComposeProject, ComposeSession, State}
+  alias Favn.Dev.{ComposeSession, State}
   alias Favn.Local.ComposeSessionFixture
 
   setup do
@@ -43,31 +43,17 @@ defmodule Favn.Dev.ComposeSessionTest do
              ComposeSession.resolve(root_dir: context.root_dir)
   end
 
-  test "rejects install state for a different Compose project", context do
-    project_name = ComposeProject.project_name(context.root_dir)
-
-    assert :ok =
-             State.write_runtime(
-               %{
-                 "schema_version" => 5,
-                 "kind" => "docker_compose",
-                 "compose_project" => project_name
-               },
-               root_dir: context.root_dir
-             )
+  test "session resolution is independent of image-only install state", context do
+    url = "http://127.0.0.1:4101"
+    assert :ok = ComposeSessionFixture.put!(context.root_dir, url)
 
     assert :ok =
              State.write_install(
-               %{
-                 "compose" => %{
-                   "project_name" => "another-project",
-                   "orchestrator_url" => "http://127.0.0.1:4101",
-                   "workspace_id" => "local-dev"
-                 }
-               },
+               %{"schema_version" => 5, "image_reference" => "unrelated-image"},
                root_dir: context.root_dir
              )
 
-    assert {:error, :install_stale} = ComposeSession.resolve(root_dir: context.root_dir)
+    assert {:ok, ^url, %{service_token: "local-compose-session-test-token"}, _context} =
+             ComposeSession.resolve(root_dir: context.root_dir)
   end
 end

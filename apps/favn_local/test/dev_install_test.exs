@@ -2,6 +2,7 @@ defmodule Favn.Dev.InstallTest do
   use ExUnit.Case, async: true
 
   alias Favn.Dev.{Install, Lock, State}
+  alias Favn.Dev.Maintainer.Candidate
 
   @version "0.5.0-dev"
   @build_id String.duplicate("a", 64)
@@ -23,7 +24,7 @@ defmodule Favn.Dev.InstallTest do
   end
 
   @tag :acceptance
-  test "install resolves an official tag to a verified digest and writes Compose state", %{
+  test "install resolves an official tag to image-only state without probing Compose", %{
     root_dir: root_dir
   } do
     runner = docker_runner(self())
@@ -41,56 +42,15 @@ defmodule Favn.Dev.InstallTest do
     assert_received {:docker, ["image", "inspect", @immutable_reference]}
 
     assert {:ok, install} = State.read_install(root_dir: root_dir)
-    assert install["schema_version"] == 4
+    assert install["schema_version"] == 5
     assert install["source"] == "official"
     assert install["favn_version"] == @version
     assert install["image_reference"] == @immutable_reference
     assert install["image_id"] == @image_id
     assert install["control_plane_build_id"] == @build_id
-
-    project = install["compose"]
-    assert project["project_name"] =~ ~r/\Afavn-[a-z0-9-]+-[0-9a-f]{12}\z/
-    assert project["network_name"] == project["project_name"] <> "-network"
-    assert project["postgres_volume_name"] == project["project_name"] <> "-postgres-data"
-
-    compose = File.read!(project["compose_path"])
-    assert compose =~ "image: ${FAVN_CONTROL_PLANE_IMAGE}"
-    assert compose =~ "image: #{Favn.Dev.ComposeProject.postgres_image()}"
-    assert compose =~ ~s("127.0.0.1:${FAVN_VIEW_PORT}:4000")
-    assert compose =~ ~s("127.0.0.1:${FAVN_ORCHESTRATOR_PORT}:4101")
-    assert compose =~ "aliases: [runner.favn.internal]"
-    assert compose =~ "aliases: [control-plane.favn.internal]"
-    assert compose =~ "FavnView.Readiness.liveness()"
-    assert compose =~ "- ./runner.env"
-    assert compose =~ "read_only: true"
-    assert compose =~ "cap_drop: [ALL]"
-    assert compose =~ "security_opt: [no-new-privileges:true]"
-
-    assert compose =~
-             "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: ${FAVN_RUNTIME_INPUT_PIN_KEY_VERSION}"
-
-    assert compose =~ "FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS: ${FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS}"
-
-    refute compose =~ "5432:5432"
-    refute compose =~ "4369:4369"
-    refute compose =~ "9100:9100"
-    refute compose =~ root_dir
+    refute Map.has_key?(install, "compose")
     refute File.exists?(Path.join(root_dir, ".favn/install/runtime_root"))
-
-    env_path = project["env_path"]
-    assert Bitwise.band(File.stat!(env_path).mode, 0o777) == 0o600
-    assert Bitwise.band(File.stat!(project["postgres_init_path"]).mode, 0o777) == 0o555
-
-    env = File.read!(env_path)
-    assert env =~ "FAVN_CONTROL_PLANE_IMAGE='#{@immutable_reference}'"
-    assert env =~ "FAVN_RUNNER_IMAGE='favn-local-runner-#{project["project_name"]}:unbuilt'"
-    assert env =~ "FAVN_POSTGRES_RUNTIME_DATABASE_URL='ecto://favn_runtime:"
-    assert env =~ "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION='1'"
-    assert env =~ "FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS='120000'"
-    assert env =~ "FAVN_WORKSPACE_NAME='Local Development'"
-    assert env =~ "local-tooling-v1|platform_reader+platform_operator+platform_admin:"
-    refute env =~ "replace-with"
-    assert File.read!(project["runner_env_path"]) == ""
+    refute_received {:docker, ["compose" | _args]}
   end
 
   test "a matching installation uses the exact local digest without pulling again", %{
@@ -105,6 +65,7 @@ defmodule Favn.Dev.InstallTest do
     assert {:ok, :already_installed} = Install.run(opts)
     refute_received {:docker, ["pull", @tag_reference]}
     assert :ok = Install.ensure_ready(opts)
+    refute_received {:docker, ["compose" | _args]}
 
     assert {:ok, :installed} = Install.run(Keyword.put(opts, :force, true))
     assert_received {:docker, ["pull", @tag_reference]}
@@ -173,7 +134,7 @@ defmodule Favn.Dev.InstallTest do
              Install.run(install_opts(root_dir, missing_runner))
   end
 
-  test "incompatible labels fail closed before Compose state becomes ready", %{root_dir: root_dir} do
+  test "incompatible labels fail closed before install state becomes ready", %{root_dir: root_dir} do
     runner =
       docker_runner(self(),
         inspection: image_inspection(%{"io.favn.runner-contract-version" => "999"})
@@ -203,6 +164,33 @@ defmodule Favn.Dev.InstallTest do
     assert install["source"] == "candidate"
     assert install["image_reference"] == @image_id
     refute_received {:docker, ["pull", _reference]}
+  end
+
+  test "maintainer selection is local-only and normal install switches back to official", %{
+    root_dir: root_dir
+  } do
+    runner = docker_runner(self())
+    candidate = maintainer_candidate(root_dir)
+
+    assert :ok =
+             Install.select_maintainer(
+               candidate,
+               install_opts(root_dir, runner) ++ [allow_maintainer_install: true]
+             )
+
+    assert {:ok, maintainer} = State.read_install(root_dir: root_dir)
+    assert maintainer["source"] == "maintainer"
+    assert maintainer["image_reference"] == @image_id
+    assert maintainer["checkout_revision"] == String.duplicate("d", 40)
+
+    assert :ok =
+             Install.ensure_ready(
+               install_opts(root_dir, runner) ++ [allow_maintainer_install: true]
+             )
+
+    assert {:ok, :installed} = Install.run(install_opts(root_dir, runner))
+    assert_received {:docker, ["pull", @tag_reference]}
+    assert {:ok, %{"source" => "official"}} = State.read_install(root_dir: root_dir)
   end
 
   test "project identity is deterministic and rooted in the canonical path", %{root_dir: root_dir} do
@@ -255,6 +243,20 @@ defmodule Favn.Dev.InstallTest do
       docker_executable: "docker",
       docker_command_runner: runner
     ]
+  end
+
+  defp maintainer_candidate(root_dir) do
+    %Candidate{
+      control_plane_build_id: @build_id,
+      image_tag: "favn-control-plane-candidate:#{@build_id}",
+      image_id: @image_id,
+      candidate_path: Path.join(root_dir, "candidate.json"),
+      image_source_revision: String.duplicate("d", 40),
+      image_source_dirty: false,
+      checkout: Path.join(root_dir, "favn"),
+      checkout_revision: String.duplicate("d", 40),
+      checkout_dirty: false
+    }
   end
 
   defp docker_runner(test_pid, overrides \\ []) do

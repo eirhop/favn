@@ -94,16 +94,32 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   keyed by the deterministic runner release ID; Favn does not push it.
 - Repository maintainers use `build.control_plane` for the deterministic,
   integrity-checked official image context and optional unpublished local
-  candidate. Protected CI publishes only changed control-plane inputs to GHCR,
-  records immutable digest aliases, scans the image, and attaches provenance and
-  SPDX SBOM attestations.
+  candidate. Consumer projects can use `FAVN_CHECKOUT` with
+  `mix favn.maintainer.dev` to exercise one coherent local framework checkout by
+  exact local image ID. Pull-request CI qualifies unpublished candidates; an
+  explicit workflow dispatch publishes only the exact current green `main`
+  revision to GHCR, records immutable digest aliases, scans the image, and
+  attaches provenance and SPDX SBOM attestations. Ordinary merges publish no
+  image.
 - `build.manifest` allows manifest-only deployment only after exact runner
   fingerprint alignment. `publish` stages content-addressed artifacts and
   `activate` selects one exact version for one workspace using a service token
   read only from the environment.
 - `mix favn.install` resolves the version-matched prebuilt control plane to an
-  immutable digest. `mix favn.dev` runs PostgreSQL, that control plane, and the
-  customer-built runner as project-scoped Docker Compose services.
+  immutable digest and keeps install state independent of deployment topology.
+  `mix favn.init --target compose` scaffolds non-overwriting local and
+  single-host consumer templates. `mix favn.dev` applies explicit
+  command/config/default Compose selection, validates versioned role labels and
+  immutable images, and runs PostgreSQL, the control plane, and the
+  customer-built runner without owning extra consumer services or resources.
+- Customer runner contexts separate stable dependency inputs from mutable
+  application/release inputs. BuildKit can reuse dependency compilation after
+  ordinary customer-code edits while every executable change still produces a
+  new immutable runner image; no live container receives copied source or BEAMs.
+- Local sample DuckDB paths are runtime references with host defaults below
+  `.favn/data` and container paths below `/var/lib/favn/data`. Stop and reset
+  preserve the consumer Compose file, containers, networks, volumes, services,
+  and data.
 
 ## Operator web UI
 

@@ -25,9 +25,10 @@ defmodule Favn.Dev do
 
   - `install/1`: prepare local tooling inputs and snapshots
   - `inspect_relation/2`, `inspect_partitions/2`, `query/2`: inspect local SQL data
-  - `init/1`: generate a local DuckDB sample project scaffold
+  - `init/1`: generate an explicit DuckDB sample or consumer-owned Compose template
   - `doctor/1`: validate local project setup before running
   - `dev/1`: start the production-like local Docker Compose topology
+  - `maintainer_dev/1`: build or reuse a non-production control plane from `FAVN_CHECKOUT`
   - `status/1`: inspect current stack state
   - `diagnostics/1`: fetch service-authenticated operator diagnostics
   - `reload/1`: rebuild and republish the manifest
@@ -49,6 +50,7 @@ defmodule Favn.Dev do
   alias Favn.Dev.Doctor
   alias Favn.Dev.Init
   alias Favn.Dev.Install
+  alias Favn.Dev.Maintainer
   alias Favn.Dev.Publish
   alias Favn.Dev.Reset
   alias Favn.Dev.Run
@@ -58,7 +60,11 @@ defmodule Favn.Dev do
   @type lifecycle_opts :: [root_dir: Path.t()]
 
   @doc """
-  Bootstraps local Favn files in the current Mix project.
+  Scaffolds local Favn files in the current Mix project.
+
+  Pass `duckdb: true, sample: true` for the authoring sample, or
+  `target: :compose` with an optional `profile: :local | :single_host` and
+  project-relative `output:` path for a consumer-owned deployment template.
   """
   @spec init(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
   def init(opts \\ []) when is_list(opts), do: Init.run(opts)
@@ -101,8 +107,9 @@ defmodule Favn.Dev do
   def ensure_install_ready(opts \\ []) when is_list(opts), do: Install.ensure_ready(opts)
 
   @doc """
-  Deletes all project-local `.favn/` artifacts after ensuring no owned services
-  are still running.
+  Removes generated local state and verified runner image tags after ensuring
+  known Favn roles are stopped. Consumer Compose resources and `.favn/data`
+  remain untouched.
   """
   @spec reset(lifecycle_opts()) :: :ok | {:error, term()}
   def reset(opts \\ []) when is_list(opts), do: Reset.run(opts)
@@ -138,13 +145,24 @@ defmodule Favn.Dev do
   def dev(opts \\ []) when is_list(opts), do: ComposeLifecycle.start_foreground(opts)
 
   @doc """
+  Builds or reuses a non-production control plane from `FAVN_CHECKOUT`, then
+  starts or reloads the local stack with that exact image.
+
+  The consuming project must load all Favn path dependencies from the same
+  checkout. Official installation remains owned by `install/1`.
+  """
+  @spec maintainer_dev(lifecycle_opts()) :: :ok | {:error, term()}
+  def maintainer_dev(opts \\ []) when is_list(opts), do: Maintainer.run(opts)
+
+  @doc """
   Stops local stack using project-local runtime metadata.
   """
   @spec stop(lifecycle_opts()) :: :ok | {:error, term()}
   def stop(opts \\ []) when is_list(opts), do: ComposeLifecycle.stop(opts)
 
   @doc """
-  Rebuilds and republishes the manifest to the running local orchestrator.
+  Applies a manifest-only, runner-environment, or immutable runner change to
+  the recorded local deployment.
   """
   @spec reload(lifecycle_opts()) :: :ok | {:error, term()}
   def reload(opts \\ []) when is_list(opts), do: ComposeLifecycle.reload(opts)

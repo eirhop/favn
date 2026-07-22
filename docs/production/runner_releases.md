@@ -46,10 +46,9 @@ pinned runner image builder. Favn rejects another host compiler before it
 compiles or fingerprints customer modules, so a descriptor can never claim a
 different toolchain from the image that will execute it.
 
-From the customer project:
+From the customer project (installation is not required to build artifacts):
 
 ```bash
-mix favn.install
 mix favn.build.runner
 ```
 
@@ -64,6 +63,15 @@ The runner directory contains `runner-release.json`, an integrity-checked OCI
 context, a digest-pinned Dockerfile, and `operator-notes.md`. The context vendors
 the exact dependency closure and builds without the original Favn checkout or
 private Git credentials.
+
+The context separates `dependency-input/` from `application-input/`. Its
+Dockerfile builds pinned toolchain and dependency stages before copying customer
+application source, selected extra BEAMs, the descriptor, runtime overlay, and
+release files. An ordinary customer-code edit therefore creates a new immutable
+runner release while allowing Docker to reuse the dependency stage. Dependency,
+plugin, adapter, lock, compile-time configuration, Favn runtime, or toolchain
+changes invalidate that stage. No deployment command copies code into a running
+container.
 
 Build and push it with customer-owned tooling, using immutable tags only as
 lookup aliases:

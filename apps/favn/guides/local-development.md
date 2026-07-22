@@ -16,6 +16,7 @@ to build the customer runner image.
 
 ```bash
 mix favn.init --duckdb --sample
+mix favn.init --target compose
 mix favn.install
 mix favn.doctor
 mix favn.dev
@@ -37,9 +38,11 @@ mix favn.stop
 | Command | Use it for | Common options |
 | --- | --- | --- |
 | `mix favn.init --duckdb --sample` | Generate local Favn files and a sample DuckDB pipeline. | `--duckdb`, `--sample` |
+| `mix favn.init --target compose` | Create a consumer-owned local or single-host Compose starting template. | `--profile local\|single-host`, `--output PATH` |
 | `mix favn.doctor` | Check local configuration before running. | `--skip-compile` |
-| `mix favn.install` | Pull and verify the version-matched control-plane image and generate the local Compose contract. | `--force`, `--root-dir PATH` |
-| `mix favn.dev` | Start PostgreSQL, the prebuilt control plane, and the customer runner with Docker Compose. | `--scheduler`, `--root-dir PATH` |
+| `mix favn.install` | Pull and verify the version-matched control-plane image. | `--force`, `--root-dir PATH` |
+| `mix favn.dev` | Validate the selected Compose file, then start PostgreSQL, the prebuilt control plane, and the customer runner. | `--compose-file PATH`, `--scheduler`, `--root-dir PATH` |
+| `mix favn.maintainer.dev` | Build or reuse an unpublished control plane from `FAVN_CHECKOUT`, then start or reload the local stack. | `--compose-file PATH`, `--scheduler`, `--root-dir PATH` |
 
 `mix favn.dev` stays in the foreground. It prints service logs and URLs. Stop it
 with `mix favn.stop` from another terminal or by ending the foreground process.
@@ -48,12 +51,82 @@ customer runner image, then runs release-safe database operations and starts the
 same two-BEAM topology used in production. Use `mix favn.install --force` to
 repull and revalidate the version-matched control-plane tag.
 
+The Compose selection order is `mix favn.dev --compose-file PATH`, then
+`config :favn, :local, compose_file: PATH`, then
+`deploy/compose.local.yml`. A successful start records the canonical path for
+reload, stop, status, logs, and diagnostics. Extra unlabeled services and normal
+Compose settings are allowed; the versioned Favn role labels must remain unique
+and complete.
+
 Before startup, `mix favn.dev` loads the project `.env` and starts a fresh Mix
 process that evaluates `config/runtime.exs`. This means runtime config can branch
 on env-file values. Existing shell values take precedence. `mix favn.reload`,
 `mix favn.inspect`, and `mix favn.query` repeat the same bootstrap, so changes to
 `.env` or `config/runtime.exs` are picked up together. The inspection commands
 start only `:favn_sql_runtime`, not the consumer application or its plugins.
+
+## Testing A Local Favn Checkout
+
+This is an explicit, non-production workflow for a Favn maintainer testing a
+framework change in a real consumer project. Keep an approved release checkout
+as the normal default and let `FAVN_CHECKOUT` replace it only when needed:
+
+```elixir
+defp favn_root do
+  System.get_env("FAVN_CHECKOUT", "../favn-release")
+  |> Path.expand(__DIR__)
+end
+
+defp deps do
+  [
+    {:favn, path: Path.join(favn_root(), "apps/favn")},
+    {:favn_duckdb, path: Path.join(favn_root(), "apps/favn_duckdb")}
+  ]
+end
+```
+
+The default checkout should be clean and detached at the approved release tag
+or commit. `FAVN_CHECKOUT` changes the dependency specification returned by
+`mix.exs`; it does not modify that file. Because Mix resolves dependencies
+before Favn can load the project's `.env`, put the override in the shell or use
+direnv. For example, add `.env.local` to the consumer project's `.gitignore` and
+store the uncommitted override there:
+
+```bash
+FAVN_CHECKOUT=/home/me/code/favn
+```
+
+Then load it from a committed `.envrc`:
+
+```bash
+dotenv_if_exists .env.local
+```
+
+After `direnv allow`, run:
+
+```bash
+mix deps.get
+mix favn.maintainer.dev
+```
+
+The command verifies that all loaded Favn path dependencies come from the same
+checkout. It builds or reuses that checkout's local control-plane image, pins
+Compose to the exact Docker image ID, builds or reuses the consumer runner, and
+starts the normal local stack. Nothing is pushed to GHCR and local candidates do
+not receive the official scan or attestation evidence.
+
+The first control-plane or runner build does the full work. Later builds use
+BuildKit's cached dependency layers. A manifest-only DSL change publishes only
+the manifest; a compiler, runner, plugin, or executable consumer-code change
+rebuilds and replaces the runner; a View, Orchestrator, Storage, or Core change
+requires the locally built control plane. If that exact control plane is already
+running, the command performs the ordinary reload path. If another control
+plane image is running, stop the foreground `mix favn.dev` process and rerun the
+maintainer command so image ownership cannot race.
+
+Run `mix favn.install` to switch the project back to its version-matched official
+control-plane image. Remove `FAVN_CHECKOUT` or leave the directory to switch Mix
+dependencies back to the approved release checkout.
 
 ## Runtime Commands
 
@@ -175,10 +248,16 @@ mix favn.reset
 | `mix favn.stop` | Stop the local stack. |
 | `mix favn.reset` | Print the project-scoped deletion plan and refuse to mutate without `--yes`. |
 
-`mix favn.stop` preserves PostgreSQL state and images. `mix favn.reset --yes`
-removes only the current project's Compose containers, network, PostgreSQL
-volume, generated runner images, and `.favn/` state; it does not remove the
-official control-plane image.
+`mix favn.stop` stops only the recorded Favn roles and preserves containers,
+PostgreSQL state, consumer services, networks, volumes, and images. If a crash
+occurred before runtime state was recorded, it discovers only contract-labeled
+Favn containers in the derived Compose project and stops those roles.
+`mix favn.reset --yes` removes generated `.favn/` state except `.favn/data` and
+verified local runner image tags after proving the known Favn roles are stopped.
+It fails closed when partial-start roles cannot be inspected and preserves a
+selected Compose template even when it is below `.favn/`. It does not run
+`docker compose down` or delete the consumer Compose file, containers, networks,
+volumes, services, data, or official control-plane image.
 
 ## Backfills
 
@@ -219,9 +298,13 @@ These are deployment/operator commands, not needed for the first local run:
 environment; service tokens are deliberately rejected as command-line flags.
 
 Runner outputs live at `.favn/dist/runner/<runner_release_id>/`, not under a
-timestamp. The generated Dockerfile is pinned by digest, runs the release as a
-non-root user, and documents `/tmp/favn` as its only writable path. Build and
-push that image with your own OCI tooling and registry credentials.
+timestamp. The digest-pinned generated Dockerfile compiles stable dependency
+inputs before mutable customer application inputs, so BuildKit can reuse the
+dependency stage after an ordinary customer-code edit. Every executable change
+still produces a new immutable release and image; Favn never copies code into a
+running container. The image runs non-root, uses `/tmp/favn` without a mount,
+and provides owned `/var/lib/favn/data` as an orchestrator-selected mount point.
+Build and push it with your own OCI tooling and registry credentials.
 
 Both build commands automatically execute in `MIX_ENV=prod`. Before building,
 check out the pinned Favn dependency at a detached tag or commit and keep that

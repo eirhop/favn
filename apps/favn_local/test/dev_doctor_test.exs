@@ -2,6 +2,7 @@ defmodule Favn.Dev.DoctorTest do
   use ExUnit.Case, async: false
 
   alias Favn.Dev.{Doctor, Install}
+  alias Favn.Dev.Init.Compose, as: ComposeInit
 
   @control_build_id String.duplicate("d", 64)
   @control_image_id "sha256:" <> String.duplicate("e", 64)
@@ -13,6 +14,7 @@ defmodule Favn.Dev.DoctorTest do
     File.mkdir_p!(Path.join(root_dir, "config"))
     File.write!(Path.join(root_dir, "mix.exs"), "defmodule DoctorSample.MixProject do end\n")
     File.write!(Path.join(root_dir, "config/config.exs"), "import Config\n")
+    assert {:ok, _scaffold} = ComposeInit.run(root_dir: root_dir)
 
     keys = [
       :asset_modules,

@@ -38,7 +38,7 @@ defmodule Favn.Dev.Build.RunnerInputs do
     current_app = Keyword.get(opts, :current_app, Mix.Project.config()[:app])
     toolchain = RunnerReleaseInput.expected_toolchain()
 
-    with :ok <- RunnerReleaseInput.validate_host_toolchain(),
+    with :ok <- RunnerReleaseInput.validate_host_toolchain(opts),
          {:ok, authoring_roots} <- FavnAuthoring.runtime_roots(build),
          {:ok, packaged_config} <- RunnerConfig.collect(opts),
          {:ok, runner_build} <- runner_build_config(opts),

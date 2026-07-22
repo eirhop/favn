@@ -32,7 +32,10 @@ defmodule Favn.AI do
   Do not add internal runtime/control-plane apps such as `:favn_storage_postgres`,
   `:favn_orchestrator`, `:favn_runner`, `:favn_local`, `:favn_core`, or
   `:favn_sql_runtime` as ordinary consumer dependencies. Local control-plane
-  storage uses PostgreSQL through Favn's runtime tooling.
+  storage uses PostgreSQL through Favn's runtime tooling. Maintainers testing a
+  local framework checkout in a consumer project should follow the
+  `FAVN_CHECKOUT` and `mix favn.maintainer.dev` flow in the Local Development
+  Commands guide instead of adding those internal applications directly.
 
   ## What To Read
 
@@ -221,8 +224,12 @@ defmodule Favn.AI do
   - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
     Docker Engine and Compose v2 are mandatory. The supported topology is
     PostgreSQL, the digest-pinned prebuilt control plane, and one customer-built
-    runner on a project-scoped private Compose network; install never builds the
-    control plane. Linux amd64 and amd64 WSL2 with Linux containers are the only
+    runner on a project-scoped private Compose network. `mix favn.init --target
+    compose` scaffolds the consumer-owned file; `mix favn.install` owns only the
+    immutable control-plane image. `mix favn.dev --compose-file` overrides
+    `config :favn, :local`, which overrides `deploy/compose.local.yml`. Favn
+    validates versioned role labels but preserves extra consumer services and
+    resources. Linux amd64 and amd64 WSL2 with Linux containers are the only
     supported v1 hosts.
     The public local command surface is `mix favn.install`, `mix favn.init`,
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
@@ -231,7 +238,10 @@ defmodule Favn.AI do
     `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
     `mix favn.build.manifest`, `mix favn.publish`, `mix favn.activate`, and
     `mix favn.read_doc`. Dev and reload load the project `.env` before evaluating
-    `config/runtime.exs`; existing shell values take precedence.
+    `config/runtime.exs`; existing shell values take precedence. Runner builds
+    remain immutable but split stable dependency input from mutable application
+    input so BuildKit can reuse dependency compilation; never copy code into a
+    running container.
     `mix favn.run` resolves asset and pipeline targets from the active manifest.
     Direct asset repair can combine `--dependencies all|none` with
     `--refresh auto|missing|force_selected|force_selected_upstream|force_all`;

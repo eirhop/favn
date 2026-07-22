@@ -7,6 +7,11 @@ defmodule Favn.Dev.EnvBootstrapTest do
   @token_env "FAVN_INTERNAL_ENV_BOOTSTRAP"
   @loaded_key "FAVN_ENV_BOOTSTRAP_TEST_LOADED"
   @shell_key "FAVN_ENV_BOOTSTRAP_TEST_SHELL"
+  @sample_keys [
+    "FAVN_LOCAL_SAMPLE_DATABASE_PATH",
+    "FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH",
+    "FAVN_LOCAL_SAMPLE_MART_CATALOG_PATH"
+  ]
 
   setup do
     root_dir =
@@ -18,13 +23,17 @@ defmodule Favn.Dev.EnvBootstrapTest do
     File.mkdir_p!(root_dir)
 
     previous_env =
-      Map.new([@token_env, @loaded_key, @shell_key, "FAVN_ENV_FILE", "MIX_ENV"], fn key ->
-        {key, System.get_env(key)}
-      end)
+      Map.new(
+        [@token_env, @loaded_key, @shell_key, "FAVN_ENV_FILE", "MIX_ENV"] ++ @sample_keys,
+        fn key ->
+          {key, System.get_env(key)}
+        end
+      )
 
     System.delete_env(@token_env)
     System.delete_env(@loaded_key)
     System.delete_env("FAVN_ENV_FILE")
+    Enum.each(@sample_keys, &System.delete_env/1)
     System.put_env(@shell_key, "shell-value")
 
     on_exit(fn ->
@@ -41,6 +50,9 @@ defmodule Favn.Dev.EnvBootstrapTest do
 
   test "exec loads .env once and runs the guarded configured task", %{root_dir: root_dir} do
     env_path = Path.join(root_dir, ".env")
+    database_path = Path.join(root_dir, "shell/local.duckdb")
+    raw_catalog_path = Path.join(root_dir, "configured/raw.duckdb")
+    System.put_env("FAVN_LOCAL_SAMPLE_DATABASE_PATH", database_path)
 
     File.write!(
       env_path,
@@ -50,6 +62,8 @@ defmodule Favn.Dev.EnvBootstrapTest do
       FAVN_ENV_FILE=ignored.env
       FAVN_INTERNAL_ENV_BOOTSTRAP=forged
       MIX_ENV=prod
+      FAVN_LOCAL_SAMPLE_DATABASE_PATH=ignored-file-value
+      FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH=#{raw_catalog_path}
       """
     )
 
@@ -69,7 +83,7 @@ defmodule Favn.Dev.EnvBootstrapTest do
 
       assert {:ok, binary} = Base.url_decode64(token, padding: false)
       payload = :erlang.binary_to_term(binary, [:safe])
-      assert payload["loaded_keys"] == Enum.sort([@loaded_key, @shell_key])
+      assert payload["loaded_keys"] == Enum.sort([@loaded_key, @shell_key] ++ @sample_keys)
       refute Map.has_key?(payload, "values")
 
       File.write!(env_path, "#{@loaded_key}=changed-after-bootstrap\n")
@@ -98,8 +112,16 @@ defmodule Favn.Dev.EnvBootstrapTest do
                env_bootstrap_command_runner: command_runner
              )
 
-    assert_received {:configured, %{@loaded_key => "file-value", @shell_key => "shell-value"},
-                     "shell-value", nil}
+    assert_received {:configured, loaded, "shell-value", nil}
+    assert loaded[@loaded_key] == "file-value"
+    assert loaded[@shell_key] == "shell-value"
+
+    assert loaded["FAVN_LOCAL_SAMPLE_DATABASE_PATH"] == database_path
+
+    assert loaded["FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH"] == raw_catalog_path
+
+    assert loaded["FAVN_LOCAL_SAMPLE_MART_CATALOG_PATH"] ==
+             Path.join(root_dir, ".favn/data/mart.duckdb")
 
     assert System.get_env(@loaded_key) == "file-value"
   end
@@ -129,6 +151,26 @@ defmodule Favn.Dev.EnvBootstrapTest do
              EnvBootstrap.exec(
                :query,
                ["select 1", "--root-dir", root_dir],
+               root_dir: root_dir,
+               env_bootstrap_command_runner: command_runner
+             )
+  end
+
+  test "maintainer dev uses its guarded configured task", %{root_dir: root_dir} do
+    command_runner = fn _mix, args, command_opts ->
+      assert args == ["favn.maintainer.dev.configured", "--root-dir", root_dir]
+
+      command_env = Map.new(command_opts[:env])
+      Enum.each(command_env, fn {key, value} -> System.put_env(key, value) end)
+
+      assert {:ok, _opts} = EnvBootstrap.consume(:maintainer_dev, root_dir: root_dir)
+      {"", 0}
+    end
+
+    assert {:ok, 0} =
+             EnvBootstrap.exec(
+               :maintainer_dev,
+               ["--root-dir", root_dir],
                root_dir: root_dir,
                env_bootstrap_command_runner: command_runner
              )

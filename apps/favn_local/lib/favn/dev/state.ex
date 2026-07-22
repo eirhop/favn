@@ -69,6 +69,25 @@ defmodule Favn.Dev.State do
     |> delete_if_exists()
   end
 
+  @spec read_compose_selection(root_opt()) :: {:ok, map()} | {:error, read_error()}
+  def read_compose_selection(opts \\ []) when is_list(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Paths.compose_selection_path()
+    |> read_json()
+  end
+
+  @spec write_compose_selection(map(), root_opt()) :: :ok | {:error, term()}
+  def write_compose_selection(selection, opts \\ [])
+      when is_map(selection) and is_list(opts) do
+    with :ok <- ensure_layout(opts) do
+      opts
+      |> Paths.root_dir()
+      |> Paths.compose_selection_path()
+      |> write_json(selection)
+    end
+  end
+
   @spec read_manifest_latest(root_opt()) :: {:ok, map()} | {:error, read_error()}
   def read_manifest_latest(opts \\ []) when is_list(opts) do
     opts

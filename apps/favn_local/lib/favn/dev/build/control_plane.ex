@@ -25,7 +25,7 @@ defmodule Favn.Dev.Build.ControlPlane do
           required(:context_dir) => Path.t(),
           required(:descriptor_path) => Path.t(),
           required(:image_repository) => String.t(),
-          optional(:image_status) => :loaded,
+          optional(:image_status) => :loaded | :reused,
           optional(:image_tag) => String.t(),
           optional(:image_id) => String.t(),
           optional(:static_asset_digest) => String.t(),
@@ -38,6 +38,24 @@ defmodule Favn.Dev.Build.ControlPlane do
     root_dir = opts |> Keyword.get(:root_dir, File.cwd!()) |> Path.expand()
 
     with :ok <- validate_options(opts, root_dir),
+         {:ok, result} <- do_run(root_dir, opts) do
+      {:ok, result}
+    end
+  end
+
+  @doc "Builds from an explicitly selected local checkout for maintainer development."
+  @spec run_from_checkout(Path.t(), keyword()) :: {:ok, result()} | {:error, term()}
+  def run_from_checkout(checkout, opts \\ []) when is_binary(checkout) and is_list(opts) do
+    root_dir = Path.expand(checkout)
+
+    with :ok <- validate_checkout_options(opts, root_dir),
+         {:ok, result} <- do_run(root_dir, opts) do
+      {:ok, result}
+    end
+  end
+
+  defp do_run(root_dir, opts) do
+    with :ok <- validate_checkout_root(root_dir),
          {:ok, collected} <- ControlPlaneInputs.collect(root_dir),
          {:ok, artifact} <- build_context(root_dir, collected, opts),
          {:ok, result} <- maybe_load_image(artifact, collected.descriptor, root_dir, opts) do
@@ -64,6 +82,35 @@ defmodule Favn.Dev.Build.ControlPlane do
 
       true ->
         :ok
+    end
+  end
+
+  defp validate_checkout_options(opts, root_dir) do
+    allowed = [:load, :build_root]
+
+    cond do
+      Enum.any?(Keyword.keys(opts), &(&1 not in allowed)) ->
+        {:error, :unsupported_control_plane_build_option}
+
+      Keyword.has_key?(opts, :build_root) and Mix.env() != :test ->
+        {:error, :control_plane_build_root_is_test_only}
+
+      not is_boolean(Keyword.get(opts, :load, false)) ->
+        {:error, :invalid_control_plane_load_option}
+
+      Path.expand(root_dir) == Path.expand(File.cwd!()) ->
+        :ok
+
+      true ->
+        validate_checkout_root(root_dir)
+    end
+  end
+
+  defp validate_checkout_root(root_dir) do
+    case File.lstat(root_dir) do
+      {:ok, %{type: :directory}} -> :ok
+      {:ok, %{type: :symlink}} -> {:error, {:control_plane_checkout_symlink, root_dir}}
+      _invalid -> {:error, {:invalid_control_plane_checkout, root_dir}}
     end
   end
 
@@ -279,11 +326,84 @@ defmodule Favn.Dev.Build.ControlPlane do
 
   defp maybe_load_image(artifact, descriptor, root_dir, opts) do
     if Keyword.get(opts, :load, false) do
-      load_image(artifact, descriptor, root_dir)
+      case reuse_loaded_image(artifact, descriptor) do
+        {:ok, result} -> {:ok, result}
+        {:error, _not_reusable} -> load_image(artifact, descriptor, root_dir)
+      end
     else
       {:ok, artifact}
     end
   end
+
+  defp reuse_loaded_image(artifact, descriptor) do
+    image_tag = "#{@candidate_repository}:#{descriptor.control_plane_build_id}"
+    candidate_path = candidate_path(artifact, descriptor)
+
+    with {:ok, docker} <- docker_executable(),
+         {:ok, %{type: :regular}} <- File.lstat(candidate_path),
+         {:ok, encoded} <- File.read(candidate_path),
+         {:ok, candidate} <- JSON.decode(encoded),
+         {:ok, metadata} <- reusable_candidate(candidate, descriptor, image_tag),
+         image_id = metadata.image_id,
+         static_asset_digest = metadata.static_asset_digest,
+         {:ok, ^image_id} <- inspect_image_id(docker, image_tag),
+         :ok <-
+           verify_loaded_image(
+             docker,
+             image_tag,
+             descriptor,
+             metadata.timestamp,
+             %{revision: metadata.revision, dirty: metadata.dirty}
+           ),
+         {:ok, ^static_asset_digest} <- static_asset_digest(docker, image_tag) do
+      {:ok,
+       Map.merge(artifact, %{
+         image_status: :reused,
+         image_tag: image_tag,
+         image_id: metadata.image_id,
+         static_asset_digest: metadata.static_asset_digest,
+         candidate_path: candidate_path
+       })}
+    else
+      _not_reusable -> {:error, :candidate_not_reusable}
+    end
+  end
+
+  defp reusable_candidate(
+         %{
+           "schema_version" => 1,
+           "control_plane_build_id" => build_id,
+           "image_repository" => @image_repository,
+           "candidate_tag" => image_tag,
+           "image_id" => image_id,
+           "static_asset_digest" => static_asset_digest,
+           "built_at" => timestamp,
+           "source_revision" => revision,
+           "source_dirty" => dirty,
+           "target" => target
+         },
+         %{control_plane_build_id: build_id},
+         image_tag
+       )
+       when is_binary(image_id) and is_binary(static_asset_digest) and is_binary(target) and
+              is_binary(timestamp) and is_binary(revision) and is_boolean(dirty) do
+    if target == ControlPlaneInputs.target() and Regex.match?(@image_id, image_id) and
+         Regex.match?(@digest, static_asset_digest) and timestamp != "" and revision != "" do
+      {:ok,
+       %{
+         image_id: image_id,
+         static_asset_digest: static_asset_digest,
+         timestamp: timestamp,
+         revision: revision,
+         dirty: dirty
+       }}
+    else
+      {:error, :invalid_candidate_metadata}
+    end
+  end
+
+  defp reusable_candidate(_candidate, _descriptor, _image_tag),
+    do: {:error, :invalid_candidate_metadata}
 
   defp load_image(artifact, descriptor, root_dir) do
     image_tag = "#{@candidate_repository}:#{descriptor.control_plane_build_id}"
@@ -453,8 +573,7 @@ defmodule Favn.Dev.Build.ControlPlane do
          timestamp,
          provenance
        ) do
-    build_root = Path.dirname(artifact.build_dir)
-    path = Path.join(build_root, "candidate-#{descriptor.control_plane_build_id}.json")
+    path = candidate_path(artifact, descriptor)
 
     payload = %{
       "schema_version" => 1,
@@ -472,6 +591,11 @@ defmodule Favn.Dev.Build.ControlPlane do
     with :ok <- write_json_atomic(path, payload) do
       {:ok, path}
     end
+  end
+
+  defp candidate_path(artifact, descriptor) do
+    build_root = Path.dirname(artifact.build_dir)
+    Path.join(build_root, "candidate-#{descriptor.control_plane_build_id}.json")
   end
 
   defp source_provenance(root_dir) do

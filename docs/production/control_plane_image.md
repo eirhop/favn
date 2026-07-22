@@ -12,15 +12,18 @@ Deploy the image only by repository-qualified digest:
 ghcr.io/eirhop/favn-control-plane@sha256:<64 lowercase hexadecimal characters>
 ```
 
-Tags are lookup aliases, not deployment identities. CI writes immutable
+Tags are lookup aliases, not deployment identities. A maintainer deliberately
+dispatches image publication only after the current `main` revision has passed
+CI and is stable. That workflow writes immutable
 `build-<control_plane_build_id>` tags, then writes
-`verified-build-<control_plane_build_id>` and `sha-<git_sha>` only after the exact
-main revision and any unverified digest pass clean verification. Pushing a semantic
-`v<favn_version>` Git tag starts release qualification. The workflow adds that
-version alias to the already-built digest and only then publishes the GitHub
-Release with its deployment reference; it does not rebuild the image. A release
-that changes only runner or development tooling therefore aliases the previous
-compatible control-plane digest.
+`verified-build-<control_plane_build_id>` and `sha-<git_sha>` only after the
+selected revision and any unverified digest pass clean verification. Ordinary
+merges never publish an image. Pushing a semantic `v<favn_version>` Git tag
+starts release qualification. The workflow adds that version alias to the
+already-built digest and only then publishes the GitHub Release with its
+deployment reference; it does not rebuild the image. A release that changes
+only runner or development tooling therefore aliases the previous compatible
+control-plane digest.
 
 ## Registry setup and access
 
@@ -30,7 +33,7 @@ credential is required. Authority is scoped by event and job:
 | Event | Expensive work | Registry/repository authority | Required result |
 | --- | --- | --- | --- |
 | Pull request to `main` | Build, inspect, scan, and create an SBOM only when the control-plane identity changes; otherwise run only changed runtime-compatibility or scan qualification | `contents: read`; no package or release writes | Unpublished candidate or exact verified-image evidence |
-| Successful exact `main` CI revision | Reuse a compatible digest, or build, scan, push, attest, and cleanly verify it | `contents: read`, `packages: write`, `attestations: write`, `id-token: write` | `build-<id>`, `verified-build-<id>`, and `sha-<git-sha>` all name the verified digest |
+| Manual dispatch on the current green `main` revision | Reuse a compatible digest, or build, scan, run complete container qualification, push, attest, and cleanly verify it | `actions: read`, `contents: read`, `packages: write`, `attestations: write`, `id-token: write` | `build-<id>`, `verified-build-<id>`, and `sha-<git-sha>` all name the verified digest |
 | Semantic `v<release_version>` tag | Qualify an existing digest; never rebuild | `actions: read`, `contents: write`, `packages: write`, `attestations: read` | Exact main-SHA and verified-build markers match before the immutable version alias and GitHub Release are created |
 
 The image's OCI source label links the GHCR package to `eirhop/favn`.
@@ -47,10 +50,12 @@ two aggregate status checks `CI / CI` and
 `Control-plane image / Control-plane image result`. Require the branch to be
 up to date before merge and do not permit ordinary contributors to bypass
 these checks. Add a separate `v*` tag ruleset that restricts tag creation to
-release maintainers and prevents tag update or deletion. The promotion
-workflow independently requires the tagged commit to be tested on `main` and
-all three immutable registry markers to match, but repository rules prevent an
-operator from bypassing that entry path accidentally.
+release maintainers and prevents tag update or deletion. The manual image
+workflow refuses a non-`main`, non-current, or non-green revision and checks
+`main` again before recording immutable aliases. The promotion workflow
+independently requires the tagged commit to be tested on `main` and all three
+immutable registry markers to match, but repository rules prevent an operator
+from bypassing that entry path accidentally.
 
 Private pulls use a separately managed GitHub credential with `read:packages`
 through the deployment platform or `docker login ghcr.io`. Favn application
@@ -145,20 +150,39 @@ uses Docker Buildx to load
 the only supported unpublished-image path. The task cannot select another image,
 repository, platform, source root, or output root.
 
+A consuming project can instead exercise a local Favn checkout through the
+explicit development-only command:
+
+```bash
+FAVN_CHECKOUT=/absolute/path/to/favn mix favn.maintainer.dev
+```
+
+`FAVN_CHECKOUT` must be present before Mix evaluates dependencies. The task
+proves that every loaded Favn path dependency belongs to that checkout, builds
+or reuses its unpublished candidate, selects the exact local Docker image ID,
+records both source and image identities, and starts the ordinary local stack.
+It never publishes an image. Running `mix favn.install` afterwards deliberately
+returns the project to the official image. The complete consumer setup is in
+the [local development guide](../../apps/favn/guides/local-development.md#testing-a-local-favn-checkout).
+
 Official images are built only by protected GitHub Actions. Pull requests build,
 inspect, scan, and generate an SBOM for an unpublished candidate when the exact
 image identity changed. Runtime-only changes qualify the existing verified
-digest, and scan-only changes rescan that digest. After the main CI workflow
-succeeds, the image workflow either reuses the existing immutable build digest
-or builds and pushes a run-scoped staging tag. A reused digest is rescanned only
-when its security scan identity changed. Only after both attestations and clean
-runner image qualification succeed does CI add the immutable build,
-verified-build, and exact-SHA aliases. An interruption before either attestation
-therefore leaves no official build cache key and the next run safely rebuilds.
-A build tag without its matching verified-build marker is re-verified rather
-than trusted. Both the build marker and exact-SHA marker are required by release
-promotion. Registry lookup and validation errors fail the workflow; they are not
-interpreted as a cache miss.
+digest, and scan-only changes rescan that digest. If a pull request needs the
+current build but it has not yet been published, its runtime or security job
+builds an unpublished candidate instead of blocking on publication.
+
+Merging to `main` never publishes an image. A maintainer manually dispatches the
+workflow for the exact current `main` SHA after required CI succeeds. The
+workflow builds or reuses that immutable build, always rescans it, reruns the
+complete container qualification, and rechecks that `main` has not moved before
+adding aliases. Only after both attestations and clean qualification succeed
+does it add the immutable build, verified-build, and exact-SHA aliases. An
+interruption before either attestation therefore leaves no official build cache
+key and the next dispatch safely rebuilds. A build tag without its matching
+verified-build marker is re-verified rather than trusted. Both the build marker
+and exact-SHA marker are required by release promotion. Registry lookup and
+validation errors fail the workflow; they are not interpreted as a cache miss.
 
 Candidate and newly published images are scanned with pinned Grype `0.116.0`.
 Any high or critical finding with an available fix fails the build. The tracked
@@ -169,8 +193,8 @@ also rejects image qualification and release promotion after the explicit
 review deadline until maintainers upgrade the base snapshot or review each
 remaining exception. Scan policy is not an image-byte input and therefore does
 not change `control_plane_build_id`; policy-only pull requests instead pull and
-rescan the exact verified digest. Reused main images are rescanned only when the
-security scan identity changes. Release promotion always rescans, and the
+rescan the exact verified digest. Manual publication always rescans the selected
+`main` image. Release promotion also rescans, and the
 trusted-default-branch `Control-plane security scan` workflow scans the current
 verified digest daily so vulnerability-database freshness is not coupled to
 unrelated pull requests.
@@ -251,15 +275,16 @@ The detailed bounded shutdown/error matrices remain at their owning app layers
 in the ordinary CI test suite.
 
 Pull requests that change control-plane build inputs build and scan a candidate
-and run this tier without registry write permission. After required CI succeeds
-on `main`, the image workflow runs the same tier before its run-scoped staging
-push. Runner, in-process DuckDB, runner-build, and Compose changes skip that
-build, pull the current official build digest, and run the runner/Compose tier
-against it without repeating the vulnerability scan. Scan-policy changes run
-only the exact verified-image scan. Unrelated local commands, ADBC, Azure,
-ordinary tests, and documentation run neither heavy image job. A main revision
-whose control-plane build ID already exists verifies and reuses that digest
-without repeating image acceptance or an unchanged scan. Release promotion
-repeats qualification against the immutable registry digest before adding the
-version alias. A failing required qualification can therefore never publish or
-promote an untested image.
+and run this tier without registry write permission. Runner, in-process DuckDB,
+runner-build, and Compose changes use the current verified digest when it exists;
+when delayed manual publication means it does not, the job builds the same
+unpublished candidate locally. Scan-policy changes rescan the exact verified
+image or the equivalent unpublished candidate. Unrelated local commands, ADBC,
+Azure, ordinary tests, and documentation run neither heavy image job.
+
+An ordinary merge to `main` publishes nothing. Manual publication accepts only
+the exact current green `main` revision, runs the full scan and container tier
+even when its immutable build already exists, and checks `main` again before
+updating aliases. Release promotion repeats qualification against the immutable
+registry digest before adding the version alias. A failing required
+qualification can therefore never publish or promote an untested image.

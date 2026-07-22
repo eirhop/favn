@@ -3,7 +3,7 @@ defmodule Favn.Dev.OutputRedactorTest do
 
   import ExUnit.CaptureIO
 
-  alias Favn.Dev.{ComposeEnv, Docker, Paths, State}
+  alias Favn.Dev.{ComposeDeployment, ComposeEnv, Docker, Paths, State}
 
   setup do
     root_dir =
@@ -51,16 +51,31 @@ defmodule Favn.Dev.OutputRedactorTest do
          "ecto://user:password@postgres.internal/db", 1}
     end
 
-    project = %{
-      "project_name" => "favn-redaction-test",
-      "compose_path" => Path.join(context.root_dir, "compose.yml"),
-      "env_path" => Path.join(context.root_dir, ".env")
+    deployment = %ComposeDeployment{
+      root_dir: context.root_dir,
+      compose_file: Path.join(context.root_dir, "compose.yml"),
+      env_file: Path.join(context.root_dir, ".env"),
+      project_name: "favn-redaction-test",
+      contract_version: 1,
+      profile: :local,
+      services: %{
+        postgres: "postgres",
+        control_plane_ops: "control-plane-ops",
+        control_plane_verify: "control-plane-verify",
+        runner: "runner",
+        control_plane: "control-plane"
+      },
+      workspace_id: "local-dev",
+      view_url: "http://127.0.0.1:4173",
+      orchestrator_url: "http://127.0.0.1:4101",
+      control_plane_image: "control-plane@sha256:test",
+      runner_image: "runner:test"
     }
 
     streamed =
       capture_io(fn ->
         result =
-          Docker.compose(project, ["logs", "--follow"],
+          Docker.compose(deployment, ["logs", "--follow"],
             root_dir: context.root_dir,
             docker_executable: "docker",
             docker_command_runner: runner,

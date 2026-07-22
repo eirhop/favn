@@ -14,6 +14,7 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
   @rebar_url "https://github.com/erlang/rebar3/releases/download/3.27.0/rebar3"
   @rebar_sha512 "0d00494d849fdc521a55142278d1f6ba552954fbd65b80d40df8022f594f05d6c99ed1d731bc263691a04176e11d4c6e126c56ba20dca19c5e42d4ffab2e7e36"
   @release_version "1.0.0"
+  @builder_packages ~w(build-essential ca-certificates git cmake pkg-config)
 
   @type toolchain :: %{
           required(:elixir_version) => String.t(),
@@ -29,11 +30,23 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
   @doc false
   @spec validate_host_toolchain() ::
           :ok | {:error, {:runner_build_toolchain_mismatch, toolchain(), toolchain()}}
-  def validate_host_toolchain do
-    actual = %{
-      elixir_version: System.version(),
-      otp_release: to_string(:erlang.system_info(:otp_release))
-    }
+  def validate_host_toolchain, do: validate_host_toolchain([])
+
+  @doc false
+  @spec validate_host_toolchain(keyword()) ::
+          :ok | {:error, {:runner_build_toolchain_mismatch, toolchain(), toolchain()}}
+  def validate_host_toolchain(opts) when is_list(opts) do
+    actual =
+      case {Mix.env(), Keyword.get(opts, :host_toolchain)} do
+        {:test, %{elixir_version: elixir_version, otp_release: otp_release}} ->
+          %{elixir_version: elixir_version, otp_release: otp_release}
+
+        _runtime ->
+          %{
+            elixir_version: System.version(),
+            otp_release: to_string(:erlang.system_info(:otp_release))
+          }
+      end
 
     validate_toolchain(actual)
   end
@@ -53,24 +66,31 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
 
   @spec write(Path.t(), map(), keyword()) :: :ok | {:error, term()}
   def write(artifact_dir, inputs, _opts \\ []) when is_binary(artifact_dir) and is_map(inputs) do
-    release_input = Path.join(artifact_dir, "release-input")
+    dependency_input = Path.join(artifact_dir, "dependency-input")
+    application_input = Path.join(artifact_dir, "application-input")
 
-    with :ok <- File.mkdir_p(release_input),
-         :ok <- copy_applications(release_input, inputs.application_sources),
-         :ok <- copy_customer_beams(release_input, inputs),
-         :ok <- copy_descriptor(release_input, artifact_dir),
-         :ok <- write_mix_project(release_input, inputs),
-         :ok <- write_mix_lock(release_input, inputs.dependency_lock),
-         :ok <- write_dependency_lock(release_input, inputs),
+    with :ok <- File.mkdir_p(dependency_input),
+         :ok <- File.mkdir_p(application_input),
+         :ok <- copy_dependency_applications(dependency_input, inputs),
+         :ok <- copy_current_application(application_input, inputs),
+         :ok <- copy_customer_beams(application_input, inputs),
+         :ok <- copy_descriptor(application_input, artifact_dir),
+         :ok <- write_mix_project(dependency_input, inputs, :dependencies),
+         :ok <- write_mix_project(application_input, inputs, :release),
+         :ok <- write_mix_lock(dependency_input, inputs.dependency_lock),
+         :ok <- write_dependency_lock(application_input, inputs),
          :ok <-
            write_runtime_config(
-             release_input,
+             dependency_input,
              inputs.packaged_config,
+             application_input,
              inputs.current_application
            ),
-         :ok <- write_stamp_script(release_input, inputs),
-         :ok <- write_release_env(release_input),
-         :ok <- write_dockerfile(artifact_dir, inputs.descriptor) do
+         :ok <- write_stamp_script(application_input, inputs),
+         :ok <- write_release_env(application_input),
+         :ok <- write_dependency_identity(dependency_input),
+         :ok <-
+           write_dockerfile(artifact_dir, inputs.descriptor, inputs.current_application) do
       :ok
     end
   end
@@ -109,18 +129,33 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
     })
   end
 
-  defp copy_applications(release_input, sources) do
-    Enum.reduce_while(sources, :ok, fn {app, source}, :ok ->
-      case Artifact.copy_tree(source, Path.join([release_input, "apps", app])) do
+  defp copy_dependency_applications(dependency_input, inputs) do
+    inputs.application_sources
+    |> Map.delete(inputs.current_application)
+    |> Enum.reduce_while(:ok, fn {app, source}, :ok ->
+      case Artifact.copy_tree(source, Path.join([dependency_input, "apps", app])) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  defp copy_customer_beams(release_input, inputs) do
+  defp copy_current_application(application_input, inputs) do
+    case Map.fetch(inputs.application_sources, inputs.current_application) do
+      {:ok, source} ->
+        Artifact.copy_tree(
+          source,
+          Path.join([application_input, "apps", inputs.current_application])
+        )
+
+      :error ->
+        {:error, {:runner_application_source_missing, inputs.current_application}}
+    end
+  end
+
+  defp copy_customer_beams(application_input, inputs) do
     application_names = MapSet.new(inputs.applications, & &1.application)
-    target = Path.join([release_input, "apps", "favn_runner", "priv", "customer_ebin"])
+    target = Path.join([application_input, "runner-priv", "customer_ebin"])
 
     with :ok <- File.mkdir_p(target) do
       inputs.closure.modules
@@ -139,18 +174,19 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
     end
   end
 
-  defp copy_descriptor(release_input, artifact_dir) do
+  defp copy_descriptor(application_input, artifact_dir) do
     File.cp(
       Path.join(artifact_dir, "runner-release.json"),
-      Path.join([release_input, "apps", "favn_runner", "priv", "runner-release.json"])
+      Path.join([application_input, "runner-priv", "runner-release.json"])
     )
   end
 
-  defp write_mix_project(release_input, inputs) do
+  defp write_mix_project(input_dir, inputs, kind) when kind in [:dependencies, :release] do
     build_only = MapSet.new(inputs.build_only_applications)
 
     deps =
       inputs.application_sources
+      |> maybe_without_current(inputs.current_application, kind)
       |> Map.keys()
       |> Enum.sort()
       |> Enum.map_join(",\n", fn app ->
@@ -161,6 +197,7 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
     extra_applications =
       inputs.applications
       |> Enum.map(& &1.application)
+      |> maybe_reject_current(inputs.current_application, kind)
       |> Enum.reject(&(&1 == "favn_runner"))
       |> Enum.sort()
       |> Enum.map_join(", ", &(":" <> &1))
@@ -198,16 +235,33 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
     end
     """
 
-    with :ok <- File.write(Path.join(release_input, "mix.exs"), source),
-         :ok <- File.mkdir_p(Path.join(release_input, "lib")) do
+    with :ok <- File.write(Path.join(input_dir, "mix.exs"), source) do
+      maybe_write_release_module(input_dir, kind)
+    end
+  end
+
+  defp maybe_without_current(sources, current_application, :dependencies),
+    do: Map.delete(sources, current_application)
+
+  defp maybe_without_current(sources, _current_application, :release), do: sources
+
+  defp maybe_reject_current(applications, current_application, :dependencies),
+    do: Enum.reject(applications, &(&1 == current_application))
+
+  defp maybe_reject_current(applications, _current_application, :release), do: applications
+
+  defp maybe_write_release_module(_input_dir, :dependencies), do: :ok
+
+  defp maybe_write_release_module(input_dir, :release) do
+    with :ok <- File.mkdir_p(Path.join(input_dir, "lib")) do
       File.write(
-        Path.join(release_input, "lib/favn_customer_runner_release.ex"),
+        Path.join(input_dir, "lib/favn_customer_runner_release.ex"),
         "defmodule FavnCustomerRunnerRelease do\n  @moduledoc false\nend\n"
       )
     end
   end
 
-  defp write_runtime_config(release_input, config, current_application) do
+  defp write_runtime_config(dependency_input, config, application_input, current_application) do
     encoded = config |> :erlang.term_to_binary() |> Base.encode64()
 
     source = """
@@ -225,13 +279,13 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
     config :favn, runner_config.favn
     """
 
-    path = Path.join(release_input, "config/config.exs")
+    path = Path.join(dependency_input, "config/config.exs")
 
-    case Code.string_to_quoted(source, file: "release-input/config/config.exs") do
+    case Code.string_to_quoted(source, file: "dependency-input/config/config.exs") do
       {:ok, _quoted} ->
         with :ok <- File.mkdir_p(Path.dirname(path)),
              :ok <- File.write(path, source) do
-          write_customer_runtime_config(release_input, current_application)
+          write_customer_runtime_config(application_input, current_application)
         end
 
       {:error, _reason} ->
@@ -239,14 +293,16 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
     end
   end
 
-  defp write_customer_runtime_config(release_input, current_application) do
+  defp write_customer_runtime_config(application_input, current_application) do
     customer_runtime =
-      Path.join([release_input, "apps", current_application, "config/runtime.exs"])
+      Path.join([application_input, "apps", current_application, "config/runtime.exs"])
+
+    runtime_config = Path.join(application_input, "config/runtime.exs")
 
     if File.regular?(customer_runtime) do
       overlay =
         Path.join([
-          release_input,
+          application_input,
           "rel/overlays/releases",
           @release_version,
           "customer_config"
@@ -256,13 +312,17 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
            :ok <- validate_customer_runtime_config(source),
            :ok <- File.mkdir_p(overlay),
            :ok <- File.write(Path.join(overlay, "runtime.exs"), source) do
-        File.write(
-          Path.join(release_input, "config/runtime.exs"),
-          "import Config\n\nimport_config \"customer_config/runtime.exs\"\n"
-        )
+        with :ok <- File.mkdir_p(Path.dirname(runtime_config)) do
+          File.write(
+            runtime_config,
+            "import Config\n\nimport_config \"customer_config/runtime.exs\"\n"
+          )
+        end
       end
     else
-      :ok
+      with :ok <- File.mkdir_p(Path.dirname(runtime_config)) do
+        File.write(runtime_config, "import Config\n")
+      end
     end
   end
 
@@ -286,7 +346,7 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
     found?
   end
 
-  defp write_stamp_script(release_input, inputs) do
+  defp write_stamp_script(application_input, inputs) do
     entries =
       inputs.applications
       |> Enum.map(fn app -> {String.to_atom(app.application), app.lock_fingerprint} end)
@@ -345,11 +405,11 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
     end)
     """
 
-    File.write(Path.join(release_input, "stamp_apps.exs"), source)
+    File.write(Path.join(application_input, "stamp_apps.exs"), source)
   end
 
-  defp write_release_env(release_input) do
-    path = Path.join(release_input, "rel/env.sh.eex")
+  defp write_release_env(application_input) do
+    path = Path.join(application_input, "rel/env.sh.eex")
 
     with :ok <- File.mkdir_p(Path.dirname(path)) do
       File.write(
@@ -433,10 +493,53 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
     end
   end
 
-  defp write_dockerfile(artifact_dir, %RunnerRelease{} = descriptor) do
+  defp write_dependency_identity(dependency_input) do
+    files =
+      dependency_input
+      |> Path.join("**/*")
+      |> Path.wildcard(match_dot: true)
+      |> Enum.filter(&File.regular?/1)
+      |> Enum.map(fn path ->
+        bytes = File.read!(path)
+
+        %{
+          "path" => Path.relative_to(path, dependency_input),
+          "sha256" => sha256(bytes),
+          "size" => byte_size(bytes)
+        }
+      end)
+      |> Enum.sort_by(& &1["path"])
+
+    inputs = %{
+      "builder_image" => @builder_image,
+      "builder_packages" => @builder_packages,
+      "debian_snapshot" => @debian_snapshot,
+      "files" => files,
+      "hex_version" => @hex_version,
+      "rebar_sha512" => @rebar_sha512,
+      "rebar_url" => @rebar_url,
+      "schema_version" => 1
+    }
+
+    Artifact.write_json(
+      Path.join(dependency_input, "dependency-input.json"),
+      Map.put(inputs, "digest", dependency_digest(inputs))
+    )
+  end
+
+  defp dependency_digest(inputs) do
+    inputs
+    |> :erlang.term_to_binary([:deterministic])
+    |> sha256()
+  end
+
+  defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+  defp write_dockerfile(artifact_dir, %RunnerRelease{} = descriptor, current_application) do
     with {:ok, revision} <- source_revision(descriptor.build_metadata) do
       dockerfile = """
-      FROM --platform=linux/amd64 #{@builder_image} AS builder
+      # syntax=docker/dockerfile:1.7
+      FROM --platform=linux/amd64 #{@builder_image} AS toolchain
 
       ENV MIX_ENV=prod
       WORKDIR /build
@@ -449,8 +552,27 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
         && rm -rf /var/lib/apt/lists/*
       RUN mix local.hex #{@hex_version} --force \\
         && mix local.rebar rebar3 #{@rebar_url} --sha512 #{@rebar_sha512} --force
-      COPY release-input/ ./
-      RUN mix deps.get --only prod --check-locked && mix deps.compile && mix compile
+      FROM toolchain AS dependencies
+      COPY dependency-input/ ./
+      RUN --mount=type=cache,target=/root/.hex \
+        --mount=type=cache,target=/root/.cache/rebar3 \
+        mix deps.get --only prod --check-locked \
+        && mix deps.compile
+
+      FROM dependencies AS builder
+      COPY application-input/mix.exs ./mix.exs
+      COPY application-input/apps/ ./apps/
+      COPY application-input/lib/ ./lib/
+      COPY application-input/config/ ./config/
+      COPY application-input/rel/ ./rel/
+      COPY application-input/stamp_apps.exs ./stamp_apps.exs
+      COPY application-input/dependency-lock.json ./dependency-lock.json
+      RUN --mount=type=cache,target=/root/.hex \
+        --mount=type=cache,target=/root/.cache/rebar3 \
+        mix deps.get --only prod --check-locked \
+        && mix deps.compile #{current_application} \
+        && mix compile
+      COPY application-input/runner-priv/ /build/_build/prod/lib/favn_runner/priv/
       RUN mix run --no-start stamp_apps.exs
       RUN mix release favn_runner
       RUN mkdir -p /build/runtime-versions \\
@@ -473,6 +595,7 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
         && useradd --system --uid 10001 --gid favn --home-dir /opt/favn --shell /usr/sbin/nologin favn \\
         && mkdir -p /opt/favn /tmp/favn \\
         && chown -R favn:favn /opt/favn /tmp/favn
+      RUN mkdir -p /var/lib/favn/data && chown -R favn:favn /var/lib/favn/data
       WORKDIR /opt/favn
       COPY --from=builder --chown=favn:favn /build/_build/prod/rel/favn_runner/ ./
       COPY --from=builder --chown=favn:favn /build/runtime-versions/ /opt/favn/runtime-versions/

@@ -291,6 +291,22 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
     assert same.control_plane_build_id == result.control_plane_build_id
   end
 
+  test "explicit checkout builds correctly outside the checkout working directory", %{
+    build_root: build_root
+  } do
+    consumer = Path.join(build_root, "consumer")
+    File.mkdir_p!(consumer)
+
+    assert {:ok, result} =
+             File.cd!(consumer, fn ->
+               ControlPlane.run_from_checkout(@repo_root, build_root: build_root)
+             end)
+
+    assert result.control_plane_build_id =~ ~r/\A[0-9a-f]{64}\z/
+    assert File.regular?(result.descriptor_path)
+    assert String.starts_with?(result.context_dir, build_root)
+  end
+
   test "corrupted immutable contexts fail closed", %{build_root: build_root} do
     assert {:ok, result} =
              ControlPlane.run(root_dir: @repo_root, build_root: build_root)
@@ -389,6 +405,13 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
     assert result.image_id =~ ~r/\Asha256:[0-9a-f]{64}\z/
     assert result.static_asset_digest =~ ~r/\A[0-9a-f]{64}\z/
     assert File.regular?(result.candidate_path)
+
+    assert {:ok, reused} =
+             ControlPlane.run(root_dir: @repo_root, build_root: build_root, load: true)
+
+    assert reused.image_status == :reused
+    assert reused.image_id == result.image_id
+    assert reused.static_asset_digest == result.static_asset_digest
 
     docker =
       System.find_executable("docker") || flunk("Docker is required for the slow image test")

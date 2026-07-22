@@ -7,9 +7,10 @@ defmodule Mix.Tasks.Favn.Dev do
 
   @moduledoc """
   Starts digest-pinned PostgreSQL, the installed prebuilt control plane, and
-  the customer-built runner as project-scoped Docker Compose services. The
-  stack uses the production release topology and streams container logs in the
-  foreground.
+  the customer-built runner using the consumer-owned local Compose file.
+  Selection precedence is `--compose-file`, `config :favn, :local`, then
+  `deploy/compose.local.yml`. The successful selection is recorded for later
+  reload, stop, status, logs, and diagnostics commands.
   """
 
   alias Favn.Dev
@@ -62,7 +63,8 @@ defmodule Mix.Tasks.Favn.Dev do
     opts =
       CLIArgs.parse_no_args!("favn.dev", args,
         root_dir: :string,
-        scheduler: :boolean
+        scheduler: :boolean,
+        compose_file: :string
       )
 
     opts
@@ -95,6 +97,35 @@ defmodule Mix.Tasks.Favn.Dev do
 
   defp error_message({:docker_compose_unavailable, _status, _output}),
     do: "Docker Compose is unavailable; install the Compose v2 plugin or newer and retry"
+
+  defp error_message({:compose_file_missing, path}),
+    do:
+      "local Compose file does not exist: #{path}\nrun mix favn.init --target compose to create the default local template"
+
+  defp error_message({:compose_file_outside_project, path}),
+    do: "local Compose file must be inside the Mix project: #{path}"
+
+  defp error_message({:compose_file_symlink, path}),
+    do: "local Compose file and its parent directories must not be symlinks: #{path}"
+
+  defp error_message({:compose_file_not_regular, path}),
+    do: "local Compose path is not a regular file: #{path}"
+
+  defp error_message({:unsupported_compose_profile, :local, actual}),
+    do: "mix favn.dev requires a local Compose profile; selected profile is #{inspect(actual)}"
+
+  defp error_message({:missing_compose_roles, roles}),
+    do: "local Compose contract is missing required Favn roles: #{inspect(roles)}"
+
+  defp error_message({:duplicate_compose_role, role}),
+    do: "local Compose contract declares the Favn role #{inspect(role)} more than once"
+
+  defp error_message({:unknown_compose_role, role}),
+    do: "local Compose contract declares unknown Favn role #{inspect(role)}"
+
+  defp error_message({:root_owned_local_project, path}),
+    do:
+      "local project #{path} is owned by root; change its owner before running the non-root Favn runner"
 
   defp error_message({:unsupported_docker_server, os, architecture}),
     do: "unsupported Docker target #{os}/#{architecture}; Linux amd64 is required"

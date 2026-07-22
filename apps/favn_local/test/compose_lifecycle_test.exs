@@ -1,7 +1,20 @@
 defmodule Favn.Dev.ComposeLifecycleTest do
   use ExUnit.Case, async: false
 
-  alias Favn.Dev.{ComposeLifecycle, Install, Lock, Paths, Reset, RunnerImage, State}
+  alias Favn.Dev.{
+    ComposeEnv,
+    ComposeLifecycle,
+    Install,
+    Lock,
+    Paths,
+    Reset,
+    RunnerImage,
+    Secrets,
+    State
+  }
+
+  alias Favn.Dev.Init.Compose, as: ComposeInit
+  alias Favn.Dev.Maintainer.Candidate
   alias Favn.RunnerRelease
 
   @version "0.5.0-dev"
@@ -16,10 +29,18 @@ defmodule Favn.Dev.ComposeLifecycleTest do
       )
 
     File.mkdir_p!(root_dir)
+    File.write!(Path.join(root_dir, "mix.exs"), "defmodule Fixture.MixProject do end\n")
+    assert {:ok, _scaffold} = ComposeInit.run(root_dir: root_dir)
 
     {:ok, state} =
       Agent.start_link(fn ->
-        %{runner: descriptor("one"), commands: [], services: %{}, events: []}
+        %{
+          runner: descriptor("one"),
+          commands: [],
+          services: %{},
+          events: [],
+          project_name: Favn.Dev.ComposeProject.project_name(root_dir)
+        }
       end)
 
     docker = docker_runner(state)
@@ -68,9 +89,9 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     assert %{stack_status: :running, services: services, runtime: %{"status" => "ok"}} =
              ComposeLifecycle.status(opts)
 
-    assert services["postgres"].health == :healthy
-    assert services["runner"].health == :healthy
-    assert services["control-plane"].health == :healthy
+    assert services.postgres.health == :healthy
+    assert services.runner.health == :healthy
+    assert services.control_plane.health == :healthy
 
     commands = commands(context.state)
 
@@ -84,24 +105,25 @@ defmodule Favn.Dev.ComposeLifecycleTest do
              operation_index(commands, "provision-workspace")
 
     assert operation_index(commands, "provision-workspace") <
-             command_index(commands, ["up", "--detach", "--wait", "--no-deps", "runner"])
+             command_index(commands, ["up", "--detach", "--wait", "runner"])
 
     assert {:ok, runtime} = State.read_runtime(root_dir: context.root_dir)
     assert runtime["kind"] == "docker_compose"
     assert runtime["runner_release_id"] == result.runner_release_id
     assert runtime["active_manifest_version_id"] == result.manifest_version_id
 
-    assert {:ok, install} = State.read_install(root_dir: context.root_dir)
-    env = File.read!(install["compose"]["env_path"])
+    env = File.read!(Paths.compose_env_path(context.root_dir))
 
     expected_image =
-      RunnerImage.image_reference(install["compose"]["project_name"], result.runner_release_id)
+      RunnerImage.image_reference(runtime["compose_project"], result.runner_release_id)
 
     assert env =~ "FAVN_RUNNER_IMAGE='#{expected_image}'"
 
-    runner_env = File.read!(install["compose"]["runner_env_path"])
+    runner_env = File.read!(Paths.compose_runner_env_path(context.root_dir))
     assert runner_env =~ ~s(FAVN_CUSTOM_TOKEN='runtime-secret')
-    refute File.read!(install["compose"]["compose_path"]) =~ "runtime-secret"
+
+    refute File.read!(Path.join(context.root_dir, "deploy/compose.local.yml")) =~
+             "runtime-secret"
   end
 
   test "manifest-only reload leaves the runner container unchanged", context do
@@ -114,6 +136,135 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
     refute Enum.any?(after_reload, &command_suffix?(&1, ["stop", "--timeout", "180", "runner"]))
     refute Enum.any?(after_reload, &Enum.member?(&1, "--force-recreate"))
+  end
+
+  test "maintainer dev starts an exact local image then reloads it without replacement",
+       context do
+    candidate = maintainer_candidate(context.root_dir)
+
+    opts =
+      context
+      |> lifecycle_opts()
+      |> Keyword.merge(
+        allow_maintainer_install: true,
+        foreground: false
+      )
+
+    assert :ok = ComposeLifecycle.maintainer_dev(candidate, opts)
+    assert {:ok, install} = State.read_install(root_dir: context.root_dir)
+    assert install["source"] == "maintainer"
+    assert install["image_reference"] == @control_image_id
+    assert {:ok, runtime} = State.read_runtime(root_dir: context.root_dir)
+    assert runtime["control_plane_image_reference"] == @control_image_id
+
+    before = commands(context.state)
+    assert :ok = ComposeLifecycle.maintainer_dev(candidate, opts)
+    after_reload = commands(context.state) -- before
+    refute Enum.any?(after_reload, &Enum.member?(&1, "--force-recreate"))
+
+    refute Enum.any?(
+             after_reload,
+             &command_suffix?(&1, ["up", "--detach", "--wait", "control-plane"])
+           )
+  end
+
+  test "maintainer dev refuses to replace a running different control plane", context do
+    opts = lifecycle_opts(context)
+    assert {:ok, _result} = ComposeLifecycle.start(opts)
+    previous_commands = commands(context.state)
+    previous_install = State.read_install(root_dir: context.root_dir)
+
+    candidate =
+      %{maintainer_candidate(context.root_dir) | image_id: "sha256:" <> String.duplicate("c", 64)}
+
+    assert {:error, {:maintainer_restart_required, _images}} =
+             ComposeLifecycle.maintainer_dev(
+               candidate,
+               Keyword.merge(opts, allow_maintainer_install: true, foreground: false)
+             )
+
+    assert commands(context.state) == previous_commands
+    assert State.read_install(root_dir: context.root_dir) == previous_install
+  end
+
+  test "failed deployment validation restores the previous runner before retry", context do
+    opts = lifecycle_opts(context)
+    assert {:ok, initial} = ComposeLifecycle.start(opts)
+    assert {:ok, initial_latest} = State.read_runner_latest(root_dir: context.root_dir)
+    Agent.update(context.state, &Map.put(&1, :runner, descriptor("invalid-compose-candidate")))
+    base_runner = docker_runner(context.state)
+
+    invalid_compose_runner = fn executable, args, command_opts ->
+      if Enum.take(args, -3) == ["config", "--format", "json"] do
+        rendered = args |> rendered_compose() |> JSON.decode!()
+        {JSON.encode!(update_in(rendered, ["services"], &Map.delete(&1, "runner"))), 0}
+      else
+        base_runner.(executable, args, command_opts)
+      end
+    end
+
+    assert {:error, {:missing_compose_roles, [:runner]}} =
+             ComposeLifecycle.reload(
+               Keyword.put(opts, :docker_command_runner, invalid_compose_runner)
+             )
+
+    assert {:ok, restored_latest} = State.read_runner_latest(root_dir: context.root_dir)
+    assert restored_latest == initial_latest
+
+    expected_image =
+      RunnerImage.image_reference(
+        Favn.Dev.ComposeProject.project_name(context.root_dir),
+        initial.runner_release_id
+      )
+
+    assert File.read!(Paths.compose_env_path(context.root_dir)) =~
+             "FAVN_RUNNER_IMAGE='#{expected_image}'"
+
+    assert :ok = ComposeLifecycle.reload(opts)
+    assert {:ok, retried_latest} = State.read_runner_latest(root_dir: context.root_dir)
+    refute retried_latest["runner_release_id"] == initial.runner_release_id
+  end
+
+  test "failed recovery creation restores the previous runner before retry", context do
+    opts = lifecycle_opts(context)
+    assert {:ok, initial} = ComposeLifecycle.start(opts)
+    assert {:ok, initial_latest} = State.read_runner_latest(root_dir: context.root_dir)
+    Agent.update(context.state, &Map.put(&1, :runner, descriptor("recovery-lookup")))
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+    active_manifest_fun = fn _deployment ->
+      case Agent.get_and_update(attempts, fn attempt -> {attempt, attempt + 1} end) do
+        0 ->
+          {:error, :active_manifest_lookup_failed}
+
+        _retry ->
+          {:ok,
+           %{
+             "manifest_version_id" => initial.manifest_version_id,
+             "required_runner_release_id" => initial.runner_release_id
+           }}
+      end
+    end
+
+    retry_opts = Keyword.put(opts, :active_manifest_fun, active_manifest_fun)
+
+    assert {:error, :active_manifest_lookup_failed} = ComposeLifecycle.reload(retry_opts)
+    assert {:error, :not_found} = State.read_maintenance(root_dir: context.root_dir)
+    assert {:ok, restored_latest} = State.read_runner_latest(root_dir: context.root_dir)
+    assert restored_latest == initial_latest
+
+    expected_image =
+      RunnerImage.image_reference(
+        Favn.Dev.ComposeProject.project_name(context.root_dir),
+        initial.runner_release_id
+      )
+
+    assert File.read!(Paths.compose_env_path(context.root_dir)) =~
+             "FAVN_RUNNER_IMAGE='#{expected_image}'"
+
+    assert :ok = ComposeLifecycle.reload(retry_opts)
+    assert {:ok, retried_latest} = State.read_runner_latest(root_dir: context.root_dir)
+    refute retried_latest["runner_release_id"] == initial.runner_release_id
   end
 
   test "a successful stop clears a now-defunct local maintenance lease", context do
@@ -142,15 +293,16 @@ defmodule Favn.Dev.ComposeLifecycleTest do
       |> Keyword.put(:scheduler, true)
 
     assert {:ok, _result} = ComposeLifecycle.start(opts)
-    {:ok, install} = State.read_install(root_dir: context.root_dir)
-    assert File.read!(install["compose"]["env_path"]) =~ "FAVN_SCHEDULER_ENABLED='true'"
+
+    assert File.read!(Paths.compose_env_path(context.root_dir)) =~
+             "FAVN_SCHEDULER_ENABLED='true'"
 
     assert :ok =
              ComposeLifecycle.reload(
                Keyword.put(opts, :env_file_loaded, %{"FAVN_CUSTOM_TOKEN" => "rotated-secret"})
              )
 
-    assert File.read!(install["compose"]["runner_env_path"]) =~
+    assert File.read!(Paths.compose_runner_env_path(context.root_dir)) =~
              ~s(FAVN_CUSTOM_TOKEN='rotated-secret')
   end
 
@@ -213,11 +365,11 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     assert {:ok, latest} = State.read_runner_latest(root_dir: context.root_dir)
     assert latest["runner_release_id"] == initial.runner_release_id
 
-    assert {:ok, install} = State.read_install(root_dir: context.root_dir)
-    env = File.read!(install["compose"]["env_path"])
+    assert {:ok, runtime} = State.read_runtime(root_dir: context.root_dir)
+    env = File.read!(Paths.compose_env_path(context.root_dir))
 
     expected_image =
-      RunnerImage.image_reference(install["compose"]["project_name"], initial.runner_release_id)
+      RunnerImage.image_reference(runtime["compose_project"], initial.runner_release_id)
 
     assert env =~ "FAVN_RUNNER_IMAGE='#{expected_image}'"
     assert_receive :runner_replacement_finish
@@ -454,16 +606,19 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
   test "failed startup preserves bounded Compose diagnostics before cleanup", context do
     base_runner = docker_runner(context.state)
+
+    assert {:ok, _secrets} =
+             Secrets.resolve(Favn.Dev.Config.resolve(context.opts), root_dir: context.root_dir)
+
     {:ok, secrets} = State.read_secrets(root_dir: context.root_dir)
     secret = secrets["service_token"]
 
     failing_runner = fn executable, args, opts ->
       cond do
-        Enum.take(args, -5) == [
+        Enum.take(args, -4) == [
           "up",
           "--detach",
           "--wait",
-          "--no-deps",
           "control-plane"
         ] ->
           {"control-plane failed token=#{secret} ecto://user:password@postgres/db", 1}
@@ -511,6 +666,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
   test "logs accepts only services in the installed Compose topology", context do
     opts = lifecycle_opts(context)
+    assert {:ok, _result} = ComposeLifecycle.start(opts)
 
     assert :ok = ComposeLifecycle.logs(Keyword.put(opts, :service, :control_plane))
 
@@ -528,36 +684,106 @@ defmodule Favn.Dev.ComposeLifecycleTest do
              ComposeLifecycle.logs(Keyword.put(opts, :service, :orchestrator))
   end
 
-  test "start rejects full and partial running stacks before runtime mutation", context do
-    {:ok, install} = State.read_install(root_dir: context.root_dir)
-    env_path = install["compose"]["env_path"]
-    original_env = File.read!(env_path)
+  test "diagnostics reports a malformed selected Compose file as a deployment error", context do
+    opts = lifecycle_opts(context)
+    assert {:ok, _result} = ComposeLifecycle.start(opts)
 
+    compose_file = Path.join(context.root_dir, "deploy/compose.local.yml")
+    File.write!(compose_file, "malformed: [\n")
+    base_runner = docker_runner(context.state)
+
+    malformed_runner = fn executable, args, command_opts ->
+      if Enum.take(args, -3) == ["config", "--format", "json"] do
+        {"yaml: line 1: did not find expected node content", 15}
+      else
+        base_runner.(executable, args, command_opts)
+      end
+    end
+
+    assert {:ok, report} =
+             ComposeLifecycle.diagnostics(
+               Keyword.put(opts, :docker_command_runner, malformed_runner)
+             )
+
+    assert report["status"] == "error"
+    assert report["deployment_contract"]["status"] == "error"
+    assert report["deployment_contract"]["error"] =~ "compose_render_failed"
+  end
+
+  test "start rejects full and partial running stacks before runtime mutation", context do
     cases = [
       {%{"postgres" => :running, "runner" => :running, "control-plane" => :running},
        :stack_already_running},
       {%{"runner" => :running, "control-plane" => :running},
        {:stack_partially_running,
-        %{"postgres" => :stopped, "runner" => :running, "control-plane" => :running}}}
+        %{
+          postgres: %{service: "postgres", status: :stopped},
+          runner: %{service: "runner", status: :running},
+          control_plane: %{service: "control-plane", status: :running}
+        }}}
     ]
 
     for {services, expected_error} <- cases do
+      maintenance = %{"attempt" => System.unique_integer([:positive])}
+      assert :ok = State.write_maintenance(maintenance, root_dir: context.root_dir)
+
       Agent.update(context.state, fn state ->
         %{state | services: services, commands: []}
       end)
 
       assert {:error, ^expected_error} = ComposeLifecycle.start(lifecycle_opts(context))
-      assert File.read!(env_path) == original_env
       assert {:error, :not_found} = State.read_runner_latest(root_dir: context.root_dir)
+      assert {:error, :not_found} = State.read_runtime(root_dir: context.root_dir)
+      assert {:ok, ^maintenance} = State.read_maintenance(root_dir: context.root_dir)
 
       refute Enum.any?(commands(context.state), fn command ->
                Enum.member?(command, "up") or Enum.member?(command, "stop")
              end)
 
-      refute Enum.any?(commands(context.state), fn command ->
-               Enum.any?(command, &String.starts_with?(&1, "favn-local-runner-"))
-             end)
+      refute Enum.any?(commands(context.state), &Enum.member?(&1, "build"))
     end
+  end
+
+  test "successful start preserves a selected consumer Compose file under .favn", context do
+    selected = Paths.compose_path(context.root_dir)
+    File.cp!(Path.join(context.root_dir, "deploy/compose.local.yml"), selected)
+
+    opts = context |> lifecycle_opts() |> Keyword.put(:compose_file, selected)
+
+    assert {:ok, _result} = ComposeLifecycle.start(opts)
+    assert File.regular?(selected)
+    assert {:ok, %{"compose_file" => ^selected}} = State.read_runtime(root_dir: context.root_dir)
+  end
+
+  test "stop preserves the successful CLI Compose selection for status and diagnostics",
+       context do
+    selected = Path.join(context.root_dir, "deploy/team.compose.yml")
+    File.cp!(Path.join(context.root_dir, "deploy/compose.local.yml"), selected)
+
+    opts = context |> lifecycle_opts() |> Keyword.put(:compose_file, selected)
+    assert {:ok, _result} = ComposeLifecycle.start(opts)
+    assert :ok = ComposeLifecycle.stop(opts)
+
+    assert {:error, :not_found} = State.read_runtime(root_dir: context.root_dir)
+
+    assert {:ok, %{"compose_file" => ^selected}} =
+             State.read_compose_selection(root_dir: context.root_dir)
+
+    default_opts = Keyword.delete(opts, :compose_file)
+
+    assert %{stack_status: :stopped, compose_file: "deploy/team.compose.yml"} =
+             ComposeLifecycle.status(default_opts)
+
+    assert {:ok, report} = ComposeLifecycle.diagnostics(default_opts)
+    assert report["deployment_contract"]["compose_file"] == "deploy/team.compose.yml"
+
+    assert :ok = ComposeLifecycle.logs(default_opts)
+
+    assert Enum.any?(commands(context.state), fn command ->
+             selected in command and "logs" in command
+           end)
+
+    assert Reset.plan(default_opts).preserved_compose_file == selected
   end
 
   test "lifecycle mutations fail boundedly while another command owns the project lock",
@@ -606,8 +832,10 @@ defmodule Favn.Dev.ComposeLifecycleTest do
                docker_command_runner: docker_runner(context.state)
              )
 
-    refute File.exists?(Paths.favn_dir(context.root_dir))
-    assert Enum.any?(commands(context.state), &Enum.member?(&1, "--volumes"))
+    assert File.dir?(Paths.data_dir(context.root_dir))
+    refute File.exists?(Paths.install_path(context.root_dir))
+    refute Enum.any?(commands(context.state), &Enum.member?(&1, "--volumes"))
+    refute Enum.any?(commands(context.state), &Enum.member?(&1, "down"))
   end
 
   defp lifecycle_opts(context) do
@@ -633,6 +861,20 @@ defmodule Favn.Dev.ComposeLifecycleTest do
         env_file_loaded: %{"FAVN_CUSTOM_TOKEN" => "runtime-secret"},
         ready_poll_interval_ms: 1
       ]
+  end
+
+  defp maintainer_candidate(root_dir) do
+    %Candidate{
+      control_plane_build_id: @control_build_id,
+      image_tag: "favn-control-plane-candidate:#{@control_build_id}",
+      image_id: @control_image_id,
+      candidate_path: Path.join(root_dir, "candidate.json"),
+      image_source_revision: String.duplicate("d", 40),
+      image_source_dirty: true,
+      checkout: Path.join(root_dir, "favn"),
+      checkout_revision: String.duplicate("d", 40),
+      checkout_dirty: true
+    }
   end
 
   defp write_runner(opts, state) do
@@ -767,6 +1009,42 @@ defmodule Favn.Dev.ComposeLifecycleTest do
         ["image", "rm" | _references] ->
           {"", 0}
 
+        ["container", "ls", "--all", "--quiet" | _filters] ->
+          ids =
+            state
+            |> Agent.get(& &1.services)
+            |> Map.keys()
+            |> Enum.sort()
+            |> Enum.map_join("\n", &"container-#{&1}")
+
+          {if(ids == "", do: "", else: ids <> "\n"), 0}
+
+        ["container", "inspect" | ids] ->
+          snapshot = Agent.get(state, & &1)
+
+          inspections =
+            Enum.map(ids, fn "container-" <> service ->
+              %{
+                "Id" => "container-#{service}",
+                "Name" => "/#{service}",
+                "Config" => %{
+                  "Labels" => %{
+                    "com.docker.compose.project" => snapshot.project_name,
+                    "io.favn.compose.contract-version" => "1",
+                    "io.favn.compose.profile" => "local",
+                    "io.favn.compose.role" => service
+                  }
+                },
+                "State" => %{"Running" => Map.get(snapshot.services, service) == :running}
+              }
+            end)
+
+          {JSON.encode!(inspections), 0}
+
+        ["container", "stop", "--time", _timeout | ids] ->
+          Enum.each(ids, fn "container-" <> service -> set_service(state, service, :stopped) end)
+          {"", 0}
+
         ["compose" | compose_args] ->
           compose_response(compose_args, state)
 
@@ -778,6 +1056,9 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
   defp compose_response(args, state) do
     cond do
+      Enum.take(args, -3) == ["config", "--format", "json"] ->
+        {rendered_compose(args), 0}
+
       Enum.take(args, -2) == ["config", "--quiet"] ->
         {"", 0}
 
@@ -813,6 +1094,33 @@ defmodule Favn.Dev.ComposeLifecycleTest do
       true ->
         {"", 0}
     end
+  end
+
+  defp rendered_compose(args) do
+    env_index = Enum.find_index(args, &(&1 == "--env-file"))
+    env_path = Enum.at(args, env_index + 1)
+    {:ok, environment} = ComposeEnv.read(env_path)
+
+    labels = %{
+      "io.favn.compose.contract-version" => "1",
+      "io.favn.compose.profile" => "local"
+    }
+
+    control_plane = environment["FAVN_CONTROL_PLANE_IMAGE"]
+
+    services = %{
+      "postgres" => service(labels, "postgres", Favn.Dev.ComposeProject.postgres_image()),
+      "control-plane-ops" => service(labels, "control-plane-ops", control_plane),
+      "control-plane-verify" => service(labels, "control-plane-verify", control_plane),
+      "runner" => service(labels, "runner", environment["FAVN_RUNNER_IMAGE"]),
+      "control-plane" => service(labels, "control-plane", control_plane)
+    }
+
+    JSON.encode!(%{"services" => services})
+  end
+
+  defp service(labels, role, image) do
+    %{"image" => image, "labels" => Map.put(labels, "io.favn.compose.role", role)}
   end
 
   defp compose_ps(state, include_stopped?) do

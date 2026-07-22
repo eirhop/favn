@@ -31,6 +31,12 @@ immutable manifest releases. Favn publishes the control-plane image; consumer
 projects do not build or depend on its implementation applications. The operator
 contract starts at `docs/production/deployment_topology.md`.
 
+For local deployment, `mix favn.init --target compose` scaffolds a
+consumer-owned template, `mix favn.install` selects only the immutable
+control-plane image, and `mix favn.dev --compose-file PATH` has highest
+selection precedence over `config :favn, :local` and the default
+`deploy/compose.local.yml`.
+
 Public SQL output-contract authoring is documented in
 `apps/favn/guides/sql-output-contracts.md` and routed from `Favn.AI`.
 `Favn.SQLAsset` owns the public `contract do` declaration, and `favn_core` owns

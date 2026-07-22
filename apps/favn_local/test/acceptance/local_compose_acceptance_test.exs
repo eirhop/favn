@@ -3,7 +3,9 @@ defmodule Favn.Local.ComposeAcceptanceTest do
 
   alias Favn.Dev.{
     ComposeEnv,
+    ComposeDeployment,
     ComposeLifecycle,
+    ComposeProject,
     Doctor,
     Docker,
     Install,
@@ -12,6 +14,8 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     Reset,
     State
   }
+
+  alias Favn.Dev.Init.Compose, as: ComposeInit
 
   @moduletag :integration
   @moduletag :container
@@ -43,6 +47,8 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     File.mkdir_p!(Path.join(root_dir, "config"))
     File.write!(Path.join(root_dir, "mix.exs"), "defmodule Fixture.MixProject do end\n")
     File.write!(Path.join(root_dir, "config/config.exs"), "import Config\n")
+    assert {:ok, _scaffold} = ComposeInit.run(root_dir: root_dir)
+    add_consumer_service!(root_dir)
 
     for app <- ~w(favn_runner favn_orchestrator favn_view) do
       File.mkdir_p!(Path.join(root_dir, "apps/#{app}"))
@@ -72,9 +78,12 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     ]
 
     assert {:ok, :installed} = Install.run(opts)
+    project_name = ComposeProject.project_name(root_dir)
 
     on_exit(fn ->
+      _ = ComposeLifecycle.stop(opts)
       _ = Reset.run(Keyword.put(opts, :yes, true))
+      cleanup_project_resources(project_name)
       File.rm_rf(root_dir)
     end)
 
@@ -83,34 +92,42 @@ defmodule Favn.Local.ComposeAcceptanceTest do
 
   test "the production-like local stack starts, deploys, stops, and restores", context do
     assert {:ok, first} = ComposeLifecycle.start(context.opts)
+    deployment = deployment!(context.opts)
 
     assert %{stack_status: :running, services: services} =
              ComposeLifecycle.status(context.opts)
 
-    assert services["postgres"].health == :healthy
-    assert services["runner"].health == :healthy
-    assert services["control-plane"].health == :healthy
+    assert services.postgres.health == :healthy
+    assert services.runner.health == :healthy
+    assert services.control_plane.health == :healthy
 
-    assert {:ok, install} = State.read_install(root_dir: context.root_dir)
-    project = install["compose"]
-    compose = File.read!(install["compose"]["compose_path"])
+    compose = File.read!(deployment.compose_file)
     refute compose =~ "/home/"
     refute compose =~ "5432:5432"
     refute compose =~ "4369:4369"
     refute compose =~ "9100:9100"
 
-    running = inspect_services(project)
-    assert running["runner"]["Mounts"] == []
+    running = inspect_services(deployment)
+
+    assert Enum.any?(running["runner"]["Mounts"], fn mount ->
+             mount["Destination"] == "/var/lib/favn/data" and
+               Path.expand(mount["Source"]) == Paths.data_dir(context.root_dir)
+           end)
+
     assert running["control-plane"]["Mounts"] == []
     assert running["runner"]["HostConfig"]["PortBindings"] == %{}
     assert running["postgres"]["HostConfig"]["PortBindings"] == %{}
 
+    owner = File.stat!(context.root_dir)
+    assert running["runner"]["Config"]["User"] == "#{owner.uid}:#{owner.gid}"
+
     for service <- ["runner", "control-plane"] do
-      assert running[service]["Config"]["User"] == "10001:10001"
       assert running[service]["HostConfig"]["ReadonlyRootfs"] == true
       assert "ALL" in running[service]["HostConfig"]["CapDrop"]
       assert "no-new-privileges:true" in running[service]["HostConfig"]["SecurityOpt"]
     end
+
+    assert running["control-plane"]["Config"]["User"] == "10001:10001"
 
     assert_control_plane_runtime_contract(running["control-plane"]["Id"])
 
@@ -124,13 +141,16 @@ defmodule Favn.Local.ComposeAcceptanceTest do
              hd(running["control-plane"]["HostConfig"]["PortBindings"]["4101/tcp"])
 
     assert Enum.all?(running, fn {_service, inspection} ->
-             inspection["HostConfig"]["NetworkMode"] == project["network_name"]
+             inspection["HostConfig"]["NetworkMode"] == deployment.project_name <> "-network"
            end)
 
-    assert_liveview_websocket_through_proxy!(project, context.root_dir)
+    assert_liveview_websocket_through_proxy!(deployment, context.root_dir)
+
+    assert {_output, 0} = Docker.compose(deployment, ["up", "--detach", "sentinel"])
+    sentinel_id = compose_container_id!(deployment, "sentinel")
 
     assert :ok = ComposeLifecycle.reload(context.opts)
-    reloaded = inspect_services(project)
+    reloaded = inspect_services(deployment)
 
     for service <- ["postgres", "runner", "control-plane"] do
       assert reloaded[service]["Image"] == running[service]["Image"]
@@ -139,7 +159,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
 
     Agent.update(context.build_state, fn _modules -> [Favn.Dev.Paths] end)
     assert :ok = ComposeLifecycle.reload(context.opts)
-    replaced = inspect_services(project)
+    replaced = inspect_services(deployment)
 
     assert replaced["runner"]["Image"] != reloaded["runner"]["Image"]
 
@@ -166,7 +186,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
                end)
              )
 
-    blocked = inspect_services(project)
+    blocked = inspect_services(deployment)
     assert blocked["runner"]["Image"] == replaced["runner"]["Image"]
     assert blocked["runner"]["State"]["StartedAt"] == replaced["runner"]["State"]["StartedAt"]
 
@@ -190,7 +210,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
 
     {_doctor_result, doctor_checks} = normalize_doctor_result(Doctor.run(context.opts))
 
-    for check_name <- ["docker", "control-plane install", "compose isolation", "compose runtime"] do
+    for check_name <- ["docker", "control-plane install", "compose deployment", "compose runtime"] do
       assert %{status: :ok} = Enum.find(doctor_checks, &(&1.name == check_name))
     end
 
@@ -203,7 +223,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
 
     Agent.update(context.build_state, fn _modules -> [] end)
     assert :ok = ComposeLifecycle.reload(context.opts)
-    rolled_back = inspect_services(project)
+    rolled_back = inspect_services(deployment)
 
     assert rolled_back["runner"]["Image"] == running["runner"]["Image"]
 
@@ -228,24 +248,28 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     assert second.runner_image_id == rollback_latest["image_id"]
     assert second.manifest_version_id == first.manifest_version_id
 
-    assert_runtime_input_key_rotation!(project, context.opts)
-    assert_view_session_key_rotation!(project, context.opts)
-    assert_service_token_rotation!(project, context.opts)
+    deployment = deployment!(context.opts)
+    assert_runtime_input_key_rotation!(deployment, context.opts)
+    assert_view_session_key_rotation!(deployment, context.opts)
+    assert_service_token_rotation!(deployment, context.opts)
 
     assert %{stack_status: :running, runtime: %{"status" => "ok"}} =
              ComposeLifecycle.status(context.opts)
 
     assert :ok = ComposeLifecycle.stop(context.opts)
-    assert File.exists?(Paths.compose_path(context.root_dir))
+    assert File.exists?(deployment.compose_file)
+    assert {_, 0} = System.cmd("docker", ["container", "inspect", sentinel_id])
 
     sentinel_volume = "favn-unrelated-#{System.unique_integer([:positive])}"
     {_output, 0} = System.cmd("docker", ["volume", "create", sentinel_volume])
 
     try do
       assert {:error, {:confirmation_required, resources}} = Reset.run(context.opts)
-      assert resources.compose_project == project["project_name"]
+      assert resources.compose_project == deployment.project_name
       assert :ok = Reset.run(Keyword.put(context.opts, :yes, true))
-      refute File.exists?(Paths.favn_dir(context.root_dir))
+      assert File.dir?(Paths.data_dir(context.root_dir))
+      assert File.exists?(deployment.compose_file)
+      assert {_, 0} = System.cmd("docker", ["container", "inspect", sentinel_id])
       {_output, 0} = System.cmd("docker", ["volume", "inspect", sentinel_volume])
     after
       _ = System.cmd("docker", ["volume", "rm", "--force", sentinel_volume])
@@ -267,6 +291,55 @@ defmodule Favn.Local.ComposeAcceptanceTest do
   defp normalize_doctor_result({:ok, checks}), do: {:ok, checks}
   defp normalize_doctor_result({:error, checks}), do: {:error, checks}
 
+  defp deployment!(opts) do
+    assert {:ok, runtime} = State.read_runtime(opts)
+    assert {:ok, deployment} = ComposeDeployment.from_runtime(runtime, opts)
+    deployment
+  end
+
+  defp add_consumer_service!(root_dir) do
+    path = Path.join(root_dir, "deploy/compose.local.yml")
+    compose = File.read!(path)
+
+    sentinel = """
+    services:
+      sentinel:
+        image: "#{@reference_proxy_image}"
+        restart: unless-stopped
+
+    """
+
+    File.write!(path, String.replace(compose, "services:\n", sentinel, global: false))
+  end
+
+  defp compose_container_id!(deployment, service) do
+    assert {container, 0} = Docker.compose(deployment, ["ps", "--quiet", service])
+    container = String.trim(container)
+    assert container != ""
+    container
+  end
+
+  defp cleanup_project_resources(project_name) do
+    {containers, 0} =
+      System.cmd("docker", [
+        "container",
+        "ls",
+        "--all",
+        "--quiet",
+        "--filter",
+        "label=com.docker.compose.project=#{project_name}"
+      ])
+
+    case String.split(containers, "\n", trim: true) do
+      [] -> :ok
+      ids -> _ = System.cmd("docker", ["container", "rm", "--force" | ids])
+    end
+
+    _ = System.cmd("docker", ["network", "rm", project_name <> "-network"])
+    _ = System.cmd("docker", ["volume", "rm", "--force", project_name <> "-postgres-data"])
+    :ok
+  end
+
   defp free_port do
     {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(socket)
@@ -274,9 +347,9 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     port
   end
 
-  defp inspect_services(project) do
+  defp inspect_services(deployment) do
     Map.new(["postgres", "runner", "control-plane"], fn service ->
-      {container, 0} = Docker.compose(project, ["ps", "--quiet", service])
+      {container, 0} = Docker.compose(deployment, ["ps", "--quiet", service])
       container = String.trim(container)
       assert container != ""
 
@@ -319,7 +392,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     refute output =~ "control-plane runtime includes"
   end
 
-  defp assert_service_token_rotation!(project, opts) do
+  defp assert_service_token_rotation!(deployment, opts) do
     assert {:ok, secrets} = State.read_secrets(opts)
     old_token = secrets["service_token"]
 
@@ -328,52 +401,52 @@ defmodule Favn.Local.ComposeAcceptanceTest do
 
     roles = "platform_reader+platform_operator+platform_admin"
 
-    put_compose_environment!(project, %{
+    put_compose_environment!(deployment, %{
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
         "local-tooling-old|#{roles}:#{old_token},local-tooling-next|#{roles}:#{new_token}"
     })
 
-    recreate_control_plane!(project, opts)
-    assert_diagnostics_ready!(project["orchestrator_url"], old_token)
-    assert_diagnostics_ready!(project["orchestrator_url"], new_token)
+    recreate_control_plane!(deployment, opts)
+    assert_diagnostics_ready!(deployment.orchestrator_url, old_token)
+    assert_diagnostics_ready!(deployment.orchestrator_url, new_token)
 
-    put_compose_environment!(project, %{
+    put_compose_environment!(deployment, %{
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "local-tooling-next|#{roles}:#{new_token}"
     })
 
     assert :ok = State.write_secrets(Map.put(secrets, "service_token", new_token), opts)
-    recreate_control_plane!(project, opts)
-    assert_diagnostics_ready!(project["orchestrator_url"], new_token)
+    recreate_control_plane!(deployment, opts)
+    assert_diagnostics_ready!(deployment.orchestrator_url, new_token)
 
     assert {:error, _unauthorized} =
-             OrchestratorClient.diagnostics(project["orchestrator_url"], old_token)
+             OrchestratorClient.diagnostics(deployment.orchestrator_url, old_token)
   end
 
-  defp assert_runtime_input_key_rotation!(project, opts) do
+  defp assert_runtime_input_key_rotation!(deployment, opts) do
     assert {:ok, secrets} = State.read_secrets(opts)
     old_key = secrets["runtime_input_pin_key"]
     new_key = :crypto.hash(:sha256, "favn-container-key-rotation") |> Base.encode64()
 
-    put_compose_environment!(project, %{
+    put_compose_environment!(deployment, %{
       "FAVN_RUNTIME_INPUT_PIN_KEYS" => JSON.encode!(%{"1" => old_key, "2" => new_key}),
       "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION" => "2"
     })
 
-    recreate_control_plane!(project, opts)
-    assert_runtime_input_key_inventory!(project, opts, 2, [1, 2], [old_key, new_key])
+    recreate_control_plane!(deployment, opts)
+    assert_runtime_input_key_inventory!(deployment, opts, 2, [1, 2], [old_key, new_key])
 
-    put_compose_environment!(project, %{
+    put_compose_environment!(deployment, %{
       "FAVN_RUNTIME_INPUT_PIN_KEYS" => JSON.encode!(%{"2" => new_key})
     })
 
-    recreate_control_plane!(project, opts)
-    assert_runtime_input_key_inventory!(project, opts, 2, [2], [old_key, new_key])
+    recreate_control_plane!(deployment, opts)
+    assert_runtime_input_key_inventory!(deployment, opts, 2, [2], [old_key, new_key])
   end
 
-  defp assert_runtime_input_key_inventory!(project, opts, current, retained, secret_keys) do
+  defp assert_runtime_input_key_inventory!(deployment, opts, current, retained, secret_keys) do
     assert {output, 0} =
              Docker.compose(
-               project,
+               deployment,
                [
                  "--profile",
                  "operations",
@@ -394,23 +467,23 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     refute Enum.any?(secret_keys, &String.contains?(output, &1))
   end
 
-  defp assert_view_session_key_rotation!(project, opts) do
+  defp assert_view_session_key_rotation!(deployment, opts) do
     assert {:ok, secrets} = State.read_secrets(opts)
-    cookie = login_browser_session!(project, secrets)
-    assert_browser_session_status!(project["view_url"], cookie, 200)
+    cookie = login_browser_session!(deployment, secrets)
+    assert_browser_session_status!(deployment.view_url, cookie, 200)
 
     new_secret = :crypto.strong_rand_bytes(48) |> Base.url_encode64(padding: false)
 
-    put_compose_environment!(project, %{"FAVN_VIEW_SECRET_KEY_BASE" => new_secret})
+    put_compose_environment!(deployment, %{"FAVN_VIEW_SECRET_KEY_BASE" => new_secret})
     assert :ok = State.write_secrets(Map.put(secrets, "web_session_secret", new_secret), opts)
-    recreate_control_plane!(project, opts)
+    recreate_control_plane!(deployment, opts)
 
-    assert_browser_session_redirected_to_login!(project["view_url"], cookie)
+    assert_browser_session_redirected_to_login!(deployment.view_url, cookie)
   end
 
-  defp login_browser_session!(project, secrets) do
+  defp login_browser_session!(deployment, secrets) do
     :ok = ensure_inets_started!()
-    login_url = project["view_url"] <> "/login"
+    login_url = deployment.view_url <> "/login"
     %{status: 200, headers: get_headers, body: body} = http_request!(:get, login_url)
     csrf_token = csrf_token!(body)
     get_cookies = response_cookies(get_headers)
@@ -418,7 +491,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     form =
       URI.encode_query([
         {"_csrf_token", csrf_token},
-        {"operator[workspace_id]", project["workspace_id"]},
+        {"operator[workspace_id]", deployment.workspace_id},
         {"operator[username]", "admin"},
         {"operator[password]", secrets["bootstrap_password"]}
       ])
@@ -512,7 +585,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     end)
   end
 
-  defp assert_liveview_websocket_through_proxy!(project, root_dir) do
+  defp assert_liveview_websocket_through_proxy!(deployment, root_dir) do
     proxy_port = free_port()
     proxy_name = "favn-reference-proxy-#{System.unique_integer([:positive])}"
     config_path = Path.join(root_dir, "reference-proxy.nginx.conf")
@@ -529,7 +602,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
                    "--name",
                    proxy_name,
                    "--network",
-                   project["network_name"],
+                   deployment.project_name <> "-network",
                    "--publish",
                    "127.0.0.1:#{proxy_port}:8080",
                    "--volume",
@@ -540,7 +613,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
                )
 
       assert String.trim(container_id) != ""
-      assert_websocket_upgrade_ready!(proxy_port, project["view_url"])
+      assert_websocket_upgrade_ready!(proxy_port, deployment.view_url)
     after
       _ =
         System.cmd(
@@ -642,18 +715,18 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     end
   end
 
-  defp put_compose_environment!(project, updates) do
-    path = project["env_path"]
+  defp put_compose_environment!(deployment, updates) do
+    path = deployment.env_file
     assert {:ok, environment} = ComposeEnv.read(path)
     assert {:ok, encoded} = ComposeEnv.encode(Map.merge(environment, updates))
     assert :ok = File.write(path, encoded)
     assert :ok = File.chmod(path, 0o600)
   end
 
-  defp recreate_control_plane!(project, opts) do
+  defp recreate_control_plane!(deployment, opts) do
     assert {output, 0} =
              Docker.compose(
-               project,
+               deployment,
                ["up", "--detach", "--wait", "--no-deps", "--force-recreate", "control-plane"],
                Keyword.put(opts, :compose_command_timeout_ms, 300_000)
              )

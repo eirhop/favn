@@ -20,7 +20,7 @@ defmodule Favn.Dev.RunnerImage do
           descriptor_path: Path.t(),
           manifest_dir: Path.t(),
           manifest_version_id: String.t(),
-          status: :built | :cached
+          status: :built | :reused
         }
 
   @doc "Builds or reuses the exact local runner image and selects it in Compose."
@@ -147,14 +147,31 @@ defmodule Favn.Dev.RunnerImage do
   defp ensure_image(reference, latest, opts) do
     case Docker.inspect_image(reference, opts) do
       {:ok, image} ->
-        with :ok <- validate_image(image, latest) do
-          {:ok, image, :cached}
+        with :ok <- validate_image(image, latest),
+             :ok <- progress(opts, "runner image: reused and verified exact image\n") do
+          {:ok, image, :reused}
         end
 
       {:error, {:docker_image_unavailable, ^reference}} ->
-        with :ok <- Docker.build_image(reference, latest.dist_dir, opts),
+        build_opts =
+          Keyword.put_new_lazy(opts, :docker_output_writer, fn ->
+            Keyword.get(opts, :progress_fun, fn _chunk -> :ok end)
+          end)
+
+        with :ok <-
+               progress(
+                 opts,
+                 "runner image: building; BuildKit will report dependency-layer cache reuse\n"
+               ),
+             :ok <- Docker.build_image(reference, latest.dist_dir, build_opts),
+             :ok <-
+               progress(
+                 opts,
+                 "runner image: customer compilation and release assembly complete\n"
+               ),
              {:ok, image} <- Docker.inspect_image(reference, opts),
-             :ok <- validate_image(image, latest) do
+             :ok <- validate_image(image, latest),
+             :ok <- progress(opts, "runner image: built image verified\n") do
           {:ok, image, :built}
         end
 
@@ -203,6 +220,13 @@ defmodule Favn.Dev.RunnerImage do
       },
       opts
     )
+  end
+
+  defp progress(opts, message) do
+    case Keyword.get(opts, :progress_fun, fn _chunk -> :ok end).(message) do
+      :ok -> :ok
+      _other -> :ok
+    end
   end
 
   defp bounded(output) when is_binary(output),

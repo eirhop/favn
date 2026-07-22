@@ -217,11 +217,12 @@ Local setup:
 
 | Command | Use it for |
 | --- | --- |
-| `mix favn.init` | Generate local Favn files and optional samples. |
-| `mix favn.install` | Verify Docker/Compose and install the prebuilt control-plane digest. |
+| `mix favn.init --duckdb --sample` | Generate local Favn files and an optional sample. |
+| `mix favn.init --target compose` | Scaffold a consumer-owned Compose template. |
+| `mix favn.install` | Verify Docker Engine and install the prebuilt control-plane digest. |
 | `mix favn.doctor` | Check the installed local configuration. |
-| `mix favn.dev` | Start PostgreSQL, control plane, and runner as Compose services. |
-| `mix favn.stop` | Stop the local runtime stack. |
+| `mix favn.dev` | Validate the selected Compose file and start the Favn roles. |
+| `mix favn.stop` | Stop only the recorded Favn roles. |
 
 Run and inspect work:
 
@@ -241,7 +242,7 @@ Manage local runtime:
 | Command | Use it for |
 | --- | --- |
 | `mix favn.reload` | Publish a manifest-only change or replace only the runner for executable changes. |
-| `mix favn.reset` | Preview project-scoped cleanup; add `--yes` to remove it. |
+| `mix favn.reset` | Preview generated-state cleanup; data and Compose resources are preserved. |
 | `mix favn.read_doc` | Read compiled Favn docs locally. |
 
 Packaging commands:

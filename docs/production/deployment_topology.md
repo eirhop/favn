@@ -26,6 +26,15 @@ Favn publishes no runner image. `mix favn.build.runner` creates a relocatable OC
 build context and an aligned manifest release; the customer builds and pushes
 that context with their own registry credentials.
 
+`mix favn.init --target compose --profile single-host` creates a non-secret
+starting template for this topology. The operator owns the resulting file and
+must adapt its external PostgreSQL, secret injection, registry, ingress,
+durability, and monitoring configuration. The versioned Favn labels identify
+the `control-plane-ops`, `control-plane-verify`, `runner`, and `control-plane`
+roles; extra unlabeled platform services are outside Favn ownership. Its
+example network permits outbound connections because PostgreSQL is external;
+the operator must restrict that egress with the host or platform firewall.
+
 ## Required infrastructure
 
 Before deployment, provide:

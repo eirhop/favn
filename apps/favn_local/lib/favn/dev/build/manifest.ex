@@ -21,6 +21,7 @@ defmodule Favn.Dev.Build.Manifest do
     :dependency_sources,
     :extra_applications,
     :extra_modules,
+    :host_toolchain,
     :lock,
     :module_inventory,
     :runner_build,

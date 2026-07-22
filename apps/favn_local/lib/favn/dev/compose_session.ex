@@ -1,9 +1,9 @@
 defmodule Favn.Dev.ComposeSession do
   @moduledoc false
 
-  alias Favn.Dev.State
+  alias Favn.Dev.{ComposeDeployment, State}
 
-  @runtime_schema_version 5
+  @runtime_schema_version 6
 
   @type credentials :: %{service_token: String.t()}
   @type session_context :: %{
@@ -14,9 +14,9 @@ defmodule Favn.Dev.ComposeSession do
           {:ok, String.t(), credentials(), session_context()} | {:error, term()}
   def resolve(opts) when is_list(opts) do
     with {:ok, runtime} <- read_running_runtime(opts),
-         {:ok, project} <- read_project(runtime, opts),
+         {:ok, deployment} <- ComposeDeployment.from_runtime(runtime, opts),
          {:ok, token} <- read_service_token(opts) do
-      {:ok, project["orchestrator_url"], %{service_token: token}, local_context(project)}
+      {:ok, deployment.orchestrator_url, %{service_token: token}, local_context(deployment)}
     end
   end
 
@@ -42,28 +42,6 @@ defmodule Favn.Dev.ComposeSession do
     end
   end
 
-  defp read_project(%{"compose_project" => expected_project_name}, opts) do
-    case State.read_install(opts) do
-      {:ok,
-       %{
-         "compose" => %{
-           "project_name" => project_name,
-           "orchestrator_url" => orchestrator_url,
-           "workspace_id" => workspace_id
-         } = project
-       }}
-      when project_name == expected_project_name and is_binary(orchestrator_url) and
-             orchestrator_url != "" and is_binary(workspace_id) and workspace_id != "" ->
-        {:ok, project}
-
-      {:error, :not_found} ->
-        {:error, :install_required}
-
-      _invalid ->
-        {:error, :install_stale}
-    end
-  end
-
   defp read_service_token(opts) do
     case State.read_secrets(opts) do
       {:ok, %{"service_token" => token}} when is_binary(token) and token != "" -> {:ok, token}
@@ -71,12 +49,12 @@ defmodule Favn.Dev.ComposeSession do
     end
   end
 
-  defp local_context(project) do
+  defp local_context(deployment) do
     %{
       "actor_id" => "local-dev-cli",
       "session_id" => "local-dev-cli",
       "local_dev_context" => "trusted",
-      "workspace_id" => project["workspace_id"]
+      "workspace_id" => deployment.workspace_id
     }
   end
 end

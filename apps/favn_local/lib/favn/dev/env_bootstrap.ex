@@ -1,8 +1,7 @@
 defmodule Favn.Dev.EnvBootstrap do
   @moduledoc false
 
-  alias Favn.Dev.EnvFile
-  alias Favn.Dev.Paths
+  alias Favn.Dev.{EnvFile, Paths, SampleEnvironment}
 
   @token_env "FAVN_INTERNAL_ENV_BOOTSTRAP"
   @schema_version 1
@@ -11,11 +10,12 @@ defmodule Favn.Dev.EnvBootstrap do
   @max_loaded_keys 512
   @max_key_bytes 256
   @key_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*$/
-  @commands [:dev, :inspect, :query, :reload]
+  @commands [:dev, :inspect, :maintainer_dev, :query, :reload]
   @command_names Enum.map(@commands, &Atom.to_string/1)
   @configured_tasks %{
     dev: "favn.dev.configured",
     inspect: "favn.inspect.configured",
+    maintainer_dev: "favn.maintainer.dev.configured",
     query: "favn.query.configured",
     reload: "favn.reload.configured"
   }
@@ -23,7 +23,7 @@ defmodule Favn.Dev.EnvBootstrap do
 
   defstruct [:env_file_path, loaded: %{}]
 
-  @type command :: :dev | :inspect | :query | :reload
+  @type command :: :dev | :inspect | :maintainer_dev | :query | :reload
   @type t :: %__MODULE__{
           env_file_path: Path.t(),
           loaded: %{optional(String.t()) => String.t()}
@@ -103,6 +103,8 @@ defmodule Favn.Dev.EnvBootstrap do
 
   defp prepare_token(command, opts) do
     with {:ok, env_file} <- load_env_file(opts) do
+      env_file = SampleEnvironment.install_defaults(env_file, opts)
+
       payload = %{
         "schema_version" => @schema_version,
         "command" => Atom.to_string(command),
