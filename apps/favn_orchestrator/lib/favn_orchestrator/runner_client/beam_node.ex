@@ -15,6 +15,15 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
 
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.GenerationActivationRequest
+  alias Favn.Contracts.GenerationActivationResult
+  alias Favn.Contracts.GenerationDiscardRequest
+  alias Favn.Contracts.GenerationDiscardResult
+  alias Favn.Contracts.GenerationMarker
+  alias Favn.Contracts.GenerationMarkerInitializationRequest
+  alias Favn.Contracts.GenerationMarkerInitializationResult
+  alias Favn.Contracts.GenerationReconciliationRequest
+  alias Favn.Contracts.GenerationReconciliationResult
   alias Favn.Contracts.RunnerCancellation
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
@@ -39,7 +48,10 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
     :ensure_manifest,
     :await_result,
     :resolve_runtime_inputs,
-    :inspect_relation
+    :inspect_relation,
+    :generation_capabilities,
+    :generation_marker,
+    :reconcile_generation
   ]
 
   @type opt ::
@@ -140,6 +152,48 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
           {:ok, RelationInspectionResult.t()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts),
     do: dispatch(opts, :inspect_relation, [request, opts])
+
+  @impl true
+  @spec generation_capabilities(Version.t(), Favn.Ref.t(), [opt()]) ::
+          {:ok, map()} | {:error, term()}
+  def generation_capabilities(%Version{} = version, asset_ref, opts \\ [])
+      when is_tuple(asset_ref) and is_list(opts),
+      do: dispatch(opts, :generation_capabilities, [version, asset_ref, opts])
+
+  @impl true
+  @spec generation_marker(Version.t(), Favn.Ref.t(), [opt()]) ::
+          {:ok, GenerationMarker.t() | nil} | {:error, term()}
+  def generation_marker(%Version{} = version, asset_ref, opts \\ [])
+      when is_tuple(asset_ref) and is_list(opts),
+      do: dispatch(opts, :generation_marker, [version, asset_ref, opts])
+
+  @impl true
+  @spec initialize_generation_marker(GenerationMarkerInitializationRequest.t(), [opt()]) ::
+          {:ok, GenerationMarkerInitializationResult.t()} | {:error, term()}
+  def initialize_generation_marker(%GenerationMarkerInitializationRequest{} = request, opts \\ [])
+      when is_list(opts),
+      do: dispatch(opts, :initialize_generation_marker, [request, opts])
+
+  @impl true
+  @spec activate_generation(GenerationActivationRequest.t(), [opt()]) ::
+          {:ok, GenerationActivationResult.t()} | {:error, term()}
+  def activate_generation(%GenerationActivationRequest{} = request, opts \\ [])
+      when is_list(opts),
+      do: dispatch(opts, :activate_generation, [request, opts])
+
+  @impl true
+  @spec reconcile_generation(GenerationReconciliationRequest.t(), [opt()]) ::
+          {:ok, GenerationReconciliationResult.t()} | {:error, term()}
+  def reconcile_generation(%GenerationReconciliationRequest{} = request, opts \\ [])
+      when is_list(opts),
+      do: dispatch(opts, :reconcile_generation, [request, opts])
+
+  @impl true
+  @spec discard_generation(GenerationDiscardRequest.t(), [opt()]) ::
+          {:ok, GenerationDiscardResult.t()} | {:error, term()}
+  def discard_generation(%GenerationDiscardRequest{} = request, opts \\ [])
+      when is_list(opts),
+      do: dispatch(opts, :discard_generation, [request, opts])
 
   @doc "Probes the configured runner node through its bounded diagnostics callback."
   @impl true

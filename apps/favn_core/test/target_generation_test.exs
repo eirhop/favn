@@ -75,4 +75,51 @@ defmodule Favn.TargetGenerationTest do
              |> Map.put(:activated_at, "yesterday")
              |> TargetGeneration.new()
   end
+
+  test "validates the exact persisted data-plane marker identity" do
+    generation_id = "018f47a0-7b0d-4b1a-8d8b-e18a9a987654"
+
+    attrs = %{
+      workspace_id: "workspace",
+      target_id: "asset:orders",
+      target_generation_id: generation_id,
+      creating_manifest_id: "manifest",
+      creating_descriptor_hash: String.duplicate("a", 64),
+      logical_relation: %{table: "orders"},
+      physical_relation: %{table: "orders"},
+      data_plane_marker: %{
+        "target_id" => "asset:orders",
+        "active_relation" => %{
+          "connection" => "warehouse",
+          "catalog" => nil,
+          "schema" => "analytics",
+          "name" => "orders"
+        },
+        "active_generation_id" => generation_id,
+        "activation_operation_id" => "initial-materialization",
+        "activation_token" => "initial-token",
+        "activated_at" => "2026-07-22T10:00:00Z"
+      },
+      status: :active,
+      version: 1,
+      created_at: ~U[2026-07-22 10:00:00Z],
+      updated_at: ~U[2026-07-22 10:00:00Z]
+    }
+
+    assert {:ok, _generation} = TargetGeneration.new(attrs)
+
+    assert {:error,
+            {:generation_data_plane_marker_identity_mismatch, :active_generation_id, _, _}} =
+             attrs
+             |> put_in(
+               [:data_plane_marker, "active_generation_id"],
+               "118f47a0-7b0d-4b1a-8d8b-e18a9a987654"
+             )
+             |> TargetGeneration.new()
+
+    assert {:error, {:incomplete_generation_data_plane_marker, :marker, _}} =
+             attrs
+             |> update_in([:data_plane_marker], &Map.delete(&1, "activation_operation_id"))
+             |> TargetGeneration.new()
+  end
 end

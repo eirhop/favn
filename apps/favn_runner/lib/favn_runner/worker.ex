@@ -313,6 +313,7 @@ defmodule FavnRunner.Worker do
     duration_ms = duration_ms(started_at, finished_at)
 
     normalized_error = normalize_error(error)
+    generation_result = generation_result(work, status, normalized_error)
 
     %RunnerAssetResult{
       ref: asset.ref,
@@ -337,7 +338,24 @@ defmodule FavnRunner.Worker do
       ],
       asset_step_id: work.asset_step_id
     }
+    |> struct(generation_result)
   end
+
+  defp generation_result(%RunnerWork{target_operation: nil}, _status, _error), do: %{}
+
+  defp generation_result(%RunnerWork{} = work, status, error) do
+    %{
+      target_operation: work.target_operation,
+      logical_target_id: work.logical_target_id,
+      target_generation_id: work.target_generation_id,
+      write_relation: work.write_relation,
+      write_outcome: write_outcome(status, error)
+    }
+  end
+
+  defp write_outcome(:ok, _error), do: :succeeded
+  defp write_outcome(_status, %RunnerError{outcome: :safe_failure}), do: :safe_failure
+  defp write_outcome(_status, _error), do: :outcome_unknown
 
   defp normalize_error(nil), do: nil
   defp normalize_error(%RunnerError{} = error), do: error

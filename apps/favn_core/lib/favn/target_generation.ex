@@ -7,6 +7,8 @@ defmodule Favn.TargetGeneration do
   the same active physical data.
   """
 
+  alias Favn.GenerationDataPlaneMarker
+
   @type status :: :building | :active | :retired | :failed | :discarded
 
   @type t :: %__MODULE__{
@@ -19,6 +21,7 @@ defmodule Favn.TargetGeneration do
           logical_relation: map(),
           physical_relation: map(),
           physical_schema_fingerprint: String.t() | nil,
+          data_plane_marker: GenerationDataPlaneMarker.t() | nil,
           status: status(),
           rebuild_operation_id: String.t() | nil,
           version: pos_integer(),
@@ -51,6 +54,7 @@ defmodule Favn.TargetGeneration do
     :logical_relation,
     :physical_relation,
     :physical_schema_fingerprint,
+    :data_plane_marker,
     :status,
     :rebuild_operation_id,
     :version,
@@ -80,6 +84,7 @@ defmodule Favn.TargetGeneration do
              :physical_schema_fingerprint,
              generation.physical_schema_fingerprint
            ),
+         :ok <- validate_data_plane_marker(generation),
          :ok <-
            validate_optional_identifier(:rebuild_operation_id, generation.rebuild_operation_id),
          :ok <- validate_relations(generation),
@@ -126,6 +131,16 @@ defmodule Favn.TargetGeneration do
 
   defp validate_optional_hash(_field, nil), do: :ok
   defp validate_optional_hash(field, value), do: validate_hash(field, value)
+
+  defp validate_data_plane_marker(%__MODULE__{data_plane_marker: nil}), do: :ok
+
+  defp validate_data_plane_marker(%__MODULE__{} = generation) do
+    GenerationDataPlaneMarker.validate(
+      generation.data_plane_marker,
+      generation.target_id,
+      generation.target_generation_id
+    )
+  end
 
   defp validate_relations(%__MODULE__{logical_relation: logical, physical_relation: physical})
        when is_map(logical) and map_size(logical) > 0 and is_map(physical) and

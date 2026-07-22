@@ -29,6 +29,7 @@ defmodule Favn.SQLAsset.Runtime do
   alias FavnRunner.RuntimeInputResolver
   alias FavnRunner.RuntimeInputResolver.Resolution, as: RuntimeInputResolution
   alias FavnRunner.ManifestHandle
+  alias FavnRunner.GenerationWork
   alias FavnRunner.SQL.MaterializationPlanner
 
   @runner_registry FavnRunner.ConnectionRegistry
@@ -140,6 +141,7 @@ defmodule Favn.SQLAsset.Runtime do
       when (is_struct(manifest_identity, Version) or
               is_struct(manifest_identity, ManifestHandle)) and is_map(relation_by_module) do
     opts = context |> run_opts() |> Keyword.merge(runner_runtime_opts(work))
+    {asset, relation_by_module} = GenerationWork.apply_overrides(asset, relation_by_module, work)
 
     with {:ok, %Definition{} = definition} <-
            manifest_definition(asset, package, relation_by_module),

@@ -85,14 +85,16 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     version = register_sql_manifest!(ref, relation)
 
-    work = %RunnerWork{
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
-      run_id: "run_sql_catalog_scope",
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      asset_ref: ref,
-      execution_package: execution_package_for(version)
-    }
+    work =
+      %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        run_id: "run_sql_catalog_scope",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref,
+        execution_package: execution_package_for(version)
+      }
+      |> generation_work(version, ref)
 
     assert {:ok, result} = FavnRunner.run(work)
     assert result.status == :ok
@@ -119,14 +121,16 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         SessionRequirements.new!([:landing_storage, :azure_extension])
       )
 
-    work = %RunnerWork{
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
-      run_id: "run_sql_resource_scope",
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      asset_ref: ref,
-      execution_package: execution_package_for(version)
-    }
+    work =
+      %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        run_id: "run_sql_resource_scope",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref,
+        execution_package: execution_package_for(version)
+      }
+      |> generation_work(version, ref)
 
     assert {:ok, %{status: :ok}} = FavnRunner.run(work)
     assert_received {:connect_opts, :runner_sql_runtime, opts}
@@ -162,14 +166,16 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         }
       ])
 
-    work = %RunnerWork{
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
-      run_id: "run_sql_relation_input_catalog_scope",
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      asset_ref: ref,
-      execution_package: execution_package_for(version)
-    }
+    work =
+      %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        run_id: "run_sql_relation_input_catalog_scope",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref,
+        execution_package: execution_package_for(version)
+      }
+      |> generation_work(version, ref)
 
     assert {:ok, result} = FavnRunner.run(work)
     assert result.status == :ok
@@ -205,6 +211,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         asset_ref: ref,
         execution_package: execution_package_for(version)
       }
+      |> generation_work(version, ref)
 
     assert {:ok, result} = FavnRunner.run(work)
     if result.status != :ok, do: flunk(inspect(result, pretty: true))
@@ -219,15 +226,17 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version =
       register_sql_manifest!(ref, nil, [], SessionRequirements.empty(), sql)
 
-    work = %RunnerWork{
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
-      run_id: "run_sql_favn_runtime_inputs",
-      run_started_at: run_started_at,
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      asset_ref: ref,
-      execution_package: execution_package_for(version)
-    }
+    work =
+      %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        run_id: "run_sql_favn_runtime_inputs",
+        run_started_at: run_started_at,
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref,
+        execution_package: execution_package_for(version)
+      }
+      |> generation_work(version, ref)
 
     assert {:ok, %{status: :ok}} = FavnRunner.run(work)
     assert_received {:materialize_params, ["run_sql_favn_runtime_inputs", ^run_started_at]}
@@ -250,16 +259,18 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         planned_asset_refs: [ref]
       })
 
-    work = %RunnerWork{
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
-      run_id: "run_sql_runtime_inputs",
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      asset_ref: ref,
-      execution_package: execution_package_for(version),
-      node_identity: node_identity,
-      params: %{submitted: 7}
-    }
+    work =
+      %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        run_id: "run_sql_runtime_inputs",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref,
+        execution_package: execution_package_for(version),
+        node_identity: node_identity,
+        params: %{submitted: 7}
+      }
+      |> generation_work(version, ref)
 
     assert {:ok, resolution} = FavnRunner.resolve_runtime_inputs(work)
 
@@ -716,6 +727,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         asset_ref: ref,
         execution_package: execution_package_for(version)
       }
+      |> generation_work(version, ref)
 
     assert {:ok, result} = FavnRunner.run(work)
     assert result.status == :error
@@ -737,6 +749,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         manifest_content_hash: version.content_hash,
         asset_ref: ref
       }
+      |> generation_work(version, ref)
 
     assert {:error, :execution_package_required} = FavnRunner.run(work)
   end
@@ -756,6 +769,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         asset_ref: ref,
         execution_package: execution_package_for(version)
       }
+      |> generation_work(version, ref)
 
     assert {:ok, result} = FavnRunner.run(work)
     assert result.status == :error
@@ -774,14 +788,16 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
     version = register_sql_manifest!(ref)
 
-    work = %RunnerWork{
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
-      run_id: "run_sql_secret_failure",
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      asset_ref: ref,
-      execution_package: execution_package_for(version)
-    }
+    work =
+      %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        run_id: "run_sql_secret_failure",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref,
+        execution_package: execution_package_for(version)
+      }
+      |> generation_work(version, ref)
 
     assert {:ok, result} = FavnRunner.run(work)
     assert result.status == :error
@@ -1760,6 +1776,27 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       asset_ref: ref,
       execution_package: execution_package_for(version)
     }
+    |> generation_work(version, ref)
+  end
+
+  defp generation_work(%RunnerWork{} = work, %Version{} = version, ref) do
+    asset = Enum.find(version.manifest.assets, &(&1.ref == ref))
+
+    case asset.target_descriptor do
+      nil ->
+        work
+
+      descriptor ->
+        %{
+          work
+          | target_operation: :normal_materialization,
+            logical_target_id: descriptor.target_id,
+            target_descriptor_hash: descriptor.descriptor_hash,
+            target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
+            active_relation: asset.relation,
+            write_relation: asset.relation
+        }
+    end
   end
 
   defp oslo_datetime!(naive) do

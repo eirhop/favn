@@ -92,6 +92,28 @@ session creation/bootstrap and read-only inspection/query paths. Blind retries o
 SQL writes are not safe, and unknown commit state must be surfaced rather than
 retried.
 
+Target generations use the optional `Favn.SQL.GenerationAdapter` behavior; a
+general `transactions: :supported` capability never implies generation safety.
+The separate generation capability value explicitly reports candidate isolation,
+physical inspection, transactional DDL, atomic swap, marker reconciliation,
+idempotent discard, and optional snapshots. Rebuild planning must require every
+non-optional capability before creating data-plane work.
+
+Generation inspection, initial-marker creation, activation, reconciliation, and
+discard run only through an owner-exclusive `%Favn.SQL.Session{}`. After an
+ordinary first materialization, marker creation verifies the recorded physical
+fingerprint and writes an idempotency identity in one transaction. Activation
+rechecks the candidate physical fingerprint inside its transaction, compares the
+exact previous marker identity (target, relation, generation, operation id, and
+token), retires the stable table, promotes the candidate, writes the new marker,
+and commits. Marker timestamps are diagnostic and may be normalized by the data
+system; they are not part of the compare-and-swap identity. A commit error after
+a successful transaction body is an explicit unknown outcome and is never
+retried. An idempotent replay returns the marker already stored by the data
+system, including its diagnostic timestamp. Reconciliation reads that marker.
+Discard reads the marker in its transaction and refuses to drop a candidate
+that is already active.
+
 Connection runtime config reserves `circuit_breaker` and normalizes it into
 `%Favn.CircuitBreaker.Policy{}` on `%Favn.Connection.Resolved{}` rather than
 passing it to adapters. The SQL runtime reports typed failure details; runner

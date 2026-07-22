@@ -839,8 +839,10 @@ Validation must prove:
 - ordered columns, normalized types, nullability, grain/key, and
   materialization fingerprint match the desired descriptor;
 - all authored contract/data checks pass against the candidate relation; and
-- the data-plane generation marker identifies the candidate as prepared but not
-  active.
+- the exact active-generation marker still identifies the pinned previous
+  generation, while the deterministic candidate relation, orchestrator-owned
+  generation record, and in-transaction candidate fingerprint together prove
+  that the candidate is prepared but not active.
 
 Validation failure stores bounded structured results, marks the candidate
 generation failed, leaves the active binding and active relation unchanged, and

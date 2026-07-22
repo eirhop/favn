@@ -54,8 +54,8 @@ defmodule FavnOrchestrator.Persistence.Commands.ReconcileInitialTargetGeneration
 
   `materialization_id` is authoritative control-plane evidence that the pinned
   generation completed successfully. The physical fingerprint is supplied by
-  runner inspection. Initial ordinary materializations have no data-plane swap
-  marker; rebuild activation supplies one through the generation adapter.
+  runner inspection. A generation-capable adapter initializes an exact
+  sidecar marker before this command makes the binding active.
   """
 
   alias FavnOrchestrator.Persistence.WorkspaceContext

@@ -102,11 +102,28 @@ defmodule Favn.SQL.Adapter.DuckDB do
   """
 
   @behaviour Favn.SQL.Adapter
+  @behaviour Favn.SQL.GenerationAdapter
 
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB.{Bootstrap, Client, ErrorMapper}
-  alias Favn.SQL.{Capabilities, Column, ConcurrencyPolicy, Error, Relation, Result, WritePlan}
+
+  alias Favn.SQL.{
+    Capabilities,
+    Column,
+    ConcurrencyPolicy,
+    Error,
+    GenerationActivation,
+    GenerationCapabilities,
+    GenerationDiscard,
+    GenerationMarkerInitialization,
+    GenerationReconciliation,
+    GenerationTransaction,
+    Relation,
+    Result,
+    WritePlan
+  }
+
   alias Favn.SQL.SessionScript
   alias Favn.SQL.SessionScript.Config.Catalog
 
@@ -266,6 +283,46 @@ defmodule Favn.SQL.Adapter.DuckDB do
        }
      }}
   end
+
+  @impl Favn.SQL.GenerationAdapter
+  @spec generation_capabilities(Resolved.t(), opts()) :: {:ok, GenerationCapabilities.t()}
+  def generation_capabilities(%Resolved{}, _opts) do
+    {:ok,
+     %GenerationCapabilities{
+       transactional_ddl: :supported,
+       isolated_candidates: :supported,
+       physical_inspection: :supported,
+       atomic_swap: :supported,
+       marker_reconciliation: :supported,
+       idempotent_discard: :supported,
+       snapshots: :unsupported,
+       max_identifier_bytes: 128
+     }}
+  end
+
+  @impl Favn.SQL.GenerationAdapter
+  def inspect_generation(%Conn{} = conn, %RelationRef{} = ref, opts),
+    do: GenerationTransaction.inspect(__MODULE__, conn, __MODULE__, ref, opts)
+
+  @impl Favn.SQL.GenerationAdapter
+  def initialize_generation_marker(
+        %Conn{} = conn,
+        %GenerationMarkerInitialization{} = request,
+        opts
+      ),
+      do: GenerationTransaction.initialize_marker(__MODULE__, conn, __MODULE__, request, opts)
+
+  @impl Favn.SQL.GenerationAdapter
+  def activate_generation(%Conn{} = conn, %GenerationActivation{} = request, opts),
+    do: GenerationTransaction.activate(__MODULE__, conn, __MODULE__, request, opts)
+
+  @impl Favn.SQL.GenerationAdapter
+  def reconcile_generation(%Conn{} = conn, %GenerationReconciliation{} = request, opts),
+    do: GenerationTransaction.reconcile(__MODULE__, conn, __MODULE__, request, opts)
+
+  @impl Favn.SQL.GenerationAdapter
+  def discard_generation(%Conn{} = conn, %GenerationDiscard{} = request, opts),
+    do: GenerationTransaction.discard(__MODULE__, conn, __MODULE__, request, opts)
 
   @impl true
   @spec diagnostics(Resolved.t(), opts()) :: {:ok, map()} | {:error, map()}

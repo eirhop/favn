@@ -34,7 +34,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ErrorMapper do
       classification: classification,
       retryable?: error.retryable? == true,
       capacity?: classification == :capacity,
-      unknown_outcome?: classification == :unknown_outcome_timeout
+      unknown_outcome?: classification in [:unknown_outcome_timeout, :activation_outcome_unknown]
     }
   end
 
@@ -45,7 +45,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ErrorMapper do
       classification: classification,
       retryable?: retryable_reason?(reason),
       capacity?: classification == :capacity,
-      unknown_outcome?: classification == :unknown_outcome_timeout
+      unknown_outcome?: classification in [:unknown_outcome_timeout, :activation_outcome_unknown]
     }
   end
 

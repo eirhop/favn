@@ -11,8 +11,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
+  alias Favn.Contracts.TargetGenerationPin
+  alias Favn.Manifest.Asset
+  alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias Favn.Plan.NodeIdentity
+  alias Favn.RelationRef
   alias Favn.Retry.Policy
   alias Favn.Run.AssetResult
   alias FavnOrchestrator.AssetStepIdentity
@@ -86,29 +90,32 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   @doc "Builds runner work for this attempt."
   @spec build_work(t()) :: {:ok, t()} | {:error, term()}
   def build_work(%__MODULE__{} = lifecycle) do
-    with {:ok, node_identity} <- node_identity(lifecycle) do
-      work = %RunnerWork{
-        run_id: lifecycle.run.id,
-        run_started_at: lifecycle.run.inserted_at,
-        manifest_version_id: node_identity.manifest_version_id,
-        manifest_content_hash: lifecycle.version.content_hash,
-        required_runner_release_id: lifecycle.run.required_runner_release_id,
-        node_identity: node_identity,
-        asset_ref: lifecycle.asset_ref,
-        asset_refs: [lifecycle.asset_ref],
-        planned_asset_refs: node_identity.planned_asset_refs,
-        attempt: lifecycle.attempt,
-        max_attempts: lifecycle.max_attempts,
-        asset_step_id: lifecycle.asset_step_id,
-        stage: lifecycle.stage,
-        params: lifecycle.run.params,
-        pipeline:
-          lifecycle.run.metadata
-          |> Map.get(:pipeline_context, Map.get(lifecycle.run.metadata, "pipeline_context"))
-          |> Favn.Run.PipelineContext.from_map(),
-        trigger: Map.put(lifecycle.run.trigger, :window, node_identity.window),
-        metadata: work_metadata(lifecycle.run.metadata)
-      }
+    with {:ok, node_identity} <- node_identity(lifecycle),
+         {:ok, generation_fields} <- generation_fields(lifecycle) do
+      work =
+        %RunnerWork{
+          run_id: lifecycle.run.id,
+          run_started_at: lifecycle.run.inserted_at,
+          manifest_version_id: node_identity.manifest_version_id,
+          manifest_content_hash: lifecycle.version.content_hash,
+          required_runner_release_id: lifecycle.run.required_runner_release_id,
+          node_identity: node_identity,
+          asset_ref: lifecycle.asset_ref,
+          asset_refs: [lifecycle.asset_ref],
+          planned_asset_refs: node_identity.planned_asset_refs,
+          attempt: lifecycle.attempt,
+          max_attempts: lifecycle.max_attempts,
+          asset_step_id: lifecycle.asset_step_id,
+          stage: lifecycle.stage,
+          params: lifecycle.run.params,
+          pipeline:
+            lifecycle.run.metadata
+            |> Map.get(:pipeline_context, Map.get(lifecycle.run.metadata, "pipeline_context"))
+            |> Favn.Run.PipelineContext.from_map(),
+          trigger: Map.put(lifecycle.run.trigger, :window, node_identity.window),
+          metadata: work_metadata(lifecycle.run.metadata)
+        }
+        |> struct(generation_fields)
 
       {:ok, %{lifecycle | work: work}}
     end
@@ -298,6 +305,138 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
        execution_pool: nil
      })}
   end
+
+  defp generation_fields(%__MODULE__{
+         run: %RunState{plan: %Favn.Plan{nodes: nodes}},
+         version: %Version{} = version,
+         node_key: node_key
+       }) do
+    with {:ok, node} <- Map.fetch(nodes, node_key) do
+      case version.manifest do
+        %{assets: assets} when is_list(assets) ->
+          assets = Map.new(assets, &{&1.ref, &1})
+
+          with {:ok, asset} <- Map.fetch(assets, node.ref) do
+            generation_fields(asset, node, nodes, assets)
+          end
+
+        _missing when is_nil(node.target_generation_id) and is_nil(node.physical_relation) ->
+          {:ok, %{}}
+
+        _missing ->
+          {:error, :invalid_manifest}
+      end
+    end
+  end
+
+  defp generation_fields(%__MODULE__{}), do: {:ok, %{}}
+
+  defp generation_fields(%Asset{target_descriptor: nil}, node, nodes, assets) do
+    with {:ok, upstream_pins} <- upstream_generation_pins(node, nodes, assets) do
+      {:ok, %{upstream_generation_pins: upstream_pins}}
+    end
+  end
+
+  defp generation_fields(
+         %Asset{target_descriptor: %TargetDescriptor{} = descriptor} = asset,
+         node,
+         nodes,
+         assets
+       ) do
+    with generation_id when is_binary(generation_id) <- Map.get(node, :target_generation_id),
+         {:ok, active_relation} <-
+           relation_ref(Map.get(node, :physical_relation) || descriptor.relation, asset.relation),
+         {:ok, upstream_pins} <- upstream_generation_pins(node, nodes, assets) do
+      {:ok,
+       %{
+         target_operation: :normal_materialization,
+         logical_target_id: descriptor.target_id,
+         target_descriptor_hash: descriptor.descriptor_hash,
+         target_generation_id: generation_id,
+         active_relation: active_relation,
+         write_relation: active_relation,
+         upstream_generation_pins: upstream_pins
+       }}
+    else
+      nil -> {:error, {:missing_target_generation_pin, asset.ref}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp upstream_generation_pins(node, nodes, assets) do
+    node
+    |> Map.get(:upstream, [])
+    |> Enum.reduce_while({:ok, []}, fn upstream_key, {:ok, pins} ->
+      with {:ok, upstream_node} <- Map.fetch(nodes, upstream_key),
+           {:ok, upstream_asset} <- Map.fetch(assets, upstream_node.ref),
+           {:ok, pin} <- upstream_generation_pin(upstream_node, upstream_asset) do
+        {:cont, {:ok, maybe_prepend(pin, pins)}}
+      else
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, pins} -> {:ok, pins |> Enum.reverse() |> Enum.sort_by(& &1.target_id)}
+      {:error, _reason} = error -> error
+    end)
+  end
+
+  defp upstream_generation_pin(_node, %Asset{target_descriptor: nil}), do: {:ok, nil}
+
+  defp upstream_generation_pin(
+         node,
+         %Asset{target_descriptor: %TargetDescriptor{} = descriptor} = asset
+       ) do
+    with generation_id when is_binary(generation_id) <- Map.get(node, :target_generation_id),
+         physical_relation when is_map(physical_relation) <- Map.get(node, :physical_relation),
+         {:ok, relation} <- relation_ref(physical_relation, asset.relation) do
+      {:ok,
+       %TargetGenerationPin{
+         asset_ref: asset.ref,
+         target_id: descriptor.target_id,
+         target_generation_id: generation_id,
+         relation: relation,
+         descriptor_hash: descriptor.descriptor_hash
+       }}
+    else
+      nil -> {:error, {:missing_upstream_target_generation_pin, asset.ref}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp relation_ref(%RelationRef{} = relation, %RelationRef{} = logical) do
+    if relation.connection == logical.connection,
+      do: {:ok, RelationRef.validate!(relation)},
+      else: {:error, {:target_relation_connection_mismatch, relation, logical}}
+  rescue
+    ArgumentError -> {:error, {:invalid_target_generation_relation, relation}}
+  end
+
+  defp relation_ref(relation, %RelationRef{} = logical) when is_map(relation) do
+    connection = field(relation, :connection)
+
+    if connection in [nil, logical.connection, Atom.to_string(logical.connection)] do
+      {:ok,
+       RelationRef.new!(%{
+         connection: logical.connection,
+         catalog: field(relation, :catalog),
+         schema: field(relation, :schema),
+         name: field(relation, :name)
+       })}
+    else
+      {:error, {:target_relation_connection_mismatch, relation, logical}}
+    end
+  rescue
+    ArgumentError -> {:error, {:invalid_target_generation_relation, relation}}
+  end
+
+  defp relation_ref(relation, _logical),
+    do: {:error, {:invalid_target_generation_relation, relation}}
+
+  defp maybe_prepend(nil, values), do: values
+  defp maybe_prepend(value, values), do: [value | values]
+
+  defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 
   defp node_asset_ref(%RunState{plan: %Favn.Plan{nodes: nodes}}, node_key) do
     case Map.fetch(nodes, node_key) do

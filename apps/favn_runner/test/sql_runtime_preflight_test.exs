@@ -293,7 +293,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
   end
 
   defp work(%Version{} = version, asset_ref, planned_refs) do
-    %RunnerWork{
+    work = %RunnerWork{
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: "run_preflight_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower),
       manifest_version_id: version.manifest_version_id,
@@ -304,6 +304,22 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
       execution_package: Process.get({:execution_package, asset_ref}),
       metadata: %{}
     }
+
+    case Enum.find(version.manifest.assets, &(&1.ref == asset_ref)) do
+      %Asset{target_descriptor: nil} ->
+        work
+
+      %Asset{} = asset ->
+        %{
+          work
+          | target_operation: :normal_materialization,
+            logical_target_id: asset.target_descriptor.target_id,
+            target_descriptor_hash: asset.target_descriptor.descriptor_hash,
+            target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
+            active_relation: asset.relation,
+            write_relation: asset.relation
+        }
+    end
   end
 
   defp reload_fake_connection(name) do

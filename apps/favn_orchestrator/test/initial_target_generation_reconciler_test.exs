@@ -2,6 +2,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
   use ExUnit.Case, async: false
 
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.GenerationMarker
+  alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
@@ -32,6 +34,58 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     def inspect_relation(request, opts) do
       send(Keyword.fetch!(opts, :test_pid), {:inspect_relation, request})
       Process.get(:inspection_result)
+    end
+
+    def generation_capabilities(_version, _asset_ref, _opts) do
+      {:ok,
+       %{
+         transactional_ddl: :supported,
+         physical_inspection: :supported,
+         marker_reconciliation: :supported
+       }}
+    end
+
+    def initialize_generation_marker(request, opts) do
+      send(Keyword.fetch!(opts, :test_pid), {:initialize_generation_marker, request})
+      Process.put(:last_initialization_request, request)
+
+      case Process.get(:initialization_mode) do
+        :unknown ->
+          {:error, Favn.Contracts.RunnerError.new(outcome: :unknown)}
+
+        _success ->
+          {:ok,
+           %GenerationMarkerInitializationResult{
+             required_runner_release_id: request.required_runner_release_id,
+             target_id: request.target_id,
+             target_generation_id: request.target_generation_id,
+             initialization_token: request.initialization_token,
+             outcome: :succeeded,
+             observed_marker: marker(request),
+             physical_fingerprint: request.expected_physical_fingerprint,
+             completed_at: ~U[2026-07-22 12:01:00Z]
+           }}
+      end
+    end
+
+    def generation_marker(_version, asset_ref, opts) do
+      send(Keyword.fetch!(opts, :test_pid), {:generation_marker, asset_ref})
+
+      case Process.get(:last_initialization_request) do
+        nil -> {:ok, nil}
+        request -> {:ok, marker(request)}
+      end
+    end
+
+    defp marker(request) do
+      %GenerationMarker{
+        target_id: request.target_id,
+        active_relation: request.active_relation,
+        active_generation_id: request.target_generation_id,
+        activation_operation_id: request.initialization_operation_id,
+        activation_token: request.initialization_token,
+        activated_at: ~U[2026-07-22 12:01:00Z]
+      }
     end
 
     def register_manifest(_version, _opts), do: :ok
@@ -121,7 +175,11 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     assert command.manifest_version_id == version.manifest_version_id
     assert command.materialization_id == "mat:claim-1"
     assert command.physical_schema_fingerprint == physical.fingerprint
-    assert command.data_plane_marker == nil
+    assert_receive {:initialize_generation_marker, marker_request}
+    assert marker_request.target_generation_id == @generation_id
+    assert marker_request.expected_physical_fingerprint == physical.fingerprint
+    assert command.data_plane_marker.active_generation_id == @generation_id
+    assert command.data_plane_marker.activation_token == marker_request.initialization_token
     assert String.starts_with?(command.command_id, "target-generation:reconcile-initial:")
   end
 
@@ -135,6 +193,26 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     assert_receive {:get_binding, _query}
     refute_receive {:inspect_relation, _request}
     refute_receive {:reconcile_initial, _command}
+  end
+
+  test "reconciles an unknown marker initialization reply before binding", %{
+    version: version,
+    entry: entry
+  } do
+    Process.put(:target_binding, %{
+      active_generation_id: nil,
+      compatibility_status: :uninitialized,
+      desired_manifest_id: version.manifest_version_id
+    })
+
+    Process.put(:inspection_result, {:ok, inspection(version)})
+    Process.put(:initialization_mode, :unknown)
+
+    assert :ok = InitialTargetGenerationReconciler.reconcile(entry)
+    assert_receive {:initialize_generation_marker, _request}
+    assert_receive {:generation_marker, @ref}
+    assert_receive {:reconcile_initial, command}
+    assert command.data_plane_marker.active_generation_id == @generation_id
   end
 
   test "does not activate when physical inspection cannot prove the relation", %{

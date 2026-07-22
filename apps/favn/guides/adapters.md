@@ -6,6 +6,14 @@ Most users see adapters through configuration. Application code should use
 `Favn.SQLAsset`, `Favn.SQLClient`, `Favn.Connection`, and `mix favn.*` commands,
 not call adapter modules directly.
 
+SQL adapters may separately implement Favn's target-generation contract used by
+manual rebuilds. Ordinary transaction support is not enough: generation support
+must explicitly provide isolated candidates, physical inspection, atomic swap,
+transactional initialization of the first active marker, exact marker
+compare-and-swap, reconciliation, and safe idempotent discard.
+Favn checks these capabilities before rebuild work; application code does not
+invoke the generation callbacks directly.
+
 ## Two Adapter Jobs
 
 | Adapter kind | Used for | User-facing path |

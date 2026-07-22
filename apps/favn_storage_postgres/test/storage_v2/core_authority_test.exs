@@ -338,7 +338,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       target_generation_id: first.generation.target_generation_id,
       materialization_id: "generation:materialization:" <> run.id,
       physical_schema_fingerprint: fingerprint,
-      data_plane_marker: nil,
+      data_plane_marker: %{
+        "target_id" => fixture.target_id,
+        "active_relation" => %{
+          "connection" => "warehouse",
+          "catalog" => nil,
+          "schema" => "analytics",
+          "name" => "orders"
+        },
+        "active_generation_id" => first.generation.target_generation_id,
+        "activation_operation_id" => "initial-materialization-operation",
+        "activation_token" => "initial-marker-token",
+        "activated_at" => "2026-07-22T10:00:00Z"
+      },
       occurred_at: DateTime.add(occurred_at, 2, :second)
     }
 
@@ -348,10 +360,20 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                | materialization_id: reconciliation.materialization_id <> ":missing"
              })
 
+    assert {:error, %{kind: :invalid}} =
+             TargetGenerationStore.reconcile_initial(%{
+               reconciliation
+               | data_plane_marker: %{
+                   reconciliation.data_plane_marker
+                   | "active_generation_id" => Ecto.UUID.generate()
+                 }
+             })
+
     assert {:ok, reconciled} = TargetGenerationStore.reconcile_initial(reconciliation)
     assert reconciled.materialization_id == reconciliation.materialization_id
     assert reconciled.generation.status == :active
     assert reconciled.generation.physical_schema_fingerprint == fingerprint
+    assert reconciled.generation.data_plane_marker == reconciliation.data_plane_marker
     assert reconciled.binding.active_generation_id == first.generation.target_generation_id
     assert reconciled.binding.compatibility_status == :ready
     assert reconciled.binding.reason_code == "initial_materialization_reconciled"

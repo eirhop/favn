@@ -2,7 +2,19 @@ defmodule Favn.SQL.Admission do
   @moduledoc false
 
   alias Favn.SQL.Admission.Limiter
-  alias Favn.SQL.{ConcurrencyPolicies, ConcurrencyPolicy, Error, Observability, Session, WritePlan}
+
+  alias Favn.SQL.{
+    ConcurrencyPolicies,
+    ConcurrencyPolicy,
+    Error,
+    GenerationActivation,
+    GenerationDiscard,
+    GenerationMarkerInitialization,
+    GenerationReconciliation,
+    Observability,
+    Session,
+    WritePlan
+  }
 
   @permit_key {__MODULE__, :permits}
   @write_prefixes ~w(
@@ -275,6 +287,24 @@ defmodule Favn.SQL.Admission do
        when is_binary(catalog),
        do: {nil, catalog}
 
+  defp catalog_target(:activate_generation, %GenerationActivation{stable_relation: relation}),
+    do: {relation.connection, relation.catalog}
+
+  defp catalog_target(
+         :initialize_generation_marker,
+         %GenerationMarkerInitialization{stable_relation: relation}
+       ),
+       do: {relation.connection, relation.catalog}
+
+  defp catalog_target(:inspect_generation, %Favn.RelationRef{} = relation),
+    do: {relation.connection, relation.catalog}
+
+  defp catalog_target(:reconcile_generation, %GenerationReconciliation{stable_relation: relation}),
+       do: {relation.connection, relation.catalog}
+
+  defp catalog_target(:discard_generation, %GenerationDiscard{candidate_relation: relation}),
+    do: {relation.connection, relation.catalog}
+
   defp catalog_target(_operation, _payload), do: nil
 
   defp operation_catalog_scope(%Session{} = session, operation, payload) do
@@ -312,10 +342,15 @@ defmodule Favn.SQL.Admission do
   defp target_catalogs(%{catalog: catalog}), do: normalize_catalog_list(catalog)
   defp target_catalogs(_target), do: []
 
-  defp session_required_catalogs(%Session{required_catalogs: catalogs}, :execute, _payload), do: catalogs
+  defp session_required_catalogs(%Session{required_catalogs: catalogs}, :execute, _payload),
+    do: catalogs
 
   defp session_required_catalogs(%Session{required_catalogs: catalogs}, :transaction, _payload),
     do: catalogs
+
+  defp session_required_catalogs(%Session{required_catalogs: catalogs}, operation, _payload)
+       when operation in [:activate_generation, :discard_generation, :initialize_generation_marker],
+       do: catalogs
 
   defp session_required_catalogs(%Session{required_catalogs: catalogs}, :query, payload) do
     statement = statement_payload(payload)
@@ -344,12 +379,21 @@ defmodule Favn.SQL.Admission do
     write_operation?(operation, payload)
   end
 
-  defp write_operation?(operation, _payload) when operation in [:execute, :materialize, :transaction],
-    do: true
+  defp write_operation?(operation, _payload)
+       when operation in [
+              :execute,
+              :materialize,
+              :transaction,
+              :activate_generation,
+              :initialize_generation_marker,
+              :discard_generation
+            ],
+       do: true
 
   defp write_operation?(operation, payload), do: write_query?(operation, payload)
 
-  defp write_query?(:query, {statement, opts}) when is_list(opts), do: write_query?(:query, statement)
+  defp write_query?(:query, {statement, opts}) when is_list(opts),
+    do: write_query?(:query, statement)
 
   defp write_query?(:query, statement) do
     statement

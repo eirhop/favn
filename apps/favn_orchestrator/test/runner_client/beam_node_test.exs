@@ -1,10 +1,14 @@
 defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Contracts.GenerationActivationRequest
+  alias Favn.Contracts.GenerationMarker
+  alias Favn.Contracts.GenerationReconciliationRequest
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.RelationRef
   alias FavnOrchestrator.RunnerClient.BeamNode
 
   defmodule StubRunner do
@@ -35,7 +39,9 @@ defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
   end
 
   defmodule TimeoutRunner do
+    def activate_generation(_request, _opts), do: :erlang.error({:erpc, :timeout})
     def await_result(_execution_id, _timeout, _opts), do: :erlang.error({:erpc, :timeout})
+    def reconcile_generation(_request, _opts), do: :erlang.error({:erpc, :timeout})
     def submit_work(_work, _opts), do: :erlang.error({:erpc, :timeout})
   end
 
@@ -165,6 +171,15 @@ defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
               retryable?: false,
               outcome: :unknown
             }} = BeamNode.submit_work(work, mutation_opts)
+
+    assert {:error, %RunnerError{retryable?: false, outcome: :unknown}} =
+             BeamNode.activate_generation(generation_activation_request(), mutation_opts)
+
+    assert {:error, %RunnerError{retryable?: true, outcome: :safe_failure}} =
+             BeamNode.reconcile_generation(
+               %GenerationReconciliationRequest{activation: generation_activation_request()},
+               mutation_opts
+             )
   end
 
   test "connects to a real peer and bounds remote diagnostics, timeouts, and exceptions" do
@@ -251,6 +266,34 @@ defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
   defp beam_opts(runner_module, extra \\ []) do
     [runner_node: Node.self(), runner_module: runner_module, runner_rpc_timeout_ms: 100]
     |> Keyword.merge(extra)
+  end
+
+  defp generation_activation_request do
+    relation = %RelationRef{connection: :warehouse, schema: "main", name: "target"}
+
+    %GenerationActivationRequest{
+      manifest_version_id: "mv_generation_rpc",
+      manifest_content_hash: String.duplicate("a", 64),
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      rebuild_operation_id: "rebuild_rpc",
+      rebuild_action_id: "action_rpc",
+      target_id: "asset:rpc",
+      previous_generation_id: "11111111-1111-4111-8111-111111111111",
+      candidate_generation_id: "22222222-2222-4222-8222-222222222222",
+      active_relation: relation,
+      candidate_relation: %{relation | name: "target_candidate"},
+      retired_relation: %{relation | name: "target_retired"},
+      expected_candidate_fingerprint: String.duplicate("b", 64),
+      activation_token: "activation_rpc",
+      expected_marker: %GenerationMarker{
+        target_id: "asset:rpc",
+        active_relation: relation,
+        active_generation_id: "11111111-1111-4111-8111-111111111111",
+        activation_operation_id: "previous_rpc",
+        activation_token: "previous_token_rpc",
+        activated_at: ~U[2026-07-22 09:00:00Z]
+      }
+    }
   end
 
   defp manifest do

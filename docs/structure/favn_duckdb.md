@@ -20,6 +20,12 @@ runtime placement, worker lifecycle, or DuckDB plugin child specs. Update test
 support when the DuckDB client boundary or shared adapter test instrumentation
 changes.
 
+The in-process adapter explicitly implements `Favn.SQL.GenerationAdapter` for
+isolated candidate tables, fingerprinted inspection, transactional table swap,
+sidecar-marker reconciliation, and marker-safe idempotent discard. Candidate and
+retired names are deterministic and identifier-bounded. Activation and discard
+remain owner-exclusive mutation sessions and are never blindly retried.
+
 DuckDB connection config is adapter-owned. The public runtime shape uses
 `open: [...]` for the session database, default-on connection-level pooling for
 runner-local warm session reuse, and native SQL files through

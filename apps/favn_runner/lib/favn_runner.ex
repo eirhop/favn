@@ -14,6 +14,15 @@ defmodule FavnRunner do
 
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.GenerationActivationRequest
+  alias Favn.Contracts.GenerationActivationResult
+  alias Favn.Contracts.GenerationDiscardRequest
+  alias Favn.Contracts.GenerationDiscardResult
+  alias Favn.Contracts.GenerationMarker
+  alias Favn.Contracts.GenerationMarkerInitializationRequest
+  alias Favn.Contracts.GenerationMarkerInitializationResult
+  alias Favn.Contracts.GenerationReconciliationRequest
+  alias Favn.Contracts.GenerationReconciliationResult
   alias Favn.Contracts.RunnerCancellation
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
@@ -23,6 +32,8 @@ defmodule FavnRunner do
   alias Favn.RuntimeInput.Resolution
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
+  alias FavnRunner.GenerationWork
+  alias FavnRunner.GenerationOperations
   alias FavnRunner.Lifecycle
   alias FavnRunner.ManifestResolver
   alias FavnRunner.ManifestStore
@@ -183,7 +194,17 @@ defmodule FavnRunner do
              server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
            ),
          {:ok, package} <- ExecutionPackage.verify_for_asset(work.execution_package, asset) do
-      resolve_asset_runtime_inputs(asset, package, manifest, relation_by_module, work, opts)
+      work = %{work | execution_package: package}
+
+      with :ok <-
+             GenerationWork.validate(
+               work,
+               asset,
+               manifest,
+               Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+             ) do
+        resolve_asset_runtime_inputs(asset, package, manifest, relation_by_module, work, opts)
+      end
     end
   end
 
@@ -367,8 +388,107 @@ defmodule FavnRunner do
     end)
   end
 
+  @doc "Returns explicit target-generation capabilities for one manifest asset."
+  @impl true
+  @spec generation_capabilities(Version.t(), Favn.Ref.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def generation_capabilities(%Version{} = version, asset_ref, opts \\ [])
+      when is_tuple(asset_ref) and is_list(opts) do
+    with_admission(opts, fn ->
+      with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+        GenerationOperations.capabilities(version, asset_ref)
+      end
+    end)
+  end
+
+  @doc "Returns the current sidecar marker for one manifest target."
+  @impl true
+  @spec generation_marker(Version.t(), Favn.Ref.t(), keyword()) ::
+          {:ok, GenerationMarker.t() | nil} | {:error, term()}
+  def generation_marker(%Version{} = version, asset_ref, opts \\ [])
+      when is_tuple(asset_ref) and is_list(opts) do
+    with_admission(opts, fn ->
+      with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+        GenerationOperations.marker(version, asset_ref)
+      end
+    end)
+  end
+
+  @doc "Initializes the sidecar marker for one successfully materialized initial generation."
+  @impl true
+  @spec initialize_generation_marker(GenerationMarkerInitializationRequest.t(), keyword()) ::
+          {:ok, GenerationMarkerInitializationResult.t()} | {:error, term()}
+  def initialize_generation_marker(%GenerationMarkerInitializationRequest{} = request, opts \\ [])
+      when is_list(opts) do
+    with_admission(opts, fn ->
+      with :ok <- GenerationMarkerInitializationRequest.validate(request),
+           {:ok, version} <- generation_version(request, opts) do
+        GenerationOperations.initialize_marker(request, version)
+      end
+    end)
+  end
+
+  @doc "Atomically activates one validated target-generation candidate."
+  @impl true
+  @spec activate_generation(GenerationActivationRequest.t(), keyword()) ::
+          {:ok, GenerationActivationResult.t()} | {:error, term()}
+  def activate_generation(%GenerationActivationRequest{} = request, opts \\ [])
+      when is_list(opts) do
+    with_admission(opts, fn ->
+      with :ok <- GenerationActivationRequest.validate(request),
+           {:ok, version} <- generation_version(request, opts) do
+        GenerationOperations.activate(request, version)
+      end
+    end)
+  end
+
+  @doc "Reconciles the marker and relations for a possibly committed activation."
+  @impl true
+  @spec reconcile_generation(GenerationReconciliationRequest.t(), keyword()) ::
+          {:ok, GenerationReconciliationResult.t()} | {:error, term()}
+  def reconcile_generation(
+        %GenerationReconciliationRequest{activation: activation} = request,
+        opts \\ []
+      )
+      when is_list(opts) do
+    with_admission(opts, fn ->
+      with :ok <- GenerationReconciliationRequest.validate(request),
+           {:ok, version} <- generation_version(activation, opts) do
+        GenerationOperations.reconcile(request, version)
+      end
+    end)
+  end
+
+  @doc "Discards one non-active candidate generation idempotently."
+  @impl true
+  @spec discard_generation(GenerationDiscardRequest.t(), keyword()) ::
+          {:ok, GenerationDiscardResult.t()} | {:error, term()}
+  def discard_generation(%GenerationDiscardRequest{} = request, opts \\ [])
+      when is_list(opts) do
+    with_admission(opts, fn ->
+      with :ok <- GenerationDiscardRequest.validate(request),
+           {:ok, version} <- generation_version(request, opts) do
+        GenerationOperations.discard(request, version)
+      end
+    end)
+  end
+
   defp with_admission(opts, fun) do
     Lifecycle.with_admission(fun, Keyword.get(opts, :lifecycle, Lifecycle))
+  end
+
+  defp generation_version(request, opts) do
+    with :ok <- ReleaseVerifier.verify_required_release(request.required_runner_release_id),
+         {:ok, version} <-
+           ManifestStore.fetch(request.manifest_version_id, request.manifest_content_hash,
+             server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+           ),
+         :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id),
+         true <-
+           version.required_runner_release_id == request.required_runner_release_id or
+             {:error, :runner_release_mismatch} do
+      {:ok, version}
+    end
   end
 
   @doc """

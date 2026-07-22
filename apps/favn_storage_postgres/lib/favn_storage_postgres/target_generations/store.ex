@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL
+  alias Favn.GenerationDataPlaneMarker
   alias Favn.Manifest.TargetDescriptor
   alias Favn.TargetGeneration
   alias FavnOrchestrator.Persistence.Commands.EnsureWritableTargetGeneration
@@ -418,6 +419,7 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
         logical_relation: canonical_json_map(generation.logical_relation),
         physical_relation: canonical_json_map(generation.physical_relation),
         physical_schema_fingerprint: generation.physical_schema_fingerprint,
+        data_plane_marker: canonical_json_map(generation.data_plane_marker),
         status: String.to_existing_atom(generation.status),
         rebuild_operation_id: generation.creating_rebuild_operation_id,
         version: generation.version,
@@ -471,7 +473,11 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
          valid_id?(command.target_id) and valid_id?(command.manifest_version_id) and
          valid_uuid?(command.target_generation_id) and valid_id?(command.materialization_id) and
          canonical_hash?(command.physical_schema_fingerprint) and
-         valid_data_plane_marker?(command.data_plane_marker) and
+         valid_data_plane_marker?(
+           command.data_plane_marker,
+           command.target_id,
+           command.target_generation_id
+         ) and
          match?(%DateTime{}, command.occurred_at) do
       :ok
     else
@@ -513,10 +519,12 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
     _error -> false
   end
 
-  defp valid_data_plane_marker?(nil), do: true
+  defp valid_data_plane_marker?(nil, _target_id, _target_generation_id), do: true
 
-  defp valid_data_plane_marker?(marker),
-    do: is_map(marker) and bounded_json?(marker, 65_536)
+  defp valid_data_plane_marker?(marker, target_id, target_generation_id) do
+    is_map(marker) and bounded_json?(marker, 65_536) and
+      GenerationDataPlaneMarker.validate(marker, target_id, target_generation_id) == :ok
+  end
 
   defp canonical_json_map(nil), do: nil
 

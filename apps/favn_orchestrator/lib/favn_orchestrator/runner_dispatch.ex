@@ -38,4 +38,46 @@ defmodule FavnOrchestrator.RunnerDispatch do
       lifecycle
     )
   end
+
+  @doc "Reads generation capabilities under a control-plane admission permit."
+  @spec generation_capabilities(module(), term(), Favn.Ref.t(), keyword(), GenServer.server()) ::
+          term()
+  def generation_capabilities(
+        runner_client,
+        version,
+        asset_ref,
+        runner_opts,
+        lifecycle \\ Lifecycle
+      )
+      when is_atom(runner_client) and is_list(runner_opts) do
+    Lifecycle.with_admission(
+      fn -> runner_client.generation_capabilities(version, asset_ref, runner_opts) end,
+      lifecycle
+    )
+  end
+
+  @doc "Reads one generation marker under a control-plane admission permit."
+  @spec generation_marker(module(), term(), Favn.Ref.t(), keyword(), GenServer.server()) :: term()
+  def generation_marker(runner_client, version, asset_ref, runner_opts, lifecycle \\ Lifecycle)
+      when is_atom(runner_client) and is_list(runner_opts) do
+    Lifecycle.with_admission(
+      fn -> runner_client.generation_marker(version, asset_ref, runner_opts) end,
+      lifecycle
+    )
+  end
+
+  @doc "Initializes one generation marker under a control-plane admission permit."
+  @spec initialize_generation_marker(module(), term(), keyword(), GenServer.server()) :: term()
+  def initialize_generation_marker(
+        runner_client,
+        request,
+        runner_opts,
+        lifecycle \\ Lifecycle
+      )
+      when is_atom(runner_client) and is_list(runner_opts) do
+    Lifecycle.with_admission(
+      fn -> runner_client.initialize_generation_marker(request, runner_opts) end,
+      lifecycle
+    )
+  end
 end

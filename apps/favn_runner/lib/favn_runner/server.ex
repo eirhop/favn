@@ -8,6 +8,7 @@ defmodule FavnRunner.Server do
   alias Favn.Connection.Registry, as: ConnectionRegistry
   alias Favn.Connection.Resolved
   alias Favn.Contracts.RelationInspectionRequest
+  alias Favn.Contracts.RunnerAssetResult
   alias Favn.Contracts.RunnerCancellation
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerEvent
@@ -18,6 +19,7 @@ defmodule FavnRunner.Server do
   alias Favn.SQL.SessionPool
   alias FavnRunner.ExecutionAdmission
   alias FavnRunner.ExecutionLifecycle
+  alias FavnRunner.GenerationWork
   alias FavnRunner.Inspection
   alias FavnRunner.ManifestResolver
   alias FavnRunner.ManifestHandle
@@ -521,9 +523,9 @@ defmodule FavnRunner.Server do
              server: manifest_store
            ),
          :ok <- ReleaseVerifier.verify_required_release(manifest.required_runner_release_id),
-         {:ok, package} <- ExecutionPackage.verify_for_asset(work.execution_package, asset) do
-      work = %{work | execution_package: package}
-
+         {:ok, package} <- ExecutionPackage.verify_for_asset(work.execution_package, asset),
+         work <- %{work | execution_package: package},
+         :ok <- GenerationWork.validate(work, asset, manifest, manifest_store) do
       {:ok,
        %{
          work: work,
@@ -690,7 +692,7 @@ defmodule FavnRunner.Server do
            manifest_version_id: manifest_version_id,
            manifest_content_hash: manifest_content_hash,
            required_runner_release_id: release_id
-         },
+         } = work,
          %RunnerResult{
            run_id: run_id,
            manifest_version_id: manifest_version_id,
@@ -698,10 +700,23 @@ defmodule FavnRunner.Server do
            required_runner_release_id: release_id
          } = result
        )
-       when is_binary(release_id),
-       do: result
+       when is_binary(release_id) do
+    if Enum.all?(result.asset_results, fn
+         %RunnerAssetResult{} = asset_result ->
+           RunnerAssetResult.validate_generation_result(asset_result, work) == :ok
+
+         _invalid ->
+           false
+       end),
+       do: result,
+       else: invalid_worker_result(work, result)
+  end
 
   defp validate_worker_result(%RunnerWork{} = work, %RunnerResult{} = result) do
+    invalid_worker_result(work, result)
+  end
+
+  defp invalid_worker_result(%RunnerWork{} = work, %RunnerResult{} = result) do
     error = worker_result_identity_error(result)
 
     %RunnerResult{
