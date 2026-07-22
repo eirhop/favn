@@ -76,6 +76,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "reason" => safe_existing_error_reason(value.reason),
       "details" => data(value.details, "details", @max_depth - 1),
       "retryable" => value.retryable?,
+      "outcome" => value.outcome,
       "redacted" => true,
       "truncated" => false
     }

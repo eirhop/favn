@@ -384,7 +384,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   defp plan_node_to_dto(node) when is_map(node) do
-    %{
+    dto = %{
       "ref" => JsonSafe.ref(Map.get(node, :ref)),
       "node_key" => node_key_to_dto(Map.get(node, :node_key)),
       "window" => window_to_dto(Map.get(node, :window)),
@@ -402,6 +402,19 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "retry_policy" => retry_policy_to_dto(Map.get(node, :retry_policy)),
       "retry_policy_source" => Map.get(node, :retry_policy_source) |> atom_to_string()
     }
+
+    [
+      {"target_operation", Map.get(node, :target_operation) |> atom_to_string()},
+      {"active_relation", JsonSafe.data(Map.get(node, :active_relation))},
+      {"write_relation", JsonSafe.data(Map.get(node, :write_relation))},
+      {"rebuild_operation_id", Map.get(node, :rebuild_operation_id)},
+      {"rebuild_action_id", Map.get(node, :rebuild_action_id)},
+      {"rebuild_item_id", Map.get(node, :rebuild_item_id)}
+    ]
+    |> Enum.reduce(dto, fn
+      {_key, nil}, acc -> acc
+      {key, value}, acc -> Map.put(acc, key, value)
+    end)
   end
 
   defp node_key_to_dto({ref, identity}) do
@@ -570,13 +583,21 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     evidence_generation_id = Map.get(node, "evidence_generation_id")
     physical_relation = Map.get(node, "physical_relation")
     input_generations = Map.get(node, "input_generations", [])
+    target_operation = Map.get(node, "target_operation")
+    active_relation = Map.get(node, "active_relation")
+    write_relation = Map.get(node, "write_relation")
+    rebuild_operation_id = Map.get(node, "rebuild_operation_id")
+    rebuild_action_id = Map.get(node, "rebuild_action_id")
+    rebuild_item_id = Map.get(node, "rebuild_item_id")
 
     cond do
       Enum.all?(
         [target_id, target_generation_id, evidence_generation_id, physical_relation],
         &is_nil/1
       ) and
-          input_generations == [] ->
+        input_generations == [] and is_nil(target_operation) and is_nil(active_relation) and
+        is_nil(write_relation) and is_nil(rebuild_operation_id) and is_nil(rebuild_action_id) and
+          is_nil(rebuild_item_id) ->
         {:ok, %{}}
 
       not valid_optional_plan_id?(target_id) or not valid_optional_plan_id?(target_generation_id) or
@@ -584,19 +605,39 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
         {:error, {:invalid_plan_generation_pin, node}}
 
       not (is_nil(physical_relation) or is_map(physical_relation)) or
-          not is_list(input_generations) ->
+        not is_list(input_generations) or
+        target_operation not in [nil, "normal_materialization", "rebuild_candidate"] or
+        not Enum.all?([active_relation, write_relation], &(is_nil(&1) or is_map(&1))) or
+          not Enum.all?(
+            [rebuild_operation_id, rebuild_action_id, rebuild_item_id],
+            &valid_optional_plan_id?/1
+          ) ->
         {:error, {:invalid_plan_generation_pin, node}}
 
       true ->
         with {:ok, decoded_inputs} <- input_generation_pins_from_dto(input_generations) do
+          generation_pin = %{
+            target_id: target_id,
+            target_generation_id: target_generation_id,
+            evidence_generation_id: evidence_generation_id,
+            physical_relation: physical_relation,
+            input_generations: decoded_inputs
+          }
+
+          decoded_optional = [
+            {:target_operation, decode_target_operation(target_operation)},
+            {:active_relation, active_relation},
+            {:write_relation, write_relation},
+            {:rebuild_operation_id, rebuild_operation_id},
+            {:rebuild_action_id, rebuild_action_id},
+            {:rebuild_item_id, rebuild_item_id}
+          ]
+
           {:ok,
-           %{
-             target_id: target_id,
-             target_generation_id: target_generation_id,
-             evidence_generation_id: evidence_generation_id,
-             physical_relation: physical_relation,
-             input_generations: decoded_inputs
-           }}
+           Enum.reduce(decoded_optional, generation_pin, fn
+             {_key, nil}, acc -> acc
+             {key, value}, acc -> Map.put(acc, key, value)
+           end)}
         end
     end
   end
@@ -641,6 +682,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp valid_plan_id?(value), do: is_binary(value) and byte_size(value) in 1..255
   defp valid_optional_plan_id?(nil), do: true
   defp valid_optional_plan_id?(value), do: valid_plan_id?(value)
+
+  defp decode_target_operation(nil), do: nil
+  defp decode_target_operation("normal_materialization"), do: :normal_materialization
+  defp decode_target_operation("rebuild_candidate"), do: :rebuild_candidate
 
   defp retry_policy_to_dto(nil), do: nil
 

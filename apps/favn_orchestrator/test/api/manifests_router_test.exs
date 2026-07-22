@@ -81,6 +81,8 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
       admission: MissingManifestStore,
       resource_circuits: MissingManifestStore,
       target_generations: MissingManifestStore,
+      rebuilds: MissingManifestStore,
+      target_operation_locks: MissingManifestStore,
       materialization: MissingManifestStore,
       backfills: MissingManifestStore,
       operator_reads: MissingManifestStore,

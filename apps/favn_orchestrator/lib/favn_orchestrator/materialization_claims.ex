@@ -83,6 +83,8 @@ defmodule FavnOrchestrator.MaterializationClaims do
            input_generations: input_generations,
            manifest_version_id: version.manifest_version_id,
            manifest_content_hash: version.content_hash,
+           execution_package_hash: work.execution_package && work.execution_package.content_hash,
+           runtime_input_lineage: Map.get(work.metadata, :runtime_input_lineage),
            target_generation_id: generation.target_generation_id,
            evidence_generation_id: generation.evidence_generation_id,
            owner_id: run_state.storage_owner_id,
@@ -100,6 +102,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
              deployment_id: run_state.deployment_id,
              target_kind: :asset,
              target_id: TargetIdentity.for_asset(node.ref),
+             operation_id: work.rebuild_operation_id,
              target_generation_id: generation.target_generation_id,
              evidence_generation_id: generation.evidence_generation_id,
              partition_key: freshness_key,
@@ -136,6 +139,11 @@ defmodule FavnOrchestrator.MaterializationClaims do
              "run_id" => field(claim, :run_id),
              "manifest_version_id" => field(claim, :manifest_version_id),
              "manifest_content_hash" => field(claim, :manifest_content_hash),
+             "execution_package_hash" => field(claim, :execution_package_hash),
+             "runtime_input_lineage" => field(claim, :runtime_input_lineage),
+             "check_results" => result_check_results(result),
+             "contract_validation" => result_contract_validation(result),
+             "rows_affected" => result_rows_affected(result),
              "target_generation_id" => field(claim, :target_generation_id),
              "evidence_generation_id" => field(claim, :evidence_generation_id)
            }
@@ -280,6 +288,27 @@ defmodule FavnOrchestrator.MaterializationClaims do
     do: true
 
   defp reusable_reason?(_reason), do: false
+
+  defp result_check_results(%RunnerResult{asset_results: [result]}) do
+    result.meta
+    |> field(:check_results)
+    |> JsonSafe.data()
+  end
+
+  defp result_check_results(%RunnerResult{}), do: []
+
+  defp result_contract_validation(%RunnerResult{asset_results: [result]}) do
+    result.meta
+    |> field(:contract_validation)
+    |> JsonSafe.data()
+  end
+
+  defp result_contract_validation(%RunnerResult{}), do: nil
+
+  defp result_rows_affected(%RunnerResult{asset_results: [result]}),
+    do: result.meta |> field(:rows_affected)
+
+  defp result_rows_affected(%RunnerResult{}), do: nil
 
   defp producer_identity(%RunState{} = run_state, %Version{} = version, node_key, decisions) do
     base = version.content_hash || version.manifest_version_id || "unknown_manifest"

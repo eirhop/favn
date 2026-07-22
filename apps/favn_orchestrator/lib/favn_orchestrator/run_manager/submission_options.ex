@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
     :dependencies,
     :exact_windows,
     :required_generation,
+    :rebuild,
     :lineage_depth
   ]
   defstruct @enforce_keys ++
@@ -40,6 +41,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
           window_selection: Selection.t() | nil,
           exact_windows: map(),
           required_generation: map() | nil,
+          rebuild: map() | nil,
           parent_run_id: String.t() | nil,
           root_run_id: String.t() | nil,
           lineage_depth: non_neg_integer(),
@@ -72,6 +74,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
         window_selection: window_selection,
         exact_windows: option(opts, defaults, :exact_windows, %{}),
         required_generation: option(opts, defaults, :required_generation, nil),
+        rebuild: option(opts, defaults, :rebuild, nil),
         parent_run_id: option(opts, defaults, :parent_run_id, nil),
         root_run_id: option(opts, defaults, :root_run_id, nil),
         lineage_depth: option(opts, defaults, :lineage_depth, 0),
@@ -89,6 +92,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
            :ok <- window_input(values.anchor_window, values.window_selection),
            :ok <- map(values.exact_windows, :invalid_exact_windows),
            :ok <- required_generation(values.required_generation),
+           :ok <- rebuild(values.rebuild),
            :ok <- optional_string(values.parent_run_id, :invalid_parent_run_id),
            :ok <- optional_string(values.root_run_id, :invalid_root_run_id),
            :ok <- optional_string(values.workspace_id, :invalid_workspace_id),
@@ -138,6 +142,27 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
   end
 
   defp required_generation(_value), do: {:error, :invalid_required_generation}
+
+  defp rebuild(nil), do: :ok
+
+  defp rebuild(%{} = rebuild) do
+    required = [
+      :target_id,
+      :candidate_generation_id,
+      :active_relation,
+      :candidate_relation,
+      :input_generations,
+      :operation_id,
+      :action_id,
+      :item_id
+    ]
+
+    if Enum.all?(required, &Map.has_key?(rebuild, &1)),
+      do: :ok,
+      else: {:error, :invalid_rebuild_submission}
+  end
+
+  defp rebuild(_value), do: {:error, :invalid_rebuild_submission}
 
   defp non_empty_binary?(value), do: is_binary(value) and value != ""
 

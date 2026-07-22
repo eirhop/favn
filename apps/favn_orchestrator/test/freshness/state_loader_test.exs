@@ -32,6 +32,8 @@ defmodule FavnOrchestrator.Freshness.StateLoaderTest do
       admission: FakeStore,
       resource_circuits: FakeStore,
       target_generations: FakeStore,
+      rebuilds: FakeStore,
+      target_operation_locks: FakeStore,
       materialization: FakeStore,
       backfills: FakeStore,
       operator_reads: FakeStore,

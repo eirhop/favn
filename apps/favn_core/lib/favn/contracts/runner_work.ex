@@ -60,6 +60,8 @@ defmodule Favn.Contracts.RunnerWork do
           rebuild_operation_id: String.t() | nil,
           rebuild_action_id: String.t() | nil,
           rebuild_item_id: String.t() | nil,
+          rebuild_empty_generation: boolean(),
+          rebuild_final_item: boolean(),
           pipeline: PipelineContext.t() | nil,
           deadline_at: DateTime.t() | nil,
           trigger: map(),
@@ -94,6 +96,8 @@ defmodule Favn.Contracts.RunnerWork do
             rebuild_operation_id: nil,
             rebuild_action_id: nil,
             rebuild_item_id: nil,
+            rebuild_empty_generation: false,
+            rebuild_final_item: false,
             pipeline: nil,
             deadline_at: nil,
             trigger: %{},
@@ -176,6 +180,8 @@ defmodule Favn.Contracts.RunnerWork do
     |> Map.put(:rebuild_operation_id, work.rebuild_operation_id)
     |> Map.put(:rebuild_action_id, work.rebuild_action_id)
     |> Map.put(:rebuild_item_id, work.rebuild_item_id)
+    |> Map.put(:rebuild_empty_generation, work.rebuild_empty_generation)
+    |> Map.put(:rebuild_final_item, work.rebuild_final_item)
   end
 
   @doc "Validates the exact runner release identity pinned into this work request."
@@ -208,7 +214,8 @@ defmodule Favn.Contracts.RunnerWork do
          :ok <- relation(:write_relation, work.write_relation),
          :ok <- validate_generation_pins(work.upstream_generation_pins),
          :ok <- validate_operation_relations(work),
-         :ok <- validate_rebuild_identity(work) do
+         :ok <- validate_rebuild_identity(work),
+         :ok <- validate_rebuild_flags(work) do
       :ok
     end
   end
@@ -316,12 +323,18 @@ defmodule Favn.Contracts.RunnerWork do
   end
 
   defp validate_rebuild_identity(%__MODULE__{target_operation: :normal_materialization} = work) do
-    if Enum.all?(
-         [work.rebuild_operation_id, work.rebuild_action_id, work.rebuild_item_id],
-         &is_nil/1
-       ),
-       do: :ok,
-       else: {:error, :unexpected_rebuild_identity}
+    identities = [work.rebuild_operation_id, work.rebuild_action_id, work.rebuild_item_id]
+
+    cond do
+      Enum.all?(identities, &is_nil/1) ->
+        :ok
+
+      true ->
+        with :ok <- identifier(:rebuild_operation_id, work.rebuild_operation_id),
+             :ok <- identifier(:rebuild_action_id, work.rebuild_action_id) do
+          identifier(:rebuild_item_id, work.rebuild_item_id)
+        end
+    end
   end
 
   defp validate_rebuild_identity(%__MODULE__{target_operation: :rebuild_candidate} = work) do
@@ -329,6 +342,16 @@ defmodule Favn.Contracts.RunnerWork do
          :ok <- identifier(:rebuild_action_id, work.rebuild_action_id) do
       identifier(:rebuild_item_id, work.rebuild_item_id)
     end
+  end
+
+  defp validate_rebuild_flags(%__MODULE__{target_operation: :rebuild_candidate} = work)
+       when is_boolean(work.rebuild_empty_generation) and is_boolean(work.rebuild_final_item),
+       do: :ok
+
+  defp validate_rebuild_flags(%__MODULE__{} = work) do
+    if work.rebuild_empty_generation == false and work.rebuild_final_item == false,
+      do: :ok,
+      else: {:error, :rebuild_flags_require_candidate_operation}
   end
 
   defp validate_execution_package(

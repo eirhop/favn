@@ -176,6 +176,7 @@ defmodule FavnStoragePostgres.Schemas.MaterializationClaim do
     field(:evidence_generation_id, :string)
     field(:partition_key, :string)
     field(:run_id, :string)
+    field(:operation_id, :string)
     field(:claim_command_id, :string)
     field(:claim_request_hash, :binary)
     field(:owner_id, :string)

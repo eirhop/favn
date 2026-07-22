@@ -24,6 +24,7 @@ defmodule FavnOrchestrator.Persistence.Commands.ClaimMaterialization do
     :deployment_id,
     :target_kind,
     :target_id,
+    :operation_id,
     :target_generation_id,
     :evidence_generation_id,
     :partition_key,
@@ -40,6 +41,7 @@ defmodule FavnOrchestrator.Persistence.Commands.ClaimMaterialization do
           deployment_id: String.t(),
           target_kind: :asset | :pipeline,
           target_id: String.t(),
+          operation_id: String.t() | nil,
           target_generation_id: String.t() | nil,
           evidence_generation_id: String.t(),
           partition_key: String.t(),
@@ -137,6 +139,31 @@ defmodule FavnOrchestrator.Persistence.Queries.GetMaterializations do
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
           claim_keys: [String.t()]
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.GetRebuildMaterialization do
+  @moduledoc "Fetches the authoritative materialization for one exact rebuild item."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :operation_id,
+    :target_id,
+    :run_id,
+    :target_generation_id,
+    :partition_key
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          operation_id: String.t(),
+          target_id: String.t(),
+          run_id: String.t(),
+          target_generation_id: String.t(),
+          partition_key: String.t()
         }
 end
 

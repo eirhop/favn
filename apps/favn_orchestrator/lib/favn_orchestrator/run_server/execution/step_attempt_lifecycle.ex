@@ -95,7 +95,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
       work =
         %RunnerWork{
           run_id: lifecycle.run.id,
-          run_started_at: lifecycle.run.inserted_at,
+          run_started_at: work_started_at(lifecycle.run),
           manifest_version_id: node_identity.manifest_version_id,
           manifest_content_hash: lifecycle.version.content_hash,
           required_runner_release_id: lifecycle.run.required_runner_release_id,
@@ -345,17 +345,28 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
        ) do
     with generation_id when is_binary(generation_id) <- Map.get(node, :target_generation_id),
          {:ok, active_relation} <-
-           relation_ref(Map.get(node, :physical_relation) || descriptor.relation, asset.relation),
+           relation_ref(
+             Map.get(node, :active_relation) || Map.get(node, :physical_relation) ||
+               descriptor.relation,
+             asset.relation
+           ),
+         {:ok, write_relation} <-
+           relation_ref(Map.get(node, :write_relation) || active_relation, asset.relation),
          {:ok, upstream_pins} <- upstream_generation_pins(node, nodes, assets) do
       {:ok,
        %{
-         target_operation: :normal_materialization,
+         target_operation: Map.get(node, :target_operation) || :normal_materialization,
          logical_target_id: descriptor.target_id,
          target_descriptor_hash: descriptor.descriptor_hash,
          target_generation_id: generation_id,
          active_relation: active_relation,
-         write_relation: active_relation,
-         upstream_generation_pins: upstream_pins
+         write_relation: write_relation,
+         upstream_generation_pins: upstream_pins,
+         rebuild_operation_id: Map.get(node, :rebuild_operation_id),
+         rebuild_action_id: Map.get(node, :rebuild_action_id),
+         rebuild_item_id: Map.get(node, :rebuild_item_id),
+         rebuild_empty_generation: Map.get(node, :rebuild_empty_generation, false),
+         rebuild_final_item: Map.get(node, :rebuild_final_item, false)
        }}
     else
       nil -> {:error, {:missing_target_generation_pin, asset.ref}}
@@ -364,21 +375,39 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   end
 
   defp upstream_generation_pins(node, nodes, assets) do
-    node
-    |> Map.get(:upstream, [])
-    |> Enum.reduce_while({:ok, []}, fn upstream_key, {:ok, pins} ->
-      with {:ok, upstream_node} <- Map.fetch(nodes, upstream_key),
-           {:ok, upstream_asset} <- Map.fetch(assets, upstream_node.ref),
-           {:ok, pin} <- upstream_generation_pin(upstream_node, upstream_asset) do
-        {:cont, {:ok, maybe_prepend(pin, pins)}}
-      else
-        {:error, _reason} = error -> {:halt, error}
-      end
+    identities = Map.get(node, :input_generations, [])
+
+    if identities == [] do
+      node
+      |> Map.get(:upstream, [])
+      |> Enum.map(fn upstream_key ->
+        with {:ok, upstream_node} <- Map.fetch(nodes, upstream_key),
+             {:ok, upstream_asset} <- Map.fetch(assets, upstream_node.ref) do
+          upstream_generation_pin(upstream_node, upstream_asset)
+        end
+      end)
+    else
+      Enum.map(identities, &input_generation_pin(&1, assets))
+    end
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, pin}, {:ok, pins} -> {:cont, {:ok, maybe_prepend(pin, pins)}}
+      {:error, _reason} = error, _acc -> {:halt, error}
     end)
     |> then(fn
       {:ok, pins} -> {:ok, pins |> Enum.reverse() |> Enum.sort_by(& &1.target_id)}
       {:error, _reason} = error -> error
     end)
+  end
+
+  defp input_generation_pin(identity, assets) when is_map(identity) do
+    target_id = field(identity, :target_id)
+
+    case Enum.find(assets, fn {_ref, asset} ->
+           match?(%TargetDescriptor{target_id: ^target_id}, asset.target_descriptor)
+         end) do
+      {_ref, %Asset{} = asset} -> upstream_generation_pin(identity, asset)
+      nil -> {:error, {:missing_upstream_generation_asset, target_id}}
+    end
   end
 
   defp upstream_generation_pin(_node, %Asset{target_descriptor: nil}), do: {:ok, nil}
@@ -468,5 +497,21 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
     |> Map.delete("runner_metadata")
     |> Map.delete(:pipeline_context)
     |> Map.delete("pipeline_context")
+  end
+
+  defp work_started_at(%RunState{metadata: metadata, inserted_at: inserted_at}) do
+    case Map.get(metadata, :rebuild_evaluated_at, Map.get(metadata, "rebuild_evaluated_at")) do
+      %DateTime{} = evaluated_at ->
+        evaluated_at
+
+      value when is_binary(value) ->
+        case DateTime.from_iso8601(value) do
+          {:ok, evaluated_at, 0} -> evaluated_at
+          _invalid -> inserted_at
+        end
+
+      _missing ->
+        inserted_at
+    end
   end
 end

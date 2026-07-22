@@ -145,6 +145,7 @@ defmodule Favn.SQLAsset.Runtime do
 
     with {:ok, %Definition{} = definition} <-
            manifest_definition(asset, package, relation_by_module),
+         definition <- rebuild_definition(definition, work),
          {:ok, final_context, final_opts} <-
            finalize_execution_window(definition, context, opts) do
       {:ok, definition, final_context, final_opts}
@@ -312,6 +313,7 @@ defmodule Favn.SQLAsset.Runtime do
         result =
           with :ok <- Renderer.validate_contract_params(definition, resolved_opts),
                {:ok, %Render{} = rendered} <- Renderer.render(definition, resolved_opts),
+               rendered <- maybe_empty_generation_render(rendered, resolved_opts),
                {:ok, %CheckedMaterialization{} = output} <-
                  materialize_render(definition, rendered, resolved_opts) do
             {:ok, rendered, output, resolution}
@@ -1557,6 +1559,7 @@ defmodule Favn.SQLAsset.Runtime do
     |> Keyword.put(:require_runtime_input_pin, true)
     |> maybe_put_runtime_input_pin(work.runtime_input_pin)
     |> maybe_put_timeout(deadline_at)
+    |> Keyword.put(:rebuild_empty_generation, work.rebuild_empty_generation)
     |> Keyword.put(
       :cancel_token,
       CancelToken.new(
@@ -1579,6 +1582,39 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp maybe_put_timeout(opts, _deadline_at), do: opts
+
+  defp rebuild_definition(%Definition{} = definition, %RunnerWork{
+         target_operation: :rebuild_candidate,
+         node_identity: %{window: %Runtime{}},
+         rebuild_final_item: final?
+       }) do
+    checks =
+      if final?,
+        do: definition.checks,
+        else: Enum.reject(definition.checks, &(&1.at == :after_materialize))
+
+    %{definition | materialization: {:incremental, strategy: :append}, checks: checks}
+  end
+
+  defp rebuild_definition(%Definition{} = definition, %RunnerWork{
+         target_operation: :rebuild_candidate,
+         rebuild_final_item: false
+       }) do
+    %{definition | checks: Enum.reject(definition.checks, &(&1.at == :after_materialize))}
+  end
+
+  defp rebuild_definition(%Definition{} = definition, %RunnerWork{}), do: definition
+
+  defp maybe_empty_generation_render(%Render{} = rendered, opts) do
+    if Keyword.get(opts, :rebuild_empty_generation, false) do
+      %{
+        rendered
+        | sql: "SELECT * FROM (#{trim_sql(rendered.sql)}) AS favn_empty_generation WHERE FALSE"
+      }
+    else
+      rendered
+    end
+  end
 
   defp session_required_catalogs(%Definition{} = definition, %Render{} = rendered) do
     # Catalog scope comes from manifest-declared relation ownership and resolved

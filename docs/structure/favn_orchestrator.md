@@ -89,6 +89,26 @@ freshness, and execution coordination.
   treating a static node environment list as persistence authority.
 - `Backfills` and `BackfillDispatcher` own range expansion, parent/child state,
   dispatch, and compensation.
+- `Rebuilds` creates immutable, hash-addressed manual plans from one active
+  manifest, frozen generation bindings, adapter capabilities, exact logical
+  items, and a conservative topological downstream repair graph. An idempotency
+  key resolves to the original frozen plan; approval revalidates every pin and
+  acquires all write-target locks in canonical order before changing state. Each
+  planned item also freezes the runtime-input resolver identity and payload
+  fingerprint. Execution resolves sensitive values through the normal encrypted
+  run-pin store and must match that frozen expectation.
+  `RebuildDispatcher` resumes fenced operations from PostgreSQL checkpoints,
+  submits candidate items serially, accepts success only with the exact
+  operation/generation/partition materialization ledger, validates the complete
+  authored check and contract result set on the final candidate item, persists activation
+  intent before the runner swap, reconciles unknown replies through the marker,
+  and retries idempotent retired-relation cleanup without changing a successful
+  operation outcome. Ordinary writes to locked targets fail admission; work
+  carrying the matching rebuild operation identity may proceed.
+  Ambiguous child outcomes remain durable and are reconciled against the exact
+  materialization ledger before retry or candidate cleanup. Safe-failure
+  candidates remain available for same-plan resume; cancelled and invalid
+  candidates are discarded through retryable terminal cleanup checkpoints.
 - `Coverage` owns explicit-time expected-window evaluation, active-generation
   evidence counts, opaque gap pagination, and immutable exact-gap backfill
   plans. Coverage reads are bounded and remain independent from freshness;

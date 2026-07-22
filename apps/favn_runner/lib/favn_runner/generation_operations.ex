@@ -137,17 +137,31 @@ defmodule FavnRunner.GenerationOperations do
              :ok <-
                same_relation(
                  request.candidate_relation,
-                 GenerationRelation.candidate(
-                   stable_relation,
-                   request.candidate_generation_id,
-                   capabilities.max_identifier_bytes
-                 )
+                 discard_relation(request, stable_relation, capabilities.max_identifier_bytes)
                ) do
           do_discard(session, request, stable_relation)
         end
       after
         Client.disconnect(session)
       end
+    end
+  end
+
+  defp discard_relation(request, stable_relation, max_identifier_bytes) do
+    case request.relation_kind do
+      :candidate ->
+        GenerationRelation.candidate(
+          stable_relation,
+          request.candidate_generation_id,
+          max_identifier_bytes
+        )
+
+      :retired ->
+        GenerationRelation.retired(
+          stable_relation,
+          request.candidate_generation_id,
+          max_identifier_bytes
+        )
     end
   end
 

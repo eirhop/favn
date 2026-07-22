@@ -196,6 +196,8 @@ previous marker identity, and lost mutation replies remain unknown until a
 read-only marker reconciliation proves the data-plane state. The control plane
 persists the complete JSON-safe marker identity and rejects incomplete markers
 or markers for a different target generation before activating a binding.
+Idempotent discard accepts only the deterministic relation for the declared
+candidate or retired generation and first proves that generation is not active.
 
 `FavnRunner.RuntimeInputResolver` owns behaviour-based SQL runtime input
 resolution. The public runner boundary can perform a bounded selection-only

@@ -42,6 +42,8 @@ defmodule Favn.Contracts.ContractLockTest do
         :pipeline,
         :planned_asset_refs,
         :rebuild_action_id,
+        :rebuild_empty_generation,
+        :rebuild_final_item,
         :rebuild_item_id,
         :rebuild_operation_id,
         :required_runner_release_id,
@@ -215,6 +217,7 @@ defmodule Favn.Contracts.ContractLockTest do
         :manifest_version_id,
         :rebuild_action_id,
         :rebuild_operation_id,
+        :relation_kind,
         :required_runner_release_id,
         :target_id
       ]

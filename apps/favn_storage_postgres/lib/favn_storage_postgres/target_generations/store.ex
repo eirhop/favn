@@ -443,6 +443,10 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
       active_generation_id: binding.active_generation_id,
       active_manifest_id: active_generation && active_generation.creating_manifest_id,
       active_descriptor_hash: active_generation && active_generation.active_descriptor_hash,
+      active_physical_relation:
+        active_generation && canonical_json_map(active_generation.physical_relation),
+      active_data_plane_marker:
+        active_generation && canonical_json_map(active_generation.data_plane_marker),
       desired_manifest_id: binding.desired_manifest_id,
       desired_descriptor_hash: binding.desired_descriptor_hash,
       compatibility_status: String.to_existing_atom(binding.compatibility_status),

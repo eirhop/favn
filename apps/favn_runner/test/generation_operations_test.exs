@@ -222,6 +222,26 @@ defmodule FavnRunner.GenerationOperationsTest do
     assert observed.physical_fingerprint == @active_fingerprint
     assert :ok = GenerationReconciliationResult.validate(observed, reconciliation)
 
+    retired_discard = %GenerationDiscardRequest{
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      required_runner_release_id: version.required_runner_release_id,
+      rebuild_operation_id: request.rebuild_operation_id,
+      rebuild_action_id: request.rebuild_action_id,
+      target_id: request.target_id,
+      candidate_generation_id: @previous_generation_id,
+      active_relation: asset.relation,
+      candidate_relation:
+        GenerationRelation.retired(asset.relation, @previous_generation_id, 128),
+      discard_token: "cleanup-retired-generation-operations",
+      relation_kind: :retired
+    }
+
+    assert {:ok, %GenerationDiscardResult{outcome: :already_absent} = retired_result} =
+             FavnRunner.discard_generation(retired_discard)
+
+    assert :ok = GenerationDiscardResult.validate(retired_result, retired_discard)
+
     discard = %GenerationDiscardRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,

@@ -14,6 +14,11 @@ compare-and-swap, reconciliation, and safe idempotent discard.
 Favn checks these capabilities before rebuild work; application code does not
 invoke the generation callbacks directly.
 
+Discard is used for both abandoned candidate relations and retired relations
+after the new active binding is durable. Adapters must compare the sidecar marker
+before removal and return an unknown outcome when they cannot prove that the
+requested generation is inactive.
+
 ## Two Adapter Jobs
 
 | Adapter kind | Used for | User-facing path |

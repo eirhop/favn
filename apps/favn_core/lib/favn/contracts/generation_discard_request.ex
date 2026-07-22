@@ -1,6 +1,6 @@
 defmodule Favn.Contracts.GenerationDiscardRequest do
   @moduledoc """
-  Idempotent request to discard one non-active candidate relation.
+  Idempotent request to discard one non-active candidate or retired relation.
 
   The adapter must inspect its generation marker and reject a request when the
   candidate generation is active. This protects a committed activation whose
@@ -35,7 +35,8 @@ defmodule Favn.Contracts.GenerationDiscardRequest do
     :candidate_generation_id,
     :active_relation,
     :candidate_relation,
-    :discard_token
+    :discard_token,
+    relation_kind: :candidate
   ]
 
   @type t :: %__MODULE__{
@@ -48,7 +49,8 @@ defmodule Favn.Contracts.GenerationDiscardRequest do
           candidate_generation_id: String.t(),
           active_relation: RelationRef.t(),
           candidate_relation: RelationRef.t(),
-          discard_token: String.t()
+          discard_token: String.t(),
+          relation_kind: :candidate | :retired
         }
 
   @doc "Validates the exact candidate identity to discard."
@@ -61,6 +63,7 @@ defmodule Favn.Contracts.GenerationDiscardRequest do
          :ok <- identifier(:rebuild_action_id, request.rebuild_action_id),
          :ok <- identifier(:target_id, request.target_id),
          :ok <- generation_id(request.candidate_generation_id),
+         :ok <- relation_kind(request.relation_kind),
          :ok <- relation(request.active_relation),
          :ok <- relation(request.candidate_relation),
          :ok <- related_relations(request) do
@@ -88,6 +91,9 @@ defmodule Favn.Contracts.GenerationDiscardRequest do
   end
 
   defp generation_id(value), do: {:error, {:invalid_candidate_generation_id, value}}
+
+  defp relation_kind(kind) when kind in [:candidate, :retired], do: :ok
+  defp relation_kind(kind), do: {:error, {:invalid_discard_relation_kind, kind}}
 
   defp relation(%RelationRef{} = relation) do
     RelationRef.validate!(relation)

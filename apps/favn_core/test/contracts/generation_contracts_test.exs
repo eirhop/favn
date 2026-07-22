@@ -256,6 +256,11 @@ defmodule Favn.Contracts.GenerationContractsTest do
     }
 
     assert :ok = GenerationDiscardResult.validate(unknown, request)
+
+    assert :ok = GenerationDiscardRequest.validate(%{request | relation_kind: :retired})
+
+    assert {:error, {:invalid_discard_relation_kind, :temporary}} =
+             GenerationDiscardRequest.validate(%{request | relation_kind: :temporary})
   end
 
   defp runner_work(operation) do

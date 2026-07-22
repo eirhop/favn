@@ -19,15 +19,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Favn.RelationRef
   alias FavnOrchestrator.Persistence.BackfillPlan
   alias FavnOrchestrator.Persistence.Commands.ActivateBackfillPlan
+  alias FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.BackfillMissingProjection
   alias FavnOrchestrator.Persistence.Commands.AppendBackfillPlanBatch
   alias FavnOrchestrator.Persistence.Commands.BackfillPlanWindow
   alias FavnOrchestrator.Persistence.Commands.CommitRunTransition
   alias FavnOrchestrator.Persistence.Commands.AdvanceRunnerExecution
   alias FavnOrchestrator.Persistence.Commands.ClaimRun
+  alias FavnOrchestrator.Persistence.Commands.ClaimRebuildItems
+  alias FavnOrchestrator.Persistence.Commands.ClaimRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.ClaimMaterialization
   alias FavnOrchestrator.Persistence.Commands.ClaimBackfillWindows
   alias FavnOrchestrator.Persistence.Commands.CreateRun
+  alias FavnOrchestrator.Persistence.Commands.CreateRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
@@ -43,6 +47,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.RecordRunnerDispatch
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
+  alias FavnOrchestrator.Persistence.Commands.ReleaseTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.FinishMaterialization
   alias FavnOrchestrator.Persistence.Commands.EnsureWritableTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.ReconcileInitialTargetGeneration
@@ -59,6 +64,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence
   alias FavnOrchestrator.Persistence.Commands.ScheduleOccurrenceIntent
   alias FavnOrchestrator.Persistence.Commands.StartBackfillPlan
+  alias FavnOrchestrator.Persistence.Commands.StartRebuildOperation
+  alias FavnOrchestrator.Persistence.Commands.RebuildPlanAction
+  alias FavnOrchestrator.Persistence.Commands.RebuildPlanItem
+  alias FavnOrchestrator.Persistence.Commands.RetryRebuildOperation
+  alias FavnOrchestrator.Persistence.Commands.RequestRebuildCancellation
+  alias FavnOrchestrator.Persistence.Commands.TransitionRebuildAction
+  alias FavnOrchestrator.Persistence.Commands.TransitionRebuildGeneration
+  alias FavnOrchestrator.Persistence.Commands.TransitionRebuildItem
+  alias FavnOrchestrator.Persistence.Commands.TransitionRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.TransitionBackfillWindow
   alias FavnOrchestrator.Persistence.Commands.RunTarget
   alias FavnOrchestrator.Persistence.Commands.AdmitExecution
@@ -99,6 +113,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Selectors.ActorByUsername
   alias FavnOrchestrator.Persistence.Selectors.SessionByTokenHash
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Rebuild.Plan, as: RebuildPlan
   alias FavnOrchestrator.RunCancellation
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.Backfills
@@ -129,6 +144,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.Projections.Projector
   alias FavnStoragePostgres.Maintenance.Store, as: MaintenanceStore
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
+  alias FavnStoragePostgres.Rebuilds.Store, as: RebuildStore
   alias FavnStoragePostgres.Release
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RuntimeInputKeyInventory
@@ -138,6 +154,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.Schemas.RuntimeInputPin, as: RuntimeInputPinRow
   alias FavnStoragePostgres.Scheduler.Store, as: SchedulerStore
   alias FavnStoragePostgres.TargetGenerations.Store, as: TargetGenerationStore
+  alias FavnStoragePostgres.TargetOperationLocks.Store, as: TargetOperationLockStore
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @service_token "B7yN3kQ9wR4mT8xZ2cV6pL1sD5fH0jA7"
@@ -197,6 +214,611 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     fixture = provision_deploy_fixture()
     {:ok, fixture}
+  end
+
+  test "target operation locks fence takeover and gate new materialization writes", fixture do
+    target_ids = [fixture.target_id, fixture.target_id <> ":downstream"]
+    occurred_at = DateTime.utc_now()
+
+    acquire = %AcquireTargetOperationLocks{
+      workspace_context: fixture.workspace_context,
+      command_id: "locks:acquire:" <> fixture.workspace_id,
+      target_ids: target_ids,
+      operation_id: "rebuild-lock-owner",
+      operation_type: :rebuild,
+      lease_owner: "rebuild-lock-owner",
+      lease_duration_ms: 30_000,
+      occurred_at: occurred_at
+    }
+
+    assert {:ok, locks} = TargetOperationLockStore.acquire_many(acquire)
+    assert Enum.map(locks, & &1.fencing_token) == [1, 1]
+
+    assert {:error, %{kind: :conflict, details: %{reason_code: "target_operation_in_progress"}}} =
+             TargetOperationLockStore.acquire_many(%{
+               acquire
+               | command_id: acquire.command_id <> ":conflict",
+                 operation_id: "other-operation",
+                 lease_owner: "other-owner"
+             })
+
+    {run_command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(run_command)
+
+    claim = %ClaimMaterialization{
+      workspace_context: fixture.workspace_context,
+      command_id: "locked-materialization:" <> run.id,
+      claim_key: "locked-materialization:" <> run.id,
+      deployment_id: fixture.deployment_id,
+      target_kind: :asset,
+      target_id: fixture.target_id,
+      evidence_generation_id: "ag_" <> String.duplicate("a", 64),
+      partition_key: Favn.Freshness.Key.latest(),
+      run_id: run.id,
+      owner_id: "materialization-worker",
+      lease_duration_ms: 30_000,
+      occurred_at: occurred_at
+    }
+
+    assert {:error, %{kind: :conflict, details: %{reason_code: "target_operation_in_progress"}}} =
+             MaterializationStore.claim(claim)
+
+    assert {:ok, %{status: :claimed}} =
+             MaterializationStore.claim(%{
+               claim
+               | command_id: claim.command_id <> ":rebuild",
+                 claim_key: claim.claim_key <> ":rebuild",
+                 operation_id: acquire.operation_id
+             })
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.target_operation_locks SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE workspace_id = $1",
+      [fixture.workspace_id]
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.materialization_claims SET expires_at = clock_timestamp() - interval '1 second' WHERE workspace_id = $1",
+      [fixture.workspace_id]
+    )
+
+    assert {:ok, takeover} =
+             TargetOperationLockStore.acquire_many(%{
+               acquire
+               | command_id: acquire.command_id <> ":takeover",
+                 operation_id: "takeover-operation",
+                 lease_owner: "takeover-owner"
+             })
+
+    assert Enum.map(takeover, & &1.fencing_token) == [2, 2]
+
+    assert :ok =
+             TargetOperationLockStore.release_many(%ReleaseTargetOperationLocks{
+               workspace_context: fixture.workspace_context,
+               command_id: "locks:release:" <> fixture.workspace_id,
+               operation_id: "takeover-operation",
+               lease_owner: "takeover-owner",
+               locks:
+                 Enum.map(takeover, &%{target_id: &1.target_id, fencing_token: &1.fencing_token}),
+               occurred_at: occurred_at
+             })
+  end
+
+  test "rebuild plan persistence is immutable, fenced, resumable, and exact-retry safe",
+       fixture do
+    occurred_at = DateTime.utc_now()
+    operation_id = "rebuild-store:" <> fixture.workspace_id
+    candidate_id = Ecto.UUID.generate()
+
+    action = %RebuildPlanAction{
+      target_id: fixture.target_id,
+      ordinal: 0,
+      action: :rebuild,
+      reason: %{reason_code: "test_rebuild"},
+      upstream_impact: %{},
+      pinned_input_generation_ids: [],
+      candidate_generation: %{
+        target_generation_id: candidate_id,
+        descriptor_hash: String.duplicate("a", 64),
+        logical_relation: %{
+          connection: "warehouse",
+          catalog: nil,
+          schema: "analytics",
+          name: "asset"
+        },
+        physical_relation: %{
+          connection: "warehouse",
+          catalog: nil,
+          schema: "analytics",
+          name: "asset__candidate"
+        }
+      },
+      status: :planned
+    }
+
+    item = %RebuildPlanItem{
+      target_id: fixture.target_id,
+      item_id: "full-load-item",
+      ordinal: 0,
+      work_kind: :full_load,
+      window_key: "full_load",
+      window_start: nil,
+      window_end: nil,
+      candidate_generation_id: candidate_id
+    }
+
+    payload = %{
+      schema_version: 1,
+      operation_id: operation_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      target_id: fixture.target_id,
+      item_count: 1,
+      items_digest: RebuildPlan.hash(%{items: [Map.from_struct(item)]})
+    }
+
+    plan_hash = RebuildPlan.hash(payload)
+
+    create = %CreateRebuildPlan{
+      workspace_context: fixture.workspace_context,
+      command_id: "rebuild:create:" <> fixture.workspace_id,
+      operation_id: operation_id,
+      root_target_id: fixture.target_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      candidate_generation_id: candidate_id,
+      plan_hash: plan_hash,
+      plan_payload: payload,
+      actor_id: fixture.workspace_context.principal_id,
+      reason: "test immutable rebuild",
+      idempotency_key: operation_id,
+      evaluated_at: occurred_at,
+      actions: [action],
+      items: [item],
+      occurred_at: occurred_at
+    }
+
+    assert {:ok, planned} = RebuildStore.create_plan(create)
+    assert planned.state == :planned
+    assert planned.plan_hash == plan_hash
+    assert planned.actions |> hd() |> Map.fetch!(:progress) == %{planned: 1, total: 1}
+    assert {:ok, ^planned} = RebuildStore.create_plan(create)
+
+    changed_payload = Map.put(payload, :target_id, fixture.target_id <> ":changed")
+
+    assert {:error, %{kind: :conflict}} =
+             RebuildStore.create_plan(%{
+               create
+               | plan_payload: changed_payload,
+                 plan_hash: RebuildPlan.hash(changed_payload)
+             })
+
+    assert {:ok, queued} =
+             RebuildStore.start_operation(%StartRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:start:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               plan_hash: plan_hash,
+               expected_version: planned.version,
+               occurred_at: occurred_at
+             })
+
+    assert queued.state == :queued
+
+    assert {:ok, claimed_operation} =
+             RebuildStore.claim_operation(%ClaimRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:claim-operation:" <> fixture.workspace_id,
+               owner_id: "rebuild-dispatcher",
+               lease_duration_ms: 30_000,
+               operation_id: operation_id
+             })
+
+    assert claimed_operation.dispatcher_fencing_token == 1
+
+    assert {:ok, building} =
+             RebuildStore.transition_operation(%TransitionRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:building:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: claimed_operation.dispatcher_fencing_token,
+               expected_version: claimed_operation.version,
+               expected_states: [:queued],
+               state: :building,
+               phase: :building,
+               occurred_at: occurred_at
+             })
+
+    assert building.state == :building
+
+    assert {:ok, [claimed_item]} =
+             RebuildStore.claim_items(%ClaimRebuildItems{
+               workspace_context: fixture.workspace_context,
+               batch_id: "rebuild:claim-item:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               target_id: fixture.target_id,
+               owner_id: "rebuild-dispatcher",
+               lease_duration_ms: 30_000,
+               limit: 1
+             })
+
+    assert {:error, %{kind: :fenced}} =
+             RebuildStore.transition_item(%TransitionRebuildItem{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:item:stale:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               target_id: fixture.target_id,
+               item_id: claimed_item.item_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: claimed_item.fencing_token + 1,
+               expected_version: claimed_item.version,
+               status: :failed,
+               last_error: %{"outcome" => "safe_failure"},
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, unknown_item} =
+             RebuildStore.transition_item(%TransitionRebuildItem{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:item:unknown:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               target_id: fixture.target_id,
+               item_id: claimed_item.item_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: claimed_item.fencing_token,
+               expected_version: claimed_item.version,
+               status: :outcome_unknown,
+               child_run_id: "unknown-child-run",
+               last_error: %{"outcome" => "unknown", "reason" => "lost reply"},
+               occurred_at: occurred_at
+             })
+
+    assert unknown_item.status == :outcome_unknown
+
+    assert {:ok, failed_item} =
+             RebuildStore.transition_item(%TransitionRebuildItem{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:item:reconciled-failed:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               target_id: fixture.target_id,
+               item_id: claimed_item.item_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: unknown_item.fencing_token,
+               expected_version: unknown_item.version,
+               status: :failed,
+               last_error: %{"outcome" => "safe_failure", "reason" => "test"},
+               occurred_at: occurred_at
+             })
+
+    planned_action = hd(building.actions)
+
+    assert {:ok, running_action} =
+             RebuildStore.transition_action(%TransitionRebuildAction{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:action:running:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               target_id: fixture.target_id,
+               owner_id: "rebuild-dispatcher",
+               operation_fencing_token: building.dispatcher_fencing_token,
+               expected_version: planned_action.version,
+               expected_statuses: [:planned],
+               status: :running,
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, _failed_action} =
+             RebuildStore.transition_action(%TransitionRebuildAction{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:action:failed:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               target_id: fixture.target_id,
+               owner_id: "rebuild-dispatcher",
+               operation_fencing_token: building.dispatcher_fencing_token,
+               expected_version: running_action.version,
+               expected_statuses: [:running],
+               status: :failed,
+               terminal_error: %{"outcome" => "safe_failure"},
+               occurred_at: occurred_at
+             })
+
+    assert failed_item.status == :failed
+
+    assert {:ok, failed} =
+             RebuildStore.transition_operation(%TransitionRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:failed:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: building.dispatcher_fencing_token,
+               expected_version: building.version,
+               expected_states: [:building],
+               state: :failed,
+               phase: :terminal,
+               terminal_error: %{"outcome" => "safe_failure"},
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, retried} =
+             RebuildStore.retry_operation(%RetryRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:retry:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               plan_hash: plan_hash,
+               occurred_at: occurred_at
+             })
+
+    assert retried.state == :queued
+    assert retried.progress == %{ready: 1, total: 1}
+    assert hd(retried.actions).status == :planned
+    assert failed.state == :failed
+
+    assert {:ok, recovered_claim} =
+             RebuildStore.claim_operation(%ClaimRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:claim-retry:" <> fixture.workspace_id,
+               owner_id: "rebuild-dispatcher",
+               lease_duration_ms: 30_000,
+               operation_id: operation_id
+             })
+
+    transition = fn current, next_state, phase, label, attrs ->
+      RebuildStore.transition_operation(%TransitionRebuildOperation{
+        workspace_context: fixture.workspace_context,
+        command_id: "rebuild:#{label}:" <> fixture.workspace_id,
+        operation_id: operation_id,
+        owner_id: "rebuild-dispatcher",
+        fencing_token: current.dispatcher_fencing_token,
+        expected_version: current.version,
+        expected_states: [current.state],
+        state: next_state,
+        phase: phase,
+        cleanup_state: Keyword.get(attrs, :cleanup_state),
+        unknown_outcome: Keyword.get(attrs, :unknown_outcome),
+        occurred_at: occurred_at
+      })
+    end
+
+    assert {:ok, retry_building} =
+             transition.(recovered_claim, :building, :building, "retry-building", [])
+
+    assert {:ok, retry_validating} =
+             transition.(retry_building, :validating, :validating, "retry-validating", [])
+
+    assert {:ok, retry_activating} =
+             transition.(retry_validating, :activating, :activating, "retry-activating", [])
+
+    assert {:ok, activation_unknown} =
+             transition.(
+               retry_activating,
+               :activation_unknown,
+               :reconciling,
+               "activation-unknown",
+               unknown_outcome: %{"outcome" => "unknown"}
+             )
+
+    assert {:ok, reconciling} =
+             transition.(activation_unknown, :reconciling, :reconciling, "reconciling", [])
+
+    assert {:ok, repairing} =
+             transition.(reconciling, :building, :repairing, "repairing", unknown_outcome: %{})
+
+    assert {:ok, final_validating} =
+             transition.(repairing, :validating, :validating, "final-validating", [])
+
+    assert {:ok, final_activating} =
+             transition.(final_validating, :activating, :activating, "final-activating", [])
+
+    assert {:ok, succeeded} =
+             transition.(final_activating, :succeeded, :terminal, "succeeded",
+               cleanup_state: :pending
+             )
+
+    assert succeeded.cleanup_state == :pending
+
+    assert {:ok, cleanup_claim} =
+             RebuildStore.claim_operation(%ClaimRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:claim-cleanup:" <> fixture.workspace_id,
+               owner_id: "rebuild-dispatcher",
+               lease_duration_ms: 30_000,
+               operation_id: operation_id
+             })
+
+    assert cleanup_claim.state == :succeeded
+
+    assert {:ok, cleaned} =
+             transition.(cleanup_claim, :succeeded, :terminal, "cleanup-complete",
+               cleanup_state: :complete
+             )
+
+    assert cleaned.cleanup_state == :complete
+    assert cleaned.completed_at == succeeded.completed_at
+
+    cancel_operation_id = "rebuild-cancel-store:" <> fixture.workspace_id
+    cancel_candidate_id = Ecto.UUID.generate()
+
+    cancel_action = %{
+      action
+      | candidate_generation: %{
+          action.candidate_generation
+          | target_generation_id: cancel_candidate_id
+        }
+    }
+
+    cancel_item = %{
+      item
+      | item_id: "cancel-full-load-item",
+        candidate_generation_id: cancel_candidate_id
+    }
+
+    cancel_payload = %{
+      payload
+      | operation_id: cancel_operation_id,
+        items_digest: RebuildPlan.hash(%{items: [Map.from_struct(cancel_item)]})
+    }
+
+    assert {:ok, cancel_planned} =
+             RebuildStore.create_plan(%{
+               create
+               | command_id: "rebuild:create-cancel:" <> fixture.workspace_id,
+                 operation_id: cancel_operation_id,
+                 candidate_generation_id: cancel_candidate_id,
+                 plan_hash: RebuildPlan.hash(cancel_payload),
+                 plan_payload: cancel_payload,
+                 idempotency_key: cancel_operation_id,
+                 actions: [cancel_action],
+                 items: [cancel_item]
+             })
+
+    assert {:ok, cancel_queued} =
+             RebuildStore.start_operation(%StartRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:start-cancel:" <> fixture.workspace_id,
+               operation_id: cancel_operation_id,
+               plan_hash: RebuildPlan.hash(cancel_payload),
+               expected_version: cancel_planned.version,
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, cancel_claim} =
+             RebuildStore.claim_operation(%ClaimRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:claim-cancel:" <> fixture.workspace_id,
+               owner_id: "rebuild-dispatcher",
+               lease_duration_ms: 30_000,
+               operation_id: cancel_operation_id
+             })
+
+    assert {:ok, cancel_building} =
+             RebuildStore.transition_operation(%TransitionRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:cancel-building:" <> fixture.workspace_id,
+               operation_id: cancel_operation_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: cancel_claim.dispatcher_fencing_token,
+               expected_version: cancel_claim.version,
+               expected_states: [:queued],
+               state: :building,
+               phase: :building,
+               occurred_at: occurred_at
+             })
+
+    cancel_planned_action = hd(cancel_building.actions)
+
+    assert {:ok, cancel_running_action} =
+             RebuildStore.transition_action(%TransitionRebuildAction{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:cancel-action-running:" <> fixture.workspace_id,
+               operation_id: cancel_operation_id,
+               target_id: fixture.target_id,
+               owner_id: "rebuild-dispatcher",
+               operation_fencing_token: cancel_building.dispatcher_fencing_token,
+               expected_version: cancel_planned_action.version,
+               expected_statuses: [:planned],
+               status: :running,
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, cancel_unknown_action} =
+             RebuildStore.transition_action(%TransitionRebuildAction{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:cancel-action-unknown:" <> fixture.workspace_id,
+               operation_id: cancel_operation_id,
+               target_id: fixture.target_id,
+               owner_id: "rebuild-dispatcher",
+               operation_fencing_token: cancel_building.dispatcher_fencing_token,
+               expected_version: cancel_running_action.version,
+               expected_statuses: [:running],
+               status: :outcome_unknown,
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, cancel_requested} =
+             RebuildStore.request_cancellation(%RequestRebuildCancellation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:cancel-unknown:" <> fixture.workspace_id,
+               operation_id: cancel_operation_id,
+               reason: "operator abandoned plan",
+               occurred_at: occurred_at
+             })
+
+    assert cancel_requested.state == :cancelling
+    assert cancel_requested.cleanup_state == :pending
+
+    assert {:ok, cancelled_action} =
+             RebuildStore.transition_action(%TransitionRebuildAction{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:cancel-action-reconciled:" <> fixture.workspace_id,
+               operation_id: cancel_operation_id,
+               target_id: fixture.target_id,
+               owner_id: "rebuild-dispatcher",
+               operation_fencing_token: cancel_requested.dispatcher_fencing_token,
+               expected_version: cancel_unknown_action.version,
+               expected_statuses: [:outcome_unknown],
+               status: :cancelled,
+               occurred_at: occurred_at
+             })
+
+    assert cancelled_action.status == :cancelled
+
+    assert :ok =
+             RebuildStore.transition_generation(%TransitionRebuildGeneration{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:discard-cancelled:" <> fixture.workspace_id,
+               operation_id: cancel_operation_id,
+               target_id: fixture.target_id,
+               candidate_generation_id: cancel_candidate_id,
+               owner_id: "rebuild-dispatcher",
+               operation_fencing_token: cancel_requested.dispatcher_fencing_token,
+               status: :discarded,
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, cancel_cleanup_failed} =
+             RebuildStore.transition_operation(%TransitionRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:cancel-cleanup-failed:" <> fixture.workspace_id,
+               operation_id: cancel_operation_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: cancel_requested.dispatcher_fencing_token,
+               expected_version: cancel_requested.version,
+               expected_states: [:cancelling],
+               state: :cancelled,
+               phase: :terminal,
+               cleanup_state: :failed,
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, cancel_cleanup_claim} =
+             RebuildStore.claim_operation(%ClaimRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:claim-cancel-cleanup:" <> fixture.workspace_id,
+               owner_id: "rebuild-dispatcher",
+               lease_duration_ms: 30_000,
+               operation_id: cancel_operation_id
+             })
+
+    assert cancel_cleanup_claim.state == :cancelled
+
+    assert {:ok, cancel_cleaned} =
+             RebuildStore.transition_operation(%TransitionRebuildOperation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:cancel-cleanup-complete:" <> fixture.workspace_id,
+               operation_id: cancel_operation_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: cancel_cleanup_claim.dispatcher_fencing_token,
+               expected_version: cancel_cleanup_claim.version,
+               expected_states: [:cancelled],
+               state: :cancelled,
+               phase: :terminal,
+               cleanup_state: :complete,
+               occurred_at: occurred_at
+             })
+
+    assert cancel_cleaned.cleanup_state == :complete
+    assert cancel_cleanup_failed.cleanup_state == :failed
+    assert cancel_queued.state == :queued
+    assert cancel_planned.state == :planned
   end
 
   test "workspace provisioning is exact-retry safe", fixture do

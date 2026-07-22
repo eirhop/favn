@@ -108,6 +108,51 @@ defmodule FavnOrchestrator.TargetGenerations do
     end
   end
 
+  @doc "Pins one isolated rebuild-candidate target and its immutable active inputs."
+  @spec pin_rebuild_plan(WorkspaceContext.t(), Version.t(), Index.t(), Plan.t(), map()) ::
+          {:ok, Plan.t()} | {:error, term()}
+  def pin_rebuild_plan(
+        %WorkspaceContext{} = context,
+        %Version{},
+        %Index{} = index,
+        %Plan{} = plan,
+        rebuild
+      )
+      when is_map(rebuild) do
+    with :ok <- validate_rebuild_pin(rebuild),
+         :ok <- validate_rebuild_inputs(context, Map.fetch!(rebuild, :input_generations)),
+         {:ok, asset} <- rebuild_asset(index, Map.fetch!(rebuild, :target_id)),
+         :ok <- validate_rebuild_plan_target(plan, asset.ref) do
+      nodes =
+        Map.new(plan.nodes, fn {node_key, node} ->
+          target_operation = Map.get(rebuild, :target_operation, :rebuild_candidate)
+
+          pinned = %{
+            target_id: rebuild.target_id,
+            target_generation_id: rebuild.candidate_generation_id,
+            evidence_generation_id: rebuild.candidate_generation_id,
+            physical_relation: rebuild.candidate_relation,
+            input_generations: rebuild.input_generations,
+            target_operation: target_operation,
+            active_relation: rebuild.active_relation,
+            write_relation: rebuild.candidate_relation,
+            rebuild_operation_id: rebuild.operation_id,
+            rebuild_action_id: rebuild.action_id,
+            rebuild_item_id: rebuild.item_id,
+            rebuild_empty_generation: Map.get(rebuild, :empty_generation, false),
+            rebuild_final_item: Map.get(rebuild, :final_item, false)
+          }
+
+          {node_key, Map.merge(node, pinned)}
+        end)
+
+      {:ok, %{plan | nodes: nodes}}
+    end
+  end
+
+  def pin_rebuild_plan(_context, _version, _index, _plan, _rebuild),
+    do: {:error, :invalid_rebuild_generation_pin}
+
   @doc "Resolves active evidence generations for a bounded manifest asset map."
   @spec for_reads(WorkspaceContext.t(), map()) ::
           {:ok, %{optional(Favn.Ref.t()) => identity()}} | {:error, term()}
@@ -225,11 +270,12 @@ defmodule FavnOrchestrator.TargetGenerations do
     target_id = TargetIdentity.for_asset(asset.ref)
 
     case Map.get(bindings, target_id) do
-      %{active_generation_id: generation_id} when is_binary(generation_id) ->
+      %{active_generation_id: generation_id} = binding when is_binary(generation_id) ->
         %{
           target_id: target_id,
           evidence_generation_id: generation_id,
-          target_generation_id: generation_id
+          target_generation_id: generation_id,
+          physical_relation: Map.get(binding, :active_physical_relation)
         }
 
       _other ->
@@ -252,6 +298,72 @@ defmodule FavnOrchestrator.TargetGenerations do
     if Keyword.keyword?(opts) and Keyword.keys(opts) -- [:required_generation] == [],
       do: :ok,
       else: {:error, :invalid_generation_pin_options}
+  end
+
+  defp validate_rebuild_pin(rebuild) do
+    ids = [
+      Map.get(rebuild, :target_id),
+      Map.get(rebuild, :candidate_generation_id),
+      Map.get(rebuild, :operation_id),
+      Map.get(rebuild, :action_id),
+      Map.get(rebuild, :item_id)
+    ]
+
+    if Enum.all?(ids, &(is_binary(&1) and byte_size(&1) in 1..255)) and
+         Map.get(rebuild, :target_operation, :rebuild_candidate) in [
+           :rebuild_candidate,
+           :normal_materialization
+         ] and
+         is_boolean(Map.get(rebuild, :empty_generation, false)) and
+         is_boolean(Map.get(rebuild, :final_item, false)) and
+         is_map(Map.get(rebuild, :active_relation)) and
+         is_map(Map.get(rebuild, :candidate_relation)) and
+         is_list(Map.get(rebuild, :input_generations)),
+       do: :ok,
+       else: {:error, :invalid_rebuild_generation_pin}
+  end
+
+  defp rebuild_asset(index, target_id) do
+    case Enum.find(index.assets_by_ref, fn {_ref, asset} ->
+           match?(%TargetDescriptor{target_id: ^target_id}, asset.target_descriptor)
+         end) do
+      {_ref, %Asset{} = asset} -> {:ok, asset}
+      nil -> {:error, :invalid_rebuild_target}
+    end
+  end
+
+  defp validate_rebuild_plan_target(%Plan{target_refs: [ref], nodes: nodes}, ref)
+       when map_size(nodes) == 1,
+       do: :ok
+
+  defp validate_rebuild_plan_target(_plan, _ref), do: {:error, :invalid_rebuild_run_plan}
+
+  defp validate_rebuild_inputs(_context, []), do: :ok
+
+  defp validate_rebuild_inputs(context, inputs) do
+    target_ids = Enum.map(inputs, &Map.get(&1, :target_id))
+
+    if Enum.all?(target_ids, &is_binary/1) and target_ids == Enum.uniq(target_ids) do
+      case Persistence.stores().target_generations.get_bindings(%GetTargetBindings{
+             workspace_context: context,
+             target_ids: target_ids
+           }) do
+        {:ok, bindings} ->
+          current = Map.new(bindings, &{&1.target_id, &1.active_generation_id})
+
+          if Enum.all?(inputs, fn input ->
+               Map.get(current, Map.get(input, :target_id)) ==
+                 Map.get(input, :target_generation_id)
+             end),
+             do: :ok,
+             else: {:error, :pinned_input_changed}
+
+        {:error, _reason} = error ->
+          error
+      end
+    else
+      {:error, :invalid_rebuild_input_generations}
+    end
   end
 
   defp require_generation(%Plan{} = plan, nil), do: {:ok, plan}

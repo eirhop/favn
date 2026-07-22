@@ -80,4 +80,34 @@ defmodule FavnOrchestrator.RunnerDispatch do
       lifecycle
     )
   end
+
+  @doc "Atomically activates one candidate generation under a control-plane admission permit."
+  @spec activate_generation(module(), term(), keyword(), GenServer.server()) :: term()
+  def activate_generation(runner_client, request, runner_opts, lifecycle \\ Lifecycle)
+      when is_atom(runner_client) and is_list(runner_opts) do
+    Lifecycle.with_admission(
+      fn -> runner_client.activate_generation(request, runner_opts) end,
+      lifecycle
+    )
+  end
+
+  @doc "Reconciles an activation outcome under a control-plane admission permit."
+  @spec reconcile_generation(module(), term(), keyword(), GenServer.server()) :: term()
+  def reconcile_generation(runner_client, request, runner_opts, lifecycle \\ Lifecycle)
+      when is_atom(runner_client) and is_list(runner_opts) do
+    Lifecycle.with_admission(
+      fn -> runner_client.reconcile_generation(request, runner_opts) end,
+      lifecycle
+    )
+  end
+
+  @doc "Discards a proven inactive candidate under a control-plane admission permit."
+  @spec discard_generation(module(), term(), keyword(), GenServer.server()) :: term()
+  def discard_generation(runner_client, request, runner_opts, lifecycle \\ Lifecycle)
+      when is_atom(runner_client) and is_list(runner_opts) do
+    Lifecycle.with_admission(
+      fn -> runner_client.discard_generation(request, runner_opts) end,
+      lifecycle
+    )
+  end
 end

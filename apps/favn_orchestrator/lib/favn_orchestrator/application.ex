@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
+  alias FavnOrchestrator.RebuildDispatcher
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunRecovery
   alias FavnOrchestrator.RunnerHealth
@@ -78,7 +79,7 @@ defmodule FavnOrchestrator.Application do
             {RunManager, []},
             {FavnOrchestrator.ResourceRecovery, []}
           ] ++
-          [{BackfillDispatcher, []}] ++
+          [{BackfillDispatcher, []}, {RebuildDispatcher, []}] ++
           [
             {RunRecovery, []},
             {RunnerHealth, []},

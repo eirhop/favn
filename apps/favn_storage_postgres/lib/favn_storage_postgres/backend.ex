@@ -41,6 +41,8 @@ defmodule FavnStoragePostgres.Backend do
       admission: FavnStoragePostgres.Instrumented.Admission,
       resource_circuits: FavnStoragePostgres.Instrumented.ResourceCircuits,
       target_generations: FavnStoragePostgres.Instrumented.TargetGenerations,
+      rebuilds: FavnStoragePostgres.Instrumented.Rebuilds,
+      target_operation_locks: FavnStoragePostgres.Instrumented.TargetOperationLocks,
       materialization: FavnStoragePostgres.Instrumented.Materialization,
       backfills: FavnStoragePostgres.Instrumented.Backfills,
       operator_reads: FavnStoragePostgres.Instrumented.OperatorReads,
