@@ -516,7 +516,7 @@ defmodule FavnRunner.ServerTest do
     wait_until(fn ->
       state = :sys.get_state(server)
       execution = state.lifecycle.executions[execution_id]
-      execution && length(execution.logs) > 0
+      execution && execution.logs != []
     end)
 
     send(server, {:runner_log_entry, execution_id, %{sequence: 1}})

@@ -15,6 +15,7 @@ defmodule FavnOrchestrator do
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.ControlPlaneRuntimeConfig
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.Logs
@@ -59,6 +60,11 @@ defmodule FavnOrchestrator do
   @type operator_actor :: Auth.actor()
   @type operator_session :: Auth.session()
   @type operator_actor_context :: OperatorContext.t()
+
+  @doc "Confirms that unified control-plane boot configuration was applied."
+  @spec ensure_control_plane_runtime_config_applied() ::
+          :ok | {:error, :control_plane_runtime_config_not_applied}
+  def ensure_control_plane_runtime_config_applied, do: ControlPlaneRuntimeConfig.ensure_applied()
 
   @doc "Builds browser-safe, non-authoritative operator identity hints."
   @spec operator_context(String.t(), operator_actor(), operator_session()) ::

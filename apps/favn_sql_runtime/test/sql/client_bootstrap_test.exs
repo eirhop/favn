@@ -484,7 +484,7 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
 
     assert Enum.count(events(), &match?({:connect, :warehouse, _conn}, &1)) == 2
     assert Enum.count(events(), &match?({:bootstrap, :warehouse, _conn}, &1)) == 2
-    assert Enum.count(events(), &match?({:disconnect, _conn}, &1)) >= 1
+    assert Enum.any?(events(), &match?({:disconnect, _conn}, &1))
   end
 
   test "failed materialization discards the pooled session and does not retry", %{

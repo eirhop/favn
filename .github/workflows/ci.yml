@@ -92,6 +92,11 @@ jobs:
       - name: Check formatting
         run: mix format --check-formatted
 
+      - name: Run Elixir static and security checks
+        env:
+          MIX_ENV: test
+        run: scripts/check_elixir_static_security.sh
+
       - name: Audit Hex dependencies
         run: mix hex.audit
 

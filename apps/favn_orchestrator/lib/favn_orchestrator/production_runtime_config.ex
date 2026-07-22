@@ -653,6 +653,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     end
   end
 
+  # sobelow_skip ["DOS.StringToAtom"]
   defp install_runner_node_atom(opts) do
     Keyword.update!(opts, :runner_node, &String.to_atom/1)
   end

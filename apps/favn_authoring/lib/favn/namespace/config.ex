@@ -147,7 +147,8 @@ defmodule Favn.Namespace.Config do
     |> SessionRequirements.normalize_resources!()
   rescue
     error in ArgumentError ->
-      raise ArgumentError, "namespace resources are invalid: #{error.message}"
+      reraise ArgumentError.exception("namespace resources are invalid: #{error.message}"),
+              __STACKTRACE__
   end
 
   defp normalize_resources!(value) do

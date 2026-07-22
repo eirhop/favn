@@ -46,7 +46,7 @@ defmodule FavnView.Application do
 
   defp ensure_runtime_config do
     if Application.get_env(:favn_view, :production_runtime_config, false) do
-      FavnOrchestrator.ControlPlaneRuntimeConfig.ensure_applied()
+      FavnOrchestrator.ensure_control_plane_runtime_config_applied()
     else
       :ok
     end

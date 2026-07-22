@@ -29,8 +29,8 @@ defmodule FavnRunner.ProductionRuntimeConfig do
 
   @doc "Applies production config only for a release or an explicitly configured node."
   @spec apply_from_env_if_configured(map()) :: :ok | {:error, map()}
-  def apply_from_env_if_configured(env \\ System.get_env()) when is_map(env) do
-    if production_release?() or Enum.any?(@required_names, &Map.has_key?(env, &1)) do
+  def apply_from_env_if_configured(env) when is_map(env) do
+    if production_release?(env) or Enum.any?(@required_names, &Map.has_key?(env, &1)) do
       apply_from_env(env)
     else
       :ok
@@ -39,7 +39,7 @@ defmodule FavnRunner.ProductionRuntimeConfig do
 
   @doc "Validates and freezes runner production environment configuration."
   @spec apply_from_env(map()) :: :ok | {:error, map()}
-  def apply_from_env(env \\ System.get_env()) when is_map(env) do
+  def apply_from_env(env) when is_map(env) do
     with {:ok, config} <- validate(env) do
       Application.put_env(:favn_runner, :production_runtime_config, config)
       Application.put_env(:favn_runner, :production_runtime_diagnostics, diagnostics(config))
@@ -56,7 +56,7 @@ defmodule FavnRunner.ProductionRuntimeConfig do
 
   @doc "Validates the runner distributed-node contract without mutating application state."
   @spec validate(map()) :: {:ok, config()} | {:error, map()}
-  def validate(env \\ System.get_env()) when is_map(env) do
+  def validate(env) when is_map(env) do
     with {:ok, runner_node} <- node_name(env, "FAVN_RUNNER_NODE"),
          {:ok, control_plane_node} <- node_name(env, "FAVN_CONTROL_PLANE_NODE"),
          :ok <- distinct_nodes(runner_node, control_plane_node),
@@ -106,8 +106,8 @@ defmodule FavnRunner.ProductionRuntimeConfig do
     }
   end
 
-  defp production_release? do
-    case System.get_env("RELEASE_NAME") do
+  defp production_release?(env) do
+    case Map.get(env, "RELEASE_NAME") do
       value when is_binary(value) -> String.trim(value) != ""
       _missing -> false
     end

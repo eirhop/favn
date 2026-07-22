@@ -1002,7 +1002,7 @@ defmodule FavnView.Components.LineagePage do
     %AssetNode{
       id: "asset:#{label}",
       label: label,
-      asset_ref: {__MODULE__, String.to_atom(label)},
+      asset_ref: {__MODULE__, :sample_asset},
       asset_ref_text: "#{__MODULE__}:#{label}",
       group_id: group_id,
       schema: to_string(layer),
@@ -1016,7 +1016,7 @@ defmodule FavnView.Components.LineagePage do
     %AssetNode{
       id: id,
       label: label,
-      asset_ref: {__MODULE__, String.to_atom(id)},
+      asset_ref: {__MODULE__, :sample_asset},
       asset_ref_text: "#{__MODULE__}:#{label}",
       group_id: "group:#{layer}:#{id}",
       schema: to_string(layer),

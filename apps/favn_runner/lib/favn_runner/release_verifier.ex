@@ -49,9 +49,9 @@ defmodule FavnRunner.ReleaseVerifier do
     Application.app_dir(:favn_runner, Path.join("priv", @descriptor_filename))
   end
 
-  @doc "Verifies and installs only the descriptor at the fixed packaged-release path."
-  @spec verify_startup() :: :ok | {:error, error()}
-  def verify_startup do
+  @doc "Verifies and installs the fixed packaged descriptor using the frozen boot environment."
+  @spec verify_startup(map()) :: :ok | {:error, error()}
+  def verify_startup(environment) when is_map(environment) do
     :ok = install_packaged_customer_code_path()
 
     case verified_release() do
@@ -59,7 +59,7 @@ defmodule FavnRunner.ReleaseVerifier do
         ensure_prepared_plugins()
 
       {:error, :runner_release_not_verified} ->
-        verify_and_install(startup_mode(), descriptor_path())
+        verify_and_install(startup_mode(environment), descriptor_path())
     end
   end
 
@@ -197,12 +197,12 @@ defmodule FavnRunner.ReleaseVerifier do
     end
   end
 
-  defp startup_mode do
-    if present_env?("RELEASE_NAME"), do: :required, else: :optional
+  defp startup_mode(environment) do
+    if present_env?(environment, "RELEASE_NAME"), do: :required, else: :optional
   end
 
-  defp present_env?(name) do
-    case System.get_env(name) do
+  defp present_env?(environment, name) do
+    case Map.get(environment, name) do
       value when is_binary(value) -> String.trim(value) != ""
       _missing -> false
     end

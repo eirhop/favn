@@ -24,6 +24,16 @@ not substitute in-memory or SQLite persistence.
 | Upgrade/rollback | Qualifies a compatible control-plane upgrade and rollback against the preserved PostgreSQL authority. |
 | Security | Checks non-root/read-only containers, secret redaction, private BEAM/PostgreSQL ports, immutable image identity, and the absence of unexpected applications. |
 
+Fast CI also runs the warning-grade Credo baseline, whole-umbrella Dialyzer,
+and strict Sobelow scans for both Phoenix boundaries. Dialyzer uses the tracked
+strict-description baseline in `.dialyzer_ignore.exs`, rejects warnings outside
+that baseline, and rejects obsolete filters so existing debt cannot silently
+grow or disappear from the baseline. Dialyxir is pinned to the immutable
+upstream OTP 28 warning-support commit until that support is released on Hex.
+Intentional Sobelow suppressions remain function-local and are accepted only
+where the surrounding code bounds and validates the value before the flagged
+operation.
+
 The single control-plane and single runner topology is the first supported
 scale point, not a single-BEAM runtime. Multi-node coordination remains a
 separate scope.

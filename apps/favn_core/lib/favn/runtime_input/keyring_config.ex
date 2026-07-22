@@ -54,7 +54,7 @@ defmodule Favn.RuntimeInput.KeyringConfig do
     if byte_size(encoded_keys) <= @max_encoded_bytes do
       case Jason.decode(encoded_keys, objects: :ordered_objects) do
         {:ok, %Jason.OrderedObject{values: keys}}
-        when length(keys) > 0 and length(keys) <= @max_keys ->
+        when keys != [] and length(keys) <= @max_keys ->
           decode_key_entries(keys)
 
         _invalid ->

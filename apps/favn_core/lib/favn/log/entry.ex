@@ -141,7 +141,8 @@ defmodule Favn.Log.Entry do
     |> String.to_existing_atom()
     |> normalize_enum(allowed, field, default)
   rescue
-    ArgumentError -> raise ArgumentError, "invalid #{field}: #{inspect(value)}"
+    _error in ArgumentError ->
+      reraise ArgumentError.exception("invalid #{field}: #{inspect(value)}"), __STACKTRACE__
   end
 
   defp normalize_enum(value, allowed, field, _default) do

@@ -328,32 +328,33 @@ defmodule Favn.SQL.Contract do
   defp ensure_compositions!(compositions, column_names) do
     ensure_unique_composition_modules!(compositions)
 
-    Enum.reduce(compositions, -1, fn composition, previous_end ->
-      length = length(composition.columns)
-      start_index = composition.start_index
-      end_index = start_index + length - 1
+    _final_end =
+      Enum.reduce(compositions, -1, fn composition, previous_end ->
+        length = length(composition.columns)
+        start_index = composition.start_index
+        end_index = start_index + length - 1
 
-      if start_index <= previous_end,
-        do: raise(ArgumentError, "contract fragment compositions overlap or are out of order")
+        if start_index <= previous_end,
+          do: raise(ArgumentError, "contract fragment compositions overlap or are out of order")
 
-      if end_index >= length(column_names),
-        do:
-          raise(
-            ArgumentError,
-            "contract fragment #{inspect(composition.module)} extends beyond contract columns"
-          )
+        if end_index >= length(column_names),
+          do:
+            raise(
+              ArgumentError,
+              "contract fragment #{inspect(composition.module)} extends beyond contract columns"
+            )
 
-      actual = Enum.slice(column_names, start_index, length)
+        actual = Enum.slice(column_names, start_index, length)
 
-      if actual != composition.columns,
-        do:
-          raise(
-            ArgumentError,
-            "contract fragment #{inspect(composition.module)} columns do not match the flattened contract at index #{start_index}"
-          )
+        if actual != composition.columns,
+          do:
+            raise(
+              ArgumentError,
+              "contract fragment #{inspect(composition.module)} columns do not match the flattened contract at index #{start_index}"
+            )
 
-      end_index
-    end)
+        end_index
+      end)
 
     :ok
   end

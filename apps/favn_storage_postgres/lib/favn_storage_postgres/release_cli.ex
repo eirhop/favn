@@ -45,7 +45,7 @@ defmodule FavnStoragePostgres.ReleaseCLI do
     case result do
       {:ok, %{operation: ^operation, status: :ok} = details} ->
         IO.puts("favn.release operation=#{operation} status=ok")
-        IO.inspect(details, label: "result", pretty: false, limit: 100)
+        IO.puts("result: " <> inspect(details, pretty: false, limit: 100))
         :ok
 
       {:error, %{operation: ^operation, status: :error, code: code}} when is_atom(code) ->

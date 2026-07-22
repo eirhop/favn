@@ -349,6 +349,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
   end
 
   test "apply_from_env/1 freezes redacted PostgreSQL composition", %{ca_file: ca_file} do
+    fresh_runner_node =
+      "runner#{System.unique_integer([:positive, :monotonic])}@runner.internal"
+
+    assert_raise ArgumentError, fn -> String.to_existing_atom(fresh_runner_node) end
+
     orchestrator_keys = [
       :persistence_backend,
       :persistence_options,
@@ -395,6 +400,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              )
              |> Map.put("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "2")
              |> Map.put("FAVN_SCHEDULER_ENABLED", "false")
+             |> Map.put("FAVN_RUNNER_NODE", fresh_runner_node)
              |> ProductionRuntimeConfig.apply_from_env()
 
     assert Application.get_env(:favn_orchestrator, :persistence_backend) ==
@@ -437,7 +443,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              FavnOrchestrator.RunnerClient.BeamNode
 
     assert Application.get_env(:favn_orchestrator, :runner_client_opts)[:runner_node] ==
-             :"runner@runner.internal"
+             String.to_existing_atom(fresh_runner_node)
 
     diagnostics = Application.get_env(:favn_orchestrator, :production_runtime_diagnostics)
     refute inspect(diagnostics) =~ "secret"
@@ -451,7 +457,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert diagnostics.runner == %{
              topology: :beam_node,
              control_plane_node: "control@control-plane.internal",
-             runner_node: "runner@runner.internal",
+             runner_node: fresh_runner_node,
              distribution_port: 9_100,
              epmd_port: 4_369,
              cookie_configured?: true

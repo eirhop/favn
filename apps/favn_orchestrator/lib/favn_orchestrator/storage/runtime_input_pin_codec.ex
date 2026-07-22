@@ -68,6 +68,7 @@ defmodule FavnOrchestrator.Storage.RuntimeInputPinCodec do
     with {:ok, binary} <- decode64(encoded), do: safe_binary_to_pin(binary)
   end
 
+  # sobelow_skip ["Misc.BinToTerm"]
   defp safe_binary_to_pin(binary) do
     case :erlang.binary_to_term(binary, [:safe]) do
       %Pin{} = pin -> {:ok, pin}

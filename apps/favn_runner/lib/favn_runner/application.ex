@@ -15,8 +15,9 @@ defmodule FavnRunner.Application do
 
   @impl true
   def start(_type, _args) do
-    :ok = apply_production_runtime_config_or_raise()
-    :ok = verify_release_or_raise()
+    environment = System.get_env()
+    :ok = apply_production_runtime_config_or_raise(environment)
+    :ok = verify_release_or_raise(environment)
     connections = load_connections_or_raise()
     plugin_children = load_plugin_children_or_raise()
 
@@ -58,8 +59,8 @@ defmodule FavnRunner.Application do
 
   def prep_stop(state), do: state
 
-  defp apply_production_runtime_config_or_raise do
-    case ProductionRuntimeConfig.apply_from_env_if_configured() do
+  defp apply_production_runtime_config_or_raise(environment) do
+    case ProductionRuntimeConfig.apply_from_env_if_configured(environment) do
       :ok ->
         :ok
 
@@ -68,8 +69,8 @@ defmodule FavnRunner.Application do
     end
   end
 
-  defp verify_release_or_raise do
-    case ReleaseVerifier.verify_startup() do
+  defp verify_release_or_raise(environment) do
+    case ReleaseVerifier.verify_startup(environment) do
       :ok ->
         :ok
 

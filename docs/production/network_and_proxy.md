@@ -51,7 +51,9 @@ The reverse proxy owns public TLS and must:
 Favn accepts forwarded scheme, host, port, and client IP only when the immediate
 peer is in the configured private proxy allowlist. It strips those headers from
 untrusted peers. Session cookies use the configured HTTPS origin and secure
-browser settings.
+browser settings. Browser responses include a restrictive Content Security
+Policy; scripts must come from the View origin, while LiveView connections may
+use same-origin WebSocket or long-poll transports.
 
 For direct operator access without a reverse proxy, use a VPN that enters the
 private network and still terminate browser TLS at a trusted endpoint. Do not

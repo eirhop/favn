@@ -3,13 +3,16 @@ defmodule FavnView.Router do
 
   import FavnView.Auth
 
+  @content_security_policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'"
+  @secure_browser_headers %{"content-security-policy" => @content_security_policy}
+
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
     plug :fetch_live_flash
     plug :put_root_layout, html: {FavnView.Layouts, :root}
     plug :protect_from_forgery
-    plug :put_secure_browser_headers
+    plug :put_secure_browser_headers, @secure_browser_headers
   end
 
   pipeline :api do

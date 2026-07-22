@@ -25,6 +25,19 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/favn_view"
 import topbar from "../vendor/topbar"
 
+const themeKey = "favn:theme"
+const defaultTheme = "favn-dark"
+const allowedThemes = new Set(["favn-dark", "favn-light"])
+const setTheme = theme => {
+  const nextTheme = allowedThemes.has(theme) ? theme : defaultTheme
+  localStorage.setItem(themeKey, nextTheme)
+  document.documentElement.setAttribute("data-theme", nextTheme)
+}
+
+setTheme(localStorage.getItem(themeKey) || defaultTheme)
+window.addEventListener("storage", event => event.key === themeKey && setTheme(event.newValue))
+window.addEventListener("favn:set-theme", event => setTheme(event.target.dataset.favnTheme))
+
 const Hooks = {
   FavnClipboard: {
     mounted() {
