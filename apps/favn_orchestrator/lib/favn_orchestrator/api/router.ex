@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.API.Parsers
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.API.RunsRouter
+  alias FavnOrchestrator.API.RebuildsRouter
   alias FavnOrchestrator.API.SchedulesRouter
   alias FavnOrchestrator.API.SSE
   alias FavnOrchestrator.API.SSE.Cursor
@@ -206,6 +207,8 @@ defmodule FavnOrchestrator.API.Router do
   forward("/api/orchestrator/v1/backfills", to: BackfillsRouter)
 
   forward("/api/orchestrator/v1/coverage", to: CoverageRouter)
+
+  forward("/api/orchestrator/v1/rebuilds", to: RebuildsRouter)
 
   get "/api/orchestrator/v1/streams/runs" do
     with :ok <- ensure_service_auth(conn),

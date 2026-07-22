@@ -69,6 +69,55 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     {:ok, provision_fixture(version)}
   end
 
+  test "rebuild operator pages use their keyset indexes", fixture do
+    {:ok, {operation_page, state_page, item_page}} =
+      Repo.transaction(fn ->
+        SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+
+        operation_page =
+          explain(
+            """
+            SELECT operation_id, inserted_at
+            FROM favn_control.rebuild_operations
+            WHERE workspace_id = $1
+            ORDER BY inserted_at DESC, operation_id DESC
+            LIMIT 201
+            """,
+            [fixture.workspace_id]
+          )
+
+        state_page =
+          explain(
+            """
+            SELECT operation_id, inserted_at
+            FROM favn_control.rebuild_operations
+            WHERE workspace_id = $1 AND state = $2
+            ORDER BY inserted_at DESC, operation_id DESC
+            LIMIT 201
+            """,
+            [fixture.workspace_id, "queued"]
+          )
+
+        item_page =
+          explain(
+            """
+            SELECT ordinal, target_id, item_id
+            FROM favn_control.rebuild_windows
+            WHERE workspace_id = $1 AND operation_id = $2
+            ORDER BY ordinal, target_id, item_id
+            LIMIT 201
+            """,
+            [fixture.workspace_id, "rebuild-performance"]
+          )
+
+        {operation_page, state_page, item_page}
+      end)
+
+    assert "rebuild_operations_page_idx" in index_names(operation_page)
+    assert "rebuild_operations_state_page_idx" in index_names(state_page)
+    assert "rebuild_windows_operation_page_idx" in index_names(item_page)
+  end
+
   test "execution-package retention scans only never-linked candidates", _fixture do
     seed = random_id()
     cutoff = DateTime.utc_now()

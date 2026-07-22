@@ -76,6 +76,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateRebuildPlan do
 
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanAction
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanItem
+  alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
   @enforce_keys [
@@ -115,6 +116,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateRebuildPlan do
     :actions,
     :items,
     :occurred_at,
+    :idempotency,
     plan_version: 1
   ]
 
@@ -138,6 +140,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateRebuildPlan do
           actions: [RebuildPlanAction.t()],
           items: [RebuildPlanItem.t()],
           occurred_at: DateTime.t(),
+          idempotency: CommandIdempotency.t() | nil,
           plan_version: pos_integer()
         }
 end
@@ -162,6 +165,7 @@ defmodule FavnOrchestrator.Persistence.Commands.StartRebuildOperation do
   @moduledoc "Approves one exact immutable plan for execution."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Persistence.CommandIdempotency
 
   @enforce_keys [
     :workspace_context,
@@ -171,7 +175,7 @@ defmodule FavnOrchestrator.Persistence.Commands.StartRebuildOperation do
     :expected_version,
     :occurred_at
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [:idempotency]
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
@@ -179,7 +183,8 @@ defmodule FavnOrchestrator.Persistence.Commands.StartRebuildOperation do
           operation_id: String.t(),
           plan_hash: String.t(),
           expected_version: pos_integer(),
-          occurred_at: DateTime.t()
+          occurred_at: DateTime.t(),
+          idempotency: CommandIdempotency.t() | nil
         }
 end
 
@@ -187,15 +192,34 @@ defmodule FavnOrchestrator.Persistence.Commands.RequestRebuildCancellation do
   @moduledoc "Persists an operator cancellation request without guessing activation outcome."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Persistence.CommandIdempotency
   @enforce_keys [:workspace_context, :command_id, :operation_id, :reason, :occurred_at]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [:idempotency]
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
           command_id: String.t(),
           operation_id: String.t(),
           reason: String.t(),
-          occurred_at: DateTime.t()
+          occurred_at: DateTime.t(),
+          idempotency: CommandIdempotency.t() | nil
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.RequestRebuildReconciliation do
+  @moduledoc "Persists an explicit operator request to reconcile an unknown rebuild outcome."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Persistence.CommandIdempotency
+  @enforce_keys [:workspace_context, :command_id, :operation_id, :occurred_at]
+  defstruct @enforce_keys ++ [:idempotency]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          command_id: String.t(),
+          operation_id: String.t(),
+          occurred_at: DateTime.t(),
+          idempotency: CommandIdempotency.t() | nil
         }
 end
 
@@ -203,15 +227,17 @@ defmodule FavnOrchestrator.Persistence.Commands.RetryRebuildOperation do
   @moduledoc "Requeues safe failed work on the same immutable rebuild plan."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Persistence.CommandIdempotency
   @enforce_keys [:workspace_context, :command_id, :operation_id, :plan_hash, :occurred_at]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [:idempotency]
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
           command_id: String.t(),
           operation_id: String.t(),
           plan_hash: String.t(),
-          occurred_at: DateTime.t()
+          occurred_at: DateTime.t(),
+          idempotency: CommandIdempotency.t() | nil
         }
 end
 
@@ -581,6 +607,20 @@ defmodule FavnOrchestrator.Persistence.Queries.GetRebuild do
   @type t :: %__MODULE__{workspace_context: WorkspaceContext.t(), operation_id: String.t()}
 end
 
+defmodule FavnOrchestrator.Persistence.Queries.PageRebuildOperations do
+  @moduledoc "Pages workspace rebuild operations newest first."
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  @enforce_keys [:workspace_context]
+  defstruct [:workspace_context, :state, :after, limit: 100]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          state: atom() | nil,
+          after: map() | nil,
+          limit: pos_integer()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Queries.PageRebuildItems do
   @moduledoc "Pages rebuild items by immutable ordinal and item identity."
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -636,6 +676,7 @@ defmodule FavnOrchestrator.Persistence.Results.RebuildOperation do
     :cancelled_at,
     :inserted_at,
     :updated_at,
+    :idempotency_replay?,
     actions: [],
     progress: %{}
   ]
@@ -677,6 +718,7 @@ defmodule FavnOrchestrator.Persistence.Results.RebuildOperation do
           cancelled_at: DateTime.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t(),
+          idempotency_replay?: boolean() | nil,
           actions: [FavnOrchestrator.Persistence.Results.RebuildAction.t()],
           progress: map()
         }

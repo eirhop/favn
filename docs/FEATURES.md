@@ -67,6 +67,10 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   records desired, active-generation, and physical compatibility per target.
   Incompatible, drifted, and ownership-unknown targets reject ordinary writes
   on affected dependency paths; compatible and unrelated paths remain runnable.
+- Operators can plan, approve, inspect, cancel, safely retry, and reconcile
+  immutable generation rebuilds. Rebuilds use isolated candidates, frozen work
+  items, sorted target locks, fenced recovery, physical validation, marker-based
+  activation reconciliation, topological downstream repair, and explicit cleanup.
 - Both runtime BEAMs expose monotonic lifecycle state and reject new mutation or
   execution admission while draining. Readiness flips before bounded shutdown;
   admitted work may settle until the configured deadline, after which ordinary
@@ -99,7 +103,7 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 
 ## Local development and packaging
 
-- `mix favn.init`, `doctor`, `install`, `dev`, `run`, `backfill`, `runs`, `logs`,
+- `mix favn.init`, `doctor`, `install`, `dev`, `run`, `backfill`, `rebuild`, `runs`, `logs`,
   `inspect`, `query`, `diagnostics`, `reload`, `status`, `stop`, and `reset` provide
   the private local developer loop against PostgreSQL.
 - `build.runner` creates an immutable, relocatable customer runner OCI context
@@ -135,7 +139,7 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 
 ## Operator web UI
 
-- Authenticated LiveView routes cover assets, pipelines, schedules, runs, logs,
+- Authenticated LiveView routes cover assets, pipelines, schedules, runs, rebuilds, logs,
   lineage, login/logout, and health through the public orchestrator facade.
 - Workspace-scoped live updates reread durable state after notification.
 - Asset and run detail distinguish requested anchors from exact effective runtime
@@ -143,8 +147,12 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - The asset catalogue and detail page show persisted target compatibility apart
   from health, freshness, and coverage. Blocking states include a stable reason,
   bounded structured diff, active generation, and desired/physical fingerprints.
+- Rebuild pages enforce plan/review/start separation, page bounded operation and
+  item histories, show progress and unknown outcomes, and render only
+  server-authorized cancellation, retry, and reconciliation actions.
 - The UI remains a prototype: some asset-detail modes are placeholders, mutation
-  audit is incomplete, actor/session/audit administration is absent, and there is
+  audit outside the rebuild workflow is incomplete, actor/session/audit
+  administration is absent, and there is
   no production browser acceptance suite.
 
 ## Production limits

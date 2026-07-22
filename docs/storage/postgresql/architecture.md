@@ -152,6 +152,16 @@ targets use their deterministic semantic-generation identity. Reads resolve the
 current binding first, so evidence from a retired physical generation cannot be
 presented as current evidence.
 
+Manual rebuilds persist one immutable operation, topologically ordered actions,
+frozen logical items, candidate generations, and sorted target locks. Operator
+histories use workspace/state keyset indexes ordered by insertion time and
+operation id. Mutating HTTP commands store their replay result in the shared
+idempotency ledger in the same PostgreSQL transaction as the rebuild mutation.
+The dispatcher uses operation and item fencing for recovery; the data-plane
+activation marker remains authoritative when a reply is lost. See
+[Target Generations And Rebuilds](../../architecture/target-generations-and-rebuilds.md)
+for the cross-application lifecycle.
+
 ## Workspace isolation
 
 Favn is designed for a small consultant-operated fleet of roughly 5–10 customer

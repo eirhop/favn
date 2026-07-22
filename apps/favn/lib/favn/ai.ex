@@ -160,6 +160,11 @@ defmodule Favn.AI do
     `FavnOrchestrator.API.Router`. For the local operator CLI, read
     `Favn.Dev.Backfill`, `Favn.Dev.Run`, `Mix.Tasks.Favn.Backfill`, and
     `Mix.Tasks.Favn.Run`.
+  - To replace an incompatible managed SQL target, read
+    `Mix.Tasks.Favn.Rebuild`, `Favn.Dev.Rebuild`, and the rebuild section of
+    [Local Development Commands](local-development.html). Planning is read-only
+    and start requires the exact reviewed plan id and hash. An unknown activation
+    outcome must be reconciled; it is never permission for a blind retry.
   - To define connection contracts, read `Favn.Connection`; if connection
     modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
     If connection values come from environment variables or secrets, also read
@@ -245,6 +250,7 @@ defmodule Favn.AI do
     supported v1 hosts.
     The public local command surface is `mix favn.install`, `mix favn.init`,
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
+    `mix favn.rebuild`,
     `mix favn.runs`, `mix favn.status`, `mix favn.logs`, `mix favn.inspect`,
     `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
     `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
@@ -501,7 +507,8 @@ defmodule Favn.AI do
     cancellation, local SQL inspection/querying, docs lookup, or packaging, not
     asset authoring. Read
     `Favn.Dev.Backfill` for the local `mix favn.backfill` workflow over the
-    private orchestrator backfill endpoints. Read `Favn.Dev.Run` for
+    private orchestrator backfill endpoints. Read `Favn.Dev.Rebuild` for the
+    plan/review/start rebuild workflow. Read `Favn.Dev.Run` for
     `mix favn.run`. Read
     `Favn.Dev.Runs` for `mix favn.runs` list/show/cancel behavior and
     `mix favn.logs RUN_ID`. Read

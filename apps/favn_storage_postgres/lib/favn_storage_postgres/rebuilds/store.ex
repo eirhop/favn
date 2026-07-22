@@ -13,6 +13,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   alias FavnOrchestrator.Persistence.Commands.ClaimRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.CreateRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.RequestRebuildCancellation
+  alias FavnOrchestrator.Persistence.Commands.RequestRebuildReconciliation
   alias FavnOrchestrator.Persistence.Commands.RetryRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.StartRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.TransitionRebuildAction
@@ -22,6 +23,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetRebuild
   alias FavnOrchestrator.Persistence.Queries.PageRebuildItems
+  alias FavnOrchestrator.Persistence.Queries.PageRebuildOperations
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RebuildAction, as: ActionResult
   alias FavnOrchestrator.Persistence.Results.RebuildItem, as: ItemResult
@@ -29,6 +31,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
+  alias FavnStoragePostgres.Idempotency.Transaction, as: IdempotencyTransaction
   alias FavnStoragePostgres.Payload
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.AssetTargetBinding
@@ -42,6 +45,42 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   @max_items_per_target 100_000
   @insert_batch 500
   @max_lease_ms 3_600_000
+  @operation_page_fields [
+    :workspace_id,
+    :operation_id,
+    :root_target_id,
+    :reason,
+    :action_count,
+    :window_count,
+    :state,
+    :phase,
+    :cleanup_state,
+    :cancel_requested,
+    :started_at,
+    :completed_at,
+    :inserted_at,
+    :updated_at
+  ]
+  @item_page_fields [
+    :workspace_id,
+    :operation_id,
+    :target_id,
+    :item_id,
+    :ordinal,
+    :work_kind,
+    :window_key,
+    :window_start,
+    :window_end,
+    :status,
+    :child_run_id,
+    :materialization_id,
+    :attempt_count,
+    :row_count,
+    :last_error,
+    :candidate_generation_id,
+    :inserted_at,
+    :updated_at
+  ]
   @operation_states ~w(planned queued building validating activating activation_unknown reconciling cancelling succeeded failed cancelled)a
   @claimable_states ~w(queued building validating activating activation_unknown reconciling cancelling)a
   @operation_phases ~w(planned locking building validating activating reconciling repairing cleanup terminal)a
@@ -51,28 +90,35 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   @impl true
   def create_plan(%CreateRebuildPlan{} = command) do
     with :ok <- validate_create(command) do
-      transaction(fn -> create_plan!(command) end)
+      idempotent_transaction(command, fn -> create_plan!(command) end)
     end
   end
 
   @impl true
   def start_operation(%StartRebuildOperation{} = command) do
     with :ok <- validate_start(command) do
-      transaction(fn -> start_operation!(command) end)
+      idempotent_transaction(command, fn -> start_operation!(command) end)
     end
   end
 
   @impl true
   def request_cancellation(%RequestRebuildCancellation{} = command) do
     with :ok <- validate_cancel(command) do
-      transaction(fn -> request_cancellation!(command) end)
+      idempotent_transaction(command, fn -> request_cancellation!(command) end)
+    end
+  end
+
+  @impl true
+  def request_reconciliation(%RequestRebuildReconciliation{} = command) do
+    with :ok <- validate_reconcile(command) do
+      idempotent_transaction(command, fn -> request_reconciliation!(command) end)
     end
   end
 
   @impl true
   def retry_operation(%RetryRebuildOperation{} = command) do
     with :ok <- validate_retry(command) do
-      transaction(fn -> retry_operation!(command) end)
+      idempotent_transaction(command, fn -> retry_operation!(command) end)
     end
   end
 
@@ -142,7 +188,8 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
 
   @impl true
   def page_items(%PageRebuildItems{} = page) do
-    with :ok <- validate_page(page) do
+    with :ok <- validate_page(page),
+         true <- operation_exists?(page.workspace_context.workspace_id, page.operation_id) do
       query =
         RebuildWindow
         |> where(
@@ -155,6 +202,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         |> after_item(page.after)
         |> order_by([item], asc: item.ordinal, asc: item.target_id, asc: item.item_id)
         |> limit(^(page.limit + 1))
+        |> select([item], struct(item, ^@item_page_fields))
 
       rows = Repo.all(query)
       items = rows |> Enum.take(page.limit) |> Enum.map(&item_result/1)
@@ -168,6 +216,58 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
          next_cursor:
            if(length(rows) > page.limit and last,
              do: %{ordinal: last.ordinal, target_id: last.target_id, item_id: last.item_id},
+             else: nil
+           )
+       }}
+    else
+      false -> {:error, ErrorMapper.map(:not_found)}
+      {:error, _reason} = error -> error
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  defp operation_exists?(workspace_id, operation_id) do
+    Repo.exists?(
+      from(operation in RebuildOperation,
+        where:
+          operation.workspace_id == ^workspace_id and
+            operation.operation_id == ^operation_id
+      )
+    )
+  end
+
+  @impl true
+  def page_operations(%PageRebuildOperations{} = page) do
+    with :ok <- validate_operation_page(page) do
+      query =
+        RebuildOperation
+        |> where([operation], operation.workspace_id == ^page.workspace_context.workspace_id)
+        |> maybe_operation_state(page.state)
+        |> after_operation(page.after)
+        |> order_by([operation], desc: operation.inserted_at, desc: operation.operation_id)
+        |> limit(^(page.limit + 1))
+        |> select([operation], struct(operation, ^@operation_page_fields))
+
+      rows = Repo.all(query)
+      selected = Enum.take(rows, page.limit)
+      progress = progress_many(page.workspace_context.workspace_id, selected)
+
+      items =
+        Enum.map(selected, fn operation ->
+          operation_result(operation, [], Map.get(progress, operation.operation_id, %{total: 0}))
+        end)
+
+      last = List.last(selected)
+
+      {:ok,
+       %CursorPage{
+         items: items,
+         limit: page.limit,
+         has_more?: length(rows) > page.limit,
+         next_cursor:
+           if(length(rows) > page.limit and last,
+             do: %{inserted_at: last.inserted_at, operation_id: last.operation_id},
              else: nil
            )
        }}
@@ -426,6 +526,35 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
        do: {state, if(state == "activating", do: "activating", else: "reconciling"), nil}
 
   defp cancellation_state(_state, _now), do: {"cancelling", "cleanup", nil}
+
+  defp request_reconciliation!(command) do
+    operation = lock_operation!(command.workspace_context.workspace_id, command.operation_id)
+    now = database_datetime(command.occurred_at)
+
+    case operation.state do
+      "reconciling" ->
+        operation_result(operation, load_actions(operation), progress(operation))
+
+      "activation_unknown" ->
+        operation
+        |> Ecto.Changeset.change(%{
+          state: "reconciling",
+          phase: "reconciling",
+          last_command_id: command.command_id,
+          version: operation.version + 1,
+          updated_at: now
+        })
+        |> Repo.update!()
+        |> then(&operation_result(&1, load_actions(&1), progress(&1)))
+
+      _state ->
+        Repo.rollback(
+          Error.new(:conflict, "rebuild has no unknown outcome to reconcile",
+            details: %{reason_code: "rebuild_reconciliation_not_available"}
+          )
+        )
+    end
+  end
 
   defp retry_operation!(command) do
     operation = lock_operation!(command.workspace_context.workspace_id, command.operation_id)
@@ -1020,6 +1149,31 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     Map.put(counts, :total, Enum.sum(Map.values(counts)))
   end
 
+  defp progress_many(_workspace_id, []), do: %{}
+
+  defp progress_many(workspace_id, operations) do
+    operation_ids = Enum.map(operations, & &1.operation_id)
+
+    from(item in RebuildWindow,
+      where: item.workspace_id == ^workspace_id and item.operation_id in ^operation_ids,
+      group_by: [item.operation_id, item.status],
+      select: {item.operation_id, item.status, count(item.item_id)}
+    )
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn {operation_id, status, count}, acc ->
+      Map.update(
+        acc,
+        operation_id,
+        %{String.to_existing_atom(status) => count, total: count},
+        fn current ->
+          current
+          |> Map.put(String.to_existing_atom(status), count)
+          |> Map.update!(:total, &(&1 + count))
+        end
+      )
+    end)
+  end
+
   defp operation_result(operation, actions, progress) do
     %OperationResult{
       workspace_id: operation.workspace_id,
@@ -1452,6 +1606,8 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     (basic_command?(command) and valid_reason?(command.reason)) |> valid_or_error()
   end
 
+  defp validate_reconcile(command), do: basic_command?(command) |> valid_or_error()
+
   defp validate_retry(command) do
     (basic_command?(command) and valid_hash?(command.plan_hash)) |> valid_or_error()
   end
@@ -1559,6 +1715,20 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     |> valid_or_error()
   end
 
+  defp validate_operation_page(page) do
+    cursor? =
+      is_nil(page.after) or
+        match?(
+          %{inserted_at: %DateTime{}, operation_id: operation_id} when is_binary(operation_id),
+          page.after
+        )
+
+    (valid_context?(page.workspace_context) and
+       (is_nil(page.state) or page.state in @operation_states) and cursor? and
+       page.limit in 1..200)
+    |> valid_or_error()
+  end
+
   defp basic_command?(command) do
     valid_context?(command.workspace_context) and valid_id?(command.command_id) and
       valid_id?(command.operation_id) and match?(%DateTime{}, command.occurred_at)
@@ -1641,10 +1811,67 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     )
   end
 
+  defp maybe_operation_state(query, nil), do: query
+
+  defp maybe_operation_state(query, state),
+    do: where(query, [operation], operation.state == ^Atom.to_string(state))
+
+  defp after_operation(query, nil), do: query
+
+  defp after_operation(query, %{inserted_at: inserted_at, operation_id: operation_id}) do
+    where(
+      query,
+      [operation],
+      operation.inserted_at < ^inserted_at or
+        (operation.inserted_at == ^inserted_at and operation.operation_id < ^operation_id)
+    )
+  end
+
   defp database_now! do
     %{rows: [[now]]} = SQL.query!(Repo, "SELECT clock_timestamp()", [])
     now
   end
+
+  defp idempotent_transaction(command, mutation) do
+    transaction(fn ->
+      {outcome, operation} =
+        IdempotencyTransaction.execute_with_outcome!(
+          command.workspace_context.workspace_id,
+          command.idempotency,
+          mutation,
+          &encode_idempotent_operation/1,
+          &decode_idempotent_operation(&1, command.workspace_context.workspace_id)
+        )
+
+      %{operation | idempotency_replay?: outcome == :replay}
+    end)
+  end
+
+  defp encode_idempotent_operation(%OperationResult{} = operation) do
+    {:ok,
+     %{
+       response: %{
+         "operation_id" => operation.operation_id,
+         "state" => Atom.to_string(operation.state)
+       },
+       response_status: 202,
+       resource_kind: "rebuild",
+       resource_id: operation.operation_id
+     }}
+  end
+
+  defp encode_idempotent_operation(_operation),
+    do: {:error, Error.new(:internal, "invalid rebuild idempotency result")}
+
+  defp decode_idempotent_operation(%{response: %{"operation_id" => operation_id}}, workspace_id) do
+    case operation_with_actions(workspace_id, operation_id) do
+      %OperationResult{} = operation -> {:ok, operation}
+      nil -> {:error, Error.new(:internal, "idempotent rebuild result is unavailable")}
+    end
+  end
+
+  defp decode_idempotent_operation(_encoded, _workspace_id),
+    do: {:error, Error.new(:internal, "invalid rebuild idempotency replay")}
 
   defp transaction(fun) do
     case Repo.transaction(fun) do

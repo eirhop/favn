@@ -460,6 +460,15 @@ their outcome ledger prevents duplicate terminal updates. Recovery candidates
 link safe remaining work to an immutable terminal source run and, once claimed,
 to a separate recovery run.
 
+`rebuild_operations` is the authoritative lifecycle and immutable plan envelope.
+`rebuild_plan_actions` checkpoints ordered target-level work;
+`rebuild_windows` freezes logical full-load, empty-generation, or window items
+and their claim/outcome state. Candidate generations remain linked to their
+creating operation. `target_operation_locks` excludes concurrent normal writes
+and other rebuilds with expiring, fenced ownership. Operator histories page on
+workspace plus descending insertion/operation identity, with a separate state
+prefix index.
+
 ## Identity, audit, maintenance, and projections
 
 ```mermaid

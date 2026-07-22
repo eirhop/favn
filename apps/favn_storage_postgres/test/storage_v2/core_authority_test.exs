@@ -69,6 +69,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanItem
   alias FavnOrchestrator.Persistence.Commands.RetryRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.RequestRebuildCancellation
+  alias FavnOrchestrator.Persistence.Commands.RequestRebuildReconciliation
   alias FavnOrchestrator.Persistence.Commands.TransitionRebuildAction
   alias FavnOrchestrator.Persistence.Commands.TransitionRebuildGeneration
   alias FavnOrchestrator.Persistence.Commands.TransitionRebuildItem
@@ -107,6 +108,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.PageRuns
   alias FavnOrchestrator.Persistence.Queries.PageScheduleOccurrences
   alias FavnOrchestrator.Persistence.Queries.PageSchedules
+  alias FavnOrchestrator.Persistence.Queries.PageRebuildItems
+  alias FavnOrchestrator.Persistence.Queries.PageRebuildOperations
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Stores
@@ -359,6 +362,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     plan_hash = RebuildPlan.hash(payload)
 
+    {:ok, plan_idempotency} =
+      CommandIdempotency.new(
+        "rebuild.plan",
+        :actor,
+        fixture.workspace_context.principal_id,
+        :crypto.hash(:sha256, operation_id),
+        :crypto.hash(:sha256, :erlang.term_to_binary(payload, [:deterministic])),
+        DateTime.add(occurred_at, 3_600, :second)
+      )
+
     create = %CreateRebuildPlan{
       workspace_context: fixture.workspace_context,
       command_id: "rebuild:create:" <> fixture.workspace_id,
@@ -374,14 +387,18 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       evaluated_at: occurred_at,
       actions: [action],
       items: [item],
-      occurred_at: occurred_at
+      occurred_at: occurred_at,
+      idempotency: plan_idempotency
     }
 
     assert {:ok, planned} = RebuildStore.create_plan(create)
     assert planned.state == :planned
     assert planned.plan_hash == plan_hash
+    refute planned.idempotency_replay?
     assert planned.actions |> hd() |> Map.fetch!(:progress) == %{planned: 1, total: 1}
-    assert {:ok, ^planned} = RebuildStore.create_plan(create)
+    assert {:ok, replayed_plan} = RebuildStore.create_plan(create)
+    assert replayed_plan.idempotency_replay?
+    assert %{replayed_plan | idempotency_replay?: false} == planned
 
     changed_payload = Map.put(payload, :target_id, fixture.target_id <> ":changed")
 
@@ -389,20 +406,69 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              RebuildStore.create_plan(%{
                create
                | plan_payload: changed_payload,
-                 plan_hash: RebuildPlan.hash(changed_payload)
+                 plan_hash: RebuildPlan.hash(changed_payload),
+                 idempotency: nil
              })
+
+    assert {:ok, operation_page} =
+             RebuildStore.page_operations(%PageRebuildOperations{
+               workspace_context: fixture.workspace_context,
+               limit: 100
+             })
+
+    assert Enum.any?(operation_page.items, &(&1.operation_id == operation_id))
+
+    assert {:ok, item_page} =
+             RebuildStore.page_items(%PageRebuildItems{
+               workspace_context: fixture.workspace_context,
+               operation_id: operation_id,
+               limit: 100
+             })
+
+    assert [%{item_id: "full-load-item"}] = item_page.items
+
+    assert {:error, %{kind: :not_found}} =
+             RebuildStore.page_items(%PageRebuildItems{
+               workspace_context: fixture.workspace_context,
+               operation_id: "missing-rebuild-operation",
+               limit: 100
+             })
+
+    assert {:error, %{kind: :not_found}} =
+             RebuildStore.page_items(%PageRebuildItems{
+               workspace_context: %{
+                 fixture.workspace_context
+                 | workspace_id: "different-workspace"
+               },
+               operation_id: operation_id,
+               limit: 100
+             })
+
+    {:ok, start_idempotency} =
+      CommandIdempotency.new(
+        "rebuild.start",
+        :actor,
+        fixture.workspace_context.principal_id,
+        :crypto.hash(:sha256, operation_id <> ":start"),
+        :crypto.hash(:sha256, plan_hash),
+        DateTime.add(occurred_at, 3_600, :second)
+      )
+
+    start_command = %StartRebuildOperation{
+      workspace_context: fixture.workspace_context,
+      command_id: "rebuild:start:" <> fixture.workspace_id,
+      operation_id: operation_id,
+      plan_hash: plan_hash,
+      expected_version: planned.version,
+      occurred_at: occurred_at,
+      idempotency: start_idempotency
+    }
 
     assert {:ok, queued} =
-             RebuildStore.start_operation(%StartRebuildOperation{
-               workspace_context: fixture.workspace_context,
-               command_id: "rebuild:start:" <> fixture.workspace_id,
-               operation_id: operation_id,
-               plan_hash: plan_hash,
-               expected_version: planned.version,
-               occurred_at: occurred_at
-             })
+             RebuildStore.start_operation(start_command)
 
     assert queued.state == :queued
+    assert {:ok, %{state: :queued}} = RebuildStore.start_operation(start_command)
 
     assert {:ok, claimed_operation} =
              RebuildStore.claim_operation(%ClaimRebuildOperation{
@@ -587,7 +653,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, retry_activating} =
              transition.(retry_validating, :activating, :activating, "retry-activating", [])
 
-    assert {:ok, activation_unknown} =
+    assert {:ok, _activation_unknown} =
              transition.(
                retry_activating,
                :activation_unknown,
@@ -597,7 +663,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              )
 
     assert {:ok, reconciling} =
-             transition.(activation_unknown, :reconciling, :reconciling, "reconciling", [])
+             RebuildStore.request_reconciliation(%RequestRebuildReconciliation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:request-reconciliation:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               occurred_at: occurred_at
+             })
+
+    assert reconciling.state == :reconciling
 
     assert {:ok, repairing} =
              transition.(reconciling, :building, :repairing, "repairing", unknown_outcome: %{})
@@ -667,7 +740,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                  plan_payload: cancel_payload,
                  idempotency_key: cancel_operation_id,
                  actions: [cancel_action],
-                 items: [cancel_item]
+                 items: [cancel_item],
+                 idempotency: nil
              })
 
     assert {:ok, cancel_queued} =
@@ -819,6 +893,35 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert cancel_cleanup_failed.cleanup_state == :failed
     assert cancel_queued.state == :queued
     assert cancel_planned.state == :planned
+
+    assert {:ok, first_page} =
+             RebuildStore.page_operations(%PageRebuildOperations{
+               workspace_context: fixture.workspace_context,
+               limit: 1
+             })
+
+    assert length(first_page.items) == 1
+    assert first_page.has_more?
+    assert is_map(first_page.next_cursor)
+
+    assert {:ok, second_page} =
+             RebuildStore.page_operations(%PageRebuildOperations{
+               workspace_context: fixture.workspace_context,
+               after: first_page.next_cursor,
+               limit: 1
+             })
+
+    assert length(second_page.items) == 1
+
+    assert hd(first_page.items).operation_id != hd(second_page.items).operation_id
+
+    isolated_context = %{fixture.workspace_context | workspace_id: "isolated-workspace"}
+
+    assert {:ok, %{items: []}} =
+             RebuildStore.page_operations(%PageRebuildOperations{
+               workspace_context: isolated_context,
+               limit: 100
+             })
   end
 
   test "workspace provisioning is exact-retry safe", fixture do

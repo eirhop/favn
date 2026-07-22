@@ -219,6 +219,14 @@ defmodule FavnOrchestrator.RebuildsTest do
     assert command.plan_payload.item_count == 2
     assert byte_size(command.plan_payload.items_digest) == 64
     refute Map.has_key?(command.plan_payload, :items)
+    assert command.plan_payload.coverage == nil
+    assert command.plan_payload.evaluated_range == %{start_at: nil, end_at: nil}
+
+    root_binding_snapshot =
+      command.plan_payload.binding_snapshot[fixture.root.target_descriptor.target_id]
+
+    assert root_binding_snapshot["reason_code"] == "incompatible_descriptor"
+    assert root_binding_snapshot["compatibility_diff"] == %{"columns" => "changed"}
 
     assert command.plan_payload.assurance_expectations == %{
              fixture.root.target_descriptor.target_id => %{
@@ -260,7 +268,9 @@ defmodule FavnOrchestrator.RebuildsTest do
                idempotency_key: "schema-change-1"
              )
 
-    assert replayed == first
+    refute first.idempotency_replay?
+    assert replayed.idempotency_replay?
+    assert %{replayed | idempotency_replay?: false} == first
     refute_received {:create_rebuild_plan, _command}
   end
 
@@ -304,6 +314,33 @@ defmodule FavnOrchestrator.RebuildsTest do
              )
 
     refute_received {:create_rebuild_plan, _command}
+  end
+
+  test "reports stable conflicts for drift and unresolved operator decisions", fixture do
+    {:ok, context} =
+      WorkspaceContext.new("workspace-rebuild", "operator", [:customer_operator])
+
+    for {status, expected_code} <- [
+          unexpected_drift: "target_drift",
+          operator_decision: "operator_decision_required"
+        ] do
+      bindings =
+        Enum.map(fixture.bindings, fn
+          %{target_id: target_id} = binding
+          when target_id == fixture.root.target_descriptor.target_id ->
+            %{binding | compatibility_status: status}
+
+          binding ->
+            binding
+        end)
+
+      Process.put(:rebuild_bindings, bindings)
+
+      assert {:error, %Error{kind: :conflict, details: %{reason_code: ^expected_code}}} =
+               Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+                 operation_id: "rebuild-conflict-#{status}"
+               )
+    end
   end
 
   defp version do

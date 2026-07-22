@@ -471,6 +471,7 @@ defmodule FavnView.AssetDetailLive do
       coverage_pagination={@asset.coverage_pagination}
       coverage_page_cursor={@coverage_page_cursor}
       compatibility={@asset.compatibility}
+      rebuild_target_id={@asset.target_id}
       assurance={@asset.assurance}
       coverage_plan={@coverage_plan}
       coverage_action_error={@coverage_action_error}

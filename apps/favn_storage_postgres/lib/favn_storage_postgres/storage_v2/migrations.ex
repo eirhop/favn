@@ -15,6 +15,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddCoordinationAndSchedulingV2
   alias FavnStoragePostgres.Migrations.AddLogsIdentityAndOperationsV2
   alias FavnStoragePostgres.Migrations.AddRuntimeInputKeyInventoryV2
+  alias FavnStoragePostgres.Migrations.AddRebuildOperatorReadsV2
   alias FavnStoragePostgres.Migrations.AddRunnerReleaseIdentityV2
   alias FavnStoragePostgres.Migrations.AddResourceCircuitsV2
   alias FavnStoragePostgres.Migrations.AddScheduleOperatorReadsV2
@@ -60,7 +61,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_720_020_000, NormalizeResourceCircuitDefinitionsV2},
     {20_260_721_000_000, AddRunnerReleaseIdentityV2},
     {20_260_722_000_000, AddTargetGenerationFoundationV2},
-    {20_260_722_010_000, CompleteRebuildOrchestrationV2}
+    {20_260_722_010_000, CompleteRebuildOrchestrationV2},
+    {20_260_722_020_000, AddRebuildOperatorReadsV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -181,6 +183,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     asset_target_bindings_status_idx
     rebuild_operations_idempotency_uidx
     rebuild_operations_recovery_idx
+    rebuild_operations_page_idx
+    rebuild_operations_state_page_idx
+    rebuild_windows_operation_page_idx
     rebuild_plan_actions_ordinal_uidx
     rebuild_windows_ordinal_uidx
     rebuild_windows_key_uidx
@@ -409,7 +414,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "0aa4d78be46b64225563290e977c7c29e9e4c9cf386cf8081cc2bd423aea5792"
+  @expected_definition_fingerprint "0e63f434bcb98d623e9f5d0be78231dd26575c6ef92c731d4f6023828838dea6"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

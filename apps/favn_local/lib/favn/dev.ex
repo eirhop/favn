@@ -33,6 +33,8 @@ defmodule Favn.Dev do
   - `diagnostics/1`: fetch service-authenticated operator diagnostics
   - `reload/1`: rebuild and republish the manifest
   - `run/2`: submit an asset or pipeline run with optional dependency and refresh intent
+  - `plan_rebuild/3`, `start_rebuild/3`, `get_rebuild/2`: plan, approve, and inspect
+    local generation rebuilds through the orchestrator API
   - `list_runs/1`, `get_run/2`, `cancel_run/2`, `list_run_events/2`: inspect
     and control local runs through HTTP APIs
   - `build_runner/1`, `build_manifest/1`: immutable runner and aligned manifest releases
@@ -53,6 +55,7 @@ defmodule Favn.Dev do
   alias Favn.Dev.Maintainer
   alias Favn.Dev.Publish
   alias Favn.Dev.Reset
+  alias Favn.Dev.Rebuild
   alias Favn.Dev.Run
   alias Favn.Dev.Runs
 
@@ -212,6 +215,37 @@ defmodule Favn.Dev do
   @spec list_run_events(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
   def list_run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts),
     do: Runs.events(run_id, opts)
+
+  @doc "Plans an immutable rebuild for one active asset."
+  @spec plan_rebuild(module() | String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_rebuild(asset, reason, opts \\ []) when is_list(opts),
+    do: Rebuild.plan(asset, reason, opts)
+
+  @doc "Starts one explicitly approved rebuild plan."
+  @spec start_rebuild(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def start_rebuild(plan_id, plan_hash, opts \\ []) when is_list(opts),
+    do: Rebuild.start(plan_id, plan_hash, opts)
+
+  @doc "Fetches one rebuild operation."
+  @spec get_rebuild(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def get_rebuild(operation_id, opts \\ []) when is_list(opts),
+    do: Rebuild.status(operation_id, opts)
+
+  @doc "Requests cancellation of one rebuild operation."
+  @spec cancel_rebuild(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def cancel_rebuild(operation_id, reason, opts \\ []) when is_list(opts),
+    do: Rebuild.cancel(operation_id, reason, opts)
+
+  @doc "Retries one eligible failed rebuild operation."
+  @spec retry_rebuild(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def retry_rebuild(operation_id, opts \\ []) when is_list(opts),
+    do: Rebuild.retry(operation_id, opts)
+
+  @doc "Requests reconciliation of one rebuild with an unknown outcome."
+  @spec reconcile_rebuild(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def reconcile_rebuild(operation_id, opts \\ []) when is_list(opts),
+    do: Rebuild.reconcile(operation_id, opts)
 
   @doc """
   Submits a pipeline operational backfill to the running local stack.

@@ -18,21 +18,26 @@ defmodule FavnOrchestrator.Rebuilds do
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestTarget
   alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.CreateRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanAction
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanItem
   alias FavnOrchestrator.Persistence.Commands.ReleaseTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.RequestRebuildCancellation
+  alias FavnOrchestrator.Persistence.Commands.RequestRebuildReconciliation
   alias FavnOrchestrator.Persistence.Commands.RetryRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.StartRebuildOperation
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetRebuild
   alias FavnOrchestrator.Persistence.Queries.GetTargetBindings
+  alias FavnOrchestrator.Persistence.Queries.PageRebuildItems
+  alias FavnOrchestrator.Persistence.Queries.PageRebuildOperations
   alias FavnOrchestrator.Persistence.Results.RebuildOperation
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Rebuild.Plan
   alias FavnOrchestrator.Rebuild.RuntimeInputs, as: RebuildRuntimeInputs
+  alias FavnOrchestrator.Rebuild.Telemetry
   alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.TargetGenerations
@@ -53,22 +58,29 @@ defmodule FavnOrchestrator.Rebuilds do
           {:ok, Plan.t()} | {:error, term()}
   def plan(%WorkspaceContext{} = context, target_id, reason, opts \\ [])
       when is_binary(target_id) and is_binary(reason) and is_list(opts) do
-    with :ok <- authorize_plan(context),
-         :ok <- validate_plan_options(opts),
-         :ok <- validate_reason(reason) do
-      operation_id = plan_operation_id(context, opts)
+    Telemetry.plan(context, target_id, fn ->
+      with :ok <- authorize_plan(context),
+           :ok <- validate_plan_options(opts),
+           :ok <- validate_reason(reason) do
+        operation_id = plan_operation_id(context, opts)
 
-      case existing_plan(context, operation_id, target_id, reason, opts) do
-        {:ok, plan} ->
-          {:ok, plan}
+        case existing_plan(context, operation_id, target_id, reason, opts) do
+          {:ok, plan} ->
+            {:ok, plan}
 
-        :missing ->
-          create_plan(context, target_id, reason, Keyword.put(opts, :operation_id, operation_id))
+          :missing ->
+            create_plan(
+              context,
+              target_id,
+              reason,
+              Keyword.put(opts, :operation_id, operation_id)
+            )
 
-        {:error, _reason} = error ->
-          error
+          {:error, _reason} = error ->
+            error
+        end
       end
-    end
+    end)
   end
 
   defp create_plan(context, target_id, reason, opts) do
@@ -107,7 +119,8 @@ defmodule FavnOrchestrator.Rebuilds do
          plan_id: persisted.operation_id,
          plan_hash: persisted.plan_hash,
          expires_at: decode_datetime!(field(persisted.plan_payload, :expires_at)),
-         payload: persisted.plan_payload
+         payload: persisted.plan_payload,
+         idempotency_replay?: persisted.idempotency_replay? == true
        }}
     end
   end
@@ -127,7 +140,8 @@ defmodule FavnOrchestrator.Rebuilds do
            plan_id: operation.operation_id,
            plan_hash: operation.plan_hash,
            expires_at: decode_datetime!(field(operation.plan_payload, :expires_at)),
-           payload: operation.plan_payload
+           payload: operation.plan_payload,
+           idempotency_replay?: true
          }}
 
       {:ok, _operation} ->
@@ -151,23 +165,46 @@ defmodule FavnOrchestrator.Rebuilds do
       when is_binary(plan_id) and is_binary(plan_hash) and is_list(opts) do
     with :ok <- authorize_admin(context),
          :ok <- validate_command_options(opts),
-         {:ok, operation} <- get(context, plan_id),
-         :ok <- exact_plan(operation, plan_hash),
+         {:ok, operation} <- get(context, plan_id) do
+      start_or_replay(context, operation, plan_hash, opts)
+    end
+  end
+
+  defp start_or_replay(
+         context,
+         %RebuildOperation{state: state} = operation,
+         plan_hash,
+         opts
+       )
+       when state != :planned do
+    case Keyword.get(opts, :idempotency) do
+      %CommandIdempotency{} -> persist_start(context, operation, plan_hash, opts)
+      nil -> {:error, Error.new(:conflict, "rebuild operation is no longer planned")}
+    end
+  end
+
+  defp start_or_replay(context, operation, plan_hash, opts) do
+    with :ok <- exact_plan(operation, plan_hash),
          :ok <- plan_not_expired(operation),
          :ok <- revalidate_plan(context, operation),
          {:ok, locks} <- acquire_plan_locks(context, operation, opts) do
-      case store().start_operation(%StartRebuildOperation{
-             workspace_context: context,
-             command_id: command_id("start", plan_id <> ":" <> plan_hash),
-             operation_id: plan_id,
-             plan_hash: plan_hash,
-             expected_version: operation.version,
-             occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now())
-           }) do
+      case persist_start(context, operation, plan_hash, opts) do
         {:ok, started} -> {:ok, started}
         {:error, reason} -> release_plan_locks(context, operation, locks, reason)
       end
     end
+  end
+
+  defp persist_start(context, operation, plan_hash, opts) do
+    store().start_operation(%StartRebuildOperation{
+      workspace_context: context,
+      command_id: command_id("start", operation.operation_id <> ":" <> plan_hash),
+      operation_id: operation.operation_id,
+      plan_hash: plan_hash,
+      expected_version: operation.version,
+      occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now()),
+      idempotency: Keyword.get(opts, :idempotency)
+    })
   end
 
   @doc "Returns one authoritative rebuild operation."
@@ -175,6 +212,38 @@ defmodule FavnOrchestrator.Rebuilds do
   def get(%WorkspaceContext{} = context, operation_id) when is_binary(operation_id) do
     with :ok <- authorize_read(context) do
       store().get(%GetRebuild{workspace_context: context, operation_id: operation_id})
+    end
+  end
+
+  @doc "Pages authoritative rebuild operations newest first."
+  @spec page(WorkspaceContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def page(%WorkspaceContext{} = context, opts \\ []) when is_list(opts) do
+    with :ok <- authorize_read(context),
+         :ok <- validate_page_options(opts) do
+      store().page_operations(%PageRebuildOperations{
+        workspace_context: context,
+        state: Keyword.get(opts, :state),
+        after: Keyword.get(opts, :after),
+        limit: Keyword.get(opts, :limit, 100)
+      })
+    end
+  end
+
+  @doc "Pages immutable logical items for one rebuild operation."
+  @spec page_items(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def page_items(%WorkspaceContext{} = context, operation_id, opts \\ [])
+      when is_binary(operation_id) and is_list(opts) do
+    with :ok <- authorize_read(context),
+         :ok <- validate_item_page_options(opts) do
+      store().page_items(%PageRebuildItems{
+        workspace_context: context,
+        operation_id: operation_id,
+        target_id: Keyword.get(opts, :target_id),
+        status: Keyword.get(opts, :status),
+        after: Keyword.get(opts, :after),
+        limit: Keyword.get(opts, :limit, 100)
+      })
     end
   end
 
@@ -191,7 +260,8 @@ defmodule FavnOrchestrator.Rebuilds do
           Keyword.get(opts, :command_id, command_id("cancel", operation_id <> ":" <> reason)),
         operation_id: operation_id,
         reason: reason,
-        occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now())
+        occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now()),
+        idempotency: Keyword.get(opts, :idempotency)
       })
     end
   end
@@ -211,7 +281,25 @@ defmodule FavnOrchestrator.Rebuilds do
           Keyword.get(opts, :command_id, command_id("retry", operation_id <> ":" <> plan_hash)),
         operation_id: operation_id,
         plan_hash: plan_hash,
-        occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now())
+        occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now()),
+        idempotency: Keyword.get(opts, :idempotency)
+      })
+    end
+  end
+
+  @doc "Requests explicit reconciliation of one durable unknown rebuild outcome."
+  @spec reconcile(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, RebuildOperation.t()} | {:error, term()}
+  def reconcile(%WorkspaceContext{} = context, operation_id, opts \\ [])
+      when is_binary(operation_id) and is_list(opts) do
+    with :ok <- authorize_admin(context),
+         :ok <- validate_command_options(opts) do
+      store().request_reconciliation(%RequestRebuildReconciliation{
+        workspace_context: context,
+        command_id: Keyword.get(opts, :command_id, command_id("reconcile", operation_id)),
+        operation_id: operation_id,
+        occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now()),
+        idempotency: Keyword.get(opts, :idempotency)
       })
     end
   end
@@ -271,6 +359,8 @@ defmodule FavnOrchestrator.Rebuilds do
         deployment_id: runtime.deployment_id,
         evaluated_at: evaluated_at,
         reason: reason,
+        coverage: coverage_payload(root.coverage),
+        evaluated_range: evaluated_range(items, root.target_descriptor.target_id),
         active_generation_id: root_binding.active_generation_id,
         candidate_generation_id: root_candidate_id(actions, root.target_descriptor.target_id),
         binding_snapshot: binding_snapshot(bindings),
@@ -525,7 +615,8 @@ defmodule FavnOrchestrator.Rebuilds do
       coverage_end: coverage_end,
       actions: draft.actions,
       items: items,
-      occurred_at: Keyword.get(opts, :occurred_at, payload.evaluated_at)
+      occurred_at: Keyword.get(opts, :occurred_at, payload.evaluated_at),
+      idempotency: Keyword.get(opts, :idempotency)
     })
   end
 
@@ -701,7 +792,7 @@ defmodule FavnOrchestrator.Rebuilds do
           {:error,
            Error.new(:conflict, "target state cannot be rebuilt safely",
              details: %{
-               reason_code: Atom.to_string(binding.compatibility_status),
+               reason_code: rebuild_conflict_code(binding.compatibility_status),
                target_id: target_id
              }
            )}
@@ -723,6 +814,10 @@ defmodule FavnOrchestrator.Rebuilds do
       end
     end)
   end
+
+  defp rebuild_conflict_code(:unexpected_drift), do: "target_drift"
+  defp rebuild_conflict_code(:operator_decision), do: "operator_decision_required"
+  defp rebuild_conflict_code(status), do: Atom.to_string(status)
 
   defp active_asset(context, target_id) do
     with {:ok, {runtime, grants}} <- ManifestStore.get_active_deployment(context),
@@ -978,6 +1073,8 @@ defmodule FavnOrchestrator.Rebuilds do
          desired_manifest_id: binding.desired_manifest_id,
          desired_descriptor_hash: binding.desired_descriptor_hash,
          compatibility_status: binding.compatibility_status,
+         reason_code: binding.reason_code,
+         compatibility_diff: binding.compatibility_diff,
          version: binding.version
        }}
     end)
@@ -991,6 +1088,43 @@ defmodule FavnOrchestrator.Rebuilds do
       nil -> nil
       candidate -> candidate
     end)
+  end
+
+  defp coverage_payload(nil), do: nil
+
+  defp coverage_payload(coverage) do
+    %{
+      declared_from: period_payload(coverage.declared_from),
+      effective_from: period_payload(coverage.effective_from),
+      through:
+        case coverage.through do
+          through when through in [:latest_closed, :current] -> through
+          through -> period_payload(through)
+        end,
+      availability_delay_seconds: coverage.availability_delay_seconds,
+      kind: coverage.kind,
+      timezone: coverage.timezone,
+      timezone_source: coverage.timezone_source,
+      scope_source: coverage.scope_source
+    }
+  end
+
+  defp period_payload(period) do
+    %{
+      kind: period.kind,
+      start_at: period.start_at,
+      end_at: period.end_at,
+      timezone: period.timezone
+    }
+  end
+
+  defp evaluated_range(items, root_target_id) do
+    root_items = Enum.filter(items, &(&1.target_id == root_target_id))
+
+    %{
+      start_at: root_items |> List.first() |> item_boundary(:window_start),
+      end_at: root_items |> List.last() |> item_boundary(:window_end)
+    }
   end
 
   defp item_payload(item) do
@@ -1224,7 +1358,7 @@ defmodule FavnOrchestrator.Rebuilds do
   end
 
   defp validate_plan_options(opts) do
-    allowed = [:evaluated_at, :operation_id, :idempotency_key, :occurred_at]
+    allowed = [:evaluated_at, :operation_id, :idempotency_key, :occurred_at, :idempotency]
 
     if Keyword.keyword?(opts) and Keyword.keys(opts) -- allowed == [],
       do: :ok,
@@ -1232,14 +1366,35 @@ defmodule FavnOrchestrator.Rebuilds do
   end
 
   defp validate_command_options(opts) do
-    allowed = [:command_id, :occurred_at, :lease_duration_ms]
+    allowed = [:command_id, :occurred_at, :lease_duration_ms, :idempotency]
 
     if Keyword.keyword?(opts) and Keyword.keys(opts) -- allowed == [],
       do: :ok,
       else: {:error, :invalid_rebuild_options}
   end
 
-  defp validate_reason(reason) when byte_size(reason) in 1..4096, do: :ok
+  defp validate_page_options(opts) do
+    allowed = [:state, :after, :limit]
+
+    if Keyword.keyword?(opts) and Keyword.keys(opts) -- allowed == [] and
+         Keyword.get(opts, :limit, 100) in 1..200,
+       do: :ok,
+       else: {:error, :invalid_rebuild_page}
+  end
+
+  defp validate_item_page_options(opts) do
+    allowed = [:target_id, :status, :after, :limit]
+
+    if Keyword.keyword?(opts) and Keyword.keys(opts) -- allowed == [] and
+         Keyword.get(opts, :limit, 100) in 1..200,
+       do: :ok,
+       else: {:error, :invalid_rebuild_item_page}
+  end
+
+  defp validate_reason(reason) when byte_size(reason) in 1..4096 do
+    if String.trim(reason) == "", do: {:error, :rebuild_reason_required}, else: :ok
+  end
+
   defp validate_reason(_reason), do: {:error, :rebuild_reason_required}
   defp validate_datetime(%DateTime{}), do: :ok
   defp validate_datetime(_value), do: {:error, :invalid_rebuild_evaluated_at}

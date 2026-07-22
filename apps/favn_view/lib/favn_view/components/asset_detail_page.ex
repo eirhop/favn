@@ -44,6 +44,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
   attr :coverage_page_cursor, :string, default: nil
   attr :compatibility, :map, default: nil
+  attr :rebuild_target_id, :string, default: nil
   attr :assurance, :map, default: nil
   attr :coverage_plan, :map, default: nil
   attr :coverage_action_error, :string, default: nil
@@ -97,6 +98,7 @@ defmodule FavnView.Components.AssetDetailPage do
         coverage_pagination={@coverage_pagination}
         coverage_page_cursor={@coverage_page_cursor}
         compatibility={@compatibility}
+        rebuild_target_id={@rebuild_target_id}
         assurance={@assurance}
         coverage_plan={@coverage_plan}
         coverage_action_error={@coverage_action_error}
@@ -148,6 +150,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
   attr :coverage_page_cursor, :string, default: nil
   attr :compatibility, :map, default: nil
+  attr :rebuild_target_id, :string, default: nil
   attr :assurance, :map, default: nil
   attr :coverage_plan, :map, default: nil
   attr :coverage_action_error, :string, default: nil
@@ -167,6 +170,7 @@ defmodule FavnView.Components.AssetDetailPage do
     <.compatibility_panel
       :if={@active_mode == :timeline && @compatibility}
       compatibility={@compatibility}
+      rebuild_target_id={@rebuild_target_id}
     />
 
     <.coverage_summary_panel
@@ -228,6 +232,7 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   attr :compatibility, :map, required: true
+  attr :rebuild_target_id, :string, default: nil
 
   def compatibility_panel(assigns) do
     ~H"""
@@ -297,13 +302,23 @@ defmodule FavnView.Components.AssetDetailPage do
         </dl>
       </div>
 
-      <p
+      <div
         :if={field(@compatibility, :blocks_writes?, false)}
-        class="mt-4 text-sm font-medium text-error"
+        class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
         data-testid="asset-compatibility-blocked"
       >
-        Runs and backfills are blocked until this target is resolved.
-      </p>
+        <p class="text-sm font-medium text-error">
+          Runs and backfills are blocked until this target is resolved.
+        </p>
+        <.link
+          :if={@rebuild_target_id}
+          navigate={~p"/rebuilds?#{[target_id: @rebuild_target_id]}"}
+          class="btn btn-warning btn-sm"
+          data-testid="plan-asset-rebuild"
+        >
+          Plan rebuild
+        </.link>
+      </div>
     </GlassPanel.glass_panel>
     """
   end

@@ -36,10 +36,38 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
   def execute!(workspace_id, %CommandIdempotency{} = context, mutation, encode, decode)
       when is_binary(workspace_id) and is_function(mutation, 0) and is_function(encode, 1) and
              is_function(decode, 1) do
+    {_outcome, result} =
+      execute_with_outcome!(workspace_id, context, mutation, encode, decode)
+
+    result
+  end
+
+  @doc "Executes or replays a command and reports which path produced the result."
+  @spec execute_with_outcome!(
+          String.t(),
+          CommandIdempotency.t() | nil,
+          (-> result),
+          (result -> {:ok, encoded_result()} | {:error, term()}),
+          (encoded_result() -> {:ok, result} | {:error, term()})
+        ) :: {:new | :replay, result}
+        when result: term()
+  def execute_with_outcome!(_workspace_id, nil, mutation, _encode, _decode)
+      when is_function(mutation, 0),
+      do: {:new, mutation.()}
+
+  def execute_with_outcome!(
+        workspace_id,
+        %CommandIdempotency{} = context,
+        mutation,
+        encode,
+        decode
+      )
+      when is_binary(workspace_id) and is_function(mutation, 0) and is_function(encode, 1) and
+             is_function(decode, 1) do
     validate_context!(workspace_id, context)
 
     if reserve(context, workspace_id) do
-      commit_new!(context, workspace_id, mutation, encode)
+      {:new, commit_new!(context, workspace_id, mutation, encode)}
     else
       replay_or_replace_expired!(context, workspace_id, mutation, encode, decode)
     end
@@ -73,7 +101,7 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
     cond do
       row.expired? ->
         replace_expired!(workspace_id, context, row.reservation_generation)
-        commit_new!(context, workspace_id, mutation, encode)
+        {:new, commit_new!(context, workspace_id, mutation, encode)}
 
       row.request_fingerprint != context.request_fingerprint ->
         Repo.rollback(
@@ -89,7 +117,7 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
         }
 
         case decode.(encoded) do
-          {:ok, result} -> result
+          {:ok, result} -> {:replay, result}
           {:error, %Error{} = error} -> Repo.rollback(error)
           {:error, reason} -> Repo.rollback(internal_error("decode", reason))
         end

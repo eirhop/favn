@@ -325,6 +325,120 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
+  @spec plan_rebuild(String.t(), String.t(), session_context(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_rebuild(base_url, service_token, session_context, target_id, reason)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(target_id) and is_binary(reason) do
+    url = base_url <> "/api/orchestrator/v1/rebuilds/plan"
+    payload = %{target_id: target_id, reason: reason}
+
+    case request_post(
+           :plan_rebuild,
+           url,
+           service_token,
+           payload,
+           session_context,
+           fresh_idempotency_key()
+         ) do
+      {:ok, %{"data" => %{"plan" => plan}}} when is_map(plan) -> {:ok, plan}
+      {:error, _reason} = error -> error
+      _other -> {:error, operation_error(:plan_rebuild, :post, url, :invalid_response)}
+    end
+  end
+
+  @spec start_rebuild(String.t(), String.t(), session_context(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def start_rebuild(base_url, service_token, session_context, plan_id, plan_hash)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(plan_id) and is_binary(plan_hash) do
+    url = base_url <> "/api/orchestrator/v1/rebuilds"
+    payload = %{plan_id: plan_id, plan_hash: plan_hash, approved: true}
+
+    rebuild_mutation(
+      :start_rebuild,
+      url,
+      service_token,
+      session_context,
+      payload
+    )
+  end
+
+  @spec get_rebuild(String.t(), String.t(), session_context(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def get_rebuild(base_url, service_token, session_context, operation_id)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(operation_id) do
+    url = base_url <> "/api/orchestrator/v1/rebuilds/#{URI.encode(operation_id)}"
+
+    case request_get(:get_rebuild, url, service_token, session_context) do
+      {:ok, %{"data" => %{"rebuild" => rebuild}}} when is_map(rebuild) -> {:ok, rebuild}
+      {:error, _reason} = error -> error
+      _other -> {:error, operation_error(:get_rebuild, :get, url, :invalid_response)}
+    end
+  end
+
+  @spec cancel_rebuild(String.t(), String.t(), session_context(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def cancel_rebuild(base_url, service_token, session_context, operation_id, reason)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(operation_id) and is_binary(reason) do
+    url = base_url <> "/api/orchestrator/v1/rebuilds/#{URI.encode(operation_id)}/cancel"
+
+    rebuild_mutation(
+      :cancel_rebuild,
+      url,
+      service_token,
+      session_context,
+      %{reason: reason}
+    )
+  end
+
+  @spec retry_rebuild(String.t(), String.t(), session_context(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def retry_rebuild(base_url, service_token, session_context, operation_id, plan_hash)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(operation_id) and is_binary(plan_hash) do
+    url = base_url <> "/api/orchestrator/v1/rebuilds/#{URI.encode(operation_id)}/retry"
+
+    rebuild_mutation(
+      :retry_rebuild,
+      url,
+      service_token,
+      session_context,
+      %{plan_hash: plan_hash}
+    )
+  end
+
+  @spec reconcile_rebuild(String.t(), String.t(), session_context(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def reconcile_rebuild(base_url, service_token, session_context, operation_id)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(operation_id) do
+    url = base_url <> "/api/orchestrator/v1/rebuilds/#{URI.encode(operation_id)}/reconcile"
+    rebuild_mutation(:reconcile_rebuild, url, service_token, session_context, %{})
+  end
+
+  defp rebuild_mutation(operation, url, service_token, session_context, payload) do
+    idempotency_key =
+      if operation in [:retry_rebuild, :reconcile_rebuild],
+        do: fresh_idempotency_key(),
+        else: idempotency_key(operation, session_context, payload)
+
+    case request_post(
+           operation,
+           url,
+           service_token,
+           payload,
+           session_context,
+           idempotency_key
+         ) do
+      {:ok, %{"data" => %{"rebuild" => rebuild}}} when is_map(rebuild) -> {:ok, rebuild}
+      {:error, _reason} = error -> error
+      _other -> {:error, operation_error(operation, :post, url, :invalid_response)}
+    end
+  end
+
   @spec submit_run(String.t(), String.t(), session_context(), map(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def submit_run(base_url, service_token, session_context, payload, opts \\ [])

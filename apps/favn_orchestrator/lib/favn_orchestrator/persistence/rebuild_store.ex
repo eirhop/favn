@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Persistence.RebuildStore do
   alias FavnOrchestrator.Persistence.Commands.ClaimRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.CreateRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.RequestRebuildCancellation
+  alias FavnOrchestrator.Persistence.Commands.RequestRebuildReconciliation
   alias FavnOrchestrator.Persistence.Commands.RetryRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.StartRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.TransitionRebuildAction
@@ -15,6 +16,7 @@ defmodule FavnOrchestrator.Persistence.RebuildStore do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetRebuild
   alias FavnOrchestrator.Persistence.Queries.PageRebuildItems
+  alias FavnOrchestrator.Persistence.Queries.PageRebuildOperations
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RebuildAction
   alias FavnOrchestrator.Persistence.Results.RebuildItem
@@ -25,6 +27,8 @@ defmodule FavnOrchestrator.Persistence.RebuildStore do
   @callback start_operation(StartRebuildOperation.t()) ::
               {:ok, RebuildOperation.t()} | {:error, Error.t()}
   @callback request_cancellation(RequestRebuildCancellation.t()) ::
+              {:ok, RebuildOperation.t()} | {:error, Error.t()}
+  @callback request_reconciliation(RequestRebuildReconciliation.t()) ::
               {:ok, RebuildOperation.t()} | {:error, Error.t()}
   @callback retry_operation(RetryRebuildOperation.t()) ::
               {:ok, RebuildOperation.t()} | {:error, Error.t()}
@@ -45,4 +49,6 @@ defmodule FavnOrchestrator.Persistence.RebuildStore do
   @callback get(GetRebuild.t()) :: {:ok, RebuildOperation.t()} | {:error, Error.t()}
   @callback page_items(PageRebuildItems.t()) ::
               {:ok, CursorPage.t(RebuildItem.t())} | {:error, Error.t()}
+  @callback page_operations(PageRebuildOperations.t()) ::
+              {:ok, CursorPage.t(RebuildOperation.t())} | {:error, Error.t()}
 end

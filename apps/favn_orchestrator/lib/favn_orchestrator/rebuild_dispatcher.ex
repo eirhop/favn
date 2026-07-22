@@ -46,6 +46,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Rebuild.ItemPager
   alias FavnOrchestrator.Rebuild.Reconciliation
+  alias FavnOrchestrator.Rebuild.Telemetry
 
   @default_interval_ms 1_000
   @default_lease_ms 30_000
@@ -135,11 +136,26 @@ defmodule FavnOrchestrator.RebuildDispatcher do
              :ok <- process_operation(context, operation, locks, state) do
           :ok
         else
-          {:error, %Error{kind: kind}} when kind in [:conflict, :fenced] -> :ok
-          {:error, reason} -> emit_error(workspace_id, operation.operation_id, :dispatch, reason)
+          {:error, %Error{kind: kind}} when kind in [:conflict, :fenced] ->
+            Telemetry.execute(:lock_contention, %{count: 1}, %{
+              workspace_id: workspace_id,
+              operation_id: operation.operation_id,
+              reason: kind
+            })
+
+            :ok
+
+          {:error, reason} ->
+            emit_error(workspace_id, operation.operation_id, :dispatch, reason)
         end
 
       {:error, %Error{kind: kind}} when kind in [:conflict, :fenced] ->
+        Telemetry.execute(:lock_contention, %{count: 1}, %{
+          workspace_id: workspace_id,
+          operation_id: nil,
+          reason: kind
+        })
+
         :ok
 
       {:error, reason} ->
@@ -188,7 +204,10 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          locks,
          state
        ),
-       do: validate_current_action(context, operation, locks, state)
+       do:
+         timed_phase(:validation, context, operation, fn ->
+           validate_current_action(context, operation, locks, state)
+         end)
 
   defp process_operation(
          context,
@@ -196,7 +215,10 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          locks,
          state
        ),
-       do: activate_current_action(context, operation, locks, state)
+       do:
+         timed_phase(:activation, context, operation, fn ->
+           activate_current_action(context, operation, locks, state)
+         end)
 
   defp process_operation(
          context,
@@ -213,7 +235,10 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          locks,
          state
        ),
-       do: reconcile_activation(context, operation, locks, state)
+       do:
+         timed_phase(:reconciliation, context, operation, fn ->
+           reconcile_activation(context, operation, locks, state)
+         end)
 
   defp process_operation(
          context,
@@ -230,7 +255,10 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          state
        )
        when cleanup_state in [:pending, :failed],
-       do: cleanup_retired_relations(context, operation, locks, state)
+       do:
+         timed_phase(:cleanup, context, operation, fn ->
+           cleanup_retired_relations(context, operation, locks, state)
+         end)
 
   defp process_operation(
          context,
@@ -239,7 +267,10 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          state
        )
        when terminal_state in [:failed, :cancelled] and cleanup_state in [:pending, :failed],
-       do: cleanup_abandoned_candidates(context, operation, locks, state)
+       do:
+         timed_phase(:cleanup, context, operation, fn ->
+           cleanup_abandoned_candidates(context, operation, locks, state)
+         end)
 
   defp process_operation(_context, _operation, _locks, _state), do: :ok
 
@@ -663,19 +694,43 @@ defmodule FavnOrchestrator.RebuildDispatcher do
         {:ok, []}
 
       :ok ->
-        rebuild_store().claim_items(%ClaimRebuildItems{
-          workspace_context: context,
-          batch_id:
-            command_id(
-              "claim-items",
-              operation.operation_id <> ":" <> action.target_id <> ":" <> unique_identity()
-            ),
-          operation_id: operation.operation_id,
-          target_id: action.target_id,
-          owner_id: state.owner_id,
-          lease_duration_ms: state.lease_ms,
-          limit: if(action.action == :rebuild, do: 1, else: state.batch_size)
-        })
+        result =
+          rebuild_store().claim_items(%ClaimRebuildItems{
+            workspace_context: context,
+            batch_id:
+              command_id(
+                "claim-items",
+                operation.operation_id <> ":" <> action.target_id <> ":" <> unique_identity()
+              ),
+            operation_id: operation.operation_id,
+            target_id: action.target_id,
+            owner_id: state.owner_id,
+            lease_duration_ms: state.lease_ms,
+            limit: if(action.action == :rebuild, do: 1, else: state.batch_size)
+          })
+
+        case result do
+          {:ok, items} ->
+            Telemetry.execute(:item_dispatch, %{count: length(items)}, %{
+              workspace_id: context.workspace_id,
+              operation_id: operation.operation_id,
+              target_id: action.target_id,
+              action: action.action,
+              outcome: :claimed
+            })
+
+          {:error, reason} ->
+            Telemetry.execute(:item_dispatch, %{count: 0}, %{
+              workspace_id: context.workspace_id,
+              operation_id: operation.operation_id,
+              target_id: action.target_id,
+              action: action.action,
+              outcome: :error,
+              reason: Telemetry.reason_kind(reason)
+            })
+        end
+
+        result
 
       {:error, _reason} = error ->
         error
@@ -1483,28 +1538,51 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   end
 
   defp transition_operation(operation, context, state, next_state, phase, attrs \\ []) do
-    rebuild_store().transition_operation(%TransitionRebuildOperation{
-      workspace_context: context,
-      command_id:
-        command_id(
-          "operation-#{next_state}-#{phase}",
-          operation.operation_id <> ":" <> Integer.to_string(operation.version)
-        ),
-      operation_id: operation.operation_id,
-      owner_id: state.owner_id,
-      fencing_token: operation.dispatcher_fencing_token,
-      expected_version: operation.version,
-      expected_states: [operation.state],
-      state: next_state,
-      phase: phase,
-      activation_token: Keyword.get(attrs, :activation_token),
-      result_marker: Keyword.get(attrs, :result_marker),
-      unknown_outcome: Keyword.get(attrs, :unknown_outcome),
-      validation_result: Keyword.get(attrs, :validation_result),
-      terminal_error: Keyword.get(attrs, :terminal_error),
-      cleanup_state: Keyword.get(attrs, :cleanup_state),
-      occurred_at: DateTime.utc_now()
-    })
+    result =
+      rebuild_store().transition_operation(%TransitionRebuildOperation{
+        workspace_context: context,
+        command_id:
+          command_id(
+            "operation-#{next_state}-#{phase}",
+            operation.operation_id <> ":" <> Integer.to_string(operation.version)
+          ),
+        operation_id: operation.operation_id,
+        owner_id: state.owner_id,
+        fencing_token: operation.dispatcher_fencing_token,
+        expected_version: operation.version,
+        expected_states: [operation.state],
+        state: next_state,
+        phase: phase,
+        activation_token: Keyword.get(attrs, :activation_token),
+        result_marker: Keyword.get(attrs, :result_marker),
+        unknown_outcome: Keyword.get(attrs, :unknown_outcome),
+        validation_result: Keyword.get(attrs, :validation_result),
+        terminal_error: Keyword.get(attrs, :terminal_error),
+        cleanup_state: Keyword.get(attrs, :cleanup_state),
+        occurred_at: DateTime.utc_now()
+      })
+
+    case result do
+      {:ok, updated} ->
+        Telemetry.execute(:transition, %{count: 1}, %{
+          workspace_id: context.workspace_id,
+          operation_id: operation.operation_id,
+          from_state: operation.state,
+          state: updated.state,
+          phase: updated.phase,
+          cleanup_state: updated.cleanup_state,
+          outcome:
+            if(updated.state in [:succeeded, :failed, :cancelled],
+              do: updated.state,
+              else: :progress
+            )
+        })
+
+      {:error, _reason} ->
+        :ok
+    end
+
+    result
   end
 
   defp transition_action(operation, action, context, state, status, attrs) do
@@ -1535,26 +1613,60 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   end
 
   defp transition_item(context, operation, item, state, status, run_id, error, attrs \\ []) do
-    rebuild_store().transition_item(%TransitionRebuildItem{
-      workspace_context: context,
-      command_id:
-        command_id(
-          "item-#{status}",
-          operation.operation_id <> ":" <> item.item_id <> ":" <> Integer.to_string(item.version)
-        ),
+    result =
+      rebuild_store().transition_item(%TransitionRebuildItem{
+        workspace_context: context,
+        command_id:
+          command_id(
+            "item-#{status}",
+            operation.operation_id <>
+              ":" <> item.item_id <> ":" <> Integer.to_string(item.version)
+          ),
+        operation_id: operation.operation_id,
+        target_id: item.target_id,
+        item_id: item.item_id,
+        owner_id: state.owner_id,
+        fencing_token: item.fencing_token,
+        expected_version: item.version,
+        status: status,
+        child_run_id: run_id,
+        materialization_id: Keyword.get(attrs, :materialization_id),
+        row_count: Keyword.get(attrs, :row_count),
+        last_error: error,
+        occurred_at: DateTime.utc_now()
+      })
+
+    if match?({:ok, _item}, result) do
+      Telemetry.execute(:item_outcome, %{count: 1}, %{
+        workspace_id: context.workspace_id,
+        operation_id: operation.operation_id,
+        target_id: item.target_id,
+        from_status: item.status,
+        status: status
+      })
+    end
+
+    result
+  end
+
+  defp timed_phase(event, context, operation, execute) do
+    started_at = System.monotonic_time()
+    result = execute.()
+
+    metadata = %{
+      workspace_id: context.workspace_id,
       operation_id: operation.operation_id,
-      target_id: item.target_id,
-      item_id: item.item_id,
-      owner_id: state.owner_id,
-      fencing_token: item.fencing_token,
-      expected_version: item.version,
-      status: status,
-      child_run_id: run_id,
-      materialization_id: Keyword.get(attrs, :materialization_id),
-      row_count: Keyword.get(attrs, :row_count),
-      last_error: error,
-      occurred_at: DateTime.utc_now()
-    })
+      outcome: if(match?({:error, _reason}, result), do: :error, else: :ok)
+    }
+
+    metadata =
+      case result do
+        {:error, reason} -> Map.put(metadata, :reason, Telemetry.reason_kind(reason))
+        _result -> metadata
+      end
+
+    Telemetry.execute(event, %{duration: System.monotonic_time() - started_at}, metadata)
+    result
   end
 
   defp ensure_target_locks(context, operation, state) do

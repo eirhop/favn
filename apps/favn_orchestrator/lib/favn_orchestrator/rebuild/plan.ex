@@ -4,13 +4,14 @@ defmodule FavnOrchestrator.Rebuild.Plan do
   alias Favn.Manifest.Serializer
 
   @enforce_keys [:plan_id, :plan_hash, :expires_at, :payload]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [idempotency_replay?: false]
 
   @type t :: %__MODULE__{
           plan_id: String.t(),
           plan_hash: String.t(),
           expires_at: DateTime.t(),
-          payload: map()
+          payload: map(),
+          idempotency_replay?: boolean()
         }
 
   @doc "Builds a plan envelope and hashes its complete canonical payload."

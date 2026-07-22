@@ -184,6 +184,65 @@ the recorded generation and investigate out-of-band DDL. For
 unmanaged relation automatically. Repeated ordinary runs cannot clear any of
 these blocking states.
 
+### Rebuild A Managed Target
+
+Use a rebuild only for a managed persisted SQL target whose active generation
+must be replaced. Unexpected drift and ownership-unknown targets require an
+operator decision first; Favn does not use rebuild as implicit adoption.
+
+1. Open the blocked asset and follow **Plan rebuild**, or open `/rebuilds`.
+2. Enter the target and a bounded operator reason.
+3. Review the immutable plan, including expiry, hash, affected targets, action
+   order, exact work items, generation pins, and downstream impact.
+4. An administrator explicitly starts that exact plan.
+5. Follow operation progress and logical items. The old active generation stays
+   readable while the candidate is built and validated.
+6. If cancellation is necessary, provide a reason and wait for durable cleanup.
+7. Use **Retry** only when the server exposes it. Use **Reconcile** when
+   activation is unknown.
+
+Planning never mutates customer data. Start returns a conflict if the manifest,
+generation, physical fingerprint, coverage selection, mapping proof, or runtime
+input expectation changed after planning. Create and review a new plan instead
+of forcing the stale one.
+
+`activation_unknown` means the activation request may have committed even though
+the control plane did not receive a conclusive reply. Ordinary writes remain
+blocked. Reconciliation reads the runner's authoritative marker and either
+continues from the candidate, resumes from the previous generation, or preserves
+the unknown state when neither can be proven. Never retry the activation blindly.
+
+The local CLI keeps approval explicit:
+
+```text
+mix favn.rebuild plan ASSET --reason REASON
+mix favn.rebuild start PLAN_ID --plan-hash HASH
+mix favn.rebuild status OPERATION_ID
+mix favn.rebuild cancel OPERATION_ID --reason REASON
+mix favn.rebuild retry OPERATION_ID
+mix favn.rebuild reconcile OPERATION_ID
+```
+
+The private service API uses the same workspace authorization and immutable
+command contract:
+
+```text
+POST /api/orchestrator/v1/rebuilds/plan
+POST /api/orchestrator/v1/rebuilds
+GET  /api/orchestrator/v1/rebuilds
+GET  /api/orchestrator/v1/rebuilds/:operation_id
+GET  /api/orchestrator/v1/rebuilds/:operation_id/items
+POST /api/orchestrator/v1/rebuilds/:operation_id/cancel
+POST /api/orchestrator/v1/rebuilds/:operation_id/retry
+POST /api/orchestrator/v1/rebuilds/:operation_id/reconcile
+```
+
+Planning requires operator authority. Start, cancel, retry, and reconcile require
+administrator authority. Mutations require an idempotency key and write bounded
+actor/session audit evidence for accepted and rejected attempts, including
+whether an accepted result was an idempotent replay. Operation and item pages
+use opaque keyset cursors, default to 100 rows, and accept at most 200.
+
 Common failures:
 
 | Failure | Action |

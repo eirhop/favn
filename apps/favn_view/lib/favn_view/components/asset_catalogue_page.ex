@@ -383,6 +383,12 @@ defmodule FavnView.Components.AssetCataloguePage do
       %{label: "Storage", icon: "hero-circle-stack", href: "#"},
       %{label: "Runs", icon: "hero-rocket-launch", href: "/runs", active: active == :runs},
       %{
+        label: "Rebuilds",
+        icon: "hero-arrow-path-rounded-square",
+        href: "/rebuilds",
+        active: active == :rebuilds
+      },
+      %{
         label: "Schedules",
         icon: "hero-calendar-days",
         href: "/schedules",
