@@ -27,6 +27,7 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     outputs:
       changed: ${{ steps.identity.outputs.changed }}
+      runtime_acceptance_changed: ${{ steps.runtime_acceptance.outputs.changed }}
       control_plane_build_id: ${{ steps.metadata.outputs.control_plane_build_id }}
       control_plane_version: ${{ steps.metadata.outputs.control_plane_version }}
       release_version: ${{ steps.metadata.outputs.release_version }}
@@ -102,6 +103,24 @@ jobs:
             echo "Control-plane inputs changed: $base_id -> $HEAD_ID"
           fi
 
+      - name: Classify runner and local Compose acceptance inputs
+        id: runtime_acceptance
+        env:
+          BASE_SHA: ${{ steps.revisions.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.revisions.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          changed=false
+          while IFS= read -r path; do
+            case "$path" in
+              mix.exs|mix.lock|config/*|apps/favn/*|apps/favn_local/*|apps/favn_runner/*|apps/favn_core/*|apps/favn_authoring/*|apps/favn_sql_runtime/*|apps/favn_duckdb/*|apps/favn_duckdb_adbc/*|apps/favn_azure/*|apps/favn_test_support/*|scripts/runner_*)
+                changed=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
   pr-candidate:
     name: PR control-plane candidate
     runs-on: ubuntu-latest
@@ -151,6 +170,19 @@ jobs:
           "favn-control-plane-candidate:$BUILD_ID"
           "$BUILD_ID"
 
+      - name: Compile container acceptance tests
+        env:
+          MIX_ENV: test
+        run: |
+          mix deps.get
+          mix compile --warnings-as-errors
+
+      - name: Run production container acceptance
+        env:
+          FAVN_CONTROL_PLANE_CANDIDATE: favn-control-plane-candidate:${{ needs.discover.outputs.control_plane_build_id }}
+          MIX_ENV: test
+        run: mix test.container
+
       - name: Scan high and critical vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
@@ -179,6 +211,69 @@ jobs:
             .favn/build/control-plane/candidate-*.json
             control-plane-grype.sarif
             control-plane.spdx.json
+
+  pr-runtime-acceptance:
+    name: PR runner and local Compose acceptance
+    runs-on: ubuntu-latest
+    needs: discover
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.discover.outputs.changed == 'false' &&
+      needs.discover.outputs.runtime_acceptance_changed == 'true'
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout exact pull-request revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.discover.outputs.head_sha }}
+
+      - name: Setup Elixir and Erlang
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: '1.20.2'
+          otp-version: '28.3.3'
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull exact current official control plane
+        id: image
+        env:
+          BUILD_ID: ${{ needs.discover.outputs.control_plane_build_id }}
+        run: |
+          set -euo pipefail
+          ref="$IMAGE_REPOSITORY:build-$BUILD_ID"
+          docker pull "$ref"
+          digest=$(scripts/control_plane_registry.sh lookup-digest "$ref")
+          scripts/control_plane_registry.sh require-digest "$IMAGE_REPOSITORY:verified-build-$BUILD_ID" "$digest"
+          scripts/control_plane_image_contract.sh "$IMAGE_REPOSITORY@$digest" "$BUILD_ID"
+          echo "reference=$IMAGE_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex 2.5.1 --force
+          mix local.rebar rebar3 https://builds.hex.pm/installs/1.18.4/rebar3-3.25.1-otp-28 --sha512 992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24 --force
+
+      - name: Compile container acceptance tests
+        env:
+          MIX_ENV: test
+        run: |
+          mix deps.get
+          mix compile --warnings-as-errors
+
+      - name: Run runner and local Compose acceptance
+        env:
+          FAVN_CONTROL_PLANE_CANDIDATE: ${{ steps.image.outputs.reference }}
+          MIX_ENV: test
+        run: mix test.container
 
   main-image:
     name: Publish or reuse merged image
@@ -288,13 +383,17 @@ jobs:
           elixir-version: '1.20.2'
           otp-version: '28.3.3'
 
-      - name: Install and compile maintainer tooling
+      - name: Install Hex and Rebar
+        if: steps.lookup.outputs.exists == 'false'
+        run: |
+          mix local.hex 2.5.1 --force
+          mix local.rebar rebar3 https://builds.hex.pm/installs/1.18.4/rebar3-3.25.1-otp-28 --sha512 992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24 --force
+
+      - name: Compile maintainer tooling
         if: steps.lookup.outputs.exists == 'false'
         env:
           MIX_ENV: prod
         run: |
-          mix local.hex 2.5.1 --force
-          mix local.rebar rebar3 https://builds.hex.pm/installs/1.18.4/rebar3-3.25.1-otp-28 --sha512 992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24 --force
           mix deps.get
           mix compile --warnings-as-errors
 
@@ -332,6 +431,29 @@ jobs:
           format: spdx-json
           output-file: control-plane.spdx.json
           upload-artifact: false
+
+      - name: Compile production container acceptance tests
+        if: steps.lookup.outputs.exists == 'false'
+        env:
+          MIX_ENV: test
+        run: |
+          mix deps.get
+          mix compile --warnings-as-errors
+
+      - name: Run complete pre-publish container acceptance
+        if: steps.lookup.outputs.exists == 'false'
+        env:
+          BUILD_ID: ${{ needs.discover.outputs.control_plane_build_id }}
+          EXISTING: ${{ steps.lookup.outputs.exists }}
+          MIX_ENV: test
+        run: |
+          set -euo pipefail
+          if [[ "$EXISTING" == true ]]; then
+            image="$IMAGE_REPOSITORY:build-$BUILD_ID"
+          else
+            image="favn-control-plane-candidate:$BUILD_ID"
+          fi
+          FAVN_CONTROL_PLANE_CANDIDATE="$image" mix test.container
 
       - name: Push run-scoped staging tag
         if: steps.lookup.outputs.exists == 'false'
@@ -489,7 +611,7 @@ jobs:
   control-plane-image:
     name: Control-plane image result
     runs-on: ubuntu-latest
-    needs: [discover, pr-candidate, main-image, verify-published, record-main-verification]
+    needs: [discover, pr-candidate, pr-runtime-acceptance, main-image, verify-published, record-main-verification]
     if: always()
 
     steps:
@@ -498,7 +620,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           DISCOVER_RESULT: ${{ needs.discover.result }}
           INPUTS_CHANGED: ${{ needs.discover.outputs.changed }}
+          RUNTIME_ACCEPTANCE_CHANGED: ${{ needs.discover.outputs.runtime_acceptance_changed }}
           PR_RESULT: ${{ needs.pr-candidate.result }}
+          PR_RUNTIME_RESULT: ${{ needs.pr-runtime-acceptance.result }}
           MAIN_RESULT: ${{ needs.main-image.result }}
           PUBLISHED: ${{ needs.main-image.outputs.published }}
           VERIFICATION_REQUIRED: ${{ needs.main-image.outputs.verification_required }}
@@ -510,8 +634,14 @@ jobs:
           if [[ "$EVENT_NAME" == pull_request ]]; then
             if [[ "$INPUTS_CHANGED" == true ]]; then
               [[ "$PR_RESULT" == success ]]
+              [[ "$PR_RUNTIME_RESULT" == skipped ]]
             else
               [[ "$PR_RESULT" == skipped ]]
+              if [[ "$RUNTIME_ACCEPTANCE_CHANGED" == true ]]; then
+                [[ "$PR_RUNTIME_RESULT" == success ]]
+              else
+                [[ "$PR_RUNTIME_RESULT" == skipped ]]
+              fi
             fi
           else
             [[ "$MAIN_RESULT" == success ]]

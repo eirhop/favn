@@ -125,6 +125,26 @@ jobs:
           --repo "${{ github.repository }}"
           --predicate-type https://spdx.dev/Document/v2.3
 
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex 2.5.1 --force
+          mix local.rebar rebar3 https://builds.hex.pm/installs/1.18.4/rebar3-3.25.1-otp-28 --sha512 992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24 --force
+
+      - name: Compile release qualification tests
+        env:
+          MIX_ENV: test
+        run: |
+          mix deps.get
+          mix compile --warnings-as-errors
+
+      - name: Run restart, persistence, rollback, and rotation qualification
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          MIX_ENV: test
+        run: >-
+          FAVN_CONTROL_PLANE_CANDIDATE="$IMAGE_REPOSITORY@$DIGEST"
+          mix test.container
+
       - name: Run release qualification
         env:
           BUILD_ID: ${{ steps.release.outputs.control_plane_build_id }}

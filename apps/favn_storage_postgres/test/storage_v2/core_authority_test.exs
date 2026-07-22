@@ -266,6 +266,70 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
   end
 
+  test "reactivates deduplicated deployment content after another deployment becomes active",
+       fixture do
+    replacement_id = fixture.deployment_id <> "-replacement"
+
+    replacement = %{
+      fixture.deploy_command
+      | deployment_id: replacement_id,
+        configuration:
+          Map.put(
+            fixture.deploy_command.configuration,
+            "secret_store_url",
+            "https://replacement.vault.example.test"
+          ),
+        occurred_at: DateTime.add(fixture.deploy_command.occurred_at, 1, :second)
+    }
+
+    assert {:ok, replacement_runtime} = RegistryStore.deploy_manifest(replacement)
+    assert replacement_runtime.deployment_id == replacement_id
+    assert replacement_runtime.revision == 2
+
+    rollback_command_id = fixture.deployment_id <> "-rollback-command"
+
+    rollback = %{
+      fixture.deploy_command
+      | deployment_id: rollback_command_id,
+        occurred_at: DateTime.add(fixture.deploy_command.occurred_at, 2, :second)
+    }
+
+    assert {:ok, rollback_runtime} = RegistryStore.deploy_manifest(rollback)
+    assert rollback_runtime.deployment_id == fixture.deployment_id
+    assert rollback_runtime.manifest_version_id == fixture.version.manifest_version_id
+    assert rollback_runtime.revision == 3
+
+    assert {:ok, ^rollback_runtime} =
+             RegistryStore.get_runtime_state(%GetRuntimeState{
+               workspace_context: fixture.workspace_context
+             })
+
+    %{rows: [[0]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT count(*)
+        FROM favn_control.workspace_deployments
+        WHERE workspace_id = $1 AND deployment_id = $2
+        """,
+        [fixture.workspace_id, rollback_command_id]
+      )
+
+    %{rows: [[aggregate_id, payload_deployment_id]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT aggregate_id, payload ->> 'deployment_id'
+        FROM favn_control.outbox_events
+        WHERE workspace_id = $1 AND command_id = $2
+        """,
+        [fixture.workspace_id, "workspace.deploy:" <> rollback_command_id]
+      )
+
+    assert aggregate_id == fixture.deployment_id
+    assert payload_deployment_id == fixture.deployment_id
+  end
+
   test "persists runner release identity and exposes it through manifest audit reads", fixture do
     row = Repo.get!(ManifestVersionRow, fixture.version.manifest_version_id)
 

@@ -1,10 +1,21 @@
 defmodule Favn.Local.ComposeAcceptanceTest do
   use ExUnit.Case, async: false
 
-  alias Favn.Dev.{ComposeLifecycle, Doctor, Docker, Install, Paths, Reset, State}
+  alias Favn.Dev.{
+    ComposeEnv,
+    ComposeLifecycle,
+    Doctor,
+    Docker,
+    Install,
+    OrchestratorClient,
+    Paths,
+    Reset,
+    State
+  }
 
   @moduletag :integration
   @moduletag :acceptance
+  @moduletag :container
   @moduletag timeout: 1_200_000
 
   @runner_environment %{
@@ -93,6 +104,15 @@ defmodule Favn.Local.ComposeAcceptanceTest do
     assert running["runner"]["HostConfig"]["PortBindings"] == %{}
     assert running["postgres"]["HostConfig"]["PortBindings"] == %{}
 
+    for service <- ["runner", "control-plane"] do
+      assert running[service]["Config"]["User"] == "10001:10001"
+      assert running[service]["HostConfig"]["ReadonlyRootfs"] == true
+      assert "ALL" in running[service]["HostConfig"]["CapDrop"]
+      assert "no-new-privileges:true" in running[service]["HostConfig"]["SecurityOpt"]
+    end
+
+    assert_control_plane_runtime_contract(running["control-plane"]["Id"])
+
     assert Map.take(container_environment(running["runner"]), Map.keys(@runner_environment)) ==
              @runner_environment
 
@@ -178,15 +198,38 @@ defmodule Favn.Local.ComposeAcceptanceTest do
            |> Enum.filter(&(is_binary(&1) and &1 != ""))
            |> Enum.any?(&String.contains?(logs, &1))
 
-    Agent.update(context.build_state, fn _modules -> [Favn.Dev.Paths] end)
+    Agent.update(context.build_state, fn _modules -> [] end)
+    assert :ok = ComposeLifecycle.reload(context.opts)
+    rolled_back = inspect_services(project)
+
+    assert rolled_back["runner"]["Image"] == running["runner"]["Image"]
+
+    assert rolled_back["runner"]["State"]["StartedAt"] !=
+             blocked["runner"]["State"]["StartedAt"]
+
+    for service <- ["postgres", "control-plane"] do
+      assert rolled_back[service]["Image"] == blocked[service]["Image"]
+      assert rolled_back[service]["State"]["StartedAt"] == blocked[service]["State"]["StartedAt"]
+    end
+
+    assert {:ok, rollback_latest} = State.read_runner_latest(root_dir: context.root_dir)
+    assert rollback_latest["runner_release_id"] == first.runner_release_id
+    assert {:ok, rollback_runtime} = State.read_runtime(root_dir: context.root_dir)
+    assert rollback_runtime["active_manifest_version_id"] == first.manifest_version_id
 
     assert :ok = ComposeLifecycle.stop(context.opts)
     assert ComposeLifecycle.status(context.opts).stack_status == :stopped
 
     assert {:ok, second} = ComposeLifecycle.start(context.opts)
-    assert second.runner_release_id == replacement_latest["runner_release_id"]
-    assert second.runner_image_id == replacement_latest["image_id"]
-    assert second.manifest_version_id == replacement_latest["manifest_version_id"]
+    assert second.runner_release_id == rollback_latest["runner_release_id"]
+    assert second.runner_image_id == rollback_latest["image_id"]
+    assert second.manifest_version_id == first.manifest_version_id
+
+    assert_runtime_input_key_rotation!(project, context.opts)
+    assert_service_token_rotation!(project, context.opts)
+
+    assert %{stack_status: :running, runtime: %{"status" => "ok"}} =
+             ComposeLifecycle.status(context.opts)
 
     assert :ok = ComposeLifecycle.stop(context.opts)
     assert File.exists?(Paths.compose_path(context.root_dir))
@@ -246,4 +289,138 @@ defmodule Favn.Local.ComposeAcceptanceTest do
       {key, value}
     end)
   end
+
+  defp assert_control_plane_runtime_contract(container_id) do
+    expression = """
+    loaded = Application.loaded_applications() |> Enum.map(&elem(&1, 0))
+
+    if :favn_runner in loaded or Code.ensure_loaded?(FavnRunner) or Code.ensure_loaded?(Mix) do
+      raise "control-plane runtime includes runner or Mix code"
+    end
+    """
+
+    assert {output, 0} =
+             System.cmd(
+               "docker",
+               [
+                 "exec",
+                 container_id,
+                 "/app/bin/favn_control_plane",
+                 "rpc",
+                 expression
+               ],
+               stderr_to_stdout: true
+             )
+
+    refute output =~ "control-plane runtime includes"
+  end
+
+  defp assert_service_token_rotation!(project, opts) do
+    assert {:ok, secrets} = State.read_secrets(opts)
+    old_token = secrets["service_token"]
+
+    new_token =
+      :crypto.hash(:sha256, "favn-container-rotation") |> Base.url_encode64(padding: false)
+
+    roles = "platform_reader+platform_operator+platform_admin"
+
+    put_compose_environment!(project, %{
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
+        "local-tooling-old|#{roles}:#{old_token},local-tooling-next|#{roles}:#{new_token}"
+    })
+
+    recreate_control_plane!(project, opts)
+    assert_diagnostics_ready!(project["orchestrator_url"], old_token)
+    assert_diagnostics_ready!(project["orchestrator_url"], new_token)
+
+    put_compose_environment!(project, %{
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "local-tooling-next|#{roles}:#{new_token}"
+    })
+
+    assert :ok = State.write_secrets(Map.put(secrets, "service_token", new_token), opts)
+    recreate_control_plane!(project, opts)
+    assert_diagnostics_ready!(project["orchestrator_url"], new_token)
+
+    assert {:error, _unauthorized} =
+             OrchestratorClient.diagnostics(project["orchestrator_url"], old_token)
+  end
+
+  defp assert_runtime_input_key_rotation!(project, opts) do
+    assert {:ok, secrets} = State.read_secrets(opts)
+    old_key = secrets["runtime_input_pin_key"]
+    new_key = :crypto.hash(:sha256, "favn-container-key-rotation") |> Base.encode64()
+
+    put_compose_environment!(project, %{
+      "FAVN_RUNTIME_INPUT_PIN_KEYS" => JSON.encode!(%{"1" => old_key, "2" => new_key}),
+      "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION" => "2"
+    })
+
+    recreate_control_plane!(project, opts)
+    assert_runtime_input_key_inventory!(project, opts, 2, [1, 2], [old_key, new_key])
+
+    put_compose_environment!(project, %{
+      "FAVN_RUNTIME_INPUT_PIN_KEYS" => JSON.encode!(%{"2" => new_key})
+    })
+
+    recreate_control_plane!(project, opts)
+    assert_runtime_input_key_inventory!(project, opts, 2, [2], [old_key, new_key])
+  end
+
+  defp assert_runtime_input_key_inventory!(project, opts, current, retained, secret_keys) do
+    assert {output, 0} =
+             Docker.compose(
+               project,
+               [
+                 "--profile",
+                 "operations",
+                 "run",
+                 "--rm",
+                 "control-plane-ops",
+                 "runtime-input-key-inventory"
+               ],
+               Keyword.put(opts, :compose_command_timeout_ms, 300_000)
+             )
+
+    assert output =~ "current_version: #{current}"
+
+    for version <- retained do
+      assert output =~ Integer.to_string(version)
+    end
+
+    refute Enum.any?(secret_keys, &String.contains?(output, &1))
+  end
+
+  defp put_compose_environment!(project, updates) do
+    path = project["env_path"]
+    assert {:ok, environment} = ComposeEnv.read(path)
+    assert {:ok, encoded} = ComposeEnv.encode(Map.merge(environment, updates))
+    assert :ok = File.write(path, encoded)
+    assert :ok = File.chmod(path, 0o600)
+  end
+
+  defp recreate_control_plane!(project, opts) do
+    assert {output, 0} =
+             Docker.compose(
+               project,
+               ["up", "--detach", "--wait", "--no-deps", "--force-recreate", "control-plane"],
+               Keyword.put(opts, :compose_command_timeout_ms, 300_000)
+             )
+
+    assert output == "" or is_binary(output)
+  end
+
+  defp assert_diagnostics_ready!(url, token, attempts \\ 60)
+
+  defp assert_diagnostics_ready!(url, token, attempts) when attempts > 0 do
+    case OrchestratorClient.diagnostics(url, token) do
+      {:ok, %{"status" => "ok"}} ->
+        :ok
+
+      _not_ready ->
+        Process.sleep(250)
+        assert_diagnostics_ready!(url, token, attempts - 1)
+    end
+  end
+
+  defp assert_diagnostics_ready!(_url, _token, 0), do: flunk("rotated service token not ready")
 end

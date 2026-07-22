@@ -137,6 +137,33 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     [_before, pr_job] = String.split(pr_job, "  pr-candidate:", parts: 2)
     assert pr_job =~ "permissions:\n      contents: read"
     refute pr_job =~ "packages: write"
+    assert pr_job =~ "pr-runtime-acceptance:"
+    assert pr_job =~ "runtime_acceptance_changed == 'true'"
+    assert image_workflow =~ "apps/favn_azure/*"
+    assert pr_job =~ ~s(ref="$IMAGE_REPOSITORY:build-$BUILD_ID")
+
+    assert pr_job =~
+             ~s(require-digest "$IMAGE_REPOSITORY:verified-build-$BUILD_ID" "$digest")
+
+    assert pr_job =~
+             ~s(control_plane_image_contract.sh "$IMAGE_REPOSITORY@$digest" "$BUILD_ID")
+
+    assert pr_job =~ "FAVN_CONTROL_PLANE_CANDIDATE: ${{ steps.image.outputs.reference }}"
+
+    assert image_workflow =~
+             "needs: [discover, pr-candidate, pr-runtime-acceptance, main-image, verify-published, record-main-verification]"
+
+    assert image_workflow =~ "PR_RUNTIME_RESULT: ${{ needs.pr-runtime-acceptance.result }}"
+    assert image_workflow =~ ~s([[ "$PR_RUNTIME_RESULT" == success ]])
+
+    [main_job, _rest] =
+      image_workflow
+      |> String.split("  main-image:", parts: 2)
+      |> List.last()
+      |> String.split("  record-main-verification:", parts: 2)
+
+    assert main_job =~
+             "- name: Run complete pre-publish container acceptance\n        if: steps.lookup.outputs.exists == 'false'"
 
     [record_job, _rest] =
       image_workflow

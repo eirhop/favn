@@ -614,7 +614,7 @@ defmodule FavnStoragePostgres.Registry.Store do
        ) do
     locked_runtime_state = lock_runtime_state!(command.workspace_context.workspace_id)
 
-    {deployment, replayed?} =
+    {deployment, deployment_status} =
       insert_or_replay_deployment!(
         command,
         configuration,
@@ -622,11 +622,14 @@ defmodule FavnStoragePostgres.Registry.Store do
         target_fingerprint
       )
 
-    insert_targets!(command, targets)
-    insert_schedules!(command)
-    sync_capacity_scopes!(command, replayed?)
+    unless deployment_status == :content_reuse do
+      insert_targets!(command, targets)
+      insert_schedules!(command)
+      sync_capacity_scopes!(command, deployment_status == :exact_replay)
+    end
 
-    if replayed? and locked_runtime_state.active_deployment_id != deployment.deployment_id do
+    if deployment_status == :exact_replay and
+         locked_runtime_state.active_deployment_id != deployment.deployment_id do
       Repo.rollback(
         Error.new(
           :conflict,
@@ -637,17 +640,17 @@ defmodule FavnStoragePostgres.Registry.Store do
 
     runtime_state = activate_deployment!(command, deployment)
 
-    unless replayed? do
+    unless deployment_status == :exact_replay do
       OutboxWriter.insert!(%{
         workspace_id: command.workspace_context.workspace_id,
         command_id: "workspace.deploy:" <> command.deployment_id,
         event_kind: "workspace.deployment.activated",
         aggregate_kind: "workspace_deployment",
-        aggregate_id: command.deployment_id,
+        aggregate_id: deployment.deployment_id,
         aggregate_version: runtime_state.revision,
         occurred_at: command.occurred_at,
         payload: %{
-          "deployment_id" => command.deployment_id,
+          "deployment_id" => deployment.deployment_id,
           "manifest_version_id" => command.manifest_version_id,
           "runtime_revision" => runtime_state.revision,
           "target_catalog_fingerprint" => Base.encode16(target_fingerprint, case: :lower)
@@ -1036,24 +1039,55 @@ defmodule FavnStoragePostgres.Registry.Store do
 
     case Repo.insert_all(WorkspaceDeployment, [attrs], on_conflict: :nothing) do
       {0, _rows} ->
-        existing =
-          Repo.get_by!(WorkspaceDeployment,
-            workspace_id: command.workspace_context.workspace_id,
-            deployment_id: command.deployment_id
-          )
+        resolve_existing_deployment!(command, config_hash, target_hash)
 
-        if existing.manifest_version_id == command.manifest_version_id and
-             existing.configuration_version == command.configuration_version and
-             existing.configuration_fingerprint == config_hash and
-             existing.target_catalog_fingerprint == target_hash do
-          {existing, true}
+      {1, _rows} ->
+        {struct!(WorkspaceDeployment, attrs), :inserted}
+    end
+  end
+
+  defp resolve_existing_deployment!(command, config_hash, target_hash) do
+    identity =
+      Repo.get_by(WorkspaceDeployment,
+        workspace_id: command.workspace_context.workspace_id,
+        deployment_id: command.deployment_id
+      )
+
+    case identity do
+      %WorkspaceDeployment{} = existing ->
+        if matching_deployment_content?(existing, command, config_hash, target_hash) do
+          {existing, :exact_replay}
         else
           Repo.rollback(Error.new(:conflict, "deployment identity has different content"))
         end
 
-      {1, _rows} ->
-        {struct!(WorkspaceDeployment, attrs), false}
+      nil ->
+        reuse_existing_deployment!(command, config_hash, target_hash)
     end
+  end
+
+  defp reuse_existing_deployment!(command, config_hash, target_hash) do
+    existing =
+      Repo.get_by(WorkspaceDeployment,
+        workspace_id: command.workspace_context.workspace_id,
+        manifest_version_id: command.manifest_version_id,
+        configuration_fingerprint: config_hash,
+        target_catalog_fingerprint: target_hash
+      )
+
+    if match?(%WorkspaceDeployment{}, existing) and
+         existing.configuration_version == command.configuration_version do
+      {existing, :content_reuse}
+    else
+      Repo.rollback(Error.new(:conflict, "deployment content conflicts with committed state"))
+    end
+  end
+
+  defp matching_deployment_content?(existing, command, config_hash, target_hash) do
+    existing.manifest_version_id == command.manifest_version_id and
+      existing.configuration_version == command.configuration_version and
+      existing.configuration_fingerprint == config_hash and
+      existing.target_catalog_fingerprint == target_hash
   end
 
   defp insert_targets!(command, targets) do

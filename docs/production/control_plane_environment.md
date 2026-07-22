@@ -136,3 +136,32 @@ versioned service-token identities before removing an old token. Automatic secre
 rotation remains future work. After successful initial-actor provisioning, the
 control plane removes the bootstrap password from its application configuration;
 the durable credential store retains only its password hash.
+
+Every rotation uses a maintenance window: drain admission, wait up to
+`FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS`, change the platform environment, restart only
+the affected revision, require readiness, run a smoke execution, and then resume
+admission. Never remove an overlapping credential until its replacement has
+been exercised successfully.
+
+For an orchestrator service token:
+
+1. Add a new versioned identity beside the old entry in
+   `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` and restart the control plane.
+2. Move clients to the new token and prove an authenticated operation.
+3. Remove the old entry, restart again, and verify the old token is rejected.
+
+For a runtime-input encryption key:
+
+1. Add the new version to `FAVN_RUNTIME_INPUT_PIN_KEYS`, retain every referenced
+   old version, set `FAVN_RUNTIME_INPUT_PIN_KEY_VERSION` to the new version, and
+   restart the control plane.
+2. Run `favn_control_plane_ops runtime-input-key-inventory` and confirm the new
+   current version without exposing key material.
+3. Remove an old version only after inventory proves it is unreferenced, then
+   restart and require readiness again. See
+   [`postgresql_operator_runbook.md`](postgresql_operator_runbook.md) for
+   compaction and retirement commands.
+
+Changing `FAVN_VIEW_SECRET_KEY_BASE` requires a control-plane restart and
+invalidates all existing browser sessions. Operators must announce that users
+will sign in again; PostgreSQL application state is unaffected.

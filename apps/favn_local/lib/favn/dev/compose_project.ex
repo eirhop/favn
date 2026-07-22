@@ -199,10 +199,12 @@ defmodule Favn.Dev.ComposeProject do
             aliases: [postgres.favn.internal]
 
       control-plane-ops:
-        image: #{project["control_plane_image"]}
+        image: ${FAVN_CONTROL_PLANE_IMAGE}
         profiles: [operations]
         entrypoint: ["/app/bin/favn_control_plane_ops"]
         read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
         tmpfs:
           - /tmp/favn:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700
         environment: &control-plane-operations-environment
@@ -212,7 +214,7 @@ defmodule Favn.Dev.ComposeProject do
           FAVN_DATABASE_RUNTIME_ROLE: favn_runtime
           FAVN_INSTANCE_ID: #{project["project_name"]}-operations
           FAVN_RUNTIME_INPUT_PIN_KEYS: ${FAVN_RUNTIME_INPUT_PIN_KEYS}
-          FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: "1"
+          FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: ${FAVN_RUNTIME_INPUT_PIN_KEY_VERSION}
           FAVN_WORKSPACE_ID: ${FAVN_WORKSPACE_ID}
           FAVN_WORKSPACE_SLUG: ${FAVN_WORKSPACE_ID}
           FAVN_WORKSPACE_NAME: ${FAVN_WORKSPACE_NAME}
@@ -228,10 +230,12 @@ defmodule Favn.Dev.ComposeProject do
             aliases: [control-plane-ops.favn.internal]
 
       control-plane-verify:
-        image: #{project["control_plane_image"]}
+        image: ${FAVN_CONTROL_PLANE_IMAGE}
         profiles: [operations]
         entrypoint: ["/app/bin/favn_control_plane_ops"]
         read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
         tmpfs:
           - /tmp/favn:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700
         environment:
@@ -251,6 +255,8 @@ defmodule Favn.Dev.ComposeProject do
         restart: unless-stopped
         read_only: true
         init: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
         stop_grace_period: 3m
         env_file:
           - ./runner.env
@@ -274,10 +280,12 @@ defmodule Favn.Dev.ComposeProject do
             aliases: [runner.favn.internal]
 
       control-plane:
-        image: #{project["control_plane_image"]}
+        image: ${FAVN_CONTROL_PLANE_IMAGE}
         restart: unless-stopped
         read_only: true
         init: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
         stop_grace_period: 3m
         tmpfs:
           - /tmp/favn:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700
@@ -287,7 +295,7 @@ defmodule Favn.Dev.ComposeProject do
           FAVN_DATABASE_SSL_MODE: disable
           FAVN_DATABASE_POOL_SIZE: "10"
           FAVN_RUNTIME_INPUT_PIN_KEYS: ${FAVN_RUNTIME_INPUT_PIN_KEYS}
-          FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: "1"
+          FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: ${FAVN_RUNTIME_INPUT_PIN_KEY_VERSION}
           FAVN_INSTANCE_ID: #{project["project_name"]}
           FAVN_WORKSPACE_IDS: ${FAVN_WORKSPACE_ID}
           FAVN_ORCHESTRATOR_API_BIND_HOST: 0.0.0.0
@@ -298,7 +306,7 @@ defmodule Favn.Dev.ComposeProject do
           FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME: Favn Local Admin
           FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES: admin
           FAVN_SCHEDULER_ENABLED: ${FAVN_SCHEDULER_ENABLED}
-          FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS: "120000"
+          FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS: ${FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS}
           FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.internal
           FAVN_RUNNER_NODE: favn_runner@runner.favn.internal
           FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
@@ -360,7 +368,10 @@ defmodule Favn.Dev.ComposeProject do
       {"FAVN_POSTGRES_RUNTIME_PASSWORD", secrets["postgres_runtime_password"]},
       {"FAVN_POSTGRES_ADMIN_DATABASE_URL", admin_url},
       {"FAVN_POSTGRES_RUNTIME_DATABASE_URL", runtime_url},
+      {"FAVN_CONTROL_PLANE_IMAGE", project["control_plane_image"]},
       {"FAVN_RUNTIME_INPUT_PIN_KEYS", runtime_input_pin_keys},
+      {"FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "1"},
+      {"FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS", "120000"},
       {"FAVN_WORKSPACE_ID", project["workspace_id"]},
       {"FAVN_WORKSPACE_NAME", workspace_display_name(project["workspace_id"])},
       {"FAVN_DISTRIBUTION_COOKIE", secrets["rpc_cookie"]},

@@ -31,6 +31,12 @@ inspect() {
 [[ $(inspect '{{json .Config.Entrypoint}}') == '["/app/bin/favn_control_plane"]' ]]
 [[ $(inspect '{{json .Config.Healthcheck.Test}}') == '["CMD","/app/bin/favn_control_plane_health"]' ]]
 
+image_environment=$(inspect '{{range .Config.Env}}{{println .}}{{end}}')
+! grep -Ei '^FAVN_.*(TOKEN|PASSWORD|COOKIE|SECRET|DATABASE_URL|PIN_KEY)=' <<< "$image_environment" | grep -q .
+
+image_history=$(docker image history --no-trunc --format '{{.CreatedBy}}' "$image")
+! grep -Ei '(TOKEN|PASSWORD|COOKIE|SECRET_KEY_BASE|DATABASE_URL|PIN_KEY)=' <<< "$image_history" | grep -q .
+
 contract=$(cat <<'SH'
 set -eu
 test "$(id -u)" = 10001

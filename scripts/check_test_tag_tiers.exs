@@ -3,6 +3,7 @@ defmodule Favn.CheckTestTagTiers do
 
   @allowed_apps %{
     acceptance: MapSet.new(["favn_local"]),
+    container: MapSet.new(["favn_local"]),
     slow: MapSet.new(["favn", "favn_local", "favn_storage_postgres"]),
     browser: MapSet.new([])
   }
@@ -16,7 +17,7 @@ defmodule Favn.CheckTestTagTiers do
     "apps/favn_local/test/integration/dev_stack_smoke_test.exs" => :slow
   }
 
-  @tag_regex ~r/@(?:module)?tag\s+:?(acceptance|slow|browser)\b|(?:acceptance|slow|browser):\s*true/
+  @tag_regex ~r/@(?:module)?tag\s+:?(acceptance|container|slow|browser)\b|(?:acceptance|container|slow|browser):\s*true/
 
   def run do
     violations =

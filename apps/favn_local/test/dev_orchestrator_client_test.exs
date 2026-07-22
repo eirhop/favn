@@ -416,6 +416,29 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert headers["idempotency-key"] == "manual-key-297"
   end
 
+  test "separate submit_run invocations use fresh command identities" do
+    parent = self()
+    body = ~s({"data":{"run":{"id":"run_1","status":"running"}}})
+    session = %{"local_dev_context" => "trusted"}
+    payload = %{target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipeline"}}
+
+    {:ok, first_url, _server} = start_server(body, 201, parent: parent)
+
+    assert {:ok, %{"id" => "run_1"}} =
+             OrchestratorClient.submit_run(first_url, "token", session, payload)
+
+    assert_receive {:request_headers, first_headers}
+
+    {:ok, second_url, _server} = start_server(body, 201, parent: parent)
+
+    assert {:ok, %{"id" => "run_1"}} =
+             OrchestratorClient.submit_run(second_url, "token", session, payload)
+
+    assert_receive {:request_headers, second_headers}
+
+    refute first_headers["idempotency-key"] == second_headers["idempotency-key"]
+  end
+
   test "mutating command helpers send idempotency keys without secrets" do
     session_context = %{
       "workspace_id" => "workspace_1",
@@ -450,7 +473,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
     end)
   end
 
-  test "logical command idempotency is stable across renewed sessions" do
+  test "separate activation invocations use fresh command identities across renewed sessions" do
     parent = self()
 
     session = %{
@@ -487,6 +510,40 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
     assert_receive {:request_headers, second_headers}
 
+    refute first_headers["idempotency-key"] == second_headers["idempotency-key"]
+  end
+
+  test "a persisted maintenance token keeps activation retries idempotent" do
+    parent = self()
+    maintenance_token = String.duplicate("m", 43)
+
+    {:ok, first_url, _server} =
+      start_server(~s({"data":{"activated":true}}), 200, parent: parent)
+
+    assert {:ok, _response} =
+             OrchestratorClient.activate_manifest_service(
+               first_url,
+               "token",
+               "mv_rollback",
+               "workspace_1",
+               maintenance_token: maintenance_token
+             )
+
+    assert_receive {:request_headers, first_headers}
+
+    {:ok, second_url, _server} =
+      start_server(~s({"data":{"activated":true}}), 200, parent: parent)
+
+    assert {:ok, _response} =
+             OrchestratorClient.activate_manifest_service(
+               second_url,
+               "token",
+               "mv_rollback",
+               "workspace_1",
+               maintenance_token: maintenance_token
+             )
+
+    assert_receive {:request_headers, second_headers}
     assert first_headers["idempotency-key"] == second_headers["idempotency-key"]
   end
 

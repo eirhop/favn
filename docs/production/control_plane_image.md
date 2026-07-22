@@ -138,6 +138,12 @@ The final image:
   operation set;
 - supports a read-only root filesystem with a writable, size-bounded `/tmp`.
 
+The reference Compose deployment additionally drops every Linux capability and
+sets `no-new-privileges:true` on the control plane, runner, and one-shot
+control-plane operation containers. PostgreSQL remains reachable only on the
+private application network. Deployments using another scheduler must preserve
+those restrictions or document their platform-equivalent controls.
+
 Phoenix generator templates and inert esbuild/tailwind configuration are removed
 after release assembly. The final release contains no source templates, and its
 runtime configuration and release metadata contain no dependency on builder
@@ -158,3 +164,40 @@ and privilege separation are defined in
 qualification. Release promotion additionally verifies the registry digest,
 GitHub build-provenance attestation, and SPDX SBOM attestation before adding a
 version alias.
+
+## Production qualification
+
+Maintainers can qualify an exact locally loaded candidate with:
+
+```bash
+FAVN_CONTROL_PLANE_CANDIDATE=favn-control-plane-candidate:<build-id> \
+  mix test.container
+```
+
+This dedicated tier runs the final image with PostgreSQL 18 and a canonical
+customer-built runner. It proves release operations, private networking,
+non-root/read-only/capability restrictions, control-plane/runner application
+separation, a real SQL-only manifest update without an image replacement,
+stale-descriptor and forged-release rejection, runner-plus-manifest upgrade and
+rollback, and a compatible control-plane image upgrade from a down-level schema
+fixture. The upgrade drill stops the application, runs preflight, migration,
+runtime grants, and exact schema verification as external release operations,
+then proves login plus SQL/Elixir execution after both upgrade and image
+rollback. The tier also proves restart persistence and sends real
+SIGTERM and abrupt-loss signals to active control-plane and runner containers,
+proving successful in-window drain, deadline cancellation, conservative
+uncertain-outcome recovery, and restored readiness. Service-token overlap and
+removal plus runtime-input key add/switch/inventory/removal run against the same
+stack. Browser session-key invalidation and the detailed bounded shutdown/error
+matrices remain at their owning app layers in the ordinary CI test suite.
+
+Pull requests that change control-plane build inputs build and scan a candidate
+and run this tier without registry write permission. After required CI succeeds
+on `main`, the image workflow runs the same tier before its run-scoped staging
+push. Runner-only and local-tooling pull requests skip that build, pull the
+current official build digest, and run the runner/Compose tier against it;
+documentation-only pull requests run neither image job. A main revision whose
+control-plane build ID already exists verifies and reuses that digest without
+repeating image acceptance. Release promotion repeats qualification against the
+immutable registry digest before adding the version alias. A failing required
+qualification can therefore never publish or promote an untested image.

@@ -144,6 +144,8 @@ defmodule Favn.Dev.OrchestratorClient do
   def activate_manifest(base_url, service_token, manifest_version_id, session_context)
       when is_binary(base_url) and is_binary(service_token) and is_binary(manifest_version_id) and
              is_map(session_context) do
+    input = %{manifest_version_id: manifest_version_id}
+
     request_post(
       :activate_manifest,
       base_url <> "/api/orchestrator/v1/manifests/#{manifest_version_id}/activate",
@@ -158,9 +160,7 @@ defmodule Favn.Dev.OrchestratorClient do
         configuration: %{}
       },
       session_context,
-      idempotency_key(:activate_manifest, session_context, %{
-        manifest_version_id: manifest_version_id
-      })
+      activation_idempotency_key(session_context, input, [])
     )
   end
 
@@ -179,6 +179,11 @@ defmodule Favn.Dev.OrchestratorClient do
       %{"workspace_id" => workspace_id}
       |> maybe_put_maintenance_token(Keyword.get(opts, :maintenance_token))
 
+    input = %{
+      manifest_version_id: manifest_version_id,
+      workspace_id: workspace_id
+    }
+
     request_post(
       :activate_manifest,
       base_url <> "/api/orchestrator/v1/manifests/#{URI.encode(manifest_version_id)}/activate",
@@ -193,10 +198,7 @@ defmodule Favn.Dev.OrchestratorClient do
         configuration: %{}
       },
       context,
-      idempotency_key(:activate_manifest, context, %{
-        manifest_version_id: manifest_version_id,
-        workspace_id: workspace_id
-      })
+      activation_idempotency_key(context, input, opts)
     )
   end
 
@@ -741,8 +743,28 @@ defmodule Favn.Dev.OrchestratorClient do
     key
   end
 
-  defp submit_run_idempotency_key(_key, session_context, payload) do
-    idempotency_key(:submit_run, session_context, payload)
+  defp submit_run_idempotency_key(_key, _session_context, _payload), do: fresh_idempotency_key()
+
+  defp activation_idempotency_key(context, input, opts) do
+    case Keyword.get(opts, :idempotency_key) do
+      key when is_binary(key) and key != "" -> key
+      _missing -> default_activation_idempotency_key(context, input)
+    end
+  end
+
+  defp default_activation_idempotency_key(context, input) do
+    case Map.get(context, "maintenance_token") do
+      token when is_binary(token) and token != "" ->
+        idempotency_key(:activate_manifest, %{}, Map.put(input, :command_token, token))
+
+      _missing ->
+        fresh_idempotency_key()
+    end
+  end
+
+  defp fresh_idempotency_key do
+    "favn-local-" <>
+      (:crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false))
   end
 
   defp idempotency_key(operation, session_context, input) when is_atom(operation) do

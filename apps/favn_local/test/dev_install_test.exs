@@ -53,7 +53,7 @@ defmodule Favn.Dev.InstallTest do
     assert project["postgres_volume_name"] == project["project_name"] <> "-postgres-data"
 
     compose = File.read!(project["compose_path"])
-    assert compose =~ "image: #{@immutable_reference}"
+    assert compose =~ "image: ${FAVN_CONTROL_PLANE_IMAGE}"
     assert compose =~ "image: #{Favn.Dev.ComposeProject.postgres_image()}"
     assert compose =~ ~s("127.0.0.1:${FAVN_VIEW_PORT}:4000")
     assert compose =~ ~s("127.0.0.1:${FAVN_ORCHESTRATOR_PORT}:4101")
@@ -62,6 +62,14 @@ defmodule Favn.Dev.InstallTest do
     assert compose =~ "FavnView.Readiness.liveness()"
     assert compose =~ "- ./runner.env"
     assert compose =~ "read_only: true"
+    assert compose =~ "cap_drop: [ALL]"
+    assert compose =~ "security_opt: [no-new-privileges:true]"
+
+    assert compose =~
+             "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: ${FAVN_RUNTIME_INPUT_PIN_KEY_VERSION}"
+
+    assert compose =~ "FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS: ${FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS}"
+
     refute compose =~ "5432:5432"
     refute compose =~ "4369:4369"
     refute compose =~ "9100:9100"
@@ -73,8 +81,11 @@ defmodule Favn.Dev.InstallTest do
     assert Bitwise.band(File.stat!(project["postgres_init_path"]).mode, 0o777) == 0o555
 
     env = File.read!(env_path)
+    assert env =~ "FAVN_CONTROL_PLANE_IMAGE='#{@immutable_reference}'"
     assert env =~ "FAVN_RUNNER_IMAGE='favn-local-runner-#{project["project_name"]}:unbuilt'"
     assert env =~ "FAVN_POSTGRES_RUNTIME_DATABASE_URL='ecto://favn_runtime:"
+    assert env =~ "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION='1'"
+    assert env =~ "FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS='120000'"
     assert env =~ "FAVN_WORKSPACE_NAME='Local Development'"
     assert env =~ "local-tooling-v1|platform_reader+platform_operator+platform_admin:"
     refute env =~ "replace-with"

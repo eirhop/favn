@@ -212,3 +212,21 @@ Linux amd64 candidate image used by acceptance tests. Public install cannot
 select arbitrary images or candidate tags. Protected main-branch CI is the only
 publisher for `ghcr.io/eirhop/favn-control-plane`; deployments consume its
 digest, not a mutable tag.
+
+Qualify the exact loaded candidate with:
+
+```bash
+FAVN_CONTROL_PLANE_CANDIDATE=favn-control-plane-candidate:<build-id> \
+  mix test.container
+```
+
+The ordinary `mix test.acceptance` tier excludes these image-building Docker
+scenarios. Pull-request candidate CI and protected-main pre-publish CI run the
+dedicated container tier explicitly, so missing candidate images cannot turn a
+production qualification into a silent skip.
+
+The generated Compose environment pins `FAVN_CONTROL_PLANE_IMAGE` to the exact
+installed image identity and freezes the shutdown drain timeout. Qualification
+temporarily swaps that pin to a compatible derived image and back to prove
+upgrade/rollback without changing PostgreSQL or the customer runner; public
+install does not expose arbitrary image selection.
