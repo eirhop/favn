@@ -190,8 +190,10 @@ SIGTERM and abrupt-loss signals to active control-plane and runner containers,
 proving successful in-window drain, deadline cancellation, conservative
 uncertain-outcome recovery, and restored readiness. Service-token overlap and
 removal plus runtime-input key add/switch/inventory/removal run against the same
-stack. Browser session-key invalidation and the detailed bounded shutdown/error
-matrices remain at their owning app layers in the ordinary CI test suite.
+stack. The suite also authenticates a browser session, rotates the View session
+key through control-plane recreation, and proves the old cookie is rejected.
+The detailed bounded shutdown/error matrices remain at their owning app layers
+in the ordinary CI test suite.
 
 Pull requests that change control-plane build inputs build and scan a candidate
 and run this tier without registry write permission. After required CI succeeds

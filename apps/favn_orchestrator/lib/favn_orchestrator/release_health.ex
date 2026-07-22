@@ -3,27 +3,48 @@ defmodule FavnOrchestrator.ReleaseHealth do
   Container-local readiness probe for the control-plane release.
 
   The probe opens one bounded HTTP connection to the validated View bind
-  address and accepts only a 200 response from the public readiness endpoint.
-  The wildcard bind maps to loopback for probing. The check does not start
+  address frozen by the unified boot loader and accepts only a 200 response
+  from the public readiness endpoint. The wildcard bind maps to loopback for
+  probing. The check does not reread the process environment, start
   applications, log configuration, or require an HTTP client executable in the
   final image.
   """
 
-  @default_port 4000
   @default_timeout_ms 3_000
+  @persistent_key {__MODULE__, :probe}
 
-  @type error :: :invalid_host | :invalid_port | :connect_failed | :request_failed | :not_ready
+  @type error ::
+          :not_configured
+          | :invalid_host
+          | :invalid_port
+          | :connect_failed
+          | :request_failed
+          | :not_ready
 
-  @doc "Checks the configured View readiness endpoint from inside the release container."
-  @spec run(map()) :: :ok | {:error, error()}
-  def run(env \\ System.get_env()) when is_map(env) do
-    with {:ok, address, host} <- bind_address(Map.get(env, "FAVN_VIEW_BIND_HOST", "0.0.0.0")),
-         {:ok, port} <- port(Map.get(env, "FAVN_VIEW_PORT", Integer.to_string(@default_port))),
-         {:ok, socket} <- connect(address, port),
-         :ok <- request(socket, host),
-         :ok <- response(socket) do
+  @type probe_config :: %{required(:bind_host) => String.t(), required(:port) => term()}
+
+  @doc false
+  @spec configure(probe_config()) :: :ok | {:error, :invalid_host | :invalid_port}
+  def configure(config) when is_map(config) do
+    with {:ok, probe} <- normalize_probe(config) do
+      :persistent_term.put(@persistent_key, probe)
       :ok
     end
+  end
+
+  @doc "Checks the View readiness endpoint frozen by unified control-plane boot."
+  @spec run() :: :ok | {:error, error()}
+  def run do
+    case :persistent_term.get(@persistent_key, :missing) do
+      :missing -> {:error, :not_configured}
+      probe -> probe(probe)
+    end
+  end
+
+  @doc "Checks an explicit validated View probe configuration."
+  @spec run(probe_config()) :: :ok | {:error, error()}
+  def run(config) when is_map(config) do
+    with {:ok, probe} <- normalize_probe(config), do: probe(probe)
   end
 
   @doc "Runs the readiness check and raises a bounded error for release scripts."
@@ -34,6 +55,23 @@ defmodule FavnOrchestrator.ReleaseHealth do
       {:error, reason} -> raise "control-plane readiness check failed: #{reason}"
     end
   end
+
+  defp normalize_probe(config) do
+    with {:ok, address, host} <- bind_address(Map.get(config, :bind_host)),
+         {:ok, port} <- port(Map.get(config, :port)) do
+      {:ok, %{address: address, host: host, port: port}}
+    end
+  end
+
+  defp probe(%{address: address, host: host, port: port}) do
+    with {:ok, socket} <- connect(address, port),
+         :ok <- request(socket, host),
+         :ok <- response(socket) do
+      :ok
+    end
+  end
+
+  defp port(value) when is_integer(value) and value in 1..65_535, do: {:ok, value}
 
   defp port(value) when is_binary(value) do
     case Integer.parse(value) do

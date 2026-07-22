@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.ControlPlaneRuntimeConfig do
   """
 
   alias FavnOrchestrator.ProductionRuntimeConfig
+  alias FavnOrchestrator.ReleaseHealth
 
   @view_runtime_config Module.concat(["FavnView.ProductionRuntimeConfig"])
   @persistent_key {__MODULE__, :diagnostics}
@@ -91,6 +92,7 @@ defmodule FavnOrchestrator.ControlPlaneRuntimeConfig do
   def apply(%{orchestrator: orchestrator, view: view}) do
     :ok = ProductionRuntimeConfig.apply(orchestrator)
     :ok = Kernel.apply(@view_runtime_config, :apply, [view])
+    :ok = ReleaseHealth.configure(%{bind_host: view.bind_host, port: view.port})
 
     :persistent_term.put(@persistent_key, %{
       status: :ok,
