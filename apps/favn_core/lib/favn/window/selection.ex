@@ -49,6 +49,7 @@ defmodule Favn.Window.Selection do
          :ok <- Validate.timezone(timezone),
          {:ok, requested} <- normalize_anchors(requested, timezone),
          :ok <- validate_requested(intent, requested),
+         :ok <- validate_anchor_kinds(requested),
          :ok <- validate_expansion(intent, expansion),
          {:ok, effective} <- expand(requested, expansion, timezone) do
       {:ok,
@@ -143,6 +144,14 @@ defmodule Favn.Window.Selection do
     do: {:error, :scheduled_selection_requires_one_anchor}
 
   defp validate_requested(_intent, _anchors), do: :ok
+
+  defp validate_anchor_kinds([%Anchor{kind: kind} | rest]) do
+    if Enum.all?(rest, &(&1.kind == kind)) do
+      :ok
+    else
+      {:error, :mixed_selection_anchor_kinds}
+    end
+  end
 
   defp validate_intent(intent) when intent in [:scheduled, :manual, :backfill], do: :ok
   defp validate_intent(intent), do: {:error, {:invalid_selection_intent, intent}}

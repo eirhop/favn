@@ -821,6 +821,7 @@ defmodule FavnOrchestrator do
     |> Keyword.put(:metadata, metadata)
     |> Keyword.put(:trigger, remaining_retry_trigger(plan, child))
     |> maybe_put_opt(:refresh_policy, Map.get(child, :refresh_policy))
+    |> maybe_put_opt(:window_selection, Map.get(child, :window_selection))
     |> maybe_put_opt(:anchor_window, Map.get(child, :anchor_window))
     |> maybe_put_opt(:parent_run_id, Map.get(child, :backfill_run_id))
     |> maybe_put_opt(:root_run_id, Map.get(child, :backfill_run_id))

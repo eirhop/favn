@@ -18,7 +18,8 @@ defmodule Favn.Window.Policy do
 
   Both anchors resolve relative to the schedule occurrence and effective
   timezone. Manual runs instead resolve explicit `%Favn.Window.Request{}` input
-  such as `month:2026-03`.
+  such as `month:2026-03`. Pipeline `lookback` expands scheduled selections only;
+  manual and backfill selections remain exact.
 
   Windowed pipelines do not allow full-load submissions by default. Set
   `allow_full_load: true` only when a windowed pipeline should explicitly accept
@@ -26,7 +27,7 @@ defmodule Favn.Window.Policy do
   """
 
   alias Favn.TimePeriod
-  alias Favn.Window.{Anchor, Request, Validate}
+  alias Favn.Window.{Anchor, Request, Selection, Validate}
 
   @type kind :: Validate.kind()
   @type anchor_policy :: :previous_complete_period | :current_period
@@ -209,6 +210,49 @@ defmodule Favn.Window.Policy do
     end
   end
 
+  @doc """
+  Resolves a manual request into an exact selection.
+
+  Full-load requests resolve to `nil`. Manual selections never apply pipeline
+  lookback.
+  """
+  @spec select_manual(t() | nil, Request.t() | map() | nil) ::
+          {:ok, Selection.t() | nil} | {:error, term()}
+  def select_manual(policy, request) do
+    with {:ok, anchor} <- resolve_manual(policy, request) do
+      case anchor do
+        nil -> {:ok, nil}
+        %Anchor{} -> Selection.manual(anchor, anchor.timezone)
+      end
+    end
+  end
+
+  @doc "Resolves one scheduled occurrence and applies pipeline lookback exactly once."
+  @spec select_scheduled(t(), DateTime.t(), String.t() | nil) ::
+          {:ok, Selection.t()} | {:error, term()}
+  def select_scheduled(%__MODULE__{} = policy, %DateTime{} = due_at, schedule_timezone) do
+    with {:ok, anchor} <- resolve_scheduled(policy, due_at, schedule_timezone) do
+      Selection.scheduled(anchor, policy.lookback, anchor.timezone)
+    end
+  end
+
+  @doc "Validates that a selection belongs to this resolved pipeline policy."
+  @spec validate_selection(t() | nil, Selection.t() | nil) :: :ok | {:error, term()}
+  def validate_selection(_policy, nil), do: :ok
+
+  def validate_selection(nil, %Selection{}),
+    do: {:error, :window_selection_without_policy}
+
+  def validate_selection(%__MODULE__{} = policy, %Selection{} = selection) do
+    with {:ok, %Selection{} = selection} <- Selection.from_value(selection),
+         %Anchor{kind: selected_kind} <- List.first(selection.requested_anchors),
+         :ok <- matching_selection_kind(policy.kind, selected_kind),
+         :ok <- matching_selection_timezone(policy.timezone, selection),
+         :ok <- matching_selection_expansion(policy.lookback, selection) do
+      :ok
+    end
+  end
+
   @spec normalize_kind(term()) :: {:ok, kind()} | {:error, term()}
   def normalize_kind(kind) do
     case TimePeriod.normalize_kind(kind) do
@@ -221,6 +265,36 @@ defmodule Favn.Window.Policy do
 
   defp ensure_matching_kind(%__MODULE__{kind: expected}, %Request{kind: actual}),
     do: {:error, {:window_kind_mismatch, expected, actual}}
+
+  defp matching_selection_kind(kind, kind), do: :ok
+
+  defp matching_selection_kind(expected, actual),
+    do: {:error, {:window_kind_mismatch, expected, actual}}
+
+  defp matching_selection_timezone(timezone, %Selection{
+         intent: :scheduled,
+         timezone: timezone
+       }),
+       do: :ok
+
+  defp matching_selection_timezone(expected, %Selection{intent: :scheduled, timezone: actual}),
+    do: {:error, {:window_timezone_mismatch, expected, actual}}
+
+  defp matching_selection_timezone(_pipeline_timezone, %Selection{}), do: :ok
+
+  defp matching_selection_expansion(lookback, %Selection{
+         intent: :scheduled,
+         expansion: {:lookback, lookback}
+       }),
+       do: :ok
+
+  defp matching_selection_expansion(expected, %Selection{
+         intent: :scheduled,
+         expansion: {:lookback, actual}
+       }),
+       do: {:error, {:window_lookback_mismatch, expected, actual}}
+
+  defp matching_selection_expansion(_lookback, %Selection{}), do: :ok
 
   defp default_timezone(%__MODULE__{timezone: timezone}) when is_binary(timezone), do: timezone
   defp default_timezone(%__MODULE__{}), do: "Etc/UTC"

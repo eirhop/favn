@@ -85,8 +85,11 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptionsTest do
     }
 
     assert {:ok, opts} = AssetOptions.from_operator_request(@asset, request, context)
-    assert opts[:anchor_window].kind == :month
-    assert opts[:anchor_window].timezone == "Europe/Oslo"
+    assert opts[:window_selection].intent == :manual
+    assert opts[:window_selection].expansion == :none
+    assert [anchor] = opts[:window_selection].effective_anchors
+    assert anchor.kind == :month
+    assert anchor.timezone == "Europe/Oslo"
     assert opts[:metadata].asset_run_context.id == context.id
     assert opts[:metadata].asset_run_context.policy.anchor == :current_period
 

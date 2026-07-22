@@ -5,7 +5,9 @@ defmodule Favn.Run.PipelineContext do
   This is an explicit runner contract. Per-run asset parameters remain on
   `Favn.Run.Context.params`; pipeline settings remain on `:settings`. Schedule
   data is canonicalized to the manifest-backed `Favn.Manifest.Schedule` shape
-  before it crosses the runner boundary.
+  before it crosses the runner boundary. `window_selection` preserves the
+  trigger's requested anchors, expansion, and effective anchors; the runner
+  consumes the concrete plan and never expands the selection.
   """
 
   alias Favn.Ref
@@ -18,6 +20,7 @@ defmodule Favn.Run.PipelineContext do
           dependencies: :all | :none,
           trigger: map(),
           anchor_window: Favn.Window.Anchor.t() | nil,
+          window_selection: Favn.Window.Selection.t() | nil,
           window: Favn.Window.Policy.t() | nil,
           max_concurrency: pos_integer() | nil,
           execution_pool: atom() | nil,
@@ -34,6 +37,7 @@ defmodule Favn.Run.PipelineContext do
             dependencies: :all,
             trigger: %{},
             anchor_window: nil,
+            window_selection: nil,
             window: nil,
             max_concurrency: nil,
             execution_pool: nil,
@@ -58,6 +62,7 @@ defmodule Favn.Run.PipelineContext do
       dependencies: field(value, :dependencies, :all),
       trigger: field(value, :trigger, %{}),
       anchor_window: Favn.Window.Anchor.from_value!(field(value, :anchor_window)),
+      window_selection: window_selection(field(value, :window_selection)),
       window: Favn.Window.Policy.from_value!(field(value, :window)),
       max_concurrency: field(value, :max_concurrency),
       execution_pool: field(value, :execution_pool),
@@ -78,6 +83,16 @@ defmodule Favn.Run.PipelineContext do
 
   defp normalize_metadata(value) do
     raise ArgumentError, "pipeline metadata must be a map, got: #{inspect(value)}"
+  end
+
+  defp window_selection(value) do
+    case Favn.Window.Selection.from_value(value) do
+      {:ok, selection} ->
+        selection
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid pipeline window selection: #{inspect(reason)}"
+    end
   end
 
   defp normalize_schedule(nil, _module, _name), do: nil

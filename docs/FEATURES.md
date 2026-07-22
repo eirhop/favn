@@ -17,7 +17,9 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
 - SQL output contracts validate ordered columns/types, lineage, grain, uniqueness,
   nullability, and up to 16 ordered conditional row-count claims.
 - Planning supports asset and pipeline targets, dependency selection, refresh
-  modes, windows, stages, retries, replay, and bounded admission.
+  modes, stages, retries, replay, and bounded admission. Scheduled window
+  selections apply pipeline lookback once; manual and backfill selections stay
+  exact, and runs persist requested, expansion, and effective anchors.
 - Packaged runners self-verify their baked descriptor against runtime target and
   versions, selected BEAM digests, and application version/lock fingerprints in
   packaged `.app` files before startup. Stamped application and configured

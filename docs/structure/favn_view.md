@@ -24,7 +24,7 @@ Ownership rules:
   models. They may prepare view-models and UI query state, but must not derive
   backfill hierarchy, asset attempt aggregation, window membership, or log
   lookup rules from ids, names, or formatted strings.
-- Run detail presents requested backfill anchors and lookback-expanded effective
+- Run detail presents requested anchors, permitted expansion, and effective
   asset windows as separate concepts. It asks for compact view-specific data and
   requests the bounded event detail only when the Events tab is active.
 - Run detail Storybook coverage is split by view so heavy Timeline variations do

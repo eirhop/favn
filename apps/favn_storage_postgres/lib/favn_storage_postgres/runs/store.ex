@@ -50,7 +50,6 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   @max_targets 10_000
   @bulk_insert_size 500
-  @max_snapshot_bytes 4 * 1_024 * 1_024
   @max_plan_bytes 64 * 1_024 * 1_024
   @max_event_bytes 512 * 1_024
   @max_event_types 32
@@ -1160,7 +1159,7 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   defp encode_write(%RunState{} = run, event, opts \\ []) do
     with {:ok, snapshot_json} <- RunSnapshotCodec.encode_run(run, plan: :reference),
-         :ok <- Payload.validate_encoded(snapshot_json, @max_snapshot_bytes),
+         :ok <- Payload.validate_encoded(snapshot_json, RunSnapshotCodec.max_persisted_bytes()),
          {:ok, snapshot} <- Jason.decode(snapshot_json),
          {:ok, plan} <- encode_plan(run, Keyword.get(opts, :persist_plan?, false)),
          {:ok, normalized_event} <- RunEventCodec.normalize(run.id, event),

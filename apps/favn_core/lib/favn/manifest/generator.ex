@@ -27,6 +27,7 @@ defmodule Favn.Manifest.Generator do
   alias Favn.Manifest.Compatibility
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Environment
+  alias Favn.Manifest.Diagnostics
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Pipeline, as: ManifestPipeline
   alias Favn.Manifest.PlanningIndex
@@ -83,7 +84,7 @@ defmodule Favn.Manifest.Generator do
            ) do
       {:ok,
        Build.new(manifest,
-         diagnostics: catalog.diagnostics,
+         diagnostics: catalog.diagnostics ++ Diagnostics.for_manifest(manifest),
          execution_packages: execution_packages
        )}
     end

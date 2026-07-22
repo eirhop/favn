@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
 
   alias Favn.Retry.Policy
   alias Favn.Window.Anchor
+  alias Favn.Window.Selection
   alias FavnOrchestrator.RunState
 
   @enforce_keys [
@@ -19,6 +20,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
   defstruct @enforce_keys ++
               [
                 :anchor_window,
+                :window_selection,
                 :parent_run_id,
                 :root_run_id,
                 :workspace_id,
@@ -34,6 +36,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
           timeout_ms: pos_integer(),
           dependencies: :all | :none,
           anchor_window: Anchor.t() | nil,
+          window_selection: Selection.t() | nil,
           exact_windows: map(),
           parent_run_id: String.t() | nil,
           root_run_id: String.t() | nil,
@@ -52,7 +55,9 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
   end
 
   defp build(opts, defaults) do
-    with {:ok, retry_policy_override} <- retry_policy_override(opts, defaults) do
+    with {:ok, retry_policy_override} <- retry_policy_override(opts, defaults),
+         {:ok, window_selection} <-
+           window_selection(option(opts, defaults, :window_selection, nil)) do
       values = %{
         run_id: option(opts, defaults, :run_id, new_run_id()),
         params: option(opts, defaults, :params, %{}),
@@ -62,6 +67,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
         timeout_ms: option(opts, defaults, :timeout_ms, RunState.default_timeout_ms()),
         dependencies: option(opts, defaults, :dependencies, :all),
         anchor_window: option(opts, defaults, :anchor_window, nil),
+        window_selection: window_selection,
         exact_windows: option(opts, defaults, :exact_windows, %{}),
         parent_run_id: option(opts, defaults, :parent_run_id, nil),
         root_run_id: option(opts, defaults, :root_run_id, nil),
@@ -77,6 +83,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
            :ok <- positive_integer(values.timeout_ms, :invalid_timeout_ms),
            :ok <- dependencies(values.dependencies),
            :ok <- anchor(values.anchor_window),
+           :ok <- window_input(values.anchor_window, values.window_selection),
            :ok <- map(values.exact_windows, :invalid_exact_windows),
            :ok <- optional_string(values.parent_run_id, :invalid_parent_run_id),
            :ok <- optional_string(values.root_run_id, :invalid_root_run_id),
@@ -125,6 +132,12 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
   defp anchor(nil), do: :ok
   defp anchor(%Anchor{} = anchor), do: Anchor.validate(anchor)
   defp anchor(_value), do: {:error, :invalid_anchor_window}
+
+  defp window_selection(value), do: Selection.from_value(value)
+
+  defp window_input(nil, _selection), do: :ok
+  defp window_input(_anchor, nil), do: :ok
+  defp window_input(_anchor, _selection), do: {:error, :ambiguous_window_selection}
 
   defp new_run_id do
     "run_" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)

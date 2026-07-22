@@ -5,7 +5,7 @@ defmodule Favn.Assets.PlannerWindowTest do
   alias Favn.Assets.Planner
   alias Favn.Window.Anchor
   alias Favn.Window.Policy
-  alias Favn.Window.Spec
+  alias Favn.Window.{Selection, Spec}
 
   test "maps a calendar anchor without asset-level lookback expansion" do
     ref = {MyApp.Daily, :asset}
@@ -91,6 +91,81 @@ defmodule Favn.Assets.PlannerWindowTest do
            ]
   end
 
+  test "planner consumes effective anchors without adding lookback across mixed asset kinds" do
+    daily_ref = {MyApp.DailySource, :asset}
+    monthly_ref = {MyApp.MonthlyTarget, :asset}
+
+    assert {:ok, index} =
+             GraphIndex.build_index([
+               %{
+                 ref: daily_ref,
+                 module: elem(daily_ref, 0),
+                 name: :asset,
+                 depends_on: [],
+                 window_spec: Spec.new!(:day, timezone: "Etc/UTC")
+               },
+               %{
+                 ref: monthly_ref,
+                 module: elem(monthly_ref, 0),
+                 name: :asset,
+                 depends_on: [daily_ref],
+                 window_spec: Spec.new!(:month, timezone: "Etc/UTC")
+               }
+             ])
+
+    policy =
+      Policy.new!(:month,
+        anchor: :current_period,
+        lookback: 1,
+        timezone: "Etc/UTC"
+      )
+
+    assert {:ok, scheduled} =
+             Policy.select_scheduled(policy, ~U[2026-07-17 02:00:00Z], "Etc/UTC")
+
+    assert {:ok, scheduled_plan} =
+             Planner.plan(monthly_ref,
+               graph_index: index,
+               anchor_windows: scheduled.effective_anchors
+             )
+
+    assert ref_window_starts(scheduled_plan, monthly_ref) == [
+             ~U[2026-06-01 00:00:00Z],
+             ~U[2026-07-01 00:00:00Z]
+           ]
+
+    assert length(ref_window_starts(scheduled_plan, daily_ref)) == 61
+
+    july = List.last(scheduled.requested_anchors)
+    assert {:ok, manual} = Selection.manual(july, "Etc/UTC")
+
+    assert {:ok, manual_plan} =
+             Planner.plan(monthly_ref,
+               graph_index: index,
+               anchor_windows: manual.effective_anchors
+             )
+
+    assert ref_window_starts(manual_plan, monthly_ref) == [~U[2026-07-01 00:00:00Z]]
+    assert length(ref_window_starts(manual_plan, daily_ref)) == 31
+
+    {:ok, march_to_may} =
+      Anchor.expand_range(:month, ~U[2026-03-01 00:00:00Z], ~U[2026-06-01 00:00:00Z])
+
+    assert {:ok, backfill} = Selection.backfill(march_to_may, "Etc/UTC")
+
+    assert {:ok, backfill_plan} =
+             Planner.plan(monthly_ref,
+               graph_index: index,
+               anchor_windows: backfill.effective_anchors
+             )
+
+    assert ref_window_starts(backfill_plan, monthly_ref) == [
+             ~U[2026-03-01 00:00:00Z],
+             ~U[2026-04-01 00:00:00Z],
+             ~U[2026-05-01 00:00:00Z]
+           ]
+  end
+
   test "copies asset execution pool onto planned nodes" do
     ref = {MyApp.ExternalApi, :asset}
 
@@ -138,6 +213,14 @@ defmodule Favn.Assets.PlannerWindowTest do
   defp window_starts(plan) do
     plan.nodes
     |> Map.values()
+    |> Enum.map(& &1.window.start_at)
+    |> Enum.sort_by(&DateTime.to_unix(&1, :microsecond))
+  end
+
+  defp ref_window_starts(plan, ref) do
+    plan.nodes
+    |> Map.values()
+    |> Enum.filter(&(&1.ref == ref))
     |> Enum.map(& &1.window.start_at)
     |> Enum.sort_by(&DateTime.to_unix(&1, :microsecond))
   end

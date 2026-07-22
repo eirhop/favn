@@ -94,6 +94,19 @@ Do not bypass dependencies merely to make a run cheaper. Scope `none` means the
 operator accepts responsibility for the suitability of the target's current
 upstream inputs.
 
+### Understand Window Selections
+
+A scheduled pipeline run records its one requested anchor, the pipeline
+`lookback` expansion, and the resulting effective anchors separately. Manual
+window submissions and explicit backfill ranges use no expansion: the requested
+anchors and effective anchors are identical. Assets map only the effective
+anchors to their own concrete runtime windows; neither the planner nor runner
+adds lookback.
+
+Reruns and retry-remaining submissions preserve the original selection so the
+same effective anchors are planned again. Inspect `window_selection` in run
+detail or API output when verifying which anchors were requested and executed.
+
 Common failures:
 
 | Failure | Action |

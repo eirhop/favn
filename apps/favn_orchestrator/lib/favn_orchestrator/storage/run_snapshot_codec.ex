@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias Favn.Run.NodeResult
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Runtime, as: WindowRuntime
+  alias Favn.Window.Selection
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ExactDateTimeCodec
   alias FavnOrchestrator.Storage.JsonSafe
@@ -16,6 +17,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   @format "favn.run_snapshot.storage.v3"
   @legacy_format "favn.run_snapshot.storage.v2"
+  @max_persisted_bytes 4 * 1_024 * 1_024
   # Favn-owned run snapshot atoms are fixed here; consumer module/name atoms come only from
   # the associated manifest record.
   @internal_atom_strings [
@@ -30,6 +32,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "all",
     "anchor_ranges",
     "anchor_window",
+    "window_selection",
     "backfill_range",
     "backoff",
     "cancelled",
@@ -171,6 +174,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   rescue
     error -> {:error, {:run_snapshot_encode_failed, error}}
   end
+
+  @doc false
+  @spec max_persisted_bytes() :: pos_integer()
+  def max_persisted_bytes, do: @max_persisted_bytes
 
   @doc false
   @spec encode_plan(Plan.t() | nil) :: {:ok, String.t()} | {:error, term()}
@@ -1089,6 +1096,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp normalize_metadata(%{} = metadata, allowed_atom_strings) do
     metadata
     |> promote_key("pipeline_context", :pipeline_context)
+    |> promote_key("window_selection", :window_selection)
     |> promote_key("pipeline_identity_ref", :pipeline_identity_ref)
     |> promote_key("pipeline_submit_ref", :pipeline_submit_ref)
     |> promote_key("pipeline_target_refs", :pipeline_target_refs)
@@ -1103,6 +1111,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> normalize_metadata_refs(:pipeline_target_refs, allowed_atom_strings)
     |> normalize_metadata_refs(:asset_dependencies, allowed_atom_strings)
     |> normalize_metadata_refs(:pipeline_dependencies, allowed_atom_strings)
+    |> normalize_metadata_window_selection()
     |> normalize_pipeline_context(allowed_atom_strings)
     |> normalize_metadata_atom(:replay_submit_kind, &submit_kind_value_from_dto/1)
     |> normalize_metadata_atom(:replay_mode, &replay_mode_from_dto/1)
@@ -1110,6 +1119,15 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   defp normalize_metadata(value, _allowed_atom_strings), do: value
+
+  defp normalize_metadata_window_selection(%{window_selection: value} = metadata) do
+    case Selection.from_value(value) do
+      {:ok, selection} -> Map.put(metadata, :window_selection, selection)
+      {:error, reason} -> raise ArgumentError, "invalid window selection: #{inspect(reason)}"
+    end
+  end
+
+  defp normalize_metadata_window_selection(metadata), do: metadata
 
   defp normalize_retry_state(%{retry_state: state} = metadata, allowed_atom_strings)
        when is_map(state) do
@@ -1213,6 +1231,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       |> normalize_context_settings(allowed_atom_strings)
       |> normalize_context_refs(:resolved_refs, allowed_atom_strings)
       |> normalize_context_schedule(allowed_atom_strings)
+      |> normalize_context_window_selection()
 
     Map.put(metadata, :pipeline_context, context)
   end
@@ -1233,6 +1252,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "max_concurrency" => :max_concurrency,
       "execution_pool" => :execution_pool,
       "anchor_window" => :anchor_window,
+      "window_selection" => :window_selection,
       "backfill_range" => :backfill_range,
       "anchor_ranges" => :anchor_ranges,
       "source" => :source,
@@ -1242,6 +1262,19 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     Enum.reduce(known_context_keys, context, fn {string_key, atom_key}, acc ->
       promote_key(acc, string_key, atom_key)
     end)
+  end
+
+  defp normalize_context_window_selection(context) when is_map(context) do
+    case Map.fetch(context, :window_selection) do
+      {:ok, value} ->
+        case Selection.from_value(value) do
+          {:ok, selection} -> Map.put(context, :window_selection, selection)
+          {:error, reason} -> raise ArgumentError, "invalid window selection: #{inspect(reason)}"
+        end
+
+      :error ->
+        context
+    end
   end
 
   defp normalize_context_module(context, key, allowed_atom_strings) when is_map(context) do

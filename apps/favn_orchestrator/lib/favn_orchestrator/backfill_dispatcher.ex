@@ -11,7 +11,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   use GenServer
 
   alias Favn.Retry.Policy
-  alias Favn.Window.Anchor
+  alias Favn.Window.{Anchor, Selection}
   alias FavnOrchestrator.Backfills
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Persistence
@@ -127,7 +127,8 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   defp submit_child(context, window, run_id) do
     with {:ok, %Backfill{} = backfill} <- Backfills.get(context, window.backfill_id),
          {:ok, anchor} <- anchor(window),
-         {:ok, opts} <- submission_options(backfill, window, run_id, anchor),
+         {:ok, selection} <- Selection.backfill([anchor], anchor.timezone),
+         {:ok, opts} <- submission_options(backfill, window, run_id, selection),
          {:ok, ^run_id} <- submit_target(context, backfill, opts) do
       {:ok, run_id}
     end
@@ -145,7 +146,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
     end
   end
 
-  defp submission_options(backfill, window, run_id, anchor) do
+  defp submission_options(backfill, window, run_id, selection) do
     metadata = %{
       backfill_id: backfill.backfill_id,
       backfill_window_id: window.window_id,
@@ -162,7 +163,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
        [
          run_id: run_id,
          manifest_version_id: backfill.manifest_version_id,
-         anchor_window: anchor,
+         window_selection: selection,
          parent_run_id: backfill.root_run_id,
          root_run_id: backfill.root_run_id,
          lineage_depth: 1,

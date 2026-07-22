@@ -8,7 +8,7 @@ defmodule FavnOrchestrator.RunRetryPlanner do
   """
 
   alias Favn.Plan
-  alias Favn.Window.Anchor
+  alias Favn.Window.{Anchor, Selection}
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.RunRetryPlanner do
           required(:target_refs) => [Favn.Ref.t()],
           required(:node_keys) => [Plan.node_key()],
           optional(:anchor_window) => Anchor.t(),
+          optional(:window_selection) => Selection.t(),
           optional(:refresh_policy) => map()
         }
 
@@ -68,6 +69,7 @@ defmodule FavnOrchestrator.RunRetryPlanner do
          node_keys: remaining_node_keys
        }
        |> maybe_put_refresh_policy(source_run)
+       |> maybe_put_window_selection(source_run)
        |> maybe_put_anchor(source_run)}
     end
   end
@@ -177,13 +179,39 @@ defmodule FavnOrchestrator.RunRetryPlanner do
   end
 
   defp maybe_put_anchor(context, %RunState{metadata: metadata}) when is_map(metadata) do
-    case metadata_anchor(metadata) do
-      nil -> context
-      anchor -> Map.put(context, :anchor_window, anchor)
+    if Map.has_key?(context, :window_selection) do
+      context
+    else
+      case metadata_anchor(metadata) do
+        nil -> context
+        anchor -> Map.put(context, :anchor_window, anchor)
+      end
     end
   end
 
   defp maybe_put_anchor(context, _run), do: context
+
+  defp maybe_put_window_selection(context, %RunState{metadata: metadata})
+       when is_map(metadata) do
+    value =
+      Map.get(metadata, :window_selection) ||
+        Map.get(metadata, "window_selection") ||
+        metadata
+        |> Map.get(:pipeline_context, Map.get(metadata, "pipeline_context", %{}))
+        |> then(fn pipeline_context ->
+          if is_map(pipeline_context) do
+            Map.get(pipeline_context, :window_selection) ||
+              Map.get(pipeline_context, "window_selection")
+          end
+        end)
+
+    case Selection.from_value(value) do
+      {:ok, %Selection{} = selection} -> Map.put(context, :window_selection, selection)
+      _other -> context
+    end
+  end
+
+  defp maybe_put_window_selection(context, _run), do: context
 
   defp maybe_put_refresh_policy(context, %RunState{} = run) do
     case refresh_policy(run) do

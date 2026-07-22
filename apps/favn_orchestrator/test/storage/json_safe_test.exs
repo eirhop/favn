@@ -2,6 +2,8 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
   use ExUnit.Case, async: true
 
   alias Favn.Contracts.RunnerError
+  alias Favn.Backfill.RangeResolver
+  alias Favn.Window.Selection
   alias FavnOrchestrator.Storage.JsonSafe
 
   defmodule ArbitraryStruct do
@@ -162,6 +164,27 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
              ]
            }
 
+    assert_json_compatible!(normalized)
+  end
+
+  test "preserves every anchor in a bounded window selection" do
+    assert {:ok, range} =
+             RangeResolver.resolve(%{
+               "kind" => "day",
+               "from" => "2026-01-01",
+               "to" => "2026-03-01",
+               "timezone" => "Etc/UTC"
+             })
+
+    assert range.requested_count == 60
+    assert {:ok, selection} = Selection.backfill(range.anchors, range.timezone)
+
+    normalized = JsonSafe.data(%{window_selection: selection})["window_selection"]
+
+    assert length(normalized["requested_anchors"]) == 60
+    assert length(normalized["effective_anchors"]) == 60
+    assert normalized["expansion"] == "none"
+    refute Map.has_key?(hd(normalized["requested_anchors"]), "key")
     assert_json_compatible!(normalized)
   end
 

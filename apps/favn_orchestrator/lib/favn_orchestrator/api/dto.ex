@@ -155,6 +155,7 @@ defmodule FavnOrchestrator.API.DTO do
       result: normalize(run.result),
       pipeline: normalize(run.pipeline),
       pipeline_context: normalize(run.pipeline_context),
+      window_selection: normalize(metadata_field(run.metadata, :window_selection)),
       asset_results: asset_results(run.asset_results),
       node_results: node_results(run.node_results),
       error: error_payload(run.error)

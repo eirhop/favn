@@ -385,14 +385,14 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
           else: {:error, {:scheduled_run_id_conflict, run_id}}
 
       {:error, %{kind: :not_found}} ->
-        with {:ok, anchor_window} <-
-               maybe_anchor_window(entry.window, occurrence.due_at, entry.schedule.timezone) do
+        with {:ok, window_selection} <-
+               maybe_window_selection(entry.window, occurrence.due_at, entry.schedule.timezone) do
           BoundedDispatcher.run(fn ->
             RunManager.submit_pipeline_module_run(context, entry.module,
               run_id: run_id,
               manifest_version_id: entry.manifest_version_id,
               trigger: trigger(entry, occurrence),
-              anchor_window: anchor_window
+              window_selection: window_selection
             )
           end)
         end
@@ -444,11 +444,11 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
     }
   end
 
-  defp maybe_anchor_window(nil, _due_at, _timezone), do: {:ok, nil}
+  defp maybe_window_selection(nil, _due_at, _timezone), do: {:ok, nil}
 
-  defp maybe_anchor_window(%Policy{} = policy, due_at, timezone) do
+  defp maybe_window_selection(%Policy{} = policy, due_at, timezone) do
     with {:ok, policy} <- Policy.validate(policy) do
-      Policy.resolve_scheduled(policy, due_at, timezone)
+      Policy.select_scheduled(policy, due_at, timezone)
     end
   end
 

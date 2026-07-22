@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias Favn.Replay.InputMode
   alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
+  alias Favn.Window.Selection
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -195,18 +196,13 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
            input.metadata
            |> Map.put(:asset_dependencies, input.dependencies)
            |> Map.put(:refresh_policy, refresh_policy)
-           |> Map.put(:runtime_input_mode, input_mode),
+           |> Map.put(:runtime_input_mode, input_mode)
+           |> put_window_selection(input.window_selection),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- get_manifest(opts, manifest_version_id),
          {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, _asset} <- Index.fetch_asset(index, asset_ref),
-         {:ok, plan} <-
-           Planner.plan(asset_ref,
-             planning_index: index.planning_index,
-             dependencies: input.dependencies,
-             anchor_window: input.anchor_window,
-             exact_windows: input.exact_windows
-           ),
+         {:ok, plan} <- plan(input, index, asset_ref, exact_windows: input.exact_windows),
          plan <- RetryPolicyResolver.annotate(plan, index, nil, input.retry_policy_override) do
       input = %{input | metadata: metadata_with_selection}
       run_state = new_run_state(input, version, plan, asset_ref, :manual)
@@ -229,7 +225,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              pipeline_submit_ref: Keyword.get(opts, :_submit_ref),
              runtime_input_mode: input_mode,
              refresh_policy: refresh_policy
-           }),
+           })
+           |> put_window_selection(input.window_selection),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- get_manifest(opts, manifest_version_id),
          {:ok, index} <- ManifestIndexCache.fetch(version),
@@ -247,18 +244,22 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     with {:ok, input} <- SubmissionOptions.new(opts, trigger: %{kind: :pipeline}),
          {:ok, input_mode} <- runtime_input_mode(opts, :manual),
          {:ok, request} <-
-           normalize_pipeline_window_request(input.anchor_window, window_request),
+           normalize_pipeline_window_request(
+             input.window_selection,
+             input.anchor_window,
+             window_request
+           ),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- get_manifest(opts, manifest_version_id),
          {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, pipeline} <- fetch_pipeline_by_module(index, pipeline_module),
-         {:ok, resolved_anchor_window} <-
-           resolve_pipeline_anchor_window(pipeline, input.anchor_window, request),
+         {:ok, window_selection} <-
+           resolve_pipeline_window_selection(pipeline, input, request),
          {:ok, resolution} <-
            PipelineResolver.resolve(index, pipeline,
              trigger: input.trigger,
              params: input.params,
-             anchor_window: resolved_anchor_window
+             window_selection: window_selection
            ),
          {:ok, refresh_policy} <- refresh_policy_metadata(opts, resolution.dependencies),
          metadata <-
@@ -272,13 +273,15 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              pipeline_execution_policy: pipeline_execution_policy(resolution.pipeline),
              runtime_input_mode: input_mode,
              refresh_policy: refresh_policy
-           }),
+           })
+           |> put_window_selection(window_selection),
          input <-
            %{
              input
              | metadata: metadata,
                dependencies: resolution.dependencies,
-               anchor_window: resolved_anchor_window
+               anchor_window: nil,
+               window_selection: window_selection
            },
          {:ok, run_state} <-
            build_pipeline_run_state(
@@ -298,18 +301,23 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
 
     with {:ok, input} <- SubmissionOptions.new(opts, trigger: %{kind: :pipeline}),
          {:ok, input_mode} <- runtime_input_mode(opts, :manual),
-         {:ok, request} <- normalize_pipeline_window_request(input.anchor_window, window_request),
+         {:ok, request} <-
+           normalize_pipeline_window_request(
+             input.window_selection,
+             input.anchor_window,
+             window_request
+           ),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- get_manifest(opts, manifest_version_id),
          {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, %Pipeline{} = pipeline} <- Index.fetch_pipeline(index, pipeline_ref),
-         {:ok, resolved_anchor_window} <-
-           resolve_pipeline_anchor_window(pipeline, input.anchor_window, request),
+         {:ok, window_selection} <-
+           resolve_pipeline_window_selection(pipeline, input, request),
          {:ok, resolution} <-
            PipelineResolver.resolve(index, pipeline,
              trigger: input.trigger,
              params: input.params,
-             anchor_window: resolved_anchor_window
+             window_selection: window_selection
            ),
          {:ok, refresh_policy} <- refresh_policy_metadata(opts, resolution.dependencies),
          metadata <-
@@ -323,13 +331,15 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              pipeline_execution_policy: pipeline_execution_policy(resolution.pipeline),
              runtime_input_mode: input_mode,
              refresh_policy: refresh_policy
-           }),
+           })
+           |> put_window_selection(window_selection),
          input <-
            %{
              input
              | metadata: metadata,
                dependencies: resolution.dependencies,
-               anchor_window: resolved_anchor_window
+               anchor_window: nil,
+               window_selection: window_selection
            },
          {:ok, run_state} <-
            build_pipeline_run_state(
@@ -351,12 +361,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          pipeline_retry_policy
        ) do
     with :ok <- ensure_assets_exist(index, target_refs),
-         {:ok, plan} <-
-           Planner.plan(target_refs,
-             planning_index: index.planning_index,
-             dependencies: input.dependencies,
-             anchor_window: input.anchor_window
-           ),
+         {:ok, plan} <- plan(input, index, target_refs),
          plan <-
            RetryPolicyResolver.annotate(
              plan,
@@ -413,11 +418,13 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     with {:ok, metadata} <- rerun_metadata(source_run, opts),
          {:ok, replay_mode} <- replay_mode(opts),
          {:ok, input_mode} <- runtime_input_mode(opts, replay_mode),
+         {:ok, source_window_selection} <- source_window_selection(source_run),
          rerun_opts <-
            opts
            |> Keyword.put(:metadata, metadata)
            |> Keyword.put(:dependencies, rerun_dependencies)
-           |> Keyword.put(:lineage_depth, source_run.lineage_depth + 1),
+           |> Keyword.put(:lineage_depth, source_run.lineage_depth + 1)
+           |> preserve_window_selection(source_window_selection),
          {:ok, input} <-
            SubmissionOptions.new(rerun_opts,
              params: source_run.params,
@@ -433,12 +440,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, _asset} <- Index.fetch_asset(index, rerun_asset_ref),
          :ok <- ensure_assets_exist(index, rerun_targets),
-         {:ok, plan} <-
-           Planner.plan(rerun_targets,
-             planning_index: index.planning_index,
-             dependencies: input.dependencies,
-             anchor_window: input.anchor_window
-           ),
+         {:ok, plan} <- plan(input, index, rerun_targets),
          {:ok, plan} <- maybe_filter_replay_plan(plan, Keyword.get(opts, :replay_node_keys)),
          pipeline_retry_policy <- replay_pipeline_retry_policy(source_run, index),
          plan <-
@@ -455,6 +457,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
         |> Map.put(:source_run_id, source_run.id)
         |> Map.put(:runtime_input_mode, input_mode)
         |> Map.put(:refresh_policy, refresh_policy)
+        |> put_window_selection(input.window_selection)
 
       metadata_with_replay =
         if pipeline_origin?(source_run) do
@@ -522,11 +525,79 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     |> Enum.max(fn -> 1 end)
   end
 
-  defp resolve_pipeline_anchor_window(%Pipeline{} = pipeline, nil, request),
-    do: Policy.resolve_manual(pipeline.window, request)
+  defp plan(%SubmissionOptions{} = input, %Index{} = index, targets, extra_opts \\ []) do
+    opts =
+      [
+        planning_index: index.planning_index,
+        dependencies: input.dependencies
+      ]
+      |> Keyword.merge(planner_window_options(input))
+      |> Keyword.merge(extra_opts)
 
-  defp resolve_pipeline_anchor_window(_pipeline, anchor_window, _request),
-    do: {:ok, anchor_window}
+    Planner.plan(targets, opts)
+  end
+
+  defp planner_window_options(%SubmissionOptions{window_selection: %Selection{} = selection}),
+    do: [anchor_windows: selection.effective_anchors]
+
+  defp planner_window_options(%SubmissionOptions{anchor_window: anchor}),
+    do: [anchor_window: anchor]
+
+  defp put_window_selection(metadata, nil), do: metadata
+
+  defp put_window_selection(metadata, %Selection{} = selection),
+    do: Map.put(metadata, :window_selection, selection)
+
+  defp preserve_window_selection(opts, nil), do: opts
+
+  defp preserve_window_selection(opts, %Selection{} = selection),
+    do: Keyword.put(opts, :window_selection, selection)
+
+  defp source_window_selection(%RunState{metadata: metadata}) when is_map(metadata) do
+    selection =
+      metadata_value(metadata, :window_selection) ||
+        metadata
+        |> metadata_value(:pipeline_context)
+        |> case do
+          context when is_map(context) -> metadata_value(context, :window_selection)
+          _other -> nil
+        end
+
+    Selection.from_value(selection)
+  end
+
+  defp source_window_selection(%RunState{}), do: {:ok, nil}
+
+  defp resolve_pipeline_window_selection(
+         %Pipeline{},
+         %SubmissionOptions{window_selection: %Selection{} = selection},
+         _request
+       ),
+       do: {:ok, selection}
+
+  defp resolve_pipeline_window_selection(
+         %Pipeline{window: %Policy{} = policy},
+         %SubmissionOptions{anchor_window: %Favn.Window.Anchor{} = anchor, trigger: trigger},
+         _request
+       ) do
+    case Map.get(trigger, :kind, Map.get(trigger, "kind")) do
+      kind when kind in [:schedule, "schedule"] ->
+        Selection.scheduled(anchor, policy.lookback, anchor.timezone)
+
+      kind when kind in [:backfill, "backfill"] ->
+        Selection.backfill([anchor], anchor.timezone)
+
+      _other ->
+        Selection.manual(anchor, anchor.timezone)
+    end
+  end
+
+  defp resolve_pipeline_window_selection(
+         %Pipeline{} = pipeline,
+         %SubmissionOptions{anchor_window: nil, window_selection: nil},
+         request
+       ),
+       do: Policy.select_manual(pipeline.window, request)
 
   defp pipeline_execution_policy(pipeline) do
     %{
@@ -567,10 +638,11 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     end
   end
 
-  defp normalize_pipeline_window_request(nil, window_request),
+  defp normalize_pipeline_window_request(nil, nil, window_request),
     do: WindowRequest.from_value(window_request)
 
-  defp normalize_pipeline_window_request(_anchor_window, _window_request), do: {:ok, nil}
+  defp normalize_pipeline_window_request(_selection, _anchor_window, _window_request),
+    do: {:ok, nil}
 
   defp validate_target_refs(refs) when is_list(refs) do
     if refs == [] do

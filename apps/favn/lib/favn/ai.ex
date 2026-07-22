@@ -109,7 +109,9 @@ defmodule Favn.AI do
   - To define a pipeline, read `Favn.Pipeline`, then
     `Favn.Triggers.Schedules` if schedules are involved. If the pipeline is
     windowed, also read `Favn.Window`, `Favn.Window.Policy`, and
-    `Favn.Window.Request`. If the pipeline or its assets touch rate-limited
+    `Favn.Window.Request`. Pipeline `lookback` expands only scheduled
+    `Favn.Window.Selection` values; manual and backfill selections remain exact.
+    If the pipeline or its assets touch rate-limited
     source systems or shared infrastructure, read the `max_concurrency` and
     `execution_pool` sections in `Favn.Pipeline` and `Favn.Asset`.
   - To configure retries, reruns, replay input behavior, or runtime-input pins,
@@ -140,7 +142,8 @@ defmodule Favn.AI do
     `FavnOrchestrator.Repair.RuntimeState`, and `Mix.Tasks.Favn.RepairRuntimeState`.
   - To work with windows or one-off run input, read `Favn.Window`, then
     `Favn.Window.Policy` for pipeline/scheduler policy, `Favn.Window.Request`
-    for CLI/API run input, and `Favn plan_asset_run` if you need planning
+    for CLI/API run input, `Favn.Window.Selection` for the persisted requested,
+    expansion, and effective anchors, and `Favn plan_asset_run` if you need planning
     details. Scheduled anchors are explicit
     `:previous_complete_period | :current_period`; schedule cadence does not
     change pipeline window granularity.

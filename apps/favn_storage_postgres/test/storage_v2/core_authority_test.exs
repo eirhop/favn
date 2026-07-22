@@ -1144,7 +1144,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       "timezone" => "Etc/UTC"
     }
 
-    assert {:ok, %{window_count: 3, target_id: target_id}} =
+    assert {:ok, %{window_count: 3, target_id: target_id, window_selection: window_selection}} =
              Backfills.plan_pipeline(
                fixture.workspace_context,
                fixture.version.manifest_version_id,
@@ -1153,6 +1153,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              )
 
     assert target_id == fixture.pipeline_target_id
+    assert window_selection.intent == :backfill
+    assert window_selection.expansion == :none
+    assert window_selection.requested_anchors == window_selection.effective_anchors
+    assert length(window_selection.effective_anchors) == 3
 
     assert {:ok, backfill} =
              Backfills.submit_pipeline(
@@ -1166,6 +1170,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert backfill.status == :ready
     assert backfill.expected_window_count == 3
     assert backfill.appended_window_count == 3
+
+    assert {:ok, pipeline_root} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: backfill.root_run_id
+             })
+
+    assert pipeline_root.metadata.window_selection.intent == :backfill
+    assert length(pipeline_root.metadata.window_selection.effective_anchors) == 3
 
     assert {:ok, page} =
              Backfills.page_windows(fixture.workspace_context, backfill.backfill_id, limit: 2)
@@ -1183,7 +1196,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       "timezone" => "Etc/UTC"
     }
 
-    assert {:ok, %{window_count: 2, target_id: target_id}} =
+    assert {:ok, %{window_count: 2, target_id: target_id, window_selection: window_selection}} =
              Backfills.plan_asset(
                fixture.workspace_context,
                fixture.version.manifest_version_id,
@@ -1193,6 +1206,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              )
 
     assert target_id == fixture.target_id
+    assert window_selection.intent == :backfill
+    assert window_selection.expansion == :none
+    assert window_selection.requested_anchors == window_selection.effective_anchors
 
     assert {:ok, backfill} =
              Backfills.submit_asset(
@@ -1208,11 +1224,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert backfill.target_kind == :asset
     assert backfill.expected_window_count == 2
 
-    assert {:ok, %RunState{submit_kind: :backfill_asset, target_refs: [{MyApp.Asset, :asset}]}} =
+    assert {:ok,
+            %RunState{
+              submit_kind: :backfill_asset,
+              target_refs: [{MyApp.Asset, :asset}],
+              metadata: %{window_selection: asset_selection}
+            }} =
              RunStore.get_run(%GetRun{
                workspace_context: fixture.workspace_context,
                run_id: backfill.root_run_id
              })
+
+    assert asset_selection.intent == :backfill
+    assert length(asset_selection.effective_anchors) == 2
 
     assert {:ok, page} =
              Backfills.page_windows(fixture.workspace_context, backfill.backfill_id, limit: 10)
@@ -4403,7 +4427,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         %Favn.Manifest.Pipeline{
           module: MyApp.Pipeline,
           name: :daily,
-          selectors: [{:asset, {MyApp.Asset, :asset}}]
+          selectors: [{:asset, {MyApp.Asset, :asset}}],
+          window: Favn.Window.Policy.new!(:day, timezone: "Etc/UTC")
         }
       ]
     }

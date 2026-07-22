@@ -643,6 +643,11 @@ window Favn.Window.monthly(
 month selected by the pipeline. Do not replace this with explicit `freshness
 :daily`, which is one asset-wide daily success.
 
+Run input and operator responses preserve the requested anchors, the permitted
+expansion, and the effective anchors separately. This makes scheduled lookback,
+manual runs, backfills, reruns, and retries deterministic and visible without
+asking the runner to resolve window policy again.
+
 ## Coverage
 
 Coverage declares which canonical windows a windowed asset is expected to have:
@@ -662,6 +667,12 @@ boundaries must be `DateTime` values.
 minutes, hours, or days, and is valid only with `:latest_closed`. It delays when
 a closed window becomes expected; it does not delay execution, create a timer,
 or change retries.
+
+Manifest builds warn when a recurring cron occurrence is provably earlier than
+the availability delay for a selected asset. They also warn when a windowed
+pipeline and selected windowed asset use different effective timezones. These
+warnings explain potentially surprising behavior but do not block compilation
+or scheduled execution.
 
 Coverage has no kind or timezone. It uses the effective asset window. Declaring
 coverage without an effective window is a compile error. A windowed asset

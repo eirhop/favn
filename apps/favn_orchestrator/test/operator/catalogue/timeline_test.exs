@@ -217,7 +217,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
 
     assert List.last(manual_detail.refresh_timeline).value == "2026-06"
     assert List.last(manual_detail.refresh_timeline).timezone == "Etc/UTC"
-    assert List.last(manual_detail.freshness_timeline).status == :missing
+    assert List.last(manual_detail.freshness_timeline).status == :fresh
 
     ambiguous =
       Timeline.build(version, asset, List.last(states), nil, states, [], %{}, now: @now)
@@ -253,7 +253,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
       name: elem(@asset_ref, 1),
       window:
         WindowSpec.new!(:month,
-          lookback: 1,
           refresh_from: :day,
           required: true,
           timezone: "Europe/Oslo"
@@ -274,7 +273,11 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
 
   defp version_fixture(
          asset,
-         window_policy \\ WindowPolicy.new!(:monthly, anchor: :current_period)
+         window_policy \\ WindowPolicy.new!(:monthly,
+           anchor: :current_period,
+           lookback: 1,
+           timezone: "Europe/Oslo"
+         )
        ) do
     {:ok, graph} = Graph.build([asset])
 
@@ -321,7 +324,11 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
       module: __MODULE__.ManualPipeline,
       name: :manual_previous,
       selectors: [{:asset, @asset_ref}],
-      window: WindowPolicy.new!(:monthly, anchor: :previous_complete_period)
+      window:
+        WindowPolicy.new!(:monthly,
+          anchor: :previous_complete_period,
+          timezone: "Etc/UTC"
+        )
     }
 
     scheduled = %Pipeline{
@@ -329,7 +336,11 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
       name: :scheduled_current,
       selectors: [{:asset, @asset_ref}],
       schedule: {:ref, schedule.ref},
-      window: WindowPolicy.new!(:monthly, anchor: :current_period)
+      window:
+        WindowPolicy.new!(:monthly,
+          anchor: :current_period,
+          timezone: "Europe/Oslo"
+        )
     }
 
     pipelines = if order == :reversed, do: [scheduled, manual], else: [manual, scheduled]

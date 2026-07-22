@@ -91,7 +91,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
 
     manifest = %Manifest{
       assets: [
-        %Asset{
+        FavnTestSupport.with_target_descriptor(%Asset{
           ref: ref,
           module: elem(ref, 0),
           name: :asset,
@@ -102,7 +102,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
           materialization: {:incremental, strategy: :delete_insert, unique_key: [:id]},
           execution_package_hash: String.duplicate("a", 64),
           metadata: %{category: :sales, tags: [:gold]}
-        }
+        })
       ],
       pipelines: [
         %Pipeline{
@@ -124,7 +124,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
                active: true,
                origin: :inline
              }},
-          window: :day,
+          window: Favn.Window.Policy.new!(:day, timezone: "Etc/UTC"),
           source: :scheduler,
           outputs: [:default],
           metadata: %{category: :sales}

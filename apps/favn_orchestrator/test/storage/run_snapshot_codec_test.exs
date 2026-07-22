@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Backfill.RangeResolver
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Pipeline
@@ -10,6 +11,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
   alias Favn.Retry.Policy
+  alias Favn.Window.Selection
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ManifestCodec
@@ -51,6 +53,65 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored.id == run.id
     assert restored.asset_ref == {__MODULE__.Asset, :asset}
     assert restored.status == :pending
+  end
+
+  test "round-trips exact selections beyond the generic metadata entry limit" do
+    version = manifest_version("mv_run_snapshot_selection_range", __MODULE__.Asset)
+
+    assert {:ok, range} =
+             RangeResolver.resolve(%{
+               "kind" => "day",
+               "from" => "2026-01-01",
+               "to" => "2026-03-01",
+               "timezone" => "Etc/UTC"
+             })
+
+    assert {:ok, selection} = Selection.backfill(range.anchors, range.timezone)
+
+    run =
+      "run_snapshot_selection_range"
+      |> run_state(version, __MODULE__.Asset)
+      |> Map.put(:metadata, %{window_selection: selection})
+      |> RunState.with_snapshot_hash()
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert restored.metadata.window_selection == selection
+    assert length(restored.metadata.window_selection.effective_anchors) == 60
+  end
+
+  test "maximum backfill selection fits the persisted run snapshot contract" do
+    version = manifest_version("mv_run_snapshot_max_selection", __MODULE__.Asset)
+    from = ~D[2026-01-01]
+    through = Date.add(from, 9_999)
+    timezone = "America/Argentina/Buenos_Aires"
+
+    assert {:ok, range} =
+             RangeResolver.resolve(%{
+               "kind" => "day",
+               "from" => Date.to_iso8601(from),
+               "to" => Date.to_iso8601(through),
+               "timezone" => timezone
+             })
+
+    assert range.requested_count == 10_000
+    assert {:ok, selection} = Selection.backfill(range.anchors, timezone)
+
+    run =
+      "run_snapshot_max_selection"
+      |> run_state(version, __MODULE__.Asset)
+      |> Map.put(:metadata, %{window_selection: selection})
+      |> RunState.with_snapshot_hash()
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert byte_size(payload) <= RunSnapshotCodec.max_persisted_bytes()
   end
 
   test "legacy snapshots are audit-readable only after terminalization" do
@@ -193,7 +254,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         timezone: "Europe/Oslo"
       )
 
-    window = Favn.Window.Policy.new!(:day, timezone: "Europe/Oslo")
+    {:ok, window_selection} =
+      Favn.Window.Selection.scheduled(anchor_window, 1, "Europe/Oslo")
+
+    window = Favn.Window.Policy.new!(:day, timezone: "Europe/Oslo", lookback: 1)
     schedule = pipeline_schedule()
 
     version =
@@ -216,6 +280,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
           replay_mode: :exact_replay,
           pipeline_submit_ref: __MODULE__.Pipeline,
           pipeline_target_refs: [{__MODULE__.Asset, :asset}],
+          window_selection: window_selection,
           pipeline_context: %{
             module: __MODULE__.Pipeline,
             name: :daily,
@@ -224,6 +289,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
             settings: settings,
             metadata: %{"owner" => "data-platform"},
             anchor_window: anchor_window,
+            window_selection: window_selection,
             window: window,
             schedule: schedule
           }
@@ -244,6 +310,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored.metadata.replay_mode == :exact_replay
     assert restored.metadata.pipeline_submit_ref == __MODULE__.Pipeline
     assert restored.metadata.pipeline_target_refs == [{__MODULE__.Asset, :asset}]
+    assert restored.metadata.window_selection == window_selection
     assert restored.metadata.pipeline_context.resolved_refs == [{__MODULE__.Asset, :asset}]
 
     pipeline_context = Favn.Run.PipelineContext.from_map(restored.metadata.pipeline_context)
@@ -252,11 +319,13 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert pipeline_context.settings == settings
     assert pipeline_context.metadata == %{"owner" => "data-platform"}
     assert pipeline_context.anchor_window == anchor_window
+    assert pipeline_context.window_selection == window_selection
     assert pipeline_context.window == window
     assert pipeline_context.schedule == schedule
 
     work = %Favn.Contracts.RunnerWork{pipeline: pipeline_context}
     assert work.pipeline.anchor_window == anchor_window
+    assert work.pipeline.window_selection == window_selection
     assert work.pipeline.window == window
     assert work.pipeline.schedule == schedule
 

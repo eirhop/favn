@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
   alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
   alias Favn.Window.Runtime, as: RuntimeWindow
+  alias Favn.Window.Selection
   alias FavnOrchestrator.Operator.WindowSelection
   alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.OperatorCommands.AssetRunRequest
@@ -138,13 +139,14 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
   defp apply_data_coverage_selection(opts, asset, id, selection) when is_binary(id) do
     with {:ok, window_request} <- WindowSelection.data_coverage_request(id),
          {:ok, anchor_window} <- WindowSelection.resolve(asset, window_request),
+         {:ok, window_selection} <- Selection.manual(anchor_window, anchor_window.timezone),
          {:ok, runtime_window} <- runtime_window(anchor_window),
          {:ok, opts} <- merge_metadata(opts, window_metadata(id, anchor_window)),
          {:ok, opts} <-
            merge_metadata(opts, selection_metadata(:data_coverage_timeline, selection)) do
       {:ok,
        opts
-       |> Keyword.put(:anchor_window, anchor_window)
+       |> Keyword.put(:window_selection, window_selection)
        |> Keyword.put(:exact_windows, %{asset.ref => [runtime_window]})}
     end
   end
@@ -156,8 +158,9 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
     with {:ok, window_request} <- WindowSelection.refresh_request(id),
          {:ok, anchor_window} <-
            WindowRequest.to_anchor(window_request, selection_timezone(selection)),
+         {:ok, window_selection} <- Selection.manual(anchor_window, anchor_window.timezone),
          {:ok, opts} <- merge_metadata(opts, selection_metadata(:refresh_timeline, selection)) do
-      {:ok, Keyword.put(opts, :anchor_window, anchor_window)}
+      {:ok, Keyword.put(opts, :window_selection, window_selection)}
     end
   end
 
@@ -171,8 +174,9 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptions do
     with {:ok, window_request} <- WindowSelection.refresh_request(id),
          :ok <- validate_refresh_context(window_request, selection, run_context),
          {:ok, anchor_window} <- WindowRequest.to_anchor(window_request, run_context.timezone),
+         {:ok, window_selection} <- Selection.manual(anchor_window, anchor_window.timezone),
          {:ok, opts} <- merge_metadata(opts, selection_metadata(:refresh_timeline, selection)) do
-      {:ok, Keyword.put(opts, :anchor_window, anchor_window)}
+      {:ok, Keyword.put(opts, :window_selection, window_selection)}
     end
   end
 

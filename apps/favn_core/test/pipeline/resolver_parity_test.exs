@@ -4,6 +4,7 @@ defmodule Favn.Pipeline.ResolverParityTest do
   alias Favn.Pipeline.Definition
   alias Favn.Pipeline.Resolver
   alias Favn.Triggers.Schedule
+  alias Favn.Window.{Anchor, Selection}
 
   test "resolve/2 applies additive selector union semantics" do
     definition = %Definition{
@@ -163,5 +164,27 @@ defmodule Favn.Pipeline.ResolverParityTest do
              Resolver.resolve(definition, assets: assets, schedule_lookup: :bad)
 
     assert {:error, {:invalid_assets_opt, :bad}} = Resolver.resolve(definition, assets: :bad)
+  end
+
+  test "resolve/2 carries a canonical selection into authoring pipeline context" do
+    definition = %Definition{
+      module: MyApp.Pipelines.Daily,
+      name: :daily,
+      selectors: [{:asset, {MyApp.Sales, :daily_gold}}],
+      window: Favn.Window.Policy.new!(:day, timezone: "Etc/UTC")
+    }
+
+    assets = [
+      %{ref: {MyApp.Sales, :daily_gold}, module: MyApp.Sales, name: :daily_gold, meta: %{}}
+    ]
+
+    anchor = Anchor.new!(:day, ~U[2026-07-01 00:00:00Z], ~U[2026-07-02 00:00:00Z])
+    assert {:ok, selection} = Selection.manual(anchor, "Etc/UTC")
+
+    assert {:ok, resolution} =
+             Resolver.resolve(definition, assets: assets, window_selection: selection)
+
+    assert resolution.pipeline_ctx.window_selection == selection
+    assert resolution.pipeline_ctx.anchor_window == anchor
   end
 end

@@ -11,7 +11,7 @@ defmodule Favn.Pipeline.Resolver do
   alias Favn.Pipeline.Resolution
   alias Favn.Pipeline.SelectorNormalizer
   alias Favn.Triggers.Schedule
-  alias Favn.Window.{Anchor, Policy}
+  alias Favn.Window.{Anchor, Policy, Selection}
 
   @type schedule_lookup :: (module(), atom() -> {:ok, Schedule.unresolved_t()} | {:error, term()})
 
@@ -19,6 +19,7 @@ defmodule Favn.Pipeline.Resolver do
           params: map(),
           trigger: map(),
           anchor_window: Anchor.t() | nil,
+          window_selection: Selection.t() | nil,
           assets: [map()],
           schedule_lookup: schedule_lookup() | nil,
           default_timezone: String.t(),
@@ -30,6 +31,7 @@ defmodule Favn.Pipeline.Resolver do
     trigger = Keyword.get(opts, :trigger, %{kind: :manual})
     params = Keyword.get(opts, :params, %{})
     anchor_window = Keyword.get(opts, :anchor_window)
+    window_selection = Keyword.get(opts, :window_selection)
     assets_input = Keyword.get(opts, :assets)
     schedule_lookup = Keyword.get(opts, :schedule_lookup)
     default_timezone = Keyword.get(opts, :default_timezone, "Etc/UTC")
@@ -47,6 +49,9 @@ defmodule Favn.Pipeline.Resolver do
          :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
          :ok <- validate_anchor_window(anchor_window),
+         :ok <- validate_window_selection(window_selection),
+         :ok <- validate_window_input(anchor_window, window_selection),
+         :ok <- Policy.validate_selection(normalized_definition.window, window_selection),
          :ok <- validate_schedule_lookup(schedule_lookup),
          :ok <- validate_assets_input(assets_input),
          {:ok, schedule} <-
@@ -59,7 +64,14 @@ defmodule Favn.Pipeline.Resolver do
          {:ok, assets} <- resolve_assets(assets_input),
          {:ok, target_refs} <- resolve_selectors(selectors, assets) do
       pipeline_ctx =
-        build_pipeline_ctx(normalized_definition, target_refs, trigger, anchor_window, schedule)
+        build_pipeline_ctx(
+          normalized_definition,
+          target_refs,
+          trigger,
+          anchor_window,
+          window_selection,
+          schedule
+        )
 
       {:ok,
        %Resolution{
@@ -148,6 +160,21 @@ defmodule Favn.Pipeline.Resolver do
     do: Anchor.validate(anchor_window)
 
   defp validate_anchor_window(other), do: {:error, {:invalid_anchor_window, other}}
+
+  defp validate_window_selection(nil), do: :ok
+
+  defp validate_window_selection(%Selection{} = selection) do
+    case Selection.from_value(selection) do
+      {:ok, %Selection{}} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_window_selection(other), do: {:error, {:invalid_window_selection, other}}
+
+  defp validate_window_input(nil, _selection), do: :ok
+  defp validate_window_input(_anchor, nil), do: :ok
+  defp validate_window_input(_anchor, _selection), do: {:error, :ambiguous_window_selection}
 
   defp validate_schedule_lookup(nil), do: :ok
   defp validate_schedule_lookup(fun) when is_function(fun, 2), do: :ok
@@ -268,7 +295,14 @@ defmodule Favn.Pipeline.Resolver do
     end
   end
 
-  defp build_pipeline_ctx(definition, target_refs, trigger, anchor_window, schedule) do
+  defp build_pipeline_ctx(
+         definition,
+         target_refs,
+         trigger,
+         anchor_window,
+         window_selection,
+         schedule
+       ) do
     %{
       module: definition.module,
       name: definition.name,
@@ -277,7 +311,8 @@ defmodule Favn.Pipeline.Resolver do
       settings: definition.settings,
       metadata: definition.meta,
       trigger: trigger,
-      anchor_window: anchor_window,
+      anchor_window: anchor_window || requested_anchor(window_selection),
+      window_selection: window_selection,
       window: definition.window,
       max_concurrency: definition.max_concurrency,
       execution_pool: definition.execution_pool,
@@ -287,4 +322,7 @@ defmodule Favn.Pipeline.Resolver do
       outputs: definition.outputs
     }
   end
+
+  defp requested_anchor(%Selection{requested_anchors: [anchor]}), do: anchor
+  defp requested_anchor(_selection), do: nil
 end

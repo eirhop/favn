@@ -8,6 +8,7 @@ defmodule Favn.Manifest.PipelineResolverTest do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
   alias Favn.Manifest.Schedule
+  alias Favn.Window.{Anchor, Selection}
 
   test "resolves persisted pipeline selectors through manifest index" do
     assert {:ok, index} = sample_manifest() |> Index.build()
@@ -75,6 +76,73 @@ defmodule Favn.Manifest.PipelineResolverTest do
     }
 
     assert {:error, :pipeline_resolved_empty} = PipelineResolver.resolve(index, pipeline, [])
+  end
+
+  test "carries one canonical selection and rejects competing anchor input" do
+    assert {:ok, index} = sample_manifest() |> Index.build()
+
+    pipeline =
+      index
+      |> Index.list_pipelines()
+      |> List.first()
+      |> Map.put(:window, Favn.Window.Policy.new!(:day, timezone: "Etc/UTC"))
+
+    anchor = Anchor.new!(:day, ~U[2026-07-01 00:00:00Z], ~U[2026-07-02 00:00:00Z])
+    assert {:ok, selection} = Selection.manual(anchor, "Etc/UTC")
+
+    assert {:ok, resolution} =
+             PipelineResolver.resolve(index, pipeline, window_selection: selection)
+
+    assert resolution.pipeline_ctx.window_selection == selection
+    assert resolution.pipeline_ctx.anchor_window == anchor
+
+    assert {:error, :ambiguous_window_selection} =
+             PipelineResolver.resolve(index, pipeline,
+               anchor_window: anchor,
+               window_selection: selection
+             )
+
+    assert {:ok, month} =
+             Selection.manual(
+               Anchor.new!(:month, ~U[2026-07-01 00:00:00Z], ~U[2026-08-01 00:00:00Z]),
+               "Etc/UTC"
+             )
+
+    assert {:error, {:window_kind_mismatch, :day, :month}} =
+             PipelineResolver.resolve(index, pipeline, window_selection: month)
+
+    assert {:ok, scheduled} = Selection.scheduled(anchor, 1, "Etc/UTC")
+
+    assert {:error, {:window_lookback_mismatch, 0, 1}} =
+             PipelineResolver.resolve(index, pipeline, window_selection: scheduled)
+
+    oslo_anchor =
+      Anchor.new!(
+        :day,
+        DateTime.new!(
+          ~D[2026-07-01],
+          ~T[00:00:00],
+          "Europe/Oslo",
+          Favn.Timezone.database!()
+        ),
+        DateTime.new!(
+          ~D[2026-07-02],
+          ~T[00:00:00],
+          "Europe/Oslo",
+          Favn.Timezone.database!()
+        ),
+        timezone: "Europe/Oslo"
+      )
+
+    assert {:ok, oslo_manual} = Selection.manual(oslo_anchor, "Europe/Oslo")
+
+    assert {:ok, %{pipeline_ctx: %{window_selection: ^oslo_manual}}} =
+             PipelineResolver.resolve(index, pipeline, window_selection: oslo_manual)
+
+    assert {:ok, oslo_backfill} = Selection.backfill([oslo_anchor], "Europe/Oslo")
+
+    assert {:ok, %{pipeline_ctx: %{window_selection: ^oslo_backfill}}} =
+             PipelineResolver.resolve(index, pipeline, window_selection: oslo_backfill)
   end
 
   defp sample_manifest do

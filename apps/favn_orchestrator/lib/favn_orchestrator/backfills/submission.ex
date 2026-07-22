@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.Backfills.Submission do
     :root_run_id,
     :backfill_id,
     :range,
+    :window_selection,
     :batches,
     :batch_hashes,
     :opts
@@ -28,6 +29,7 @@ defmodule FavnOrchestrator.Backfills.Submission do
     :root_run_id,
     :backfill_id,
     :range,
+    :window_selection,
     :batches,
     :batch_hashes,
     :resolution,
@@ -44,6 +46,7 @@ defmodule FavnOrchestrator.Backfills.Submission do
           root_run_id: String.t(),
           backfill_id: String.t(),
           range: map(),
+          window_selection: Favn.Window.Selection.t(),
           batches: [[struct()]],
           batch_hashes: [String.t()],
           resolution: struct() | nil,
