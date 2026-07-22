@@ -415,10 +415,16 @@ defmodule Favn.Dev.Build.RunnerTest do
     root_dir: root_dir
   } do
     install!(root_dir)
-    previous = Application.get_env(:favn, :asset_modules)
-    on_exit(fn -> restore_env(:asset_modules, previous) end)
+    previous_assets = Application.get_env(:favn, :asset_modules)
+    previous_connections = Application.get_env(:favn, :connection_modules)
+
+    on_exit(fn ->
+      restore_env(:asset_modules, previous_assets)
+      restore_env(:connection_modules, previous_connections)
+    end)
 
     Application.put_env(:favn, :asset_modules, [SQLVersionOne])
+    Application.put_env(:favn, :connection_modules, [FavnTestSupport.WarehouseConnection])
     assert {:ok, first} = build(root_dir)
     assert first.status == :built
     first_manifest_dir = first.manifest_dir
