@@ -33,7 +33,11 @@ upstream commit that classifies the warning forms emitted by the pinned OTP 29
 toolchain; the immutable pin prevents static-analysis behavior from drifting.
 Intentional Sobelow suppressions remain function-local and are accepted only
 where the surrounding code bounds and validates the value before the flagged
-operation.
+operation. Pull-request CI reports quick formatting, repository guard, Credo,
+Sobelow, and dependency-audit results independently from fast tests and full
+Dialyzer analysis. All slices still feed the stable required `CI / CI` aggregate,
+and a newer push cancels obsolete work for the same pull request without
+canceling `main` runs.
 
 The single control-plane and single runner topology is the first supported
 scale point, not a single-BEAM runtime. Multi-node coordination remains a
