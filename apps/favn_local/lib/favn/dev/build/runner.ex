@@ -45,6 +45,7 @@ defmodule Favn.Dev.Build.Runner do
     with :ok <- validate_test_only_options(opts),
          :ok <- ensure_production_build(opts),
          :ok <- ensure_project_root(opts),
+         :ok <- RunnerReleaseInput.validate_host_toolchain(),
          :ok <- Install.ensure_ready(opts),
          :ok <- State.ensure_layout(opts),
          :ok <- Manifest.compile_project(opts),
@@ -159,12 +160,14 @@ defmodule Favn.Dev.Build.Runner do
   end
 
   defp seed_descriptor do
+    toolchain = RunnerReleaseInput.expected_toolchain()
+
     RunnerRelease.new(%{
       schema_version: RunnerRelease.current_schema_version(),
       favn_version: RunnerRelease.current_favn_version(),
       runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
-      elixir_version: System.version(),
-      otp_release: to_string(:erlang.system_info(:otp_release)),
+      elixir_version: toolchain.elixir_version,
+      otp_release: toolchain.otp_release,
       target: RunnerRelease.current_target(),
       runtime_modules: [],
       runtime_applications: [],

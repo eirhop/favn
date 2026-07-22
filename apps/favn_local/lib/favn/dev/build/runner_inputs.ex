@@ -5,7 +5,7 @@ defmodule Favn.Dev.Build.RunnerInputs do
   alias Favn.RunnerRelease
   alias Favn.RunnerRelease.{ApplicationFingerprint, ModuleClosure, PluginFingerprint}
   alias Favn.RunnerRelease.RuntimeRoots
-  alias Favn.Dev.Build.RunnerConfig
+  alias Favn.Dev.Build.{RunnerConfig, RunnerReleaseInput}
 
   @required_runner_applications [:favn_core, :favn_runner, :favn_sql_runtime]
   @build_only_favn_applications [:favn, :favn_authoring, :favn_local]
@@ -36,8 +36,10 @@ defmodule Favn.Dev.Build.RunnerInputs do
   @spec collect(Build.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def collect(%Build{} = build, opts \\ []) when is_list(opts) do
     current_app = Keyword.get(opts, :current_app, Mix.Project.config()[:app])
+    toolchain = RunnerReleaseInput.expected_toolchain()
 
-    with {:ok, authoring_roots} <- FavnAuthoring.runtime_roots(build),
+    with :ok <- RunnerReleaseInput.validate_host_toolchain(),
+         {:ok, authoring_roots} <- FavnAuthoring.runtime_roots(build),
          {:ok, packaged_config} <- RunnerConfig.collect(opts),
          {:ok, runner_build} <- runner_build_config(opts),
          {:ok, favn_source_revision} <- pinned_favn_source_revision(opts),
@@ -62,8 +64,8 @@ defmodule Favn.Dev.Build.RunnerInputs do
              favn_version: RunnerRelease.current_favn_version(),
              runner_contract_version:
                Favn.Manifest.Compatibility.current_runner_contract_version(),
-             elixir_version: System.version(),
-             otp_release: to_string(:erlang.system_info(:otp_release)),
+             elixir_version: toolchain.elixir_version,
+             otp_release: toolchain.otp_release,
              target: RunnerRelease.current_target(),
              runtime_modules: closure.modules,
              runtime_applications: applications,

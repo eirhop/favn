@@ -1,0 +1,108 @@
+# Narrow exceptions for Debian 13 vulnerabilities without an available package fix.
+# Reviewed: 2026-07-22. Review by: 2026-08-22.
+# Every rule includes the vendor fix state so it stops matching when a fix appears.
+ignore:
+  - vulnerability: CVE-2026-13221
+    fix-state: not-fixed
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-5450
+    fix-state: wont-fix
+    package:
+      name: libc-bin
+  - vulnerability: CVE-2026-5450
+    fix-state: wont-fix
+    package:
+      name: libc6
+  - vulnerability: CVE-2026-42496
+    fix-state: wont-fix
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-8376
+    fix-state: wont-fix
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-12087
+    fix-state: not-fixed
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-9538
+    fix-state: wont-fix
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-57433
+    fix-state: not-fixed
+    package:
+      name: perl-base
+  - vulnerability: CVE-2025-69720
+    fix-state: wont-fix
+    package:
+      name: libtinfo6
+  - vulnerability: CVE-2025-69720
+    fix-state: wont-fix
+    package:
+      name: ncurses-base
+  - vulnerability: CVE-2025-69720
+    fix-state: wont-fix
+    package:
+      name: ncurses-bin
+  - vulnerability: CVE-2026-42497
+    fix-state: wont-fix
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-48959
+    fix-state: not-fixed
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-5928
+    fix-state: wont-fix
+    package:
+      name: libc-bin
+  - vulnerability: CVE-2026-5928
+    fix-state: wont-fix
+    package:
+      name: libc6
+  - vulnerability: CVE-2026-48962
+    fix-state: not-fixed
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-41992
+    fix-state: wont-fix
+    package:
+      name: gzip
+  - vulnerability: CVE-2026-48961
+    fix-state: not-fixed
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-7017
+    fix-state: not-fixed
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-5435
+    fix-state: wont-fix
+    package:
+      name: libc-bin
+  - vulnerability: CVE-2026-5435
+    fix-state: wont-fix
+    package:
+      name: libc6
+  - vulnerability: CVE-2026-57432
+    fix-state: not-fixed
+    package:
+      name: perl-base
+  - vulnerability: CVE-2026-11822
+    fix-state: wont-fix
+    package:
+      name: libsqlite3-0
+  - vulnerability: CVE-2026-11824
+    fix-state: wont-fix
+    package:
+      name: libsqlite3-0
+  - vulnerability: CVE-2026-54369
+    fix-state: wont-fix
+    package:
+      name: libacl1
+  - vulnerability: CVE-2026-54370
+    fix-state: wont-fix
+    package:
+      name: libacl1

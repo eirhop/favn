@@ -29,7 +29,8 @@ and strict Sobelow scans for both Phoenix boundaries. Dialyzer uses the tracked
 strict-description baseline in `.dialyzer_ignore.exs`, rejects warnings outside
 that baseline, and rejects obsolete filters so existing debt cannot silently
 grow or disappear from the baseline. Dialyxir is pinned to the immutable
-upstream OTP 28 warning-support commit until that support is released on Hex.
+upstream commit that classifies the warning forms emitted by the pinned OTP 29
+toolchain; the immutable pin prevents static-analysis behavior from drifting.
 Intentional Sobelow suppressions remain function-local and are accepted only
 where the surrounding code bounds and validates the value before the flagged
 operation.

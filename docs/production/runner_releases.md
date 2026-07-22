@@ -41,6 +41,11 @@ Before Hex publication, use a clean Favn checkout detached at the approved Git
 tag or commit and reference its public packages with path dependencies. Do not
 use a floating or dirty Favn checkout for a production build.
 
+Run the build command with Elixir `1.20.2` on Erlang/OTP `29`, matching the
+pinned runner image builder. Favn rejects another host compiler before it
+compiles or fingerprints customer modules, so a descriptor can never claim a
+different toolchain from the image that will execute it.
+
 From the customer project:
 
 ```bash

@@ -33,11 +33,18 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
+      - name: Enforce vulnerability exception review deadline
+        env:
+          VULNERABILITY_EXCEPTION_REVIEW_BY: '2026-08-22'
+        run: |
+          today=$(date -u +%F)
+          [[ "$today" < "$VULNERABILITY_EXCEPTION_REVIEW_BY" || "$today" == "$VULNERABILITY_EXCEPTION_REVIEW_BY" ]]
+
       - name: Setup Elixir and Erlang
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: '1.20.2'
-          otp-version: '28.3.3'
+          otp-version: '29.0.3'
 
       - name: Resolve release identity
         id: release
@@ -125,10 +132,22 @@ jobs:
           --repo "${{ github.repository }}"
           --predicate-type https://spdx.dev/Document/v2.3
 
+      - name: Scan exact release image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ env.IMAGE_REPOSITORY }}@${{ steps.image.outputs.digest }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          grype-version: 0.116.0
+          config: security/control-plane-grype.yaml
+          output-format: sarif
+          output-file: control-plane-release-grype.sarif
+
       - name: Install Hex and Rebar
         run: |
           mix local.hex 2.5.1 --force
-          mix local.rebar rebar3 https://builds.hex.pm/installs/1.18.4/rebar3-3.25.1-otp-28 --sha512 992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24 --force
+          mix local.rebar rebar3 https://github.com/erlang/rebar3/releases/download/3.27.0/rebar3 --sha512 0d00494d849fdc521a55142278d1f6ba552954fbd65b80d40df8022f594f05d6c99ed1d731bc263691a04176e11d4c6e126c56ba20dca19c5e42d4ffab2e7e36 --force
 
       - name: Compile release qualification tests
         env:

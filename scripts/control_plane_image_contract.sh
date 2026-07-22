@@ -24,7 +24,7 @@ inspect() {
 [[ $(inspect '{{ index .Config.Labels "org.opencontainers.image.source" }}') == https://github.com/eirhop/favn ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.control-plane.build-id" }}') == "$build_id" ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.elixir-version" }}') == 1.20.2 ]]
-[[ $(inspect '{{ index .Config.Labels "io.favn.otp-version" }}') == 28.3.3 ]]
+[[ $(inspect '{{ index .Config.Labels "io.favn.otp-version" }}') == 29.0.3 ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.target" }}') == linux/amd64 ]]
 [[ $(inspect '{{range .Config.Env}}{{println .}}{{end}}' | grep '^LANG=') == LANG=C.UTF-8 ]]
 [[ $(inspect '{{range .Config.Env}}{{println .}}{{end}}' | grep '^LC_ALL=') == LC_ALL=C.UTF-8 ]]
@@ -46,7 +46,7 @@ test -x /app/bin/favn_control_plane_health
 test -x /app/bin/favn_control_plane_ops
 test -f /app/control-plane-build.json
 test "$(cat /app/runtime-versions/ELIXIR_VERSION)" = 1.20.2
-test "$(cat /app/runtime-versions/OTP_VERSION)" = 28.3.3
+test "$(cat /app/runtime-versions/OTP_VERSION)" = 29.0.3
 test ! -e /app/releases/COOKIE
 ! find /app -type f \( -name COOKIE -o -name .erlang.cookie \) | grep -q .
 find /app/lib -maxdepth 1 -type d -name 'favn_core-*' | grep -q .

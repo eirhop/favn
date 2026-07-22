@@ -7,8 +7,10 @@ Authoring and manifest compilation remain owned by `favn_authoring`.
 ## Supported local runtime
 
 Local development requires a reachable Linux amd64 Docker Engine and Docker
-Compose v2 or newer. Docker Desktop with the WSL2 amd64 engine is supported.
-There is one supported topology:
+Compose v2 or newer, plus Elixir `1.20.2` on Erlang/OTP `29` for host Mix
+commands. The host compiler must match the pinned customer-runner compiler.
+Docker Desktop with the WSL2 amd64 engine is supported. There is one supported
+topology:
 
 - digest-pinned PostgreSQL 18;
 - the prebuilt, version-matched Favn control-plane image;

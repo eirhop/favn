@@ -48,6 +48,21 @@ defmodule Favn.Dev.Build.RunnerTest do
     %{root_dir: root_dir}
   end
 
+  test "requires the host compiler to match the pinned runner compiler" do
+    expected = %{elixir_version: "1.20.2", otp_release: "29"}
+
+    assert RunnerReleaseInput.expected_toolchain() == expected
+    assert :ok = RunnerReleaseInput.validate_host_toolchain()
+
+    assert {:error,
+            {:runner_build_toolchain_mismatch, ^expected,
+             %{elixir_version: "1.20.2", otp_release: "28"}}} =
+             RunnerReleaseInput.validate_toolchain(%{
+               elixir_version: "1.20.2",
+               otp_release: "28"
+             })
+  end
+
   test "build_runner/1 writes an immutable relocatable OCI context", %{root_dir: root_dir} do
     install!(root_dir)
 
@@ -100,10 +115,10 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert dockerfile =~ "RUN rm -f /opt/favn/releases/COOKIE"
     assert dockerfile =~ "snapshot.debian.org/archive/debian/20260713T000000Z"
     assert dockerfile =~ "mix local.hex 2.5.1 --force"
-    assert dockerfile =~ "rebar3-3.25.1-otp-28"
+    assert dockerfile =~ "rebar3/releases/download/3.27.0/rebar3"
     assert dockerfile =~ "mix deps.get --only prod --check-locked"
     assert dockerfile =~ "io.favn.elixir-version=\"1.20.2\""
-    assert dockerfile =~ "io.favn.otp-version=\"28.3.3\""
+    assert dockerfile =~ "io.favn.otp-version=\"29.0.3\""
     assert dockerfile =~ "LANG=C.UTF-8 LC_ALL=C.UTF-8"
     refute dockerfile =~ root_dir
 
@@ -621,7 +636,7 @@ defmodule Favn.Dev.Build.RunnerTest do
              )
 
     assert String.trim(image_metadata) ==
-             "10001:10001|amd64|#{descriptor.runner_release_id}|1.20.2|28.3.3"
+             "10001:10001|amd64|#{descriptor.runner_release_id}|1.20.2|29.0.3"
 
     assert {_output, 0} =
              System.cmd(
@@ -633,7 +648,7 @@ defmodule Favn.Dev.Build.RunnerTest do
                  "/bin/sh",
                  image,
                  "-c",
-                 "set -- /opt/favn/lib/favn_local-*/ebin/Elixir.Favn.Dev.Build.Runner.beam; test ! -e \"$1\"; test ! -e /opt/favn/releases/COOKIE; ! find /opt/favn -type f -name .erlang.cookie | grep -q .; test \"$(cat /opt/favn/runtime-versions/ELIXIR_VERSION)\" = 1.20.2; test \"$(cat /opt/favn/runtime-versions/OTP_VERSION)\" = 28.3.3"
+                 "set -- /opt/favn/lib/favn_local-*/ebin/Elixir.Favn.Dev.Build.Runner.beam; test ! -e \"$1\"; test ! -e /opt/favn/releases/COOKIE; ! find /opt/favn -type f -name .erlang.cookie | grep -q .; test \"$(cat /opt/favn/runtime-versions/ELIXIR_VERSION)\" = 1.20.2; test \"$(cat /opt/favn/runtime-versions/OTP_VERSION)\" = 29.0.3"
                ],
                stderr_to_stdout: true
              )

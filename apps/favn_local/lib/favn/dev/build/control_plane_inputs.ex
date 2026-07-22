@@ -4,12 +4,12 @@ defmodule Favn.Dev.Build.ControlPlaneInputs do
   alias Favn.ControlPlaneBuild
   alias Favn.Manifest.ContractVersions
 
-  @builder_image "hexpm/elixir:1.20.2-erlang-28.3.3-debian-bookworm-20260713-slim@sha256:874b36d3e432c42a4f78e12fbe251c5e6c3b1342c8f1072e25dc418b823c31ba"
-  @runtime_image "debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"
+  @builder_image "hexpm/elixir:1.20.2-erlang-29.0.3-debian-trixie-20260713-slim@sha256:6fcd8ea864221b960c1ec418e3b10fa488298ff9e70c9e0f3db18070e610fb8a"
+  @runtime_image "debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd"
   @target "linux/amd64"
-  @target_os "debian/bookworm-slim"
+  @target_os "debian/trixie-slim"
   @elixir_version "1.20.2"
-  @otp_version "28.3.3"
+  @otp_version "29.0.3"
   @ignored_directory_components ~w(.git .favn _build deps test docs doc node_modules)
   @assembly_inputs [
     "apps/favn_local/lib/favn/dev/build/artifact.ex",

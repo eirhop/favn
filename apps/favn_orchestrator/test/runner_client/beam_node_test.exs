@@ -171,6 +171,7 @@ defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
     started_distribution? = not Node.alive?()
 
     if started_distribution? do
+      assert {_, 0} = System.cmd("epmd", ["-daemon"], stderr_to_stdout: true)
       client_name = String.to_atom("favn_beam_client_#{System.unique_integer([:positive])}")
       assert {:ok, _pid} = Node.start(client_name, :shortnames)
     end

@@ -8,7 +8,9 @@ storage, or UI implementation apps directly.
 Docker Engine and Docker Compose v2 are mandatory. Favn supports Linux amd64 and
 amd64 WSL2 using Linux containers. Native Windows, arm64, macOS emulation, and
 Podman are not supported in v1. Authenticate Docker to the private GHCR package
-with a pull-only credential before `mix favn.install`.
+with a pull-only credential before `mix favn.install`. Run the host Mix commands
+with Elixir `1.20.2` on Erlang/OTP `29`; this must match the pinned compiler used
+to build the customer runner image.
 
 ## First Local Flow
 

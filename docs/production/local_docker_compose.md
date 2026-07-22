@@ -9,10 +9,13 @@ network.
 
 - Linux amd64 with Docker Engine and Docker Compose v2;
 - amd64 WSL2 using Docker Desktop's Linux container engine and Compose v2; and
+- Elixir `1.20.2` running on Erlang/OTP `29` for the host Mix commands; and
 - authenticated pull access to the private GHCR control-plane package.
 
 Native Windows, arm64, macOS emulation, and Podman are not supported in v1. Host
-and engine probes fail before pulling images or starting services.
+compiler and engine probes fail before pulling images or starting services. The
+host compiler must match the pinned runner compiler because authored modules are
+compiled before they are vendored into the reproducible runner image context.
 
 Authenticate Docker with a pull-only GitHub credential outside Favn:
 

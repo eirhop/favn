@@ -120,6 +120,18 @@ build marker and exact-SHA marker are required by release promotion. Registry
 lookup and validation errors fail the workflow; they are not interpreted as a
 cache miss.
 
+Candidate and newly published images are scanned with pinned Grype `0.116.0`.
+Any high or critical finding with an available fix fails the build. The tracked
+policy at `security/control-plane-grype.yaml` names each Debian vulnerability,
+package, and vendor fix state individually; it never hides all unfixed findings.
+Those narrow exceptions stop matching as soon as Debian publishes a fix, and CI
+also rejects image qualification and release promotion after the explicit
+review deadline until maintainers upgrade the base snapshot or review each
+remaining exception. Scan policy is not an image-byte input and therefore does
+not change `control_plane_build_id`; policy-only pull requests instead pull and
+rescan the exact verified digest, while reused main and release images are
+rescanned before aliases are added.
+
 ## Runtime contract
 
 The final image:
@@ -127,7 +139,7 @@ The final image:
 - is based on digest-pinned Debian builder and runtime images;
 - downloads the fixed Tailwind and esbuild asset binaries before compilation
   and verifies their pinned SHA-256 checksums;
-- records and verifies the actual Elixir `1.20.2` and OTP `28.3.3` files copied
+- records and verifies the actual Elixir `1.20.2` and OTP `29.0.3` files copied
   from the pinned builder;
 - runs as non-root UID/GID `10001:10001` from `/app`;
 - starts `/app/bin/favn_control_plane start`;

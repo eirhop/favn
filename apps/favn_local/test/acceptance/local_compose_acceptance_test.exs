@@ -17,7 +17,7 @@ defmodule Favn.Local.ComposeAcceptanceTest do
   @moduletag :container
   @moduletag timeout: 1_200_000
 
-  @reference_proxy_image "nginx@sha256:123827f4a105eee4054d59a0080f7860b2a7e29fe138d132af7850843b54c833"
+  @reference_proxy_image "nginx:1.30.4@sha256:5cf90903deda2c5981b8ad05e7617ac010e389f0dde0ac83487c02c509281de6"
 
   @runner_environment %{
     "FAVN_ACCEPTANCE_DOLLARS" => "$HOME and ${UNSET_VALUE}",

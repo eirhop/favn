@@ -54,6 +54,7 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
     assert "apps/favn_local/lib/favn/dev/build/artifact.ex" in paths
     assert "apps/favn_local/lib/favn/dev/build/control_plane.ex" in paths
     assert "apps/favn_local/lib/favn/dev/build/control_plane_inputs.ex" in paths
+    refute "security/control-plane-grype.yaml" in paths
     assert "mix.lock/phoenix" in paths
     assert "mix.lock/postgrex" in paths
     assert "mix.lock/heroicons" in paths
@@ -251,6 +252,7 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
     refute File.exists?(Path.join(result.context_dir, "apps/favn_local"))
     refute File.exists?(Path.join(result.context_dir, "apps/favn_authoring"))
     refute File.exists?(Path.join(result.context_dir, "apps/favn_view/test"))
+    refute File.exists?(Path.join(result.context_dir, "security/control-plane-grype.yaml"))
 
     assert Bitwise.band(File.stat!(result.context_dir).mode, 0o777) == 0o755
 
@@ -263,10 +265,10 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
 
     dockerfile = File.read!(Path.join(result.context_dir, "rel/control_plane/Dockerfile"))
     assert dockerfile =~ "mix deps.get --only prod --check-locked"
-    assert dockerfile =~ "tailwind-linux-x64-4.1.12"
-    assert dockerfile =~ "5eeee66ea237eae9a160fa3314fd0cf76ab993551a99fafb16fa1db6c6b90289"
+    assert dockerfile =~ "tailwind-linux-x64-4.3.3"
+    assert dockerfile =~ "dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a"
     assert dockerfile =~ "esbuild-linux-x64"
-    assert dockerfile =~ "93433b456cac3a454ee27403d3de9adce88d83e5439ba37e1471af54730c9ca7"
+    assert dockerfile =~ "0c6588b092a2c291a72bab90659f3c9e0e25e0fe59c9ac12b4dae4d945e5548c"
 
     context_lock = Mix.Dep.Lock.read(Path.join(result.context_dir, "mix.lock"))
     descriptor = result.descriptor_path |> File.read!() |> JSON.decode!()
@@ -414,7 +416,7 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
     test -x /app/bin/favn_control_plane_ops
     test -f /app/control-plane-build.json
     test "$(cat /app/runtime-versions/ELIXIR_VERSION)" = 1.20.2
-    test "$(cat /app/runtime-versions/OTP_VERSION)" = 28.3.3
+    test "$(cat /app/runtime-versions/OTP_VERSION)" = 29.0.3
     test ! -e /app/releases/COOKIE
     ! find /app -type f '(' -name COOKIE -o -name .erlang.cookie ')' | grep -q .
     test -d /app/lib/favn_view-0.1.0

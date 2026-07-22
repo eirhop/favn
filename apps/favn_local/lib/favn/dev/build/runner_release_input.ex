@@ -4,15 +4,53 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
   alias Favn.Dev.Build.Artifact
   alias Favn.RunnerRelease
 
-  @builder_image "hexpm/elixir:1.20.2-erlang-28.3.3-debian-bookworm-20260713-slim@sha256:874b36d3e432c42a4f78e12fbe251c5e6c3b1342c8f1072e25dc418b823c31ba"
-  @runtime_image "debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"
+  @builder_image "hexpm/elixir:1.20.2-erlang-29.0.3-debian-trixie-20260713-slim@sha256:6fcd8ea864221b960c1ec418e3b10fa488298ff9e70c9e0f3db18070e610fb8a"
+  @runtime_image "debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd"
   @debian_snapshot "20260713T000000Z"
   @elixir_version "1.20.2"
-  @otp_version "28.3.3"
+  @otp_version "29.0.3"
+  @otp_release "29"
   @hex_version "2.5.1"
-  @rebar_url "https://builds.hex.pm/installs/1.18.4/rebar3-3.25.1-otp-28"
-  @rebar_sha512 "992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24"
+  @rebar_url "https://github.com/erlang/rebar3/releases/download/3.27.0/rebar3"
+  @rebar_sha512 "0d00494d849fdc521a55142278d1f6ba552954fbd65b80d40df8022f594f05d6c99ed1d731bc263691a04176e11d4c6e126c56ba20dca19c5e42d4ffab2e7e36"
   @release_version "1.0.0"
+
+  @type toolchain :: %{
+          required(:elixir_version) => String.t(),
+          required(:otp_release) => String.t()
+        }
+
+  @doc false
+  @spec expected_toolchain() :: toolchain()
+  def expected_toolchain do
+    %{elixir_version: @elixir_version, otp_release: @otp_release}
+  end
+
+  @doc false
+  @spec validate_host_toolchain() ::
+          :ok | {:error, {:runner_build_toolchain_mismatch, toolchain(), toolchain()}}
+  def validate_host_toolchain do
+    actual = %{
+      elixir_version: System.version(),
+      otp_release: to_string(:erlang.system_info(:otp_release))
+    }
+
+    validate_toolchain(actual)
+  end
+
+  @doc false
+  @spec validate_toolchain(toolchain()) ::
+          :ok | {:error, {:runner_build_toolchain_mismatch, toolchain(), toolchain()}}
+  def validate_toolchain(actual) when is_map(actual) do
+    expected = expected_toolchain()
+
+    if actual == expected do
+      :ok
+    else
+      {:error, {:runner_build_toolchain_mismatch, expected, actual}}
+    end
+  end
+
   @spec write(Path.t(), map(), keyword()) :: :ok | {:error, term()}
   def write(artifact_dir, inputs, _opts \\ []) when is_binary(artifact_dir) and is_map(inputs) do
     release_input = Path.join(artifact_dir, "release-input")
@@ -417,7 +455,7 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
       RUN mix release favn_runner
       RUN mkdir -p /build/runtime-versions \\
         && elixir -e 'IO.write(System.version())' > /build/runtime-versions/ELIXIR_VERSION \\
-        && cp /usr/local/lib/erlang/releases/28/OTP_VERSION /build/runtime-versions/OTP_VERSION \\
+        && cp /usr/local/lib/erlang/releases/#{@otp_release}/OTP_VERSION /build/runtime-versions/OTP_VERSION \\
         && test "$(cat /build/runtime-versions/ELIXIR_VERSION)" = "#{@elixir_version}" \\
         && test "$(cat /build/runtime-versions/OTP_VERSION)" = "#{@otp_version}"
 

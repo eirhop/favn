@@ -44,7 +44,7 @@ config :favn_view, FavnView.Endpoint,
   live_view: [signing_salt: "Pqi8zx5Q"]
 
 config :esbuild,
-  version: "0.25.4",
+  version: "0.28.1",
   favn_view: [
     args:
       ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
@@ -53,7 +53,7 @@ config :esbuild,
   ]
 
 config :tailwind,
-  version: "4.1.12",
+  version: "4.3.3",
   favn_view: [
     args: ~w(
       --input=assets/css/app.css

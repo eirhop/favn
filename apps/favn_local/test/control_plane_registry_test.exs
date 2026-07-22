@@ -115,18 +115,63 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     release_workflow =
       File.read!(Path.join(@repo_root, ".github/workflows/control-plane-release.yml"))
 
+    grype_policy = File.read!(Path.join(@repo_root, "security/control-plane-grype.yaml"))
+
     assert Regex.scan(
              ~r/otp-version: '([^']+)'/,
              ci_workflow <> image_workflow <> release_workflow,
              capture: :all_but_first
            )
            |> List.flatten()
-           |> Enum.uniq() == ["28.3.3"]
+           |> Enum.uniq() == ["29.0.3"]
 
     refute ci_workflow =~ "28.4.2"
     refute image_workflow =~ "28.4.2"
     refute release_workflow =~ "28.4.2"
     assert image_workflow =~ "mix local.hex 2.5.1 --force"
+    refute ci_workflow =~ "mix local.hex --force"
+    refute ci_workflow =~ "mix local.rebar --force"
+    assert length(Regex.scan(~r/mix local\.hex 2\.5\.1 --force/, ci_workflow)) == 3
+
+    assert length(
+             Regex.scan(
+               ~r{mix local\.rebar rebar3 https://github\.com/erlang/rebar3/releases/download/3\.27\.0/rebar3},
+               ci_workflow
+             )
+           ) == 3
+
+    assert length(Regex.scan(~r/grype-version: 0\.116\.0/, image_workflow)) == 4
+    assert length(Regex.scan(~r/grype-version: 0\.116\.0/, release_workflow)) == 1
+    assert length(Regex.scan(~r/config: security\/control-plane-grype\.yaml/, image_workflow)) == 4
+
+    assert length(
+             Regex.scan(~r/config: security\/control-plane-grype\.yaml/, release_workflow)
+           ) == 1
+
+    assert length(Regex.scan(~r/only-fixed: false/, image_workflow)) == 4
+    assert length(Regex.scan(~r/only-fixed: false/, release_workflow)) == 1
+    refute image_workflow =~ "only-fixed: true"
+    refute release_workflow =~ "only-fixed: true"
+
+    assert length(
+             Regex.scan(
+               ~r/VULNERABILITY_EXCEPTION_REVIEW_BY: '2026-08-22'/,
+             image_workflow
+             )
+           ) == 4
+
+    assert release_workflow =~ "VULNERABILITY_EXCEPTION_REVIEW_BY: '2026-08-22'"
+    assert image_workflow =~ "security/control-plane-grype.yaml|.github/workflows/control-plane-image.yml"
+
+    [discover_job, _rest] = String.split(image_workflow, "  pr-candidate:", parts: 2)
+    assert discover_job =~ "Enforce vulnerability exception review deadline"
+    assert discover_job =~ "VULNERABILITY_EXCEPTION_REVIEW_BY: '2026-08-22'"
+
+    assert grype_policy =~ "Review by: 2026-08-22"
+    assert length(Regex.scan(~r/^  - vulnerability:/m, grype_policy)) == 26
+    assert length(Regex.scan(~r/^    fix-state: (?:not-fixed|wont-fix)$/m, grype_policy)) == 26
+    assert length(Regex.scan(~r/^      name: /m, grype_policy)) == 26
+    refute grype_policy =~ "ignore-wontfix"
     assert image_workflow =~ "control_plane_registry.sh record-alias"
     assert image_workflow =~ ~s($IMAGE_REPOSITORY:sha-$HEAD_SHA)
     assert Bitwise.band(File.stat!(@script).mode, 0o111) != 0
@@ -139,6 +184,7 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
     refute pr_job =~ "packages: write"
     assert pr_job =~ "pr-runtime-acceptance:"
     assert pr_job =~ "runtime_acceptance_changed == 'true'"
+    assert pr_job =~ "Scan current official control plane"
     assert image_workflow =~ "apps/favn_azure/*"
     assert pr_job =~ ~s(ref="$IMAGE_REPOSITORY:build-$BUILD_ID")
 
@@ -164,6 +210,8 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
 
     assert main_job =~
              "- name: Run complete pre-publish container acceptance\n        if: steps.lookup.outputs.exists == 'false'"
+
+    assert main_job =~ "Scan reused official control plane"
 
     [record_job, _rest] =
       image_workflow

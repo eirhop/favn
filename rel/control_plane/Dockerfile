@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 hexpm/elixir:1.20.2-erlang-28.3.3-debian-bookworm-20260713-slim@sha256:874b36d3e432c42a4f78e12fbe251c5e6c3b1342c8f1072e25dc418b823c31ba AS builder
+FROM --platform=linux/amd64 hexpm/elixir:1.20.2-erlang-29.0.3-debian-trixie-20260713-slim@sha256:6fcd8ea864221b960c1ec418e3b10fa488298ff9e70c9e0f3db18070e610fb8a AS builder
 
 ENV MIX_ENV=prod
 WORKDIR /build
@@ -11,12 +11,12 @@ RUN sed -i \
     && apt-get install -y --no-install-recommends build-essential ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 RUN mix local.hex 2.5.1 --force \
-    && mix local.rebar rebar3 https://builds.hex.pm/installs/1.18.4/rebar3-3.25.1-otp-28 \
-         --sha512 992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24 \
+    && mix local.rebar rebar3 https://github.com/erlang/rebar3/releases/download/3.27.0/rebar3 \
+         --sha512 0d00494d849fdc521a55142278d1f6ba552954fbd65b80d40df8022f594f05d6c99ed1d731bc263691a04176e11d4c6e126c56ba20dca19c5e42d4ffab2e7e36 \
          --force
-RUN test "$(cat /usr/local/lib/erlang/releases/28/OTP_VERSION)" = 28.3.3 \
+RUN test "$(cat /usr/local/lib/erlang/releases/29/OTP_VERSION)" = 29.0.3 \
     && install -d /build/runtime-versions \
-    && cp /usr/local/lib/erlang/releases/28/OTP_VERSION /build/runtime-versions/OTP_VERSION \
+    && cp /usr/local/lib/erlang/releases/29/OTP_VERSION /build/runtime-versions/OTP_VERSION \
     && elixir -e 'IO.write(System.version())' > /build/runtime-versions/ELIXIR_VERSION \
     && test "$(cat /build/runtime-versions/ELIXIR_VERSION)" = 1.20.2
 
@@ -29,9 +29,9 @@ COPY apps/favn_storage_postgres/mix.exs apps/favn_storage_postgres/mix.exs
 COPY apps/favn_view/mix.exs apps/favn_view/mix.exs
 RUN mix deps.get --only prod --check-locked && mix deps.compile
 RUN mix do --app favn_view cmd mix tailwind.install \
-    && echo '5eeee66ea237eae9a160fa3314fd0cf76ab993551a99fafb16fa1db6c6b90289  /build/_build/tailwind-linux-x64-4.1.12' | sha256sum --check --strict
+    && echo 'dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a  /build/_build/tailwind-linux-x64-4.3.3' | sha256sum --check --strict
 RUN mix do --app favn_view cmd mix esbuild.install \
-    && echo '93433b456cac3a454ee27403d3de9adce88d83e5439ba37e1471af54730c9ca7  /build/_build/esbuild-linux-x64' | sha256sum --check --strict
+    && echo '0c6588b092a2c291a72bab90659f3c9e0e25e0fe59c9ac12b4dae4d945e5548c  /build/_build/esbuild-linux-x64' | sha256sum --check --strict
 
 COPY apps/ apps/
 COPY control-plane-build.json control-plane-build.json
@@ -39,7 +39,7 @@ RUN mix do --app favn_view cmd mix assets.deploy
 RUN mix release favn_control_plane --overwrite \
     && elixir rel/control_plane/sanitize_sys_config.exs _build/prod/rel/favn_control_plane
 
-FROM --platform=linux/amd64 debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e AS runtime
+FROM --platform=linux/amd64 debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime
 
 RUN sed -i \
       -e 's|URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/20260713T000000Z|' \
@@ -81,7 +81,7 @@ LABEL org.opencontainers.image.title="Favn control plane" \
       io.favn.manifest-schema-version="$FAVN_MANIFEST_SCHEMA_VERSION" \
       io.favn.runner-contract-version="$FAVN_RUNNER_CONTRACT_VERSION" \
       io.favn.elixir-version="1.20.2" \
-      io.favn.otp-version="28.3.3" \
+      io.favn.otp-version="29.0.3" \
       io.favn.target="linux/amd64"
 
 ENV HOME=/tmp/favn \
