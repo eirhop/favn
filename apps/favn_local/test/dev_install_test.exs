@@ -22,6 +22,7 @@ defmodule Favn.Dev.InstallTest do
     %{root_dir: root_dir}
   end
 
+  @tag :acceptance
   test "install resolves an official tag to a verified digest and writes Compose state", %{
     root_dir: root_dir
   } do

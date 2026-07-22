@@ -58,8 +58,8 @@ It is not an application-process launcher.
 - Shared canonical customer project:
   `apps/favn_local/test_support/canonical_sample_project.exs`.
 
-The real-image cases carry both `:acceptance` and `:container`. They run through
-`mix test.container`; ordinary acceptance excludes them deliberately.
+The real-image cases carry only `:container` and run through
+`mix test.container`; ordinary acceptance remains a separate tier.
 
 ## Invariants
 
@@ -82,7 +82,7 @@ The real-image cases carry both `:acceptance` and `:container`. They run through
 From the umbrella root:
 
 ```bash
-MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser --exclude container
+MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude container --exclude slow --exclude browser
 FAVN_CONTROL_PLANE_CANDIDATE=<loaded-candidate> mix test.container
 ```
 

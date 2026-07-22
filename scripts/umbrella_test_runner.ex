@@ -21,6 +21,8 @@ defmodule Favn.UmbrellaTestRunner do
     "--exclude",
     "acceptance",
     "--exclude",
+    "container",
+    "--exclude",
     "slow",
     "--exclude",
     "browser"

@@ -14,7 +14,6 @@ defmodule Favn.Local.ComposeAcceptanceTest do
   }
 
   @moduletag :integration
-  @moduletag :acceptance
   @moduletag :container
   @moduletag timeout: 1_200_000
 
