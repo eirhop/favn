@@ -134,6 +134,7 @@ defmodule Favn.Source do
   @spec finalize_raw_asset(map()) :: Asset.t()
   def finalize_raw_asset(raw_asset) when is_map(raw_asset) do
     namespace = Namespace.resolve(raw_asset.module)
+    validate_no_inherited_coverage!(namespace)
 
     meta =
       namespace
@@ -218,6 +219,13 @@ defmodule Favn.Source do
     Asset.validate!(asset)
   rescue
     error in ArgumentError -> compile_error!(env.file, env.line, error.message)
+  end
+
+  defp validate_no_inherited_coverage!(%Favn.Namespace.Config{coverage: {:set, nil}}), do: :ok
+  defp validate_no_inherited_coverage!(%Favn.Namespace.Config{coverage: :unset}), do: :ok
+
+  defp validate_no_inherited_coverage!(%Favn.Namespace.Config{coverage: {:set, _coverage}}) do
+    raise ArgumentError, "coverage requires an effective asset window"
   end
 
   defp normalize_doc({_line, false}), do: nil

@@ -9,10 +9,11 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
 ## Authoring and execution
 
 - The `favn` package provides manifest-first asset, SQL-asset, pipeline, schedule,
-  window, freshness, retry, settings, and runtime-input DSLs.
-- Compilation produces a deterministic schema-10 manifest bound to the exact
+  window, coverage, freshness, retry, settings, and runtime-input DSLs.
+- Compilation produces a deterministic schema-11 manifest bound to the exact
   verified runner release, with graph metadata, compact catalogue/planning indexes,
-  and content-addressed SQL execution packages.
+  content-addressed SQL execution packages, environment-resolved timezones and
+  coverage, provenance, and desired SQL target descriptors.
 - SQL output contracts validate ordered columns/types, lineage, grain, uniqueness,
   nullability, and up to 16 ordered conditional row-count claims.
 - Planning supports asset and pipeline targets, dependency selection, refresh

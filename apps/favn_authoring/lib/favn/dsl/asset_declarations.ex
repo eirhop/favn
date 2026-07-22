@@ -6,6 +6,7 @@ defmodule Favn.DSL.AssetDeclarations do
   @legacy_attributes [
     :asset,
     :config,
+    :coverage,
     :custom,
     :defaults,
     :depends,
@@ -30,6 +31,7 @@ defmodule Favn.DSL.AssetDeclarations do
     :settings,
     :meta,
     :depends,
+    :coverage,
     :window,
     :freshness,
     :retry,
@@ -122,6 +124,10 @@ defmodule Favn.DSL.AssetDeclarations do
 
   defmacro window(value) do
     put_declaration(:window, value)
+  end
+
+  defmacro coverage(value) do
+    put_declaration(:coverage, value)
   end
 
   defmacro freshness(value) do

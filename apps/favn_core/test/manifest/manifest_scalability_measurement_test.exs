@@ -65,7 +65,7 @@ defmodule Favn.ManifestScalabilityMeasurementTest do
 
     assert length(packages) == 300
     assert index_bytes < 2 * 1024 * 1024
-    assert projected_6_600_bytes < 32 * 1024 * 1024
+    assert projected_6_600_bytes < 64 * 1024 * 1024
     refute encoded_index =~ ~s|"sql_execution"|
     refute encoded_index =~ ~s|"template"|
 

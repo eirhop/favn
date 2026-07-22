@@ -27,11 +27,11 @@ defmodule Favn.Window do
 
   `hourly/1`, `daily/1`, `monthly/1`, and `yearly/1` accept these keyword options:
 
-  - `lookback`: non-negative integer, defaults to `0`
   - `refresh_from`: lower or equal-granularity calendar cadence, tracked
     separately for every exact runtime window
   - `required`: boolean, defaults to `false`; when `true`, planning must supply a runtime window
-  - `timezone`: IANA timezone string, defaults to `"Etc/UTC"`
+  - `timezone`: optional IANA timezone string; manifest construction applies
+    the application default when omitted
 
   Supported `refresh_from` values:
 
@@ -40,10 +40,11 @@ defmodule Favn.Window do
   - monthly: `nil | :day | :month`
   - yearly: `nil | :month | :year`
 
-  For example, `monthly(lookback: 1, refresh_from: :day)` can plan June and July
-  from a July anchor. Each month runs once per local day; if June succeeded today
-  but July did not, only July remains runnable. Use `refresh_from` for this
-  per-window cadence. An explicit `freshness :daily` is asset-wide instead.
+  Operational lookback belongs to `Favn.Window.Policy` on a pipeline. Asset
+  specs map each supplied anchor without expanding it. For example,
+  `monthly(refresh_from: :day)` tracks the per-window refresh cadence for every
+  exact month selected by the pipeline. An explicit `freshness :daily` is
+  asset-wide instead.
 
   ## Anchor/runtime options
 
@@ -57,7 +58,7 @@ defmodule Favn.Window do
 
       Favn.Window.daily()
 
-      Favn.Window.daily(lookback: 2, refresh_from: :hour, timezone: "Europe/Oslo")
+      Favn.Window.daily(refresh_from: :hour, timezone: "Europe/Oslo")
 
       Favn.Window.monthly(refresh_from: :day)
 
@@ -96,14 +97,13 @@ defmodule Favn.Window do
 
   Supported options:
 
-  - `lookback`
   - `refresh_from: :hour`
   - `required`
   - `timezone`
 
   ## Example
 
-      Favn.Window.hourly(lookback: 6, refresh_from: :hour)
+      Favn.Window.hourly(refresh_from: :hour)
   """
   @spec hourly(keyword()) :: Spec.t()
   def hourly(opts \\ []), do: Spec.new!(:hour, opts)
@@ -113,7 +113,6 @@ defmodule Favn.Window do
 
   Supported options:
 
-  - `lookback`
   - `refresh_from: :hour | :day`
   - `required`
   - `timezone`
@@ -121,8 +120,7 @@ defmodule Favn.Window do
   ## Examples
 
       Favn.Window.daily()
-      Favn.Window.daily(lookback: 1)
-      Favn.Window.daily(lookback: 7, refresh_from: :hour, timezone: "Europe/Oslo")
+      Favn.Window.daily(refresh_from: :hour, timezone: "Europe/Oslo")
   """
   @spec daily(keyword()) :: Spec.t()
   def daily(opts \\ []), do: Spec.new!(:day, opts)
@@ -132,14 +130,13 @@ defmodule Favn.Window do
 
   Supported options:
 
-  - `lookback`
   - `refresh_from: :day | :month`
   - `required`
   - `timezone`
 
   ## Example
 
-      Favn.Window.monthly(lookback: 1, refresh_from: :day)
+      Favn.Window.monthly(refresh_from: :day)
   """
   @spec monthly(keyword()) :: Spec.t()
   def monthly(opts \\ []), do: Spec.new!(:month, opts)
@@ -149,7 +146,6 @@ defmodule Favn.Window do
 
   Supported options:
 
-  - `lookback`
   - `refresh_from: :month | :year`
   - `required`
   - `timezone`

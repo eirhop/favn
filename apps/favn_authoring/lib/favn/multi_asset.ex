@@ -39,7 +39,7 @@ defmodule Favn.MultiAsset do
   function.
 
   Structural ancestor `Favn.Namespace` modules may provide `settings`, `meta`,
-  `runtime_config`, `window`, and `freshness` defaults. Resolution order is
+  `runtime_config`, `window`, `coverage`, and `freshness` defaults. Resolution order is
   namespace root-to-leaf, this module's shared declarations, then each child.
   Settings and metadata shallow-merge, runtime configuration composes through
   normal conflict validation, and child scalar declarations win. Use `nil` in a
@@ -49,6 +49,7 @@ defmodule Favn.MultiAsset do
 
   alias Favn.Asset
   alias Favn.Asset.RelationResolver
+  alias Favn.Coverage.Spec, as: CoverageSpec
   alias Favn.DSL.AssetDeclarations
   alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Namespace
@@ -62,6 +63,7 @@ defmodule Favn.MultiAsset do
     :meta,
     :depends,
     :window,
+    :coverage,
     :freshness,
     :retry,
     :execution_pool,
@@ -92,6 +94,7 @@ defmodule Favn.MultiAsset do
           meta: 1,
           depends: 1,
           window: 1,
+          coverage: 1,
           freshness: 1,
           retry: 1,
           execution_pool: 1,
@@ -114,6 +117,7 @@ defmodule Favn.MultiAsset do
         :meta,
         :depends,
         :window,
+        :coverage,
         :freshness,
         :retry,
         :execution_pool,
@@ -382,6 +386,7 @@ defmodule Favn.MultiAsset do
                :meta,
                :depends,
                :window,
+               :coverage,
                :freshness,
                :retry,
                :execution_pool,
@@ -432,6 +437,7 @@ defmodule Favn.MultiAsset do
       meta: [],
       depends: [],
       window: [],
+      coverage: [],
       freshness: [],
       retry: [],
       execution_pool: [],
@@ -468,10 +474,15 @@ defmodule Favn.MultiAsset do
     depends = Enum.uniq(shared.depends ++ child.depends)
     window_values = select_scalar(namespace, :window, shared.window, child.window)
     window = scalar_value!(:window, [], window_values, env, nil)
+    window = mark_window_source(window, shared.window, child.window)
+
+    coverage_values = select_scalar(namespace, :coverage, shared.coverage, child.coverage)
+    coverage = normalize_coverage!(coverage_values, window, env)
 
     freshness_values = select_scalar(namespace, :freshness, shared.freshness, child.freshness)
 
     freshness = normalize_freshness!(freshness_values, window, env)
+    freshness = mark_freshness_source(freshness, shared.freshness, child.freshness)
     retry = scalar_value!(:retry, shared.retry, child.retry, env, nil)
 
     execution_pool =
@@ -499,6 +510,7 @@ defmodule Favn.MultiAsset do
       meta: meta,
       depends: depends,
       window_spec: window,
+      coverage_spec: coverage,
       freshness: freshness,
       retry_policy: normalize_retry!(retry),
       execution_pool: execution_pool,
@@ -548,6 +560,44 @@ defmodule Favn.MultiAsset do
     error in ArgumentError -> DSLCompiler.compile_error!(env.file, env.line, error.message)
   end
 
+  defp normalize_coverage!([], _window, _env), do: nil
+  defp normalize_coverage!([nil], _window, _env), do: nil
+
+  defp normalize_coverage!([value], %Spec{}, env) do
+    case CoverageSpec.from_value(value) do
+      {:ok, %CoverageSpec{} = spec} -> spec
+      {:error, reason} -> DSLCompiler.compile_error!(env.file, env.line, inspect(reason))
+    end
+  end
+
+  defp normalize_coverage!([_value], nil, env) do
+    DSLCompiler.compile_error!(env.file, env.line, "coverage requires an effective asset window")
+  end
+
+  defp normalize_coverage!(_values, _window, env) do
+    DSLCompiler.compile_error!(
+      env.file,
+      env.line,
+      "multiple coverage declarations are not allowed"
+    )
+  end
+
+  defp mark_window_source(%Spec{} = spec, [], []),
+    do: Spec.with_declaration_source(spec, :namespace)
+
+  defp mark_window_source(%Spec{} = spec, _shared, _child),
+    do: Spec.with_declaration_source(spec, :local)
+
+  defp mark_window_source(nil, _shared, _child), do: nil
+
+  defp mark_freshness_source(%Favn.Freshness.Policy{} = policy, [], []),
+    do: Favn.Freshness.Policy.with_declaration_source(policy, :namespace)
+
+  defp mark_freshness_source(%Favn.Freshness.Policy{} = policy, _shared, _child),
+    do: Favn.Freshness.Policy.with_declaration_source(policy, :local)
+
+  defp mark_freshness_source(nil, _shared, _child), do: nil
+
   defp normalize_retry!(nil), do: nil
   defp normalize_retry!(value), do: Favn.Retry.Policy.new!(value)
 
@@ -595,6 +645,7 @@ defmodule Favn.MultiAsset do
       settings: raw_asset.settings,
       runtime_config: raw_asset.runtime_config,
       window_spec: raw_asset.window_spec,
+      coverage_spec: raw_asset.coverage_spec,
       freshness: raw_asset.freshness,
       retry_policy: raw_asset.retry_policy,
       execution_pool: raw_asset.execution_pool,

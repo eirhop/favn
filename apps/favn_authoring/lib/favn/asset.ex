@@ -55,7 +55,7 @@ defmodule Favn.Asset do
 
   - define exactly one public `asset/1`
   - use `@doc` for the real `asset/1` function
-  - declare `settings`, `meta`, `depends`, `window`, `freshness`, `retry`,
+  - declare `settings`, `meta`, `depends`, `window`, `coverage`, `freshness`, `retry`,
     `execution_pool`, `relation`, and `runtime_config` before `asset/1`
   - repeat `depends` for multiple upstream dependencies
   - repeat `settings` or `meta` to shallow-merge declarations from left to right
@@ -64,11 +64,11 @@ defmodule Favn.Asset do
   ## Namespace inheritance
 
   Structural ancestor `Favn.Namespace` modules may provide `settings`, `meta`,
-  `runtime_config`, `window`, and `freshness` defaults. Favn resolves ancestors
+  `runtime_config`, `window`, `coverage`, and `freshness` defaults. Favn resolves ancestors
   root-to-leaf and applies this asset's declarations last. Settings and metadata
   shallow-merge, runtime configuration composes through its normal conflict
-  validation, and the closest window or freshness declaration wins. Use `nil`
-  locally to clear an inherited optional scalar.
+  validation, and the closest window, coverage, or freshness declaration wins.
+  Use `nil` locally to clear an inherited optional scalar.
 
   The asset module uses only `Favn.Asset`; module ancestry selects namespace
   defaults automatically. Dependencies, retry policy, execution pool, relation
@@ -83,6 +83,7 @@ defmodule Favn.Asset do
     strings
   - `depends`: repeatable dependency declaration
   - `window`: one `Favn.Window.*` spec
+  - `coverage`: expected historical windows for a windowed asset
   - `freshness`: optional asset freshness policy
   - `retry`: optional node-attempt retry policy overriding the pipeline default
   - `execution_pool`: optional orchestrator admission pool
@@ -148,7 +149,8 @@ defmodule Favn.Asset do
 
   Supported V1 values are:
 
-  - `:daily` or `:day`: one success per local calendar day in `"Etc/UTC"`
+  - `:daily` or `:day`: one success per local calendar day, using the effective
+    asset-window timezone or the application default for a non-windowed asset
   - `{:daily, timezone: "Europe/Oslo"}`: one success per local day in the given timezone
   - `[max_age: {:hours, 6}]`: rolling max age, using `{unit, amount}`
   - `[window_success: true]`: one success for the exact runtime window
@@ -158,8 +160,8 @@ defmodule Favn.Asset do
   is declared. Non-windowed assets have no implicit freshness. `:always` is the
   explicit opt-out from that window default. A window spec with `refresh_from`
   retains exact-window identity while adding a calendar refresh cadence. For
-  example, `Favn.Window.monthly(lookback: 1, refresh_from: :day)` tracks today's
-  success independently for the current and previous month. An explicit
+  example, `Favn.Window.monthly(refresh_from: :day)` tracks today's success
+  independently for each exact month selected by the pipeline. An explicit
   `freshness :daily` is asset-wide and does not provide that per-window identity.
 
       window Favn.Window.daily()
@@ -304,6 +306,7 @@ defmodule Favn.Asset do
 
   alias Favn.Asset.Dependency
   alias Favn.Asset.RelationInput
+  alias Favn.Coverage.Spec, as: CoverageSpec
   alias Favn.Diagnostic
   alias Favn.DSL.AssetDeclarations
   alias Favn.DSL.Compiler, as: DSLCompiler
@@ -332,6 +335,7 @@ defmodule Favn.Asset do
           meta: 1,
           depends: 1,
           window: 1,
+          coverage: 1,
           freshness: 1,
           retry: 1,
           execution_pool: 1,
@@ -399,6 +403,7 @@ defmodule Favn.Asset do
              :settings,
              :meta,
              :depends,
+             :coverage,
              :freshness,
              :retry,
              :execution_pool,
@@ -451,6 +456,7 @@ defmodule Favn.Asset do
           dependencies: [Dependency.t()],
           settings: Favn.Settings.t(),
           window_spec: Spec.t() | nil,
+          coverage_spec: CoverageSpec.t() | nil,
           freshness: FreshnessPolicy.t() | nil,
           retry_policy: Favn.Retry.Policy.t() | nil,
           execution_pool: atom() | nil,
@@ -482,6 +488,7 @@ defmodule Favn.Asset do
     dependencies: [],
     settings: %{},
     window_spec: nil,
+    coverage_spec: nil,
     freshness: nil,
     retry_policy: nil,
     execution_pool: nil,
@@ -511,6 +518,7 @@ defmodule Favn.Asset do
     validate_entrypoint!(asset.entrypoint)
     settings = Favn.Settings.normalize!(asset.settings)
     validate_window_spec!(asset.window_spec)
+    validate_coverage_spec!(asset.coverage_spec, asset.window_spec)
     validate_freshness!(asset.freshness)
     validate_retry_policy!(asset.retry_policy)
     validate_execution_pool!(asset.execution_pool)
@@ -639,6 +647,25 @@ defmodule Favn.Asset do
           "asset window_spec must be a Favn.Window.Spec or nil, got: #{inspect(value)}"
   end
 
+  defp validate_coverage_spec!(nil, _window_spec), do: :ok
+
+  defp validate_coverage_spec!(%CoverageSpec{} = spec, %Spec{}) do
+    case CoverageSpec.validate(spec) do
+      {:ok, ^spec} -> :ok
+      {:ok, _normalized} -> raise ArgumentError, "asset coverage must already be normalized"
+      {:error, reason} -> raise ArgumentError, "invalid asset coverage: #{inspect(reason)}"
+    end
+  end
+
+  defp validate_coverage_spec!(%CoverageSpec{}, nil) do
+    raise ArgumentError, "coverage requires an effective asset window"
+  end
+
+  defp validate_coverage_spec!(value, _window_spec) do
+    raise ArgumentError,
+          "asset coverage_spec must be a Favn.Coverage.Spec or nil, got: #{inspect(value)}"
+  end
+
   defp validate_freshness!(nil), do: :ok
 
   defp validate_freshness!(%FreshnessPolicy{} = policy) do
@@ -734,6 +761,7 @@ defmodule Favn.Asset do
     settings = AssetDeclarations.take(env.module, :settings)
     depends = AssetDeclarations.take(env.module, :depends)
     freshness = AssetDeclarations.take(env.module, :freshness)
+    coverage = AssetDeclarations.take(env.module, :coverage)
     retry = AssetDeclarations.take(env.module, :retry)
     execution_pool = AssetDeclarations.take(env.module, :execution_pool)
     meta = AssetDeclarations.take(env.module, :meta)
@@ -752,6 +780,7 @@ defmodule Favn.Asset do
       settings: settings,
       depends: depends,
       freshness: freshness,
+      coverage: coverage,
       retry: retry,
       execution_pool: execution_pool,
       meta: meta,
@@ -789,10 +818,19 @@ defmodule Favn.Asset do
       |> Namespace.effective_declarations(:window, raw_asset.window)
       |> normalize_single_asset_window!(raw_asset)
 
+    window_spec = mark_window_source(window_spec, raw_asset.window)
+
+    coverage_spec =
+      namespace
+      |> Namespace.effective_declarations(:coverage, raw_asset.coverage)
+      |> normalize_single_asset_coverage!(window_spec, raw_asset)
+
     freshness =
       namespace
       |> Namespace.effective_declarations(:freshness, raw_asset.freshness)
       |> normalize_single_asset_freshness!(window_spec, raw_asset)
+
+    freshness = mark_freshness_source(freshness, raw_asset.freshness)
 
     retry_policy = normalize_single_asset_retry!(raw_asset.retry, raw_asset)
     execution_pool = normalize_execution_pool!(raw_asset.execution_pool, raw_asset)
@@ -812,6 +850,7 @@ defmodule Favn.Asset do
       settings: settings,
       runtime_config: runtime_config,
       window_spec: window_spec,
+      coverage_spec: coverage_spec,
       freshness: freshness,
       retry_policy: retry_policy,
       execution_pool: execution_pool
@@ -898,6 +937,62 @@ defmodule Favn.Asset do
       "invalid window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
     )
   end
+
+  defp normalize_single_asset_coverage!([], _window_spec, _raw_asset), do: nil
+  defp normalize_single_asset_coverage!([nil], _window_spec, _raw_asset), do: nil
+
+  defp normalize_single_asset_coverage!([value], window_spec, raw_asset) do
+    with %Spec{} <- window_spec,
+         {:ok, %CoverageSpec{} = spec} <- CoverageSpec.from_value(value) do
+      spec
+    else
+      nil ->
+        DSLCompiler.compile_error!(
+          raw_asset.file,
+          raw_asset.line,
+          "coverage requires an effective asset window"
+        )
+
+      {:error, reason} ->
+        DSLCompiler.compile_error!(
+          raw_asset.file,
+          raw_asset.line,
+          "invalid coverage declaration: #{inspect(reason)}"
+        )
+    end
+  end
+
+  defp normalize_single_asset_coverage!([_a, _b | _rest], _window_spec, raw_asset) do
+    DSLCompiler.compile_error!(
+      raw_asset.file,
+      raw_asset.line,
+      "multiple coverage declarations are not allowed; use at most one coverage for def asset(ctx)"
+    )
+  end
+
+  defp normalize_single_asset_coverage!(value, _window_spec, raw_asset) do
+    DSLCompiler.compile_error!(
+      raw_asset.file,
+      raw_asset.line,
+      "invalid coverage value #{inspect(value)}; expected coverage(from: ...)"
+    )
+  end
+
+  defp mark_window_source(%Spec{} = spec, []),
+    do: Spec.with_declaration_source(spec, :namespace)
+
+  defp mark_window_source(%Spec{} = spec, _local),
+    do: Spec.with_declaration_source(spec, :local)
+
+  defp mark_window_source(nil, _local), do: nil
+
+  defp mark_freshness_source(%FreshnessPolicy{} = policy, []),
+    do: FreshnessPolicy.with_declaration_source(policy, :namespace)
+
+  defp mark_freshness_source(%FreshnessPolicy{} = policy, _local),
+    do: FreshnessPolicy.with_declaration_source(policy, :local)
+
+  defp mark_freshness_source(nil, _local), do: nil
 
   defp normalize_single_asset_freshness!(freshness, window_spec, raw_asset) do
     normalize_freshness!(freshness, window_spec, "for def asset(ctx)")

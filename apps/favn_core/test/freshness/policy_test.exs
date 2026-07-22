@@ -5,7 +5,7 @@ defmodule Favn.Freshness.PolicyTest do
 
   describe "from_value/1" do
     test "normalizes daily V1 forms" do
-      assert {:ok, %Policy{mode: :calendar_period, kind: :day, timezone: "Etc/UTC"}} =
+      assert {:ok, %Policy{mode: :calendar_period, kind: :day, timezone: nil}} =
                Policy.from_value(:daily)
 
       assert {:ok, %Policy{mode: :calendar_period, kind: :day, timezone: "Europe/Oslo"}} =
@@ -13,7 +13,7 @@ defmodule Favn.Freshness.PolicyTest do
     end
 
     test "normalizes canonical day aliases" do
-      assert {:ok, %Policy{mode: :calendar_period, kind: :day, timezone: "Etc/UTC"}} =
+      assert {:ok, %Policy{mode: :calendar_period, kind: :day, timezone: nil}} =
                Policy.from_value(:day)
 
       assert {:ok, %Policy{mode: :calendar_period, kind: :day, timezone: "Europe/Oslo"}} =

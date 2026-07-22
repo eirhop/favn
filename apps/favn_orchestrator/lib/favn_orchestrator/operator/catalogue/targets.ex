@@ -223,10 +223,10 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
   defp normalize_data(%WindowSpec{} = spec) do
     %{
       kind: atom_name(spec.kind),
-      lookback: spec.lookback,
       refresh_from: normalize_data(spec.refresh_from),
       required: spec.required,
-      timezone: spec.timezone
+      timezone: spec.timezone,
+      timezone_source: normalize_data(spec.timezone_source)
     }
   end
 

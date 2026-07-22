@@ -46,6 +46,37 @@ Explicit module keys:
 | `:schedule_modules` | list of schedule modules, or `:all` with discovery |
 | `:connection_modules` | list of connection modules, or `:all` with discovery |
 
+## Manifest Environment Defaults
+
+Set one application timezone for schedules, pipeline anchors, asset windows,
+calendar freshness, and coverage:
+
+```elixir
+config :favn,
+  default_timezone: "Europe/Oslo"
+```
+
+The fallback is `"Etc/UTC"`. The value must be a valid IANA timezone; manifest
+construction fails when it is invalid. A timezone declared directly on a
+schedule, pipeline window, asset window, or calendar freshness policy overrides
+the default only for that declaration. These overrides are independent: a
+schedule timezone does not become the pipeline or asset timezone.
+
+Portable assets can declare their complete history while an environment narrows
+the beginning of expected coverage:
+
+```elixir
+config :favn,
+  coverage_scope: [from: ~D[2026-07-01]]
+```
+
+`from` accepts a `Date` or ISO-8601 date string. No other keys are supported.
+The effective first window is the later of the asset's declared coverage start
+and this deployment-wide floor. Manifest construction resolves and stores the
+effective timezone, timezone provenance, declared coverage, effective coverage,
+and scope input; runtime code does not reread application or OS environment
+values.
+
 ## Local Runtime Config
 
 Local dev reads `config :favn, :local`. Task flags override config values.

@@ -118,7 +118,7 @@ into the runtime path.
 Current regression gates are:
 
 - a directly measured 300-asset index below 2 MiB and a conservative 6,600-asset
-  projection below the 32 MiB expanded publication limit;
+  projection below the schema-11 64 MiB expanded publication limit;
 - no-op publication transfers no execution packages;
 - activation remains atomic and pinned runs remain reproducible; and
 - runner package memory grows with admitted concurrent work rather than total

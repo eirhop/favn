@@ -15,10 +15,16 @@ defmodule Favn.Manifest.Asset do
   to create atoms for user-facing labels.
   """
 
+  alias Favn.Coverage.Effective, as: EffectiveCoverage
+  alias Favn.Coverage.Spec, as: CoverageSpec
   alias Favn.Freshness.Policy, as: FreshnessPolicy
   alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Environment
+  alias Favn.Manifest.Compatibility
+  alias Favn.Manifest.TargetDescriptor
   alias Favn.RuntimeConfig.Requirements
   alias Favn.SQL.SessionRequirements
+  alias Favn.Window.Spec, as: WindowSpec
 
   @type t :: %__MODULE__{
           ref: {module(), atom()} | nil,
@@ -34,6 +40,7 @@ defmodule Favn.Manifest.Asset do
           description: String.t() | nil,
           relation: map() | struct() | nil,
           window: map() | struct() | nil,
+          coverage: EffectiveCoverage.t() | nil,
           freshness: FreshnessPolicy.t() | nil,
           retry_policy: Favn.Retry.Policy.t() | nil,
           materialization: map() | struct() | nil,
@@ -42,6 +49,8 @@ defmodule Favn.Manifest.Asset do
           session_requirements: SessionRequirements.t(),
           execution_package_hash: String.t() | nil,
           assurance: map() | nil,
+          target_descriptor: TargetDescriptor.t() | nil,
+          semantic_generation_id: String.t() | nil,
           execution_pool: atom() | nil,
           metadata: map()
         }
@@ -57,6 +66,7 @@ defmodule Favn.Manifest.Asset do
     description: nil,
     relation: nil,
     window: nil,
+    coverage: nil,
     freshness: nil,
     retry_policy: nil,
     materialization: nil,
@@ -65,6 +75,8 @@ defmodule Favn.Manifest.Asset do
     session_requirements: %SessionRequirements{version: 1},
     execution_package_hash: nil,
     assurance: nil,
+    target_descriptor: nil,
+    semantic_generation_id: nil,
     execution_pool: nil,
     metadata: %{}
   ]
@@ -72,8 +84,12 @@ defmodule Favn.Manifest.Asset do
   @spec from_asset(map(), keyword()) :: t()
   def from_asset(asset, opts \\ []) when is_map(asset) and is_list(opts) do
     package = Keyword.get_lazy(opts, :execution_package, fn -> execution_package(asset) end)
+    environment = Keyword.get(opts, :environment, Environment.new!())
+    window = resolve_window(Map.get(asset, :window_spec), environment)
+    coverage = resolve_coverage(Map.get(asset, :coverage_spec), window, environment)
+    freshness = resolve_freshness(Map.get(asset, :freshness), window, environment)
 
-    %__MODULE__{
+    manifest_asset = %__MODULE__{
       ref: Map.get(asset, :ref),
       module: Map.get(asset, :module),
       name: Map.get(asset, :name),
@@ -83,8 +99,9 @@ defmodule Favn.Manifest.Asset do
       settings: Favn.Settings.normalize!(Map.get(asset, :settings, %{})),
       description: Map.get(asset, :doc),
       relation: Map.get(asset, :relation),
-      window: Map.get(asset, :window_spec),
-      freshness: normalize_freshness(Map.get(asset, :freshness)),
+      window: window,
+      coverage: coverage,
+      freshness: freshness,
       retry_policy: normalize_retry_policy(Map.get(asset, :retry_policy)),
       materialization: Map.get(asset, :materialization),
       relation_inputs: normalize_list(Map.get(asset, :relation_inputs, [])),
@@ -94,6 +111,34 @@ defmodule Favn.Manifest.Asset do
       assurance: package_assurance(package),
       execution_pool: normalize_execution_pool(Map.get(asset, :execution_pool)),
       metadata: normalize_map(Map.get(asset, :meta, %{}))
+    }
+
+    descriptor =
+      TargetDescriptor.from_asset(Map.from_struct(manifest_asset),
+        connection_definitions: Keyword.get(opts, :connection_definitions, %{}),
+        manifest_schema_version:
+          Keyword.get(opts, :manifest_schema_version, Compatibility.current_schema_version()),
+        runner_contract_version:
+          Keyword.get(
+            opts,
+            :runner_contract_version,
+            Compatibility.current_runner_contract_version()
+          )
+      )
+
+    semantic_generation_id =
+      if descriptor,
+        do: nil,
+        else:
+          TargetDescriptor.semantic_generation_id(
+            Map.from_struct(manifest_asset),
+            Keyword.get(opts, :runner_release_id)
+          )
+
+    %{
+      manifest_asset
+      | target_descriptor: descriptor,
+        semantic_generation_id: semantic_generation_id
     }
   end
 
@@ -162,6 +207,53 @@ defmodule Favn.Manifest.Asset do
     case FreshnessPolicy.from_value(value) do
       {:ok, policy} -> policy
       {:error, reason} -> raise ArgumentError, "invalid freshness policy: #{inspect(reason)}"
+    end
+  end
+
+  defp resolve_window(value, %Environment{} = environment) do
+    with {:ok, window} <- WindowSpec.from_value(value),
+         {:ok, window} <-
+           resolve_window_timezone(
+             window,
+             environment.default_timezone,
+             environment.default_timezone_source
+           ) do
+      window
+    else
+      {:error, reason} -> raise ArgumentError, "invalid manifest asset window: #{inspect(reason)}"
+    end
+  end
+
+  defp resolve_window_timezone(nil, _timezone, _source), do: {:ok, nil}
+
+  defp resolve_window_timezone(%WindowSpec{} = window, timezone, source),
+    do: WindowSpec.resolve_timezone(window, timezone, source)
+
+  defp resolve_coverage(value, window, %Environment{} = environment) do
+    scope_from = if environment.coverage_scope, do: environment.coverage_scope.from
+
+    with {:ok, spec} <- CoverageSpec.from_value(value),
+         {:ok, coverage} <- EffectiveCoverage.resolve(spec, window, scope_from) do
+      coverage
+    else
+      {:error, reason} ->
+        raise ArgumentError, "invalid manifest asset coverage: #{inspect(reason)}"
+    end
+  end
+
+  defp resolve_freshness(value, window, %Environment{} = environment) do
+    with freshness <- normalize_freshness(value),
+         {:ok, freshness} <-
+           FreshnessPolicy.resolve_timezone(
+             freshness,
+             window,
+             environment.default_timezone,
+             environment.default_timezone_source
+           ) do
+      freshness
+    else
+      {:error, reason} ->
+        raise ArgumentError, "invalid manifest asset freshness: #{inspect(reason)}"
     end
   end
 

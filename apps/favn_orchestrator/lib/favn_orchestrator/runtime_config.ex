@@ -46,7 +46,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
             shutdown_drain_timeout_ms: 120_000,
             manifest_publication: %ManifestPublicationConfig{
               compressed_limit_bytes: 8 * 1_024 * 1_024,
-              decompressed_limit_bytes: 32 * 1_024 * 1_024
+              decompressed_limit_bytes: 64 * 1_024 * 1_024
             },
             auth_session_ttl_seconds: @default_auth_session_ttl_seconds
 

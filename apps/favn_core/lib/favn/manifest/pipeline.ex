@@ -7,6 +7,7 @@ defmodule Favn.Manifest.Pipeline do
   """
 
   alias Favn.Window.Policy
+  alias Favn.Manifest.Environment
   alias Favn.Manifest.Schedule
   alias Favn.Triggers.Schedule, as: TriggerSchedule
 
@@ -42,18 +43,21 @@ defmodule Favn.Manifest.Pipeline do
             settings: %{},
             metadata: %{}
 
-  @spec from_definition(map()) :: t()
-  def from_definition(definition) when is_map(definition) do
+  @spec from_definition(map(), Environment.t()) :: t()
+  def from_definition(definition, environment \\ Environment.new!())
+
+  def from_definition(definition, %Environment{} = environment) when is_map(definition) do
     module = Map.get(definition, :module)
     name = Map.get(definition, :name)
+    window = resolve_window(Map.get(definition, :window), environment)
 
     %__MODULE__{
       module: module,
       name: name,
       selectors: normalize_list(Map.get(definition, :selectors, [])),
       deps: normalize_deps(Map.get(definition, :deps, :all)),
-      schedule: normalize_schedule(Map.get(definition, :schedule), module, name),
-      window: Policy.from_value!(Map.get(definition, :window)),
+      schedule: normalize_schedule(Map.get(definition, :schedule), module, name, environment),
+      window: window,
       retry_policy: normalize_retry_policy(Map.get(definition, :retry_policy)),
       max_concurrency: normalize_max_concurrency(Map.get(definition, :max_concurrency)),
       execution_pool: normalize_execution_pool(Map.get(definition, :execution_pool)),
@@ -66,15 +70,40 @@ defmodule Favn.Manifest.Pipeline do
     }
   end
 
-  defp normalize_schedule({:inline, %TriggerSchedule{} = schedule}, module, name)
+  defp normalize_schedule(
+         {:inline, %TriggerSchedule{} = schedule},
+         module,
+         name,
+         environment
+       )
        when is_atom(module) and is_atom(name),
-       do: {:inline, Schedule.from_schedule(module, name, schedule)}
+       do: {:inline, Schedule.from_schedule(module, name, schedule, environment)}
 
-  defp normalize_schedule({:inline, %Schedule{} = schedule}, module, name)
+  defp normalize_schedule({:inline, %Schedule{} = schedule}, module, name, _environment)
        when is_atom(module) and is_atom(name),
        do: {:inline, Schedule.apply_identity(schedule, module, name)}
 
-  defp normalize_schedule(schedule, _module, _name), do: schedule
+  defp normalize_schedule(schedule, _module, _name, _environment), do: schedule
+
+  defp resolve_window(value, %Environment{} = environment) do
+    with {:ok, policy} <- Policy.from_value(value),
+         {:ok, policy} <- resolve_window_timezone(policy, environment) do
+      policy
+    else
+      {:error, reason} ->
+        raise ArgumentError, "invalid manifest pipeline window: #{inspect(reason)}"
+    end
+  end
+
+  defp resolve_window_timezone(nil, _environment), do: {:ok, nil}
+
+  defp resolve_window_timezone(%Policy{} = policy, %Environment{} = environment) do
+    Policy.resolve_timezone(
+      policy,
+      environment.default_timezone,
+      environment.default_timezone_source
+    )
+  end
 
   defp normalize_deps(:all), do: :all
   defp normalize_deps(:none), do: :none

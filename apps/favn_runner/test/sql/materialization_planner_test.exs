@@ -54,7 +54,7 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
     assert {:ok, %WritePlan{} = write_plan} =
              MaterializationPlanner.build(
                session(transactions: :supported),
-               definition(materialization, Spec.new!(:day, lookback: 1)),
+               definition(materialization, Spec.new!(:day)),
                %Render{render(materialization) | runtime: runtime}
              )
 
@@ -224,9 +224,11 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
           module: elem(ref, 0),
           name: elem(ref, 1),
           type: :sql,
+          relation: relation(),
           materialization: materialization,
           execution_package_hash: String.duplicate("a", 64)
         }
+        |> FavnTestSupport.with_target_descriptor()
       ],
       graph: %Graph{nodes: [ref], topo_order: [ref]}
     }

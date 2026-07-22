@@ -20,7 +20,7 @@ defmodule Favn.Triggers.Schedule do
             kind: :cron,
             cron: nil,
             timezone: nil,
-            timezone_source: :schedule,
+            timezone_source: :utc_fallback,
             missed: :skip,
             overlap: :forbid,
             active: true,
@@ -32,7 +32,7 @@ defmodule Favn.Triggers.Schedule do
           kind: kind(),
           cron: String.t(),
           timezone: String.t() | nil,
-          timezone_source: :schedule | :app_default,
+          timezone_source: :local | :application_default | :utc_fallback,
           missed: missed_policy(),
           overlap: overlap_policy(),
           active: boolean(),
@@ -45,7 +45,7 @@ defmodule Favn.Triggers.Schedule do
           kind: kind(),
           cron: String.t(),
           timezone: String.t(),
-          timezone_source: :schedule | :app_default,
+          timezone_source: :local | :application_default | :utc_fallback,
           missed: missed_policy(),
           overlap: overlap_policy(),
           active: boolean(),
@@ -71,7 +71,7 @@ defmodule Favn.Triggers.Schedule do
          overlap: overlap,
          active: active,
          origin: :inline,
-         timezone_source: if(timezone == nil, do: :app_default, else: :schedule)
+         timezone_source: if(timezone == nil, do: :utc_fallback, else: :local)
        }}
     end
   end
@@ -94,16 +94,34 @@ defmodule Favn.Triggers.Schedule do
 
   @spec apply_default_timezone(unresolved_t(), String.t() | nil) :: {:ok, t()} | {:error, term()}
   def apply_default_timezone(%__MODULE__{} = schedule, default_timezone) do
+    source = if is_binary(default_timezone), do: :application_default, else: :utc_fallback
+    apply_default_timezone(schedule, default_timezone, source)
+  end
+
+  @spec apply_default_timezone(
+          unresolved_t(),
+          String.t() | nil,
+          :application_default | :utc_fallback
+        ) :: {:ok, t()} | {:error, term()}
+  def apply_default_timezone(%__MODULE__{} = schedule, default_timezone, default_source) do
     case schedule.timezone do
       timezone when is_binary(timezone) ->
-        {:ok, %{schedule | timezone_source: :schedule}}
+        {:ok, %{schedule | timezone_source: :local}}
 
       nil ->
-        with {:ok, effective} <- validate_timezone(default_timezone || "Etc/UTC") do
-          {:ok, %{schedule | timezone: effective, timezone_source: :app_default}}
+        with :ok <- validate_default_timezone_source(default_source),
+             {:ok, effective} <- validate_timezone(default_timezone || "Etc/UTC") do
+          {:ok, %{schedule | timezone: effective, timezone_source: default_source}}
         end
     end
   end
+
+  defp validate_default_timezone_source(source)
+       when source in [:application_default, :utc_fallback],
+       do: :ok
+
+  defp validate_default_timezone_source(source),
+    do: {:error, {:invalid_schedule_timezone_source, source}}
 
   @spec validate_keyword_opts(term()) :: :ok | {:error, :invalid_schedule}
   def validate_keyword_opts(opts) when is_list(opts) do
@@ -124,14 +142,6 @@ defmodule Favn.Triggers.Schedule do
     case duplicates do
       [] -> :ok
       values -> {:error, {:duplicate_schedule_opts, values}}
-    end
-  end
-
-  @spec default_timezone() :: String.t()
-  def default_timezone do
-    case Application.get_env(:favn, :scheduler, []) do
-      scheduler when is_list(scheduler) -> Keyword.get(scheduler, :default_timezone, "Etc/UTC")
-      _ -> "Etc/UTC"
     end
   end
 

@@ -11,6 +11,7 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.SQLExecution
+  alias Favn.Manifest.TargetDescriptor
   alias Favn.RelationRef
   alias Favn.SQL.Check
   alias Favn.SQL.Contract
@@ -110,41 +111,55 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
 
     {:ok, package} = ExecutionPackage.new(ref, execution)
 
-    {%Asset{
-       ref: ref,
-       module: module,
-       name: :asset,
-       type: :sql,
-       depends_on: dependencies(index),
-       execution: %{entrypoint: :asset, arity: 1},
-       description:
-         "Synthetic SQL-heavy analytics asset #{padded(index, 5)} used for manifest scalability measurement.",
-       relation:
-         RelationRef.new!(
-           connection: :warehouse,
-           catalog: "analytics",
-           schema: "manifest_scale",
-           name: "asset_#{padded(index, 5)}"
-         ),
-       materialization:
-         {:incremental,
-          strategy: :delete_insert, unique_key: [:metric_001], window_column: :event_date},
-       session_requirements: SessionRequirements.new!([:analytics_catalog, :quality_macros]),
-       execution_package_hash: package.content_hash,
-       assurance: %{
-         contract: contract,
-         checks:
-           Enum.map(execution.checks, fn check ->
-             Map.take(check, [:name, :origin, :claim_id, :at, :when, :on_violation, :message])
-           end)
-       },
-       metadata: %{
-         owner: "analytics-platform",
-         domain: "manifest-scalability",
-         category: "gold",
-         tags: ["sql", "synthetic", "scalability"]
-       }
-     }, package}
+    asset = %Asset{
+      ref: ref,
+      module: module,
+      name: :asset,
+      type: :sql,
+      depends_on: dependencies(index),
+      execution: %{entrypoint: :asset, arity: 1},
+      description:
+        "Synthetic SQL-heavy analytics asset #{padded(index, 5)} used for manifest scalability measurement.",
+      relation:
+        RelationRef.new!(
+          connection: :warehouse,
+          catalog: "analytics",
+          schema: "manifest_scale",
+          name: "asset_#{padded(index, 5)}"
+        ),
+      materialization:
+        {:incremental,
+         strategy: :delete_insert, unique_key: [:metric_001], window_column: :event_date},
+      session_requirements: SessionRequirements.new!([:analytics_catalog, :quality_macros]),
+      execution_package_hash: package.content_hash,
+      assurance: %{
+        contract: contract,
+        checks:
+          Enum.map(execution.checks, fn check ->
+            Map.take(check, [:name, :origin, :claim_id, :at, :when, :on_violation, :message])
+          end)
+      },
+      metadata: %{
+        owner: "analytics-platform",
+        domain: "manifest-scalability",
+        category: "gold",
+        tags: ["sql", "synthetic", "scalability"]
+      }
+    }
+
+    descriptor =
+      TargetDescriptor.from_asset(Map.from_struct(asset),
+        connection_definitions: %{
+          warehouse: %{
+            adapter: FavnTestSupport.ManifestScale.Adapter,
+            module: FavnTestSupport.ManifestScale.Connection
+          }
+        },
+        manifest_schema_version: 11,
+        runner_contract_version: 11
+      )
+
+    {%{asset | target_descriptor: descriptor}, package}
   end
 
   defp sql(index, column_count) do

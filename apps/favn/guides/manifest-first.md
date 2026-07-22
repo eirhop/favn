@@ -6,7 +6,7 @@ Use `mix favn.dev`, `mix favn.run`, and the UI for normal local development. Use
 the functions in this guide when building tools, debugging discovery, comparing
 versions, or preparing deployment artifacts.
 
-Favn still uses manifests internally. Schema 10 publishes one compact manifest
+Favn still uses manifests internally. Schema 11 publishes one compact manifest
 index plus immutable, content-addressed execution packages. The index describes
 assets, pipelines, schedules, dependencies, and compact runtime metadata. Each
 manifest is bound to the exact verified runner descriptor it requires, and each
@@ -14,6 +14,12 @@ SQL asset points to exactly one package containing its complete executable SQL p
 
 Runtime systems then use a pinned manifest version instead of rediscovering your
 modules while runs are in progress.
+
+Manifest construction also freezes `config :favn, :default_timezone` and the
+optional `coverage_scope` floor. Assets, pipelines, and schedules carry concrete
+effective timezones plus provenance, and assets carry both declared and
+environment-effective coverage. Runtime services never reinterpret these values
+from their own boot environment.
 
 ## When To Use Manifest Functions
 
@@ -73,9 +79,14 @@ Generate from explicit modules:
   Favn.generate_manifest(
     asset_modules: [MyApp.Lakehouse.Raw.Sales.Orders],
     pipeline_modules: [MyApp.Pipelines.DailySales],
+    connection_modules: [MyApp.Connections.Warehouse],
     runner_release: runner_release
   )
 ```
+
+Include the connection definition for every persisted SQL target when passing
+explicit module lists. Its non-secret adapter and connection identity are part
+of the target descriptor used for compatibility decisions.
 
 Pin, serialize, hash, and validate:
 
@@ -121,10 +132,10 @@ A manifest can include:
 - schedules
 - relation metadata for SQL-backed assets
 - compact SQL assurance metadata, package hashes, and explicit column lineage
-- freshness and window metadata
+- effective freshness, window, coverage, timezone provenance, and target descriptors
 - JSON-safe asset and pipeline settings
 - runtime config requirements
-- schema and runner contract version 10 data used by the runtime
+- schema and runner contract version 11 data used by the runtime
 - the exact `required_runner_release_id` derived from a verified runner descriptor
 
 Execution packages contain the full SQL templates, runtime-input resolver refs,

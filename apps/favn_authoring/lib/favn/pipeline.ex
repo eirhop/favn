@@ -413,6 +413,7 @@ defmodule Favn.Pipeline do
   Supported options:
 
   - `anchor: :previous_complete_period | :current_period`
+  - `lookback: non_neg_integer`
   - `timezone: "Etc/UTC"`
   - `allow_full_load: true | false`
   """

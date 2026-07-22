@@ -46,17 +46,6 @@ defmodule Favn.Pipeline.ResolverParityTest do
   end
 
   test "resolve/2 keeps explicit schedule timezone over app default" do
-    previous_scheduler = Application.get_env(:favn, :scheduler)
-    Application.put_env(:favn, :scheduler, default_timezone: "Europe/Oslo")
-
-    on_exit(fn ->
-      if is_nil(previous_scheduler) do
-        Application.delete_env(:favn, :scheduler)
-      else
-        Application.put_env(:favn, :scheduler, previous_scheduler)
-      end
-    end)
-
     assert {:ok, schedule} = Schedule.new_inline(cron: "0 2 * * *", timezone: "UTC")
 
     definition = %Definition{
@@ -70,23 +59,18 @@ defmodule Favn.Pipeline.ResolverParityTest do
       %{ref: {MyApp.Sales, :daily_gold}, module: MyApp.Sales, name: :daily_gold, meta: %{}}
     ]
 
-    assert {:ok, resolution} = Resolver.resolve(definition, assets: assets)
+    assert {:ok, resolution} =
+             Resolver.resolve(definition,
+               assets: assets,
+               default_timezone: "Europe/Oslo",
+               default_timezone_source: :application_default
+             )
+
     assert resolution.pipeline_ctx.schedule.timezone == "UTC"
-    assert resolution.pipeline_ctx.schedule.timezone_source == :schedule
+    assert resolution.pipeline_ctx.schedule.timezone_source == :local
   end
 
-  test "resolve/2 applies scheduler default timezone for inline schedules without timezone" do
-    previous_scheduler = Application.get_env(:favn, :scheduler)
-    Application.put_env(:favn, :scheduler, default_timezone: "Europe/Oslo")
-
-    on_exit(fn ->
-      if is_nil(previous_scheduler) do
-        Application.delete_env(:favn, :scheduler)
-      else
-        Application.put_env(:favn, :scheduler, previous_scheduler)
-      end
-    end)
-
+  test "resolve/2 applies an explicit build default to schedules without timezone" do
     assert {:ok, schedule} = Schedule.new_inline(cron: "0 2 * * *")
 
     definition = %Definition{
@@ -100,9 +84,15 @@ defmodule Favn.Pipeline.ResolverParityTest do
       %{ref: {MyApp.Sales, :daily_gold}, module: MyApp.Sales, name: :daily_gold, meta: %{}}
     ]
 
-    assert {:ok, resolution} = Resolver.resolve(definition, assets: assets)
+    assert {:ok, resolution} =
+             Resolver.resolve(definition,
+               assets: assets,
+               default_timezone: "Europe/Oslo",
+               default_timezone_source: :application_default
+             )
+
     assert resolution.pipeline_ctx.schedule.timezone == "Europe/Oslo"
-    assert resolution.pipeline_ctx.schedule.timezone_source == :app_default
+    assert resolution.pipeline_ctx.schedule.timezone_source == :application_default
   end
 
   test "resolve/2 carries pipeline execution policy into pipeline context" do

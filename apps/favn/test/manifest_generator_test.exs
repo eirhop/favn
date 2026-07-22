@@ -3,6 +3,19 @@ defmodule Favn.Manifest.GeneratorTest do
 
   alias Favn.Manifest
 
+  defmodule TestConnection do
+    @behaviour Favn.Connection
+
+    @impl true
+    def definition do
+      %Favn.Connection.Definition{
+        name: :warehouse,
+        adapter: __MODULE__.Adapter,
+        config_schema: []
+      }
+    end
+  end
+
   defmodule TestSchedules do
     use Favn.Triggers.Schedules
 
@@ -85,11 +98,12 @@ defmodule Favn.Manifest.GeneratorTest do
                asset_modules: [TestAsset, TestSQLAsset],
                pipeline_modules: [TestPipeline],
                schedule_modules: [TestSchedules],
+               connection_modules: [TestConnection],
                runner_release: runner_release()
              )
 
-    assert manifest.schema_version == 10
-    assert manifest.runner_contract_version == 10
+    assert manifest.schema_version == 11
+    assert manifest.runner_contract_version == 11
     assert manifest.required_runner_release_id == FavnTestSupport.runner_release_id()
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1
@@ -107,6 +121,7 @@ defmodule Favn.Manifest.GeneratorTest do
                asset_modules: [TestAsset, TestSQLAsset],
                pipeline_modules: [TestPipeline],
                schedule_modules: [TestSchedules],
+               connection_modules: [TestConnection],
                runner_release: runner_release()
              )
 

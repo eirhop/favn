@@ -65,7 +65,7 @@ Integration boundaries opt in explicitly; DuckDB session-script parameters are
 the first consumer. Providers return bounded errors, refs have redacted Inspect
 output, and secret refs are tracked by connection redaction.
 
-Manifest schema 10 and runner contract 10 are the only supported versions.
+Manifest schema 11 and runner contract 11 are the only supported versions.
 Every current manifest includes a canonical `required_runner_release_id` derived
 from a verified `%Favn.RunnerRelease{}` descriptor; that field participates in
 the manifest content hash. Static

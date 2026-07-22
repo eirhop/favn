@@ -331,11 +331,11 @@ defmodule Favn.Assets.Planner do
     end
   end
 
-  defp asset_window_spec(%{window_spec: %Spec{} = spec}), do: spec
+  defp asset_window_spec(%{window_spec: %Spec{} = spec}), do: resolve_authoring_timezone(spec)
 
   defp asset_window_spec(%{window: window}) do
     case Spec.from_value(window) do
-      {:ok, %Spec{} = spec} -> spec
+      {:ok, %Spec{} = spec} -> resolve_authoring_timezone(spec)
       {:ok, nil} -> nil
       {:error, _reason} -> nil
     end
@@ -343,16 +343,23 @@ defmodule Favn.Assets.Planner do
 
   defp asset_window_spec(_asset), do: nil
 
+  defp resolve_authoring_timezone(%Spec{timezone: timezone} = spec) when is_binary(timezone),
+    do: spec
+
+  defp resolve_authoring_timezone(%Spec{} = spec) do
+    {:ok, resolved} = Spec.resolve_timezone(spec, "Etc/UTC", :utc_fallback)
+    resolved
+  end
+
   defp expand_windows(%Anchor{} = anchor_window, %Spec{} = spec) do
     window_count =
       window_units_between(spec.kind, anchor_window.start_at, anchor_window.end_at, spec.timezone)
 
-    runtime_window_count = max(window_count + spec.lookback, 1)
+    runtime_window_count = max(window_count, 1)
     anchor_start = TimePeriod.floor!(anchor_window.start_at, spec.kind, spec.timezone)
-    first_start = TimePeriod.shift!(anchor_start, spec.kind, -spec.lookback)
 
     for offset <- 0..(runtime_window_count - 1) do
-      start_at = TimePeriod.shift!(first_start, spec.kind, offset)
+      start_at = TimePeriod.shift!(anchor_start, spec.kind, offset)
       end_at = TimePeriod.shift!(start_at, spec.kind, 1)
       Runtime.new!(spec.kind, start_at, end_at, anchor_window.key, timezone: spec.timezone)
     end

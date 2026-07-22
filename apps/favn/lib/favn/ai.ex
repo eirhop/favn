@@ -58,6 +58,13 @@ defmodule Favn.AI do
     where `freshness` must be attached. For one refresh cadence per exact data
     window, use `Favn.Window.Spec.refresh_from`; explicit `freshness :daily` is
     asset-wide.
+  - To declare expected historical windows, read `Favn.Coverage.Spec`,
+    `Favn.Coverage.Effective`, `Favn.Window`, and the applicable asset DSL.
+    Coverage is independent of freshness: `availability_delay` changes when a
+    closed window becomes expected but never schedules or delays execution.
+    Namespace coverage is one closest-declaration-wins scalar, and `coverage
+    nil` clears it. Environment-wide history narrowing uses `config :favn,
+    coverage_scope: [from: date]`.
   - To author a source-system raw landing asset, read `Favn.Asset`, then
     `Favn.SQLClient`, `Favn.Namespace`, and the standalone tutorial at
     `examples/basic-workflow-tutorial`. The canonical pattern is: declare
@@ -200,10 +207,10 @@ defmodule Favn.AI do
     tasks.
   - To compile a manifest, read `Favn generate_manifest`; if the project uses
     `config :favn, discovery: [apps: [...], assets: :all, pipelines: :all,
-    schedules: :all]`, also read `Favn.ModuleDiscovery`. Read
+    schedules: :all, connections: :all]`, also read `Favn.ModuleDiscovery`. Read
     `Favn.Manifest.Generator` if you need internal compilation details. For
     deployment, call `Favn.build_manifest/1` with a verified runner descriptor,
-    followed by `Favn.prepare_manifest_publication/2`: schema 10 has one compact
+    followed by `Favn.prepare_manifest_publication/2`: schema 11 has one compact
     manifest index bound to its exact `required_runner_release_id` and immutable
     content-addressed SQL execution packages, with no inline SQL manifest form
     or compatibility fallback.

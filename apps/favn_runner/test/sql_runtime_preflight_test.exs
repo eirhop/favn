@@ -255,6 +255,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
       materialization: :table,
       execution_package_hash: package.content_hash
     }
+    |> FavnTestSupport.with_target_descriptor()
   end
 
   defp source_asset(ref) do
@@ -271,8 +272,8 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     refs = Enum.map(assets, & &1.ref)
 
     manifest = %Manifest{
-      schema_version: 10,
-      runner_contract_version: 10,
+      schema_version: 11,
+      runner_contract_version: 11,
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: assets,
       pipelines: [],

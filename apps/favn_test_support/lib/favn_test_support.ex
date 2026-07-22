@@ -62,6 +62,34 @@ defmodule FavnTestSupport do
   end
 
   @doc """
+  Adds a canonical target descriptor to a persisted SQL manifest asset fixture.
+
+  Descriptor construction is invoked dynamically to preserve
+  `favn_test_support`'s dependency-light compile boundary.
+  """
+  @spec with_target_descriptor(struct()) :: struct()
+  def with_target_descriptor(%{relation: %{connection: connection}} = asset) do
+    schema_version = apply(Favn.Manifest.Compatibility, :current_schema_version, [])
+
+    runner_contract_version =
+      apply(Favn.Manifest.Compatibility, :current_runner_contract_version, [])
+
+    descriptor =
+      apply(Favn.Manifest.TargetDescriptor, :from_asset, [
+        asset,
+        [
+          connection_definitions: %{
+            connection => %{adapter: FavnTestSupport.TargetAdapter, module: nil}
+          },
+          manifest_schema_version: schema_version,
+          runner_contract_version: runner_contract_version
+        ]
+      ])
+
+    Map.put(asset, :target_descriptor, descriptor)
+  end
+
+  @doc """
   Adds the canonical dependency graph to a manifest fixture.
 
   The graph builder is invoked dynamically so this dependency-light support

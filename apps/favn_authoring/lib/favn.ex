@@ -26,6 +26,7 @@ defmodule FavnAuthoring do
   alias Favn.Manifest
   alias Favn.Manifest.Build
   alias Favn.Manifest.Compatibility
+  alias Favn.Manifest.Environment
   alias Favn.Manifest.Generator
   alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
@@ -44,6 +45,7 @@ defmodule FavnAuthoring do
           asset_modules: [module()] | :all,
           pipeline_modules: [module()] | :all,
           schedule_modules: [module()] | :all,
+          connection_modules: [module()] | :all,
           runner_release: Favn.RunnerRelease.t()
         ]
 
@@ -154,7 +156,8 @@ defmodule FavnAuthoring do
   """
   @spec generate_manifest(manifest_opts()) :: {:ok, Manifest.t()} | {:error, term()}
   def generate_manifest(opts \\ []) when is_list(opts) do
-    with {:ok, opts} <- with_default_manifest_modules(opts) do
+    with {:ok, opts} <- with_default_manifest_modules(opts),
+         {:ok, opts} <- with_manifest_environment(opts) do
       Generator.generate(opts)
     end
   end
@@ -166,7 +169,8 @@ defmodule FavnAuthoring do
   """
   @spec build_manifest(manifest_opts()) :: {:ok, Build.t()} | {:error, term()}
   def build_manifest(opts \\ []) when is_list(opts) do
-    with {:ok, opts} <- with_default_manifest_modules(opts) do
+    with {:ok, opts} <- with_default_manifest_modules(opts),
+         {:ok, opts} <- with_manifest_environment(opts) do
       Generator.build(opts)
     end
   end
@@ -227,7 +231,14 @@ defmodule FavnAuthoring do
          {:ok, opts} <-
            put_default_modules(opts, :pipeline_modules, :pipelines, &default_pipeline_modules/0),
          {:ok, opts} <-
-           put_default_modules(opts, :schedule_modules, :schedules, &default_schedule_modules/0) do
+           put_default_modules(opts, :schedule_modules, :schedules, &default_schedule_modules/0),
+         {:ok, opts} <-
+           put_default_modules(
+             opts,
+             :connection_modules,
+             :connections,
+             &default_connection_modules/0
+           ) do
       {:ok, opts}
     end
   end
@@ -259,6 +270,20 @@ defmodule FavnAuthoring do
 
   defp default_schedule_modules do
     default_modules(:schedule_modules, :schedules)
+  end
+
+  defp default_connection_modules do
+    default_modules(:connection_modules, :connections)
+  end
+
+  defp with_manifest_environment(opts) do
+    case Environment.new(
+           default_timezone: Application.get_env(:favn, :default_timezone),
+           coverage_scope: Application.get_env(:favn, :coverage_scope)
+         ) do
+      {:ok, environment} -> {:ok, Keyword.put(opts, :environment, environment)}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp default_modules(config_key, discovery_key) do
@@ -296,8 +321,19 @@ defmodule FavnAuthoring do
           {:ok, Favn.Plan.t()} | {:error, term()}
   def plan_asset_run(target_refs, opts \\ []) do
     with {:ok, default_asset_modules} <- default_asset_modules(),
+         {:ok, connection_modules} <- default_connection_modules(),
+         {:ok, environment} <-
+           Environment.new(
+             default_timezone: Application.get_env(:favn, :default_timezone),
+             coverage_scope: Application.get_env(:favn, :coverage_scope)
+           ),
          asset_modules <- Keyword.get(opts, :asset_modules, default_asset_modules),
-         {:ok, planning_index} <- Generator.planning_index(asset_modules: asset_modules) do
+         {:ok, planning_index} <-
+           Generator.planning_index(
+             asset_modules: asset_modules,
+             connection_modules: connection_modules,
+             environment: environment
+           ) do
       opts =
         opts
         |> Keyword.delete(:asset_modules)
@@ -324,16 +360,23 @@ defmodule FavnAuthoring do
   def resolve_pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
 
   defp resolve_pipeline_opts(opts) when is_list(opts) do
-    opts = Keyword.put_new(opts, :schedule_lookup, &PipelineSchedules.fetch/2)
+    with {:ok, environment} <-
+           Environment.new(default_timezone: Application.get_env(:favn, :default_timezone)) do
+      opts =
+        opts
+        |> Keyword.put_new(:schedule_lookup, &PipelineSchedules.fetch/2)
+        |> Keyword.put_new(:default_timezone, environment.default_timezone)
+        |> Keyword.put_new(:default_timezone_source, environment.default_timezone_source)
 
-    case Keyword.fetch(opts, :assets) do
-      {:ok, _assets} ->
-        {:ok, opts}
+      case Keyword.fetch(opts, :assets) do
+        {:ok, _assets} ->
+          {:ok, opts}
 
-      :error ->
-        with {:ok, assets} <- list_assets() do
-          {:ok, Keyword.put(opts, :assets, assets)}
-        end
+        :error ->
+          with {:ok, assets} <- list_assets() do
+            {:ok, Keyword.put(opts, :assets, assets)}
+          end
+      end
     end
   end
 end

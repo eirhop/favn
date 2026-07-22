@@ -36,7 +36,7 @@ defmodule Favn.Manifest.FreshnessTest do
              })
 
     assert encoded ==
-             ~s|{"freshness":{"amount":null,"kind":"day","mode":"calendar_period","timezone":"Europe/Oslo","unit":null}}|
+             ~s|{"freshness":{"amount":null,"kind":"day","mode":"calendar_period","timezone":"Europe/Oslo","timezone_source":null,"unit":null}}|
   end
 
   test "manifest serialization and rehydration round-trips freshness policies" do
@@ -72,7 +72,8 @@ defmodule Favn.Manifest.FreshnessTest do
     assert daily_oslo.freshness == %Policy{
              mode: :calendar_period,
              kind: :day,
-             timezone: "Europe/Oslo"
+             timezone: "Europe/Oslo",
+             timezone_source: :local
            }
 
     assert max_age.freshness == %Policy{mode: :max_age, amount: 24, unit: :hour}
