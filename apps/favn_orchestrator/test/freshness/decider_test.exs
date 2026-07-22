@@ -475,6 +475,7 @@ defmodule FavnOrchestrator.Freshness.DeciderTest do
         asset_ref_module: module,
         asset_ref_name: name,
         freshness_key: freshness_key,
+        evidence_generation_id: "ag_test",
         status: status,
         freshness_version: Keyword.get(opts, :version, "#{name}:v1"),
         latest_success_run_id: run_id,

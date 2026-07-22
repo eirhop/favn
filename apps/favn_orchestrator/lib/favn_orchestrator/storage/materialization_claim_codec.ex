@@ -6,7 +6,7 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.PersistedAtom
 
-  @format "favn.materialization_claim.storage.v1"
+  @format "favn.materialization_claim.storage.v2"
 
   @spec normalize(MaterializationClaim.t() | map()) ::
           {:ok, MaterializationClaim.t()} | {:error, term()}
@@ -36,7 +36,7 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
 
   defp decode_json(payload) do
     case Jason.decode(payload) do
-      {:ok, %{"format" => @format, "schema_version" => 1} = dto} ->
+      {:ok, %{"format" => @format, "schema_version" => 2} = dto} ->
         from_dto(dto)
 
       {:ok, %{"format" => @format, "schema_version" => version}} ->
@@ -53,7 +53,7 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
   defp to_dto(%MaterializationClaim{} = claim) do
     %{
       "format" => @format,
-      "schema_version" => 1,
+      "schema_version" => 2,
       "claim_key" => claim.claim_key,
       "asset_ref_module" => Atom.to_string(claim.asset_ref_module),
       "asset_ref_name" => Atom.to_string(claim.asset_ref_name),
@@ -65,6 +65,8 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
       "runner_execution_id" => claim.runner_execution_id,
       "manifest_version_id" => claim.manifest_version_id,
       "manifest_content_hash" => claim.manifest_content_hash,
+      "target_generation_id" => claim.target_generation_id,
+      "evidence_generation_id" => claim.evidence_generation_id,
       "freshness_version" => claim.freshness_version,
       "status" => Atom.to_string(claim.status),
       "error" => JsonSafe.error(claim.error),
@@ -98,6 +100,8 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
         runner_execution_id: Map.get(dto, "runner_execution_id"),
         manifest_version_id: Map.get(dto, "manifest_version_id"),
         manifest_content_hash: Map.get(dto, "manifest_content_hash"),
+        target_generation_id: Map.get(dto, "target_generation_id"),
+        evidence_generation_id: Map.get(dto, "evidence_generation_id"),
         freshness_version: Map.get(dto, "freshness_version"),
         status: Map.get(dto, "status"),
         error: error,

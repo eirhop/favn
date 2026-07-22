@@ -116,6 +116,7 @@ defmodule FavnOrchestrator.Freshness.StalenessTest do
         asset_ref_module: module,
         asset_ref_name: name,
         freshness_key: inspect(node_key),
+        evidence_generation_id: "ag_test",
         status: :ok,
         freshness_version: version,
         latest_success_run_id: run_id,

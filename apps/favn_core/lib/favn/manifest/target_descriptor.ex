@@ -10,6 +10,7 @@ defmodule Favn.Manifest.TargetDescriptor do
   alias Favn.Coverage.Effective, as: EffectiveCoverage
   alias Favn.Manifest.Serializer
   alias Favn.RelationRef
+  alias Favn.TargetIdentity
   alias Favn.TimePeriod
   alias Favn.Window.Spec, as: WindowSpec
 
@@ -311,7 +312,7 @@ defmodule Favn.Manifest.TargetDescriptor do
     end
   end
 
-  defp target_id({module, name}), do: Atom.to_string(module) <> ":" <> Atom.to_string(name)
+  defp target_id(ref), do: TargetIdentity.for_asset(ref)
 
   defp relation_identity(%RelationRef{} = relation) do
     %{

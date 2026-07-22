@@ -9,7 +9,8 @@ design rationale and scale budgets remain in the
 
 PostgreSQL stores orchestration metadata: workspaces, immutable manifests and
 execution packages, deployments, runs, events, schedules, leases,
-materializations, resource circuits and recovery candidates, backfills,
+materializations, asset target generations and bindings, rebuild operations,
+resource circuits and recovery candidates, backfills,
 authentication, audit, logs, and repairable
 projections.
 
@@ -37,7 +38,7 @@ The dependency direction is deliberate:
   composition root selects `FavnStoragePostgres.Backend` at boot.
 - `favn_view` calls orchestrator facades only.
 
-`FavnOrchestrator.Persistence.Backend` composes eleven focused store
+`FavnOrchestrator.Persistence.Backend` composes thirteen focused store
 capabilities. No 97-callback database adapter remains, and no generic
 `execute/query` escape hatch is part of the contract.
 
@@ -93,6 +94,8 @@ Important properties:
 - A state transition and its outbox event commit together.
 - Command identities make retries deterministic; conflicting reuse is rejected.
 - Ownership and claim writes require current fencing tokens.
+- Persisted asset writes resolve and pin one target generation before claiming;
+  projection evidence is keyed by that generation rather than deployment identity.
 - Multi-node claimers use row locks and `SKIP LOCKED` where appropriate.
 - Resource circuit acquisition locks requested resources in deterministic order;
   one expiring owner identity holds a half-open probe, and a terminal outcome is
@@ -133,6 +136,21 @@ This prevents large SQL payloads from being repeatedly loaded during catalog,
 planning, or unrelated asset execution. One immutable `run_plans` row stores the
 submitted plan; mutable run snapshots retain its hash instead of rewriting the
 full plan on every transition.
+
+## Target generations
+
+Each persisted asset target has one workspace-scoped binding. The binding points
+to its active physical generation and records the desired manifest descriptor and
+compatibility state. Initial planning creates a `building` generation; an ordinary
+success alone does not activate it. Activation requires authoritative physical
+reconciliation and a recorded fingerprint. Ordinary writes pin the resolved
+generation in the run plan, claim, and immutable materialization ledger.
+
+Asset-window and freshness projections use `evidence_generation_id` in their
+identity. Persisted targets use the physical generation UUID; non-persisted
+targets use their deterministic semantic-generation identity. Reads resolve the
+current binding first, so evidence from a retired physical generation cannot be
+presented as current evidence.
 
 ## Workspace isolation
 

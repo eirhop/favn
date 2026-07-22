@@ -26,6 +26,11 @@ defmodule Favn.Plan do
   @type node_key :: {Ref.t(), term() | nil}
 
   @type plan_node :: %{
+          optional(:target_id) => String.t(),
+          optional(:target_generation_id) => String.t() | nil,
+          optional(:evidence_generation_id) => String.t(),
+          optional(:physical_relation) => map() | nil,
+          optional(:input_generations) => [map()],
           ref: Ref.t(),
           node_key: node_key(),
           window: Favn.Window.Runtime.t() | nil,

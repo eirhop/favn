@@ -322,7 +322,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   @impl true
   def get_freshness_many(%GetFreshnessMany{} = query) do
     with :ok <- validate_freshness(query) do
-      {deployment_ids, target_ids, freshness_keys} = freshness_arrays(query.identities)
+      {generation_ids, target_ids, freshness_keys} = freshness_arrays(query.identities)
 
       %{rows: rows} =
         SQL.query!(
@@ -331,22 +331,23 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
           WITH requested AS (
             SELECT *
             FROM unnest($2::text[], $3::text[], $4::text[])
-              AS item(deployment_id, target_id, freshness_key)
+              AS item(evidence_generation_id, target_id, freshness_key)
           )
-          SELECT state.workspace_id, state.deployment_id, state.target_id,
-                 state.freshness_key, state.latest_attempt_materialization_id,
+          SELECT state.workspace_id, state.evidence_generation_id, state.deployment_id,
+                 state.manifest_version_id, state.target_id, state.freshness_key,
+                 state.latest_attempt_materialization_id,
                  state.latest_success_materialization_id, state.status, state.payload,
                  state.source_publication_id, state.updated_at
           FROM requested
           JOIN favn_control.asset_freshness_states state
             ON state.workspace_id = $1
-           AND state.deployment_id = requested.deployment_id
+           AND state.evidence_generation_id = requested.evidence_generation_id
            AND state.target_id = requested.target_id
            AND state.freshness_key = requested.freshness_key
           """,
           [
             query.workspace_context.workspace_id,
-            deployment_ids,
+            generation_ids,
             target_ids,
             freshness_keys
           ]
@@ -356,7 +357,13 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
       {:ok,
        query.identities
-       |> Enum.map(&Map.get(indexed, {&1.deployment_id, &1.target_id, &1.freshness_key}))
+       |> Enum.map(
+         &Map.get(indexed, {
+           &1.evidence_generation_id,
+           &1.target_id,
+           &1.freshness_key
+         })
+       )
        |> Enum.reject(&is_nil/1)}
     end
   rescue
@@ -372,7 +379,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         from(state in AssetWindowState,
           where:
             state.workspace_id == ^workspace_id and
-              state.manifest_version_id == ^query.manifest_version_id and
+              state.evidence_generation_id == ^query.evidence_generation_id and
               state.target_id == ^query.target_id,
           order_by: [desc: state.window_start, desc: state.window_key],
           limit: ^query.limit
@@ -679,7 +686,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   defp freshness_result([
          workspace_id,
+         evidence_generation_id,
          deployment_id,
+         manifest_version_id,
          target_id,
          freshness_key,
          latest_attempt,
@@ -691,7 +700,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
        ]) do
     %FreshnessResult{
       workspace_id: workspace_id,
+      evidence_generation_id: evidence_generation_id,
       deployment_id: deployment_id,
+      manifest_version_id: manifest_version_id,
       target_id: target_id,
       freshness_key: freshness_key,
       latest_attempt_materialization_id: latest_attempt,
@@ -706,6 +717,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp asset_window_result(state) do
     %AssetWindowResult{
       workspace_id: state.workspace_id,
+      evidence_generation_id: state.evidence_generation_id,
       manifest_version_id: state.manifest_version_id,
       target_id: state.target_id,
       window_key: state.window_key,
@@ -720,19 +732,19 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
-  defp freshness_identity([_workspace, deployment, target, key | _rest]),
-    do: {deployment, target, key}
+  defp freshness_identity([_workspace, generation, _deployment, _manifest, target, key | _rest]),
+    do: {generation, target, key}
 
   defp freshness_arrays(identities) do
-    Enum.reduce(identities, {[], [], []}, fn identity, {deployments, targets, keys} ->
+    Enum.reduce(identities, {[], [], []}, fn identity, {generations, targets, keys} ->
       {
-        [identity.deployment_id | deployments],
+        [identity.evidence_generation_id | generations],
         [identity.target_id | targets],
         [identity.freshness_key | keys]
       }
     end)
-    |> then(fn {deployments, targets, keys} ->
-      {Enum.reverse(deployments), Enum.reverse(targets), Enum.reverse(keys)}
+    |> then(fn {generations, targets, keys} ->
+      {Enum.reverse(generations), Enum.reverse(targets), Enum.reverse(keys)}
     end)
   end
 
@@ -929,8 +941,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   defp validate_asset_detail_state(query) do
-    if workspace_context?(query.workspace_context) and valid_id?(query.deployment_id) and
-         valid_id?(query.manifest_version_id) and valid_id?(query.target_id) and
+    if workspace_context?(query.workspace_context) and
+         valid_id?(query.evidence_generation_id) and valid_id?(query.target_id) and
          valid_limit?(query.limit),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
@@ -938,7 +950,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   defp freshness_identity?(%FreshnessIdentity{} = identity),
     do:
-      valid_id?(identity.deployment_id) and valid_id?(identity.target_id) and
+      valid_id?(identity.evidence_generation_id) and valid_id?(identity.target_id) and
         valid_id?(identity.freshness_key)
 
   defp freshness_identity?(_other), do: false

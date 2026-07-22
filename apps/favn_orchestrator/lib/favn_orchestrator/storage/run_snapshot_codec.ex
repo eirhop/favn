@@ -49,6 +49,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "event_seq",
     "execution_id",
     "execution_pool",
+    "evidence_generation_id",
     "finished_at",
     "fixed",
     "freshness_key",
@@ -56,6 +57,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "in_flight_execution_ids",
     "initial_ms",
     "input_versions",
+    "input_generations",
     "inserted_at",
     "kind",
     "lineage_depth",
@@ -129,6 +131,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "submit_ref",
     "submit_kind",
     "target_node_keys",
+    "target_generation_id",
+    "target_id",
     "target_refs",
     "terminal_event_type",
     "timeout_ms",
@@ -388,6 +392,12 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "downstream" => Enum.map(List.wrap(Map.get(node, :downstream)), &node_key_to_dto/1),
       "stage" => Map.get(node, :stage),
       "execution_pool" => Map.get(node, :execution_pool) |> atom_to_string(),
+      "target_id" => Map.get(node, :target_id),
+      "target_generation_id" => Map.get(node, :target_generation_id),
+      "evidence_generation_id" => Map.get(node, :evidence_generation_id),
+      "physical_relation" => JsonSafe.data(Map.get(node, :physical_relation)),
+      "input_generations" =>
+        Enum.map(List.wrap(Map.get(node, :input_generations)), &generation_pin_to_dto/1),
       "action" => Map.get(node, :action) |> atom_to_string(),
       "retry_policy" => retry_policy_to_dto(Map.get(node, :retry_policy)),
       "retry_policy_source" => Map.get(node, :retry_policy_source) |> atom_to_string()
@@ -522,24 +532,115 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, retry_policy} <- retry_policy_from_dto(Map.get(node, "retry_policy")),
          {:ok, retry_policy_source} <-
            retry_policy_source_from_dto(Map.get(node, "retry_policy_source")),
-         {:ok, window} <- plan_window_from_dto(Map.get(node, "window")) do
+         {:ok, window} <- plan_window_from_dto(Map.get(node, "window")),
+         {:ok, generation_pin} <- generation_pin_from_dto(node) do
       {:ok,
-       %{
-         ref: ref,
-         node_key: node_key,
-         window: window,
-         upstream: upstream,
-         downstream: downstream,
-         stage: Map.get(node, "stage", 0),
-         execution_pool: execution_pool,
-         action: action,
-         retry_policy: retry_policy,
-         retry_policy_source: retry_policy_source
-       }}
+       Map.merge(
+         %{
+           ref: ref,
+           node_key: node_key,
+           window: window,
+           upstream: upstream,
+           downstream: downstream,
+           stage: Map.get(node, "stage", 0),
+           execution_pool: execution_pool,
+           action: action,
+           retry_policy: retry_policy,
+           retry_policy_source: retry_policy_source
+         },
+         generation_pin
+       )}
     end
   end
 
   defp node_from_dto(node, _allowed_atom_strings), do: {:error, {:invalid_plan_node, node}}
+
+  defp generation_pin_to_dto(pin) when is_map(pin) do
+    %{
+      "target_id" => field(pin, :target_id),
+      "target_generation_id" => field(pin, :target_generation_id),
+      "evidence_generation_id" => field(pin, :evidence_generation_id),
+      "physical_relation" => JsonSafe.data(field(pin, :physical_relation))
+    }
+  end
+
+  defp generation_pin_from_dto(node) do
+    target_id = Map.get(node, "target_id")
+    target_generation_id = Map.get(node, "target_generation_id")
+    evidence_generation_id = Map.get(node, "evidence_generation_id")
+    physical_relation = Map.get(node, "physical_relation")
+    input_generations = Map.get(node, "input_generations", [])
+
+    cond do
+      Enum.all?(
+        [target_id, target_generation_id, evidence_generation_id, physical_relation],
+        &is_nil/1
+      ) and
+          input_generations == [] ->
+        {:ok, %{}}
+
+      not valid_optional_plan_id?(target_id) or not valid_optional_plan_id?(target_generation_id) or
+          not valid_optional_plan_id?(evidence_generation_id) ->
+        {:error, {:invalid_plan_generation_pin, node}}
+
+      not (is_nil(physical_relation) or is_map(physical_relation)) or
+          not is_list(input_generations) ->
+        {:error, {:invalid_plan_generation_pin, node}}
+
+      true ->
+        with {:ok, decoded_inputs} <- input_generation_pins_from_dto(input_generations) do
+          {:ok,
+           %{
+             target_id: target_id,
+             target_generation_id: target_generation_id,
+             evidence_generation_id: evidence_generation_id,
+             physical_relation: physical_relation,
+             input_generations: decoded_inputs
+           }}
+        end
+    end
+  end
+
+  defp input_generation_pins_from_dto(pins) do
+    Enum.reduce_while(pins, {:ok, []}, fn pin, {:ok, acc} ->
+      case input_generation_pin_from_dto(pin) do
+        {:ok, decoded} -> {:cont, {:ok, [decoded | acc]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, pins} -> {:ok, Enum.reverse(pins)}
+      error -> error
+    end)
+  end
+
+  defp input_generation_pin_from_dto(%{} = pin) do
+    target_id = Map.get(pin, "target_id")
+    target_generation_id = Map.get(pin, "target_generation_id")
+    evidence_generation_id = Map.get(pin, "evidence_generation_id")
+    physical_relation = Map.get(pin, "physical_relation")
+
+    if valid_plan_id?(target_id) and valid_optional_plan_id?(target_generation_id) and
+         valid_plan_id?(evidence_generation_id) and
+         (is_nil(physical_relation) or is_map(physical_relation)) do
+      {:ok,
+       %{
+         target_id: target_id,
+         target_generation_id: target_generation_id,
+         evidence_generation_id: evidence_generation_id,
+         physical_relation: physical_relation
+       }}
+    else
+      {:error, {:invalid_plan_generation_pin, pin}}
+    end
+  end
+
+  defp input_generation_pin_from_dto(pin),
+    do: {:error, {:invalid_plan_generation_pin, pin}}
+
+  defp valid_plan_id?(value), do: is_binary(value) and byte_size(value) in 1..255
+  defp valid_optional_plan_id?(nil), do: true
+  defp valid_optional_plan_id?(value), do: valid_plan_id?(value)
 
   defp retry_policy_to_dto(nil), do: nil
 

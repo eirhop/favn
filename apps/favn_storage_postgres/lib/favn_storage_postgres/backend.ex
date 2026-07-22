@@ -40,6 +40,7 @@ defmodule FavnStoragePostgres.Backend do
       scheduler: FavnStoragePostgres.Instrumented.Scheduler,
       admission: FavnStoragePostgres.Instrumented.Admission,
       resource_circuits: FavnStoragePostgres.Instrumented.ResourceCircuits,
+      target_generations: FavnStoragePostgres.Instrumented.TargetGenerations,
       materialization: FavnStoragePostgres.Instrumented.Materialization,
       backfills: FavnStoragePostgres.Instrumented.Backfills,
       operator_reads: FavnStoragePostgres.Instrumented.OperatorReads,

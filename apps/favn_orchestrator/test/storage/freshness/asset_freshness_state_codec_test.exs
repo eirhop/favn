@@ -25,6 +25,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodecTest do
         latest_attempt_at: ~U[2026-05-09 12:00:00Z],
         manifest_version_id: "mv_1",
         manifest_content_hash: "hash_1",
+        evidence_generation_id: "ag_orders_v1",
         input_versions: [
           %{
             upstream_ref: {__MODULE__.RawOrders, :asset},
@@ -41,6 +42,13 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodecTest do
 
     assert {:ok, payload} = AssetFreshnessStateCodec.encode(state)
     assert {:ok, ^expected} = AssetFreshnessStateCodec.decode(payload)
+
+    assert {:error, {:missing_required_keys, [:evidence_generation_id]}} =
+             payload
+             |> Jason.decode!()
+             |> Map.delete("evidence_generation_id")
+             |> Jason.encode!()
+             |> AssetFreshnessStateCodec.decode()
   end
 
   test "rejects malformed input versions instead of dropping them" do
@@ -49,6 +57,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodecTest do
         asset_ref_module: __MODULE__.Orders,
         asset_ref_name: :asset,
         freshness_key: "latest",
+        evidence_generation_id: "ag_test",
         status: :ok,
         input_versions: [:invalid],
         updated_at: ~U[2026-05-09 12:00:00Z]
@@ -71,6 +80,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodecTest do
         asset_ref_module: __MODULE__.Orders,
         asset_ref_name: :asset,
         freshness_key: "latest",
+        evidence_generation_id: "ag_test",
         status: :ok,
         input_versions: [
           %{
@@ -107,6 +117,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodecTest do
         asset_ref_module: __MODULE__.Orders,
         asset_ref_name: :asset,
         freshness_key: "latest",
+        evidence_generation_id: "ag_test",
         status: :ok,
         updated_at: ~U[2026-05-09 12:00:00Z]
       })
@@ -136,6 +147,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodecTest do
                asset_ref_module: __MODULE__.Orders,
                asset_ref_name: :asset,
                freshness_key: "latest",
+               evidence_generation_id: "ag_test",
                freshness_version: 123,
                status: :ok,
                updated_at: ~U[2026-05-09 12:00:00Z]

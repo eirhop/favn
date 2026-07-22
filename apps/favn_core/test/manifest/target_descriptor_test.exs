@@ -19,7 +19,7 @@ defmodule Favn.Manifest.TargetDescriptorTest do
         runner_contract_version: 11
       )
 
-    assert descriptor.target_id == "Elixir.MyApp.Target:asset"
+    assert descriptor.target_id == "asset:Elixir.MyApp.Target:asset"
     assert descriptor.relation.name == "target"
 
     assert descriptor.connection_identity == %{

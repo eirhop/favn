@@ -26,6 +26,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: PersistenceTargetStatus
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.TargetGenerations
 
   @type manifest_summary :: %{
           required(:manifest_version_id) => String.t(),
@@ -250,7 +251,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
            ),
          {:ok, status} <- target_status(context, runtime, :asset, target_id),
          {:ok, page} <- target_runs(context, runtime, :asset, target_id),
-         {:ok, projected_window_states} <- asset_window_states(context, runtime, target_id),
+         {:ok, projected_window_states} <- asset_window_states(context, asset, target_id),
          {:ok, window_states} <-
            catalogue_window_states(projected_window_states, asset, version) do
       runs = Enum.map(page.items, &Projector.project_run_summary/1)
@@ -372,14 +373,21 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     })
   end
 
-  defp asset_window_states(context, runtime, target_id) do
-    Persistence.stores().operator_reads.get_asset_window_states(%GetAssetWindowStates{
-      workspace_context: context,
-      deployment_id: runtime.deployment_id,
-      manifest_version_id: runtime.manifest_version_id,
-      target_id: target_id,
-      limit: 200
-    })
+  defp asset_window_states(context, asset, target_id) do
+    with {:ok, generations} <- TargetGenerations.for_reads(context, %{asset.ref => asset}) do
+      case Map.get(generations, asset.ref) do
+        %{evidence_generation_id: generation_id} ->
+          Persistence.stores().operator_reads.get_asset_window_states(%GetAssetWindowStates{
+            workspace_context: context,
+            evidence_generation_id: generation_id,
+            target_id: target_id,
+            limit: 200
+          })
+
+        nil ->
+          {:ok, []}
+      end
+    end
   end
 
   defp catalogue_window_states(states, asset, version) do

@@ -10,7 +10,8 @@ Favn's PostgreSQL 18 control-plane persistence.
 - `FavnStoragePostgres.BackendSupervisor` owns the repo, notification listener,
   publisher, projectors, and bounded maintenance workers.
 - Capability stores live under `registry/`, `runs/`, `run_ownership/`,
-  `scheduler/`, `admission/`, `materialization/`, `backfills/`, `identity/`,
+  `scheduler/`, `admission/`, `target_generations/`, `materialization/`,
+  `backfills/`, `identity/`,
   `resource_circuits/`, `logs/`, `operator_reads/`, and `maintenance/`.
 - Ecto schemas live under `schemas/`. Ordinary typed queries use Ecto;
   concurrency-critical commands may use focused SQL.
@@ -24,6 +25,15 @@ Favn's PostgreSQL 18 control-plane persistence.
 - `run_plans` stores one bounded immutable plan per planned run. `runs.snapshot`
   stores only mutable state plus the plan hash, keeping every transition below its
   independent 4 MiB boundary.
+- `asset_target_generations` owns immutable physical-generation identity and
+  `asset_target_bindings` selects the active generation for ordinary writes and
+  current-evidence reads. Initial writes remain `building` until authoritative
+  physical reconciliation records an activation and fingerprint. Rebuild
+  operations, actions, windows, and target locks have
+  normalized, bounded authority tables for later lifecycle transitions.
+- Materialization ledgers pin both the optional physical target generation and the
+  required evidence generation. Window and freshness projections use that evidence
+  generation in their primary identity.
 - `asset_attempt_overviews` projects exact run, asset-step, and effective runtime
   window identities from authoritative run events. It supports bounded operator
   overview reads without loading run snapshots, plans, or event payloads and is

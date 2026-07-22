@@ -116,6 +116,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
         deployment_id: command.deployment_id,
         target_kind: Atom.to_string(command.target_kind),
         target_id: command.target_id,
+        target_generation_id: command.target_generation_id,
+        evidence_generation_id: command.evidence_generation_id,
         partition_key: command.partition_key,
         run_id: command.run_id,
         claim_command_id: command.command_id,
@@ -153,6 +155,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
             claim_request_hash: request_hash,
             owner_id: command.owner_id,
             run_id: command.run_id,
+            target_generation_id: command.target_generation_id,
+            evidence_generation_id: command.evidence_generation_id,
             fencing_token: claim.fencing_token + 1,
             last_renewal_id: nil,
             last_finish_command_id: nil,
@@ -202,7 +206,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
               AND fencing_token = $4 AND status = 'claimed'
               AND expires_at > clock_timestamp()
             RETURNING workspace_id, claim_key, deployment_id, target_kind, target_id,
-                      partition_key, run_id, owner_id, fencing_token, status, expires_at,
+                      target_generation_id, evidence_generation_id, partition_key, run_id,
+                      owner_id, fencing_token, status, expires_at,
                       completed_at, result, error, version
             """,
             [
@@ -265,7 +270,9 @@ defmodule FavnStoragePostgres.Materialization.Store do
           "materialization_id" => command.materialization_id,
           "claim_key" => claim.claim_key,
           "run_id" => claim.run_id,
-          "target_id" => claim.target_id
+          "target_id" => claim.target_id,
+          "target_generation_id" => claim.target_generation_id,
+          "evidence_generation_id" => claim.evidence_generation_id
         }
       })
 
@@ -277,6 +284,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
         deployment_id: claim.deployment_id,
         target_kind: claim.target_kind,
         target_id: claim.target_id,
+        target_generation_id: claim.target_generation_id,
+        evidence_generation_id: claim.evidence_generation_id,
         partition_key: claim.partition_key,
         run_id: claim.run_id,
         payload: command.payload,
@@ -404,6 +413,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       deployment_id: claim.deployment_id,
       target_kind: String.to_existing_atom(claim.target_kind),
       target_id: claim.target_id,
+      target_generation_id: claim.target_generation_id,
+      evidence_generation_id: claim.evidence_generation_id,
       partition_key: claim.partition_key,
       run_id: claim.run_id,
       owner_id: claim.owner_id,
@@ -423,6 +434,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
          deployment_id,
          target_kind,
          target_id,
+         target_generation_id,
+         evidence_generation_id,
          partition_key,
          run_id,
          owner_id,
@@ -440,6 +453,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       deployment_id: deployment_id,
       target_kind: String.to_existing_atom(target_kind),
       target_id: target_id,
+      target_generation_id: target_generation_id,
+      evidence_generation_id: evidence_generation_id,
       partition_key: partition_key,
       run_id: run_id,
       owner_id: owner_id,
@@ -461,6 +476,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       deployment_id: materialization.deployment_id,
       target_kind: String.to_existing_atom(materialization.target_kind),
       target_id: materialization.target_id,
+      target_generation_id: materialization.target_generation_id,
+      evidence_generation_id: materialization.evidence_generation_id,
       partition_key: materialization.partition_key,
       run_id: materialization.run_id,
       payload: materialization.payload,
@@ -478,7 +495,10 @@ defmodule FavnStoragePostgres.Materialization.Store do
   defp same_logical_identity?(claim, command) do
     claim.claim_key == command.claim_key and claim.deployment_id == command.deployment_id and
       claim.target_kind == Atom.to_string(command.target_kind) and
-      claim.target_id == command.target_id and claim.partition_key == command.partition_key
+      claim.target_id == command.target_id and
+      claim.target_generation_id == command.target_generation_id and
+      claim.evidence_generation_id == command.evidence_generation_id and
+      claim.partition_key == command.partition_key
   end
 
   defp matching_owner?(claim, command),
@@ -492,6 +512,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       deployment_id: command.deployment_id,
       target_kind: command.target_kind,
       target_id: command.target_id,
+      target_generation_id: command.target_generation_id,
+      evidence_generation_id: command.evidence_generation_id,
       partition_key: command.partition_key,
       run_id: command.run_id,
       owner_id: command.owner_id
@@ -549,12 +571,14 @@ defmodule FavnStoragePostgres.Materialization.Store do
              command.claim_key,
              command.deployment_id,
              command.target_id,
+             command.evidence_generation_id,
              command.partition_key,
              command.run_id,
              command.owner_id
            ],
            &valid_id?/1
          ) and command.target_kind in [:asset, :pipeline] and
+         valid_generation_identity?(command.target_generation_id, command.evidence_generation_id) and
          valid_duration?(command.lease_duration_ms) and match?(%DateTime{}, command.occurred_at),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
@@ -608,4 +632,12 @@ defmodule FavnStoragePostgres.Materialization.Store do
 
   defp valid_duration?(duration), do: is_integer(duration) and duration > 0
   defp valid_id?(value), do: is_binary(value) and value != "" and byte_size(value) <= 255
+
+  defp valid_generation_identity?(nil, evidence_generation_id),
+    do: valid_id?(evidence_generation_id)
+
+  defp valid_generation_identity?(target_generation_id, evidence_generation_id) do
+    target_generation_id == evidence_generation_id and
+      match?({:ok, _uuid}, Ecto.UUID.cast(target_generation_id))
+  end
 end

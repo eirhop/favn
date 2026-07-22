@@ -25,6 +25,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       scheduler: FakeStore,
       admission: FakeStore,
       resource_circuits: FakeStore,
+      target_generations: FakeStore,
       materialization: FakeStore,
       backfills: FakeStore,
       operator_reads: FakeStore,

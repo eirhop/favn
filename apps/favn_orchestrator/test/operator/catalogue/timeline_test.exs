@@ -386,6 +386,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
         asset_ref_module: elem(@asset_ref, 0),
         asset_ref_name: elem(@asset_ref, 1),
         freshness_key: freshness_key,
+        evidence_generation_id: "ag_test",
         status: status,
         freshness_version: "#{id}:v1",
         latest_success_run_id: run_id,

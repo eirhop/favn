@@ -10,11 +10,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.SQLExecution
+  alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias Favn.Freshness.Policy
   alias Favn.SQL.Template
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInput.Resolution
+  alias Favn.RelationRef
   alias FavnOrchestrator.Persistence.BackfillPlan
   alias FavnOrchestrator.Persistence.Commands.ActivateBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.BackfillMissingProjection
@@ -41,6 +43,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
   alias FavnOrchestrator.Persistence.Commands.FinishMaterialization
+  alias FavnOrchestrator.Persistence.Commands.EnsureWritableTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.AppendLogBatch
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
   alias FavnOrchestrator.Persistence.Commands.LogEntry
@@ -70,6 +73,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeInputs
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
   alias FavnOrchestrator.Persistence.Queries.GetMaterializations
+  alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
+  alias FavnOrchestrator.Persistence.Queries.GetTargetBinding
   alias FavnOrchestrator.Persistence.Queries.GetBackfill
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
@@ -130,6 +135,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.Schemas.ManifestVersion, as: ManifestVersionRow
   alias FavnStoragePostgres.Schemas.RuntimeInputPin, as: RuntimeInputPinRow
   alias FavnStoragePostgres.Scheduler.Store, as: SchedulerStore
+  alias FavnStoragePostgres.TargetGenerations.Store, as: TargetGenerationStore
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @service_token "B7yN3kQ9wR4mT8xZ2cV6pL1sD5fH0jA7"
@@ -213,6 +219,226 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         "SELECT count(*) FROM favn_control.outbox_events WHERE workspace_id = $1 AND event_kind = 'workspace.provisioned'",
         [fixture.workspace_id]
       )
+  end
+
+  test "creates one replay-safe building generation and leaves activation to reconciliation",
+       fixture do
+    descriptor = target_descriptor(fixture)
+    occurred_at = DateTime.utc_now()
+
+    command = %EnsureWritableTargetGeneration{
+      workspace_context: fixture.workspace_context,
+      command_id: "generation:ensure:" <> fixture.workspace_id,
+      target_id: fixture.target_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      descriptor: descriptor,
+      occurred_at: occurred_at
+    }
+
+    assert {:ok, first} = TargetGenerationStore.ensure_writable(command)
+    assert first.generation.status == :building
+
+    assert first.generation.physical_relation == %{
+             "catalog" => nil,
+             "connection" => "warehouse",
+             "name" => "asset",
+             "schema" => "analytics"
+           }
+
+    assert first.binding.compatibility_status == :uninitialized
+    assert is_nil(first.binding.active_generation_id)
+
+    assert {:ok, replayed} = TargetGenerationStore.ensure_writable(command)
+    assert replayed.generation.target_generation_id == first.generation.target_generation_id
+    assert replayed.generation.logical_relation == first.generation.logical_relation
+    assert replayed.generation.physical_relation == first.generation.physical_relation
+
+    assert {:ok, same_build} =
+             TargetGenerationStore.ensure_writable(%{
+               command
+               | command_id: command.command_id <> ":new-run"
+             })
+
+    assert same_build.generation.target_generation_id == first.generation.target_generation_id
+
+    assert {:ok, binding} =
+             TargetGenerationStore.get_binding(%GetTargetBinding{
+               workspace_context: fixture.workspace_context,
+               target_id: fixture.target_id
+             })
+
+    assert binding == same_build.binding
+
+    {run_command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(run_command)
+
+    claim = %ClaimMaterialization{
+      workspace_context: fixture.workspace_context,
+      command_id: "generation:claim:" <> run.id,
+      claim_key: "generation:claim:" <> run.id,
+      deployment_id: fixture.deployment_id,
+      target_kind: :asset,
+      target_id: fixture.target_id,
+      target_generation_id: first.generation.target_generation_id,
+      evidence_generation_id: first.generation.target_generation_id,
+      partition_key: Favn.Freshness.Key.latest(),
+      run_id: run.id,
+      owner_id: "generation-worker",
+      lease_duration_ms: 30_000,
+      occurred_at: occurred_at
+    }
+
+    assert {:ok, %{status: :claimed, claim: claimed}} = MaterializationStore.claim(claim)
+
+    assert {:ok, %{status: :materialized}} =
+             MaterializationStore.finish(%FinishMaterialization{
+               workspace_context: fixture.workspace_context,
+               command_id: "generation:finish:" <> run.id,
+               claim_key: claim.claim_key,
+               owner_id: claim.owner_id,
+               fencing_token: claimed.fencing_token,
+               expected_version: claimed.version,
+               status: :succeeded,
+               materialization_id: "generation:materialization:" <> run.id,
+               payload: %{"row_count" => 1},
+               occurred_at: DateTime.add(occurred_at, 1, :second)
+             })
+
+    assert {:ok, after_success} =
+             TargetGenerationStore.get_binding(%GetTargetBinding{
+               workspace_context: fixture.workspace_context,
+               target_id: fixture.target_id
+             })
+
+    assert after_success.compatibility_status == :uninitialized
+    assert is_nil(after_success.active_generation_id)
+
+    assert %{rows: [["building", nil]]} =
+             SQL.query!(
+               Repo,
+               "SELECT status, physical_schema_fingerprint FROM favn_control.asset_target_generations WHERE workspace_id = $1 AND target_id = $2 AND target_generation_id::text = $3",
+               [fixture.workspace_id, fixture.target_id, first.generation.target_generation_id]
+             )
+
+    isolated = provision_deploy_fixture(fixture.version)
+
+    assert {:ok, isolated_generation} =
+             TargetGenerationStore.ensure_writable(%{
+               command
+               | workspace_context: isolated.workspace_context,
+                 command_id: command.command_id <> ":isolated"
+             })
+
+    refute isolated_generation.generation.target_generation_id ==
+             first.generation.target_generation_id
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.asset_target_bindings SET compatibility_status = 'rebuild_required', reason_code = 'test_block' WHERE workspace_id = $1 AND target_id = $2",
+      [fixture.workspace_id, fixture.target_id]
+    )
+
+    assert {:error, %{kind: :conflict}} =
+             TargetGenerationStore.ensure_writable(%{
+               command
+               | command_id: command.command_id <> ":blocked"
+             })
+
+    assert %{rows: [[lifecycle_constraint]]} =
+             SQL.query!(
+               Repo,
+               "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'rebuild_operations_values_valid'",
+               []
+             )
+
+    assert lifecycle_constraint =~ "activation_unknown"
+    assert lifecycle_constraint =~ "reconciling"
+    assert lifecycle_constraint =~ "not_started"
+    assert lifecycle_constraint =~ "complete"
+
+    assert %{
+             rows: [
+               ["rebuild_plan_actions_child_operation_fk"],
+               ["rebuild_windows_materialization_fk"]
+             ]
+           } =
+             SQL.query!(
+               Repo,
+               "SELECT conname FROM pg_constraint WHERE conname IN ('rebuild_plan_actions_child_operation_fk', 'rebuild_windows_materialization_fk') ORDER BY conname",
+               []
+             )
+  end
+
+  test "keeps projected window evidence isolated by generation", fixture do
+    {run_command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(run_command)
+
+    window_key =
+      Favn.Window.Key.new!(:day, ~U[2026-07-20 00:00:00Z], "Etc/UTC")
+      |> Favn.Freshness.Key.window!()
+
+    materializations =
+      for generation_id <- ["ag_active", "ag_candidate"] do
+        claim_key = "generation-window:#{generation_id}:#{run.id}"
+
+        assert {:ok, %{status: :claimed, claim: claimed}} =
+                 MaterializationStore.claim(%ClaimMaterialization{
+                   workspace_context: fixture.workspace_context,
+                   command_id: "claim:" <> claim_key,
+                   claim_key: claim_key,
+                   deployment_id: fixture.deployment_id,
+                   target_kind: :asset,
+                   target_id: fixture.target_id,
+                   target_generation_id: nil,
+                   evidence_generation_id: generation_id,
+                   partition_key: window_key,
+                   run_id: run.id,
+                   owner_id: "generation-window-worker",
+                   lease_duration_ms: 30_000,
+                   occurred_at: DateTime.utc_now()
+                 })
+
+        materialization_id = "materialization:" <> claim_key
+
+        assert {:ok, %{status: :materialized}} =
+                 MaterializationStore.finish(%FinishMaterialization{
+                   workspace_context: fixture.workspace_context,
+                   command_id: "finish:" <> claim_key,
+                   claim_key: claim_key,
+                   owner_id: claimed.owner_id,
+                   fencing_token: claimed.fencing_token,
+                   expected_version: claimed.version,
+                   status: :succeeded,
+                   materialization_id: materialization_id,
+                   payload: %{
+                     "freshness_version" => generation_id <> ":v1",
+                     "run_id" => run.id,
+                     "manifest_version_id" => fixture.version.manifest_version_id,
+                     "manifest_content_hash" => fixture.version.content_hash,
+                     "target_generation_id" => nil,
+                     "evidence_generation_id" => generation_id
+                   },
+                   occurred_at: DateTime.utc_now()
+                 })
+
+        {generation_id, materialization_id}
+      end
+
+    assert {:ok, _publications} = Sequencer.sequence_batch()
+    assert drain_projector("generation-window-projector:" <> run.id) > 0
+
+    for {generation_id, materialization_id} <- materializations do
+      assert {:ok, [state]} =
+               OperatorReadStore.get_asset_window_states(%GetAssetWindowStates{
+                 workspace_context: fixture.workspace_context,
+                 evidence_generation_id: generation_id,
+                 target_id: fixture.target_id,
+                 limit: 10
+               })
+
+      assert state.evidence_generation_id == generation_id
+      assert state.materialization_id == materialization_id
+    end
   end
 
   test "registers and deploys an immutable exact manifest catalog", fixture do
@@ -2636,7 +2862,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   test "pipeline continues independent branches after a terminal sibling failure", fixture do
-    {plan, keys} = continuation_regression_plan()
+    asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
+    {plan, keys} = continuation_regression_plan(asset.semantic_generation_id)
     {command, original} = pipeline_run_command(fixture)
 
     run =
@@ -2865,6 +3092,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       deployment_id: fixture.deployment_id,
       target_kind: :asset,
       target_id: fixture.target_id,
+      evidence_generation_id:
+        fixture.version.manifest.assets
+        |> Enum.find(&(&1.ref == {MyApp.Asset, :asset}))
+        |> Map.fetch!(:semantic_generation_id),
       partition_key: Favn.Freshness.Key.latest(),
       run_id: run.id,
       owner_id: "worker-a",
@@ -4444,6 +4675,29 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {version, [package, private_package]}
   end
 
+  defp target_descriptor(fixture) do
+    asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
+
+    asset
+    |> Map.from_struct()
+    |> Map.merge(%{
+      relation:
+        RelationRef.new!(
+          connection: :warehouse,
+          schema: "analytics",
+          name: "asset"
+        ),
+      materialization: :table
+    })
+    |> TargetDescriptor.from_asset(
+      connection_definitions: %{
+        warehouse: %{adapter: FavnTestSupport.TargetAdapter, module: nil}
+      },
+      manifest_schema_version: fixture.version.schema_version,
+      runner_contract_version: fixture.version.runner_contract_version
+    )
+  end
+
   defp drain_projector(owner_id, total \\ 0) do
     case Projector.project_batch(owner_id, limit: 250) do
       {:ok, %{count: 250}} -> drain_projector(owner_id, total + 250)
@@ -4761,7 +5015,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
   end
 
-  defp continuation_regression_plan do
+  defp continuation_regression_plan(evidence_generation_id) do
     ref = {MyApp.Asset, :asset}
     start_at = ~U[2026-07-01 00:00:00Z]
 
@@ -4788,8 +5042,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       e: {ref, e_window.key}
     }
 
+    pin = %{
+      target_id: Favn.TargetIdentity.for_asset(ref),
+      target_generation_id: nil,
+      evidence_generation_id: evidence_generation_id,
+      physical_relation: nil
+    }
+
     node = fn key, window, upstream, downstream, stage, retry_policy ->
-      %{
+      Map.merge(pin, %{
         ref: ref,
         node_key: key,
         window: window,
@@ -4799,8 +5060,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         execution_pool: nil,
         action: :run,
         retry_policy: retry_policy,
-        retry_policy_source: :asset
-      }
+        retry_policy_source: :asset,
+        input_generations: if(upstream == [], do: [], else: [pin])
+      })
     end
 
     default = Favn.Retry.Policy.default()

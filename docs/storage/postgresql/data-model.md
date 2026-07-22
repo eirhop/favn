@@ -330,6 +330,8 @@ erDiagram
         text deployment_id FK
         text target_kind FK
         text target_id FK
+        uuid target_generation_id FK
+        text evidence_generation_id
         bigint fencing_token
         text status
     }
@@ -338,8 +340,55 @@ erDiagram
         text materialization_id PK
         text run_id FK
         text target_id FK
+        uuid target_generation_id FK
+        text evidence_generation_id
         bigint outbox_event_id FK
         jsonb payload
+    }
+    ASSET_TARGET_GENERATIONS {
+        text workspace_id PK, FK
+        text target_id PK
+        uuid target_generation_id PK
+        text status
+        text creating_descriptor_hash
+        text active_descriptor_hash
+    }
+    ASSET_TARGET_BINDINGS {
+        text workspace_id PK, FK
+        text target_id PK
+        uuid active_generation_id FK
+        text desired_manifest_id FK
+        text compatibility_status
+    }
+    REBUILD_OPERATIONS {
+        text workspace_id PK, FK
+        text operation_id PK
+        text root_target_id
+        uuid candidate_generation_id FK
+        text state
+        text phase
+    }
+    REBUILD_PLAN_ACTIONS {
+        text workspace_id PK, FK
+        text operation_id PK, FK
+        text target_id PK
+        text action
+        text status
+    }
+    REBUILD_WINDOWS {
+        text workspace_id PK, FK
+        text operation_id PK, FK
+        text target_id PK, FK
+        text item_id PK
+        text status
+        bigint fencing_token
+    }
+    TARGET_OPERATION_LOCKS {
+        text workspace_id PK, FK
+        text target_id PK
+        text operation_id
+        text operation_type
+        bigint fencing_token
     }
     COVERAGE_BASELINES {
         text workspace_id PK, FK
@@ -390,6 +439,11 @@ erDiagram
     RUNS ||--o{ RESOURCE_RECOVERY_CANDIDATES : originates
     RUN_TARGETS ||--o{ MATERIALIZATION_CLAIMS : claims
     RUN_TARGETS ||--o{ MATERIALIZATIONS : produces
+    ASSET_TARGET_GENERATIONS ||--o{ MATERIALIZATION_CLAIMS : pins
+    ASSET_TARGET_GENERATIONS ||--o{ MATERIALIZATIONS : proves
+    ASSET_TARGET_GENERATIONS ||--o| ASSET_TARGET_BINDINGS : activates
+    REBUILD_OPERATIONS ||--|{ REBUILD_PLAN_ACTIONS : plans
+    REBUILD_PLAN_ACTIONS ||--o{ REBUILD_WINDOWS : expands
     OUTBOX_EVENTS ||--o| MATERIALIZATIONS : publishes
     WORKSPACE_DEPLOYMENT_TARGETS ||--o{ COVERAGE_BASELINES : covers
     WORKSPACE_DEPLOYMENT_TARGETS ||--o{ BACKFILLS : targets
@@ -506,7 +560,7 @@ erDiagram
     }
     ASSET_WINDOW_STATES {
         text workspace_id PK
-        text manifest_version_id PK
+        text evidence_generation_id PK
         text target_id PK
         text window_key PK
         text status
@@ -514,7 +568,7 @@ erDiagram
     }
     ASSET_FRESHNESS_STATES {
         text workspace_id PK
-        text deployment_id PK
+        text evidence_generation_id PK
         text target_id PK
         text freshness_key PK
         text status
@@ -554,16 +608,17 @@ repaired from authoritative publications.
 | Scheduling | `schedule_cursors`, `schedule_occurrences` | Authoritative |
 | Admission | `capacity_scopes`, `execution_leases`, `execution_lease_scopes`, `admission_waiters` | Authoritative coordination |
 | Resource circuits | `resource_circuits`, `resource_circuit_outcomes`, `resource_recovery_candidates` | Authoritative coordination |
+| Target generations and rebuilds | `asset_target_generations`, `asset_target_bindings`, `rebuild_operations`, `rebuild_plan_actions`, `rebuild_windows`, `target_operation_locks` | Authoritative state and coordination |
 | Materialization | `materialization_claims`, `materializations`, `coverage_baselines` | Authoritative |
 | Backfills | `backfills`, `backfill_plan_batches`, `backfill_windows` | Authoritative |
 | Logs | `log_batches`, `log_entries` | Authoritative operational history subject to retention |
 | Identity and audit | `auth_actors`, `auth_credentials`, `auth_sessions`, `auth_workspace_memberships`, `auth_platform_grants`, `auth_audit_entries`, `auth_platform_audit_entries` | Authoritative |
 | API/maintenance | `idempotency_records`, `maintenance_jobs` | Authoritative coordination |
 | Projection infrastructure | `projection_cursors`, `projection_failures` | Durable projector state |
-| Read projections | `execution_group_overviews`, `backfill_overviews`, `target_statuses`, `asset_window_states`, `asset_freshness_states` | Derived and repairable |
+| Read projections | `execution_group_overviews`, `backfill_overviews`, `target_statuses`, `asset_window_states`, `asset_freshness_states`, `asset_attempt_overviews` | Derived and repairable |
 | Ecto | `schema_migrations` | Migration bookkeeping |
 
-There are 51 application/schema tables including `schema_migrations`. Tables
+There are 58 application/schema tables including `schema_migrations`. Tables
 without direct foreign keys still require workspace-scoped application contracts;
 their lack of an FK is not permission to perform unscoped reads.
 

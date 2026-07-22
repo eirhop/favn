@@ -1,16 +1,54 @@
 defmodule FavnOrchestrator.Freshness.StateLoaderTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
+  alias Favn.Freshness.Policy
   alias Favn.Plan
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.Freshness.StateLoader
+  alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
   alias FavnOrchestrator.Persistence.Results.FreshnessState
+  alias FavnOrchestrator.Persistence.Stores
+  alias FavnOrchestrator.Persistence.WorkspaceContext
 
   @now ~U[2026-07-20 10:00:00Z]
   @upstream_ref {MyApp.Raw, :orders}
   @target_ref {MyApp.Gold, :orders}
   @upstream_key {@upstream_ref, "window:upstream"}
   @target_key {@target_ref, "window:target"}
+
+  defmodule FakeStore do
+    def get_freshness_many(%{identities: identities}) do
+      send(self(), {:freshness_batch, length(identities)})
+      {:ok, []}
+    end
+  end
+
+  setup do
+    stores = %Stores{
+      registry: FakeStore,
+      runs: FakeStore,
+      run_ownership: FakeStore,
+      scheduler: FakeStore,
+      admission: FakeStore,
+      resource_circuits: FakeStore,
+      target_generations: FakeStore,
+      materialization: FakeStore,
+      backfills: FakeStore,
+      operator_reads: FakeStore,
+      logs: FakeStore,
+      identity: FakeStore,
+      maintenance: FakeStore
+    }
+
+    runtime = %PersistenceRuntime{backend: __MODULE__, options: [], stores: stores}
+    assert {:ok, pid} = PersistenceRuntime.start_link(runtime)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: GenServer.stop(pid)
+    end)
+
+    :ok
+  end
 
   test "restores planned node identities and consumed upstream versions" do
     plan = plan()
@@ -19,7 +57,9 @@ defmodule FavnOrchestrator.Freshness.StateLoaderTest do
 
     persisted = %FreshnessState{
       workspace_id: "workspace",
+      evidence_generation_id: "ag_test",
       deployment_id: "deployment",
+      manifest_version_id: "manifest",
       target_id: target_id,
       freshness_key: freshness_key,
       status: :fresh,
@@ -60,7 +100,9 @@ defmodule FavnOrchestrator.Freshness.StateLoaderTest do
   test "rejects rows outside the exact requested identity set" do
     persisted = %FreshnessState{
       workspace_id: "workspace",
+      evidence_generation_id: "ag_test",
       deployment_id: "deployment",
+      manifest_version_id: "manifest",
       target_id: "unexpected",
       freshness_key: "unexpected",
       status: :fresh,
@@ -70,6 +112,32 @@ defmodule FavnOrchestrator.Freshness.StateLoaderTest do
 
     assert {:error, :unexpected_freshness_identity} =
              StateLoader.decode_many([persisted], %{}, plan())
+  end
+
+  test "chunks freshness reads for plans larger than the persistence batch limit" do
+    ref = {MyApp.Windowed, :orders}
+
+    nodes =
+      Map.new(1..501, fn index ->
+        window_key = Favn.Window.Key.new!(:day, DateTime.add(@now, index, :day), "Etc/UTC")
+        node_key = {ref, window_key}
+
+        {node_key,
+         node(ref, node_key, [], [], 0)
+         |> Map.put(:window, %{key: window_key})
+         |> Map.put(:evidence_generation_id, "ag_windowed")}
+      end)
+
+    plan = %Plan{nodes: nodes}
+    assets = %{ref => %{freshness: Policy.from_value!(window_success: true)}}
+    assert {:ok, context} = WorkspaceContext.new("workspace", "test", [:workspace_admin])
+
+    assert {:ok, %{states: [], indexed: %{}}} =
+             StateLoader.load(context, "deployment", plan, assets, now: @now)
+
+    assert_receive {:freshness_batch, 500}
+    assert_receive {:freshness_batch, 1}
+    refute_receive {:freshness_batch, _size}
   end
 
   defp plan do

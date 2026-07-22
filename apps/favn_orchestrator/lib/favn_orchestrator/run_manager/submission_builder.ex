@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias Favn.Window.Selection
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RetryPolicyResolver
@@ -19,6 +20,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias FavnOrchestrator.RunManager.SubmissionOptions
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
+  alias FavnOrchestrator.TargetGenerations
 
   @spec asset(WorkspaceContext.t(), Favn.Ref.t(), keyword()) ::
           {:ok, Submission.t()} | {:error, term()}
@@ -203,7 +205,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, _asset} <- Index.fetch_asset(index, asset_ref),
          {:ok, plan} <- plan(input, index, asset_ref, exact_windows: input.exact_windows),
-         plan <- RetryPolicyResolver.annotate(plan, index, nil, input.retry_policy_override) do
+         plan <- RetryPolicyResolver.annotate(plan, index, nil, input.retry_policy_override),
+         {:ok, plan} <- pin_plan(input, version, index, plan) do
       input = %{input | metadata: metadata_with_selection}
       run_state = new_run_state(input, version, plan, asset_ref, :manual)
 
@@ -368,7 +371,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              index,
              pipeline_retry_policy,
              input.retry_policy_override
-           ) do
+           ),
+         {:ok, plan} <- pin_plan(input, version, index, plan) do
       {:ok, new_run_state(input, version, plan, List.first(plan.target_refs), :pipeline)}
     end
   end
@@ -449,7 +453,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              index,
              pipeline_retry_policy,
              input.retry_policy_override
-           ) do
+           ),
+         {:ok, plan} <- pin_plan(input, version, index, plan) do
       rerun_of_run_id = source_run.rerun_of_run_id || source_run.id
 
       metadata_with_source =
@@ -535,6 +540,17 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       |> Keyword.merge(extra_opts)
 
     Planner.plan(targets, opts)
+  end
+
+  defp pin_plan(%SubmissionOptions{workspace_id: workspace_id}, version, index, plan)
+       when is_binary(workspace_id) do
+    TargetGenerations.pin_plan(
+      SystemContext.workspace(workspace_id, :run_generation_planning),
+      version,
+      index,
+      plan,
+      DateTime.utc_now()
+    )
   end
 
   defp planner_window_options(%SubmissionOptions{window_selection: %Selection{} = selection}),

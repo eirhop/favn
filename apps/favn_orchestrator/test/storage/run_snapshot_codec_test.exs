@@ -485,6 +485,11 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
           downstream: [],
           stage: 0,
           execution_pool: :warehouse,
+          target_id: "asset:Elixir.FavnOrchestrator.Storage.RunSnapshotCodecTest.Asset:asset",
+          target_generation_id: nil,
+          evidence_generation_id: "ag_windowed_plan",
+          physical_relation: nil,
+          input_generations: [],
           action: :run,
           retry_policy: Policy.default(),
           retry_policy_source: :default
@@ -558,6 +563,99 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
                },
                manifest_record
              )
+  end
+
+  test "round-trips persisted generation pins with an upstream input" do
+    version = multi_asset_manifest_version("mv_run_snapshot_generation_pins")
+    upstream_ref = {__MODULE__.AssetA, :asset}
+    target_ref = {__MODULE__.AssetB, :asset}
+    upstream_key = {upstream_ref, nil}
+    target_key = {target_ref, nil}
+
+    upstream_pin = %{
+      target_id: "asset:Elixir.FavnOrchestrator.Storage.RunSnapshotCodecTest.AssetA:asset",
+      target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
+      evidence_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
+      physical_relation: %{
+        "catalog" => nil,
+        "connection" => "warehouse",
+        "name" => "asset_a",
+        "schema" => "analytics"
+      }
+    }
+
+    target_pin = %{
+      target_id: "asset:Elixir.FavnOrchestrator.Storage.RunSnapshotCodecTest.AssetB:asset",
+      target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987655",
+      evidence_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987655",
+      physical_relation: %{
+        "catalog" => nil,
+        "connection" => "warehouse",
+        "name" => "asset_b",
+        "schema" => "analytics"
+      }
+    }
+
+    plan = %Plan{
+      target_refs: [target_ref],
+      target_node_keys: [target_key],
+      nodes: %{
+        upstream_key =>
+          Map.merge(upstream_pin, %{
+            ref: upstream_ref,
+            node_key: upstream_key,
+            window: nil,
+            upstream: [],
+            downstream: [target_key],
+            stage: 0,
+            execution_pool: :warehouse,
+            input_generations: [],
+            action: :run,
+            retry_policy: Policy.default(),
+            retry_policy_source: :default
+          }),
+        target_key =>
+          Map.merge(target_pin, %{
+            ref: target_ref,
+            node_key: target_key,
+            window: nil,
+            upstream: [upstream_key],
+            downstream: [],
+            stage: 1,
+            execution_pool: :warehouse,
+            input_generations: [upstream_pin],
+            action: :run,
+            retry_policy: Policy.default(),
+            retry_policy_source: :default
+          })
+      },
+      topo_order: [upstream_ref, target_ref],
+      stages: [[upstream_ref], [target_ref]],
+      node_stages: [[upstream_key], [target_key]]
+    }
+
+    run =
+      RunState.new(
+        id: "run_snapshot_generation_pins",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        required_runner_release_id: version.required_runner_release_id,
+        asset_ref: target_ref,
+        target_refs: [target_ref],
+        plan: plan
+      )
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert restored.plan == plan
+    assert restored.plan_hash == run.plan_hash
   end
 
   test "normalizes unexpected exception structs before persistence" do

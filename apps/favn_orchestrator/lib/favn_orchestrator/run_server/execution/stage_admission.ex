@@ -232,6 +232,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     case MaterializationClaims.acquire(
            current_run,
            version,
+           ctx.manifest_index,
            node_key,
            ctx.decisions,
            ctx.freshness_context,

@@ -48,6 +48,11 @@ freshness, and execution coordination.
   database operation cannot block unrelated manager calls.
 - `RunOwnership`, `ExecutionAdmission`, `MaterializationClaims`, and scheduler
   runtime modules own fenced distributed coordination.
+- `TargetGenerations` resolves persisted asset writes to one durable physical
+  generation and non-persisted assets to a deterministic semantic generation.
+  Materialization claims pin that identity before execution; freshness and window
+  reads first resolve the active binding so retired-generation evidence is not
+  presented as current.
 - `RunnerClient.BeamNode` is the sole production runner transport. It connects
   to one validated static long node name, performs bounded `:erpc` calls, and
   never loads or calls `favn_runner` inside the control-plane BEAM. Readiness

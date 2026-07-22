@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.Freshness.StateLoader do
   alias FavnOrchestrator.Persistence.Queries.GetFreshnessMany
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.TargetGenerations
 
   @status_by_name %{
     "running" => :running,
@@ -26,6 +27,7 @@ defmodule FavnOrchestrator.Freshness.StateLoader do
     "blocked" => :blocked
   }
   @statuses Map.values(@status_by_name)
+  @persistence_batch 500
 
   @type loaded :: %{
           required(:states) => [AssetFreshnessState.t()],
@@ -52,11 +54,9 @@ defmodule FavnOrchestrator.Freshness.StateLoader do
         now: now
       )
 
-    {identities, requested} = identities(deployment_id, keys)
-
-    query = %GetFreshnessMany{workspace_context: context, identities: identities}
-
-    with {:ok, results} <- Persistence.stores().operator_reads.get_freshness_many(query),
+    with {:ok, generations} <- planned_generations(context, plan, assets_by_ref, keys),
+         {identities, requested} <- identities(keys, generations),
+         {:ok, results} <- fetch_many(context, identities),
          {:ok, states} <- decode_many(results, requested, plan) do
       {:ok, %{states: states, indexed: index(states)}}
     end
@@ -94,17 +94,78 @@ defmodule FavnOrchestrator.Freshness.StateLoader do
     end)
   end
 
-  defp identities(deployment_id, keys) do
-    Enum.map_reduce(keys, %{}, fn {module, name, freshness_key} = key, acc ->
+  defp identities(keys, generations) do
+    Enum.reduce(keys, {[], %{}}, fn {module, name, freshness_key} = key,
+                                    {identities, requested} ->
       target_id = TargetIdentity.for_asset({module, name})
 
-      identity = %FreshnessIdentity{
-        deployment_id: deployment_id,
-        target_id: target_id,
-        freshness_key: freshness_key
-      }
+      case Map.get(generations, {module, name}) do
+        %{evidence_generation_id: evidence_generation_id} ->
+          identity = %FreshnessIdentity{
+            evidence_generation_id: evidence_generation_id,
+            target_id: target_id,
+            freshness_key: freshness_key
+          }
 
-      {identity, Map.put(acc, {target_id, freshness_key}, key)}
+          {[identity | identities], Map.put(requested, {target_id, freshness_key}, key)}
+
+        nil ->
+          {identities, requested}
+      end
+    end)
+    |> then(fn {identities, requested} -> {Enum.reverse(identities), requested} end)
+  end
+
+  defp planned_generations(context, plan, assets_by_ref, keys) do
+    refs =
+      keys
+      |> Enum.map(fn {module, name, _freshness_key} -> {module, name} end)
+      |> Enum.uniq()
+
+    pinned_by_ref =
+      plan.nodes
+      |> Map.values()
+      |> Enum.reduce(%{}, fn node, acc ->
+        case Map.get(node, :evidence_generation_id) do
+          generation_id when is_binary(generation_id) ->
+            Map.put_new(acc, node.ref, %{
+              evidence_generation_id: generation_id,
+              target_generation_id: Map.get(node, :target_generation_id)
+            })
+
+          _other ->
+            acc
+        end
+      end)
+
+    unpinned_assets =
+      refs
+      |> Enum.reject(&Map.has_key?(pinned_by_ref, &1))
+      |> Map.new(fn ref -> {ref, Map.get(assets_by_ref, ref)} end)
+      |> Map.reject(fn {_ref, asset} -> is_nil(asset) end)
+
+    with {:ok, active_by_ref} <- TargetGenerations.for_reads(context, unpinned_assets) do
+      {:ok, Map.merge(active_by_ref, pinned_by_ref)}
+    end
+  end
+
+  defp fetch_many(_context, []), do: {:ok, []}
+
+  defp fetch_many(context, identities) do
+    identities
+    |> Enum.chunk_every(@persistence_batch)
+    |> Enum.reduce_while({:ok, []}, fn batch, {:ok, batches} ->
+      case Persistence.stores().operator_reads.get_freshness_many(%GetFreshnessMany{
+             workspace_context: context,
+             identities: batch
+           }) do
+        {:ok, results} -> {:cont, {:ok, [results | batches]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, batches} -> {:ok, batches |> Enum.reverse() |> Enum.concat()}
+      error -> error
     end)
   end
 
@@ -126,6 +187,7 @@ defmodule FavnOrchestrator.Freshness.StateLoader do
       latest_attempt_at: result.updated_at,
       manifest_version_id: field(payload, :manifest_version_id),
       manifest_content_hash: field(payload, :manifest_content_hash),
+      evidence_generation_id: result.evidence_generation_id,
       input_versions: input_versions(payload, fingerprints),
       metadata: %{"input_fingerprint" => field(payload, :input_fingerprint)},
       updated_at: result.updated_at
