@@ -162,7 +162,8 @@ One run transition must remain `O(1)` in aggregate history and sibling count. Wo
 may be `O(T)` only for that run's own bounded target set and must use bulk
 operations. Interactive pages return at most 200 rows; internal scans normally
 process at most 500. Multi-node database coordination must remain safe even though
-the first supported release target is one application node with PostgreSQL.
+the first supported release target is one control-plane node, one separate runner
+node, and PostgreSQL.
 
 ## Consequences
 

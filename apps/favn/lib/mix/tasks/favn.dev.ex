@@ -6,11 +6,10 @@ defmodule Mix.Tasks.Favn.Dev do
   @shortdoc "Starts local Favn dev stack"
 
   @moduledoc """
-  Starts local `favn_view + favn_orchestrator + favn_runner` in foreground mode.
-
-  The project's `.env` is loaded before the consumer project's
-  `config/runtime.exs` is evaluated. Local runtime configuration is then
-  collected for the runner.
+  Starts digest-pinned PostgreSQL, the installed prebuilt control plane, and
+  the customer-built runner as project-scoped Docker Compose services. The
+  stack uses the production release topology and streams container logs in the
+  foreground.
   """
 
   alias Favn.Dev
@@ -71,10 +70,14 @@ defmodule Mix.Tasks.Favn.Dev do
 
   defp error_message(:stack_already_running), do: "local stack already running"
 
+  defp error_message({:lock_failed, :timeout}),
+    do: "another Favn lifecycle command is active for this project; retry after it exits"
+
   defp error_message(:install_required), do: "install required; run mix favn.install"
 
   defp error_message(:install_stale),
-    do: "install stale; run mix favn.install to refresh, or mix favn.install --force to rebuild"
+    do:
+      "install stale; run mix favn.install to refresh, or mix favn.install --force to repull and revalidate"
 
   defp error_message({:stack_partially_running, service_states}) do
     details =
@@ -87,54 +90,26 @@ defmodule Mix.Tasks.Favn.Dev do
   defp error_message({:missing_tool, tool}),
     do: "missing required tool #{tool}; run mix favn.install after tool is available"
 
-  defp error_message({:tool_check_failed, tool, status, output}),
-    do: "required tool #{tool} check failed (status=#{status}): #{output}; rerun mix favn.install"
+  defp error_message({:docker_engine_unavailable, _status, _output}),
+    do: "Docker Engine is not reachable; start the Linux-container daemon and retry"
 
-  defp error_message({:port_conflict, service, port}),
-    do: "port conflict: #{service} cannot bind port #{port}; free the port and retry"
+  defp error_message({:docker_compose_unavailable, _status, _output}),
+    do: "Docker Compose is unavailable; install the Compose v2 plugin or newer and retry"
 
-  defp error_message({:port_check_failed, service, port, reason}),
-    do:
-      "port check failed for #{service} on #{port}: #{inspect(reason)}; verify local networking and retry"
+  defp error_message({:unsupported_docker_server, os, architecture}),
+    do: "unsupported Docker target #{os}/#{architecture}; Linux amd64 is required"
 
-  defp error_message({:postgres_misconfigured, field}),
-    do: "postgres configuration missing #{field}; fix config :favn, :local and retry"
+  defp error_message({:unsupported_docker_host, os, architecture}),
+    do: "unsupported Docker host #{os}/#{architecture}; Linux amd64 or WSL2 amd64 is required"
 
-  defp error_message({:postgres_unavailable, host, port, reason}),
-    do:
-      "postgres unavailable at #{host}:#{port} (#{inspect(reason)}); start postgres or fix config and retry"
+  defp error_message({:runner_release_build_failed, status, output}),
+    do: "customer runner release build failed (status=#{inspect(status)}): #{output}"
 
-  defp error_message({:runtime_compile_failed, app, status, output}),
-    do:
-      "runtime compile failed for #{app} under --root-dir (status=#{inspect(status)}): #{output}; ensure runtime root is current and compilable"
+  defp error_message({:runner_image_build_failed, status, output}),
+    do: "customer runner image build failed (status=#{inspect(status)}): #{output}"
 
-  defp error_message({:runner_manifest_register_unavailable, runner_node, attempted}) do
-    details =
-      attempted
-      |> Enum.map_join(", ", fn %{module: module, function: function, arity: arity} ->
-        "#{inspect(module)}.#{function}/#{arity}"
-      end)
-
-    "runner bootstrap contract mismatch on #{inspect(runner_node)}; none of [#{details}] are exported on the live runner node"
-  end
-
-  defp error_message({:web_build_failed, status, output}),
-    do: "web build failed (status=#{status}): #{output}"
-
-  defp error_message({:shortname_host_unavailable, reason}),
-    do:
-      "local Erlang shortname host is unavailable (#{inspect(reason)}); verify local hostname setup and retry"
-
-  defp error_message(:shortname_host_not_available),
-    do: "could not derive local Erlang shortname host; verify local hostname setup and retry"
-
-  defp error_message({:invalid_shortname_host, host}),
-    do:
-      "local host '#{host}' is invalid for Erlang shortnames; use a short hostname or fix local host resolution and retry"
-
-  defp error_message({:service_exit, service, status}),
-    do:
-      "#{service} exited during startup (status=#{inspect(status)}); inspect .favn/logs/#{service}.log and check for stale state or port conflicts"
+  defp error_message({:compose_command_failed, phase, status, output}),
+    do: "Docker Compose phase #{inspect(phase)} failed (status=#{inspect(status)}): #{output}"
 
   defp error_message(reason), do: "failed to start local stack: #{inspect(reason)}"
 

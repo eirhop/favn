@@ -4,7 +4,6 @@ defmodule Favn.Dev.Init do
   """
 
   alias Favn.Dev.Paths
-  alias Favn.Dev.RuntimeSource
 
   @type result :: %{
           created: [Path.t()],
@@ -155,10 +154,29 @@ defmodule Favn.Dev.Init do
   end
 
   defp duckdb_dependency_line(project) do
-    with {:ok, source} <- RuntimeSource.resolve([]) do
-      duckdb_path = Path.join(source.root, "apps/favn_duckdb")
+    with {:ok, favn_path} <- favn_dependency_path(),
+         duckdb_path <- Path.expand("../favn_duckdb", favn_path),
+         true <- File.regular?(Path.join(duckdb_path, "mix.exs")) do
       relative_path = Path.relative_to(duckdb_path, project.root_dir)
       {:ok, ~s({:favn_duckdb, path: "#{relative_path}"})}
+    else
+      _unavailable -> {:error, :favn_duckdb_source_unavailable}
+    end
+  end
+
+  defp favn_dependency_path do
+    dependency_path =
+      try do
+        Mix.Project.deps_paths()[:favn]
+      rescue
+        _error -> nil
+      end
+
+    candidates = [dependency_path, Path.expand("../../../../favn", __DIR__)]
+
+    case Enum.find(candidates, &(is_binary(&1) and File.regular?(Path.join(&1, "mix.exs")))) do
+      nil -> {:error, :favn_source_unavailable}
+      path -> {:ok, Path.expand(path)}
     end
   end
 

@@ -89,7 +89,7 @@ defmodule FavnView.Components.ModeRail do
   defp mode_items(%{modes: modes}) when is_list(modes) and modes != [] do
     Enum.map(modes, fn mode ->
       mode
-      |> Map.put_new(:id, mode[:label] |> String.downcase() |> String.to_atom())
+      |> Map.put_new(:id, String.downcase(mode[:label]))
       |> Map.put_new(:disabled, false)
     end)
   end
@@ -97,7 +97,7 @@ defmodule FavnView.Components.ModeRail do
   defp mode_items(%{item: items}) do
     Enum.map(items, fn item ->
       %{
-        id: item[:id] || item.label |> String.downcase() |> String.to_atom(),
+        id: item[:id] || String.downcase(item.label),
         label: item.label,
         icon: item.icon,
         active: item[:active] || false,
@@ -108,5 +108,5 @@ defmodule FavnView.Components.ModeRail do
   end
 
   defp mode_active?(mode, nil), do: mode[:active] || false
-  defp mode_active?(mode, active), do: mode.id == active
+  defp mode_active?(mode, active), do: to_string(mode.id) == to_string(active)
 end

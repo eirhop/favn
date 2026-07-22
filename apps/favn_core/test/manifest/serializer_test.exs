@@ -7,20 +7,43 @@ defmodule Favn.Manifest.SerializerTest do
   alias Favn.SQL.Contract
 
   test "encodes canonical json with sorted keys" do
-    manifest = %{schema_version: 9, runner_contract_version: 9, z: 1, a: 2}
+    release_id = FavnTestSupport.runner_release_id()
+
+    manifest =
+      FavnTestSupport.with_manifest_contract(%{z: 1, a: 2}, release_id)
 
     assert {:ok, encoded} = Serializer.encode_manifest(manifest)
-    assert encoded == ~s|{"a":2,"runner_contract_version":9,"schema_version":9,"z":1}|
+
+    assert encoded ==
+             ~s|{"a":2,"required_runner_release_id":"#{release_id}","runner_contract_version":10,"schema_version":10,"z":1}|
+  end
+
+  test "generic canonical encoding preserves non-manifest build metadata" do
+    value = %{z: 1, build_metadata: %{built_at: "2026-07-21T12:00:00Z"}, a: 2}
+
+    assert {:ok, encoded} = Serializer.encode_canonical(value)
+
+    assert encoded ==
+             ~s|{"a":2,"build_metadata":{"built_at":"2026-07-21T12:00:00Z"},"z":1}|
+  end
+
+  test "generic canonical encoding rejects nondeterministic terms and normalized-key collisions" do
+    assert {:error, {:encode_failed, %ArgumentError{}}} = Serializer.encode_canonical(self())
+
+    assert {:error, {:encode_failed, %ArgumentError{}}} =
+             Serializer.encode_canonical(%{:duplicate => 1, "duplicate" => 2})
+
+    assert {:error, {:encode_failed, %ArgumentError{}}} =
+             Serializer.encode_canonical(%{{:unsupported, :key} => 1})
   end
 
   test "drops build-only keys from encoded payload" do
-    manifest = %{
-      schema_version: 9,
-      runner_contract_version: 9,
-      generated_at: DateTime.utc_now(),
-      diagnostics: [%{message: "warn"}],
-      assets: []
-    }
+    manifest =
+      FavnTestSupport.with_manifest_contract(%{
+        generated_at: DateTime.utc_now(),
+        diagnostics: [%{message: "warn"}],
+        assets: []
+      })
 
     assert {:ok, encoded} = Serializer.encode_manifest(manifest)
     refute encoded =~ "generated_at"
@@ -29,13 +52,14 @@ defmodule Favn.Manifest.SerializerTest do
 
   test "uses build manifest payload when build struct is provided" do
     build =
-      Build.new(%{schema_version: 9, runner_contract_version: 9, assets: []},
+      Build.new(FavnTestSupport.with_manifest_contract(%{assets: []}),
         diagnostics: ["ignored"]
       )
 
     assert {:ok, encoded} = Serializer.encode_manifest(build)
     assert {:ok, decoded} = Serializer.decode_manifest(encoded)
-    assert decoded["schema_version"] == 9
+    assert decoded["schema_version"] == 10
+    assert decoded["required_runner_release_id"] == FavnTestSupport.runner_release_id()
     refute Map.has_key?(decoded, "diagnostics")
   end
 
@@ -54,21 +78,20 @@ defmodule Favn.Manifest.SerializerTest do
   end
 
   test "encodes runtime config refs without resolved values" do
-    manifest = %{
-      schema_version: 9,
-      runner_contract_version: 9,
-      assets: [
-        %{
-          ref: {__MODULE__, :asset},
-          runtime_config: %{
-            source_system: %{
-              segment_id: Ref.env!("SOURCE_SYSTEM_SEGMENT_ID"),
-              token: Ref.secret_env!("SOURCE_SYSTEM_TOKEN")
+    manifest =
+      FavnTestSupport.with_manifest_contract(%{
+        assets: [
+          %{
+            ref: {__MODULE__, :asset},
+            runtime_config: %{
+              source_system: %{
+                segment_id: Ref.env!("SOURCE_SYSTEM_SEGMENT_ID"),
+                token: Ref.secret_env!("SOURCE_SYSTEM_TOKEN")
+              }
             }
           }
-        }
-      ]
-    }
+        ]
+      })
 
     assert {:ok, encoded} = Serializer.encode_manifest(manifest)
     assert encoded =~ "SOURCE_SYSTEM_SEGMENT_ID"

@@ -4,7 +4,11 @@ defmodule Mix.Tasks.Favn.Logs do
   @shortdoc "Prints local Favn service logs"
 
   @moduledoc """
-  Reads project-local logs under `.favn/logs`.
+  Reads bounded, prefixed PostgreSQL, runner, and control-plane logs through
+  the project-scoped Docker Compose application.
+
+      mix favn.logs --service control-plane --tail 200
+      mix favn.logs --service runner --follow
 
   Passing a run id prints persisted run events from the orchestrator API:
 
@@ -17,7 +21,10 @@ defmodule Mix.Tasks.Favn.Logs do
   def run(args) do
     case parse_args(args) do
       {:ok, {:services, opts}} ->
-        :ok = opts |> normalize_service() |> Dev.logs()
+        case opts |> normalize_service() |> Dev.logs() do
+          :ok -> :ok
+          {:error, reason} -> Mix.raise("service logs unavailable: #{inspect(reason)}")
+        end
 
       {:ok, {:run_events, run_id, opts}} ->
         print_run_events(run_id, opts)
@@ -57,25 +64,20 @@ defmodule Mix.Tasks.Favn.Logs do
       nil ->
         opts
 
-      "operator" ->
-        Keyword.put(opts, :service, :operator)
-
-      "web" ->
-        Keyword.put(opts, :service, :web)
-
-      "orchestrator" ->
-        Keyword.put(opts, :service, :orchestrator)
-
       "runner" ->
         Keyword.put(opts, :service, :runner)
+
+      "postgres" ->
+        Keyword.put(opts, :service, :postgres)
+
+      "control-plane" ->
+        Keyword.put(opts, :service, :control_plane)
 
       "all" ->
         Keyword.put(opts, :service, :all)
 
       other ->
-        Mix.raise(
-          "invalid service #{inspect(other)}; expected operator|web|orchestrator|runner|all"
-        )
+        Mix.raise("invalid service #{inspect(other)}; expected postgres|control-plane|runner|all")
     end
   end
 
@@ -118,9 +120,6 @@ defmodule Mix.Tasks.Favn.Logs do
   defp atom_key("asset_ref"), do: :asset_ref
 
   defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
-
-  defp error_message(:stack_not_healthy),
-    do: "stack not healthy; use mix favn.stop then mix favn.dev"
 
   defp error_message(reason), do: "run events unavailable: #{inspect(reason)}"
 end

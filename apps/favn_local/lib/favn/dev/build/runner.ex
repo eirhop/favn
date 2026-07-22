@@ -1,284 +1,223 @@
 defmodule Favn.Dev.Build.Runner do
   @moduledoc """
-  Project-local runner build target.
+  Builds the immutable, customer-owned runner OCI context.
 
-  This target currently builds the manifest and compiled user modules from the
-  current Mix project root (`File.cwd!/0`). A different `:root_dir` is not
-  accepted for project selection.
+  The output directory is named by `runner_release_id`. It contains the
+  self-verifying descriptor, an aligned manifest release, vendored release
+  inputs, a digest-pinned multi-stage Dockerfile, and hashed bundle metadata.
+  This operation never invokes Docker or pushes an image.
   """
 
-  alias Favn.Dev.Install
-  alias Favn.Dev.Paths
-  alias Favn.Dev.State
-  alias Favn.Manifest.Serializer
+  alias Favn.Dev.Build.{Artifact, Manifest, RunnerInputs, RunnerReleaseInput}
+  alias Favn.Dev.{Install, Paths, State}
+  alias Favn.RunnerRelease
 
-  @schema_version 1
-  @target "runner"
+  @test_only_options [
+    :allow_non_prod_build,
+    :allow_unpinned_favn,
+    :build_dependency_sources,
+    :current_app,
+    :current_app_source,
+    :dependency_sources,
+    :extra_applications,
+    :extra_modules,
+    :lock,
+    :module_inventory,
+    :runner_build,
+    :runner_plugins,
+    :skip_compile,
+    :skip_project_root_check
+  ]
 
-  @type root_opt :: [root_dir: Path.t()]
+  @type result :: %{
+          runner_release_id: String.t(),
+          build_id: String.t(),
+          dist_dir: Path.t(),
+          descriptor_path: Path.t(),
+          manifest_dir: Path.t(),
+          embedded_manifest_dir: Path.t(),
+          manifest_status: :built | :already_built,
+          status: :built | :already_built
+        }
 
-  @spec run(root_opt()) :: {:ok, map()} | {:error, term()}
+  @spec run(keyword()) :: {:ok, result()} | {:error, term()}
   def run(opts \\ []) when is_list(opts) do
-    with :ok <- ensure_project_root(opts),
+    with :ok <- validate_test_only_options(opts),
+         :ok <- ensure_production_build(opts),
+         :ok <- ensure_project_root(opts),
+         :ok <- RunnerReleaseInput.validate_host_toolchain(),
          :ok <- Install.ensure_ready(opts),
          :ok <- State.ensure_layout(opts),
-         :ok <- compile_project(opts),
-         {:ok, build} <- FavnAuthoring.build_manifest(),
-         {:ok, publication} <- FavnAuthoring.prepare_manifest_publication(build),
-         version <- publication.version,
-         {:ok, serialized_manifest} <- FavnAuthoring.serialize_manifest(version.manifest),
-         {build_id, root_dir} <- {build_id(), Paths.root_dir(opts)},
-         build_dir <- Paths.build_runner_dir(root_dir, build_id),
-         dist_dir <- Paths.dist_runner_dir(root_dir, build_id),
-         :ok <- File.mkdir_p(build_dir),
-         :ok <- File.mkdir_p(dist_dir),
-         :ok <- write_execution_packages(dist_dir, publication.execution_packages),
-         modules <- user_modules(version.manifest),
-         copied_modules <- copy_user_beams(modules, Path.join(dist_dir, "ebin")),
-         plugins <- selected_plugins(root_dir),
-         :ok <- write_manifest_cache(version, serialized_manifest, opts),
-         build_json <- build_json(build_id, version, modules, plugins, copied_modules, opts),
-         metadata_json <- metadata_json(build_id, version, modules, plugins, copied_modules, opts),
-         :ok <- write_json(Path.join(build_dir, "build.json"), build_json),
-         :ok <- write_json(Path.join(dist_dir, "metadata.json"), metadata_json),
-         :ok <-
-           File.write(Path.join(dist_dir, "manifest-index.json"), serialized_manifest <> "\n"),
-         :ok <- write_operator_notes(dist_dir) do
-      {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
+         :ok <- Manifest.compile_project(opts),
+         {:ok, seed} <- seed_descriptor(),
+         {:ok, seed_build} <- FavnAuthoring.build_manifest(runner_release: seed),
+         {:ok, inputs} <- RunnerInputs.collect(seed_build, opts),
+         {:ok, publication, aligned_inputs} <-
+           Manifest.build_publication(inputs.descriptor, Keyword.put(opts, :skip_compile, true)) do
+      root_dir = Paths.root_dir(opts)
+      release_id = inputs.descriptor.runner_release_id
+      dist_dir = Paths.dist_runner_dir(root_dir, release_id)
+
+      with {:ok, runner_result} <- write_artifact(dist_dir, aligned_inputs, publication, opts),
+           {:ok, manifest_result} <- Manifest.write_release(root_dir, publication),
+           result <-
+             runner_result
+             |> Map.put(:manifest_dir, manifest_result.dist_dir)
+             |> Map.put(:manifest_status, manifest_result.status),
+           :ok <- write_latest(result, publication, opts) do
+        {:ok, result}
+      end
     end
+  end
+
+  defp validate_test_only_options(opts) do
+    invalid = Keyword.keys(opts) |> Enum.filter(&(&1 in @test_only_options)) |> Enum.uniq()
+
+    if Mix.env() == :test or invalid == [],
+      do: :ok,
+      else: {:error, {:unsupported_build_options, Enum.sort(invalid)}}
+  end
+
+  defp ensure_production_build(opts) do
+    if Mix.env() == :prod or
+         (Mix.env() == :test and Keyword.get(opts, :allow_non_prod_build, false)) do
+      :ok
+    else
+      {:error, {:production_build_required, Mix.env()}}
+    end
+  end
+
+  defp write_artifact(dist_dir, inputs, publication, opts) do
+    descriptor = inputs.descriptor
+
+    case Artifact.atomic_directory(dist_dir, fn temp_dir ->
+           with {:ok, encoded_descriptor} <- RunnerRelease.encode(descriptor),
+                :ok <-
+                  File.write(
+                    Path.join(temp_dir, "runner-release.json"),
+                    encoded_descriptor <> "\n"
+                  ),
+                :ok <- Manifest.write_bundle(Path.join(temp_dir, "manifest"), publication),
+                :ok <- RunnerReleaseInput.write(temp_dir, inputs, opts),
+                :ok <- write_operator_notes(temp_dir, descriptor, publication),
+                :ok <-
+                  Artifact.write_bundle(temp_dir, "favn_runner_build_context", %{
+                    "runner_release_id" => descriptor.runner_release_id,
+                    "favn_version" => descriptor.favn_version,
+                    "runner_contract_version" => descriptor.runner_contract_version,
+                    "target" => descriptor.target,
+                    "manifest_version_id" => publication.version.manifest_version_id
+                  }) do
+             {:ok, :built}
+           end
+         end) do
+      {:ok, :built} -> {:ok, result(dist_dir, descriptor, :built)}
+      {:error, :artifact_already_exists} -> verify_existing(dist_dir, descriptor)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp verify_existing(dist_dir, descriptor) do
+    manifest_version_id = aligned_manifest_version_id(dist_dir)
+
+    with {:ok, existing} <- Manifest.read_descriptor(Path.join(dist_dir, "runner-release.json")),
+         true <- existing.runner_release_id == descriptor.runner_release_id,
+         value when is_binary(value) <- manifest_version_id,
+         :ok <-
+           Artifact.verify_bundle(dist_dir, "favn_runner_build_context", %{
+             "runner_release_id" => descriptor.runner_release_id,
+             "favn_version" => descriptor.favn_version,
+             "runner_contract_version" => descriptor.runner_contract_version,
+             "target" => descriptor.target,
+             "manifest_version_id" => value
+           }) do
+      {:ok, result(dist_dir, descriptor, :already_built)}
+    else
+      _mismatch -> {:error, :runner_artifact_conflict}
+    end
+  end
+
+  defp aligned_manifest_version_id(dist_dir) do
+    with {:ok, bytes} <- File.read(Path.join([dist_dir, "manifest", "bundle.json"])),
+         {:ok, bundle} <- JSON.decode(bytes) do
+      get_in(bundle, ["manifest", "manifest_version_id"])
+    else
+      _invalid -> nil
+    end
+  end
+
+  defp result(dist_dir, descriptor, status) do
+    %{
+      runner_release_id: descriptor.runner_release_id,
+      build_id: descriptor.runner_release_id,
+      dist_dir: dist_dir,
+      descriptor_path: Path.join(dist_dir, "runner-release.json"),
+      manifest_dir: nil,
+      embedded_manifest_dir: Path.join(dist_dir, "manifest"),
+      manifest_status: nil,
+      status: status
+    }
+  end
+
+  defp seed_descriptor do
+    toolchain = RunnerReleaseInput.expected_toolchain()
+
+    RunnerRelease.new(%{
+      schema_version: RunnerRelease.current_schema_version(),
+      favn_version: RunnerRelease.current_favn_version(),
+      runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
+      elixir_version: toolchain.elixir_version,
+      otp_release: toolchain.otp_release,
+      target: RunnerRelease.current_target(),
+      runtime_modules: [],
+      runtime_applications: [],
+      plugins: [],
+      build_profile: "prod"
+    })
   end
 
   defp ensure_project_root(opts) do
     requested_root = opts |> Paths.root_dir() |> Path.expand()
     current_root = File.cwd!() |> Path.expand()
 
-    if requested_root == current_root or Keyword.get(opts, :skip_project_root_check, false) do
+    if requested_root == current_root or
+         (Mix.env() == :test and Keyword.get(opts, :skip_project_root_check, false)) do
       :ok
     else
       {:error, {:unsupported_root_dir, requested_root, current_root}}
     end
   end
 
-  defp compile_project(opts) do
-    if Keyword.get(opts, :skip_compile, false) do
-      :ok
-    else
-      :ok = Mix.Task.reenable("compile")
-      _ = Mix.Task.run("compile", [])
-      :ok
-    end
+  defp write_operator_notes(directory, descriptor, publication) do
+    notes = """
+    # Favn customer runner
+
+    Runner release: `#{descriptor.runner_release_id}`
+    Manifest version: `#{publication.version.manifest_version_id}`
+
+    Build this context with an OCI-compatible builder, tag it immutably, and
+    push it to the registry you operate. Favn does not receive registry
+    credentials and does not publish customer runner images.
+
+    The container runs as UID/GID 10001. Deploy it with a read-only root
+    filesystem and keep only `/tmp/favn` writable. Expose EPMD and the single
+    fixed BEAM distribution port only on the private application network.
+    """
+
+    File.write(Path.join(directory, "operator-notes.md"), notes)
   end
 
-  defp user_modules(manifest) do
-    asset_modules = manifest_modules(manifest, :assets)
-    pipeline_modules = manifest_modules(manifest, :pipelines)
-    schedule_modules = manifest_modules(manifest, :schedules)
-
-    (asset_modules ++ pipeline_modules ++ schedule_modules)
-    |> Enum.uniq()
-    |> Enum.sort_by(&Atom.to_string/1)
-  end
-
-  defp manifest_modules(manifest, key) do
-    manifest
-    |> map_get(key)
-    |> List.wrap()
-    |> Enum.map(&map_get(&1, :module))
-    |> Enum.filter(&is_atom/1)
-  end
-
-  defp map_get(map, key) when is_map(map) and is_atom(key) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
-  end
-
-  defp map_get(_other, _key), do: nil
-
-  defp copy_module_beams(modules, target_dir) do
-    :ok = File.mkdir_p(target_dir)
-
-    Enum.reduce(modules, [], fn module, copied ->
-      with {:module, _loaded} <- Code.ensure_loaded(module),
-           beam when is_list(beam) <- :code.which(module),
-           beam_path <- List.to_string(beam),
-           true <- String.ends_with?(beam_path, ".beam"),
-           true <- File.exists?(beam_path),
-           destination <- Path.join(target_dir, Path.basename(beam_path)),
-           :ok <- File.cp(beam_path, destination) do
-        [Atom.to_string(module) | copied]
-      else
-        _ -> copied
-      end
-    end)
-    |> Enum.reverse()
-  end
-
-  defp copy_user_beams(modules, target_dir) do
-    :ok = File.mkdir_p(target_dir)
-
-    (copy_project_app_beams(target_dir) ++ copy_module_beams(modules, target_dir))
-    |> Enum.uniq()
-    |> Enum.sort()
-  end
-
-  defp copy_project_app_beams(target_dir) do
-    app = Mix.Project.config()[:app]
-
-    if is_atom(app) do
-      Mix.Project.build_path()
-      |> Path.join("lib/#{app}/ebin/*.beam")
-      |> Path.wildcard()
-      |> Enum.reduce([], fn beam_path, copied ->
-        destination = Path.join(target_dir, Path.basename(beam_path))
-
-        case File.cp(beam_path, destination) do
-          :ok -> [beam_module_name(beam_path) | copied]
-          {:error, _reason} -> copied
-        end
-      end)
-    else
-      []
-    end
-  end
-
-  defp beam_module_name(beam_path) do
-    beam_path
-    |> Path.basename(".beam")
-  end
-
-  defp selected_plugins(root_dir) do
-    configured =
-      Application.get_env(:favn, :runner_plugins, [])
-      |> List.wrap()
-      |> Enum.map(&plugin_identifier/1)
-      |> Enum.reject(&is_nil/1)
-
-    known =
-      ["favn_duckdb"]
-      |> Enum.filter(fn app_name ->
-        File.dir?(Path.join(root_dir, "apps/#{app_name}"))
-      end)
-
-    (configured ++ known)
-    |> Enum.uniq()
-    |> Enum.sort()
-  end
-
-  defp plugin_identifier({module, opts}) when is_atom(module) and is_list(opts),
-    do: Atom.to_string(module)
-
-  defp plugin_identifier(module) when is_atom(module), do: Atom.to_string(module)
-  defp plugin_identifier(app_name) when is_binary(app_name), do: app_name
-  defp plugin_identifier(_other), do: nil
-
-  defp write_manifest_cache(version, serialized_manifest, opts) do
-    root_dir = Paths.root_dir(opts)
-    path = Path.join(Paths.manifest_cache_dir(root_dir), "#{version.manifest_version_id}.json")
-    File.mkdir_p!(Path.dirname(path))
-    File.write(path, serialized_manifest <> "\n")
-  end
-
-  defp write_execution_packages(dist_dir, packages) do
-    package_dir = Path.join(dist_dir, "execution-packages")
-
-    with :ok <- File.mkdir_p(package_dir) do
-      Enum.reduce_while(packages, :ok, fn package, :ok ->
-        path = Path.join(package_dir, package.content_hash <> ".json")
-
-        case Serializer.encode_manifest(package) do
-          {:ok, encoded} ->
-            case File.write(path, encoded <> "\n") do
-              :ok -> {:cont, :ok}
-              {:error, reason} -> {:halt, {:error, reason}}
-            end
-
-          {:error, reason} ->
-            {:halt, {:error, reason}}
-        end
-      end)
-    end
-  end
-
-  defp build_json(build_id, version, modules, plugins, copied_modules, opts) do
-    base(build_id, version, opts)
-    |> Map.put("phase", "build")
-    |> Map.put("target", @target)
-    |> Map.put("project_root", Paths.root_dir(opts))
-    |> Map.put("user_modules", Enum.map(modules, &Atom.to_string/1))
-    |> Map.put("copied_module_beams", copied_modules)
-    |> Map.put("plugins", plugins)
-  end
-
-  defp metadata_json(build_id, version, modules, plugins, copied_modules, opts) do
-    base(build_id, version, opts)
-    |> Map.put("phase", "dist")
-    |> Map.put("target", @target)
-    |> Map.put("artifact", %{
-      "kind" => "runtime_package",
-      "operational" => true,
-      "truthfulness" => "manifest_and_code_included"
-    })
-    |> Map.put("topology", %{"boundary" => "runner", "includes_user_business_code" => true})
-    |> Map.put("compatibility", %{
-      "manifest_schema_version" => version.schema_version,
-      "runner_contract_version" => version.runner_contract_version,
-      "serialization_format" => version.serialization_format
-    })
-    |> Map.put("manifest", %{
-      "manifest_version_id" => version.manifest_version_id,
-      "content_hash" => version.content_hash,
-      "index_path" => "manifest-index.json",
-      "execution_packages_path" => "execution-packages"
-    })
-    |> Map.put("plugins", plugins)
-    |> Map.put("user_modules", Enum.map(modules, &Atom.to_string/1))
-    |> Map.put("copied_module_beams", copied_modules)
-    |> Map.put("required_env", ["FAVN_RUNNER_MODE"])
-  end
-
-  defp base(build_id, version, opts) do
-    now = DateTime.utc_now() |> DateTime.to_iso8601()
-
-    %{
-      "schema_version" => @schema_version,
-      "build_id" => build_id,
-      "built_at" => now,
-      "favn_version" => to_string(Application.spec(:favn, :vsn) || "unknown"),
-      "install_fingerprint" => read_install_fingerprint(opts),
-      "elixir_version" => System.version(),
-      "otp_release" => :erlang.system_info(:otp_release) |> List.to_string(),
-      "manifest_version_id" => version.manifest_version_id
-    }
-  end
-
-  defp read_install_fingerprint(opts) do
-    case State.read_install(opts) do
-      {:ok, %{"fingerprint" => fingerprint}} when is_map(fingerprint) -> fingerprint
-      _ -> %{}
-    end
-  end
-
-  defp write_json(path, map) when is_map(map) do
-    encoded = JSON.encode_to_iodata!(map)
-    File.write(path, [encoded, "\n"])
-  end
-
-  defp build_id do
-    stamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%d%H%M%S")
-    unique = System.unique_integer([:positive])
-    "rb_#{stamp}_#{unique}"
-  end
-
-  defp write_operator_notes(dist_dir) do
-    notes = [
-      "# Favn Runner Artifact Notes",
-      "",
-      "This output is the most operationally complete Phase 9 packaging target.",
-      "It includes pinned manifest data plus compiled user business code beams.",
-      "",
-      "It still requires the orchestrator boundary for full distributed topology.",
-      ""
-    ]
-
-    File.write(Path.join(dist_dir, "OPERATOR_NOTES.md"), Enum.join(notes, "\n"))
+  defp write_latest(result, publication, opts) do
+    State.write_runner_latest(
+      %{
+        "schema_version" => 1,
+        "runner_release_id" => result.runner_release_id,
+        "dist_dir" => result.dist_dir,
+        "descriptor_path" => result.descriptor_path,
+        "manifest_dir" => result.manifest_dir,
+        "manifest_version_id" => publication.version.manifest_version_id
+      },
+      opts
+    )
   end
 end

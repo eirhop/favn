@@ -85,7 +85,8 @@ defmodule Favn.Log.Filter do
     |> String.to_existing_atom()
     |> normalize_enum(allowed, field)
   rescue
-    ArgumentError -> raise ArgumentError, "invalid #{field}: #{inspect(value)}"
+    _error in ArgumentError ->
+      reraise ArgumentError.exception("invalid #{field}: #{inspect(value)}"), __STACKTRACE__
   end
 
   defp normalize_enum(value, allowed, field) do

@@ -63,7 +63,6 @@ defmodule FavnView.MixProject do
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       internal_dep(:favn_orchestrator, "../favn_orchestrator"),
-      internal_dep(:favn_storage_postgres, "../favn_storage_postgres"),
       {:bandit, "~> 1.5"}
     ]
   end

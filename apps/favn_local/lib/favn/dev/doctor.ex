@@ -3,7 +3,7 @@ defmodule Favn.Dev.Doctor do
   Local project setup validation for Favn development workflows.
   """
 
-  alias Favn.Dev.Paths
+  alias Favn.Dev.{ComposeLifecycle, Docker, Install, LocalHttpClient, Paths, State}
   alias Favn.ModuleDiscovery
 
   @type check :: %{name: String.t(), status: :ok | :error, message: String.t()}
@@ -13,6 +13,10 @@ defmodule Favn.Dev.Doctor do
     root_dir = Paths.root_dir(opts) |> Path.expand()
 
     checks = [
+      safe_check("docker", fn -> docker_check(opts) end),
+      safe_check("control-plane install", fn -> install_check(opts) end),
+      safe_check("compose isolation", fn -> compose_isolation_check(opts) end),
+      safe_check("compose runtime", fn -> compose_runtime_check(opts) end),
       safe_check("mix project", fn -> mix_project_check(root_dir) end),
       safe_check("config", fn -> config_file_check(root_dir) end),
       safe_check("asset_modules", fn -> module_config_check(:asset_modules, :assets) end),
@@ -37,6 +41,113 @@ defmodule Favn.Dev.Doctor do
       {:error, checks}
     end
   end
+
+  defp docker_check(opts) do
+    case Docker.probe(opts) do
+      {:ok, probe} ->
+        ok(
+          "docker",
+          "Docker #{probe.server_version} linux/amd64 with Compose #{probe.compose_version}"
+        )
+
+      {:error, reason} ->
+        error("docker", docker_error(reason))
+    end
+  end
+
+  defp install_check(opts) do
+    case Install.ensure_ready(opts) do
+      :ok -> ok("control-plane install", "immutable control-plane image verified")
+      {:error, :install_required} -> error("control-plane install", "run mix favn.install")
+      {:error, reason} -> error("control-plane install", "not ready: #{docker_error(reason)}")
+    end
+  end
+
+  defp compose_isolation_check(opts) do
+    with {:ok, %{"compose" => project}} <- State.read_install(opts),
+         {_output, 0} <- Docker.compose(project, ["config", "--quiet"], opts),
+         {:ok, compose} <- File.read(project["compose_path"]),
+         true <- compose =~ ~s("127.0.0.1:${FAVN_VIEW_PORT}:4000"),
+         true <- compose =~ ~s("127.0.0.1:${FAVN_ORCHESTRATOR_PORT}:4101"),
+         false <- compose =~ ~s("${FAVN_POSTGRES_PORT}:5432"),
+         false <- compose =~ ~s("${FAVN_BEAM_DISTRIBUTION_PORT}") do
+      ok("compose isolation", "only View and private API ports bind to loopback")
+    else
+      _invalid ->
+        error("compose isolation", "generated Compose network contract is missing or invalid")
+    end
+  end
+
+  defp compose_runtime_check(opts) do
+    case ComposeLifecycle.status(opts) do
+      %{stack_status: :stopped} ->
+        ok("compose runtime", "project stack is installed and currently stopped")
+
+      %{stack_status: :running, services: services, user_urls: %{orchestrator_api: url}} = status ->
+        with true <- services_ready?(services),
+             :ok <- control_plane_ready(url),
+             :ok <-
+               runtime_alignment_ready(status.runner, status.active_manifest_version_id, opts) do
+          ok(
+            "compose runtime",
+            "PostgreSQL, runner, manifest alignment, and control plane are ready"
+          )
+        else
+          _not_ready ->
+            error("compose runtime", "running services are not fully ready or aligned")
+        end
+
+      %{stack_status: :not_installed} ->
+        error("compose runtime", "run mix favn.install")
+
+      %{stack_status: state} ->
+        error("compose runtime", "project stack state is #{state}")
+    end
+  end
+
+  defp services_ready?(services) do
+    Enum.all?(["postgres", "runner", "control-plane"], fn service ->
+      case Map.get(services, service) do
+        %{status: :running, health: health} when health in [:healthy, :none] -> true
+        _unavailable -> false
+      end
+    end)
+  end
+
+  defp control_plane_ready(url) when is_binary(url) do
+    case LocalHttpClient.request(:get, url <> "/api/orchestrator/v1/health/ready") do
+      {:ok, %{"data" => %{"status" => "ready"}}} -> :ok
+      {:ok, %{"status" => "ready"}} -> :ok
+      _not_ready -> {:error, :control_plane_not_ready}
+    end
+  end
+
+  defp runtime_alignment_ready(
+         %{"runner_release_id" => runner_release_id},
+         manifest_version_id,
+         opts
+       )
+       when is_binary(runner_release_id) and is_binary(manifest_version_id) do
+    case State.read_runtime(opts) do
+      {:ok,
+       %{
+         "runner_release_id" => ^runner_release_id,
+         "active_manifest_version_id" => ^manifest_version_id
+       }} ->
+        :ok
+
+      _stale ->
+        {:error, :runtime_state_mismatch}
+    end
+  end
+
+  defp runtime_alignment_ready(_runner, _manifest_version_id, _opts),
+    do: {:error, :runtime_state_unavailable}
+
+  defp docker_error(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp docker_error({reason, _detail}) when is_atom(reason), do: Atom.to_string(reason)
+  defp docker_error({reason, _status, _output}) when is_atom(reason), do: Atom.to_string(reason)
+  defp docker_error(_reason), do: "validation failed"
 
   defp mix_project_check(root_dir) do
     path_check("mix project", Path.join(root_dir, "mix.exs"), "mix.exs found")
@@ -187,30 +298,30 @@ defmodule Favn.Dev.Doctor do
   end
 
   defp manifest_check do
-    case FavnAuthoring.generate_manifest() do
-      {:ok, manifest} ->
-        ok(
-          "manifest",
-          "compiled #{length(manifest.assets)} asset(s) and #{length(manifest.pipelines)} pipeline(s)"
-        )
+    case FavnAuthoring.list_assets() do
+      {:ok, assets} ->
+        ok("manifest", "compiled #{length(assets)} asset(s) for manifest generation")
 
       {:error, reason} ->
-        error("manifest", "generation failed: #{inspect(reason)}")
+        error("manifest", "asset compilation failed: #{inspect(reason)}")
     end
   end
 
   defp relation_catalogs_check do
-    with {:manifest, {:ok, manifest}} <- {:manifest, FavnAuthoring.generate_manifest()},
-         requirements <- relation_catalog_requirements(manifest.assets),
+    with {:assets, {:ok, assets}} <- {:assets, FavnAuthoring.list_assets()},
+         requirements <- relation_catalog_requirements(assets),
          {:ok, connections} <- resolve_catalog_connections(requirements),
          :ok <- validate_relation_catalogs(requirements, connections) do
       ok("relation catalogs", relation_catalogs_ok_message(requirements, connections))
     else
-      {:manifest, {:error, reason}} ->
-        error("relation catalogs", "manifest generation failed: #{inspect(redact(reason))}")
+      {:assets, {:error, reason}} ->
+        error("relation catalogs", "asset compilation failed: #{inspect(redact(reason))}")
 
       {:error, {:connections, errors}} ->
-        error("relation catalogs", "connection resolution failed: #{format_connection_errors(errors)}")
+        error(
+          "relation catalogs",
+          "connection resolution failed: #{format_connection_errors(errors)}"
+        )
 
       {:error, messages} when is_list(messages) ->
         error("relation catalogs", Enum.join(messages, "; "))
@@ -221,7 +332,9 @@ defmodule Favn.Dev.Doctor do
     assets
     |> Enum.flat_map(&asset_relation_requirement/1)
     |> Enum.group_by(& &1.connection, & &1.catalog)
-    |> Map.new(fn {connection, catalogs} -> {connection, catalogs |> Enum.uniq() |> Enum.sort()} end)
+    |> Map.new(fn {connection, catalogs} ->
+      {connection, catalogs |> Enum.uniq() |> Enum.sort()}
+    end)
   end
 
   defp asset_relation_requirement(asset) do
@@ -381,7 +494,8 @@ defmodule Favn.Dev.Doctor do
   defp normalize_catalog(catalog) when is_atom(catalog), do: [Atom.to_string(catalog)]
   defp normalize_catalog(_catalog), do: []
 
-  defp relation_catalogs_ok_message(requirements, _connections) when map_size(requirements) == 0 do
+  defp relation_catalogs_ok_message(requirements, _connections)
+       when map_size(requirements) == 0 do
     "no catalog-qualified asset relations found"
   end
 
@@ -447,7 +561,9 @@ defmodule Favn.Dev.Doctor do
 
   defp sensitive_key?(key) when is_binary(key) do
     key = String.downcase(key)
-    String.contains?(key, "secret") or String.contains?(key, "password") or String.contains?(key, "token")
+
+    String.contains?(key, "secret") or String.contains?(key, "password") or
+      String.contains?(key, "token")
   end
 
   defp plugin_module({module, _opts}) when is_atom(module), do: module
@@ -496,7 +612,9 @@ defmodule Favn.Dev.Doctor do
   defp module_discovery_key(:connection_modules), do: :connections
   defp module_discovery_key(_key), do: nil
 
-  defp discovery_enabled?(discovery, key) when is_list(discovery), do: Keyword.get(discovery, key) == :all
+  defp discovery_enabled?(discovery, key) when is_list(discovery),
+    do: Keyword.get(discovery, key) == :all
+
   defp discovery_enabled?(_discovery, _key), do: false
 
   defp fetch_keyword(key) do

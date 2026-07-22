@@ -134,12 +134,15 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     node_key = {{MyApp.Assets.Lifecycle, :asset}, nil}
 
     assert {:ok, version} =
-             Version.new(%Manifest{}, manifest_version_id: run.manifest_version_id)
+             Version.new(FavnTestSupport.with_manifest_contract(%Manifest{}),
+               manifest_version_id: run.manifest_version_id
+             )
 
     lifecycle = StepAttemptLifecycle.new(run, version, node_key, 0, 2)
 
     assert {:ok, %{work: work}} = StepAttemptLifecycle.build_work(lifecycle)
     assert work.run_started_at == run.inserted_at
+    assert work.required_runner_release_id == run.required_runner_release_id
   end
 
   defp run_state(opts) do
@@ -147,6 +150,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
       id: "run_lifecycle_test",
       manifest_version_id: "mv_lifecycle_test",
       manifest_content_hash: "hash_lifecycle_test",
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       asset_ref: {MyApp.Assets.Lifecycle, :asset},
       max_attempts: Keyword.get(opts, :max_attempts, 1),
       retry_backoff_ms: Keyword.get(opts, :retry_backoff_ms, 0)

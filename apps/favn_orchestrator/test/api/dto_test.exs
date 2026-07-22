@@ -213,6 +213,7 @@ defmodule FavnOrchestrator.API.DTOTest do
       submit_kind: :manual,
       manifest_version_id: "manifest_1",
       manifest_content_hash: "hash_1",
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       event_seq: 3,
       started_at: @now,
       finished_at: @later,
@@ -241,6 +242,7 @@ defmodule FavnOrchestrator.API.DTOTest do
              status: "error",
              submit_kind: "manual",
              manifest_version_id: "manifest_1",
+             required_runner_release_id: FavnTestSupport.runner_release_id(),
              event_seq: 3,
              started_at: DateTime.to_iso8601(@now),
              finished_at: DateTime.to_iso8601(@later)
@@ -249,6 +251,7 @@ defmodule FavnOrchestrator.API.DTOTest do
     refute Map.has_key?(summary, :asset_results)
     refute Map.has_key?(summary, :error)
     assert detail.params == %{"api_token" => "[REDACTED]", "limit" => 5}
+    assert detail.required_runner_release_id == FavnTestSupport.runner_release_id()
     assert detail.asset_results == [DTO.asset_result(asset_result)]
     refute Map.has_key?(detail, :retry_backoff_ms)
 

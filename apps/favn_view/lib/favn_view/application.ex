@@ -7,7 +7,7 @@ defmodule FavnView.Application do
 
   @impl true
   def start(_type, _args) do
-    with :ok <- FavnView.ProductionRuntimeConfig.apply_from_env_if_configured() do
+    with :ok <- ensure_runtime_config() do
       start_storybook()
 
       children = [
@@ -21,7 +21,34 @@ defmodule FavnView.Application do
       # See https://hexdocs.pm/elixir/Supervisor.html
       # for other strategies and supported options
       opts = [strategy: :one_for_one, name: FavnView.Supervisor]
-      Supervisor.start_link(children, opts)
+
+      with {:ok, supervisor} <- Supervisor.start_link(children, opts) do
+        {:ok, supervisor, %{runtime?: true, drain: control_plane_drain_callback()}}
+      end
+    end
+  end
+
+  @impl true
+  def prep_stop(%{runtime?: true, drain: drain} = state) when is_function(drain, 0) do
+    _ = drain.()
+    state
+  end
+
+  def prep_stop(state), do: state
+
+  defp control_plane_drain_callback do
+    if Application.get_env(:favn_view, :production_runtime_config, false) do
+      &FavnOrchestrator.drain/0
+    else
+      fn -> :ok end
+    end
+  end
+
+  defp ensure_runtime_config do
+    if Application.get_env(:favn_view, :production_runtime_config, false) do
+      FavnOrchestrator.ensure_control_plane_runtime_config_applied()
+    else
+      :ok
     end
   end
 

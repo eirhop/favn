@@ -51,6 +51,7 @@ defmodule FavnStoragePostgres.Runs.Decoder do
         select: %ManifestVersion{
           manifest_version_id: manifest.manifest_version_id,
           content_hash: manifest.content_hash,
+          required_runner_release_id: manifest.required_runner_release_id,
           atom_strings: manifest.atom_strings
         }
       )
@@ -82,6 +83,7 @@ defmodule FavnStoragePostgres.Runs.Decoder do
         select: %ManifestVersion{
           manifest_version_id: manifest.manifest_version_id,
           content_hash: manifest.content_hash,
+          required_runner_release_id: manifest.required_runner_release_id,
           atom_strings: manifest.atom_strings
         }
       )
@@ -131,12 +133,19 @@ defmodule FavnStoragePostgres.Runs.Decoder do
     manifest_record = %{
       manifest_version_id: manifest.manifest_version_id,
       content_hash: Base.encode16(manifest.content_hash, case: :lower),
+      required_runner_release_id: manifest.required_runner_release_id,
       atom_strings: manifest.atom_strings || legacy_atom_strings(manifest)
     }
 
     case RunSnapshotCodec.decode_run(run_record, manifest_record) do
       {:ok, run} ->
         {:ok, %{run | workspace_id: row.workspace_id, deployment_id: row.deployment_id}}
+
+      {:error, :legacy_runner_release_unbound} ->
+        {:error,
+         Error.new(:conflict, "legacy run is not bound to a runner release",
+           details: %{reason: :legacy_runner_release_unbound}
+         )}
 
       {:error, reason} ->
         {:error,

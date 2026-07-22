@@ -335,13 +335,14 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     first_ref = {MyApp.Orders, :asset}
     second_ref = {MyApp.Customers, :asset}
 
-    manifest = %Manifest{
-      assets: [
-        sql_asset(first_ref, package.content_hash),
-        sql_asset(second_ref, package.content_hash)
-      ],
-      graph: %Graph{nodes: [first_ref, second_ref], topo_order: [first_ref, second_ref]}
-    }
+    manifest =
+      current_manifest(%{
+        assets: [
+          sql_asset(first_ref, package.content_hash),
+          sql_asset(second_ref, package.content_hash)
+        ],
+        graph: %Graph{nodes: [first_ref, second_ref], topo_order: [first_ref, second_ref]}
+      })
 
     assert {:error, {:duplicate_execution_package_hash, hash, [^second_ref, ^first_ref]}} =
              Version.new(manifest)
@@ -367,7 +368,9 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     asset = sql_asset(ref, package_hash)
 
     {:ok, version} =
-      Version.new(%Manifest{assets: [asset], graph: %Graph{nodes: [ref], topo_order: [ref]}})
+      Version.new(
+        current_manifest(%{assets: [asset], graph: %Graph{nodes: [ref], topo_order: [ref]}})
+      )
 
     version
   end
@@ -380,5 +383,11 @@ defmodule Favn.Manifest.ExecutionPackageTest do
       type: :sql,
       execution_package_hash: package_hash
     }
+  end
+
+  defp current_manifest(attrs) do
+    attrs
+    |> FavnTestSupport.with_manifest_contract()
+    |> then(&struct!(Manifest, &1))
   end
 end

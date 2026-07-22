@@ -10,6 +10,19 @@ defmodule FavnView.AuthBoundaryTest do
     assert redirected_to(conn) == "/login?return_to=%2Fassets"
   end
 
+  test "browser responses include the production content security policy", %{conn: conn} do
+    conn = get(conn, ~p"/login")
+
+    assert [policy] = get_resp_header(conn, "content-security-policy")
+    assert policy =~ "default-src 'self'"
+    assert policy =~ "script-src 'self'"
+    assert policy =~ "connect-src 'self'"
+    refute policy =~ " ws:"
+    refute policy =~ " wss:"
+    refute policy =~ "unsafe-eval"
+    refute policy =~ "script-src 'self' 'unsafe-inline'"
+  end
+
   test "return paths accept only local absolute paths" do
     assert Auth.safe_return_to("/pipelines?status=failed") == "/pipelines?status=failed"
 
@@ -61,6 +74,7 @@ defmodule FavnView.AuthBoundaryTest do
     forbidden = [
       "FavnOrchestrator.Persistence",
       "FavnOrchestrator.Storage",
+      "FavnOrchestrator.ControlPlaneRuntimeConfig",
       "FavnStoragePostgres",
       "FavnOrchestrator.Auth.Store",
       "FavnOrchestrator.Scheduler.PersistenceRuntime",

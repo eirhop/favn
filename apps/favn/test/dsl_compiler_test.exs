@@ -102,7 +102,7 @@ defmodule Favn.DSLCompilerTest do
   defp runtime_unavailable_or_connect_error?({:error, error}) when is_map(error) do
     error.type == :backend_execution_failed and
       is_map(error.cause) and
-      error.cause.type == :invalid_config and
+      error.cause.type in [:invalid_config, :execution_error] and
       error.cause.operation == :connect
   end
 

@@ -1,6 +1,10 @@
 defmodule FavnOrchestrator.RunState do
   @moduledoc """
   Persisted run snapshot owned by the orchestrator control plane.
+
+  New runs require the exact runner release selected by their immutable
+  deployment manifest. A nil release id exists only when decoding a historical
+  terminal snapshot for read-only audit display.
   """
 
   @default_timeout_ms 30 * 60 * 1000
@@ -17,6 +21,7 @@ defmodule FavnOrchestrator.RunState do
           deployment_id: String.t() | nil,
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
+          required_runner_release_id: String.t() | nil,
           asset_ref: Favn.Ref.t(),
           target_refs: [Favn.Ref.t()],
           plan: Favn.Plan.t() | nil,
@@ -50,6 +55,7 @@ defmodule FavnOrchestrator.RunState do
     :deployment_id,
     :manifest_version_id,
     :manifest_content_hash,
+    :required_runner_release_id,
     :asset_ref,
     :plan,
     :plan_hash,
@@ -77,6 +83,7 @@ defmodule FavnOrchestrator.RunState do
     error: nil
   ]
 
+  @doc "Creates a new manifest- and runner-release-pinned run snapshot."
   @spec new(keyword()) :: t()
   def new(opts) when is_list(opts) do
     now = DateTime.utc_now()
@@ -88,6 +95,7 @@ defmodule FavnOrchestrator.RunState do
       deployment_id: Keyword.get(opts, :deployment_id),
       manifest_version_id: Keyword.fetch!(opts, :manifest_version_id),
       manifest_content_hash: Keyword.fetch!(opts, :manifest_content_hash),
+      required_runner_release_id: Keyword.fetch!(opts, :required_runner_release_id),
       asset_ref: Keyword.fetch!(opts, :asset_ref),
       target_refs: normalize_refs(Keyword.get(opts, :target_refs, [])),
       plan: plan,
@@ -265,6 +273,20 @@ defmodule FavnOrchestrator.RunState do
     if proposed_plan != run.plan or proposed_hash != run.plan_hash or
          proposed_target_refs != run.target_refs do
       raise ArgumentError, "run plans and target references are immutable after submission"
+    end
+
+    immutable_identity = [
+      :workspace_id,
+      :deployment_id,
+      :manifest_version_id,
+      :manifest_content_hash,
+      :required_runner_release_id
+    ]
+
+    if Enum.any?(immutable_identity, fn field ->
+         Keyword.get(attrs, field, Map.fetch!(run, field)) != Map.fetch!(run, field)
+       end) do
+      raise ArgumentError, "run deployment and release identity is immutable after submission"
     end
   end
 

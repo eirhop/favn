@@ -2,7 +2,7 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
   @moduledoc """
   Builds deterministic SQL-heavy manifests for repeatable scalability measurements.
 
-  The fixture models schema 8: the manifest contains compact SQL asset metadata
+  The fixture models the current manifest schema: compact SQL asset metadata
   and content hashes while generated SQL/template IR lives in immutable packages.
   """
 
@@ -61,16 +61,21 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
 
     {:ok, graph} = Graph.build(assets)
 
-    {%Manifest{
-       assets: assets,
-       graph: graph,
-       metadata: %{
-         fixture: "sql_heavy_manifest_scalability",
-         fixture_version: 2,
-         sql_columns_per_asset: config.sql_columns,
-         contract_columns_per_asset: config.contract_columns
-       }
-     }, packages}
+    manifest =
+      %{
+        assets: assets,
+        graph: graph,
+        metadata: %{
+          fixture: "sql_heavy_manifest_scalability",
+          fixture_version: 2,
+          sql_columns_per_asset: config.sql_columns,
+          contract_columns_per_asset: config.contract_columns
+        }
+      }
+      |> FavnTestSupport.with_manifest_contract()
+      |> then(&struct!(Manifest, &1))
+
+    {manifest, packages}
   end
 
   def build_with_packages(asset_count, _opts) do

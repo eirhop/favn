@@ -18,7 +18,7 @@ defmodule FavnLocal.MixProject do
 
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger, :inets, :ssl]
     ]
   end
 
@@ -26,8 +26,10 @@ defmodule FavnLocal.MixProject do
     [
       internal_dep(:favn_authoring, "../favn_authoring"),
       internal_dep(:favn_core, "../favn_core"),
+      internal_dep(:favn_runner, "../favn_runner", runtime: false),
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
-      internal_dep(:favn_test_support, "../favn_test_support", only: :test)
+      internal_dep(:favn_test_support, "../favn_test_support", only: :test),
+      {:mint, "~> 1.6", runtime: false}
     ]
   end
 

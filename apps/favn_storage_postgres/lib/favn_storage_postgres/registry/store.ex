@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL
+  alias Favn.Manifest.Compatibility
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
@@ -61,6 +62,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   @max_deployment_schedules 2_000
   @max_capacity_scopes 1_000
   @bulk_insert_size 500
+  @current_manifest_schema Compatibility.current_schema_version()
 
   @impl true
   def provision_workspace(%ProvisionWorkspace{} = command) do
@@ -487,6 +489,29 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
+  defp get_activatable_manifest(manifest_version_id) do
+    case Repo.get(ManifestVersion, manifest_version_id) do
+      nil ->
+        {:error, Error.new(:not_found, "manifest release not found")}
+
+      %ManifestVersion{schema_version: schema_version}
+      when schema_version < @current_manifest_schema ->
+        {:error,
+         Error.new(:invalid, "historical manifest cannot be activated",
+           details: %{
+             reason: :historical_manifest_not_activatable,
+             schema_version: schema_version,
+             current_schema_version: @current_manifest_schema
+           }
+         )}
+
+      %ManifestVersion{} = row ->
+        row
+        |> decode_manifest_row()
+        |> cache_manifest()
+    end
+  end
+
   defp cache_manifest({:ok, %Version{} = version} = result) do
     :ok = ManifestCache.put(version)
     result
@@ -498,7 +523,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   def deploy_manifest(%DeployManifest{} = command) do
     with :ok <- validate_deploy_command(command),
          {:ok, configuration} <- validate_configuration(command.configuration),
-         {:ok, manifest} <- get_manifest(%ById{manifest_version_id: command.manifest_version_id}),
+         {:ok, manifest} <- get_activatable_manifest(command.manifest_version_id),
          :ok <- validate_targets(command.targets, manifest),
          schedules <- normalize_schedules(command.schedules),
          capacities <- normalize_capacities(command.capacity_scopes),
@@ -589,7 +614,7 @@ defmodule FavnStoragePostgres.Registry.Store do
        ) do
     locked_runtime_state = lock_runtime_state!(command.workspace_context.workspace_id)
 
-    {deployment, replayed?} =
+    {deployment, deployment_status} =
       insert_or_replay_deployment!(
         command,
         configuration,
@@ -597,11 +622,14 @@ defmodule FavnStoragePostgres.Registry.Store do
         target_fingerprint
       )
 
-    insert_targets!(command, targets)
-    insert_schedules!(command)
-    sync_capacity_scopes!(command, replayed?)
+    unless deployment_status == :content_reuse do
+      insert_targets!(command, targets)
+      insert_schedules!(command)
+      sync_capacity_scopes!(command, deployment_status == :exact_replay)
+    end
 
-    if replayed? and locked_runtime_state.active_deployment_id != deployment.deployment_id do
+    if deployment_status == :exact_replay and
+         locked_runtime_state.active_deployment_id != deployment.deployment_id do
       Repo.rollback(
         Error.new(
           :conflict,
@@ -612,17 +640,17 @@ defmodule FavnStoragePostgres.Registry.Store do
 
     runtime_state = activate_deployment!(command, deployment)
 
-    unless replayed? do
+    unless deployment_status == :exact_replay do
       OutboxWriter.insert!(%{
         workspace_id: command.workspace_context.workspace_id,
         command_id: "workspace.deploy:" <> command.deployment_id,
         event_kind: "workspace.deployment.activated",
         aggregate_kind: "workspace_deployment",
-        aggregate_id: command.deployment_id,
+        aggregate_id: deployment.deployment_id,
         aggregate_version: runtime_state.revision,
         occurred_at: command.occurred_at,
         payload: %{
-          "deployment_id" => command.deployment_id,
+          "deployment_id" => deployment.deployment_id,
           "manifest_version_id" => command.manifest_version_id,
           "runtime_revision" => runtime_state.revision,
           "target_catalog_fingerprint" => Base.encode16(target_fingerprint, case: :lower)
@@ -647,18 +675,21 @@ defmodule FavnStoragePostgres.Registry.Store do
           where: state.workspace_id == ^context.workspace_id,
           select:
             {state, deployment.manifest_version_id, manifest.content_hash,
-             manifest.schema_version, manifest.runner_contract_version, manifest.asset_count,
-             manifest.pipeline_count, manifest.schedule_count}
+             manifest.schema_version, manifest.runner_contract_version,
+             manifest.required_runner_release_id, manifest.asset_count, manifest.pipeline_count,
+             manifest.schedule_count}
         )
 
       case Repo.one(query) do
         {%WorkspaceRuntimeState{} = state, manifest_version_id, content_hash, schema_version,
-         runner_contract_version, asset_count, pipeline_count, schedule_count} ->
+         runner_contract_version, required_runner_release_id, asset_count, pipeline_count,
+         schedule_count} ->
           {:ok,
            runtime_result(state, manifest_version_id, %{
              content_hash: content_hash,
              schema_version: schema_version,
              runner_contract_version: runner_contract_version,
+             required_runner_release_id: required_runner_release_id,
              asset_count: asset_count,
              pipeline_count: pipeline_count,
              schedule_count: schedule_count
@@ -782,6 +813,7 @@ defmodule FavnStoragePostgres.Registry.Store do
       content_hash: hash,
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
+      required_runner_release_id: version.required_runner_release_id,
       payload_version: 1,
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
@@ -822,6 +854,18 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp decode_manifest_row(nil), do: {:error, Error.new(:not_found, "manifest release not found")}
 
+  defp decode_manifest_row(%ManifestVersion{schema_version: schema_version})
+       when schema_version < @current_manifest_schema do
+    {:error,
+     Error.new(:invalid, "historical manifest cannot be used as a current release",
+       details: %{
+         reason: :historical_manifest_not_activatable,
+         schema_version: schema_version,
+         current_schema_version: @current_manifest_schema
+       }
+     )}
+  end
+
   defp decode_manifest_row(%ManifestVersion{} = row) do
     manifest_json = Jason.encode!(row.manifest)
 
@@ -832,6 +876,7 @@ defmodule FavnStoragePostgres.Registry.Store do
              content_hash: Base.encode16(row.content_hash, case: :lower),
              schema_version: row.schema_version,
              runner_contract_version: row.runner_contract_version,
+             required_runner_release_id: row.required_runner_release_id,
              serialization_format: "json-v1",
              inserted_at: row.inserted_at
            ) do
@@ -994,24 +1039,55 @@ defmodule FavnStoragePostgres.Registry.Store do
 
     case Repo.insert_all(WorkspaceDeployment, [attrs], on_conflict: :nothing) do
       {0, _rows} ->
-        existing =
-          Repo.get_by!(WorkspaceDeployment,
-            workspace_id: command.workspace_context.workspace_id,
-            deployment_id: command.deployment_id
-          )
+        resolve_existing_deployment!(command, config_hash, target_hash)
 
-        if existing.manifest_version_id == command.manifest_version_id and
-             existing.configuration_version == command.configuration_version and
-             existing.configuration_fingerprint == config_hash and
-             existing.target_catalog_fingerprint == target_hash do
-          {existing, true}
+      {1, _rows} ->
+        {struct!(WorkspaceDeployment, attrs), :inserted}
+    end
+  end
+
+  defp resolve_existing_deployment!(command, config_hash, target_hash) do
+    identity =
+      Repo.get_by(WorkspaceDeployment,
+        workspace_id: command.workspace_context.workspace_id,
+        deployment_id: command.deployment_id
+      )
+
+    case identity do
+      %WorkspaceDeployment{} = existing ->
+        if matching_deployment_content?(existing, command, config_hash, target_hash) do
+          {existing, :exact_replay}
         else
           Repo.rollback(Error.new(:conflict, "deployment identity has different content"))
         end
 
-      {1, _rows} ->
-        {struct!(WorkspaceDeployment, attrs), false}
+      nil ->
+        reuse_existing_deployment!(command, config_hash, target_hash)
     end
+  end
+
+  defp reuse_existing_deployment!(command, config_hash, target_hash) do
+    existing =
+      Repo.get_by(WorkspaceDeployment,
+        workspace_id: command.workspace_context.workspace_id,
+        manifest_version_id: command.manifest_version_id,
+        configuration_fingerprint: config_hash,
+        target_catalog_fingerprint: target_hash
+      )
+
+    if match?(%WorkspaceDeployment{}, existing) and
+         existing.configuration_version == command.configuration_version do
+      {existing, :content_reuse}
+    else
+      Repo.rollback(Error.new(:conflict, "deployment content conflicts with committed state"))
+    end
+  end
+
+  defp matching_deployment_content?(existing, command, config_hash, target_hash) do
+    existing.manifest_version_id == command.manifest_version_id and
+      existing.configuration_version == command.configuration_version and
+      existing.configuration_fingerprint == config_hash and
+      existing.target_catalog_fingerprint == target_hash
   end
 
   defp insert_targets!(command, targets) do
@@ -1174,6 +1250,8 @@ defmodule FavnStoragePostgres.Registry.Store do
       manifest_content_hash: manifest_summary_value(manifest_summary, :content_hash),
       schema_version: manifest_summary_value(manifest_summary, :schema_version),
       runner_contract_version: manifest_summary_value(manifest_summary, :runner_contract_version),
+      required_runner_release_id:
+        manifest_summary_value(manifest_summary, :required_runner_release_id),
       asset_count: manifest_summary_value(manifest_summary, :asset_count),
       pipeline_count: manifest_summary_value(manifest_summary, :pipeline_count),
       schedule_count: manifest_summary_value(manifest_summary, :schedule_count)
@@ -1196,6 +1274,7 @@ defmodule FavnStoragePostgres.Registry.Store do
       content_hash: version.content_hash,
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
+      required_runner_release_id: version.required_runner_release_id,
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
       schedule_count: length(List.wrap(version.manifest.schedules))
@@ -1214,6 +1293,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          "manifest_content_hash" => result.manifest_content_hash,
          "schema_version" => result.schema_version,
          "runner_contract_version" => result.runner_contract_version,
+         "required_runner_release_id" => result.required_runner_release_id,
          "asset_count" => result.asset_count,
          "pipeline_count" => result.pipeline_count,
          "schedule_count" => result.schedule_count
@@ -1241,6 +1321,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          manifest_content_hash: Map.get(response, "manifest_content_hash"),
          schema_version: Map.get(response, "schema_version"),
          runner_contract_version: Map.get(response, "runner_contract_version"),
+         required_runner_release_id: Map.get(response, "required_runner_release_id"),
          asset_count: Map.get(response, "asset_count"),
          pipeline_count: Map.get(response, "pipeline_count"),
          schedule_count: Map.get(response, "schedule_count")

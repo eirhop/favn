@@ -60,9 +60,8 @@ Minimal local configuration:
 ```elixir
 config :favn,
   local: [
-    storage: :postgres,
     workspace_id: "local-dev",
-    postgres: [url: System.fetch_env!("FAVN_DATABASE_URL")]
+    scheduler: false
   ]
 ```
 
@@ -70,33 +69,16 @@ Common local options:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `:storage` | `:postgres` | PostgreSQL is the only supported control-plane backend. |
 | `:workspace_id` | `"local-dev"` | Workspace selected by local CLI/UI requests. |
-| `:postgres` | local defaults or `FAVN_DATABASE_URL` | PostgreSQL URL or connection options. |
-| `:orchestrator_api_enabled` | `true` | Keep enabled for local commands. |
 | `:orchestrator_port` | `4101` | Local API port. |
 | `:web_port` | `4173` | Local UI port. |
-| `:orchestrator_base_url` | derived from port | Usually leave unset. |
-| `:web_base_url` | derived from port | Usually leave unset. |
 | `:scheduler` | `false` | Enable with config or `mix favn.dev --scheduler`. |
-| `:service_token` | generated if absent | Advanced local auth override. |
-| `:web_session_secret` | generated if absent | Advanced local web-session override. |
 
-Postgres local options:
-
-| Key | Default |
-| --- | --- |
-| `:url` | `FAVN_DATABASE_URL`, when set |
-| `:hostname` | `"127.0.0.1"` |
-| `:port` | `5432` |
-| `:username` | `"postgres"` |
-| `:password` | `"postgres"` |
-| `:database` | `"favn"` |
-| `:ssl` | `false` |
-| `:pool_size` | `10` |
-
-The memory and SQLite control-plane backends were removed. Production requires
-verified TLS; local development may explicitly disable TLS for a loopback database.
+The local tooling generates PostgreSQL credentials, service authentication,
+the View session secret, and the distribution cookie into owner-only files
+under `.favn/`. PostgreSQL and all control-plane storage configuration belong
+to the generated Compose application; a customer does not supply a host
+database URL or select a storage adapter.
 
 ## SQL Connection Modules
 

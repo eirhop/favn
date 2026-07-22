@@ -13,8 +13,13 @@ compiling them into a deterministic execution contract, and running them through
 a PostgreSQL-backed control plane. Asset logic stays in ordinary Elixir modules;
 DuckDB and other data systems remain runner-owned integrations.
 
-Favn is private pre-v1 software. APIs may change, and the supported production
-release artifacts are still being completed.
+Canonical manifests are bound to the exact verified customer runner release;
+changing executable user code therefore cannot be deployed as a manifest-only update.
+
+Favn is private pre-v1 software. APIs may change. The first release topology is
+implemented and container-qualified: one Favn-published control plane, one
+customer-built runner, and external PostgreSQL 18 on a trusted private network.
+The remaining production epics are tracked separately in the roadmap.
 
 ## Start here
 
@@ -23,6 +28,8 @@ release artifacts are still being completed.
 - [Authoring assets and pipelines](apps/favn/guides/authoring-assets.md)
 - [Local development](apps/favn/guides/local-development.md)
 - [Configuration](apps/favn/guides/configuration.md)
+- [Production deployment topology](docs/production/deployment_topology.md)
+- [Production operator documentation](docs/production/README.md)
 - [AI-assisted development](apps/favn/guides/ai-agents.md)
 
 The complete public guide set lives in [`apps/favn/guides/`](apps/favn/guides/).

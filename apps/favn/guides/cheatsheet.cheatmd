@@ -8,8 +8,8 @@ First local run:
 
 ```bash
 mix favn.init --duckdb --sample
-mix favn.doctor
 mix favn.install
+mix favn.doctor
 mix favn.dev
 mix favn.run MyApp.Pipelines.LocalSmoke
 ```
@@ -153,7 +153,8 @@ Generate a manifest from explicit modules:
 {:ok, manifest} =
   Favn.generate_manifest(
     asset_modules: [MyApp.Assets.Orders, MyApp.Assets.OrderSummary],
-    pipeline_modules: [MyApp.Pipelines.DailySales]
+    pipeline_modules: [MyApp.Pipelines.DailySales],
+    runner_release: runner_release
   )
 ```
 
@@ -163,7 +164,7 @@ Generate from configured discovery:
 config :favn,
   discovery: [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all]
 
-{:ok, manifest} = Favn.generate_manifest()
+{:ok, manifest} = Favn.generate_manifest(runner_release: runner_release)
 ```
 
 Pin, serialize, hash, and validate:
@@ -217,9 +218,9 @@ Local setup:
 | Command | Use it for |
 | --- | --- |
 | `mix favn.init` | Generate local Favn files and optional samples. |
-| `mix favn.doctor` | Check local configuration. |
-| `mix favn.install` | Prepare the local runtime workspace. |
-| `mix favn.dev` | Start local runtime processes. |
+| `mix favn.install` | Verify Docker/Compose and install the prebuilt control-plane digest. |
+| `mix favn.doctor` | Check the installed local configuration. |
+| `mix favn.dev` | Start PostgreSQL, control plane, and runner as Compose services. |
 | `mix favn.stop` | Stop the local runtime stack. |
 
 Run and inspect work:
@@ -239,25 +240,24 @@ Manage local runtime:
 
 | Command | Use it for |
 | --- | --- |
-| `mix favn.reload` | Reload manifest or scheduler state where supported. |
-| `mix favn.reset` | Reset local runtime state. Use with care. |
+| `mix favn.reload` | Publish a manifest-only change or replace only the runner for executable changes. |
+| `mix favn.reset` | Preview project-scoped cleanup; add `--yes` to remove it. |
 | `mix favn.read_doc` | Read compiled Favn docs locally. |
 
 Packaging commands:
 
 | Command | Use it for |
 | --- | --- |
-| `mix favn.build.runner` | Build runner artifact metadata/output. |
-| `mix favn.build.web` | Build web artifact metadata/output. |
-| `mix favn.build.orchestrator` | Build orchestrator artifact metadata/output. |
-| `mix favn.build.single` | Build the single-node local deployment artifact. |
-| `mix favn.bootstrap.single` | Bootstrap a single-node backend from a manifest JSON file. |
+| `mix favn.build.runner` | Build an immutable customer runner OCI context plus its aligned manifest. |
+| `mix favn.build.manifest --runner-release PATH` | Build a manifest-only release after proving exact runner alignment. |
+| `mix favn.publish --manifest PATH` | Publish missing packages and stage one immutable manifest. |
+| `mix favn.activate --manifest-version ID --workspace-id ID` | Activate an exact staged manifest after runner verification. |
 
 ## Common Rules
 
 - Depend on `:favn` from application code.
 - Add optional plugin packages only when you need them, such as DuckDB support.
-- Use `mix favn.init`, `mix favn.doctor`, `mix favn.install`, and `mix favn.dev`
+- Use `mix favn.init`, `mix favn.install`, `mix favn.doctor`, and `mix favn.dev`
   for first local setup.
 - Do not depend on Favn runtime, storage, or UI implementation apps directly.
 - Use public `mix favn.*` commands for local runtime work.

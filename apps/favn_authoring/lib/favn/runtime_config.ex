@@ -33,6 +33,7 @@ defmodule Favn.RuntimeConfig do
   """
   defmacro bundle(name, fields) do
     caller = __CALLER__
+    file = Favn.DSL.Compiler.normalize_file(caller.file)
     doc = "Returns the unresolved #{name} runtime configuration bundle."
 
     unless is_atom(name) do
@@ -46,7 +47,7 @@ defmodule Favn.RuntimeConfig do
       def unquote(name)() do
         Favn.RuntimeConfig.Bundle.new!(unquote(name), unquote(fields),
           module: __MODULE__,
-          file: unquote(caller.file),
+          file: unquote(file),
           line: unquote(caller.line)
         )
       end

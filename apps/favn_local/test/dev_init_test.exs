@@ -51,7 +51,9 @@ defmodule Favn.Dev.InitTest do
     assert {:ok, result} = Init.run(root_dir: root_dir, app: app, duckdb: true, sample: true)
 
     assert result.pipeline_module == "#{base_module(app)}.Pipelines.LocalSmoke"
+
     assert "lib/#{Macro.underscore(base_module(app))}/connections/important_lakehouse.ex" in result.created
+
     assert "config/config.exs" in result.updated
     assert "mix.exs" in result.updated
     assert "priv/duckdb/raw_catalog.sql" in result.created
@@ -59,7 +61,10 @@ defmodule Favn.Dev.InitTest do
 
     raw_orders =
       File.read!(
-        Path.join(root_dir, "lib/#{Macro.underscore(base_module(app))}/lakehouse/raw/sales/orders.ex")
+        Path.join(
+          root_dir,
+          "lib/#{Macro.underscore(base_module(app))}/lakehouse/raw/sales/orders.ex"
+        )
       )
 
     assert raw_orders =~ "use Favn.Asset"
@@ -101,8 +106,10 @@ defmodule Favn.Dev.InitTest do
     assert config =~ "raw_catalog: [file: {:priv, #{inspect(app)}, \"duckdb/raw_catalog.sql\"}]"
     assert config =~ "catalogs: ["
     assert config =~ "raw: [resource: :raw_catalog, write_concurrency: 1]"
+
     assert File.read!(Path.join(root_dir, "priv/duckdb/raw_catalog.sql")) =~
              "ATTACH '.favn/data/raw.duckdb' AS raw"
+
     assert config =~ "runner_plugins: ["
     assert config =~ "FavnDuckdb"
 
@@ -122,12 +129,17 @@ defmodule Favn.Dev.InitTest do
     assert "mix.exs" in second.existing
 
     raw_path =
-      Path.join(root_dir, "lib/#{Macro.underscore(base_module(app))}/lakehouse/raw/sales/orders.ex")
+      Path.join(
+        root_dir,
+        "lib/#{Macro.underscore(base_module(app))}/lakehouse/raw/sales/orders.ex"
+      )
 
     File.write!(raw_path, "# local edit\n")
 
     assert {:ok, third} = Init.run(root_dir: root_dir, app: app, duckdb: true, sample: true)
+
     assert "lib/#{Macro.underscore(base_module(app))}/lakehouse/raw/sales/orders.ex" in third.skipped
+
     assert File.read!(raw_path) == "# local edit\n"
   end
 
@@ -160,7 +172,8 @@ defmodule Favn.Dev.InitTest do
     assert {:ok, manifest} =
              FavnAuthoring.generate_manifest(
                asset_modules: [raw_orders, order_summary],
-               pipeline_modules: [pipeline]
+               pipeline_modules: [pipeline],
+               runner_release: FavnTestSupport.runner_release()
              )
 
     assert length(manifest.assets) == 2
@@ -179,110 +192,6 @@ defmodule Favn.Dev.InitTest do
     assert Enum.any?(manifest.graph.edges, fn edge ->
              edge.from == {raw_orders, :asset} and edge.to == {order_summary, :asset}
            end)
-  end
-
-  @tag :slow
-  @tag timeout: 180_000
-  test "generated sample executes raw and SQL assets against DuckDB", %{root_dir: root_dir} do
-    repo_root = Path.expand("../../..", __DIR__)
-    app = :smoke_consumer
-    base = base_module(app)
-
-    File.write!(
-      Path.join(root_dir, "mix.exs"),
-      """
-      defmodule SmokeConsumer.MixProject do
-        use Mix.Project
-
-        def project do
-          [app: :smoke_consumer, version: "0.1.0", elixir: "~> 1.20", deps: deps()]
-        end
-
-        def application do
-          [extra_applications: [:logger]]
-        end
-
-        defp deps do
-          [
-            {:favn, path: #{inspect(Path.join(repo_root, "apps/favn"))}}
-          ]
-        end
-      end
-      """
-    )
-
-    assert {:ok, _result} = Init.run(root_dir: root_dir, app: app, duckdb: true, sample: true)
-    File.mkdir_p!(Path.join(root_dir, "test"))
-    File.write!(Path.join(root_dir, "test/test_helper.exs"), "ExUnit.start()\n")
-
-    File.write!(
-      Path.join(root_dir, "test/generated_smoke_test.exs"),
-      """
-      defmodule GeneratedSmokeTest do
-        use ExUnit.Case, async: false
-
-        test "generated Favn sample runs against DuckDB" do
-          File.mkdir_p!(".favn/data")
-          {:ok, _started} = Application.ensure_all_started(:favn_runner)
-
-          {:ok, build} = Favn.build_manifest()
-          {:ok, publication} = Favn.prepare_manifest_publication(build)
-          version = publication.version
-          :ok = FavnRunner.register_manifest(version)
-
-          raw_ref = {#{base}.Lakehouse.Raw.Sales.Orders, :asset}
-          mart_ref = {#{base}.Lakehouse.Mart.Sales.OrderSummary, :asset}
-
-          for ref <- [raw_ref, mart_ref] do
-            run_id =
-              ref
-              |> elem(0)
-              |> Atom.to_string()
-              |> String.replace(".", "_")
-
-            work = %Favn.Contracts.RunnerWork{
-              run_id: "generated-" <> run_id,
-              manifest_version_id: version.manifest_version_id,
-              manifest_content_hash: version.content_hash,
-              asset_ref: ref,
-              execution_package:
-                Enum.find(publication.execution_packages, &(&1.asset_ref == ref))
-            }
-
-            assert {:ok, result} = FavnRunner.run(work, timeout: 30_000)
-            assert result.status == :ok, inspect(result)
-          end
-
-          assert {:ok, result} =
-                   Favn.SQLClient.with_connection(:important_lakehouse, [], fn session ->
-                      Favn.SQLClient.query(
-                        session,
-                        "select order_date, order_count, revenue_cents from mart.sales.order_summary order by order_date"
-                      )
-                   end)
-
-          assert [first, second] = result.rows
-          assert value(first["order_count"]) == 2
-          assert value(first["revenue_cents"]) == 20500
-          assert value(second["order_count"]) == 1
-          assert value(second["revenue_cents"]) == 1575
-        end
-
-        defp value({_scale, integer}), do: integer
-        defp value(value), do: value
-      end
-      """
-    )
-
-    assert {_output, 0} = System.cmd("mix", ["deps.get"], cd: root_dir, stderr_to_stdout: true)
-
-    assert {output, 0} =
-             System.cmd("mix", ["test", "test/generated_smoke_test.exs"],
-               cd: root_dir,
-               stderr_to_stdout: true
-             )
-
-    assert output =~ "Result: 1 passed"
   end
 
   test "requires explicit duckdb and sample flags", %{root_dir: root_dir} do

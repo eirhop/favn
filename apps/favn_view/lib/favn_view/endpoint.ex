@@ -1,18 +1,12 @@
 defmodule FavnView.Endpoint do
   use Phoenix.Endpoint, otp_app: :favn_view
 
-  # The session is cookie-backed. It intentionally stores only a random browser
-  # session id and LiveView socket topic; the raw orchestrator token stays
-  # server-side. Cookies are HTTP-only and encrypted, and production config must
-  # set `secure: true`.
-  @session_options Application.compile_env!(:favn_view, :session_cookie_options)
-
   @doc false
-  def session_options, do: @session_options
+  def session_options, do: FavnView.ProductionRuntimeConfig.session_cookie_options()
 
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: @session_options]],
-    longpoll: [connect_info: [session: @session_options]]
+    websocket: [connect_info: [session: {__MODULE__, :session_options, []}]],
+    longpoll: [connect_info: [session: {__MODULE__, :session_options, []}]]
 
   # Serve at "/" the static files from "priv/static" directory.
   #
@@ -45,14 +39,12 @@ defmodule FavnView.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
-  plug Plug.Parsers,
-    parsers: [:urlencoded, :json],
-    pass: ["*/*"],
-    length: 1_000_000,
-    json_decoder: Phoenix.json_library()
+  plug FavnView.Plugs.RuntimeTransportSecurity
+
+  plug FavnView.Plugs.RequestParsers
 
   plug Plug.MethodOverride
   plug Plug.Head
-  plug Plug.Session, @session_options
+  plug FavnView.Plugs.RuntimeSession
   plug FavnView.Router
 end

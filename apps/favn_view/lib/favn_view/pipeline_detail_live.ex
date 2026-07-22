@@ -484,6 +484,13 @@ defmodule FavnView.PipelineDetailLive do
 
   defp submit_error_label(:forbidden), do: "Operator role required to submit runs."
   defp submit_error_label(:not_found), do: "Pipeline not found."
+
+  defp submit_error_label(:runtime_starting),
+    do: "Control plane is still starting. Try again shortly."
+
+  defp submit_error_label(:runtime_draining),
+    do: "Control plane is draining and cannot start new runs."
+
   defp submit_error_label(_reason), do: "Submit failed."
 
   defp humanize(value) do

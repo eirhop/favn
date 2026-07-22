@@ -52,8 +52,9 @@ tests start the required components explicitly.
 Production configuration is validated by
 `FavnOrchestrator.ProductionRuntimeConfig`. It selects PostgreSQL, validates TLS,
 pool, authentication, workspace, scheduler, and runner settings, then injects
-the backend and redacted options. Local development performs the same explicit
-composition in `Favn.Dev.RuntimeLaunch`.
+the backend and redacted options. Local development runs that production
+composition in the prebuilt control-plane container through
+`Favn.Dev.ComposeLifecycle`.
 
 The PostgreSQL backend supervisor owns:
 
@@ -196,7 +197,7 @@ Redis is not required for correctness or initial multi-node scale.
 | Ecto schemas | `apps/favn_storage_postgres/lib/favn_storage_postgres/schemas/` |
 | Migrations | `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/` |
 | Runtime configuration | `FavnOrchestrator.ProductionRuntimeConfig` and `FavnStoragePostgres.Config` |
-| Local composition | `Favn.Dev.RuntimeLaunch` |
+| Local composition | `Favn.Dev.ComposeLifecycle` and the prebuilt control-plane release |
 | Operations | [`postgresql_operator_runbook.md`](../../production/postgresql_operator_runbook.md) |
 | Tables and relationships | [`data-model.md`](data-model.md) |
 | Tests | [`testing.md`](testing.md) |

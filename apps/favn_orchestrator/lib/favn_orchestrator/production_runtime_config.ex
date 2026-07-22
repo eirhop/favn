@@ -10,17 +10,29 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   alias FavnOrchestrator.Auth.Credentials
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
+  alias Favn.RuntimeInput.KeyringConfig
+  alias Favn.DeploymentMode
 
   @max_session_ttl_seconds 30 * 24 * 60 * 60
   @max_postgres_pool_size 200
   @max_postgres_timeout_ms 120_000
   @max_scheduler_tick_ms 24 * 60 * 60 * 1_000
   @max_missed_occurrences 100_000
-  @max_runtime_input_pin_keys 32
-  @max_runtime_input_pin_keys_bytes 8 * 1_024
   @default_active_run_plan_max_bytes 512 * 1_024 * 1_024
   @min_active_run_plan_max_bytes 64 * 1_024 * 1_024
   @max_active_run_plan_max_bytes 8 * 1_024 * 1_024 * 1_024
+  @max_runner_rpc_timeout_ms 120_000
+  @max_runner_diagnostics_timeout_ms 30_000
+  @max_runner_await_buffer_ms 120_000
+  @max_shutdown_drain_timeout_ms 3_600_000
+  @max_workspace_count 1_000
+  @max_workspace_env_bytes 65_536
+  @min_http_body_limit_bytes 64 * 1_024
+  @max_http_body_limit_bytes 8 * 1_024 * 1_024
+  @max_http_connections 100_000
+  @max_http_request_timeout_ms 120_000
+  @max_http_idle_timeout_ms 300_000
+  @runner_module Module.concat(["FavnRunner"])
 
   @type runtime_input_pin_config :: %{
           keys: %{pos_integer() => binary()},
@@ -28,10 +40,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         }
 
   @type config :: %{
-          storage: :postgres,
+          deployment_mode: DeploymentMode.t(),
+          instance_id: String.t(),
           postgres: keyword(),
           runtime_input_pin: runtime_input_pin_config(),
           api_server: keyword(),
+          http_server: map(),
           manifest_publication: keyword(),
           api_service_tokens: [ServiceTokens.token_config()],
           workspace_ids: [String.t()],
@@ -39,6 +53,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           auth_session_ttl_seconds: pos_integer(),
           active_run_plan_max_bytes: pos_integer(),
           scheduler: keyword(),
+          shutdown_drain_timeout_ms: pos_integer(),
           runner: map(),
           runner_client: module(),
           runner_client_opts: keyword()
@@ -46,19 +61,13 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
   @postgres_backend Module.concat([FavnStoragePostgres, Backend])
 
-  @doc """
-  Applies production env config when explicitly configured.
-
-  Startup calls this before children are built. Local/test environments that do
-  not set `FAVN_STORAGE` continue using ordinary application config.
-  """
+  @doc "Applies production env config only for the production control-plane profile."
   @spec apply_from_env_if_configured(map()) :: :ok | {:error, term()}
-  def apply_from_env_if_configured(env \\ System.get_env()) when is_map(env) do
+  def apply_from_env_if_configured(env) when is_map(env) do
     if Application.get_env(:favn_orchestrator, :local_dev_mode, false) do
       :ok
     else
-      if Map.has_key?(env, "FAVN_STORAGE") or
-           Application.get_env(:favn_orchestrator, :production_runtime_config, false) do
+      if Application.get_env(:favn_orchestrator, :production_runtime_config, false) do
         apply_from_env(env)
       else
         :ok
@@ -70,95 +79,129 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   Validates and applies production env config.
   """
   @spec apply_from_env(map()) :: :ok | {:error, term()}
-  def apply_from_env(env \\ System.get_env()) when is_map(env) do
+  def apply_from_env(env) when is_map(env) do
     with {:ok, config} <- validate(env) do
-      Application.put_env(:favn_orchestrator, :persistence_backend, @postgres_backend)
-      Application.put_env(:favn_orchestrator, :persistence_options, config.postgres)
-
-      Application.put_env(
-        :favn_storage_postgres,
-        :runtime_input_pin_keys,
-        config.runtime_input_pin.keys
-      )
-
-      Application.put_env(
-        :favn_storage_postgres,
-        :runtime_input_pin_current_key_version,
-        config.runtime_input_pin.current_version
-      )
-
-      Application.put_env(:favn_orchestrator, :api_server, config.api_server)
-
-      Application.put_env(
-        :favn_orchestrator,
-        :manifest_publication,
-        config.manifest_publication
-      )
-
-      Application.put_env(:favn_orchestrator, :api_service_tokens, config.api_service_tokens)
-      Application.put_env(:favn_orchestrator, :workspace_ids, config.workspace_ids)
-      Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
-
-      Application.put_env(
-        :favn_orchestrator,
-        :auth_bootstrap_username,
-        Keyword.fetch!(config.auth_bootstrap, :username)
-      )
-
-      Application.put_env(
-        :favn_orchestrator,
-        :auth_bootstrap_password,
-        Keyword.fetch!(config.auth_bootstrap, :password)
-      )
-
-      Application.put_env(
-        :favn_orchestrator,
-        :auth_bootstrap_display_name,
-        Keyword.fetch!(config.auth_bootstrap, :display_name)
-      )
-
-      Application.put_env(
-        :favn_orchestrator,
-        :auth_bootstrap_roles,
-        Keyword.fetch!(config.auth_bootstrap, :roles)
-      )
-
-      Application.put_env(:favn_orchestrator, :local_dev_mode, false)
-
-      Application.put_env(
-        :favn_orchestrator,
-        :auth_session_ttl_seconds,
-        config.auth_session_ttl_seconds
-      )
-
-      Application.put_env(
-        :favn_orchestrator,
-        :active_run_plan_max_bytes,
-        config.active_run_plan_max_bytes
-      )
-
-      Application.put_env(:favn_orchestrator, :scheduler, config.scheduler)
-      Application.put_env(:favn_orchestrator, :runner_client, config.runner_client)
-      Application.put_env(:favn_orchestrator, :runner_client_opts, config.runner_client_opts)
-
-      Application.put_env(
-        :favn_orchestrator,
-        :production_runtime_diagnostics,
-        diagnostics(config)
-      )
-
-      :ok
+      apply(config)
     end
+  end
+
+  @doc "Applies one already validated production configuration exactly once at boot."
+  @spec apply(config()) :: :ok
+  def apply(config) when is_map(config) do
+    postgres = Keyword.put(config.postgres, :instance_id, config.instance_id)
+
+    Application.put_env(:favn_orchestrator, :persistence_backend, @postgres_backend)
+    Application.put_env(:favn_orchestrator, :persistence_options, postgres)
+    Application.put_env(:favn_orchestrator, :instance_id, config.instance_id)
+    Application.put_env(:favn_orchestrator, :http_server, config.http_server)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :shutdown_drain_timeout_ms,
+      config.shutdown_drain_timeout_ms
+    )
+
+    Application.put_env(
+      :favn_storage_postgres,
+      Module.concat(["FavnStoragePostgres.Repo"]),
+      postgres
+    )
+
+    Application.put_env(
+      :favn_storage_postgres,
+      :runtime_input_pin_keys,
+      config.runtime_input_pin.keys
+    )
+
+    Application.put_env(
+      :favn_storage_postgres,
+      :runtime_input_pin_current_key_version,
+      config.runtime_input_pin.current_version
+    )
+
+    Application.put_env(:favn_orchestrator, :api_server, config.api_server)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :manifest_publication,
+      config.manifest_publication
+    )
+
+    Application.put_env(:favn_orchestrator, :api_service_tokens, config.api_service_tokens)
+    Application.put_env(:favn_orchestrator, :workspace_ids, config.workspace_ids)
+    Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :auth_bootstrap_username,
+      Keyword.fetch!(config.auth_bootstrap, :username)
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
+      :auth_bootstrap_password,
+      Keyword.fetch!(config.auth_bootstrap, :password)
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
+      :auth_bootstrap_display_name,
+      Keyword.fetch!(config.auth_bootstrap, :display_name)
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
+      :auth_bootstrap_roles,
+      Keyword.fetch!(config.auth_bootstrap, :roles)
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
+      :local_dev_mode,
+      config.deployment_mode == :local_development
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
+      :auth_session_ttl_seconds,
+      config.auth_session_ttl_seconds
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
+      :active_run_plan_max_bytes,
+      config.active_run_plan_max_bytes
+    )
+
+    Application.put_env(:favn_orchestrator, :scheduler, config.scheduler)
+    Application.put_env(:favn_orchestrator, :runner_client, config.runner_client)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :runner_client_opts,
+      install_runner_node_atom(config.runner_client_opts)
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
+      :production_runtime_diagnostics,
+      diagnostics(config)
+    )
+
+    :ok
   end
 
   @doc """
   Validates production runtime env values without mutating application env.
   """
   @spec validate(map()) :: {:ok, config()} | {:error, map()}
-  def validate(env \\ System.get_env()) when is_map(env) do
-    with {:ok, storage} <- storage(env),
-         {:ok, {postgres, runtime_input_pin}} <- postgres(env),
+  def validate(env) when is_map(env) do
+    with {:ok, deployment_mode} <- DeploymentMode.from_env(env),
+         {:ok, {runner, runner_client_opts}} <- runner(env),
+         {:ok, instance_id} <- instance_id(env, runner.control_plane_node),
+         {:ok, {postgres, runtime_input_pin}} <- postgres(env, deployment_mode),
          {:ok, api_server} <- api_server(env),
+         {:ok, http_server} <- http_server(env),
          {:ok, manifest_publication} <- manifest_publication(env),
          {:ok, tokens} <- api_service_tokens(env),
          {:ok, workspace_ids} <- workspace_ids(env),
@@ -166,13 +209,15 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
          {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
          {:ok, scheduler} <- scheduler(env, workspace_ids),
-         {:ok, runner} <- runner(env) do
+         {:ok, shutdown_drain_timeout_ms} <- shutdown_drain_timeout_ms(env) do
       {:ok,
        %{
-         storage: storage,
+         deployment_mode: deployment_mode,
+         instance_id: instance_id,
          postgres: postgres,
          runtime_input_pin: runtime_input_pin,
          api_server: api_server,
+         http_server: http_server,
          manifest_publication: ManifestPublicationConfig.to_keyword(manifest_publication),
          api_service_tokens: tokens,
          workspace_ids: workspace_ids,
@@ -180,9 +225,10 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          auth_session_ttl_seconds: auth_session_ttl_seconds,
          active_run_plan_max_bytes: active_run_plan_max_bytes,
          scheduler: scheduler,
+         shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
          runner: runner,
-         runner_client: FavnOrchestrator.RunnerClient.LocalNode,
-         runner_client_opts: []
+         runner_client: FavnOrchestrator.RunnerClient.BeamNode,
+         runner_client_opts: runner_client_opts
        }}
     else
       {:error, reason} -> {:error, %{status: :invalid, error: redact(reason)}}
@@ -196,6 +242,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   def diagnostics(config) when is_map(config) do
     %{
       status: :ok,
+      deployment_mode: config.deployment_mode,
+      instance: %{configured?: true},
       storage: %{backend: :postgres, database: %{configured?: true, url: :redacted}},
       postgres: %{
         ssl_mode: Keyword.fetch!(config.postgres, :ssl_mode),
@@ -208,8 +256,13 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         host: Keyword.fetch!(config.api_server, :host),
         port: Keyword.fetch!(config.api_server, :port)
       },
+      http_server: config.http_server,
       manifest_publication: Map.new(config.manifest_publication),
-      api_service_tokens: %{count: length(config.api_service_tokens), redacted: true},
+      api_service_tokens: %{
+        count: length(config.api_service_tokens),
+        ids: config.api_service_tokens |> Enum.map(& &1.service_identity) |> Enum.sort(),
+        redacted: true
+      },
       workspaces: %{configured_count: length(config.workspace_ids)},
       auth_bootstrap: %{username_configured?: true, password_configured?: true, redacted: true},
       auth_session: %{ttl_seconds: config.auth_session_ttl_seconds},
@@ -219,6 +272,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         retained_versions: config.runtime_input_pin.keys |> Map.keys() |> Enum.sort()
       },
       scheduler: Map.new(config.scheduler),
+      shutdown: %{drain_timeout_ms: config.shutdown_drain_timeout_ms},
       runner: config.runner
     }
   end
@@ -226,19 +280,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @spec postgres_backend() :: module()
   def postgres_backend, do: @postgres_backend
 
-  defp storage(env) do
-    case fetch(env, "FAVN_STORAGE") do
-      {:ok, "postgres"} -> {:ok, :postgres}
-      {:ok, "postgresql"} -> {:ok, :postgres}
-      {:ok, other} -> {:error, {:invalid_env, "FAVN_STORAGE", other, "postgres"}}
-      :error -> {:error, {:missing_env, "FAVN_STORAGE"}}
-    end
-  end
-
-  defp postgres(env) do
+  defp postgres(env, deployment_mode) do
     with {:ok, url} <- required_secret(env, "FAVN_DATABASE_URL"),
          :ok <- postgres_url("FAVN_DATABASE_URL", url),
-         {:ok, tls_options} <- postgres_tls(env, url),
+         :ok <- deployment_database_url(url, deployment_mode),
+         {:ok, tls_options} <- postgres_tls(env, deployment_mode),
          {:ok, pool_size} <- int(env, "FAVN_DATABASE_POOL_SIZE", "15", 1, @max_postgres_pool_size),
          {:ok, queue_target} <-
            int(env, "FAVN_DATABASE_QUEUE_TARGET_MS", "50", 1, @max_postgres_timeout_ms),
@@ -246,7 +292,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
            int(env, "FAVN_DATABASE_QUEUE_INTERVAL_MS", "1000", 1, @max_postgres_timeout_ms),
          {:ok, timeout} <-
            int(env, "FAVN_DATABASE_TIMEOUT_MS", "15000", 1, @max_postgres_timeout_ms),
-         {:ok, runtime_input_pin} <- runtime_input_pin(env) do
+         {:ok, runtime_input_pin} <- KeyringConfig.from_env(env) do
       {:ok,
        {
          [
@@ -261,116 +307,59 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     end
   end
 
-  defp postgres_tls(env, url) do
-    case Map.get(env, "FAVN_DATABASE_SSL_MODE", "verify-full") do
-      mode when mode in ["verify-full", "verify_full"] ->
-        with {:ok, ca_file} <- required(env, "FAVN_DATABASE_SSL_CA_FILE"),
-             :ok <- absolute_regular_file("FAVN_DATABASE_SSL_CA_FILE", ca_file) do
-          {:ok, [ssl_mode: :verify_full, ssl_ca_file: ca_file]}
+  defp postgres_tls(env, :production) do
+    case fetch(env, "FAVN_DATABASE_SSL_MODE") do
+      :error ->
+        {:error, {:missing_env, "FAVN_DATABASE_SSL_MODE"}}
+
+      {:ok, mode} when mode in ["verify-full", "verify_full"] ->
+        case fetch(env, "FAVN_DATABASE_SSL_CA_FILE") do
+          {:ok, ca_file} ->
+            with :ok <- absolute_regular_file("FAVN_DATABASE_SSL_CA_FILE", ca_file) do
+              {:ok, [ssl_mode: :verify_full, ssl_ca_file: ca_file]}
+            end
+
+          :error ->
+            {:ok, [ssl_mode: :verify_full]}
         end
 
-      "disable" ->
-        case {plaintext_loopback_database?(url),
-              Map.get(env, "FAVN_UNSAFE_ALLOW_PLAINTEXT_DATABASE")} do
-          {true, value} when value in ["1", "true", "TRUE"] ->
-            {:ok, [ssl_mode: :disable, allow_insecure_database?: true]}
+      {:ok, "disable"} ->
+        {:error, {:invalid_env, "FAVN_DATABASE_SSL_MODE", "verify-full"}}
 
-          _value ->
-            {:error,
-             {:invalid_env, "FAVN_DATABASE_SSL_MODE",
-              "verify-full or explicit loopback plaintext interlock"}}
-        end
-
-      _value ->
-        {:error,
-         {:invalid_env, "FAVN_DATABASE_SSL_MODE",
-          "verify-full or explicit loopback plaintext interlock"}}
+      {:ok, _mode} ->
+        {:error, {:invalid_env, "FAVN_DATABASE_SSL_MODE", "verify-full"}}
     end
   end
 
-  defp plaintext_loopback_database?(url) do
+  defp postgres_tls(env, :local_development) do
+    case fetch(env, "FAVN_DATABASE_SSL_MODE") do
+      {:ok, "disable"} ->
+        {:ok, [ssl_mode: :disable, deployment_mode: :local_development]}
+
+      {:ok, _mode} ->
+        {:error, {:invalid_env, "FAVN_DATABASE_SSL_MODE", "disable in local-development"}}
+
+      :error ->
+        {:error, {:missing_env, "FAVN_DATABASE_SSL_MODE"}}
+    end
+  end
+
+  defp deployment_database_url(_url, :production), do: :ok
+
+  defp deployment_database_url(url, :local_development) do
     case URI.parse(url) do
-      %URI{host: host} when host in ["127.0.0.1", "localhost", "::1"] -> true
-      _url -> false
-    end
-  end
-
-  defp runtime_input_pin(env) do
-    with {:ok, encoded_keys} <- required_secret(env, "FAVN_RUNTIME_INPUT_PIN_KEYS"),
-         {:ok, keys} <- runtime_input_pin_keys(encoded_keys),
-         {:ok, current_version} <-
-           int(env, "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "1", 1, nil),
-         true <- Map.has_key?(keys, current_version) do
-      {:ok, %{keys: keys, current_version: current_version}}
-    else
-      false ->
-        {:error,
-         {:invalid_env, "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", :redacted,
-          "version present in FAVN_RUNTIME_INPUT_PIN_KEYS"}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp runtime_input_pin_keys(encoded_keys) do
-    if byte_size(encoded_keys) <= @max_runtime_input_pin_keys_bytes do
-      case Jason.decode(encoded_keys) do
-        {:ok, keys}
-        when is_map(keys) and map_size(keys) > 0 and
-               map_size(keys) <= @max_runtime_input_pin_keys ->
-          decode_runtime_input_pin_keys(keys)
-
-        _invalid ->
-          invalid_runtime_input_pin_keys(:invalid_keyring)
-      end
-    else
-      invalid_runtime_input_pin_keys(:invalid_keyring)
-    end
-  end
-
-  defp decode_runtime_input_pin_keys(keys) do
-    Enum.reduce_while(keys, {:ok, %{}}, fn {encoded_version, encoded_key}, {:ok, decoded} ->
-      with {:ok, version} <- runtime_input_pin_key_version(encoded_version),
-           {:ok, key} <- runtime_input_pin_key(encoded_key) do
-        {:cont, {:ok, Map.put(decoded, version, key)}}
-      else
-        {:error, reason} -> {:halt, invalid_runtime_input_pin_keys(reason)}
-      end
-    end)
-  end
-
-  defp runtime_input_pin_key_version(encoded_version) when is_binary(encoded_version) do
-    case Integer.parse(encoded_version) do
-      {version, ""} when version > 0 ->
-        if Integer.to_string(version) == encoded_version,
-          do: {:ok, version},
-          else: {:error, :invalid_version}
+      %URI{host: "postgres.favn.internal", port: port} when port in [nil, 5432] ->
+        :ok
 
       _invalid ->
-        {:error, :invalid_version}
+        {:error,
+         {:invalid_env, "FAVN_DATABASE_URL", :redacted,
+          "postgres.favn.internal:5432 in local-development"}}
     end
   end
-
-  defp runtime_input_pin_key_version(_encoded_version), do: {:error, :invalid_version}
-
-  defp runtime_input_pin_key(key) when is_binary(key) and byte_size(key) == 32,
-    do: {:ok, key}
-
-  defp runtime_input_pin_key(encoded) when is_binary(encoded) do
-    case Base.decode64(encoded) do
-      {:ok, key} when byte_size(key) == 32 -> {:ok, key}
-      _invalid -> {:error, :invalid_key}
-    end
-  end
-
-  defp runtime_input_pin_key(_encoded), do: {:error, :invalid_key}
-
-  defp invalid_runtime_input_pin_keys(reason),
-    do: {:error, {:invalid_secret_env, "FAVN_RUNTIME_INPUT_PIN_KEYS", reason}}
 
   defp api_server(env) do
-    with {:ok, host} <- required_or_default(env, "FAVN_ORCHESTRATOR_API_BIND_HOST", "127.0.0.1"),
+    with {:ok, host} <- required_or_default(env, "FAVN_ORCHESTRATOR_API_BIND_HOST", "0.0.0.0"),
          :ok <- ipv4_host("FAVN_ORCHESTRATOR_API_BIND_HOST", host),
          {:ok, port} <- int(env, "FAVN_ORCHESTRATOR_API_PORT", "4101", 1, 65_535) do
       {:ok, [enabled: true, host: host, port: port]}
@@ -383,16 +372,16 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
              env,
              "FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES",
              Integer.to_string(ManifestPublicationConfig.default_compressed_limit_bytes()),
-             1,
-             ManifestPublicationConfig.maximum_compressed_limit_bytes()
+             1 * 1_024 * 1_024,
+             32 * 1_024 * 1_024
            ),
          {:ok, decompressed_limit_bytes} <-
            int(
              env,
              "FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES",
              Integer.to_string(ManifestPublicationConfig.default_decompressed_limit_bytes()),
-             1,
-             ManifestPublicationConfig.maximum_decompressed_limit_bytes()
+             1 * 1_024 * 1_024,
+             128 * 1_024 * 1_024
            ) do
       ManifestPublicationConfig.new(
         compressed_limit_bytes: compressed_limit_bytes,
@@ -456,7 +445,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
              env,
              "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES",
              "1000",
-             1,
+             0,
              @max_missed_occurrences
            ) do
       {:ok,
@@ -476,26 +465,205 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         |> String.split(",", trim: true)
         |> Enum.map(&String.trim/1)
         |> Enum.reject(&(&1 == ""))
-        |> Enum.uniq()
 
-      if workspace_ids != [] and Enum.all?(workspace_ids, &(byte_size(&1) <= 255)),
-        do: {:ok, workspace_ids},
-        else: {:error, {:invalid_env, "FAVN_WORKSPACE_IDS", :redacted, "comma-separated ids"}}
+      if byte_size(raw) <= @max_workspace_env_bytes and workspace_ids != [] and
+           length(workspace_ids) <= @max_workspace_count and
+           length(workspace_ids) == length(Enum.uniq(workspace_ids)) and
+           Enum.all?(workspace_ids, &(byte_size(&1) in 1..255)),
+         do: {:ok, workspace_ids},
+         else:
+           {:error,
+            {:invalid_env, "FAVN_WORKSPACE_IDS", :redacted,
+             "unique comma-separated ids (maximum 1000)"}}
     end
   end
 
-  defp runner(env) do
-    module = Module.concat([FavnRunner, ProductionRuntimeConfig])
+  defp instance_id(env, default) do
+    with {:ok, instance_id} <- required_or_default(env, "FAVN_INSTANCE_ID", default) do
+      if byte_size(instance_id) in 1..160 and Regex.match?(~r/^[A-Za-z0-9_.@-]+$/, instance_id),
+        do: {:ok, instance_id},
+        else: {:error, {:invalid_env, "FAVN_INSTANCE_ID", "1..160 safe identifier bytes"}}
+    end
+  end
 
-    with {:module, ^module} <- Code.ensure_loaded(module),
-         true <- function_exported?(module, :validate, 1) do
-      case module.validate(env) do
-        {:ok, config} -> {:ok, config}
-        {:error, %{error: reason}} -> {:error, reason}
-        {:error, reason} -> {:error, reason}
-      end
+  defp http_server(env) do
+    with {:ok, max_connections} <-
+           int(env, "FAVN_HTTP_MAX_CONNECTIONS", "1024", 1, @max_http_connections),
+         {:ok, request_timeout_ms} <-
+           int(
+             env,
+             "FAVN_HTTP_REQUEST_TIMEOUT_MS",
+             "30000",
+             1_000,
+             @max_http_request_timeout_ms
+           ),
+         {:ok, idle_timeout_ms} <-
+           int(
+             env,
+             "FAVN_HTTP_IDLE_TIMEOUT_MS",
+             "60000",
+             1_000,
+             @max_http_idle_timeout_ms
+           ),
+         {:ok, body_limit_bytes} <-
+           int(
+             env,
+             "FAVN_HTTP_BODY_LIMIT_BYTES",
+             Integer.to_string(1 * 1_024 * 1_024),
+             @min_http_body_limit_bytes,
+             @max_http_body_limit_bytes
+           ) do
+      {:ok,
+       %{
+         max_connections: max_connections,
+         request_timeout_ms: request_timeout_ms,
+         idle_timeout_ms: idle_timeout_ms,
+         body_limit_bytes: body_limit_bytes
+       }}
+    end
+  end
+
+  defp shutdown_drain_timeout_ms(env) do
+    int(
+      env,
+      "FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS",
+      "120000",
+      1_000,
+      @max_shutdown_drain_timeout_ms
+    )
+  end
+
+  defp runner(env) do
+    with {:ok, control_plane_node} <- node_name(env, "FAVN_CONTROL_PLANE_NODE"),
+         {:ok, runner_node} <- node_name(env, "FAVN_RUNNER_NODE"),
+         :ok <- distinct_nodes(control_plane_node, runner_node),
+         :ok <- current_control_plane_node(control_plane_node),
+         {:ok, cookie} <- required_secret(env, "FAVN_DISTRIBUTION_COOKIE"),
+         :ok <- distribution_cookie(cookie),
+         :ok <- current_distribution_cookie(cookie),
+         {:ok, distribution_port} <- required_port(env, "FAVN_BEAM_DISTRIBUTION_PORT"),
+         {:ok, epmd_port} <- int(env, "ERL_EPMD_PORT", "4369", 1, 65_535),
+         {:ok, rpc_timeout_ms} <-
+           int(
+             env,
+             "FAVN_RUNNER_RPC_TIMEOUT_MS",
+             "15000",
+             100,
+             @max_runner_rpc_timeout_ms
+           ),
+         {:ok, diagnostics_timeout_ms} <-
+           int(
+             env,
+             "FAVN_RUNNER_DIAGNOSTICS_TIMEOUT_MS",
+             "5000",
+             100,
+             @max_runner_diagnostics_timeout_ms
+           ),
+         {:ok, await_buffer_ms} <-
+           int(
+             env,
+             "FAVN_RUNNER_AWAIT_TIMEOUT_BUFFER_MS",
+             "2000",
+             0,
+             @max_runner_await_buffer_ms
+           ) do
+      {:ok,
+       {
+         %{
+           topology: :beam_node,
+           control_plane_node: control_plane_node,
+           runner_node: runner_node,
+           distribution_port: distribution_port,
+           epmd_port: epmd_port,
+           cookie_configured?: true
+         },
+         [
+           runner_node: runner_node,
+           runner_module: @runner_module,
+           runner_rpc_timeout_ms: rpc_timeout_ms,
+           runner_diagnostics_timeout_ms: diagnostics_timeout_ms,
+           runner_await_timeout_buffer_ms: await_buffer_ms
+         ]
+       }}
+    end
+  end
+
+  defp node_name(env, name) do
+    with {:ok, value} <- required(env, name),
+         [local_name, host] <- String.split(value, "@", parts: 2),
+         true <- valid_node_part?(local_name),
+         true <- valid_node_host?(host) do
+      {:ok, local_name <> "@" <> host}
     else
-      _other -> {:error, {:runtime_config_unavailable, "FAVN_RUNNER_MODE"}}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, {:invalid_env, name, "long name@private-dns-name"}}
+    end
+  end
+
+  defp valid_node_part?(value) do
+    byte_size(value) in 1..255 and Regex.match?(~r/^[A-Za-z0-9_.-]+$/, value)
+  end
+
+  defp valid_node_host?(host) do
+    normalized = String.downcase(host)
+
+    valid_node_part?(host) and
+      normalized not in ["localhost", "nohost", "127.0.0.1", "::1"] and
+      not String.ends_with?(normalized, ".localhost") and
+      not loopback_host?(host)
+  end
+
+  defp loopback_host?(host) do
+    case :inet.parse_address(String.to_charlist(host)) do
+      {:ok, {127, _b, _c, _d}} -> true
+      {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
+      _other -> false
+    end
+  end
+
+  defp distinct_nodes(node, node),
+    do: {:error, {:invalid_env, "FAVN_RUNNER_NODE", "different from control-plane node"}}
+
+  defp distinct_nodes(_control_plane_node, _runner_node), do: :ok
+
+  defp current_control_plane_node(control_plane_node) do
+    if Node.alive?() and Atom.to_string(node()) != control_plane_node do
+      {:error, {:invalid_env, "FAVN_CONTROL_PLANE_NODE", "equal to the running release node"}}
+    else
+      :ok
+    end
+  end
+
+  defp distribution_cookie(cookie) do
+    unique_bytes = cookie |> :binary.bin_to_list() |> MapSet.new() |> MapSet.size()
+
+    if byte_size(cookie) in 32..255 and unique_bytes >= 12 and
+         not Regex.match?(~r/\s/, cookie) do
+      :ok
+    else
+      {:error, {:invalid_secret_env, "FAVN_DISTRIBUTION_COOKIE", :insufficient_entropy}}
+    end
+  end
+
+  defp current_distribution_cookie(cookie) do
+    if Node.alive?() and Atom.to_string(Node.get_cookie()) != cookie do
+      {:error, {:invalid_secret_env, "FAVN_DISTRIBUTION_COOKIE", :running_cookie_mismatch}}
+    else
+      :ok
+    end
+  end
+
+  # sobelow_skip ["DOS.StringToAtom"]
+  defp install_runner_node_atom(opts) do
+    Keyword.update!(opts, :runner_node, &String.to_atom/1)
+  end
+
+  defp required_port(env, name) do
+    with {:ok, value} <- required(env, name) do
+      case Integer.parse(value) do
+        {port, ""} when port in 1..65_535 -> {:ok, port}
+        _invalid -> {:error, {:invalid_env, name, "1..65535"}}
+      end
     end
   end
 
@@ -538,9 +706,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     with {:ok, value} <- required_or_default(env, name, default) do
       case String.downcase(value) do
         "true" -> {:ok, true}
-        "1" -> {:ok, true}
         "false" -> {:ok, false}
-        "0" -> {:ok, false}
         _other -> {:error, {:invalid_env, name, value, "boolean"}}
       end
     end
@@ -570,15 +736,36 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   end
 
   defp postgres_url(name, url) do
-    case URI.parse(url) do
-      %URI{scheme: scheme, host: host}
-      when scheme in ["ecto", "postgres", "postgresql"] and is_binary(host) and host != "" ->
+    uri = URI.parse(url)
+
+    cond do
+      is_binary(uri.query) ->
+        {:error,
+         {:invalid_env, name, url,
+          "PostgreSQL connection URL without query parameters; use dedicated FAVN_DATABASE_* variables"}}
+
+      valid_postgres_url?(uri) ->
         :ok
 
-      _invalid ->
+      true ->
         {:error, {:invalid_env, name, url, "PostgreSQL connection URL"}}
     end
   end
+
+  defp valid_postgres_url?(%URI{
+         scheme: scheme,
+         host: host,
+         path: "/" <> database,
+         query: nil,
+         fragment: nil,
+         port: port
+       }) do
+    scheme in ["ecto", "postgres", "postgresql"] and is_binary(host) and host != "" and
+      database != "" and not String.contains?(database, "/") and
+      (is_nil(port) or port in 1..65_535)
+  end
+
+  defp valid_postgres_url?(_uri), do: false
 
   defp ipv4_host(name, host) do
     case :inet.parse_ipv4_address(String.to_charlist(host)) do

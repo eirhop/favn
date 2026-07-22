@@ -6,7 +6,11 @@ facade.
 
 ## Local Tooling
 
-- Start through the root local loop with `mix favn.dev`, or from this app with `mix phx.server`.
+- Use `mix favn.dev` for the supported customer Docker Compose runtime.
+- Maintainers may run
+  `FAVN_DATABASE_URL=<local-postgres-url> FAVN_RUNTIME_INPUT_PIN_KEY=<32-byte-key> mix phx.server`
+  from the umbrella root for source-level Phoenix and Tidewave inspection. This
+  is not a deployment example.
 - The default local URL is `http://127.0.0.1:4173`.
 - Tidewave is plugged only in dev. Use it from the local Phoenix endpoint; do not enable remote access unless you intentionally change local dev networking and understand Tidewave's security guidance.
 - PhoenixStorybook is available at `/storybook` when dev routes are enabled.

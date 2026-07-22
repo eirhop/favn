@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunExecutionOwnership
+  alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.RuntimeInputPins
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
@@ -322,7 +323,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   end
 
   defp dispatch_attempt(state, lifecycle, work, ownership) do
-    case state.runner_client.submit_work(work, state.runner_opts) do
+    case RunnerDispatch.submit_work(state.runner_client, work, state.runner_opts) do
       {:ok, execution_id} ->
         with :ok <- RunExecutionOwnership.validate_runner_execution_id(ownership, execution_id) do
           submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)

@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.RunManager do
 
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.RunOwnership, as: Ownership
@@ -20,6 +21,7 @@ defmodule FavnOrchestrator.RunManager do
   alias FavnOrchestrator.RunManager.PlanCapacity
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunnerClientValidator
+  alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunState
@@ -46,7 +48,7 @@ defmodule FavnOrchestrator.RunManager do
 
   @spec admit_prepared_submission(Submission.t()) :: {:ok, String.t()} | {:error, term()}
   def admit_prepared_submission(%Submission{} = submission) do
-    persist_and_admit(submission)
+    Lifecycle.with_admission(fn -> persist_and_admit(submission) end)
   end
 
   @spec submit_asset_run(WorkspaceContext.t(), Favn.Ref.t(), keyword()) ::
@@ -173,6 +175,19 @@ defmodule FavnOrchestrator.RunManager do
     call_manager(:plan_capacity_diagnostics)
   end
 
+  @doc false
+  @spec active_runs(pos_integer()) ::
+          {:ok, [%{workspace_id: String.t(), run_id: String.t()}]} | {:error, term()}
+  def active_runs(timeout_ms \\ run_manager_call_timeout())
+      when is_integer(timeout_ms) and timeout_ms > 0,
+      do: call_manager(:active_runs, timeout_ms)
+
+  @doc false
+  @spec stop_active_for_shutdown(pos_integer()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def stop_active_for_shutdown(timeout_ms \\ run_manager_call_timeout())
+      when is_integer(timeout_ms) and timeout_ms > 0,
+      do: call_manager(:stop_active_for_shutdown, timeout_ms)
+
   @impl true
   def init(opts) do
     {:ok, %{run_pids: %{}, monitors: %{}, plan_capacity: PlanCapacity.new(opts)}}
@@ -201,6 +216,31 @@ defmodule FavnOrchestrator.RunManager do
 
   def handle_call(:plan_capacity_diagnostics, _from, state) do
     {:reply, {:ok, PlanCapacity.diagnostics(state.plan_capacity)}, state}
+  end
+
+  def handle_call(:active_runs, _from, state) do
+    runs =
+      state.run_pids
+      |> Enum.flat_map(fn
+        {{workspace_id, run_id}, pid} when is_pid(pid) ->
+          if Process.alive?(pid), do: [%{workspace_id: workspace_id, run_id: run_id}], else: []
+
+        _other ->
+          []
+      end)
+      |> Enum.sort_by(&{&1.workspace_id, &1.run_id})
+
+    {:reply, {:ok, runs}, state}
+  end
+
+  def handle_call(:stop_active_for_shutdown, _from, state) do
+    pids =
+      state.run_pids
+      |> Map.values()
+      |> Enum.filter(&(is_pid(&1) and Process.alive?(&1)))
+
+    Enum.each(pids, &Process.exit(&1, :kill))
+    {:reply, {:ok, length(pids)}, state}
   end
 
   def handle_call({:notify_cancellation, run_key, reason}, _from, state) do
@@ -249,7 +289,7 @@ defmodule FavnOrchestrator.RunManager do
             plan_capacity: PlanCapacity.release(state.plan_capacity, run_key)
         }
 
-        if reason != :normal,
+        if reason != :normal and Lifecycle.ensure_accepting() == :ok,
           do: schedule_crash_recovery(run_key, run_server_down_error(reason), 1)
 
         {:noreply, next_state}
@@ -257,17 +297,21 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   def handle_info({:retry_run_crash_recovery, run_key, error, attempt}, state) do
-    unless active_run_server?(state, run_key) do
+    if not active_run_server?(state, run_key) and Lifecycle.ensure_accepting() == :ok do
       Task.Supervisor.start_child(FavnOrchestrator.RunManagerTaskSupervisor, fn ->
-        recover_or_terminalize_crashed_run(run_key, error, attempt)
+        Lifecycle.with_admission(fn ->
+          recover_or_terminalize_crashed_run(run_key, error, attempt)
+        end)
       end)
     end
 
     {:noreply, state}
   end
 
-  defp call_manager(message) do
-    GenServer.call(__MODULE__, message, run_manager_call_timeout())
+  defp call_manager(message), do: call_manager(message, run_manager_call_timeout())
+
+  defp call_manager(message, timeout_ms) do
+    GenServer.call(__MODULE__, message, timeout_ms)
   catch
     :exit, :timeout ->
       run_manager_timeout_error()
@@ -277,20 +321,22 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   defp prepare_and_admit(submit_kind, prepare) when is_function(prepare, 0) do
-    case prepare.() do
-      {:ok, %Submission{} = submission} ->
-        persist_and_admit(submission)
+    Lifecycle.with_admission(fn ->
+      case prepare.() do
+        {:ok, %Submission{} = submission} ->
+          persist_and_admit(submission)
 
-      {:error, reason} = error ->
-        OperationalEvents.emit(
-          :run_submission_failed,
-          %{},
-          %{submit_kind: submit_kind, reason: reason},
-          level: :warning
-        )
+        {:error, reason} = error ->
+          OperationalEvents.emit(
+            :run_submission_failed,
+            %{},
+            %{submit_kind: submit_kind, reason: reason},
+            level: :warning
+          )
 
-        error
-    end
+          error
+      end
+    end)
   end
 
   defp run_manager_timeout_error do
@@ -444,11 +490,15 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   defp load_run_manifest(%WorkspaceContext{} = context, %RunState{} = run) do
-    ManifestStore.get_deployment_manifest(
-      context,
-      run.deployment_id,
-      run.manifest_version_id
-    )
+    with {:ok, version} <-
+           ManifestStore.get_deployment_manifest(
+             context,
+             run.deployment_id,
+             run.manifest_version_id
+           ),
+         :ok <- RunnerReleaseCompatibility.verify_run_manifest(run, version) do
+      {:ok, version}
+    end
   end
 
   defp retry_wait?(%RunState{status: status, metadata: metadata})
@@ -479,7 +529,9 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   defp schedule_run_server_start_compensation(%RunState{} = run, reason) do
-    worker = fn -> compensate_run_server_start(run, reason) end
+    worker = fn ->
+      Lifecycle.with_admission(fn -> compensate_run_server_start(run, reason) end)
+    end
 
     case Process.whereis(FavnOrchestrator.RunManagerTaskSupervisor) do
       pid when is_pid(pid) -> Task.Supervisor.start_child(pid, worker)
@@ -515,7 +567,7 @@ defmodule FavnOrchestrator.RunManager do
       id: {RunServer, run_key(run_state)},
       start: {RunServer, :start_link, [args]},
       restart: :temporary,
-      shutdown: 5000,
+      shutdown: 5_000,
       type: :worker
     }
 

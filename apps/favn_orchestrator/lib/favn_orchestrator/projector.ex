@@ -13,7 +13,11 @@ defmodule FavnOrchestrator.Projector do
 
   @spec run_event(RunState.t(), atom(), map()) :: RunEvent.t()
   def run_event(%RunState{} = run_state, event_type, data \\ %{}) when is_atom(event_type) do
-    normalized_data = data |> normalize_data() |> put_event_asset_step_id(run_state, event_type)
+    normalized_data =
+      data
+      |> normalize_data()
+      |> Map.put(:required_runner_release_id, run_state.required_runner_release_id)
+      |> put_event_asset_step_id(run_state, event_type)
 
     RunEvent.from_map(%{
       run_id: run_state.id,
@@ -40,6 +44,7 @@ defmodule FavnOrchestrator.Projector do
       id: run_state.id,
       manifest_version_id: run_state.manifest_version_id,
       manifest_content_hash: run_state.manifest_content_hash,
+      required_runner_release_id: run_state.required_runner_release_id,
       asset_ref: run_state.asset_ref,
       target_refs: run_state.target_refs,
       plan: run_state.plan,
@@ -82,6 +87,7 @@ defmodule FavnOrchestrator.Projector do
     %{
       id: summary.run_id,
       manifest_version_id: summary.manifest_version_id,
+      required_runner_release_id: summary.required_runner_release_id,
       submit_kind: summary.submit_kind,
       status: summary.status,
       event_seq: summary.event_sequence,

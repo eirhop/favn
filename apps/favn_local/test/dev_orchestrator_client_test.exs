@@ -20,6 +20,71 @@ defmodule Favn.Dev.OrchestratorClientTest do
              })
   end
 
+  test "runner replacement methods carry the opaque maintenance lease" do
+    parent = self()
+    runner_release_id = "rr_" <> String.duplicate("a", 64)
+
+    {:ok, base_url, _server} =
+      start_server_sequence(
+        [
+          {~s({"data":{"maintenance_token":"lease-token"}}), 200, 0},
+          {~s({"data":{"maintenance?":true,"maintenance_kind":"runner_replacement","active_admissions":0}}),
+           200, 0},
+          {JSON.encode!(%{data: %{runner_release_id: runner_release_id, ready?: true}}), 200, 0},
+          {~s({"data":{"status":"accepting"}}), 200, 0}
+        ],
+        parent: parent
+      )
+
+    assert {:ok, "lease-token"} =
+             OrchestratorClient.begin_runner_replacement(
+               base_url,
+               "service-token",
+               "lease-token"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/maintenance/runner-replacement"}
+    assert_receive {:request_headers, begin_headers}
+    assert begin_headers["authorization"] == "Bearer service-token"
+    assert begin_headers["x-favn-maintenance-token"] == "lease-token"
+    assert_receive {:request_body, "{}"}
+
+    assert {:ok, %{"active_admissions" => 0}} =
+             OrchestratorClient.runner_replacement_status(base_url, "service-token")
+
+    assert_receive {:request_path, "/api/orchestrator/v1/maintenance/runner-replacement"}
+    assert_receive {:request_headers, _status_headers}
+    assert_receive {:request_body, ""}
+
+    assert {:ok, %{"runner_release_id" => ^runner_release_id}} =
+             OrchestratorClient.verify_replacement_runner(
+               base_url,
+               "service-token",
+               "lease-token",
+               runner_release_id
+             )
+
+    assert_receive {:request_path,
+                    "/api/orchestrator/v1/maintenance/runner-replacement/verify-runner"}
+
+    assert_receive {:request_headers, verify_headers}
+    assert verify_headers["x-favn-maintenance-token"] == "lease-token"
+    assert_receive {:request_body, verify_body}
+    assert JSON.decode!(verify_body)["runner_release_id"] == runner_release_id
+
+    assert :ok =
+             OrchestratorClient.finish_runner_replacement(
+               base_url,
+               "service-token",
+               "lease-token"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/maintenance/runner-replacement"}
+    assert_receive {:request_headers, finish_headers}
+    assert finish_headers["x-favn-maintenance-token"] == "lease-token"
+    assert_receive {:request_body, ""}
+  end
+
   test "in_flight_runs/3 returns operation context on non-2xx response" do
     {:ok, base_url, _server} = start_server(~s({"error":{"code":"bad_request"}}), 400)
 
@@ -54,6 +119,18 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert url == base_url <> "/api/orchestrator/v1/runs/in-flight"
   end
 
+  test "operation errors never echo URL credentials or query values" do
+    assert {:error, error} =
+             OrchestratorClient.health(
+               "https://operator:embedded-secret@control.internal?token=query-secret"
+             )
+
+    rendered = inspect(error)
+    refute rendered =~ "embedded-secret"
+    refute rendered =~ "query-secret"
+    assert error.url == "https://control.internal"
+  end
+
   test "publish_manifest/3 serializes manifest structs before JSON encoding" do
     parent = self()
 
@@ -66,15 +143,14 @@ defmodule Favn.Dev.OrchestratorClientTest do
         parent: parent
       )
 
-    manifest = %{
-      schema_version: 9,
-      runner_contract_version: 9,
-      assets: [],
-      pipelines: [],
-      schedules: [],
-      graph: %{},
-      metadata: %{}
-    }
+    manifest =
+      FavnTestSupport.with_manifest_contract(%{
+        assets: [],
+        pipelines: [],
+        schedules: [],
+        graph: %{},
+        metadata: %{}
+      })
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_orchestrator_client_test")
     {:ok, publication} = Publication.from_parts(version, [])
@@ -85,6 +161,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert_receive {:request_path, "/api/orchestrator/v1/execution-packages/missing"}
     assert_receive {:request_headers, headers}
     assert headers["content-encoding"] == "gzip"
+    assert headers["content-type"] == "application/json"
 
     assert_receive {:request_body, missing_body}
     assert JSON.decode!(:zlib.gunzip(missing_body)) == %{"hashes" => []}
@@ -92,6 +169,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert_receive {:request_path, "/api/orchestrator/v1/manifests"}
     assert_receive {:request_headers, publish_headers}
     assert publish_headers["content-encoding"] == "gzip"
+    assert publish_headers["content-type"] == "application/json"
 
     assert_receive {:request_body, compressed_body}
     body = :zlib.gunzip(compressed_body)
@@ -107,15 +185,14 @@ defmodule Favn.Dev.OrchestratorClientTest do
         {~s({"data":{"ok":true}}), 200, 5_100}
       ])
 
-    manifest = %{
-      schema_version: 9,
-      runner_contract_version: 9,
-      assets: [],
-      pipelines: [],
-      schedules: [],
-      graph: %{},
-      metadata: %{}
-    }
+    manifest =
+      FavnTestSupport.with_manifest_contract(%{
+        assets: [],
+        pipelines: [],
+        schedules: [],
+        graph: %{},
+        metadata: %{}
+      })
 
     {:ok, version} = Version.new(manifest)
     {:ok, publication} = Publication.from_parts(version, [])
@@ -130,15 +207,14 @@ defmodule Favn.Dev.OrchestratorClientTest do
     {:ok, base_url, _server} =
       start_server(missing_response([unknown_hash]), 200)
 
-    manifest = %{
-      schema_version: 9,
-      runner_contract_version: 9,
-      assets: [],
-      pipelines: [],
-      schedules: [],
-      graph: %{},
-      metadata: %{}
-    }
+    manifest =
+      FavnTestSupport.with_manifest_contract(%{
+        assets: [],
+        pipelines: [],
+        schedules: [],
+        graph: %{},
+        metadata: %{}
+      })
 
     {:ok, version} = Version.new(manifest)
     {:ok, publication} = Publication.from_parts(version, [])
@@ -219,6 +295,30 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert body == "{}"
     assert_receive {:request_headers, headers}
     assert headers["x-favn-workspace-id"] == "workspace-1"
+  end
+
+  test "activate_manifest_service/4 sends workspace authority without actor credentials" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"activated":true}}), 200, parent: parent)
+
+    assert {:ok, %{"data" => %{"activated" => true}}} =
+             OrchestratorClient.activate_manifest_service(
+               base_url,
+               "service-token",
+               "mv_service",
+               "workspace-service"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/manifests/mv_service/activate"}
+    assert_receive {:request_body, _body}
+    assert_receive {:request_headers, headers}
+    assert headers["x-favn-workspace-id"] == "workspace-service"
+    assert headers["authorization"] == "Bearer service-token"
+    refute Map.has_key?(headers, "x-favn-actor-id")
+    refute Map.has_key?(headers, "x-favn-session-token")
+    assert is_binary(headers["idempotency-key"])
   end
 
   test "bootstrap_active_manifest/3 reads the workspace active manifest" do
@@ -316,6 +416,29 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert headers["idempotency-key"] == "manual-key-297"
   end
 
+  test "separate submit_run invocations use fresh command identities" do
+    parent = self()
+    body = ~s({"data":{"run":{"id":"run_1","status":"running"}}})
+    session = %{"local_dev_context" => "trusted"}
+    payload = %{target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipeline"}}
+
+    {:ok, first_url, _server} = start_server(body, 201, parent: parent)
+
+    assert {:ok, %{"id" => "run_1"}} =
+             OrchestratorClient.submit_run(first_url, "token", session, payload)
+
+    assert_receive {:request_headers, first_headers}
+
+    {:ok, second_url, _server} = start_server(body, 201, parent: parent)
+
+    assert {:ok, %{"id" => "run_1"}} =
+             OrchestratorClient.submit_run(second_url, "token", session, payload)
+
+    assert_receive {:request_headers, second_headers}
+
+    refute first_headers["idempotency-key"] == second_headers["idempotency-key"]
+  end
+
   test "mutating command helpers send idempotency keys without secrets" do
     session_context = %{
       "workspace_id" => "workspace_1",
@@ -350,7 +473,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
     end)
   end
 
-  test "logical command idempotency is stable across renewed sessions" do
+  test "separate activation invocations use fresh command identities across renewed sessions" do
     parent = self()
 
     session = %{
@@ -387,6 +510,40 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
     assert_receive {:request_headers, second_headers}
 
+    refute first_headers["idempotency-key"] == second_headers["idempotency-key"]
+  end
+
+  test "a persisted maintenance token keeps activation retries idempotent" do
+    parent = self()
+    maintenance_token = String.duplicate("m", 43)
+
+    {:ok, first_url, _server} =
+      start_server(~s({"data":{"activated":true}}), 200, parent: parent)
+
+    assert {:ok, _response} =
+             OrchestratorClient.activate_manifest_service(
+               first_url,
+               "token",
+               "mv_rollback",
+               "workspace_1",
+               maintenance_token: maintenance_token
+             )
+
+    assert_receive {:request_headers, first_headers}
+
+    {:ok, second_url, _server} =
+      start_server(~s({"data":{"activated":true}}), 200, parent: parent)
+
+    assert {:ok, _response} =
+             OrchestratorClient.activate_manifest_service(
+               second_url,
+               "token",
+               "mv_rollback",
+               "workspace_1",
+               maintenance_token: maintenance_token
+             )
+
+    assert_receive {:request_headers, second_headers}
     assert first_headers["idempotency-key"] == second_headers["idempotency-key"]
   end
 
@@ -566,7 +723,10 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
     {:ok, version} =
       Version.new(
-        %Manifest{assets: assets, graph: %Graph{nodes: refs, topo_order: refs}},
+        FavnTestSupport.with_manifest_contract(%Manifest{
+          assets: assets,
+          graph: %Graph{nodes: refs, topo_order: refs}
+        }),
         manifest_version_id: "mv_orchestrator_client_packages"
       )
 

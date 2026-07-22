@@ -18,6 +18,7 @@ defmodule FavnOrchestrator.ProjectorTest do
         id: "run_projected",
         manifest_version_id: "mv_projected",
         manifest_content_hash: "hash_projected",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Assets.Gold, :asset},
         target_refs: [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Gold, :asset}],
         submit_kind: :pipeline,
@@ -76,6 +77,7 @@ defmodule FavnOrchestrator.ProjectorTest do
 
     assert %Run{} = run = Projector.project_run(run_state)
     assert run.id == "run_projected"
+    assert run.required_runner_release_id == run_state.required_runner_release_id
     assert run.asset_ref == {MyApp.Assets.Gold, :asset}
     assert run.submit_kind == :pipeline
     assert map_size(run.asset_results) == 2
@@ -101,6 +103,7 @@ defmodule FavnOrchestrator.ProjectorTest do
         id: "run_backfill_projected",
         manifest_version_id: "mv_backfill_projected",
         manifest_content_hash: "hash_backfill_projected",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Assets.Gold, :asset},
         target_refs: [{MyApp.Assets.Gold, :asset}],
         submit_kind: :backfill_pipeline,
@@ -120,6 +123,7 @@ defmodule FavnOrchestrator.ProjectorTest do
         id: "run_backfill_asset_projected",
         manifest_version_id: "mv_backfill_projected",
         manifest_content_hash: "hash_backfill_projected",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Assets.Gold, :asset},
         submit_kind: :backfill_asset
       )
@@ -157,6 +161,7 @@ defmodule FavnOrchestrator.ProjectorTest do
         id: "run_explicit_node_results",
         manifest_version_id: "mv_explicit_node_results",
         manifest_content_hash: "hash_explicit_node_results",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Assets.Raw, :asset}
       )
       |> RunState.transition(
@@ -189,6 +194,7 @@ defmodule FavnOrchestrator.ProjectorTest do
         id: "run_step_event_identity",
         manifest_version_id: "mv_step_event_identity",
         manifest_content_hash: "hash_step_event_identity",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: ref
       )
 
@@ -203,5 +209,13 @@ defmodule FavnOrchestrator.ProjectorTest do
     assert event.entity == :step
     assert event.asset_ref == ref
     assert event.data.asset_step_id == expected_id
+    assert event.data.required_runner_release_id == run_state.required_runner_release_id
+
+    conflicting =
+      Projector.run_event(run_state, :step_started, %{
+        required_runner_release_id: FavnTestSupport.runner_release_id(:alternate)
+      })
+
+    assert conflicting.data.required_runner_release_id == run_state.required_runner_release_id
   end
 end

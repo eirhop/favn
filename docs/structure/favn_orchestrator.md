@@ -25,14 +25,51 @@ freshness, and execution coordination.
   deployment planning own
   immutable compact global releases, package-first publication, on-demand runtime
   package attachment, bounded compiled indexes, and exact workspace deployment
-  catalogs.
+  catalogs. Publication is runner-independent and leaves a manifest staged.
+  Activation loads that immutable version, requires an explicitly ready runner
+  reporting the exact `required_runner_release_id`, verifies or registers the
+  manifest in the runner cache, and only then commits the deployment pointer.
+  Runner outage returns a service-unavailable result; a release mismatch or
+  conflicting runner cache entry returns a conflict without changing the active
+  deployment. `Manifests` emits bounded publication and activation telemetry.
+  Runner diagnostic events include latency, status, manifest id when known, and
+  the required/actual release ids on mismatch. Rejected activation audit entries
+  contain only actor/service identity, stable reason codes, idempotency metadata,
+  and relevant release ids; selection and configuration are not copied into them.
 - `Runs`, `RunManager`, `RunServer`, and `TransitionWriter` own submission,
   execution, retry, cancellation, snapshots, events, and durable publication.
+  Submission derives the runner release only from the selected immutable manifest;
+  caller options cannot override it. The run's workspace, deployment, manifest id,
+  manifest content hash, and runner release id are one immutable identity. Dispatch,
+  relation inspection, runner results, recovery, events, diagnostics, and compact
+  operator summaries preserve or verify that identity.
   `RunManager` coordinates only bounded in-memory admission and process tracking;
   PostgreSQL work happens in callers or supervised recovery workers so one slow
   database operation cannot block unrelated manager calls.
 - `RunOwnership`, `ExecutionAdmission`, `MaterializationClaims`, and scheduler
   runtime modules own fenced distributed coordination.
+- `RunnerClient.BeamNode` is the sole production runner transport. It connects
+  to one validated static long node name, performs bounded `:erpc` calls, and
+  never loads or calls `favn_runner` inside the control-plane BEAM. Readiness
+  accepts only connected runner diagnostics with a ready verified release ID.
+- `ControlPlaneRuntimeConfig` reads the production environment once and validates
+  both same-BEAM applications before either supervisor starts. Production always
+  installs the PostgreSQL backend; there is no storage selector. `RuntimeConfig`
+  freezes runner, instance, HTTP, and shutdown values for hot runtime paths.
+- `Lifecycle` owns monotonic `starting`, `accepting`, `draining`, and `stopping`
+  state plus monitored admission permits. `Shutdown` flips readiness before
+  waiting for admitted mutations and active run servers, then requests durable
+  cancellation at the configured deadline. One lifecycle election makes repeated
+  View and Orchestrator shutdown callbacks reuse the same drain result. PostgreSQL
+  fencing remains the crash recovery authority. The private API rejects unsafe
+  methods with a stable, retryable `503 runtime_draining` response while read-only
+  requests remain live.
+- `RuntimeStarter` is the final child of a coupled `one_for_all` runtime tree. It
+  performs the idempotent bootstrap and marks the lifecycle accepting only after
+  restarted dependencies are alive. Lifecycle, `RunManager`, `RunSupervisor`,
+  and active run servers therefore cannot survive or restart independently and
+  lose ownership visibility; a critical child failure restarts the whole
+  control-plane runtime for fenced PostgreSQL recovery.
 - `ResourceCircuits` resolves configured execution-pool and SQL-connection
   resources before ordinary capacity admission. It records only explicit runner
   resource outcomes, while `ResourceRecovery` submits linked targeted runs for
@@ -60,11 +97,22 @@ freshness, and execution coordination.
   credentials never enter generic run metadata. Pins are bound to the selected
   asset's exact execution-package hash and resolver.
 - `Readiness`, `Diagnostics`, and persistence maintenance expose safe operational
-  state without bypassing the public boundary.
+  state without bypassing the public boundary. `RunnerHealth` maintains one
+  bounded, reusable remote diagnostic snapshot. `ActiveManifestReconciler`
+  periodically restores active manifests after runner-cache restarts and treats a
+  configured workspace without a deployment as valid. Readiness uses stable
+  component names and cached snapshots, verifies lifecycle admission and the
+  connected runner release, and requires every existing active manifest to be
+  aligned and registered. Pending, stale, malformed, and failed snapshots make
+  readiness fail closed without putting remote or mutation work on the HTTP path.
 
 Run snapshots and append-only events are authoritative for run state. Compact
 operator projections are versioned, repairable, and updated through the durable
 outbox. PubSub and PostgreSQL notifications only reduce refresh latency.
+Current snapshots require the runner release binding and use storage format v3.
+Historical terminal v2 snapshots remain readable with a nil release id for audit.
+A non-terminal v2 snapshot cannot be recovered or dispatched and returns the stable
+`legacy_runner_release_unbound` reason.
 Catalogue and planning paths share the byte- and entry-bounded compiled manifest
 index cache; generated SQL execution
 trees are loaded only after execution admission for the selected runtime asset and
@@ -92,9 +140,13 @@ latest bounded check result; `favn_view` does not reconstruct this state.
   `apps/favn_orchestrator/test/`.
 - PostgreSQL transaction, concurrency, authority, tenancy, and query tests:
   `apps/favn_storage_postgres/test/storage_v2/`.
-- Product-level one-node workflow:
-  `apps/favn_local/test/acceptance/single_node_production_acceptance_test.exs`.
+- Product-level container workflows:
+  `apps/favn_local/test/acceptance/local_compose_acceptance_test.exs` and
+  `apps/favn_local/test/acceptance/local_compose_execution_acceptance_test.exs`.
 
 Use this app when changing lifecycle semantics, persistence contracts, workspace
 authorization, private API behavior, live-event DTOs, backfills, scheduling,
 admission, ownership, retries, cancellation, readiness, or operator read models.
+The supported one-control-plane/one-runner deployment and private network contract
+are documented under `docs/production/`; multi-node routing and failover are not
+part of this release.

@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.Diagnostics do
   @moduledoc """
-  Operator-facing diagnostics for the single-node orchestrator runtime.
+  Operator-facing diagnostics for the orchestrator inside the control-plane
+  runtime.
   """
 
   alias FavnOrchestrator.ManifestStore
@@ -11,6 +12,7 @@ defmodule FavnOrchestrator.Diagnostics do
   alias FavnOrchestrator.ProjectionDiagnostics
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunnerClientValidator
+  alias FavnOrchestrator.RunnerDiagnostics
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
@@ -145,6 +147,7 @@ defmodule FavnOrchestrator.Diagnostics do
             workspace_id: workspace_id,
             manifest_version_id: version.manifest_version_id,
             content_hash: version.content_hash,
+            required_runner_release_id: version.required_runner_release_id,
             asset_count: length(version.manifest.assets),
             pipeline_count: length(version.manifest.pipelines),
             schedule_count: length(version.manifest.schedules)
@@ -164,7 +167,7 @@ defmodule FavnOrchestrator.Diagnostics do
   end
 
   defp scheduler_check do
-    scheduler_opts = Application.get_env(:favn_orchestrator, :scheduler, [])
+    scheduler_opts = RuntimeConfig.scheduler()
     enabled? = Keyword.get(scheduler_opts, :enabled, false)
     name = Keyword.get(scheduler_opts, :name, SchedulerRuntime)
 
@@ -202,8 +205,19 @@ defmodule FavnOrchestrator.Diagnostics do
 
         if function_exported?(module, :diagnostics, 1) do
           case module.diagnostics(opts) do
-            {:ok, runner_details} ->
-              ok(:runner, "Runner is available", Map.merge(details, runner_details))
+            {:ok, runner_details} when is_map(runner_details) ->
+              case RunnerDiagnostics.validate_ready(runner_details, opts) do
+                {:ok, _release_id} ->
+                  ok(:runner, "Runner is available", Map.merge(details, runner_details))
+
+                {:error, reason} ->
+                  error(
+                    :runner,
+                    "Runner is unavailable",
+                    Map.merge(details, runner_details),
+                    reason
+                  )
+              end
 
             {:error, reason} ->
               error(:runner, "Runner is unavailable", details, normalize_error(reason))
@@ -293,7 +307,7 @@ defmodule FavnOrchestrator.Diagnostics do
   end
 
   defp workspace_ids do
-    Application.get_env(:favn_orchestrator, :workspace_ids, [])
+    RuntimeConfig.workspace_ids()
   end
 
   defp run_summary(%FavnOrchestrator.Persistence.Results.RunSummary{} = run) do
@@ -301,6 +315,7 @@ defmodule FavnOrchestrator.Diagnostics do
       run_id: run.run_id,
       status: run.status,
       manifest_version_id: run.manifest_version_id,
+      required_runner_release_id: run.required_runner_release_id,
       submit_kind: run.submit_kind,
       updated_at: run.updated_at,
       runner_execution_id: nil
@@ -312,6 +327,7 @@ defmodule FavnOrchestrator.Diagnostics do
       run_id: run.id,
       status: run.status,
       manifest_version_id: run.manifest_version_id,
+      required_runner_release_id: run.required_runner_release_id,
       submit_kind: run.submit_kind,
       updated_at: run.updated_at,
       runner_execution_id: run.runner_execution_id

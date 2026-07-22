@@ -4,11 +4,59 @@ Purpose: execution runtime for pinned manifest work, runner server, worker
 execution, plugin loading, runtime context construction, and safe relation
 inspection.
 
+The production control plane reaches this app only through
+`FavnOrchestrator.RunnerClient.BeamNode`; there is no in-process control-plane
+fallback. The two releases use a private distributed-Erlang connection with a
+fixed port and a shared high-entropy cookie. This transport is unencrypted and
+the cookie grants node-level trust; EPMD and the fixed distribution ports must
+be firewalled to the two BEAM nodes, never exposed publicly, with operator
+access supplied through a VPN or authenticated TLS reverse proxy.
+
+The private firewall contract permits TCP EPMD on `ERL_EPMD_PORT` (4369 when
+unset) and each node's single TCP distribution port from
+`FAVN_BEAM_DISTRIBUTION_PORT`, only between the control-plane and runner
+containers. PostgreSQL and the private orchestrator API are likewise
+private-only; none of these ports belong on an internet-facing listener.
+
 Code:
 - `apps/favn_runner/lib/favn_runner.ex`
 - `apps/favn_runner/lib/favn_runner/`
 - `apps/favn_runner/lib/favn_runner/production_runtime_config.ex` owns
-  runner-side production env validation for the first local single-node setup
+  runner-side long-node, expected-peer, cookie-strength, and fixed-port
+  validation for the separate production BEAM, including the bounded
+  `FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS` contract
+- `apps/favn_runner/lib/favn_runner/lifecycle.ex` owns monotonic runtime state and
+  monitored admission permits. Registration, new manifest leases, work
+  submission, runtime-input resolution, and executable inspection fail with
+  `runtime_draining` after the transition. Cache checks, result waits,
+  cancellation, and log delivery remain available so admitted work can settle.
+- `apps/favn_runner/lib/favn_runner/runtime_starter.ex` is the final child of the
+  coupled `one_for_all` runtime tree and restores acceptance only after all
+  restarted runner dependencies are alive. The runner server, manifest store,
+  worker supervisor, workers, and lifecycle cannot restart independently and
+  lose execution visibility.
+- `apps/favn_runner/lib/favn_runner/shutdown.ex` waits for admitted calls and
+  workers within the frozen drain window, then cancels remaining workers through
+  the normal result path before OTP stops their supervisors. Deadline interruption
+  is an error with unknown outcome and `native_cancel_unknown`, not a claimed safe
+  cancellation.
+- `apps/favn_runner/lib/favn_runner/release_verifier.ex` reads the fixed
+  `priv/runner-release.json` artifact before packaged-release startup. It verifies
+  descriptor self-identity, exact target/Favn/Elixir/OTP compatibility, every
+  selected packaged BEAM digest, application name/version/lock fingerprints,
+  and plugin module inclusion. Application checks read packaged `.app` metadata
+  before any plugin application starts; release assembly stamps the canonical
+  `:favn_runner_lock_fingerprint` property into each fingerprinted `.app` file.
+  The stamped application set and configured plugin set must exactly equal their
+  descriptor inventories. Before identity is installed, bounded plugin expansion
+  first requires each configured entrypoint in its own module fingerprints, may
+  start only fingerprinted applications, and may normalize only supervised child
+  roots declared in that plugin fingerprint; unverified plugin/child modules are
+  rejected before their callback or `child_spec/1` code runs. Production startup can
+  install identity only from the fixed private path. Errors are stable and never
+  contain artifact paths or descriptor payloads.
+  Mix-based development may start without the descriptor, but runner operations
+  remain not-ready until a verified descriptor is installed.
 - `apps/favn_runner/lib/favn_runner/plugin_loader.ex` consumes the public
   `Favn.Runner.Plugin` contract with explicit packaged-application startup,
   bounded callback and child-spec expansion, plugin/child counts, duplicate-id
@@ -44,6 +92,11 @@ Code:
   orchestrator concern; the runner rejects exhausted capacity with a typed,
   retryable `:runner_overloaded` boundary error. Submit and cancel calls are
   bounded and normalize call timeouts into typed runner boundary errors.
+- Runner diagnostics prove the runner server, required supervisors and registries,
+  manifest store, extensions, and every configured data-plane adapter are ready.
+  The whole dependency probe has one deadline outside the runner GenServer, so a
+  blocking adapter cannot wedge execution. Adapter-provided payloads are not
+  forwarded; only a small runner-owned status allowlist is exposed.
 - Runner cancellation outcomes distinguish BEAM worker acknowledgement from
   native data-plane certainty. A stopped BEAM worker reports
   `native_status: :native_cancel_unknown` unless an adapter-specific native
@@ -79,7 +132,16 @@ submitted values as `ctx.params`, and resolved environment values/secrets as
 absolute deadline explicitly rather than duplicating them inside metadata.
 
 Runner registration stores immutable pinned manifests only in the bounded runner
-manifest cache. Before one
+manifest cache. Registration and lease acquisition first require the manifest's
+`required_runner_release_id` to equal the baked verified release. Work submission,
+runtime-input resolution, and relation inspection repeat that check before cache
+lookup or worker admission. A mismatch is a stable non-retryable
+`runner_release_mismatch` safe failure containing only the required and actual
+canonical ids. Runner results, lifecycle events, and inspection results echo the
+same release id; a worker result whose run, manifest, hash, or release differs
+from stored work is replaced by a bounded error result, and an event with any of
+those mismatches is discarded.
+Before one
 selected SQL asset is admitted, the orchestrator loads that asset's immutable
 execution package and attaches it to `%Favn.Contracts.RunnerWork{}`. The runner
 verifies both package hash and asset ref before resolving runtime inputs or

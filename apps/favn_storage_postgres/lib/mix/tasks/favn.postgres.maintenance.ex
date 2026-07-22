@@ -179,7 +179,7 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
   end
 
   defp repo_options! do
-    case Config.repo_options() do
+    case Config.repo_options_from_env() do
       {:ok, options} -> options
       {:error, reason} -> Mix.raise("invalid PostgreSQL configuration: #{inspect(reason)}")
     end

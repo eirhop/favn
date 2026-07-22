@@ -7,11 +7,8 @@ defmodule Favn.Dev.Runs do
   `mix favn.runs cancel RUN_ID`, and the run-event mode of `mix favn.logs RUN_ID`.
   """
 
-  alias Favn.Dev.Config
-  alias Favn.Dev.LocalContext
+  alias Favn.Dev.ComposeSession
   alias Favn.Dev.OrchestratorClient
-  alias Favn.Dev.State
-  alias Favn.Dev.Status
 
   @type run_filters :: [root_dir: Path.t(), status: String.t() | atom(), limit: pos_integer()]
   @type event_filters :: [root_dir: Path.t(), limit: pos_integer(), after_sequence: non_neg_integer()]
@@ -90,24 +87,7 @@ defmodule Favn.Dev.Runs do
     end
   end
 
-  defp session(opts) do
-    with :ok <- ensure_running(opts),
-         {:ok, runtime} <- State.read_runtime(opts) do
-      {:ok, base_url(runtime, opts), LocalContext.credentials(), LocalContext.session_context()}
-    end
-  end
-
-  defp ensure_running(opts) do
-    case Status.inspect_stack(opts).stack_status do
-      :running -> :ok
-      :partial -> {:error, :stack_not_healthy}
-      _other -> {:error, :stack_not_running}
-    end
-  end
-
-  defp base_url(runtime, opts) do
-    runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
-  end
+  defp session(opts), do: ComposeSession.resolve(opts)
 
   defp filters(opts, allowed) do
     opts

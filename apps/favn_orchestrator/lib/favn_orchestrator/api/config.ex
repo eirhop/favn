@@ -3,17 +3,19 @@ defmodule FavnOrchestrator.API.Config do
 
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
+  alias FavnOrchestrator.RuntimeConfig
 
   @default_bind_ip {127, 0, 0, 1}
   @default_port 4101
+  @post_drain_shutdown_timeout_ms 5_000
 
   @spec validate() :: :ok | {:error, term()}
   def validate do
     api_opts = Application.get_env(:favn_orchestrator, :api_server, [])
 
     if Keyword.get(api_opts, :enabled, false) do
-      with {:ok, _options} <- server_options(api_opts),
-           {:ok, _manifest_publication} <- ManifestPublicationConfig.from_app_env(),
+      with {:ok, _manifest_publication} <- ManifestPublicationConfig.from_app_env(),
+           {:ok, _options} <- server_options(api_opts),
            :ok <- validate_access_config() do
         :ok
       else
@@ -30,7 +32,19 @@ defmodule FavnOrchestrator.API.Config do
   def server_options(api_opts) when is_list(api_opts) do
     with {:ok, bind_ip} <- bind_ip(api_opts),
          {:ok, port} <- port(api_opts) do
-      {:ok, [port: port, ip: bind_ip]}
+      http = RuntimeConfig.http_server()
+
+      {:ok,
+       [
+         port: port,
+         ip: bind_ip,
+         thousand_island_options: [
+           num_acceptors: 1,
+           num_connections: http.max_connections,
+           read_timeout: http.idle_timeout_ms,
+           shutdown_timeout: @post_drain_shutdown_timeout_ms
+         ]
+       ]}
     end
   end
 

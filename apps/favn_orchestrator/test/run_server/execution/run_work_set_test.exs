@@ -50,6 +50,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSetTest do
       id: "run_work_set_test",
       manifest_version_id: "mv_work_set_test",
       manifest_content_hash: "hash_work_set_test",
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       asset_ref: {MyApp.Assets.WorkSet, :asset}
     )
   end

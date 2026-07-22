@@ -4,11 +4,13 @@ defmodule Favn.Contracts.RelationInspectionResult do
   """
 
   alias Favn.RelationRef
+  alias Favn.Contracts.RunnerReleaseBinding
 
   @type warning :: %{required(:code) => atom(), optional(:message) => String.t()}
 
   @type t :: %__MODULE__{
           asset_ref: Favn.Ref.t() | nil,
+          required_runner_release_id: String.t(),
           relation_ref: RelationRef.t() | nil,
           relation: term() | nil,
           columns: [term()],
@@ -22,6 +24,7 @@ defmodule Favn.Contracts.RelationInspectionResult do
         }
 
   defstruct asset_ref: nil,
+            required_runner_release_id: nil,
             relation_ref: nil,
             relation: nil,
             columns: [],
@@ -32,4 +35,9 @@ defmodule Favn.Contracts.RelationInspectionResult do
             inspected_at: nil,
             warnings: [],
             error: nil
+
+  @doc "Validates the exact runner release identity echoed by this inspection result."
+  @spec validate_release_binding(t()) :: :ok | {:error, RunnerReleaseBinding.error()}
+  def validate_release_binding(%__MODULE__{required_runner_release_id: release_id}),
+    do: RunnerReleaseBinding.validate(release_id)
 end

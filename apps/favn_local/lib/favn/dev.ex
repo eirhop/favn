@@ -27,39 +27,32 @@ defmodule Favn.Dev do
   - `inspect_relation/2`, `inspect_partitions/2`, `query/2`: inspect local SQL data
   - `init/1`: generate a local DuckDB sample project scaffold
   - `doctor/1`: validate local project setup before running
-  - `dev/1`: start a local runner process plus one operator process for orchestrator and web
+  - `dev/1`: start the production-like local Docker Compose topology
   - `status/1`: inspect current stack state
   - `diagnostics/1`: fetch service-authenticated operator diagnostics
   - `reload/1`: rebuild and republish the manifest
   - `run/2`: submit an asset or pipeline run with optional dependency and refresh intent
   - `list_runs/1`, `get_run/2`, `cancel_run/2`, `list_run_events/2`: inspect
     and control local runs through HTTP APIs
-  - `build_runner/1`, `build_web/1`, `build_orchestrator/1`, `build_single/1`:
-    project-local packaging flows
-  - `bootstrap_single/1`: API-driven single-node backend bootstrap
+  - `build_runner/1`, `build_manifest/1`: immutable runner and aligned manifest releases
+  - `publish/1`, `activate/1`: topology-neutral staged deployment operations
 
   See `apps/favn_local/README.md` for the full local-tooling contract and `.favn/`
   layout details.
   """
 
   alias Favn.Dev.Backfill
-  alias Favn.Dev.Bootstrap.Single, as: SingleBootstrap
-  alias Favn.Dev.Build.Orchestrator, as: OrchestratorBuild
+  alias Favn.Dev.Activate
   alias Favn.Dev.Build.Runner, as: RunnerBuild
-  alias Favn.Dev.Build.Single, as: SingleBuild
-  alias Favn.Dev.Build.Web, as: WebBuild
-  alias Favn.Dev.Diagnostics
+  alias Favn.Dev.ComposeLifecycle
   alias Favn.Dev.DataInspection
   alias Favn.Dev.Doctor
   alias Favn.Dev.Init
   alias Favn.Dev.Install
-  alias Favn.Dev.Logs
-  alias Favn.Dev.Reload
+  alias Favn.Dev.Publish
   alias Favn.Dev.Reset
   alias Favn.Dev.Run
   alias Favn.Dev.Runs
-  alias Favn.Dev.Stack
-  alias Favn.Dev.Status
 
   @type status_opts :: [root_dir: Path.t()]
   @type lifecycle_opts :: [root_dir: Path.t()]
@@ -117,8 +110,8 @@ defmodule Favn.Dev do
   @doc """
   Prints local service logs.
   """
-  @spec logs(keyword()) :: :ok
-  def logs(opts \\ []) when is_list(opts), do: Logs.run(opts)
+  @spec logs(keyword()) :: :ok | {:error, term()}
+  def logs(opts \\ []) when is_list(opts), do: ComposeLifecycle.logs(opts)
 
   @doc """
   Builds the project-local runner packaging target.
@@ -126,47 +119,35 @@ defmodule Favn.Dev do
   @spec build_runner(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
   def build_runner(opts \\ []) when is_list(opts), do: RunnerBuild.run(opts)
 
-  @doc """
-  Builds the project-local web packaging target.
-  """
-  @spec build_web(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
-  def build_web(opts \\ []) when is_list(opts), do: WebBuild.run(opts)
+  @doc "Builds a manifest release aligned with an explicit runner descriptor."
+  @spec build_manifest(keyword()) :: {:ok, map()} | {:error, term()}
+  def build_manifest(opts) when is_list(opts), do: Favn.Dev.Build.Manifest.run(opts)
 
-  @doc """
-  Builds the project-local orchestrator packaging target.
-  """
-  @spec build_orchestrator(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
-  def build_orchestrator(opts \\ []) when is_list(opts), do: OrchestratorBuild.run(opts)
+  @doc "Publishes an immutable manifest release as staged/inactive."
+  @spec publish(keyword()) :: {:ok, map()} | {:error, term()}
+  def publish(opts) when is_list(opts), do: Publish.run(opts)
 
-  @doc """
-  Builds the project-local single-node assembly target.
-  """
-  @spec build_single(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
-  def build_single(opts \\ []) when is_list(opts), do: SingleBuild.run(opts)
-
-  @doc """
-  Bootstraps a single-node backend through orchestrator HTTP APIs.
-  """
-  @spec bootstrap_single(keyword()) :: {:ok, map()} | {:error, term()}
-  def bootstrap_single(opts \\ []) when is_list(opts), do: SingleBootstrap.run(opts)
+  @doc "Activates one exact staged manifest for one workspace."
+  @spec activate(keyword()) :: {:ok, map()} | {:error, term()}
+  def activate(opts) when is_list(opts), do: Activate.run(opts)
 
   @doc """
   Starts local stack in foreground mode.
   """
   @spec dev(lifecycle_opts()) :: :ok | {:error, term()}
-  def dev(opts \\ []) when is_list(opts), do: Stack.start_foreground(opts)
+  def dev(opts \\ []) when is_list(opts), do: ComposeLifecycle.start_foreground(opts)
 
   @doc """
   Stops local stack using project-local runtime metadata.
   """
   @spec stop(lifecycle_opts()) :: :ok | {:error, term()}
-  def stop(opts \\ []) when is_list(opts), do: Stack.stop(opts)
+  def stop(opts \\ []) when is_list(opts), do: ComposeLifecycle.stop(opts)
 
   @doc """
   Rebuilds and republishes the manifest to the running local orchestrator.
   """
   @spec reload(lifecycle_opts()) :: :ok | {:error, term()}
-  def reload(opts \\ []) when is_list(opts), do: Reload.run(opts)
+  def reload(opts \\ []) when is_list(opts), do: ComposeLifecycle.reload(opts)
 
   @doc """
   Submits an asset or pipeline run to the running local stack.
@@ -268,11 +249,11 @@ defmodule Favn.Dev do
   Fetches operator diagnostics from the running local stack.
   """
   @spec diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
-  def diagnostics(opts \\ []) when is_list(opts), do: Diagnostics.fetch(opts)
+  def diagnostics(opts \\ []) when is_list(opts), do: ComposeLifecycle.diagnostics(opts)
 
   @doc """
   Returns local stack status for the current project.
   """
   @spec status(status_opts()) :: map()
-  def status(opts \\ []) when is_list(opts), do: Status.inspect_stack(opts)
+  def status(opts \\ []) when is_list(opts), do: ComposeLifecycle.status(opts)
 end

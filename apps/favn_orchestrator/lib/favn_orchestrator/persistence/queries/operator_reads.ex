@@ -184,6 +184,7 @@ defmodule FavnOrchestrator.Persistence.Results.ManifestSummary do
     :content_hash,
     :schema_version,
     :runner_contract_version,
+    :required_runner_release_id,
     :inserted_at
   ]
 
@@ -192,6 +193,7 @@ defmodule FavnOrchestrator.Persistence.Results.ManifestSummary do
           content_hash: String.t(),
           schema_version: pos_integer(),
           runner_contract_version: pos_integer(),
+          required_runner_release_id: String.t() | nil,
           inserted_at: DateTime.t()
         }
 end
@@ -238,6 +240,7 @@ defmodule FavnOrchestrator.Persistence.Results.RunSummary do
     :parent_run_id,
     :deployment_id,
     :manifest_version_id,
+    :required_runner_release_id,
     :status,
     :submit_kind,
     :trigger_type,
@@ -257,6 +260,7 @@ defmodule FavnOrchestrator.Persistence.Results.RunSummary do
           parent_run_id: String.t() | nil,
           deployment_id: String.t(),
           manifest_version_id: String.t(),
+          required_runner_release_id: String.t() | nil,
           status: atom(),
           submit_kind: atom(),
           trigger_type: atom(),

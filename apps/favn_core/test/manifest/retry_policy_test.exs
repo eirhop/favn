@@ -22,7 +22,7 @@ defmodule Favn.Manifest.RetryPolicyTest do
     resource_recovery = ResourceRecoveryPolicy.new!(:retry_remaining, max_age_ms: 3_600_000)
 
     manifest =
-      FavnTestSupport.with_manifest_graph(%Manifest{
+      %Manifest{
         assets: [
           %Asset{
             ref: ref,
@@ -42,7 +42,11 @@ defmodule Favn.Manifest.RetryPolicyTest do
             resource_recovery: resource_recovery
           }
         ]
-      })
+      }
+      |> Map.from_struct()
+      |> FavnTestSupport.with_manifest_contract()
+      |> then(&struct!(Manifest, &1))
+      |> FavnTestSupport.with_manifest_graph()
 
     assert {:ok, original} = Version.new(manifest, manifest_version_id: "mv_retry_roundtrip")
     assert {:ok, encoded} = Serializer.encode_manifest(manifest)

@@ -1,7 +1,10 @@
 defmodule Favn.Dev.DoctorTest do
   use ExUnit.Case, async: false
 
-  alias Favn.Dev.Doctor
+  alias Favn.Dev.{Doctor, Install}
+
+  @control_build_id String.duplicate("d", 64)
+  @control_image_id "sha256:" <> String.duplicate("e", 64)
 
   setup do
     root_dir =
@@ -19,6 +22,7 @@ defmodule Favn.Dev.DoctorTest do
       :runner_plugins,
       :discovery
     ]
+
     previous = Map.new(keys, &{&1, Application.get_env(:favn, &1, :__missing__)})
 
     on_exit(fn ->
@@ -81,7 +85,7 @@ defmodule Favn.Dev.DoctorTest do
     Application.put_env(:favn, :connections, warehouse: [database: ":memory:"])
     Application.put_env(:favn, :runner_plugins, [{plugin, []}])
 
-    assert {:ok, checks} = Doctor.run(root_dir: root_dir)
+    assert {:ok, checks} = doctor(root_dir)
     assert Enum.any?(checks, &(&1.name == "manifest" and &1.status == :ok))
   end
 
@@ -92,7 +96,7 @@ defmodule Favn.Dev.DoctorTest do
     Application.delete_env(:favn, :connections)
     Application.delete_env(:favn, :runner_plugins)
 
-    assert {:error, checks} = Doctor.run(root_dir: root_dir)
+    assert {:error, checks} = doctor(root_dir)
     assert Enum.any?(checks, &(&1.name == "asset_modules" and &1.status == :error))
     assert Enum.any?(checks, &(&1.name == "manifest" and &1.status == :ok))
   end
@@ -104,7 +108,7 @@ defmodule Favn.Dev.DoctorTest do
     Application.put_env(:favn, :connections, %{warehouse: []})
     Application.put_env(:favn, :runner_plugins, [{"not_a_module", %{}}])
 
-    assert {:error, checks} = Doctor.run(root_dir: root_dir)
+    assert {:error, checks} = doctor(root_dir)
 
     assert Enum.any?(checks, &(&1.name == "asset_modules" and &1.status == :error))
     assert Enum.any?(checks, &(&1.name == "pipeline_modules" and &1.status == :error))
@@ -113,7 +117,9 @@ defmodule Favn.Dev.DoctorTest do
     assert Enum.any?(checks, &(&1.name == "manifest" and &1.status == :error))
   end
 
-  test "validates catalog-qualified asset relations against adapter catalogs", %{root_dir: root_dir} do
+  test "validates catalog-qualified asset relations against adapter catalogs", %{
+    root_dir: root_dir
+  } do
     suffix = System.unique_integer([:positive])
     base = Module.concat([Favn, Dev, DoctorTest, "CatalogConfigured#{suffix}"])
     asset = Module.concat([base, Asset])
@@ -162,10 +168,14 @@ defmodule Favn.Dev.DoctorTest do
     Application.put_env(:favn, :asset_modules, [asset])
     Application.put_env(:favn, :pipeline_modules, [pipeline])
     Application.put_env(:favn, :connection_modules, [connection])
-    Application.put_env(:favn, :connections, lakehouse: [database: ":memory:", catalogs: [:raw, :int]])
+
+    Application.put_env(:favn, :connections,
+      lakehouse: [database: ":memory:", catalogs: [:raw, :int]]
+    )
+
     Application.put_env(:favn, :runner_plugins, [{adapter, []}])
 
-    assert {:ok, checks} = Doctor.run(root_dir: root_dir)
+    assert {:ok, checks} = doctor(root_dir)
 
     assert Enum.any?(
              checks,
@@ -231,7 +241,7 @@ defmodule Favn.Dev.DoctorTest do
 
     Application.put_env(:favn, :runner_plugins, [{adapter, []}])
 
-    assert {:error, checks} = Doctor.run(root_dir: root_dir)
+    assert {:error, checks} = doctor(root_dir)
     check = Enum.find(checks, &(&1.name == "relation catalogs"))
 
     assert check.status == :error
@@ -287,13 +297,13 @@ defmodule Favn.Dev.DoctorTest do
     Application.put_env(:favn, :connections, warehouse: [database: ":memory:"])
     Application.put_env(:favn, :runner_plugins, [{adapter, []}])
 
-    assert {:ok, checks} = Doctor.run(root_dir: root_dir)
+    assert {:ok, checks} = doctor(root_dir)
 
     assert Enum.any?(
              checks,
              &(&1.name == "relation catalogs" and &1.status == :ok and
                  &1.message =~ "skipped 1 adapter")
-            )
+           )
   end
 
   test "reports catalogless relations for catalog-aware adapters without default catalog", %{
@@ -347,7 +357,7 @@ defmodule Favn.Dev.DoctorTest do
     Application.put_env(:favn, :connections, lakehouse: [catalogs: [:raw]])
     Application.put_env(:favn, :runner_plugins, [{adapter, []}])
 
-    assert {:error, checks} = Doctor.run(root_dir: root_dir)
+    assert {:error, checks} = doctor(root_dir)
     check = Enum.find(checks, &(&1.name == "relation catalogs"))
 
     assert check.status == :error
@@ -407,8 +417,68 @@ defmodule Favn.Dev.DoctorTest do
     Application.put_env(:favn, :connections, lakehouse: [catalogs: [:raw]])
     Application.put_env(:favn, :runner_plugins, [{adapter, []}])
 
-    assert {:ok, checks} = Doctor.run(root_dir: root_dir)
+    assert {:ok, checks} = doctor(root_dir)
 
     assert Enum.any?(checks, &(&1.name == "relation catalogs" and &1.status == :ok))
+  end
+
+  defp doctor(root_dir) do
+    opts = [
+      root_dir: root_dir,
+      favn_version: Favn.RunnerRelease.current_favn_version(),
+      docker_executable: "docker",
+      docker_command_runner: &docker_command/3,
+      candidate_control_plane: %{
+        "reference" => "favn-control-plane-candidate:#{@control_build_id}",
+        "image_id" => @control_image_id
+      }
+    ]
+
+    assert {:ok, install_status} = Install.run(opts)
+    assert install_status in [:installed, :already_installed]
+    Doctor.run(opts)
+  end
+
+  defp docker_command("docker", args, _opts) do
+    case args do
+      ["version", "--format", "{{json .Server}}"] ->
+        {JSON.encode!(%{"Os" => "linux", "Arch" => "amd64", "Version" => "28.3.0"}), 0}
+
+      ["compose", "version", "--short"] ->
+        {"2.39.1\n", 0}
+
+      ["image", "inspect", _reference] ->
+        {JSON.encode!([control_image_inspection()]), 0}
+
+      ["compose" | compose_args] ->
+        if Enum.take(compose_args, -2) == ["config", "--quiet"] or
+             Enum.take(compose_args, -3) == ["ps", "--format", "json"] do
+          {"", 0}
+        else
+          {"unexpected Compose command", 97}
+        end
+    end
+  end
+
+  defp control_image_inspection do
+    %{
+      "Id" => @control_image_id,
+      "RepoDigests" => [],
+      "Architecture" => "amd64",
+      "Os" => "linux",
+      "Config" => %{
+        "User" => "10001:10001",
+        "Labels" => %{
+          "org.opencontainers.image.version" => Favn.RunnerRelease.current_favn_version(),
+          "io.favn.control-plane.build-id" => @control_build_id,
+          "io.favn.manifest-schema-version" =>
+            Favn.Manifest.Compatibility.current_schema_version() |> Integer.to_string(),
+          "io.favn.runner-contract-version" =>
+            Favn.Manifest.Compatibility.current_runner_contract_version()
+            |> Integer.to_string(),
+          "io.favn.target" => "linux/amd64"
+        }
+      }
+    }
   end
 end

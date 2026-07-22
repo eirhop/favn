@@ -15,7 +15,9 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.ExecutionPackagesRouter
   alias FavnOrchestrator.API.ManifestPublication
+  alias FavnOrchestrator.API.MutationAdmission
   alias FavnOrchestrator.API.ManifestsRouter
+  alias FavnOrchestrator.API.Parsers
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.API.RunsRouter
   alias FavnOrchestrator.API.SchedulesRouter
@@ -31,14 +33,11 @@ defmodule FavnOrchestrator.API.Router do
     plug(Tidewave)
   end
 
+  plug(MutationAdmission)
+
   plug(ManifestPublication)
 
-  plug(Plug.Parsers,
-    parsers: [:json],
-    pass: ["application/json"],
-    length: 1_000_000,
-    json_decoder: Jason
-  )
+  plug(Parsers)
 
   plug(:match)
   plug(:dispatch)
@@ -95,6 +94,85 @@ defmodule FavnOrchestrator.API.Router do
       {:error, reason} ->
         Logger.error("bootstrap.active_manifest failed: #{inspect(reason)}")
         error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  post "/api/orchestrator/v1/maintenance/runner-replacement" do
+    with {:ok, _context} <- Authentication.platform_context(conn, :platform_operator),
+         token when is_binary(token) and token != "" <- header(conn, "x-favn-maintenance-token"),
+         {:ok, token} <- FavnOrchestrator.begin_runner_replacement(token) do
+      data(conn, 200, %{status: "draining", maintenance_token: token})
+    else
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Platform operator access is required")
+
+      {:error, :maintenance_active} ->
+        error(conn, 409, "maintenance_active", "Runner replacement is already active")
+
+      {:error, :invalid_maintenance_token} ->
+        error(conn, 422, "invalid_maintenance_token", "A valid maintenance token is required")
+
+      nil ->
+        error(conn, 422, "invalid_maintenance_token", "A valid maintenance token is required")
+
+      {:error, _reason} ->
+        error(conn, 503, "runtime_not_accepting", "Control plane is not accepting maintenance")
+    end
+  end
+
+  get "/api/orchestrator/v1/maintenance/runner-replacement" do
+    with {:ok, _context} <- Authentication.platform_context(conn, :platform_operator) do
+      data(conn, 200, FavnOrchestrator.runner_replacement_status())
+    else
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Platform operator access is required")
+    end
+  end
+
+  post "/api/orchestrator/v1/maintenance/runner-replacement/verify-runner" do
+    expected_release_id = conn.body_params["runner_release_id"]
+
+    with {:ok, _context} <- Authentication.platform_context(conn, :platform_operator),
+         true <- is_binary(expected_release_id) and expected_release_id != "",
+         {:ok, verified} <- FavnOrchestrator.verify_replacement_runner(expected_release_id) do
+      data(conn, 200, verified)
+    else
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Platform operator access is required")
+
+      false ->
+        error(conn, 422, "validation_failed", "runner_release_id is required")
+
+      {:error, reason} ->
+        error(conn, 409, "runner_not_aligned", "Runner verification failed", %{
+          reason: runner_verification_reason(reason)
+        })
+    end
+  end
+
+  delete "/api/orchestrator/v1/maintenance/runner-replacement" do
+    with {:ok, _context} <- Authentication.platform_context(conn, :platform_operator),
+         token when is_binary(token) and token != "" <- header(conn, "x-favn-maintenance-token"),
+         :ok <- FavnOrchestrator.finish_runner_replacement(token) do
+      data(conn, 200, %{status: "accepting"})
+    else
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Platform operator access is required")
+
+      _invalid ->
+        error(conn, 403, "invalid_maintenance_token", "Maintenance ownership is required")
     end
   end
 
@@ -216,7 +294,7 @@ defmodule FavnOrchestrator.API.Router do
   defp stream(conn, context, stream), do: SSE.stream(conn, context, stream)
 
   defp bootstrap_active_manifest(conn) do
-    with {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :viewer),
+    with {:ok, _session, _actor, context} <- Authentication.service_workspace_context(conn),
          {:ok, %{manifest: summary}} <- Manifests.active(context) do
       {:ok, summary}
     end
@@ -228,6 +306,9 @@ defmodule FavnOrchestrator.API.Router do
       _ -> nil
     end
   end
+
+  defp runner_verification_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp runner_verification_reason(_reason), do: "runner_verification_failed"
 
   defp data(conn, status, payload), do: Response.data(conn, status, payload)
 

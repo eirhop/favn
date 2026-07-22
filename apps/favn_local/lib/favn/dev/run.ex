@@ -3,11 +3,8 @@ defmodule Favn.Dev.Run do
   Local run submission workflow for a running `mix favn.dev` stack.
   """
 
-  alias Favn.Dev.Config
-  alias Favn.Dev.LocalContext
+  alias Favn.Dev.ComposeSession
   alias Favn.Dev.OrchestratorClient
-  alias Favn.Dev.State
-  alias Favn.Dev.Status
   alias Favn.Window.Request, as: WindowRequest
 
   @terminal_statuses ["ok", "error", "cancelled", "timed_out"]
@@ -40,13 +37,10 @@ defmodule Favn.Dev.Run do
       when is_atom(target) or is_binary(target) do
     with :ok <- validate_opts(opts),
          {:ok, window_request} <- parse_window_request(opts),
-         :ok <- ensure_running(opts),
-         {:ok, runtime} <- read_runtime_snapshot(opts),
-         credentials = LocalContext.credentials(),
-         session_context = LocalContext.session_context(),
+         {:ok, base_url, credentials, session_context} <- ComposeSession.resolve(opts),
          {:ok, active_manifest} <-
            OrchestratorClient.active_manifest(
-             base_url(runtime, opts),
+             base_url,
              credentials.service_token,
              session_context
            ),
@@ -54,7 +48,7 @@ defmodule Favn.Dev.Run do
          :ok <- validate_target_opts(target, opts),
          {:ok, run} <-
            submit_run(
-             base_url(runtime, opts),
+             base_url,
              credentials.service_token,
              session_context,
              target,
@@ -62,7 +56,7 @@ defmodule Favn.Dev.Run do
              opts
            ),
          {:ok, final_run} <-
-           maybe_wait(run, runtime, credentials.service_token, session_context, opts),
+           maybe_wait(run, base_url, credentials.service_token, session_context, opts),
          :ok <- ensure_success(final_run, Keyword.get(opts, :wait, true)) do
       {:ok, final_run}
     end
@@ -197,24 +191,6 @@ defmodule Favn.Dev.Run do
     end
   end
 
-  defp ensure_running(opts) do
-    case Status.inspect_stack(opts).stack_status do
-      :running -> :ok
-      :partial -> {:error, :stack_not_healthy}
-      :stale -> {:error, :stack_not_running}
-      :stopped -> {:error, :stack_not_running}
-      _other -> {:error, :stack_not_running}
-    end
-  end
-
-  defp read_runtime_snapshot(opts) do
-    State.read_runtime(opts)
-  end
-
-  defp base_url(runtime, opts) do
-    runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
-  end
-
   defp parse_window_request(opts) do
     case Keyword.fetch(opts, :window) do
       :error ->
@@ -283,16 +259,13 @@ defmodule Favn.Dev.Run do
   defp maybe_put(payload, key, value), do: Map.put(payload, key, value)
 
   defp unwrap_submit_error(%{operation: :submit_run, reason: {:http_error, 422, payload}}) do
-    case get_in(payload, ["error", "message"]) do
-      message when is_binary(message) and message != "" ->
-        {:orchestrator_validation_failed, message}
-
-      _other ->
-        {:orchestrator_validation_failed, inspect(payload)}
-    end
+    {:orchestrator_validation_failed, validation_error_code(payload)}
   end
 
   defp unwrap_submit_error(reason), do: reason
+
+  defp validation_error_code(%{error_code: code}) when is_binary(code) and code != "", do: code
+  defp validation_error_code(_payload), do: "validation_failed"
 
   defp run_idempotency_key(opts) do
     case Keyword.fetch(opts, :idempotency_key) do
@@ -325,7 +298,7 @@ defmodule Favn.Dev.Run do
         Keyword.get(opts, :timeout_ms, @default_wait_timeout_ms)
       )
 
-  defp maybe_wait(run, runtime, service_token, session_context, opts) do
+  defp maybe_wait(run, base_url, service_token, session_context, opts) do
     case {Keyword.get(opts, :wait, true), run} do
       {false, _run} ->
         {:ok, run}
@@ -338,7 +311,7 @@ defmodule Favn.Dev.Run do
         wait_for_run(
           run,
           run_id,
-          runtime,
+          base_url,
           service_token,
           session_context,
           deadline,
@@ -354,7 +327,7 @@ defmodule Favn.Dev.Run do
   defp wait_for_run(
          run,
          run_id,
-         runtime,
+         base_url,
          service_token,
          session_context,
          deadline,
@@ -373,7 +346,7 @@ defmodule Favn.Dev.Run do
 
         with {:ok, next_run} <-
                OrchestratorClient.get_run(
-                 base_url(runtime, opts),
+                 base_url,
                  service_token,
                  session_context,
                  run_id
@@ -381,7 +354,7 @@ defmodule Favn.Dev.Run do
           wait_for_run(
             next_run,
             run_id,
-            runtime,
+            base_url,
             service_token,
             session_context,
             deadline,

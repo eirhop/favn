@@ -38,6 +38,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifierTest do
         id: "bounded-classification",
         manifest_version_id: "mv_stage_classifier",
         manifest_content_hash: "hash",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         plan: plan,
         asset_ref: hd(plan.target_refs)
       )

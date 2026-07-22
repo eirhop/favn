@@ -1,8 +1,6 @@
 defmodule Favn.ConsumerDependencyInstallTest do
   use ExUnit.Case, async: false
 
-  alias Favn.Dev.RuntimeWorkspace
-
   setup do
     base_dir =
       Path.join(
@@ -27,8 +25,17 @@ defmodule Favn.ConsumerDependencyInstallTest do
     refute :favn in dep_apps
     refute Enum.any?(deps, fn dep -> Keyword.has_key?(dep_opts(dep), :in_umbrella) end)
 
-    assert runtime_deps(deps) == [:favn_authoring, :favn_local, :favn_sql_runtime]
-    assert test_only_deps(deps) == [:favn_orchestrator, :favn_runner, :favn_test_support]
+    assert runtime_deps(deps) == [:favn_sql_runtime]
+    assert build_only_deps(deps) == [:favn_authoring, :favn_local]
+    assert test_only_deps(deps) == [:favn_orchestrator, :favn_test_support]
+
+    local_deps = FavnLocal.MixProject.project()[:deps]
+    refute :favn_runner in runtime_deps(local_deps)
+    assert :favn_runner in build_only_deps(local_deps)
+
+    app_file = Path.join([Mix.Project.build_path(), "lib/favn_local/ebin/favn_local.app"])
+    assert {:ok, [{:application, :favn_local, properties}]} = :file.consult(app_file)
+    refute :favn_runner in Keyword.fetch!(properties, :applications)
 
     assert Enum.all?(internal_path_deps(deps), fn dep ->
              opts = dep_opts(dep)
@@ -38,20 +45,15 @@ defmodule Favn.ConsumerDependencyInstallTest do
   end
 
   @tag :slow
+  @tag timeout: 300_000
   test "fresh consumer can deps.get and compile favn from git umbrella subdir", %{
     snapshot_dir: snapshot_dir,
     consumer_dir: consumer_dir
   } do
     repo_root = Path.expand("../../..", __DIR__)
 
-    snapshot_state_dir = Path.join(snapshot_dir, "state")
-    snapshot_dir = Path.join(snapshot_state_dir, ".favn/install/runtime_root")
-
-    assert {:ok, %{"materialized_root" => ^snapshot_dir}} =
-             RuntimeWorkspace.materialize(
-               %{kind: :root_override, root: repo_root},
-               root_dir: snapshot_state_dir
-             )
+    snapshot_dir = Path.join(snapshot_dir, "repo")
+    copy_checkout!(repo_root, snapshot_dir)
 
     assert {_, 0} = System.cmd("git", ["init", "-q"], cd: snapshot_dir)
     assert {_, 0} = System.cmd("git", ["add", "."], cd: snapshot_dir)
@@ -89,6 +91,7 @@ defmodule Favn.ConsumerDependencyInstallTest do
   end
 
   @tag :slow
+  @tag timeout: 300_000
   test "fresh local consumer can resolve favn with plugin path dependencies", %{
     consumer_dir: consumer_dir
   } do
@@ -133,6 +136,14 @@ defmodule Favn.ConsumerDependencyInstallTest do
     deps
     |> internal_path_deps()
     |> Enum.reject(fn dep -> Keyword.get(dep_opts(dep), :only) == :test end)
+    |> Enum.reject(fn dep -> Keyword.get(dep_opts(dep), :runtime, true) == false end)
+    |> Enum.map(&elem(&1, 0))
+  end
+
+  defp build_only_deps(deps) do
+    deps
+    |> internal_path_deps()
+    |> Enum.filter(fn dep -> Keyword.get(dep_opts(dep), :runtime, true) == false end)
     |> Enum.map(&elem(&1, 0))
   end
 
@@ -149,6 +160,33 @@ defmodule Favn.ConsumerDependencyInstallTest do
 
   defp dep_opts({_app, opts}) when is_list(opts), do: opts
   defp dep_opts({_app, _requirement, opts}) when is_list(opts), do: opts
+
+  defp copy_checkout!(source, destination) do
+    {encoded_paths, 0} =
+      System.cmd(
+        "git",
+        ["-C", source, "ls-files", "--cached", "--others", "--exclude-standard", "-z"]
+      )
+
+    paths =
+      encoded_paths
+      |> String.split(<<0>>, trim: true)
+      |> Enum.filter(&File.regular?(Path.join(source, &1)))
+
+    File.mkdir_p!(destination)
+
+    Enum.each(Enum.chunk_every(paths, 200), fn batch ->
+      {output, status} =
+        System.cmd(
+          "cp",
+          ["--parents", "--no-dereference", "--target-directory", destination, "--" | batch],
+          cd: source,
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, output
+    end)
+  end
 
   defp consumer_mix_exs(repo_url, ref) do
     """

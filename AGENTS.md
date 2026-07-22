@@ -60,7 +60,7 @@ Run the narrowest owning-layer check first. From the umbrella root, app-scoped
 tests must use `cmd mix test` so the root alias does not recurse:
 
 ```bash
-MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude container --exclude slow --exclude browser
 MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --only acceptance
 ```
 
@@ -76,9 +76,10 @@ mix test.slow
 elixir scripts/check_test_tag_tiers.exs
 ```
 
-The fast suite excludes explicit `:acceptance`, `:slow`, and `:browser` tiers.
-Keep tagged tests in a CI-covered app or update the tag guard. Documentation-only
-changes need link/render review and `git diff --check`, not the umbrella suite.
+The fast suite excludes explicit `:acceptance`, `:container`, `:slow`, and
+`:browser` tiers. Keep tagged tests in a CI-covered app or update the tag guard.
+Documentation-only changes need link/render review and `git diff --check`, not
+the umbrella suite.
 
 ## What the agent should optimize for
 

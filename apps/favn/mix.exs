@@ -26,11 +26,10 @@ defmodule Favn.MixProject do
 
   defp deps do
     [
-      internal_dep(:favn_authoring, "../favn_authoring"),
-      internal_dep(:favn_local, "../favn_local"),
+      internal_dep(:favn_authoring, "../favn_authoring", runtime: false),
+      internal_dep(:favn_local, "../favn_local", runtime: false),
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
       internal_dep(:favn_orchestrator, "../favn_orchestrator", only: :test),
-      internal_dep(:favn_runner, "../favn_runner", only: :test),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
       {:ex_doc, "~> 0.38", only: :dev, runtime: false}
     ]

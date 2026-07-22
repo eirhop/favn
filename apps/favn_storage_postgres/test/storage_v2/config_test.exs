@@ -49,20 +49,83 @@ defmodule FavnStoragePostgres.StorageV2.ConfigTest do
     refute inspect(Config.redacted(options)) =~ "top-secret"
   end
 
-  test "production plaintext requires an explicit development/test interlock" do
+  test "production rejects plaintext even with a development interlock" do
     Application.put_env(:favn_storage_postgres, :environment, :prod)
     url = "ecto://runtime:top-secret@127.0.0.1/favn"
 
-    assert {:ok, options} =
+    assert {:error, :production_tls_required} =
              Config.repo_options(
                url: url,
                ssl_mode: :disable,
                allow_insecure_database?: true
              )
+  end
 
+  test "release environment permits plaintext only for generated local Compose DNS" do
+    Application.put_env(:favn_storage_postgres, :environment, :prod)
+
+    local_env = %{
+      "FAVN_DEPLOYMENT_MODE" => "local-development",
+      "FAVN_DATABASE_URL" =>
+        "ecto://favn_runtime:top-secret@postgres.favn.internal:5432/favn_dev",
+      "FAVN_DATABASE_SSL_MODE" => "disable"
+    }
+
+    assert {:ok, options} = Config.repo_options_from_env(local_env)
     assert options[:ssl] == false
-    refute Keyword.has_key?(options, :ssl_mode)
-    refute Keyword.has_key?(options, :allow_insecure_database?)
+    refute Keyword.has_key?(options, :deployment_mode)
+
+    assert {:error, :invalid_local_development_database_url} =
+             local_env
+             |> Map.put("FAVN_DATABASE_URL", "ecto://runtime:top-secret@database.example/favn")
+             |> Config.repo_options_from_env()
+  end
+
+  test "database URL query parameters cannot override validated connection options" do
+    Application.put_env(:favn_storage_postgres, :environment, :test)
+
+    assert {:error, :database_url_query_parameters_not_allowed} =
+             Config.repo_options(
+               url:
+                 "ecto://runtime:top-secret@127.0.0.1/favn?ssl=false&pool_size=1000000&timeout=0",
+               ssl_mode: :verify_full,
+               pool_size: 15,
+               timeout: 15_000
+             )
+  end
+
+  test "release-task TLS parsing rejects a relative CA path" do
+    Application.put_env(:favn_storage_postgres, :environment, :test)
+
+    assert {:error, :database_tls_trust_required} =
+             Config.repo_options_from_env(%{
+               "FAVN_DATABASE_URL" => "ecto://runtime:top-secret@postgres.internal/favn",
+               "FAVN_DATABASE_SSL_MODE" => "verify-full",
+               "FAVN_DATABASE_SSL_CA_FILE" => "mix.exs"
+             })
+  end
+
+  test "release-task environment parsing uses production connection bounds" do
+    Application.put_env(:favn_storage_postgres, :environment, :test)
+
+    env = %{
+      "FAVN_DATABASE_URL" => "ecto://runtime:top-secret@127.0.0.1/favn",
+      "FAVN_DATABASE_SSL_MODE" => "disable"
+    }
+
+    assert {:ok, options} = Config.repo_options_from_env(env)
+    assert options[:pool_size] == 15
+    assert options[:timeout] == 15_000
+
+    assert {:error, {:invalid_database_env, "FAVN_DATABASE_POOL_SIZE"}} =
+             env
+             |> Map.put("FAVN_DATABASE_POOL_SIZE", "201")
+             |> Config.repo_options_from_env()
+
+    assert {:error, {:invalid_database_env, "FAVN_DATABASE_TIMEOUT_MS"}} =
+             env
+             |> Map.put("FAVN_DATABASE_TIMEOUT_MS", "120001")
+             |> Config.repo_options_from_env()
   end
 
   test "runtime-input encryption requires an exact 256-bit current key and retains old versions" do

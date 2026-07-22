@@ -5,12 +5,19 @@ Favn exposes local development through `mix favn.*` tasks.
 Use these commands from your application project. Do not depend on Favn runtime,
 storage, or UI implementation apps directly.
 
+Docker Engine and Docker Compose v2 are mandatory. Favn supports Linux amd64 and
+amd64 WSL2 using Linux containers. Native Windows, arm64, macOS emulation, and
+Podman are not supported in v1. Authenticate Docker to the private GHCR package
+with a pull-only credential before `mix favn.install`. Run the host Mix commands
+with Elixir `1.20.2` on Erlang/OTP `29`; this must match the pinned compiler used
+to build the customer runner image.
+
 ## First Local Flow
 
 ```bash
 mix favn.init --duckdb --sample
-mix favn.doctor
 mix favn.install
+mix favn.doctor
 mix favn.dev
 ```
 
@@ -31,17 +38,15 @@ mix favn.stop
 | --- | --- | --- |
 | `mix favn.init --duckdb --sample` | Generate local Favn files and a sample DuckDB pipeline. | `--duckdb`, `--sample` |
 | `mix favn.doctor` | Check local configuration before running. | `--skip-compile` |
-| `mix favn.install` | Prepare `.favn/install`, including Phoenix asset binaries. | `--force`, `--skip-runtime-deps-install`, `--skip-web-install`, `--root-dir PATH` |
-| `mix favn.dev` | Start PostgreSQL-backed local runtime processes and the UI. | `--scheduler`, `--root-dir PATH` |
+| `mix favn.install` | Pull and verify the version-matched control-plane image and generate the local Compose contract. | `--force`, `--root-dir PATH` |
+| `mix favn.dev` | Start PostgreSQL, the prebuilt control plane, and the customer runner with Docker Compose. | `--scheduler`, `--root-dir PATH` |
 
 `mix favn.dev` stays in the foreground. It prints service logs and URLs. Stop it
 with `mix favn.stop` from another terminal or by ending the foreground process.
-Startup compiles only stale runtime and project modules. A clean Git runtime
-source uses Git tree metadata for install validation; dirty or non-Git sources
-fall back to content hashing. Use `mix favn.install --force` when you explicitly
-need a clean runtime workspace rebuild.
-Runner and operator processes reuse that compiled runtime with `--no-compile`;
-they do not serialize startup on Mix's build lock.
+Install never compiles the control plane. Startup builds or reuses only the
+customer runner image, then runs release-safe database operations and starts the
+same two-BEAM topology used in production. Use `mix favn.install --force` to
+repull and revalidate the version-matched control-plane tag.
 
 Before startup, `mix favn.dev` loads the project `.env` and starts a fresh Mix
 process that evaluates `config/runtime.exs`. This means runtime config can branch
@@ -123,7 +128,7 @@ Options:
 
 | Option | Meaning |
 | --- | --- |
-| `--service operator|web|orchestrator|runner|all` | Select service logs. |
+| `--service postgres|control-plane|runner|all` | Select service logs. |
 | `--tail N` | Number of lines or events. Default is 100. |
 | `--follow` | Follow service logs. Cannot be used with `RUN_ID`. |
 
@@ -166,9 +171,14 @@ mix favn.reset
 | --- | --- |
 | `mix favn.status` | Show whether the local stack is running, stopped, partial, stale, or unknown. |
 | `mix favn.diagnostics` | Show storage, scheduler, runner, and recent failure checks. |
-| `mix favn.reload` | Rebuild and reload authored modules into a running local stack. Blocks when runs are in flight. |
+| `mix favn.reload` | Publish a manifest-only change, or drain and replace only the runner for executable changes. |
 | `mix favn.stop` | Stop the local stack. |
-| `mix favn.reset` | Delete local `.favn/` install/build/runtime artifacts. Use with care. |
+| `mix favn.reset` | Print the project-scoped deletion plan and refuse to mutate without `--yes`. |
+
+`mix favn.stop` preserves PostgreSQL state and images. `mix favn.reset --yes`
+removes only the current project's Compose containers, network, PostgreSQL
+volume, generated runner images, and `.favn/` state; it does not remove the
+official control-plane image.
 
 ## Backfills
 
@@ -199,11 +209,43 @@ These are deployment/operator commands, not needed for the first local run:
 
 | Command | Use it for |
 | --- | --- |
-| `mix favn.build.runner` | Build runner artifact metadata/output. |
-| `mix favn.build.web` | Build web artifact metadata/output. |
-| `mix favn.build.orchestrator` | Build orchestrator artifact metadata/output. |
-| `mix favn.build.single` | Build the single-node local deployment artifact. |
-| `mix favn.bootstrap.single` | Bootstrap a single-node backend from a manifest JSON file. |
+| `mix favn.build.runner` | Build the immutable customer runner OCI context and its aligned manifest release. |
+| `mix favn.build.manifest --runner-release PATH` | Build a manifest-only release after proving the runner fingerprint is unchanged. |
+| `mix favn.publish --manifest PATH` | Upload missing execution packages and stage the immutable manifest. |
+| `mix favn.activate --manifest-version ID --workspace-id ID` | Activate an exact staged manifest after runner verification. |
+
+`publish` and `activate` use `--orchestrator-url` or
+`FAVN_ORCHESTRATOR_URL`. Set `FAVN_ORCHESTRATOR_SERVICE_TOKEN` in the process
+environment; service tokens are deliberately rejected as command-line flags.
+
+Runner outputs live at `.favn/dist/runner/<runner_release_id>/`, not under a
+timestamp. The generated Dockerfile is pinned by digest, runs the release as a
+non-root user, and documents `/tmp/favn` as its only writable path. Build and
+push that image with your own OCI tooling and registry credentials.
+
+Both build commands automatically execute in `MIX_ENV=prod`. Before building,
+check out the pinned Favn dependency at a detached tag or commit and keep that
+checkout clean. Favn rejects floating or dirty framework checkouts. Customer
+code that is reachable only by dynamic dispatch must be declared explicitly:
+
+```elixir
+config :favn,
+  runner_build: [
+    extra_modules: [MyApp.DynamicHelper],
+    extra_applications: [:my_runtime_app]
+  ]
+```
+
+The customer OTP application and its `priv` directory are compiled inside the
+generated Docker context. Only Elixir assets, runtime-input resolvers, plugins,
+supervised children, declared dynamic modules, and their executable closure
+contribute module fingerprints. A SQL-, pipeline-, or schedule-only edit can
+therefore reuse the existing runner descriptor.
+
+Favn replays the exact `Application.compile_env/3` values recorded for selected
+runtime applications and loads the customer `config/runtime.exs` in the final
+release. Unselected customer BEAMs are removed; unrelated development and
+manifest-only configuration does not create executable runner content.
 
 ## What You Should See In The UI
 

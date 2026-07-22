@@ -327,9 +327,6 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
 
-  defp error_message(:stack_not_healthy),
-    do: "stack not healthy; use mix favn.stop then mix favn.dev"
-
   defp error_message(:replacement_scope_required),
     do:
       "--apply requires an explicit repair scope: --all, --backfill-run-id, or --pipeline-module"

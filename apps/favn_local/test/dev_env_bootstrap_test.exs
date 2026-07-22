@@ -69,7 +69,7 @@ defmodule Favn.Dev.EnvBootstrapTest do
 
       assert {:ok, binary} = Base.url_decode64(token, padding: false)
       payload = :erlang.binary_to_term(binary, [:safe])
-      assert payload["loaded_keys"] == [@loaded_key]
+      assert payload["loaded_keys"] == Enum.sort([@loaded_key, @shell_key])
       refute Map.has_key?(payload, "values")
 
       File.write!(env_path, "#{@loaded_key}=changed-after-bootstrap\n")
@@ -98,7 +98,9 @@ defmodule Favn.Dev.EnvBootstrapTest do
                env_bootstrap_command_runner: command_runner
              )
 
-    assert_received {:configured, %{@loaded_key => "file-value"}, "shell-value", nil}
+    assert_received {:configured, %{@loaded_key => "file-value", @shell_key => "shell-value"},
+                     "shell-value", nil}
+
     assert System.get_env(@loaded_key) == "file-value"
   end
 

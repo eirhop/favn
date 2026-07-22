@@ -7,43 +7,32 @@ defmodule Mix.Tasks.Favn.Postgres.CompactRuntimeInputKeys do
 
   use Mix.Task
 
-  alias FavnStoragePostgres.Config
-  alias FavnStoragePostgres.Repo
-  alias FavnStoragePostgres.RuntimeInputKeyInventory
+  alias FavnStoragePostgres.Release
+  alias Mix.Tasks.Favn.Postgres.ReleaseHelpers
 
   @shortdoc "Removes unreferenced runtime-input key versions"
 
   @impl true
   def run(args) do
-    if args != [], do: Mix.raise("usage: mix favn.postgres.compact_runtime_input_keys")
+    {options, positional, invalid} = OptionParser.parse(args, strict: [version: :keep])
+
+    if positional != [] or invalid != [] or Keyword.get_values(options, :version) == [] do
+      Mix.raise(
+        "usage: mix favn.postgres.compact_runtime_input_keys --version VERSION [--version VERSION]"
+      )
+    end
+
+    versions =
+      Enum.map(Keyword.get_values(options, :version), fn value ->
+        case Integer.parse(value) do
+          {version, ""} -> version
+          _invalid -> Mix.raise("runtime-input key versions must be positive integers")
+        end
+      end)
 
     Mix.Task.run("app.config")
-    {:ok, _applications} = Application.ensure_all_started(:ecto_sql)
-    {:ok, _applications} = Application.ensure_all_started(:postgrex)
-    {:ok, repo} = Repo.start_link(repo_options!())
 
-    try do
-      case RuntimeInputKeyInventory.compact(Repo) do
-        {:ok, []} ->
-          Mix.shell().info("Runtime-input key inventory is already compact")
-
-        {:ok, versions} ->
-          Mix.shell().info(
-            "Removed unreferenced runtime-input key versions: #{inspect(versions)}"
-          )
-
-        {:error, reason} ->
-          Mix.raise("runtime-input key inventory compaction failed: #{inspect(reason)}")
-      end
-    after
-      GenServer.stop(repo)
-    end
-  end
-
-  defp repo_options! do
-    case Config.repo_options() do
-      {:ok, options} -> options
-      {:error, reason} -> Mix.raise("invalid PostgreSQL configuration: #{inspect(reason)}")
-    end
+    Release.compact_runtime_input_keys(versions)
+    |> ReleaseHelpers.report("Runtime-input key inventory is compact")
   end
 end

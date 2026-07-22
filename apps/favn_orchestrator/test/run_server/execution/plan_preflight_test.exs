@@ -14,7 +14,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
     @behaviour Favn.Contracts.RunnerClient
 
     def register_manifest(_version, _opts), do: :ok
-    def ensure_manifest(_manifest_version_id, _content_hash, _opts), do: :ok
+    def ensure_manifest(_version, _opts), do: :ok
 
     def acquire_manifest(_version, lease_id, _expires_at, planned_asset_refs, opts) do
       send(
@@ -36,6 +36,20 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
     def await_result(_execution_id, _timeout, _opts), do: {:error, :not_executed}
     def cancel_work(_execution_id, _reason, _opts), do: {:error, :not_executed}
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    def diagnostics(opts) do
+      {:ok,
+       %{
+         available?: true,
+         ready?: true,
+         status: :ready,
+         runner_release_id: Keyword.fetch!(opts, :runner_release_id),
+         favn_version: Favn.RunnerRelease.current_favn_version(),
+         runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
+         self_verified?: true,
+         node_name: "runner@runner.internal"
+       }}
+    end
   end
 
   setup do
@@ -43,7 +57,11 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClient)
-    Application.put_env(:favn_orchestrator, :runner_client_opts, test_pid: self())
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      test_pid: self(),
+      runner_release_id: FavnTestSupport.runner_release_id()
+    )
 
     on_exit(fn ->
       restore_env(:runner_client, previous_client)
@@ -66,10 +84,11 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
       relation: %{name: "wide_source"}
     }
 
-    manifest = %Manifest{
-      assets: [asset],
-      graph: %Graph{nodes: [ref], topo_order: [ref]}
-    }
+    manifest =
+      FavnTestSupport.with_manifest_contract(%Manifest{
+        assets: [asset],
+        graph: %Graph{nodes: [ref], topo_order: [ref]}
+      })
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv-wide-plan-preflight")
 
@@ -100,6 +119,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
         deployment_id: "deployment-wide-plan-preflight",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
+        required_runner_release_id: version.required_runner_release_id,
         asset_ref: ref,
         target_refs: [ref],
         plan: plan
@@ -126,7 +146,12 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
       relation: %{name: "source"}
     }
 
-    manifest = %Manifest{assets: [asset], graph: %Graph{nodes: [ref], topo_order: [ref]}}
+    manifest =
+      FavnTestSupport.with_manifest_contract(%Manifest{
+        assets: [asset],
+        graph: %Graph{nodes: [ref], topo_order: [ref]}
+      })
+
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv-identity-preflight")
 
     plan = %Plan{
@@ -156,6 +181,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
         deployment_id: "deployment-identity-preflight",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
+        required_runner_release_id: version.required_runner_release_id,
         asset_ref: ref,
         target_refs: [ref],
         plan: plan
@@ -163,6 +189,48 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
 
     assert {:terminal, %RunState{error: %Error{} = error}} = Execution.start_state(run, version)
     assert error.details == %{field: :asset_step_id, actual_bytes: 256, max_bytes: 255}
+    refute_receive {:manifest_acquired, _lease_id, _refs, _opts}
+  end
+
+  test "rejects a forged run release before acquiring the manifest" do
+    ref = {__MODULE__.Source, :asset}
+
+    asset = %Asset{
+      ref: ref,
+      module: elem(ref, 0),
+      name: elem(ref, 1),
+      type: :source,
+      relation: %{name: "source"}
+    }
+
+    manifest =
+      FavnTestSupport.with_manifest_contract(%Manifest{
+        assets: [asset],
+        graph: %Graph{nodes: [ref], topo_order: [ref]}
+      })
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: "mv-forged-release")
+    alternate = FavnTestSupport.runner_release_id(:alternate)
+
+    run =
+      RunState.new(
+        id: "run-forged-release",
+        workspace_id: "workspace-forged-release",
+        deployment_id: "deployment-forged-release",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        required_runner_release_id: alternate,
+        asset_ref: ref,
+        target_refs: [ref]
+      )
+
+    assert {:terminal,
+            %RunState{
+              status: :error,
+              error: {:runner_release_mismatch, ^alternate, required}
+            }} = Execution.start_state(run, version)
+
+    assert required == version.required_runner_release_id
     refute_receive {:manifest_acquired, _lease_id, _refs, _opts}
   end
 

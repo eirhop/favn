@@ -21,20 +21,32 @@ defmodule FavnRunner.PluginLoader do
           | {:invalid_plugin_applications, module()}
           | {:plugin_application_callback_failed, module(), atom()}
           | {:plugin_application_start_failed, module(), atom()}
+          | {:unverified_plugin_application, module(), atom()}
+          | {:unverified_plugin_child_module, module(), module()}
           | {:invalid_plugin_child_spec, module(), non_neg_integer()}
           | :duplicate_plugin_child_id
 
   @spec load(term()) :: {:ok, [Supervisor.child_spec()]} | {:error, reason()}
-  def load(entries) when is_list(entries) do
+  def load(entries), do: prepare(entries)
+
+  @doc false
+  @spec prepare(term(), keyword()) :: {:ok, [Supervisor.child_spec()]} | {:error, reason()}
+  def prepare(entries, opts \\ [])
+
+  def prepare(entries, opts) when is_list(entries) and is_list(opts) do
+    application_validator = Keyword.get(opts, :application_validator, &allow_application/2)
+    child_module_validator = Keyword.get(opts, :child_module_validator, &allow_child_module/2)
+
     with :ok <- validate_plugin_count(entries),
          {:ok, plugins} <- normalize_entries(entries),
-         {:ok, children} <- load_plugins(plugins),
+         {:ok, children} <-
+           load_plugins(plugins, application_validator, child_module_validator),
          :ok <- validate_unique_ids(children) do
       {:ok, children}
     end
   end
 
-  def load(_entries), do: {:error, :invalid_runner_plugins}
+  def prepare(_entries, _opts), do: {:error, :invalid_runner_plugins}
 
   @spec format_error(reason()) :: String.t()
   def format_error(reason), do: "invalid runner plugin configuration: #{inspect(reason)}"
@@ -88,12 +100,13 @@ defmodule FavnRunner.PluginLoader do
     |> Enum.member?(Favn.Runner.Plugin)
   end
 
-  defp load_plugins(plugins) do
+  defp load_plugins(plugins, application_validator, child_module_validator) do
     plugins
     |> Enum.reduce_while({:ok, [], 0}, fn {plugin, opts}, {:ok, acc, count} ->
       with {:ok, applications} <- load_applications(plugin, opts),
+           :ok <- validate_applications(plugin, applications, application_validator),
            :ok <- start_applications(plugin, applications),
-           {:ok, children} <- load_children(plugin, opts),
+           {:ok, children} <- load_children(plugin, opts, child_module_validator),
            {:ok, child_count} <- remaining_child_count(children, count) do
         {:cont, {:ok, Enum.reverse(children, acc), count + child_count}}
       else
@@ -105,6 +118,21 @@ defmodule FavnRunner.PluginLoader do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp validate_applications(plugin, applications, validator) when is_function(validator, 2) do
+    Enum.reduce_while(applications, :ok, fn application, :ok ->
+      case validator.(plugin, application) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+        _invalid -> {:halt, {:error, {:unverified_plugin_application, plugin, application}}}
+      end
+    end)
+  end
+
+  defp validate_applications(plugin, [application | _rest], _invalid_validator),
+    do: {:error, {:unverified_plugin_application, plugin, application}}
+
+  defp validate_applications(_plugin, [], _invalid_validator), do: :ok
 
   defp load_applications(plugin, opts) do
     if function_exported?(plugin, :applications, 1) do
@@ -138,8 +166,8 @@ defmodule FavnRunner.PluginLoader do
     end)
   end
 
-  defp load_children(plugin, opts) do
-    case invoke(plugin, :child_specs, opts) do
+  defp load_children(plugin, opts, child_module_validator) do
+    case invoke(plugin, :child_specs, opts, child_module_validator) do
       {:ok, children} ->
         {:ok, children}
 
@@ -157,12 +185,12 @@ defmodule FavnRunner.PluginLoader do
     end
   end
 
-  defp invoke(plugin, callback, opts) do
+  defp invoke(plugin, callback, opts, child_module_validator \\ nil) do
     bounded_call(
       fn ->
         plugin
         |> invoke_callback(callback, opts)
-        |> normalize_callback_result(plugin, callback)
+        |> normalize_callback_result(plugin, callback, child_module_validator)
       end,
       @callback_timeout
     )
@@ -175,7 +203,7 @@ defmodule FavnRunner.PluginLoader do
   defp invoke_callback(plugin, :applications, opts), do: plugin.applications(opts)
   defp invoke_callback(plugin, :child_specs, opts), do: plugin.child_specs(opts)
 
-  defp normalize_callback_result({:ok, applications}, _plugin, :applications)
+  defp normalize_callback_result({:ok, applications}, _plugin, :applications, _validator)
        when is_list(applications) do
     with {:ok, _count} <- bounded_list_count(applications, @max_applications_per_plugin),
          true <- Enum.all?(applications, &(is_atom(&1) and not is_nil(&1))) do
@@ -185,9 +213,10 @@ defmodule FavnRunner.PluginLoader do
     end
   end
 
-  defp normalize_callback_result({:ok, specs}, plugin, :child_specs) when is_list(specs) do
+  defp normalize_callback_result({:ok, specs}, plugin, :child_specs, validator)
+       when is_list(specs) do
     with {:ok, _count} <- bounded_list_count(specs, @max_children),
-         {:ok, children} <- normalize_child_specs(plugin, specs) do
+         {:ok, children} <- normalize_child_specs(plugin, specs, validator) do
       {:ok, children}
     else
       :too_many -> {:error, :too_many_plugin_children}
@@ -195,10 +224,10 @@ defmodule FavnRunner.PluginLoader do
     end
   end
 
-  defp normalize_callback_result({:error, reason}, _plugin, _callback),
+  defp normalize_callback_result({:error, reason}, _plugin, _callback, _validator),
     do: {:returned_error, reason}
 
-  defp normalize_callback_result(_result, _plugin, _callback), do: :invalid_result
+  defp normalize_callback_result(_result, _plugin, _callback, _validator), do: :invalid_result
 
   defp bounded_call(fun, timeout) do
     parent = self()
@@ -238,17 +267,26 @@ defmodule FavnRunner.PluginLoader do
     end
   end
 
-  defp normalize_child_specs(plugin, specs) do
+  defp normalize_child_specs(plugin, specs, validator) do
     specs
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, []}, fn {spec, index}, {:ok, acc} ->
       try do
-        child = Supervisor.child_spec(spec, [])
+        with {:ok, module} <- child_module(spec),
+             :ok <- validate_child_module(plugin, module, validator) do
+          child = Supervisor.child_spec(spec, [])
 
-        if valid_child_spec?(child) and bounded_term?(child, @max_child_spec_bytes) do
-          {:cont, {:ok, [child | acc]}}
+          if valid_child_spec?(child) and bounded_term?(child, @max_child_spec_bytes) do
+            {:cont, {:ok, [child | acc]}}
+          else
+            {:halt, {:error, {:invalid_plugin_child_spec, plugin, index}}}
+          end
         else
-          {:halt, {:error, {:invalid_plugin_child_spec, plugin, index}}}
+          {:error, {:unverified_plugin_child_module, _plugin, _module}} = error ->
+            {:halt, error}
+
+          _invalid ->
+            {:halt, {:error, {:invalid_plugin_child_spec, plugin, index}}}
         end
       rescue
         _error -> {:halt, {:error, {:invalid_plugin_child_spec, plugin, index}}}
@@ -258,6 +296,28 @@ defmodule FavnRunner.PluginLoader do
     end)
     |> reverse_ok()
   end
+
+  defp child_module(module) when is_atom(module) and not is_nil(module), do: {:ok, module}
+
+  defp child_module({module, _arg}) when is_atom(module) and not is_nil(module),
+    do: {:ok, module}
+
+  defp child_module(%{start: {module, _function, _args}})
+       when is_atom(module) and not is_nil(module),
+       do: {:ok, module}
+
+  defp child_module(_invalid), do: :error
+
+  defp validate_child_module(plugin, module, validator) when is_function(validator, 2) do
+    case validator.(plugin, module) do
+      :ok -> :ok
+      {:error, _reason} = error -> error
+      _invalid -> {:error, {:unverified_plugin_child_module, plugin, module}}
+    end
+  end
+
+  defp validate_child_module(plugin, module, _invalid_validator),
+    do: {:error, {:unverified_plugin_child_module, plugin, module}}
 
   defp valid_child_spec?(%{id: _id, start: {module, function, args}})
        when is_atom(module) and is_atom(function) and is_list(args),
@@ -305,4 +365,7 @@ defmodule FavnRunner.PluginLoader do
 
   defp reverse_ok({:ok, values}), do: {:ok, Enum.reverse(values)}
   defp reverse_ok({:error, reason}), do: {:error, reason}
+
+  defp allow_application(_plugin, _application), do: :ok
+  defp allow_child_module(_plugin, _module), do: :ok
 end

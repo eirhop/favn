@@ -7,11 +7,12 @@ defmodule FavnRunner.ManifestHandle do
   rescan the full compact manifest.
   """
 
-  @enforce_keys [:manifest_version_id, :content_hash]
-  defstruct [:manifest_version_id, :content_hash]
+  @enforce_keys [:manifest_version_id, :content_hash, :required_runner_release_id]
+  defstruct [:manifest_version_id, :content_hash, :required_runner_release_id]
 
   @type t :: %__MODULE__{
           manifest_version_id: String.t(),
-          content_hash: String.t()
+          content_hash: String.t(),
+          required_runner_release_id: String.t()
         }
 end

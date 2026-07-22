@@ -271,8 +271,9 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     refs = Enum.map(assets, & &1.ref)
 
     manifest = %Manifest{
-      schema_version: 9,
-      runner_contract_version: 9,
+      schema_version: 10,
+      runner_contract_version: 10,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: assets,
       pipelines: [],
       schedules: [],
@@ -292,6 +293,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
 
   defp work(%Version{} = version, asset_ref, planned_refs) do
     %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: "run_preflight_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower),
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,

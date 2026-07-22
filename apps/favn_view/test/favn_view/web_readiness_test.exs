@@ -47,6 +47,10 @@ defmodule FavnView.WebReadinessTest do
   end
 
   setup do
+    persistent_key = {ProductionRuntimeConfig, :config}
+    previous_runtime_config = :persistent_term.get(persistent_key, :missing)
+    :persistent_term.erase(persistent_key)
+
     keys = [
       :orchestrator_facade,
       :orchestrator_readiness_timeout_ms,
@@ -66,7 +70,14 @@ defmodule FavnView.WebReadinessTest do
     Application.put_env(:favn_view, :orchestrator_readiness_timeout_ms, 50)
     Application.put_env(:favn_view, :production_runtime_config, false)
 
-    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_env(key, value) end) end)
+    on_exit(fn ->
+      Enum.each(previous, fn {key, value} -> restore_env(key, value) end)
+
+      case previous_runtime_config do
+        :missing -> :persistent_term.erase(persistent_key)
+        config -> :persistent_term.put(persistent_key, config)
+      end
+    end)
 
     :ok
   end
@@ -166,11 +177,15 @@ defmodule FavnView.WebReadinessTest do
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
                "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8,127.0.0.1/32",
                "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS" => "250"
              })
 
     assert config.public_origin == "https://favn.example.com"
     assert config.orchestrator_readiness_timeout_ms == 250
+    assert config.bind_host == "0.0.0.0"
+    assert config.port == 4_000
+    assert length(config.trusted_proxy_cidrs) == 2
 
     assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
              ProductionRuntimeConfig.validate(%{
@@ -178,10 +193,12 @@ defmodule FavnView.WebReadinessTest do
                "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
              })
 
-    assert {:ok, %{public_origin: "http://localhost:4173"}} =
+    assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "http://localhost:4173",
-               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "127.0.0.1/32",
+               "FAVN_UNSAFE_ALLOW_HTTP_LOCALHOST" => "true"
              })
 
     assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
@@ -229,6 +246,7 @@ defmodule FavnView.WebReadinessTest do
              ProductionRuntimeConfig.apply_from_env(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
                "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8",
                "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS" => "250"
              })
 
@@ -238,6 +256,16 @@ defmodule FavnView.WebReadinessTest do
     assert Keyword.fetch!(endpoint_config, :url)[:port] == 443
     assert Keyword.fetch!(endpoint_config, :check_origin) == ["https://favn.example.com"]
     assert Keyword.fetch!(endpoint_config, :secret_key_base) == @secret_key_base
+    assert Keyword.fetch!(endpoint_config, :server)
+    assert Keyword.fetch!(endpoint_config, :http)[:ip] == {0, 0, 0, 0}
+    assert Keyword.fetch!(endpoint_config, :http)[:port] == 4_000
+
+    Application.put_env(:favn_view, :orchestrator_readiness_timeout_ms, 999)
+    assert ProductionRuntimeConfig.configured_timeout_ms() == 250
+
+    frozen = :persistent_term.get({ProductionRuntimeConfig, :config})
+    refute Map.has_key?(frozen, :secret_key_base)
+    refute inspect(frozen) =~ @secret_key_base
   end
 
   test "production runtime config requires hardened session cookie options when enabled" do
@@ -254,7 +282,8 @@ defmodule FavnView.WebReadinessTest do
     assert {:ok, _config} =
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
-               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8"
              })
 
     Application.put_env(
@@ -266,7 +295,8 @@ defmodule FavnView.WebReadinessTest do
     assert {:error, %{error: {:invalid_session_cookie, :secure_required}}} =
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
-               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8"
              })
 
     Application.put_env(
@@ -278,8 +308,69 @@ defmodule FavnView.WebReadinessTest do
     assert {:error, %{error: {:invalid_session_cookie, :encryption_salt_required}}} =
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
-               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8"
              })
+  end
+
+  test "local-development mode permits loopback HTTP and freezes non-secure local cookies" do
+    secure_options =
+      FavnView.Endpoint.session_options()
+      |> Keyword.put(:secure, true)
+      |> Keyword.put(:http_only, true)
+      |> Keyword.put(:same_site, "Lax")
+      |> Keyword.put(:encryption_salt, "test-encryption-salt")
+
+    Application.put_env(:favn_view, :session_cookie_options, secure_options)
+
+    env = %{
+      "FAVN_DEPLOYMENT_MODE" => "local-development",
+      "FAVN_VIEW_PUBLIC_ORIGIN" => "http://127.0.0.1:4173",
+      "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+      "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "127.0.0.1/32"
+    }
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+    assert config.deployment_mode == :local_development
+    assert config.force_ssl? == false
+    assert config.session_cookie_options[:secure] == false
+
+    assert :ok = ProductionRuntimeConfig.apply(config)
+    assert ProductionRuntimeConfig.force_ssl?() == false
+    assert ProductionRuntimeConfig.session_cookie_options()[:secure] == false
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN",
+                 "loopback http origin in local-development"}
+            }} =
+             env
+             |> Map.put("FAVN_VIEW_PUBLIC_ORIGIN", "http://0.0.0.0:4173")
+             |> ProductionRuntimeConfig.validate()
+  end
+
+  test "production runtime config rejects public proxy networks and bounds HTTP settings" do
+    base = %{
+      "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+      "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+      "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8"
+    }
+
+    assert {:error, %{error: {:invalid_env, "FAVN_VIEW_TRUSTED_PROXY_CIDRS", _expected}}} =
+             base
+             |> Map.put("FAVN_VIEW_TRUSTED_PROXY_CIDRS", "203.0.113.0/24")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{error: {:invalid_env, "FAVN_HTTP_MAX_CONNECTIONS", "1..100000"}}} =
+             base
+             |> Map.put("FAVN_HTTP_MAX_CONNECTIONS", "100001")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(base)
+    :ok = ProductionRuntimeConfig.apply(config)
+    assert ProductionRuntimeConfig.trusted_proxy?({10, 20, 30, 40})
+    refute ProductionRuntimeConfig.trusted_proxy?({192, 168, 1, 1})
   end
 
   test "production config files do not commit a production secret key base" do

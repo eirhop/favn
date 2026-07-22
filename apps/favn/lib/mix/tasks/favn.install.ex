@@ -1,10 +1,17 @@
 defmodule Mix.Tasks.Favn.Install do
   use Mix.Task
 
-  @shortdoc "Resolves project-local Favn install inputs"
+  @shortdoc "Installs the prebuilt Favn control-plane image"
 
   @moduledoc """
-  Resolves and validates project-local install inputs under `.favn/install`.
+  Requires Docker Engine and Compose v2, pulls the version-matched official
+  control-plane image, verifies its platform and Favn contract labels, records
+  its immutable repository digest, and writes the project-scoped Compose inputs
+  under `.favn/`.
+
+  The task never compiles the control plane and cannot select an arbitrary or
+  unpublished candidate image. `--force` repulls and revalidates the official
+  version tag without changing a valid digest unnecessarily.
   """
 
   alias Favn.Dev
@@ -15,10 +22,7 @@ defmodule Mix.Tasks.Favn.Install do
     opts =
       CLIArgs.parse_no_args!("favn.install", args,
         root_dir: :string,
-        force: :boolean,
-        skip_web_install: :boolean,
-        skip_tool_checks: :boolean,
-        skip_runtime_deps_install: :boolean
+        force: :boolean
       )
 
     case Dev.install(opts) do
@@ -31,16 +35,43 @@ defmodule Mix.Tasks.Favn.Install do
       {:error, {:missing_tool, tool}} ->
         Mix.raise("install failed: missing required tool #{tool}")
 
-      {:error, {:tool_check_failed, tool, status, output}} ->
+      {:error, {:docker_engine_unavailable, _status, _output}} ->
         Mix.raise(
-          "install failed: required tool #{tool} check failed (status=#{status}): #{output}"
+          "install failed: Docker Engine is not reachable; start a Linux-container Docker daemon and retry"
         )
 
-      {:error, {:web_install_failed, status, output}} ->
-        Mix.raise("install failed: web dependency install failed (status=#{status}): #{output}")
+      {:error, {:docker_compose_unavailable, _status, _output}} ->
+        Mix.raise(
+          "install failed: the Docker Compose plugin is unavailable; install Docker Compose v2 or newer and retry"
+        )
 
-      {:error, {:runtime_deps_install_failed, status, output}} ->
-        Mix.raise("install failed: runtime deps install failed (status=#{status}): #{output}")
+      {:error, {:unsupported_compose_version, version}} ->
+        Mix.raise(
+          "install failed: unsupported Docker Compose version #{version}; Compose v2 or newer is required"
+        )
+
+      {:error, {:unsupported_docker_server, os, architecture}} ->
+        Mix.raise(
+          "install failed: unsupported Docker server target #{os}/#{architecture}; use a Linux amd64 daemon"
+        )
+
+      {:error, {:unsupported_docker_host, os, architecture}} ->
+        Mix.raise(
+          "install failed: unsupported Docker host #{os}/#{architecture}; use Linux amd64 or WSL2 amd64"
+        )
+
+      {:error, {:lock_failed, :timeout}} ->
+        Mix.raise(
+          "install failed: another Favn lifecycle command is active; retry after it exits"
+        )
+
+      {:error, :control_plane_registry_authentication_required} ->
+        Mix.raise(
+          "install failed: GHCR authentication required; configure Docker login/credential helpers and retry"
+        )
+
+      {:error, {:control_plane_version_unavailable, reference}} ->
+        Mix.raise("install failed: no official control-plane image exists at #{reference}")
 
       {:error, reason} ->
         Mix.raise("install failed: #{inspect(reason)}")

@@ -473,7 +473,8 @@ defmodule Favn.PublicPipelineParityTest do
                Favn.generate_manifest(
                  asset_modules: [SalesAssets, ReportingAssets],
                  pipeline_modules: [pipeline_module],
-                 schedule_modules: [schedule_module]
+                 schedule_modules: [schedule_module],
+                 runner_release: FavnTestSupport.runner_release()
                )
 
       assert Enum.any?(

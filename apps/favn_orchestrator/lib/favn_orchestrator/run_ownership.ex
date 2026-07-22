@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.RunOwnership do
   alias FavnOrchestrator.Persistence.Commands.RenewRunOwnership
   alias FavnOrchestrator.Persistence.Results.RunOwnership, as: Ownership
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.RuntimeConfig
 
   @default_lease_duration_ms 30_000
 
@@ -23,7 +24,7 @@ defmodule FavnOrchestrator.RunOwnership do
   @doc "Builds a node-and-process-specific owner identity."
   @spec owner_id(String.t()) :: String.t()
   def owner_id(run_id) when is_binary(run_id) do
-    instance = System.get_env("FAVN_INSTANCE_ID", Atom.to_string(node()))
+    instance = RuntimeConfig.instance_id()
     digest = :crypto.hash(:sha256, :erlang.term_to_binary({node(), self(), run_id}))
     "#{String.slice(instance, 0, 96)}:#{Base.url_encode64(digest, padding: false)}"
   end

@@ -15,6 +15,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddCoordinationAndSchedulingV2
   alias FavnStoragePostgres.Migrations.AddLogsIdentityAndOperationsV2
   alias FavnStoragePostgres.Migrations.AddRuntimeInputKeyInventoryV2
+  alias FavnStoragePostgres.Migrations.AddRunnerReleaseIdentityV2
   alias FavnStoragePostgres.Migrations.AddResourceCircuitsV2
   alias FavnStoragePostgres.Migrations.AddScheduleOperatorReadsV2
   alias FavnStoragePostgres.Migrations.CreateStorageV2
@@ -28,6 +29,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.OptimizeExecutionPackageRetentionV2
   alias FavnStoragePostgres.Migrations.OptimizeRunStatusPagingV2
   alias FavnStoragePostgres.Migrations.OptimizeRunnerExecutionPagingV2
+  alias FavnStoragePostgres.Migrations.NormalizeResourceCircuitDefinitionsV2
   alias FavnStoragePostgres.Privileges
 
   @prefix "favn_control"
@@ -52,7 +54,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_717_170_000, OptimizeExecutionPackageRetentionV2},
     {20_260_717_180_000, EnforceRunPlanManifestIdentityV2},
     {20_260_720_000_000, AddResourceCircuitsV2},
-    {20_260_720_010_000, AddAssetAttemptOverviewsV2}
+    {20_260_720_010_000, AddAssetAttemptOverviewsV2},
+    {20_260_720_020_000, NormalizeResourceCircuitDefinitionsV2},
+    {20_260_721_000_000, AddRunnerReleaseIdentityV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -234,7 +238,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "maintenance_jobs" =>
       ~w(job_id job_kind scope_kind workspace_id status cursor configuration owner_id fencing_token claim_expires_at processed_count last_error version inserted_at updated_at),
     "manifest_versions" =>
-      ~w(manifest_version_id content_hash schema_version runner_contract_version payload_version asset_count pipeline_count schedule_count atom_strings manifest inserted_at),
+      ~w(manifest_version_id content_hash schema_version runner_contract_version required_runner_release_id payload_version asset_count pipeline_count schedule_count atom_strings manifest inserted_at),
     "execution_packages" =>
       ~w(content_hash asset_module asset_name runtime_input_resolver payload first_linked_at inserted_at),
     "manifest_execution_packages" => ~w(manifest_version_id package_hash asset_module asset_name),
@@ -306,7 +310,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   )
   @critical_constraints ~w(
     workspaces_id_valid workspaces_slug_valid workspaces_display_name_valid workspaces_status_valid
-    manifest_versions_id_valid manifest_versions_versions_valid execution_packages_hash_valid
+    manifest_versions_id_valid manifest_versions_versions_valid
+    manifest_versions_runner_release_valid execution_packages_hash_valid
     execution_packages_asset_ref_valid
     execution_packages_runtime_input_resolver_valid
     workspace_deployments_values_valid workspace_deployment_targets_kind_valid
@@ -351,7 +356,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "b3841285078fd44a08310717da24273849a5d4e1e37b6a31ce02f6f8e9f858cc"
+  @expected_definition_fingerprint "6518943513ab2d5c8991a2886be2f7582e99d8baae052692e32c5086ba533194"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok
@@ -368,6 +373,10 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
 
     :ok
   end
+
+  @doc "Returns the exact ordered Storage V2 migration versions required by this release."
+  @spec expected_versions() :: [pos_integer()]
+  def expected_versions, do: @expected_versions
 
   @doc "Returns exact, redacted compatibility evidence for runtime readiness."
   @spec diagnostics(module() | pid()) :: {:ok, map()} | {:error, term()}
@@ -553,7 +562,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
            query_rows(
              repo,
              """
-             SELECT c.relname, a.attname, a.attnum,
+             SELECT c.relname, a.attname,
                     pg_catalog.format_type(a.atttypid, a.atttypmod),
                     a.attnotnull, a.attidentity, a.attgenerated,
                     pg_catalog.pg_get_expr(d.adbin, d.adrelid)
@@ -564,7 +573,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                ON d.adrelid = a.attrelid AND d.adnum = a.attnum
              WHERE n.nspname = $1 AND c.relname = ANY($2::text[])
                AND a.attnum > 0 AND NOT a.attisdropped
-             ORDER BY c.relname, a.attnum
+             ORDER BY c.relname, a.attname
              """,
              [@prefix, @required_tables]
            ),

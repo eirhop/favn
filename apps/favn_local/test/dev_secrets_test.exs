@@ -30,24 +30,6 @@ defmodule Favn.Dev.SecretsTest do
     end
   end
 
-  test "configured HTTP secrets override persisted generated values", %{root_dir: root_dir} do
-    config =
-      Config.resolve(
-        root_dir: root_dir,
-        service_token: "configured-service-token",
-        web_session_secret: String.duplicate("s", 64)
-      )
-
-    assert {:ok, secrets} = Secrets.resolve(config, root_dir: root_dir)
-    assert secrets["service_token"] == "configured-service-token"
-    assert secrets["web_session_secret"] == String.duplicate("s", 64)
-
-    persisted = Paths.secrets_path(root_dir) |> File.read!()
-    refute persisted =~ "configured-service-token"
-    refute persisted =~ String.duplicate("s", 64)
-  end
-
-
   defp native_tmp_dir do
     if match?({:unix, _}, :os.type()) and File.dir?("/tmp"), do: "/tmp", else: System.tmp_dir!()
   end

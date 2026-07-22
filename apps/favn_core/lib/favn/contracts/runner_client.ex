@@ -20,8 +20,7 @@ defmodule Favn.Contracts.RunnerClient do
 
   @callback register_manifest(Version.t(), keyword()) :: :ok | {:error, term()}
 
-  @callback ensure_manifest(String.t(), String.t(), keyword()) ::
-              :ok | :missing | {:error, term()}
+  @callback ensure_manifest(Version.t(), keyword()) :: :ok | :missing | {:error, term()}
 
   @callback acquire_manifest(
               Version.t(),

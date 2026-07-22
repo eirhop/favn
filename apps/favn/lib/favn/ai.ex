@@ -199,10 +199,11 @@ defmodule Favn.AI do
     `config :favn, discovery: [apps: [...], assets: :all, pipelines: :all,
     schedules: :all]`, also read `Favn.ModuleDiscovery`. Read
     `Favn.Manifest.Generator` if you need internal compilation details. For
-    deployment, call `Favn.build_manifest/1` followed by
-    `Favn.prepare_manifest_publication/2`: schema 8 has one compact manifest
-    index and immutable content-addressed SQL execution packages, with no inline
-    SQL manifest form or compatibility fallback.
+    deployment, call `Favn.build_manifest/1` with a verified runner descriptor,
+    followed by `Favn.prepare_manifest_publication/2`: schema 10 has one compact
+    manifest index bound to its exact `required_runner_release_id` and immutable
+    content-addressed SQL execution packages, with no inline SQL manifest form
+    or compatibility fallback.
   - To resolve pipeline targets, read `Favn resolve_pipeline`, then
     `Favn.Pipeline.Resolver` if needed.
   - To plan execution order, read `Favn plan_asset_run`, then
@@ -218,13 +219,17 @@ defmodule Favn.AI do
     runtime config without starting the consumer app, and
     `Favn.Dev.DataInspection` starts `:favn_sql_runtime` before connecting.
   - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
+    Docker Engine and Compose v2 are mandatory. The supported topology is
+    PostgreSQL, the digest-pinned prebuilt control plane, and one customer-built
+    runner on a project-scoped private Compose network; install never builds the
+    control plane. Linux amd64 and amd64 WSL2 with Linux containers are the only
+    supported v1 hosts.
     The public local command surface is `mix favn.install`, `mix favn.init`,
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
     `mix favn.runs`, `mix favn.status`, `mix favn.logs`, `mix favn.inspect`,
     `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
     `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
-    `mix favn.build.web`, `mix favn.build.orchestrator`,
-    `mix favn.build.single`, `mix favn.bootstrap.single`, and
+    `mix favn.build.manifest`, `mix favn.publish`, `mix favn.activate`, and
     `mix favn.read_doc`. Dev and reload load the project `.env` before evaluating
     `config/runtime.exs`; existing shell values take precedence.
     `mix favn.run` resolves asset and pipeline targets from the active manifest.

@@ -15,10 +15,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Detect test-affecting changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: filter
         with:
           predicate-quantifier: every
@@ -57,13 +57,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Elixir and Erlang
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: '1.20.2'
-          otp-version: '28.4.2'
+          otp-version: '29.0.3'
 
       - name: Check test tag coverage
         run: elixir scripts/check_test_tag_tiers.exs
@@ -76,8 +76,8 @@ jobs:
 
       - name: Install Hex and Rebar
         run: |
-          mix local.hex --force
-          mix local.rebar --force
+          mix local.hex 2.5.1 --force
+          mix local.rebar rebar3 https://github.com/erlang/rebar3/releases/download/3.27.0/rebar3 --sha512 0d00494d849fdc521a55142278d1f6ba552954fbd65b80d40df8022f594f05d6c99ed1d731bc263691a04176e11d4c6e126c56ba20dca19c5e42d4ffab2e7e36 --force
 
       - name: Fetch dependencies
         env:
@@ -88,6 +88,20 @@ jobs:
         env:
           MIX_ENV: test
         run: mix compile --warnings-as-errors
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Run Elixir static and security checks
+        env:
+          MIX_ENV: test
+        run: scripts/check_elixir_static_security.sh
+
+      - name: Audit Hex dependencies
+        run: mix hex.audit
+
+      - name: Audit dependency advisories
+        run: mix deps.audit
 
       - name: Migrate PostgreSQL Storage V2
         env:
@@ -149,18 +163,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Elixir and Erlang
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: '1.20.2'
-          otp-version: '28.4.2'
+          otp-version: '29.0.3'
 
       - name: Install Hex and Rebar
         run: |
-          mix local.hex --force
-          mix local.rebar --force
+          mix local.hex 2.5.1 --force
+          mix local.rebar rebar3 https://github.com/erlang/rebar3/releases/download/3.27.0/rebar3 --sha512 0d00494d849fdc521a55142278d1f6ba552954fbd65b80d40df8022f594f05d6c99ed1d731bc263691a04176e11d4c6e126c56ba20dca19c5e42d4ffab2e7e36 --force
 
       - name: Fetch dependencies
         env:
@@ -208,18 +222,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Elixir and Erlang
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: '1.20.2'
-          otp-version: '28.4.2'
+          otp-version: '29.0.3'
 
       - name: Install Hex and Rebar
         run: |
-          mix local.hex --force
-          mix local.rebar --force
+          mix local.hex 2.5.1 --force
+          mix local.rebar rebar3 https://github.com/erlang/rebar3/releases/download/3.27.0/rebar3 --sha512 0d00494d849fdc521a55142278d1f6ba552954fbd65b80d40df8022f594f05d6c99ed1d731bc263691a04176e11d4c6e126c56ba20dca19c5e42d4ffab2e7e36 --force
 
       - name: Install PostgreSQL 18 client tools
         run: |

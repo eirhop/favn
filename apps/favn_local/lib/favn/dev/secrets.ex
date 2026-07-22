@@ -2,29 +2,29 @@ defmodule Favn.Dev.Secrets do
   @moduledoc false
 
   alias Favn.Dev.Config
-  alias Favn.Dev.DistributedErlang
   alias Favn.Dev.State
 
-  @schema_version 1
+  @schema_version 2
 
   @type root_opt :: [root_dir: Path.t()]
 
   @spec resolve(Config.t(), root_opt()) :: {:ok, map()} | {:error, term()}
-  def resolve(%Config{} = config, opts \\ []) when is_list(opts) do
+  def resolve(%Config{}, opts \\ []) when is_list(opts) do
     with :ok <- State.ensure_layout(opts),
          {:ok, stored} <- read_or_initialize(opts),
          :ok <- validate(stored),
-         :ok <- persist_if_missing(stored, opts),
-         secrets <- apply_configured_overrides(stored, config),
-         :ok <- validate(secrets) do
-      {:ok, Map.drop(secrets, ["schema_version"])}
+         :ok <- persist(stored, opts) do
+      {:ok, Map.drop(stored, ["schema_version"])}
     end
   end
 
   defp read_or_initialize(opts) do
     case State.read_secrets(opts) do
       {:ok, %{"schema_version" => @schema_version} = secrets} ->
-        {:ok, Map.put_new_lazy(secrets, "runtime_input_pin_key", &runtime_input_pin_key/0)}
+        {:ok, complete_secrets(secrets)}
+
+      {:ok, %{"schema_version" => 1} = secrets} ->
+        {:ok, secrets |> Map.put("schema_version", @schema_version) |> complete_secrets()}
 
       {:ok, _invalid} ->
         {:error, :invalid_local_secrets}
@@ -43,18 +43,20 @@ defmodule Favn.Dev.Secrets do
       "service_token" => random_secret(24),
       "web_session_secret" => random_secret(48),
       "rpc_cookie" => random_cookie(32),
-      "runtime_input_pin_key" => runtime_input_pin_key()
+      "runtime_input_pin_key" => runtime_input_pin_key(),
+      "postgres_admin_password" => random_secret(32),
+      "postgres_runtime_password" => random_secret(32),
+      "bootstrap_password" => random_secret(32)
     }
   end
 
-  defp apply_configured_overrides(secrets, config) do
+  defp complete_secrets(secrets) do
     secrets
-    |> maybe_put("service_token", config.service_token)
-    |> maybe_put("web_session_secret", config.web_session_secret)
+    |> Map.put_new_lazy("runtime_input_pin_key", &runtime_input_pin_key/0)
+    |> Map.put_new_lazy("postgres_admin_password", fn -> random_secret(32) end)
+    |> Map.put_new_lazy("postgres_runtime_password", fn -> random_secret(32) end)
+    |> Map.put_new_lazy("bootstrap_password", fn -> random_secret(32) end)
   end
-
-  defp maybe_put(secrets, _key, nil), do: secrets
-  defp maybe_put(secrets, key, value), do: Map.put(secrets, key, value)
 
   defp validate(secrets) do
     with token when is_binary(token) and token != "" <- secrets["service_token"],
@@ -62,14 +64,25 @@ defmodule Favn.Dev.Secrets do
            secrets["web_session_secret"],
          {:ok, pin_key} <- Base.decode64(secrets["runtime_input_pin_key"]),
          32 <- byte_size(pin_key),
-         :ok <- DistributedErlang.validate_cookie(secrets["rpc_cookie"]) do
+         admin when is_binary(admin) and byte_size(admin) >= 32 <-
+           secrets["postgres_admin_password"],
+         runtime when is_binary(runtime) and byte_size(runtime) >= 32 <-
+           secrets["postgres_runtime_password"],
+         bootstrap when is_binary(bootstrap) and byte_size(bootstrap) >= 15 <-
+           secrets["bootstrap_password"],
+         cookie when is_binary(cookie) <- secrets["rpc_cookie"],
+         true <- valid_cookie?(cookie) do
       :ok
     else
       _invalid -> {:error, :invalid_local_secrets}
     end
   end
 
-  defp persist_if_missing(secrets, opts) do
+  defp valid_cookie?(cookie) do
+    byte_size(cookie) in 1..255 and String.match?(cookie, ~r/\A[A-Za-z0-9_]+\z/)
+  end
+
+  defp persist(secrets, opts) do
     case State.read_secrets(opts) do
       {:ok, ^secrets} -> :ok
       _other -> State.write_secrets(secrets, opts)

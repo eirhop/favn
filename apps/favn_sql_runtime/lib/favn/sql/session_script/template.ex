@@ -228,13 +228,7 @@ defmodule Favn.SQL.SessionScript.Template do
   defp literal(false), do: {:ok, "FALSE"}
   defp literal(value) when is_integer(value), do: {:ok, Integer.to_string(value)}
 
-  defp literal(value) when is_float(value) do
-    if value == value do
-      {:ok, Float.to_string(value)}
-    else
-      {:error, :non_finite_float}
-    end
-  end
+  defp literal(value) when is_float(value), do: {:ok, Float.to_string(value)}
 
   defp literal(%Decimal{} = value), do: {:ok, Decimal.to_string(value, :normal)}
   defp literal(%Date{} = value), do: value |> Date.to_iso8601() |> quote_checked_string()

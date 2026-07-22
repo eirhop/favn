@@ -59,16 +59,19 @@ defmodule Favn do
       {:ok, assets} = Favn.list_assets()
       {:ok, pipeline} = Favn.get_pipeline(MyApp.Pipelines.DailySales)
       {:ok, resolution} = Favn.resolve_pipeline(MyApp.Pipelines.DailySales)
-      {:ok, manifest} = Favn.generate_manifest()
+      {:ok, manifest} = Favn.generate_manifest(runner_release: runner_release)
       {:ok, version} = Favn.pin_manifest_version(manifest)
 
   Deployment tooling should preserve the complete execution artifact set:
 
-      {:ok, build} = Favn.build_manifest()
+      {:ok, build} = Favn.build_manifest(runner_release: runner_release)
       {:ok, publication} = Favn.prepare_manifest_publication(build)
 
-  `publication.version` is the compact schema-8 manifest index. SQL assets point
-  to immutable entries in `publication.execution_packages` by content hash.
+  `publication.version` is the compact schema-10 manifest index. It is bound to
+  the exact verified runner descriptor through `required_runner_release_id`.
+  SQL assets point to immutable entries in `publication.execution_packages` by
+  content hash. In these examples, `runner_release` is the descriptor produced
+  by runner build tooling, not a caller-selected ID.
 
   ## Retries, replay, and runtime-input stability
 
@@ -179,7 +182,8 @@ defmodule Favn do
   @type manifest_opts :: [
           asset_modules: [module()] | :all,
           pipeline_modules: [module()] | :all,
-          schedule_modules: [module()] | :all
+          schedule_modules: [module()] | :all,
+          runner_release: Favn.RunnerRelease.t()
         ]
 
   @type run_id :: term()
@@ -249,7 +253,9 @@ defmodule Favn do
   Generates the canonical `%Favn.Manifest{}` from authored modules.
 
   Use this when you need the stable graph payload used by planning and runtime,
-  but do not need build-only metadata such as diagnostics.
+  but do not need build-only metadata such as diagnostics. A verified
+  `:runner_release` descriptor is required; the manifest derives its exact
+  `required_runner_release_id` from that descriptor.
 
   If no explicit modules are passed, `Favn` reads `:asset_modules`,
   `:pipeline_modules`, and `:schedule_modules` from `config :favn`. Projects can
@@ -259,14 +265,15 @@ defmodule Favn do
   ## Example
 
       # With config :favn, discovery: [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all]
-      {:ok, manifest} = Favn.generate_manifest()
+      {:ok, manifest} = Favn.generate_manifest(runner_release: runner_release)
 
       {:ok, manifest} = Favn.generate_manifest(
+        runner_release: runner_release,
         asset_modules: [MyApp.Lakehouse.Raw.Sales.Orders, MyApp.Lakehouse.Mart.Sales.OrderSummary],
         pipeline_modules: [MyApp.Pipelines.DailySales]
       )
   """
-  @spec generate_manifest(keyword()) :: {:ok, Favn.Manifest.t()} | {:error, term()}
+  @spec generate_manifest(manifest_opts()) :: {:ok, Favn.Manifest.t()} | {:error, term()}
   def generate_manifest(opts \\ []) when is_list(opts) do
     FavnAuthoring.generate_manifest(opts)
   end
@@ -275,9 +282,11 @@ defmodule Favn do
   Builds a manifest plus build-only metadata such as diagnostics.
 
   Use this instead of `generate_manifest/1` when tooling needs both the
-  canonical manifest payload and non-runtime build information.
+  canonical manifest payload and non-runtime build information. Pass the same
+  required `:runner_release` descriptor; an independent release ID is not an
+  accepted option.
   """
-  @spec build_manifest(keyword()) :: {:ok, Favn.Manifest.Build.t()} | {:error, term()}
+  @spec build_manifest(manifest_opts()) :: {:ok, Favn.Manifest.Build.t()} | {:error, term()}
   def build_manifest(opts \\ []) when is_list(opts) do
     FavnAuthoring.build_manifest(opts)
   end

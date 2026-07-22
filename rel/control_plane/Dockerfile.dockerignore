@@ -1,0 +1,10 @@
+**/.git
+**/.favn
+**/_build
+**/deps
+**/test
+**/docs
+**/doc
+**/*.md
+**/.env*
+erl_crash.dump

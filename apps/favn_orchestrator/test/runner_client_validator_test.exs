@@ -5,7 +5,7 @@ defmodule FavnOrchestrator.RunnerClientValidatorTest do
 
   defmodule CompleteClient do
     def register_manifest(_, _), do: :ok
-    def ensure_manifest(_, _, _), do: :ok
+    def ensure_manifest(_, _), do: :ok
     def acquire_manifest(_, _, _, _, _), do: :ok
     def renew_manifest(_, _, _), do: :ok
     def release_manifest(_, _), do: :ok

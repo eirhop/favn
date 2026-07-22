@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.RunServer.SnapshotsTest do
         id: "run-snapshot-clear",
         manifest_version_id: "manifest-v1",
         manifest_content_hash: String.duplicate("a", 64),
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Asset, :asset},
         metadata: %{in_flight_execution_ids: ["execution-a", "execution-b"]}
       )
@@ -28,6 +29,7 @@ defmodule FavnOrchestrator.RunServer.SnapshotsTest do
         id: "run-snapshot-empty-clear",
         manifest_version_id: "manifest-v1",
         manifest_content_hash: String.duplicate("b", 64),
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Asset, :asset}
       )
       |> RunState.transition(status: :running)

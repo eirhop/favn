@@ -22,6 +22,7 @@ defmodule FavnRunner.Worker do
   alias FavnRunner.EventSink
   alias FavnRunner.LogSink
   alias FavnRunner.ManifestHandle
+  alias FavnRunner.ReleaseVerifier
   alias FavnRunner.RuntimeConfigDiagnostic
   alias FavnRunner.ResultRetention
 
@@ -41,7 +42,15 @@ defmodule FavnRunner.Worker do
 
   @impl true
   def init(args) do
-    {:ok, args, {:continue, :execute}}
+    work = Map.fetch!(args, :work)
+    manifest = Map.get(args, :manifest) || Map.fetch!(args, :version)
+
+    with :ok <- ReleaseVerifier.verify_required_release(work.required_runner_release_id),
+         :ok <- ReleaseVerifier.verify_required_release(manifest.required_runner_release_id) do
+      {:ok, args, {:continue, :execute}}
+    else
+      {:error, %RunnerError{} = error} -> {:stop, error}
+    end
   end
 
   @impl true
@@ -277,6 +286,7 @@ defmodule FavnRunner.Worker do
       run_id: work.run_id,
       manifest_version_id: manifest_version_id,
       manifest_content_hash: content_hash,
+      required_runner_release_id: work.required_runner_release_id,
       status: Keyword.get(opts, :status, :ok),
       asset_results: asset_results,
       error: normalize_error(Keyword.get(opts, :error)),
@@ -451,6 +461,7 @@ defmodule FavnRunner.Worker do
       run_id: work.run_id,
       manifest_version_id: work.manifest_version_id,
       manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
       event_type: event_type,
       occurred_at: DateTime.utc_now(),
       payload: payload

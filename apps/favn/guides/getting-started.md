@@ -8,11 +8,15 @@ local commands build and load what they need from your DSL modules.
 ## Prerequisites
 
 - An Elixir Mix project.
+- Linux amd64, or amd64 WSL2 with Linux containers.
+- Docker Engine and Docker Compose v2.
+- Pull access to Favn's private GHCR control-plane package.
 - The Favn monorepo or private package source available to your project.
 
 ## 1. Add Favn
 
-For local workspace use:
+Before Hex publication, check out Favn at the approved Git tag or commit, detach
+the checkout, keep it clean, and use path dependencies from that checkout:
 
 ```elixir
 def deps do
@@ -22,7 +26,9 @@ def deps do
 end
 ```
 
-Use your approved package version when Favn is published to your package source.
+The generated runner context vendors the exact dependency closure and does not
+need this checkout or private Git credentials when built elsewhere. Use your
+approved package version when Favn is published to your package source.
 
 If you also want the generated DuckDB sample, add the DuckDB plugin dependency
 when prompted by `mix favn.init` or add it manually from the same checkout.
@@ -53,21 +59,23 @@ This creates a small local setup with:
 - a sample pipeline, usually `MyApp.Pipelines.LocalSmoke`
 - local Favn config
 
-## 3. Check The Setup
-
-```bash
-mix favn.doctor
-```
-
-Fix any reported config or dependency issues before continuing.
-
-## 4. Install Local Runtime Files
+## 3. Install The Local Compose Application
 
 ```bash
 mix favn.install
 ```
 
-This prepares Favn's local runtime workspace under `.favn/install`.
+This verifies Docker Engine and Compose v2, resolves the version-matched
+prebuilt control-plane image to an immutable digest, and writes project-scoped
+Compose state under `.favn/`. It does not compile the control plane.
+
+## 4. Check The Installed Setup
+
+```bash
+mix favn.doctor
+```
+
+Fix any reported config, dependency, image, or Compose issue before continuing.
 
 ## 5. Start Favn Locally
 

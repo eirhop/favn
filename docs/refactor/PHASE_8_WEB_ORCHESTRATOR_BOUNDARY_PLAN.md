@@ -1,8 +1,12 @@
 # Phase 8 Web/Orchestrator Boundary, Event, and Auth Plan
 
+> **Historical and superseded:** Issue #522 selected Favn View and Orchestrator
+> in one control-plane BEAM. The separate `favn_web` topology and packaging
+> recommendations below are not current architecture or implementation guidance.
+
 ## Status
 
-Reopened and redefined.
+Completed historical record; superseded by the issue #522 production contract.
 
 This plan replaces the earlier same-BEAM `favn_view -> favn_orchestrator` LiveView prototype as the Phase 8 target definition. The existing `favn_view` code remains a transitional prototype only. It is no longer the steady-state architecture to optimize around.
 

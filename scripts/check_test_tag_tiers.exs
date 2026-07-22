@@ -3,18 +3,18 @@ defmodule Favn.CheckTestTagTiers do
 
   @allowed_apps %{
     acceptance: MapSet.new(["favn_local"]),
+    container: MapSet.new(["favn_local"]),
     slow: MapSet.new(["favn", "favn_local", "favn_storage_postgres"]),
     browser: MapSet.new([])
   }
 
   @external_lifecycle_module_tiers %{
     "apps/favn/test/mix_tasks/env_bootstrap_integration_test.exs" => :slow,
-    "apps/favn_local/test/acceptance/single_node_production_acceptance_test.exs" => :acceptance,
-    "apps/favn_local/test/integration/dev_split_root_regression_test.exs" => :slow,
-    "apps/favn_local/test/integration/dev_stack_smoke_test.exs" => :slow
+    "apps/favn_local/test/acceptance/local_compose_acceptance_test.exs" => :container,
+    "apps/favn_local/test/acceptance/local_compose_execution_acceptance_test.exs" => :container
   }
 
-  @tag_regex ~r/@(?:module)?tag\s+:?(acceptance|slow|browser)\b|(?:acceptance|slow|browser):\s*true/
+  @tag_regex ~r/@(?:module)?tag\s+:?(acceptance|container|slow|browser)\b|(?:acceptance|container|slow|browser):\s*true/
 
   def run do
     violations =
@@ -68,12 +68,19 @@ defmodule Favn.CheckTestTagTiers do
   end
 
   defp disjoint_tag_violations(path, tags) do
-    if :acceptance in tags and :slow in tags do
-      ["#{path}: :acceptance and :slow must be disjoint because they run in separate CI jobs"]
-    else
-      []
-    end
+    []
+    |> maybe_add_disjoint_violation(
+      :acceptance in tags and :slow in tags,
+      "#{path}: :acceptance and :slow must be disjoint because they run in separate CI jobs"
+    )
+    |> maybe_add_disjoint_violation(
+      :acceptance in tags and :container in tags,
+      "#{path}: :acceptance and :container must be disjoint because ExUnit --only overrides --exclude"
+    )
   end
+
+  defp maybe_add_disjoint_violation(violations, true, message), do: [message | violations]
+  defp maybe_add_disjoint_violation(violations, false, _message), do: violations
 
   defp external_lifecycle_tier_violations(path) do
     case @external_lifecycle_module_tiers do

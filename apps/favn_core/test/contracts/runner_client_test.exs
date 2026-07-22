@@ -10,7 +10,7 @@ defmodule Favn.Contracts.RunnerClientTest do
                await_result: 3,
                cancel_work: 3,
                diagnostics: 1,
-               ensure_manifest: 3,
+               ensure_manifest: 2,
                inspect_relation: 2,
                register_manifest: 2,
                release_manifest: 2,

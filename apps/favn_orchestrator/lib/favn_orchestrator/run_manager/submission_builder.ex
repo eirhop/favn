@@ -71,8 +71,10 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          idempotency: Keyword.get(opts, :_idempotency),
          manifest_version: version,
          submit_kind: :manual,
-         transition_metadata: %{status: run_state.status, submit_kind: :manual},
-         event_metadata: %{run_id: run_state.id, submit_kind: :manual}
+         transition_metadata:
+           release_metadata(run_state, %{status: run_state.status, submit_kind: :manual}),
+         event_metadata:
+           release_metadata(run_state, %{run_id: run_state.id, submit_kind: :manual})
        }}
     end
   end
@@ -90,12 +92,14 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          manifest_version: version,
          submit_kind: :pipeline,
          pipeline_refs: pipeline_refs_from_opts(opts),
-         transition_metadata: %{
-           status: run_state.status,
-           submit_kind: :pipeline,
-           pipeline_target_refs: target_refs
-         },
-         event_metadata: %{run_id: run_state.id, submit_kind: :pipeline}
+         transition_metadata:
+           release_metadata(run_state, %{
+             status: run_state.status,
+             submit_kind: :pipeline,
+             pipeline_target_refs: target_refs
+           }),
+         event_metadata:
+           release_metadata(run_state, %{run_id: run_state.id, submit_kind: :pipeline})
        }}
     end
   end
@@ -113,13 +117,15 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          manifest_version: version,
          submit_kind: :pipeline,
          pipeline_refs: pipeline_refs_from_run(run_state),
-         transition_metadata: %{
-           status: run_state.status,
-           submit_kind: :pipeline,
-           pipeline_target_refs: run_state.target_refs,
-           pipeline_module: pipeline_module
-         },
-         event_metadata: %{run_id: run_state.id, submit_kind: :pipeline}
+         transition_metadata:
+           release_metadata(run_state, %{
+             status: run_state.status,
+             submit_kind: :pipeline,
+             pipeline_target_refs: run_state.target_refs,
+             pipeline_module: pipeline_module
+           }),
+         event_metadata:
+           release_metadata(run_state, %{run_id: run_state.id, submit_kind: :pipeline})
        }}
     end
   end
@@ -137,13 +143,15 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          manifest_version: version,
          submit_kind: :pipeline,
          pipeline_refs: [pipeline_ref],
-         transition_metadata: %{
-           status: run_state.status,
-           submit_kind: :pipeline,
-           pipeline_target_refs: run_state.target_refs,
-           pipeline_ref: pipeline_ref
-         },
-         event_metadata: %{run_id: run_state.id, submit_kind: :pipeline}
+         transition_metadata:
+           release_metadata(run_state, %{
+             status: run_state.status,
+             submit_kind: :pipeline,
+             pipeline_target_refs: run_state.target_refs,
+             pipeline_ref: pipeline_ref
+           }),
+         event_metadata:
+           release_metadata(run_state, %{run_id: run_state.id, submit_kind: :pipeline})
        }}
     end
   end
@@ -167,13 +175,14 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          manifest_version: version,
          submit_kind: :rerun,
          pipeline_refs: pipeline_refs_from_run(run_state),
-         transition_metadata: %{
-           status: run_state.status,
-           submit_kind: :rerun,
-           rerun_of_run_id: run_state.rerun_of_run_id,
-           parent_run_id: run_state.parent_run_id
-         },
-         event_metadata: %{run_id: run_state.id, submit_kind: :rerun}
+         transition_metadata:
+           release_metadata(run_state, %{
+             status: run_state.status,
+             submit_kind: :rerun,
+             rerun_of_run_id: run_state.rerun_of_run_id,
+             parent_run_id: run_state.parent_run_id
+           }),
+         event_metadata: release_metadata(run_state, %{run_id: run_state.id, submit_kind: :rerun})
        }}
     end
   end
@@ -373,6 +382,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       deployment_id: input.deployment_id,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
+      required_runner_release_id: version.required_runner_release_id,
       asset_ref: asset_ref,
       target_refs: plan.target_refs,
       plan: plan,
@@ -391,6 +401,10 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     base
     |> Keyword.merge(extra)
     |> RunState.new()
+  end
+
+  defp release_metadata(%RunState{} = run, metadata) when is_map(metadata) do
+    Map.put(metadata, :required_runner_release_id, run.required_runner_release_id)
   end
 
   defp build_rerun_submission(%RunState{} = source_run, opts) when is_list(opts) do

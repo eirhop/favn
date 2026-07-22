@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Storage.ExecutionOwnershipCodecTest do
         id: "run_codec",
         manifest_version_id: "mv_codec",
         manifest_content_hash: "hash_codec",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {MyApp.Assets.Raw, :asset}
       )
 

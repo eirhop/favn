@@ -249,6 +249,7 @@ defmodule FavnRunner.ExecutionLifecycleTest do
 
   defp work(run_id) do
     %RunnerWork{
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: run_id,
       manifest_version_id: "mv_" <> run_id,
       manifest_content_hash: "hash_" <> run_id,

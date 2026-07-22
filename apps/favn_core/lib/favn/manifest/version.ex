@@ -14,6 +14,7 @@ defmodule Favn.Manifest.Version do
           content_hash: String.t(),
           schema_version: pos_integer(),
           runner_contract_version: pos_integer(),
+          required_runner_release_id: String.t(),
           serialization_format: String.t(),
           manifest: Manifest.t(),
           inserted_at: DateTime.t() | nil
@@ -24,6 +25,7 @@ defmodule Favn.Manifest.Version do
     :content_hash,
     :schema_version,
     :runner_contract_version,
+    :required_runner_release_id,
     :manifest,
     inserted_at: nil,
     serialization_format: "json-v1"
@@ -40,6 +42,7 @@ defmodule Favn.Manifest.Version do
           | {:content_hash, String.t()}
           | {:schema_version, pos_integer()}
           | {:runner_contract_version, pos_integer()}
+          | {:required_runner_release_id, String.t()}
 
   @type error ::
           {:invalid_manifest_version_id, term()}
@@ -49,6 +52,8 @@ defmodule Favn.Manifest.Version do
           | {:manifest_content_hash_mismatch, String.t(), String.t()}
           | {:manifest_schema_version_mismatch, pos_integer(), pos_integer()}
           | {:manifest_runner_contract_version_mismatch, pos_integer(), pos_integer()}
+          | {:invalid_required_runner_release_id, term()}
+          | {:manifest_required_runner_release_id_mismatch, String.t(), String.t()}
           | {:legacy_manifest_field, :sql_execution}
           | Rehydrate.error()
           | Serializer.error()
@@ -68,6 +73,8 @@ defmodule Favn.Manifest.Version do
          {:ok, schema_version} <- read_field(stable_manifest, :schema_version),
          {:ok, runner_contract_version} <-
            read_field(stable_manifest, :runner_contract_version),
+         {:ok, required_runner_release_id} <-
+           read_field(stable_manifest, :required_runner_release_id),
          :ok <- validate_manifest_version_id(manifest_version_id),
          :ok <- validate_serialization_format(serialization_format),
          {:ok, content_hash} <-
@@ -80,6 +87,7 @@ defmodule Favn.Manifest.Version do
          content_hash: content_hash,
          schema_version: schema_version,
          runner_contract_version: runner_contract_version,
+         required_runner_release_id: required_runner_release_id,
          serialization_format: serialization_format,
          manifest: stable_manifest,
          inserted_at: Keyword.get(opts, :inserted_at)
@@ -93,12 +101,15 @@ defmodule Favn.Manifest.Version do
   This function verifies that the supplied manifest payload still matches the
   supplied content hash. It is intended for services that receive a manifest
   version created elsewhere and must validate, not mint, the manifest identity.
+  The publication envelope must include `:required_runner_release_id`, which is
+  matched exactly against the canonical manifest payload.
   """
   @spec from_published(map() | struct(), [published_opt()]) :: {:ok, t()} | {:error, error()}
   def from_published(manifest, opts) when is_list(opts) do
     with :ok <- validate_published_opts(opts),
          {:ok, manifest_version_id} <- fetch_manifest_version_id(opts),
          {:ok, expected_hash} <- fetch_content_hash(opts),
+         {:ok, expected_runner_release_id} <- fetch_required_runner_release_id(opts),
          {:ok, version} <-
            new(manifest,
              manifest_version_id: manifest_version_id,
@@ -116,6 +127,11 @@ defmodule Favn.Manifest.Version do
            match_optional_runner_contract_version(
              version.runner_contract_version,
              Keyword.get(opts, :runner_contract_version)
+           ),
+         :ok <-
+           match_required_runner_release_id(
+             version.required_runner_release_id,
+             expected_runner_release_id
            ) do
       {:ok, version}
     end
@@ -141,6 +157,13 @@ defmodule Favn.Manifest.Version do
            match_runner_contract_version(
              runner_contract_version,
              version.runner_contract_version
+           ),
+         {:ok, required_runner_release_id} <-
+           read_field(stable_manifest, :required_runner_release_id),
+         :ok <-
+           match_required_runner_release_id(
+             required_runner_release_id,
+             version.required_runner_release_id
            ),
          {:ok, computed_hash} <- Identity.hash_manifest(stable_manifest),
          :ok <- match_content_hash(computed_hash, version.content_hash) do
@@ -195,6 +218,7 @@ defmodule Favn.Manifest.Version do
       :content_hash,
       :schema_version,
       :runner_contract_version,
+      :required_runner_release_id,
       :serialization_format,
       :inserted_at,
       :hash_algorithm
@@ -220,6 +244,15 @@ defmodule Favn.Manifest.Version do
     case Keyword.get(opts, :manifest_version_id) do
       value when is_binary(value) and value != "" -> {:ok, value}
       value -> {:error, {:invalid_manifest_version_id, value}}
+    end
+  end
+
+  defp fetch_required_runner_release_id(opts) do
+    value = Keyword.get(opts, :required_runner_release_id)
+
+    case Compatibility.validate_required_runner_release_id(value) do
+      :ok -> {:ok, value}
+      {:error, _reason} -> {:error, {:invalid_required_runner_release_id, value}}
     end
   end
 
@@ -259,6 +292,11 @@ defmodule Favn.Manifest.Version do
 
   defp match_optional_runner_contract_version(actual, expected),
     do: match_runner_contract_version(actual, expected)
+
+  defp match_required_runner_release_id(value, value), do: :ok
+
+  defp match_required_runner_release_id(actual, expected),
+    do: {:error, {:manifest_required_runner_release_id_mismatch, expected, actual}}
 
   defp default_manifest_version_id do
     "mv_" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)

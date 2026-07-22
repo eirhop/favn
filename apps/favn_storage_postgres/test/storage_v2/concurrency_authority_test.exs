@@ -111,8 +111,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     start_supervised!({Repo, options})
     :ok = Migrations.migrate!(Repo)
 
-    version =
-      manifest_version("concurrency-mv-#{System.unique_integer([:positive, :monotonic])}")
+    version = manifest_version("concurrency-mv-#{random_id()}")
 
     {:ok, platform_context} =
       PlatformContext.new("concurrency-test", "manifest-publisher", [:platform_admin])
@@ -1350,6 +1349,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
       deployment_id: fixture.deployment_id,
       manifest_version_id: fixture.version.manifest_version_id,
       manifest_content_hash: fixture.version.content_hash,
+      required_runner_release_id: fixture.version.required_runner_release_id,
       asset_ref: {MyApp.ConcurrentAsset, :asset},
       target_refs: [{MyApp.ConcurrentAsset, :asset}]
     )
@@ -1580,6 +1580,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
 
   defp manifest_version(manifest_version_id) do
     manifest = %Manifest{
+      metadata: %{"fixture_id" => manifest_version_id},
       assets: [
         %Favn.Manifest.Asset{
           ref: {MyApp.ConcurrentAsset, :asset},
@@ -1593,7 +1594,10 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     }
 
     {:ok, version} =
-      Version.new(FavnTestSupport.with_manifest_graph(manifest),
+      Version.new(
+        manifest
+        |> FavnTestSupport.with_manifest_contract()
+        |> FavnTestSupport.with_manifest_graph(),
         manifest_version_id: manifest_version_id
       )
 

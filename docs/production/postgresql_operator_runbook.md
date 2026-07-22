@@ -17,9 +17,10 @@ Vault contents, or runner/plugin-owned data.
 - One Favn-owned database and one `favn_control` schema.
 - One migrator identity with DDL authority and a separate `favn_runtime` identity.
 - Verified TLS with hostname checking on every production connection.
-- At least two orchestrator nodes are required for application-node failure
-  tolerance after the deployable multi-node topology in #522 exists. The database
-  coordination foundation alone is not a supported deployment artifact.
+- The first supported deployment has one control-plane node and one separate
+  runner node. Application-node failure tolerance requires the deferred
+  multi-node topology in #529; the database coordination foundation alone does
+  not provide failover.
 - Provider-managed high availability and point-in-time recovery (PITR).
 - Customer isolation through explicit workspace context and composite workspace
   keys; customers never receive database credentials.
@@ -73,9 +74,14 @@ free for failover, migrations, monitoring, and incident response. PgBouncer may
 protect connection count, but it cannot replace database capacity. This pool is
 unrelated to DuckLake metadata connection or write-concurrency budgets.
 
-## Local development
+## Repository storage development
 
-Docker and PostgreSQL client tools are prerequisites.
+These scripts are for Favn repository contributors working on the storage layer.
+Customer projects use the production-like `mix favn.install` and `mix favn.dev`
+Compose workflow documented in
+[`local_docker_compose.md`](local_docker_compose.md).
+
+Docker and PostgreSQL client tools are prerequisites for the repository scripts.
 
 ```bash
 scripts/postgres/setup
@@ -93,18 +99,71 @@ scripts/postgres/reset
 Developers using another service set `FAVN_DATABASE_MIGRATOR_URL` before setup.
 Credentials in `compose.postgres.yml` are local-only.
 
-The local container does not enable TLS. Local development uses its explicit dev
-configuration. A production-config acceptance launcher may use plaintext loopback
-only with both `FAVN_DATABASE_SSL_MODE=disable` and
-`FAVN_UNSAFE_ALLOW_PLAINTEXT_DATABASE=true`; never deploy that interlock.
+The repository-only local container does not enable TLS and uses explicit dev/test
+configuration. The production loader always requires verified PostgreSQL TLS and
+has no plaintext interlock.
 
 ## Deployment and migrations
 
 Runtime nodes never migrate at boot.
+Use this database procedure together with the immutable runtime sequence in
+[`upgrade_and_rollback.md`](upgrade_and_rollback.md).
 
-1. Confirm a current backup/PITR recovery point and recent successful restore drill.
-2. Prevent rollout of runtime code that requires the new schema.
-3. Run the migration artifact with the migrator identity:
+1. Record the current image and active manifest IDs, then run candidate-image
+   preflight with a read-capable database role:
+
+   Run the fixed operation wrapper from the candidate image. The env file must
+   contain the normal production release environment plus a read-capable
+   database URL; pin the image by digest:
+
+   ```bash
+   docker run --rm \
+     --env-file /secure/favn-preflight.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     preflight-upgrade
+   ```
+
+   An error has code `:runner_identity_upgrade_blocked`. Its
+   `:active_legacy_manifests` sample field identifies active deployments that
+   still point at pre-runner-identity manifests; `:nonterminal_legacy_runs`
+   identifies unfinished runs still bound to them. Republish and activate an
+   aligned current manifest, then explicitly finish or terminate every listed
+   legacy run during the maintenance window before completing the upgrade. The
+   result reports total and per-category blocker counts and at most 100 samples
+   from each category, with `truncated?: true` when more remain.
+2. Confirm a current backup/PITR recovery point and recent successful restore drill.
+3. Prevent rollout of runtime code that requires the new schema.
+4. Run the candidate image with the migrator identity to apply migrations and
+   grants:
+
+   ```bash
+   docker run --rm \
+     --env-file /secure/favn-migrator.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     migrate
+   docker run --rm \
+     --env-file /secure/favn-migrator.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     grant-runtime
+   ```
+
+   Then run exact schema verification from a separate one-off process configured
+   with the runtime database identity. Production verification deliberately
+   rejects a connection whose current database user is not the configured runtime
+   role:
+
+   ```bash
+   docker run --rm \
+     --env-file /secure/favn-runtime-verify.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     verify-schema
+   ```
+
+   The equivalent development wrappers are:
 
    ```bash
    FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" mix favn.postgres.migrate
@@ -112,7 +171,22 @@ Runtime nodes never migrate at boot.
      mix favn.postgres.grant_runtime --role favn_runtime
    ```
 
-   Provision a workspace before adding it to a runtime's allowed workspace set:
+   Provision a workspace before adding it to a runtime's allowed workspace set.
+   Production uses the candidate release image with the elevated database
+   identity:
+
+   Put `FAVN_WORKSPACE_ID=salmon-one`, `FAVN_WORKSPACE_SLUG=salmon-one`, and
+   `FAVN_WORKSPACE_NAME=Salmon One` in the one-off migrator env file, then run:
+
+   ```bash
+   docker run --rm \
+     --env-file /secure/favn-migrator.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     provision-workspace
+   ```
+
+   The development wrapper is:
 
    ```bash
    FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
@@ -120,9 +194,51 @@ Runtime nodes never migrate at boot.
        --id salmon-one --slug salmon-one --name "Salmon One"
    ```
 
-4. Start one canary and require readiness to report `ready?: true`.
-5. Check database errors, lock waits, pool queue time, projection lag, and outbox lag.
-6. Roll out remaining nodes gradually.
+5. Start one canary and require readiness to report `ready?: true`.
+6. Check database errors, lock waits, pool queue time, projection lag, and outbox lag.
+
+Release operations emit start/stop telemetry at
+`[:favn, :storage_postgres, :release_operation, :start | :stop]`. Completion
+events contain a bounded duration measurement and metadata limited to operation,
+status, and a stable error code; logs must never contain database URLs,
+credentials, TLS material, or key values.
+
+## Manifest activation and runner alignment
+
+Manifest publication is safe while the runner is offline: it validates and stores
+an immutable staged release without changing any workspace deployment. Activation
+is the compatibility gate. For the exact staged manifest, the control plane:
+
+1. validates the requested workspace target selection;
+2. requires runner diagnostics to report both explicit readiness and a canonical
+   runner release id;
+3. requires that id to equal the manifest's `required_runner_release_id`;
+4. verifies or registers the manifest in the runner cache; and
+5. commits the immutable deployment and active pointer.
+
+A runner outage or incomplete diagnostics returns `runner_unavailable` and leaves
+the active deployment unchanged. A release mismatch returns
+`runner_release_mismatch` with only the required and actual release ids. A cache
+collision returns `runner_manifest_conflict`. Both are conflicts and also leave the
+active deployment unchanged. Audit records and operator responses include release
+ids, never runner paths, environment values, or secrets.
+
+Monitor `manifest_publication_succeeded`, `manifest_publication_rejected`,
+`manifest_activation_succeeded`, `manifest_activation_rejected`, and
+`runner_release_diagnostics_checked` on the orchestrator telemetry prefix. The
+diagnostic event reports bounded latency and readiness status. A mismatch reports
+only the required and actual release ids. Activation rejection audit records use a
+stable `rejection_reason`; they deliberately omit selection, deployment
+configuration, environment values, and raw runner errors.
+
+Every admitted run pins the deployment id, manifest id, manifest content hash, and
+runner release id. Recovery rechecks this tuple before starting a run server. After
+an upgrade, historical terminal snapshots without a release binding remain visible
+for audit; a pending or running legacy snapshot fails closed with
+`legacy_runner_release_unbound`. Do not edit those rows. Republish an aligned
+manifest for new work and resolve or terminate legacy work through an explicit
+maintenance decision before reopening admission.
+7. Roll out remaining nodes gradually.
 
 Readiness rejects PostgreSQL majors other than 18, a mismatched catalog-definition
 fingerprint (column types/nullability/defaults plus every constraint and index on
@@ -140,18 +256,48 @@ Do not remove a key version merely because a newer version is current. A persist
 pin remains encrypted with the version recorded on its row, and exact command replay
 returns that canonical pin without rewriting it.
 
+First inspect version numbers and pin counts. Neither command reads key material:
+
+```bash
+docker run --rm \
+  --env-file /secure/favn-runtime-verify.env \
+  --entrypoint /app/bin/favn_control_plane_ops \
+  ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+  runtime-input-key-inventory
+```
+
+The one-off process validates the complete keyring directly from
+`FAVN_RUNTIME_INPUT_PIN_KEYS` and protects the version selected by
+`FAVN_RUNTIME_INPUT_PIN_KEY_VERSION`; it does not depend on control-plane startup
+having populated application state.
+
 After the retention workflow has purged or re-encrypted every pin using the old
-version, compact the inventory with the migrator identity:
+version, compact that explicit non-current version:
+
+Set `FAVN_RUNTIME_INPUT_KEY_VERSIONS=1` in the one-off migrator env file, then run:
+
+```bash
+docker run --rm \
+  --env-file /secure/favn-migrator.env \
+  --entrypoint /app/bin/favn_control_plane_ops \
+  ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+  compact-runtime-input-keys
+```
+
+The equivalent development wrappers are:
 
 ```bash
 FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
-  mix favn.postgres.compact_runtime_input_keys
+  mix favn.postgres.runtime_input_key_inventory
+FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
+  mix favn.postgres.compact_runtime_input_keys --version 1
 ```
 
-The task briefly locks runtime-input pin writes while it removes only inventory
-versions with no referencing pin. Confirm readiness remains healthy, then remove
-the retired version from `FAVN_RUNTIME_INPUT_PIN_KEYS`. The task reports version
-numbers only and never reads or prints key material.
+Compaction briefly locks runtime-input pin writes. It atomically rejects the whole
+request if any requested version still has a pin, rejects the configured current
+version, and treats an already-absent version as a successful retry. Confirm
+readiness remains healthy, then remove the retired version from the configured
+keyring.
 
 ## Runtime privileges
 
@@ -180,11 +326,22 @@ physical backups.
 At least monthly, and before a major upgrade or destructive migration:
 
 1. Restore the provider backup/PITR point into a new isolated server or database.
-2. Run schema and authority verification:
+2. Apply the normal runtime grants, then run schema and authority verification
+   with a read-capable restored runtime identity:
 
    ```bash
-   FAVN_DATABASE_URL="$RESTORED_DATABASE_URL" mix favn.postgres.verify_restore
+   docker run --rm \
+     --env-file /secure/favn-restore-verify.env \
+     --entrypoint /app/bin/favn_control_plane_ops \
+     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
+     verify-restore
    ```
+
+   The development wrapper is
+   `FAVN_DATABASE_URL="$RESTORED_DATABASE_URL" mix favn.postgres.verify_restore`.
+   Restore verification gives its checked-out database session a bounded
+   ten-minute statement/client timeout for large authority scans and restores
+   the normal session timeout before returning the connection.
 
 3. Start an isolated canary with external dispatch disabled.
 4. Backfill missing disposable projection rows in bounded batches and compare

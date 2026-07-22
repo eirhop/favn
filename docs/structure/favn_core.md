@@ -14,6 +14,17 @@ Code:
   normalization so selector-facing metadata persists and matches as strings
 - `apps/favn_core/lib/favn/runner/` owns the public runner plugin lifecycle and
   simple supervised-children implementation
+- `Favn.RunnerRelease` owns the canonical customer runtime descriptor,
+  `runner_release_id`, and validation. `RuntimeRoots` keeps Elixir assets,
+  runtime-input resolvers, plugins, supervised children, and explicit dynamic
+  modules/applications as typed Mix-free build inputs. `BeamDigest` removes
+  compile/debug/source-root metadata and uses only chunks retained after OTP
+  release stripping. It rejects compiled absolute-path literals because they
+  cannot be distinguished safely from business-significant paths after
+  stripping. `ModuleClosure` selects caller-supplied project-local imports and
+  conservatively includes every project-local protocol implementation,
+  including implementations of dependency protocols. Container assembly and
+  filesystem discovery remain outside core.
 - `apps/favn_core/lib/favn/runtime_value*` owns inert provider refs for deferred,
   explicitly supported runtime-boundary values; refs never contain resolved
   credentials
@@ -54,7 +65,10 @@ Integration boundaries opt in explicitly; DuckDB session-script parameters are
 the first consumer. Providers return bounded errors, refs have redacted Inspect
 output, and secret refs are tracked by connection redaction.
 
-Manifest schema 9 and runner contract 9 are the only supported versions. Static
+Manifest schema 10 and runner contract 10 are the only supported versions.
+Every current manifest includes a canonical `required_runner_release_id` derived
+from a verified `%Favn.RunnerRelease{}` descriptor; that field participates in
+the manifest content hash. Static
 asset and pipeline settings use `Favn.Settings`; top-level atom keys are retained
 for runtime access while nested maps normalize to JSON-safe string keys.
 `Favn.Run.Context`, `Favn.Run.AssetContext`, and `Favn.Run.PipelineContext`

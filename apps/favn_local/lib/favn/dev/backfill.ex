@@ -14,12 +14,9 @@ defmodule Favn.Dev.Backfill do
   anchor value expected by the orchestrator.
   """
 
-  alias Favn.Dev.Config
-  alias Favn.Dev.LocalContext
+  alias Favn.Dev.ComposeSession
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.Run
-  alias Favn.Dev.State
-  alias Favn.Dev.Status
 
   @terminal_statuses ["ok", "partial", "error", "cancelled", "timed_out"]
   @default_timeout_ms 60_000
@@ -47,9 +44,9 @@ defmodule Favn.Dev.Backfill do
           timeout_ms: pos_integer(),
           wait_timeout_ms: pos_integer(),
           run_timeout_ms: pos_integer(),
-           poll_interval_ms: pos_integer(),
-           refresh: String.t(),
-           metadata: map()
+          poll_interval_ms: pos_integer(),
+          refresh: String.t(),
+          metadata: map()
         ]
 
   @spec submit_pipeline(module() | String.t(), submit_opts()) :: {:ok, map()} | {:error, term()}
@@ -360,28 +357,7 @@ defmodule Favn.Dev.Backfill do
     end
   end
 
-  defp session(opts) do
-    with :ok <- ensure_running(opts),
-         {:ok, runtime} <- read_runtime_snapshot(opts) do
-      {:ok, base_url(runtime, opts), LocalContext.credentials(), LocalContext.session_context()}
-    end
-  end
-
-  defp ensure_running(opts) do
-    case Status.inspect_stack(opts).stack_status do
-      :running -> :ok
-      :partial -> {:error, :stack_not_healthy}
-      _other -> {:error, :stack_not_running}
-    end
-  end
-
-  defp read_runtime_snapshot(opts) do
-    State.read_runtime(opts)
-  end
-
-  defp base_url(runtime, opts) do
-    runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
-  end
+  defp session(opts), do: ComposeSession.resolve(opts)
 
   defp filters(opts, allowed) do
     opts
@@ -529,14 +505,11 @@ defmodule Favn.Dev.Backfill do
 
   defp unwrap_submit_error(%{operation: operation, reason: {:http_error, 422, payload}})
        when operation in [:submit_backfill, :plan_backfill] do
-    case get_in(payload, ["error", "message"]) do
-      message when is_binary(message) and message != "" ->
-        {:orchestrator_validation_failed, message}
-
-      _other ->
-        {:orchestrator_validation_failed, inspect(payload)}
-    end
+    {:orchestrator_validation_failed, validation_error_code(payload)}
   end
 
   defp unwrap_submit_error(reason), do: reason
+
+  defp validation_error_code(%{error_code: code}) when is_binary(code) and code != "", do: code
+  defp validation_error_code(_payload), do: "validation_failed"
 end

@@ -1,3 +1,5 @@
+Code.require_file("rel/control_plane/release.exs", __DIR__)
+
 defmodule FavnUmbrella.MixProject do
   use Mix.Project
 
@@ -23,9 +25,14 @@ defmodule FavnUmbrella.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      releases: FavnControlPlane.Release.config(),
       aliases: aliases(),
       listeners: listeners(Mix.env()),
-      dialyzer: [plt_add_apps: [:mix]]
+      dialyzer: [
+        plt_add_apps: [:mix],
+        ignore_warnings: ".dialyzer_ignore.exs",
+        list_unused_filters: true
+      ]
     ]
   end
 
@@ -34,6 +41,7 @@ defmodule FavnUmbrella.MixProject do
       preferred_envs: [
         test: :test,
         "test.acceptance": :test,
+        "test.container": :test,
         "test.slow": :test
       ]
     ]
@@ -42,7 +50,11 @@ defmodule FavnUmbrella.MixProject do
   defp deps do
     [
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:dialyxir,
+       github: "jeremyjh/dialyxir",
+       ref: "3553678f4d69281ac6db61034bcf35bcb30cfd78",
+       only: [:dev, :test],
+       runtime: false},
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
       {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false}
     ]
@@ -55,7 +67,10 @@ defmodule FavnUmbrella.MixProject do
     [
       test: &test/1,
       "test.acceptance": [
-        "do --app favn_local cmd mix test --no-compile --only acceptance --timeout 1200000"
+        "do --app favn_local cmd mix test --no-compile --only acceptance --exclude container --timeout 1200000"
+      ],
+      "test.container": [
+        "do --app favn_local cmd mix test --no-compile --only container --timeout 1200000"
       ],
       "test.slow": [
         "do --app favn cmd mix test --no-compile --only slow --timeout 1200000",

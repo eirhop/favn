@@ -32,6 +32,7 @@ defmodule FavnOrchestrator.RunnerExecutionIdentityTest do
         id: "run",
         manifest_version_id: "manifest",
         manifest_content_hash: "hash",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
         asset_ref: {__MODULE__, :asset}
       )
 

@@ -10,13 +10,16 @@ defmodule FavnOrchestrator do
   """
 
   alias Favn.Contracts.RelationInspectionRequest
+  alias Favn.Contracts.RelationInspectionResult
   alias Favn.Contracts.RunnerClient
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.ControlPlaneRuntimeConfig
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.Logs
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestTarget
   alias FavnOrchestrator.Manifests
@@ -40,11 +43,15 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunnerManifestRegistration
+  alias FavnOrchestrator.RunnerDispatch
+  alias FavnOrchestrator.RunnerReleaseCompatibility
+  alias FavnOrchestrator.RunnerReplacement
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.Shutdown
   alias FavnOrchestrator.ScheduleListEntry
   alias FavnOrchestrator.ScheduleOccurrencePreview
   alias FavnOrchestrator.SchedulerEntry
@@ -53,6 +60,11 @@ defmodule FavnOrchestrator do
   @type operator_actor :: Auth.actor()
   @type operator_session :: Auth.session()
   @type operator_actor_context :: OperatorContext.t()
+
+  @doc "Confirms that unified control-plane boot configuration was applied."
+  @spec ensure_control_plane_runtime_config_applied() ::
+          :ok | {:error, :control_plane_runtime_config_not_applied}
+  def ensure_control_plane_runtime_config_applied, do: ControlPlaneRuntimeConfig.ensure_applied()
 
   @doc "Builds browser-safe, non-authoritative operator identity hints."
   @spec operator_context(String.t(), operator_actor(), operator_session()) ::
@@ -145,6 +157,31 @@ defmodule FavnOrchestrator do
   @spec readiness() :: map()
   def readiness, do: FavnOrchestrator.Readiness.readiness()
 
+  @doc "Returns bounded lifecycle state for operator and release tooling."
+  @spec lifecycle() :: map()
+  def lifecycle, do: Lifecycle.diagnostics()
+
+  @doc "Begins or resumes an authenticated runner-replacement boundary."
+  @spec begin_runner_replacement(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def begin_runner_replacement(token), do: RunnerReplacement.begin(token)
+
+  @doc "Returns bounded runner-replacement drain state."
+  @spec runner_replacement_status() :: map()
+  def runner_replacement_status, do: RunnerReplacement.status()
+
+  @doc "Verifies that the connected runner advertises one exact release ID."
+  @spec verify_replacement_runner(String.t()) :: {:ok, map()} | {:error, term()}
+  def verify_replacement_runner(runner_release_id),
+    do: RunnerReplacement.verify_runner(runner_release_id)
+
+  @doc "Ends a runner-replacement boundary owned by the opaque token."
+  @spec finish_runner_replacement(String.t()) :: :ok | {:error, term()}
+  def finish_runner_replacement(token), do: RunnerReplacement.finish(token)
+
+  @doc "Begins the irreversible bounded drain used before a controlled shutdown."
+  @spec drain(keyword()) :: {:ok, map()}
+  def drain(opts \\ []) when is_list(opts), do: Shutdown.drain(opts)
+
   @doc "Authenticates an operator against one explicit workspace membership."
   @spec operator_password_login(String.t(), String.t(), String.t(), keyword() | map()) ::
           {:ok, operator_session(), operator_actor()} | {:error, :invalid_credentials}
@@ -217,7 +254,8 @@ defmodule FavnOrchestrator do
     runner_opts = configured_runner_opts()
     manifest_version_id = version.manifest_version_id
 
-    with :ok <- validate_runner_client(runner_client) do
+    with :ok <- validate_runner_client(runner_client),
+         :ok <- RunnerReleaseCompatibility.verify_runner(runner_client, version, runner_opts) do
       content_hash = version.content_hash
 
       case RunnerManifestRegistration.ensure(runner_client, version, runner_opts) do
@@ -521,6 +559,12 @@ defmodule FavnOrchestrator do
          {:ok, asset_ref} <- ManifestTarget.resolve_asset_ref(version, target_id),
          :ok <- validate_runner_client(configured_runner_client()),
          :ok <-
+           RunnerReleaseCompatibility.verify_runner(
+             configured_runner_client(),
+             version,
+             configured_runner_opts()
+           ),
+         :ok <-
            RunnerManifestRegistration.ensure(
              configured_runner_client(),
              version,
@@ -529,11 +573,34 @@ defmodule FavnOrchestrator do
       request = %RelationInspectionRequest{
         manifest_version_id: manifest_version_id,
         manifest_content_hash: version.content_hash,
+        required_runner_release_id: version.required_runner_release_id,
         asset_ref: asset_ref,
         sample_limit: Keyword.get(opts, :sample_limit, 20)
       }
 
-      configured_runner_client().inspect_relation(request, configured_runner_opts())
+      case RunnerDispatch.inspect_relation(
+             configured_runner_client(),
+             request,
+             configured_runner_opts()
+           ) do
+        {:ok, %RelationInspectionResult{} = result} ->
+          with :ok <-
+                 RunnerReleaseCompatibility.verify_inspection_result(
+                   version.required_runner_release_id,
+                   result
+                 ) do
+            {:ok, result}
+          end
+
+        {:ok, _invalid_result} ->
+          {:error, :invalid_runner_inspection_result}
+
+        {:error, _reason} = error ->
+          error
+
+        _invalid_response ->
+          {:error, :invalid_runner_inspection_result}
+      end
     end
   end
 

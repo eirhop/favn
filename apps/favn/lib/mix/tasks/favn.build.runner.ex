@@ -1,10 +1,11 @@
 defmodule Mix.Tasks.Favn.Build.Runner do
   use Mix.Task
 
+  @requirements ["app.config"]
   @shortdoc "Builds the project-local runner artifact"
 
   @moduledoc """
-  Builds `.favn/build/runner/<build_id>` and `.favn/dist/runner/<build_id>`.
+  Builds `.favn/dist/runner/<runner_release_id>` as a relocatable OCI context.
 
   The runner build is rooted in the current Mix project. `--root-dir` controls
   artifact location only when it matches the current project root.
@@ -12,38 +13,42 @@ defmodule Mix.Tasks.Favn.Build.Runner do
 
   alias Favn.Dev
   alias Mix.Tasks.Favn.CLIArgs
+  alias Mix.Tasks.Favn.ProductionBuild
 
   @impl Mix.Task
   def run(args) do
     opts = CLIArgs.parse_no_args!("favn.build.runner", args, root_dir: :string)
 
+    ProductionBuild.run("favn.build.runner", args, fn -> run_build(opts) end)
+  end
+
+  @doc false
+  def run_build(opts) when is_list(opts) do
     case Dev.build_runner(opts) do
-      {:ok, %{build_id: build_id, dist_dir: dist_dir}} ->
+      {:ok,
+       %{
+         runner_release_id: release_id,
+         dist_dir: dist_dir,
+         manifest_dir: manifest_dir,
+         status: status
+       }} ->
         IO.puts("Favn runner build complete")
-        IO.puts("build id: #{build_id}")
+        IO.puts("runner release: #{release_id}")
+        IO.puts("status: #{status}")
         IO.puts("dist: #{dist_dir}")
-        IO.puts("note: see #{Path.join(dist_dir, "OPERATOR_NOTES.md")}")
+        IO.puts("aligned manifest: #{manifest_dir}")
+        IO.puts("note: see #{Path.join(dist_dir, "operator-notes.md")}")
 
       {:error, :install_required} ->
         Mix.raise("build blocked: install required; run mix favn.install")
 
       {:error, :install_stale} ->
         Mix.raise(
-          "build blocked: install stale; run mix favn.install to refresh, or mix favn.install --force to rebuild"
+          "build blocked: install stale; run mix favn.install to refresh, or mix favn.install --force to repull and revalidate"
         )
 
       {:error, {:missing_tool, tool}} ->
         Mix.raise("build blocked: missing required tool #{tool}; run mix favn.install")
-
-      {:error, {:tool_check_failed, tool, status, output}} ->
-        Mix.raise(
-          "build blocked: required tool #{tool} check failed (status=#{status}): #{output}; rerun mix favn.install"
-        )
-
-      {:error, :missing_install_runtime_input} ->
-        Mix.raise(
-          "build blocked: install runtime input missing; run mix favn.install to refresh, or mix favn.install --force to rebuild"
-        )
 
       {:error, {:unsupported_root_dir, requested, current}} ->
         Mix.raise(

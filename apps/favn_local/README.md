@@ -1,350 +1,234 @@
 # favn_local
 
-`favn_local` owns local developer tooling and project-local packaging workflows
-for Favn.
+`favn_local` owns Favn's customer-side build and local Docker Compose tooling.
+The public `mix favn.*` tasks live in `apps/favn` and delegate to `Favn.Dev`.
+Authoring and manifest compilation remain owned by `favn_authoring`.
 
-`apps/favn` exposes the public `mix favn.*` tasks. Those tasks delegate to
-`Favn.Dev` in this app.
+## Supported local runtime
 
-## Scope and ownership
+Local development requires a reachable Linux amd64 Docker Engine and Docker
+Compose v2 or newer, plus Elixir `1.20.2` on Erlang/OTP `29` for host Mix
+commands. The host compiler must match the pinned customer-runner compiler.
+Docker Desktop with the WSL2 amd64 engine is supported. There is one supported
+topology:
 
-`favn_local` owns:
+- digest-pinned PostgreSQL 18;
+- the prebuilt, version-matched Favn control-plane image;
+- the customer-built runner image.
 
-- local stack lifecycle implementation (`dev`, `stop`, `status`, `reload`)
-- local project bootstrap and validation (`init`, `doctor`)
-- install/reset/log tooling (`install`, `reset`, `logs`)
-- local run investigation and cancellation (`runs`, `logs RUN_ID`)
-- local SQL data inspection and read-only querying (`inspect`, `query`)
-- local operational-backfill submission, planning, inspection, rerun, and repair
-- project-local packaging flows (`build.runner`, `build.web`,
-  `build.orchestrator`, `build.single`, `bootstrap.single`)
-- project-local filesystem state under `.favn/`
+All three services use one project-scoped private Compose network. PostgreSQL,
+EPMD, and BEAM distribution ports are not published. Only the View and private
+orchestrator API bind to `127.0.0.1`. No source tree is mounted into either
+release container.
 
-`favn_local` does not define public authoring APIs. Authoring and manifest
-compile logic remains in `favn_authoring`.
-
-## Public task surface
-
-These tasks are exposed by `apps/favn` and implemented by `favn_local`:
-
-- `mix favn.install`
-- `mix favn.init`
-- `mix favn.doctor`
-- `mix favn.dev`
-- `mix favn.status`
-- `mix favn.run`
-- `mix favn.backfill`
-- `mix favn.runs`
-- `mix favn.logs`
-- `mix favn.inspect`
-- `mix favn.query`
-- `mix favn.diagnostics`
-- `mix favn.reload`
-- `mix favn.stop`
-- `mix favn.reset`
-- `mix favn.build.runner`
-- `mix favn.build.web`
-- `mix favn.build.orchestrator`
-- `mix favn.build.single`
-- `mix favn.bootstrap.single`
-
-`mix favn.backfill` is a local operator convenience over the private
-orchestrator backfill HTTP endpoints. It is not a stable external API contract.
-
-## Typical usage
-
-### First-time local setup
+## First use
 
 ```bash
-mix favn.init --duckdb --sample
 mix deps.get
-mix favn.doctor
+mix favn.init --duckdb --sample
 mix favn.install
+mix favn.doctor
 mix favn.dev
-mix favn.dev --scheduler
 ```
 
-`mix favn.init --duckdb --sample` generates a minimal DuckDB-backed consumer
-sample: connection module, namespace modules, raw Elixir load asset, downstream
-SQL asset, a `deps(:all)` pipeline, local Favn config, and `.env.example` values
-for local web login. Generated files are idempotent: matching files are reported
-as already present, and changed files are left untouched.
+`mix favn.install` is explicit and does not start services. It:
 
-### Inspect and iterate
+- checks Docker Engine and Docker Compose;
+- pulls `ghcr.io/eirhop/favn-control-plane:v<matching-favn-version>`;
+- resolves the tag to its immutable repository digest;
+- verifies its Linux amd64 target, non-root user, Favn version, build ID,
+  manifest schema, and runner contract labels;
+- writes the project-scoped Compose contract and generated local credentials.
+
+A repeated install uses the exact cached digest. `mix favn.install --force`
+repulls and revalidates the version tag. Registry credentials remain entirely
+in Docker's credential store; Favn has no registry-password option.
+
+`mix favn.dev` then:
+
+1. compiles the customer project and builds an aligned runner/manifest release;
+2. builds or reuses a project-scoped
+   `favn-local-runner-<compose-project>:<runner_release_id>` image;
+3. starts PostgreSQL and runs migration, grant, schema verification, and local
+   workspace provisioning as one-shot control-plane release operations;
+4. starts the runner and control plane and verifies liveness plus full remote
+   runner readiness;
+5. publishes and activates the aligned manifest;
+6. streams prefixed Compose logs until interrupted.
+
+Ctrl-C performs a bounded graceful stop and preserves the PostgreSQL volume,
+generated artifacts, and cached images.
+
+Install, start, reload, stop, and reset mutations are serialized by one
+project-adjacent bounded lock. A second command fails instead of interleaving.
+If a CLI process is killed, the next Linux process verifies the recorded PID,
+boot ID, and process start identity before reclaiming its stale lock.
+Start also fails before changing generated files or images when any part of the
+project stack is already running; use reload or stop explicitly. Containers
+left stopped by `mix favn.stop` may be started again normally.
+
+## Day-to-day commands
 
 ```bash
 mix favn.status
 mix favn.run MyApp.Pipelines.Daily
-mix favn.run MyApp.Pipelines.Monthly --window month:2026-03 --timezone Europe/Oslo
-mix favn.run MyApp.Source.Events:movement --window month:2026-07 \
-  --dependencies none --refresh force_selected
-mix favn.backfill submit MyApp.Pipelines.Daily --from 2026-04-01 --to 2026-04-07 --kind day
-mix favn.backfill submit MyApp.Pipelines.Monthly --window month:2025-05..2026-05 --dry-run
-mix favn.backfill windows RUN_ID
-mix favn.runs list --status error --limit 20
-mix favn.runs show RUN_ID
-mix favn.runs cancel RUN_ID
-mix favn.runs cancel RUN_ID --wait --wait-timeout-ms 30000
-mix favn.logs RUN_ID
-mix favn.inspect relation raw.sales.orders
-mix favn.inspect partitions raw.sales.orders
-mix favn.query "select count(*) from raw.sales.orders"
-mix favn.logs --service runner --tail 200
+mix favn.runs list --limit 20
+mix favn.logs --service control-plane --tail 200
+mix favn.logs --service runner --follow
 mix favn.reload
 mix favn.stop
+mix favn.diagnostics
 ```
 
-`mix favn.inspect ...` and `mix favn.query "select ..."` are safe to run
-directly from a consumer project. The tasks load `.env` before consumer runtime
-config and start only `:favn_sql_runtime` before connecting, so the SQL session
-pool is supervised without starting the consumer app or its plugins.
+`mix favn.reload` recomputes the release contract before changing the running
+stack:
 
-`mix favn.runs cancel RUN_ID` requests cancellation through the local
-orchestrator HTTP API using the trusted local-dev context. Add `--wait` when the
-command should poll that run until it is terminal or the local wait timeout
-expires. Backfill parent runs still need explicit backfill cancellation support;
-cancel active child/window runs individually for now.
+- SQL, pipeline, schedule, or other manifest-only changes publish and activate
+  a new manifest without rebuilding or restarting either image;
+- customer Elixir, helper, resolver, plugin, adapter, runtime dependency, or
+  runner-contract changes enter a resumable maintenance boundary, wait a
+  bounded time for admitted mutations and work to drain, replace only the
+  runner, verify its exact release ID, activate its aligned manifest, and then
+  restore admission;
+- the official control-plane image is never rebuilt or replaced by reload.
 
-### Clean local state
+The owner-only recovery record snapshots the verified running image and active
+manifest before a build can replace `latest.json`, then records the opaque
+maintenance lease before the control plane is asked to acquire it. An
+interrupted command therefore resumes with the original image/manifest pair
+and the same lease. Admission is restored only after replacement succeeds or
+both the old runner and old active manifest have been positively verified. If
+rollback cannot be verified, maintenance remains active for a later recovery
+attempt.
+
+`mix favn.stop` preserves the volume and images. Destructive cleanup is always
+explicit:
 
 ```bash
 mix favn.reset
+mix favn.reset --yes
 ```
 
-### Build artifacts
+Without `--yes`, reset prints the exact project-scoped containers, network,
+volume, local runner images, and `.favn` directory it would remove. It never
+removes the installed official control-plane image.
+
+## Build and deployment operations
 
 ```bash
 mix favn.build.runner
-mix favn.build.web
-mix favn.build.orchestrator
-mix favn.build.single
+mix favn.build.manifest \
+  --runner-release .favn/dist/runner/rr_.../runner-release.json
+
+FAVN_ORCHESTRATOR_SERVICE_TOKEN=... mix favn.publish \
+  --manifest .favn/dist/manifest/mv_.../manifest-index.json \
+  --orchestrator-url https://control-plane.internal
+
+FAVN_ORCHESTRATOR_SERVICE_TOKEN=... mix favn.activate \
+  --manifest-version mv_... \
+  --workspace-id production \
+  --orchestrator-url https://control-plane.internal
 ```
 
-## Configuration contract
+Runner and manifest builds execute in `MIX_ENV=prod`. A production runner build
+requires Favn to come from a clean, detached Git commit/tag so the packaged
+source revision is provable. The runner context vendors the customer's OTP app,
+`priv` files, exact runtime dependency closure, verified descriptor, aligned
+manifest, digest-pinned Dockerfile, and bundle hashes. The user owns building
+and publishing this runner image.
 
-`favn_local` reads local tooling config from `config :favn, :local`.
+Declare executable code reached only through dynamic dispatch:
 
-`config :favn, :dev` is still read and merged for backward compatibility, but
-`:local` is the source-of-truth namespace for new config.
+```elixir
+config :favn,
+  runner_build: [
+    extra_modules: [MyApp.DynamicHelper],
+    extra_applications: [:my_runtime_app]
+  ]
+```
 
-Example:
+Changing either list requires a new runner release. A manifest-only build
+recomputes the executable fingerprint and fails if code, dependencies, plugins,
+compile-time runtime values, or the toolchain no longer match the supplied
+runner descriptor.
+
+Publication uploads missing execution packages before staging the manifest. It
+is content-addressed: a replay returns the existing canonical manifest version.
+Activation always targets that exact staged version and succeeds only when the
+connected runner advertises the required release.
+
+## Configuration
+
+Local tooling reads `config :favn, :local`:
 
 ```elixir
 config :favn, :local,
-  postgres: [
-    url: "ecto://favn_runtime:favn_runtime_local@127.0.0.1:5432/favn_dev",
-    ssl: false,
-    pool_size: 10
-  ],
   workspace_id: "local-dev",
   scheduler: false,
   orchestrator_port: 4101,
   web_port: 4173
 ```
 
-PostgreSQL is the only supported control-plane backend. Run
-`scripts/postgres/setup` from the Favn repository first; it migrates the schema,
-grants the runtime role, and provisions the configured local workspace.
+PostgreSQL is managed by Compose; a customer does not configure a local storage
+adapter or host database URL. The scheduler is disabled by default. Use
+`mix favn.dev --scheduler`, `mix favn.dev --no-scheduler`, or the configuration
+above to choose explicitly.
 
-### Consumer dependency boundary
+`mix favn.dev` and `mix favn.reload` load `<project-root>/.env` once before the
+customer production build. Existing shell values win. The resulting bounded
+customer environment is written to owner-only `.favn/compose/runner.env` and is
+consumed only by the runner container. Favn-owned service values override
+customer values. Values are literal: `$NAME`, `${NAME}`, quotes, backslashes,
+`#`, and newlines reach the runner unchanged. Secrets are never placed in
+process arguments, Compose YAML, install metadata, diagnostics, returned Docker
+errors, persisted failure output, or streamed log messages.
 
-Consumer projects configure the local PostgreSQL connection through `config
-:favn, :local` or `FAVN_DATABASE_URL`.
+The first release supports environment-variable secrets only. Rotation is a
+manual overlap-and-restart procedure; automatic secret-provider integration and
+hot rotation are outside this release.
 
-Do not add `:favn_storage_postgres`, `:favn_orchestrator`, `:favn_runner`, or
-`:favn_local` directly to a normal consumer `mix.exs` for local development. Those
-apps are Favn-owned runtime/package components materialized under `.favn/` by
-`mix favn.install` and used by `mix favn.dev`.
+## Managed files
 
-Scheduler selection:
+All project-local state is under `.favn/` and must stay uncommitted:
 
-- default: disabled
-- `scheduler: true` in `config :favn, :local` enables local schedules
-- `mix favn.dev --scheduler` enables local schedules and overrides config
-- `mix favn.dev --no-scheduler` disables local schedules and overrides config
+- `install/control-plane.json`: exact installed control-plane image metadata;
+- `compose/compose.yml`: generated topology with no embedded secrets;
+- `compose/.env`: owner-only Favn service credentials and port selections;
+- `compose/runner.env`: owner-only customer runner environment;
+- `dist/runner/` and `dist/manifest/`: immutable customer artifacts;
+- `history/`: bounded failure records;
+- `logs/compose-failure.log`: preserved bounded startup diagnostics;
+- `secrets.json`: owner-only generated local credentials;
+- `maintenance.json`: owner-only runner/manifest recovery snapshot and
+  maintenance lease, present only while completion remains unconfirmed;
+- `runtime.json`: current Compose/deployment identity.
 
-Numeric local config values, including local ports and Postgres port/pool size,
-must be positive integers or strings containing only a positive integer after
-trimming whitespace. Malformed strings fall back to the documented defaults.
+The PostgreSQL data volume is Docker-managed and named from the canonical
+project root. Install does not create it; `dev` creates it and `reset --yes`
+removes it.
 
-Local env files:
+## Maintainer-only control-plane build
 
-- `mix favn.dev`, `mix favn.reload`, `mix favn.inspect`, and `mix favn.query`
-  load `<project-root>/.env`, then use a
-  fresh Mix process to evaluate `config/runtime.exs` before compiling the
-  project, building manifests, or launching/restarting services
-- each command reads its env file once; a later `mix favn.reload` starts a new
-  bootstrap and therefore sees current env-file and runtime-config values
-- `FAVN_ENV_FILE` can point at an alternate env file; relative paths are resolved
-  from the project root
-- existing shell environment variables win over values in the env file
-- Favn-owned service values such as local ports, runner node names, and service
-  tokens override env-file values when launching managed services
-- raw env values are not written into `.favn/` runtime metadata
-- env values are inherited by the configured process and are not placed in
-  command-line arguments
+`MIX_ENV=prod mix favn.build.control_plane --load` creates the repository-owned
+Linux amd64 candidate image used by acceptance tests. Public install cannot
+select arbitrary images or candidate tags. Protected main-branch CI is the only
+publisher for `ghcr.io/eirhop/favn-control-plane`; deployments consume its
+digest, not a mutable tag.
 
-## `.favn/` layout
+Qualify the exact loaded candidate with:
 
-`favn_local` keeps all managed project-local side effects under `.favn/`:
+```bash
+FAVN_CONTROL_PLANE_CANDIDATE=favn-control-plane-candidate:<build-id> \
+  mix test.container
+```
 
-- `install/` install metadata, toolchain capture, runtime input snapshots
-- `build/` per-target build working directories
-- `dist/` per-target final artifact outputs
-- `logs/` local service logs
-- `data/` local DuckDB files and other project data-plane state
-- `manifests/` latest and cached manifest metadata
-- `history/` failure metadata
-- `secrets.json` generated project-local service, session, and Distributed
-  Erlang credentials; owner-readable/writable only on POSIX filesystems
-- `runtime.json` live stack state
+The ordinary `mix test.acceptance` tier excludes these image-building Docker
+scenarios. Pull-request candidate CI and protected-main pre-publish CI run the
+dedicated container tier explicitly, so missing candidate images cannot turn a
+production qualification into a silent skip.
 
-`.favn/` is local runtime state and must stay uncommitted. Favn persists only
-generated local credentials in `secrets.json`; configured password/token/secret
-overrides are used at runtime and are not copied into Favn state files.
-
-## How core flows work
-
-### Install
-
-`mix favn.install`:
-
-- validates Elixir runtime metadata
-- computes and stores an install fingerprint, using filtered Git tree metadata
-  for clean Git sources, hashing only changed files for dirty Git worktrees,
-  and falling back to full deterministic content hashing outside Git, while
-  excluding generated dependency/build/doc/temp directories and rejecting
-  source symlinks so materialization cannot escape the runtime root
-- captures toolchain metadata
-- resolves a runnable Favn runtime workspace under `.favn/install/runtime_root`
-- records runtime source/materialization metadata in `.favn/install/runtime.json`
-- installs runtime-root Mix deps for orchestrator/runner/storage apps
-- installs the Phoenix esbuild and Tailwind binaries used by local endpoint
-  watchers unless `--skip-web-install` is passed
-
-`mix favn.dev` and build tasks validate install freshness before running. When
-the source-tree hash changes, rerunning `mix favn.install` refreshes the
-materialized runtime; `mix favn.install --force` remains available for an
-unconditional rebuild. Failed reinstalls invalidate readiness so a partially
-prepared workspace cannot be mistaken for the previous working install.
-
-### Local dev startup
-
-`mix favn.dev` starts a runner process plus one operator process that runs both
-orchestrator and the Phoenix/LiveView `favn_view` app. It writes runtime state to
-`.favn/runtime.json`. The UI is available at `http://127.0.0.1:4173` by default.
-
-The local scheduler is disabled by default so active pipeline schedules do not
-surprise one-time local ETL work. Manual `mix favn.run PipelineModule` is the
-recommended safe default. Scheduled tutorial or smoke flows should opt in with
-`mix favn.dev --scheduler`.
-
-Runtime and consumer compilation is incremental. Unchanged starts reuse Mix
-compiler manifests; they do not force a full rebuild.
-
-The orchestrator process starts with local-dev mode enabled. Local CLI calls use
-an explicit trusted local-dev context that is accepted only while the API is
-bound to `127.*`; they do not perform password login and do not create local
-operator users. Production/server auth is a separate runtime configuration path.
-
-`mix favn.run TARGET` submits an asset or pipeline to the running local stack over
-the private orchestrator HTTP boundary using the loopback-only local-dev context.
-It resolves the active manifest target ID, submits the run, and waits
-for terminal status by default.
-Windowed pipelines accept explicit local run windows with `--window
-hour:YYYY-MM-DDTHH`, `--window day:YYYY-MM-DD`, `--window month:YYYY-MM`, or
-`--window year:YYYY`, plus optional `--timezone`.
-Asset targets accept `--dependencies all|none` and `--refresh auto|missing|force_selected|force_selected_upstream|force_all`.
-Pipeline targets reject `--dependencies` and accept only `auto`, `missing`, and
-`force_all` refresh. Omitted options preserve orchestrator defaults of
-dependency scope `all` and refresh `auto`. `force_selected_upstream` requires
-dependency scope `all`.
-
-Dependency scope determines which assets are planned; refresh determines how
-freshness is applied within that plan. `--dependencies none --refresh
-force_selected` is intended for targeted repair after the operator has confirmed
-that upstream inputs are suitable. It must not be treated as the normal
-scheduling or pipeline path.
-The local tooling HTTP client is intentionally limited to plain HTTP loopback
-URLs for Favn-managed local services.
-
-Runner-side consumer config transport is local-dev-only. It carries only
-`:discovery`, `:connection_modules`, `:connections`, `:execution_pools`,
-`:runner_plugins`, `:duckdb_in_process_client`, and `:duckdb_adbc` from the
-consumer project's `config :favn`. Relative
-connection database paths are expanded against the consumer project root before
-the runner starts. Tagged `Favn.RuntimeConfig.Ref` and `Favn.RuntimeValue.Ref`
-values are preserved as inert refs, so Azure token refs resolve only inside the
-runner. Secrets can be present for local use, but diagnostics redact connection
-values, tokens, passwords, database URLs, and plugin config.
-
-Before startup, `favn_local` incrementally compiles the installed runtime
-workspace under `.favn/install/runtime_root`. Runner and operator services then
-use those beams with `--no-compile` and without taking Mix's OS build lock; the
-shared build tree is read-only while they run. Consumer-config validation also
-uses the compiled transport module instead of compiling a generated decoder in
-each service process.
-
-`--root-dir` remains supported as a runtime-source override for install
-resolution. Local dev and reload then launch from the installed runtime
-workspace.
-
-Readiness is checked through the configured loopback HTTP health endpoints.
-
-Phoenix asset watchers are managed by the `favn_view` endpoint during local dev.
-
-### Reload
-
-`mix favn.reload`:
-
-- requires a healthy running stack
-- recompiles and rebuilds/pins manifest
-- restarts runner and re-registers manifest
-- publishes/activates manifest in orchestrator
-- updates runtime active manifest metadata
-
-Runner restart uses a short node name for `--sname`, derived from stored
-runtime full node name.
-
-Manifest registration probes the live runner node for a compatible
-`register_manifest` entrypoint before RPC dispatch so local-dev startup fails
-with an explicit contract error instead of raw `:undef` when the runtime root
-is out of sync.
-
-### Operator inspection, logs, and reset
-
-- `mix favn.logs` reads files under `.favn/logs/` (supports service filter,
-  tail, and follow)
-- `mix favn.logs RUN_ID` reads persisted run events from the local orchestrator
-- `mix favn.runs list` and `mix favn.runs show RUN_ID` inspect persisted run
-  summaries/details through the local orchestrator API
-- `mix favn.inspect relation RELATION` and `mix favn.inspect partitions RELATION`
-  inspect configured SQL relations; pass `--connection NAME` when multiple Favn
-  SQL connections are configured
-- `mix favn.query "select ..."` uses a best-effort read-only guardrail by
-  default; this is not a SQL sandbox or security boundary. Pass `--allow-write`
-  only for deliberate local mutation. The SQL inspection commands load `.env`
-  before `config/runtime.exs`, then start only the SQL runtime before connecting,
-  including `Favn.SQL.SessionPool`
-- `mix favn.reset` removes `.favn/` after verifying no managed services are
-  still running
-
-### Packaging targets
-
-- `build.runner`: project-specific runner artifact with user code + pinned
-  manifest + plugin inventory metadata
-- `build.web`: Phoenix/LiveView UI artifact metadata and bundle contract
-- `build.orchestrator`: orchestrator artifact metadata and storage contract
-- `build.single`: assembles a project-local backend-only PostgreSQL launcher with
-  generated `config/assembly.json`, `env/backend.env.example`, and executable
-  `bin/start|stop` scripts. It runs runner, PostgreSQL persistence, and
-  orchestrator in one backend BEAM runtime. The launcher is operational and
-  start/stop tested, but remains project-local and non-relocatable because it
-  depends on the installed runtime source root. It does not provide a supported web
-  startup path; the current UI requires an in-BEAM orchestrator facade.
-
-## Platform assumptions
-
-`favn_local` supports Unix and Windows process checks/termination paths.
-
-No separate Node/SvelteKit frontend process is required for local dev.
+The generated Compose environment pins `FAVN_CONTROL_PLANE_IMAGE` to the exact
+installed image identity and freezes the shutdown drain timeout. Qualification
+temporarily swaps that pin to a compatible derived image and back to prove
+upgrade/rollback without changing PostgreSQL or the customer runner; public
+install does not expose arbitrary image selection.

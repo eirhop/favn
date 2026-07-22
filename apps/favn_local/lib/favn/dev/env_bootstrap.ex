@@ -87,13 +87,13 @@ defmodule Favn.Dev.EnvBootstrap do
         with {:ok, env_file} <- EnvFile.load(opts) do
           bootstrap = %__MODULE__{
             env_file_path: Path.expand(env_file.path),
-            loaded: env_file.loaded
+            loaded: env_file.effective
           }
 
           {:ok,
            opts
            |> Keyword.put(:env_bootstrap, bootstrap)
-           |> Keyword.put(:env_file_loaded, env_file.loaded)}
+           |> Keyword.put(:env_file_loaded, env_file.effective)}
         end
 
       _other ->
@@ -108,7 +108,7 @@ defmodule Favn.Dev.EnvBootstrap do
         "command" => Atom.to_string(command),
         "root_dir" => opts |> Paths.root_dir() |> Path.expand(),
         "env_file_path" => Path.expand(env_file.path),
-        "loaded_keys" => env_file.loaded |> Map.keys() |> Enum.sort()
+        "loaded_keys" => env_file.effective |> Map.keys() |> Enum.sort()
       }
 
       with :ok <- validate_payload_shape(payload),
@@ -133,7 +133,12 @@ defmodule Favn.Dev.EnvBootstrap do
 
     case result do
       {:ok, env_file} ->
-        {:ok, %{env_file | loaded: Map.drop(env_file.loaded, @bootstrap_control_env)}}
+        {:ok,
+         %{
+           env_file
+           | loaded: Map.drop(env_file.loaded, @bootstrap_control_env),
+             effective: Map.drop(env_file.effective, @bootstrap_control_env)
+         }}
 
       {:error, _reason} = error ->
         error

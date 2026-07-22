@@ -1,8 +1,12 @@
 # Phase 8 TODO
 
+> **Historical and superseded:** This completed checklist records the removed
+> separate-`favn_web` direction. Current architecture keeps Favn View and
+> Orchestrator in one control-plane BEAM.
+
 ## Status
 
-Checklist for implementing `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md`.
+Completion record for `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md`.
 
 This list is intentionally detailed and execution-oriented. `docs/FEATURES.md` remains the high-level roadmap only.
 

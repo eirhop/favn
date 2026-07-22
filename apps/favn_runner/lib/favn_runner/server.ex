@@ -10,6 +10,7 @@ defmodule FavnRunner.Server do
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerCancellation
   alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerEvent
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.ExecutionPackage
@@ -21,9 +22,13 @@ defmodule FavnRunner.Server do
   alias FavnRunner.ManifestResolver
   alias FavnRunner.ManifestHandle
   alias FavnRunner.ManifestStore
+  alias FavnRunner.ReleaseVerifier
+  alias FavnRunner.Lifecycle, as: RuntimeLifecycle
   alias FavnRunner.Worker
 
   @type execution_id :: String.t()
+
+  @default_diagnostics_timeout_ms 4_000
 
   @type state :: %{
           lifecycle: ExecutionLifecycle.t(),
@@ -47,23 +52,25 @@ defmodule FavnRunner.Server do
 
   @spec submit_work(RunnerWork.t(), keyword()) :: {:ok, execution_id()} | {:error, term()}
   def submit_work(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
-    server = Keyword.get(opts, :server, __MODULE__)
+    with :ok <- ReleaseVerifier.verify_required_release(work.required_runner_release_id) do
+      server = Keyword.get(opts, :server, __MODULE__)
 
-    case GenServer.call(server, {:lookup_execution_replay, work}, submit_call_timeout_ms(opts)) do
-      {:replay, execution_id} ->
-        {:ok, execution_id}
+      case GenServer.call(server, {:lookup_execution_replay, work}, submit_call_timeout_ms(opts)) do
+        {:replay, execution_id} ->
+          {:ok, execution_id}
 
-      :new ->
-        with {:ok, submission} <-
-               prepare_submission(
-                 work,
-                 Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
-               ) do
-          GenServer.call(server, {:submit_work, submission}, submit_call_timeout_ms(opts))
-        end
+        :new ->
+          with {:ok, submission} <-
+                 prepare_submission(
+                   work,
+                   Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+                 ) do
+            GenServer.call(server, {:submit_work, submission}, submit_call_timeout_ms(opts))
+          end
 
-      {:error, _reason} = error ->
-        error
+        {:error, _reason} = error ->
+          error
+      end
     end
   catch
     :exit, {:timeout, _call} ->
@@ -145,8 +152,10 @@ defmodule FavnRunner.Server do
   @spec inspect_relation(RelationInspectionRequest.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts) do
-    server = Keyword.get(opts, :server, __MODULE__)
-    GenServer.call(server, {:inspect_relation, request}, Keyword.get(opts, :timeout, 15_000))
+    with :ok <- ReleaseVerifier.verify_required_release(request.required_runner_release_id) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:inspect_relation, request}, Keyword.get(opts, :timeout, 15_000))
+    end
   end
 
   @spec diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
@@ -154,9 +163,46 @@ defmodule FavnRunner.Server do
     server = Keyword.get(opts, :server, __MODULE__)
 
     case Process.whereis(server) do
-      nil -> {:error, :runner_not_available}
-      _pid -> GenServer.call(server, :diagnostics)
+      nil ->
+        {:error, :runner_not_available}
+
+      _pid ->
+        with {:ok, core} <-
+               GenServer.call(
+                 server,
+                 :diagnostics_core,
+                 Keyword.get(opts, :server_timeout_ms, 1_000)
+               ) do
+          {:ok, complete_diagnostics(core, opts)}
+        end
     end
+  catch
+    :exit, _reason -> {:error, :runner_not_available}
+  end
+
+  @doc false
+  @spec active_execution_count(keyword()) ::
+          {:ok, non_neg_integer()} | {:error, :runner_not_available}
+  def active_execution_count(opts \\ []) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    {:ok, GenServer.call(server, :active_execution_count, Keyword.get(opts, :timeout, 1_000))}
+  catch
+    :exit, _reason -> {:error, :runner_not_available}
+  end
+
+  @doc false
+  @spec cancel_active(RunnerCancellation.t(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, :runner_not_available}
+  def cancel_active(reason, opts \\ []) when is_map(reason) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+
+    GenServer.call(
+      server,
+      {:cancel_active, RunnerCancellation.from_map(reason)},
+      Keyword.get(opts, :timeout, 5_000)
+    )
+  catch
+    :exit, _reason -> {:error, :runner_not_available}
   end
 
   @impl true
@@ -268,39 +314,29 @@ defmodule FavnRunner.Server do
   end
 
   def handle_call({:cancel_work, execution_id, reason}, _from, state) do
-    case ExecutionLifecycle.fetch_execution(state.lifecycle, execution_id) do
-      {:ok, %{status: :completed}} ->
-        {:reply,
-         {:ok,
-          RunnerCancellation.outcome(:already_completed,
-            execution_id: execution_id,
-            runner_status: :already_completed,
-            native_status: :not_applicable
-          )}, state}
+    {reply, state} = cancel_execution(state, execution_id, reason)
+    {:reply, reply, state}
+  end
 
-      {:ok, %{status: :running, pid: pid, work: work}} ->
-        _ = DynamicSupervisor.terminate_child(FavnRunner.WorkerSupervisor, pid)
+  def handle_call(:active_execution_count, _from, state) do
+    {:reply, active_worker_count(state), state}
+  end
 
-        result = cancelled_result(work, reason)
-        next_state = finalize_execution(state, execution_id, result)
+  def handle_call({:cancel_active, reason}, _from, state) do
+    execution_ids =
+      state.lifecycle.executions
+      |> Enum.flat_map(fn
+        {execution_id, %{status: :running}} -> [execution_id]
+        _other -> []
+      end)
 
-        {:reply,
-         {:ok,
-          RunnerCancellation.outcome(:acknowledged,
-            execution_id: execution_id,
-            runner_status: :beam_worker_stopped,
-            native_status: :native_cancel_unknown
-          )}, next_state}
+    state =
+      Enum.reduce(execution_ids, state, fn execution_id, acc ->
+        {_reply, next} = cancel_execution(acc, execution_id, reason, :deadline)
+        next
+      end)
 
-      :error ->
-        {:reply,
-         {:ok,
-          RunnerCancellation.outcome(:not_found,
-            execution_id: execution_id,
-            runner_status: :not_found,
-            native_status: :native_cancel_unknown
-          )}, state}
-    end
+    {:reply, {:ok, length(execution_ids)}, state}
   end
 
   def handle_call({:subscribe_execution_logs, execution_id, subscriber}, _from, state) do
@@ -332,37 +368,106 @@ defmodule FavnRunner.Server do
 
   def handle_call({:inspect_relation, %RelationInspectionRequest{} = request}, _from, state) do
     reply =
-      with {:ok, version} <-
+      with :ok <- ReleaseVerifier.verify_required_release(request.required_runner_release_id),
+           {:ok, version} <-
              ManifestStore.fetch(request.manifest_version_id, request.manifest_content_hash,
                server: state.manifest_store
-             ) do
+             ),
+           :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
         Inspection.inspect_relation(request, version)
       end
 
     {:reply, reply, state}
   end
 
-  def handle_call(:diagnostics, _from, state) do
-    reply =
-      {:ok,
-       state.lifecycle
-       |> ExecutionLifecycle.diagnostics()
-       |> Map.merge(%{
-         available?: true,
-         server: __MODULE__,
-         admission: admission_diagnostics(state),
-         manifest_cache: ManifestStore.diagnostics(server: state.manifest_store),
-         data_plane: data_plane_diagnostics()
-       })}
+  def handle_call(:diagnostics_core, _from, state) do
+    core =
+      state.lifecycle
+      |> ExecutionLifecycle.diagnostics()
+      |> Map.merge(%{
+        available?: true,
+        node_name: Atom.to_string(node()),
+        server: __MODULE__,
+        admission: admission_diagnostics(state),
+        manifest_store_server: state.manifest_store
+      })
 
-    {:reply, reply, state}
+    {:reply, {:ok, core}, state}
+  end
+
+  defp cancel_execution(state, execution_id, reason, mode \\ :graceful) do
+    case ExecutionLifecycle.fetch_execution(state.lifecycle, execution_id) do
+      {:ok, %{status: :completed}} ->
+        {
+          {:ok,
+           RunnerCancellation.outcome(:already_completed,
+             execution_id: execution_id,
+             runner_status: :already_completed,
+             native_status: :not_applicable
+           )},
+          state
+        }
+
+      {:ok, %{status: :running, pid: pid, work: work}} ->
+        :ok = terminate_worker(pid, mode)
+
+        result = cancellation_result(work, reason, mode)
+        next_state = finalize_execution(state, execution_id, result)
+
+        {
+          {:ok,
+           RunnerCancellation.outcome(:acknowledged,
+             execution_id: execution_id,
+             runner_status: :beam_worker_stopped,
+             native_status: :native_cancel_unknown
+           )},
+          next_state
+        }
+
+      :error ->
+        {
+          {:ok,
+           RunnerCancellation.outcome(:not_found,
+             execution_id: execution_id,
+             runner_status: :not_found,
+             native_status: :native_cancel_unknown
+           )},
+          state
+        }
+    end
+  end
+
+  defp terminate_worker(pid, :deadline) do
+    Process.exit(pid, :kill)
+    :ok
+  end
+
+  defp terminate_worker(pid, :graceful) do
+    case DynamicSupervisor.terminate_child(FavnRunner.WorkerSupervisor, pid) do
+      :ok -> :ok
+      {:error, :not_found} -> :ok
+    end
   end
 
   @impl true
-  def handle_info({:runner_event, execution_id, event}, state) do
-    lifecycle = ExecutionLifecycle.append_event(state.lifecycle, execution_id, event)
+  def handle_info({:runner_event, execution_id, %RunnerEvent{} = event}, state) do
+    lifecycle =
+      case ExecutionLifecycle.fetch_execution(state.lifecycle, execution_id) do
+        {:ok, %{status: :running, work: %RunnerWork{} = work}} ->
+          if valid_runner_event?(work, event) do
+            ExecutionLifecycle.append_event(state.lifecycle, execution_id, event)
+          else
+            state.lifecycle
+          end
+
+        _not_running ->
+          state.lifecycle
+      end
+
     {:noreply, %{state | lifecycle: lifecycle}}
   end
+
+  def handle_info({:runner_event, _execution_id, _invalid_event}, state), do: {:noreply, state}
 
   def handle_info({:runner_log_entry, execution_id, entry}, state) do
     {subscribers, lifecycle} = ExecutionLifecycle.append_log(state.lifecycle, execution_id, entry)
@@ -376,7 +481,8 @@ defmodule FavnRunner.Server do
 
   def handle_info({:runner_result, execution_id, %RunnerResult{} = result}, state) do
     case ExecutionLifecycle.fetch_execution(state.lifecycle, execution_id) do
-      {:ok, %{status: :running}} ->
+      {:ok, %{status: :running, work: %RunnerWork{} = work}} ->
+        result = validate_worker_result(work, result)
         {:noreply, finalize_execution(state, execution_id, result)}
 
       {:ok, %{status: :completed}} ->
@@ -403,7 +509,8 @@ defmodule FavnRunner.Server do
   end
 
   defp prepare_submission(%RunnerWork{} = work, manifest_store) do
-    with {:ok, asset_ref} <- ManifestResolver.resolve_target_ref(work),
+    with :ok <- ReleaseVerifier.verify_required_release(work.required_runner_release_id),
+         {:ok, asset_ref} <- ManifestResolver.resolve_target_ref(work),
          {:ok, manifest, asset, relation_by_module} <-
            ManifestStore.fetch_execution_bundle(
              work.manifest_lease_id,
@@ -413,6 +520,7 @@ defmodule FavnRunner.Server do
              work.execution_package,
              server: manifest_store
            ),
+         :ok <- ReleaseVerifier.verify_required_release(manifest.required_runner_release_id),
          {:ok, package} <- ExecutionPackage.verify_for_asset(work.execution_package, asset) do
       work = %{work | execution_package: package}
 
@@ -474,7 +582,7 @@ defmodule FavnRunner.Server do
            }
          ]},
       restart: :temporary,
-      shutdown: 5000,
+      shutdown: 5_000,
       type: :worker
     }
 
@@ -530,6 +638,29 @@ defmodule FavnRunner.Server do
     ExecutionAdmission.diagnostics(state.admission, active_worker_count(state))
   end
 
+  defp release_diagnostics do
+    case ReleaseVerifier.release_info() do
+      {:ok, release_info} ->
+        release_info
+        |> Map.put(:ready?, true)
+        |> Map.put(:status, :ready)
+
+      {:error, :runner_release_not_verified} ->
+        %{
+          ready?: false,
+          status: :not_ready,
+          release_status: :runner_release_not_verified
+        }
+    end
+  end
+
+  defp valid_runner_event?(%RunnerWork{} = work, %RunnerEvent{} = event) do
+    event.run_id == work.run_id and
+      event.manifest_version_id == work.manifest_version_id and
+      event.manifest_content_hash == work.manifest_content_hash and
+      event.required_runner_release_id == work.required_runner_release_id
+  end
+
   defp active_worker_count(state) do
     state.lifecycle.executions
     |> Map.values()
@@ -553,6 +684,56 @@ defmodule FavnRunner.Server do
     %{state | lifecycle: lifecycle}
   end
 
+  defp validate_worker_result(
+         %RunnerWork{
+           run_id: run_id,
+           manifest_version_id: manifest_version_id,
+           manifest_content_hash: manifest_content_hash,
+           required_runner_release_id: release_id
+         },
+         %RunnerResult{
+           run_id: run_id,
+           manifest_version_id: manifest_version_id,
+           manifest_content_hash: manifest_content_hash,
+           required_runner_release_id: release_id
+         } = result
+       )
+       when is_binary(release_id),
+       do: result
+
+  defp validate_worker_result(%RunnerWork{} = work, %RunnerResult{} = result) do
+    error = worker_result_identity_error(result)
+
+    %RunnerResult{
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
+      status: :error,
+      asset_results: [],
+      error: error,
+      metadata: RunnerWork.lifecycle_metadata(work)
+    }
+  end
+
+  defp worker_result_identity_error(%RunnerResult{} = result) do
+    case ReleaseVerifier.verify_required_release(result.required_runner_release_id) do
+      {:error, %RunnerError{} = error} ->
+        error
+
+      :ok ->
+        RunnerError.new(
+          kind: :boundary,
+          type: :runner_result_identity_mismatch,
+          phase: :runner_result,
+          message: "Runner result does not match its stored work identity",
+          reason: :runner_result_identity_mismatch,
+          retryable?: false,
+          outcome: :safe_failure
+        )
+    end
+  end
+
   defp cleanup_monitor_refs(monitor_refs) when is_list(monitor_refs),
     do: Enum.each(monitor_refs, &Process.demonitor(&1, [:flush]))
 
@@ -561,10 +742,38 @@ defmodule FavnRunner.Server do
       run_id: work.run_id,
       manifest_version_id: work.manifest_version_id,
       manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
       status: :cancelled,
       asset_results: [],
       error: RunnerError.cancelled(reason),
       metadata: RunnerWork.lifecycle_metadata(work)
+    }
+  end
+
+  defp cancellation_result(work, reason, :graceful), do: cancelled_result(work, reason)
+
+  defp cancellation_result(work, reason, :deadline) do
+    interruption = %{native_status: :native_cancel_unknown, source: :runner_shutdown_deadline}
+
+    %RunnerResult{
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
+      status: :error,
+      asset_results: [],
+      error:
+        RunnerError.new(
+          kind: :exit,
+          type: :runner_shutdown_interrupted,
+          phase: :runner_shutdown,
+          message: "Runner execution interrupted at the shutdown deadline",
+          reason: reason,
+          details: interruption,
+          retryable?: false,
+          outcome: :unknown
+        ),
+      metadata: Map.put(RunnerWork.lifecycle_metadata(work), :shutdown_interruption, interruption)
     }
   end
 
@@ -573,6 +782,7 @@ defmodule FavnRunner.Server do
       run_id: work.run_id,
       manifest_version_id: work.manifest_version_id,
       manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
       status: :error,
       asset_results: [],
       error: RunnerError.normalize(reason, kind: :exit, type: :worker_crash),
@@ -591,6 +801,7 @@ defmodule FavnRunner.Server do
       run_id: work.run_id,
       manifest_version_id: manifest.manifest_version_id,
       manifest_content_hash: manifest.content_hash,
+      required_runner_release_id: manifest.required_runner_release_id,
       status: :error,
       asset_results: [],
       error:
@@ -605,13 +816,125 @@ defmodule FavnRunner.Server do
     }
   end
 
-  defp data_plane_diagnostics do
+  defp complete_diagnostics(core, opts) do
+    {manifest_store, core} = Map.pop!(core, :manifest_store_server)
+    release_diagnostics = release_diagnostics()
+    runtime_lifecycle = RuntimeLifecycle.diagnostics()
+    dependencies = bounded_dependency_diagnostics(manifest_store, opts)
+    data_plane = dependencies.data_plane
+    extensions = dependencies.extensions
+    supervision = dependencies.supervision
+
+    ready? =
+      release_diagnostics.ready? and runtime_lifecycle.ready? and data_plane.status == :ok and
+        extensions.status == :ok and supervision.status == :ok and dependencies.ready?
+
+    status =
+      cond do
+        ready? -> :ready
+        not runtime_lifecycle.ready? -> runtime_lifecycle.status
+        true -> :not_ready
+      end
+
+    core
+    |> Map.merge(%{
+      data_plane: data_plane,
+      extensions: extensions,
+      supervision: supervision,
+      manifest_cache: dependencies.manifest_cache,
+      lifecycle: runtime_lifecycle
+    })
+    |> Map.merge(release_diagnostics)
+    |> Map.put(:ready?, ready?)
+    |> Map.put(:status, status)
+  end
+
+  defp bounded_dependency_diagnostics(manifest_store, opts) do
+    timeout_ms = diagnostics_timeout_ms(opts)
+    parent = self()
+    result_ref = make_ref()
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        result = %{
+          ready?: true,
+          manifest_cache: ManifestStore.diagnostics(server: manifest_store),
+          data_plane: data_plane_diagnostics(timeout_ms),
+          extensions: extension_diagnostics(),
+          supervision: supervision_diagnostics()
+        }
+
+        send(parent, {result_ref, result})
+      end)
+
+    receive do
+      {^result_ref, diagnostics} ->
+        Process.demonitor(monitor, [:flush])
+        diagnostics
+
+      {:DOWN, ^monitor, :process, ^pid, _reason} ->
+        dependency_diagnostics_error(:runner_dependency_diagnostics_failed)
+    after
+      timeout_ms ->
+        Process.exit(pid, :kill)
+        Process.demonitor(monitor, [:flush])
+        dependency_diagnostics_error(:runner_dependency_diagnostics_timeout)
+    end
+  end
+
+  defp diagnostics_timeout_ms(opts) do
+    case Keyword.get(opts, :diagnostics_timeout_ms, @default_diagnostics_timeout_ms) do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> timeout_ms
+      _invalid -> @default_diagnostics_timeout_ms
+    end
+  end
+
+  defp dependency_diagnostics_error(reason) do
+    %{
+      ready?: false,
+      manifest_cache: %{status: :error, reason: reason},
+      data_plane: %{status: :error, reason: reason},
+      extensions: %{status: :error, reason: reason},
+      supervision: %{status: :error, reason: reason}
+    }
+  end
+
+  defp supervision_diagnostics do
+    required_processes = [
+      FavnRunner.Supervisor,
+      FavnRunner.ExtensionSupervisor,
+      FavnRunner.ConnectionRegistry,
+      FavnRunner.ExecutionRegistry,
+      FavnRunner.WorkerSupervisor,
+      FavnRunner.ManifestStore,
+      FavnRunner.RuntimeStarter
+    ]
+
+    processes =
+      Map.new(required_processes, fn name ->
+        {name, if(is_pid(Process.whereis(name)), do: :alive, else: :unavailable)}
+      end)
+
+    %{
+      status:
+        if(Enum.all?(processes, fn {_name, status} -> status == :alive end),
+          do: :ok,
+          else: :error
+        ),
+      processes: processes
+    }
+  end
+
+  defp data_plane_diagnostics(timeout_ms) do
     case ConnectionRegistry.list(registry_name: FavnRunner.ConnectionRegistry) do
       connections when is_list(connections) ->
+        connection_diagnostics = Enum.map(connections, &connection_diagnostics(&1, timeout_ms))
+
         %{
-          status: :ok,
+          status:
+            if(Enum.all?(connection_diagnostics, &(&1.status == :ok)), do: :ok, else: :error),
           connection_count: length(connections),
-          connections: Enum.map(connections, &connection_diagnostics/1),
+          connections: connection_diagnostics,
           session_pool: SessionPool.diagnostics()
         }
     end
@@ -622,11 +945,31 @@ defmodule FavnRunner.Server do
         reason: %{kind: :raised, exception: exception.__struct__}
       }
   catch
-    kind, reason ->
-      %{status: :error, reason: redact(%{kind: kind, reason: reason})}
+    _kind, _reason ->
+      %{status: :error, reason: :data_plane_diagnostics_failed}
   end
 
-  defp connection_diagnostics(%Resolved{} = resolved) do
+  defp extension_diagnostics do
+    case Process.whereis(FavnRunner.ExtensionSupervisor) do
+      nil ->
+        %{status: :error, reason: :extension_supervisor_not_available}
+
+      pid ->
+        counts = Supervisor.count_children(pid)
+
+        %{
+          status: if(counts.active == counts.specs, do: :ok, else: :error),
+          active: counts.active,
+          configured: counts.specs
+        }
+    end
+  rescue
+    _exception -> %{status: :error, reason: :extension_diagnostics_failed}
+  catch
+    _kind, _reason -> %{status: :error, reason: :extension_diagnostics_failed}
+  end
+
+  defp connection_diagnostics(%Resolved{} = resolved, timeout_ms) do
     base = %{
       name: resolved.name,
       adapter: resolved.adapter,
@@ -637,14 +980,15 @@ defmodule FavnRunner.Server do
       config: safe_connection_config(resolved.config || %{})
     }
 
-    adapter_connection_diagnostics(resolved, base)
+    adapter_connection_diagnostics(resolved, base, timeout_ms)
   end
 
-  defp adapter_connection_diagnostics(%Resolved{} = resolved, base) do
+  defp adapter_connection_diagnostics(%Resolved{} = resolved, base, timeout_ms) do
     if is_atom(resolved.adapter) and function_exported?(resolved.adapter, :diagnostics, 2) do
-      case resolved.adapter.diagnostics(resolved, []) do
-        {:ok, details} -> Map.merge(base, %{status: :ok, details: redact(details)})
-        {:error, reason} -> Map.merge(base, %{status: :error, reason: redact(reason)})
+      case resolved.adapter.diagnostics(resolved, timeout: timeout_ms) do
+        {:ok, details} -> Map.merge(base, %{status: :ok, details: safe_adapter_details(details)})
+        {:error, _reason} -> Map.merge(base, %{status: :error, reason: :adapter_not_ready})
+        _invalid -> Map.merge(base, %{status: :error, reason: :invalid_adapter_diagnostics})
       end
     else
       Map.merge(base, %{status: :unknown, summary: :adapter_diagnostics_not_supported})
@@ -653,9 +997,18 @@ defmodule FavnRunner.Server do
     exception ->
       Map.merge(base, %{status: :error, reason: %{kind: :raised, exception: exception.__struct__}})
   catch
-    kind, reason ->
-      Map.merge(base, %{status: :error, reason: redact(%{kind: kind, reason: reason})})
+    _kind, _reason ->
+      Map.merge(base, %{status: :error, reason: :adapter_diagnostics_failed})
   end
+
+  defp safe_adapter_details(details) when is_map(details) do
+    case Map.get(details, :status) do
+      status when status in [:ok, :ready, :degraded] -> %{status: status}
+      _other -> %{}
+    end
+  end
+
+  defp safe_adapter_details(_details), do: %{}
 
   defp safe_connection_config(config) when is_map(config) do
     %{
@@ -663,46 +1016,6 @@ defmodule FavnRunner.Server do
       duckdb_storage: Map.get(config, :duckdb_storage),
       database_path: if(Map.has_key?(config, :database), do: :redacted, else: nil)
     }
-  end
-
-  defp redact(value) when is_map(value) do
-    Map.new(value, fn {key, map_value} -> {key, redact(key, map_value)} end)
-  end
-
-  defp redact(value) when is_list(value), do: Enum.map(value, &redact/1)
-
-  defp redact(value) when is_tuple(value) do
-    value
-    |> Tuple.to_list()
-    |> Enum.map(&redact/1)
-    |> List.to_tuple()
-  end
-
-  defp redact(value) when is_atom(value), do: value
-  defp redact(value) when is_integer(value), do: value
-  defp redact(value) when is_binary(value), do: value
-  defp redact(value), do: inspect(value)
-
-  defp redact(key, _value)
-       when key in [:token, :tokens, :password, :secret, :database, :database_path],
-       do: "[REDACTED]"
-
-  defp redact(key, value) when is_atom(key) do
-    if sensitive_key?(Atom.to_string(key)), do: "[REDACTED]", else: redact(value)
-  end
-
-  defp redact(key, value) when is_binary(key) do
-    if sensitive_key?(key), do: "[REDACTED]", else: redact(value)
-  end
-
-  defp redact(_key, value), do: redact(value)
-
-  defp sensitive_key?(key) when is_binary(key) do
-    key = String.downcase(key)
-
-    String.contains?(key, "token") or String.contains?(key, "password") or
-      String.contains?(key, "secret") or String.contains?(key, "credential") or
-      String.contains?(key, "database")
   end
 
   defp submit_call_timeout_ms(opts) do

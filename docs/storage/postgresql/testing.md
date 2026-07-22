@@ -60,19 +60,18 @@ From the umbrella root, prefer an app-scoped command:
 MIX_ENV=test mix do --app favn_storage_postgres cmd mix test --no-compile
 ```
 
-Use the exact owning test for regressions. For example, the split-root runtime
-test is:
+Use the exact owning test for regressions. The production-like PostgreSQL,
+control-plane, and runner topology is covered by the container acceptance:
 
 ```bash
-MIX_ENV=test mix do --app favn_local cmd mix test --no-compile \
-  --only slow --timeout 1200000 \
-  test/integration/dev_split_root_regression_test.exs
+FAVN_CONTROL_PLANE_CANDIDATE=favn-control-plane-candidate:<build-id> \
+  mix test.container
 ```
 
-The split-root test records runtime state plus runner and operator log tails if
-the dev command exits before readiness. Preserve this diagnostic context: a
-connection refusal describes only the failed health check, not the operator's
-root startup error.
+Failed Compose startup preserves bounded, redacted diagnostics under
+`.favn/logs/compose-failure.log`. Use `mix favn.logs --service control-plane`
+and `mix favn.logs --service runner` for the current service logs; a connection
+refusal alone does not identify the first startup failure.
 
 ## CI topology
 

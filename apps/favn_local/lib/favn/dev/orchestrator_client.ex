@@ -1,7 +1,7 @@
 defmodule Favn.Dev.OrchestratorClient do
   @moduledoc false
 
-  alias Favn.Dev.LocalHttpClient
+  alias Favn.Dev.HttpClient
   alias Favn.Dev.ExecutionPackageBatches
   alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
@@ -10,9 +10,96 @@ defmodule Favn.Dev.OrchestratorClient do
 
   @type session_context :: %{required(String.t()) => String.t()}
 
+  @spec begin_runner_replacement(String.t(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def begin_runner_replacement(base_url, service_token, maintenance_token)
+      when is_binary(base_url) and is_binary(service_token) and is_binary(maintenance_token) do
+    url = base_url <> "/api/orchestrator/v1/maintenance/runner-replacement"
+    context = %{"maintenance_token" => maintenance_token}
+
+    case request_post(:begin_runner_replacement, url, service_token, %{}, context) do
+      {:ok, %{"data" => %{"maintenance_token" => ^maintenance_token}}} ->
+        {:ok, maintenance_token}
+
+      {:error, _reason} = error ->
+        error
+
+      _invalid ->
+        {:error, operation_error(:begin_runner_replacement, :post, url, :invalid_response)}
+    end
+  end
+
+  @spec runner_replacement_status(String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def runner_replacement_status(base_url, service_token)
+      when is_binary(base_url) and is_binary(service_token) do
+    url = base_url <> "/api/orchestrator/v1/maintenance/runner-replacement"
+
+    case request_get(:runner_replacement_status, url, service_token) do
+      {:ok, %{"data" => status}} when is_map(status) ->
+        {:ok, status}
+
+      {:error, _reason} = error ->
+        error
+
+      _invalid ->
+        {:error, operation_error(:runner_replacement_status, :get, url, :invalid_response)}
+    end
+  end
+
+  @spec verify_replacement_runner(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def verify_replacement_runner(base_url, service_token, maintenance_token, runner_release_id)
+      when is_binary(base_url) and is_binary(service_token) and is_binary(maintenance_token) and
+             is_binary(runner_release_id) do
+    url = base_url <> "/api/orchestrator/v1/maintenance/runner-replacement/verify-runner"
+    context = %{"maintenance_token" => maintenance_token}
+
+    case request_post(
+           :verify_replacement_runner,
+           url,
+           service_token,
+           %{runner_release_id: runner_release_id},
+           context
+         ) do
+      {:ok, %{"data" => %{"runner_release_id" => ^runner_release_id} = verified}} ->
+        {:ok, verified}
+
+      {:error, _reason} = error ->
+        error
+
+      _invalid ->
+        {:error, operation_error(:verify_replacement_runner, :post, url, :invalid_response)}
+    end
+  end
+
+  @spec finish_runner_replacement(String.t(), String.t(), String.t()) ::
+          :ok | {:error, term()}
+  def finish_runner_replacement(base_url, service_token, maintenance_token)
+      when is_binary(base_url) and is_binary(service_token) and is_binary(maintenance_token) do
+    url = base_url <> "/api/orchestrator/v1/maintenance/runner-replacement"
+    context = %{"maintenance_token" => maintenance_token}
+
+    case request(:finish_runner_replacement, :delete, url, service_token, nil, context, nil) do
+      {:ok, %{"data" => %{"status" => "accepting"}}} ->
+        :ok
+
+      {:error, _reason} = error ->
+        error
+
+      _invalid ->
+        {:error, operation_error(:finish_runner_replacement, :delete, url, :invalid_response)}
+    end
+  end
+
   @spec publish_manifest(String.t(), String.t(), Publication.t(), session_context() | nil) ::
           {:ok, map()} | {:error, term()}
-  def publish_manifest(base_url, service_token, %Publication{} = publication, session_context \\ nil)
+  def publish_manifest(
+        base_url,
+        service_token,
+        %Publication{} = publication,
+        session_context \\ nil
+      )
       when is_binary(base_url) and is_binary(service_token) do
     with {:ok, missing, batch_limits} <-
            missing_execution_packages(base_url, service_token, publication, session_context),
@@ -57,6 +144,8 @@ defmodule Favn.Dev.OrchestratorClient do
   def activate_manifest(base_url, service_token, manifest_version_id, session_context)
       when is_binary(base_url) and is_binary(service_token) and is_binary(manifest_version_id) and
              is_map(session_context) do
+    input = %{manifest_version_id: manifest_version_id}
+
     request_post(
       :activate_manifest,
       base_url <> "/api/orchestrator/v1/manifests/#{manifest_version_id}/activate",
@@ -71,9 +160,45 @@ defmodule Favn.Dev.OrchestratorClient do
         configuration: %{}
       },
       session_context,
-      idempotency_key(:activate_manifest, session_context, %{
-        manifest_version_id: manifest_version_id
-      })
+      activation_idempotency_key(session_context, input, [])
+    )
+  end
+
+  @spec activate_manifest_service(String.t(), String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def activate_manifest_service(
+        base_url,
+        service_token,
+        manifest_version_id,
+        workspace_id,
+        opts \\ []
+      )
+      when is_binary(base_url) and is_binary(service_token) and is_binary(manifest_version_id) and
+             is_binary(workspace_id) and workspace_id != "" and is_list(opts) do
+    context =
+      %{"workspace_id" => workspace_id}
+      |> maybe_put_maintenance_token(Keyword.get(opts, :maintenance_token))
+
+    input = %{
+      manifest_version_id: manifest_version_id,
+      workspace_id: workspace_id
+    }
+
+    request_post(
+      :activate_manifest,
+      base_url <> "/api/orchestrator/v1/manifests/#{URI.encode(manifest_version_id)}/activate",
+      service_token,
+      %{
+        selection: %{
+          common_assets: "all",
+          common_pipelines: "all",
+          workspace_assets: [],
+          workspace_pipelines: []
+        },
+        configuration: %{}
+      },
+      context,
+      activation_idempotency_key(context, input, opts)
     )
   end
 
@@ -476,7 +601,7 @@ defmodule Favn.Dev.OrchestratorClient do
   def health(base_url) when is_binary(base_url) do
     url = base_url <> "/api/orchestrator/v1/health"
 
-    case LocalHttpClient.request(:get, url, [], nil, connect_timeout_ms: 1_000, timeout_ms: 2_000) do
+    case HttpClient.request(:get, url, [], nil, connect_timeout_ms: 1_000, timeout_ms: 2_000) do
       {:ok, %{"data" => %{"status" => "ok"}}} ->
         :ok
 
@@ -560,10 +685,11 @@ defmodule Favn.Dev.OrchestratorClient do
       |> add_authorization_header(service_token)
       |> add_session_headers(session_context)
       |> add_workspace_header(session_context)
+      |> add_maintenance_header(session_context)
       |> add_idempotency_header(idempotency_key)
       |> Kernel.++(extra_headers)
 
-    case LocalHttpClient.request(method, url, headers, body, request_opts) do
+    case HttpClient.request(method, url, headers, body, request_opts) do
       {:ok, decoded} -> {:ok, decoded}
       {:error, reason} -> {:error, operation_error(operation, method, url, reason)}
     end
@@ -594,19 +720,51 @@ defmodule Favn.Dev.OrchestratorClient do
 
   defp add_workspace_header(headers, _session_context), do: headers
 
+  defp add_maintenance_header(headers, %{"maintenance_token" => token})
+       when is_binary(token) and token != "" do
+    headers ++ [{"x-favn-maintenance-token", token}]
+  end
+
+  defp add_maintenance_header(headers, _session_context), do: headers
+
   defp add_idempotency_header(headers, key) when is_binary(key) and key != "" do
     headers ++ [{"idempotency-key", key}]
   end
 
   defp add_idempotency_header(headers, _key), do: headers
 
+  defp maybe_put_maintenance_token(context, token) when is_binary(token) and token != "",
+    do: Map.put(context, "maintenance_token", token)
+
+  defp maybe_put_maintenance_token(context, _token), do: context
+
   defp submit_run_idempotency_key(key, _session_context, _payload)
        when is_binary(key) and key != "" do
     key
   end
 
-  defp submit_run_idempotency_key(_key, session_context, payload) do
-    idempotency_key(:submit_run, session_context, payload)
+  defp submit_run_idempotency_key(_key, _session_context, _payload), do: fresh_idempotency_key()
+
+  defp activation_idempotency_key(context, input, opts) do
+    case Keyword.get(opts, :idempotency_key) do
+      key when is_binary(key) and key != "" -> key
+      _missing -> default_activation_idempotency_key(context, input)
+    end
+  end
+
+  defp default_activation_idempotency_key(context, input) do
+    case Map.get(context, "maintenance_token") do
+      token when is_binary(token) and token != "" ->
+        idempotency_key(:activate_manifest, %{}, Map.put(input, :command_token, token))
+
+      _missing ->
+        fresh_idempotency_key()
+    end
+  end
+
+  defp fresh_idempotency_key do
+    "favn-local-" <>
+      (:crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false))
   end
 
   defp idempotency_key(operation, session_context, input) when is_atom(operation) do
@@ -658,7 +816,22 @@ defmodule Favn.Dev.OrchestratorClient do
     do: %{"__type__" => "atom", "value" => Atom.to_string(value)}
 
   defp operation_error(operation, method, url, reason) do
-    %{operation: operation, method: method, url: url, reason: reason}
+    %{operation: operation, method: method, url: sanitized_url(url), reason: reason}
+  end
+
+  defp sanitized_url(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} = uri
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        uri
+        |> Map.put(:userinfo, nil)
+        |> Map.put(:query, nil)
+        |> Map.put(:fragment, nil)
+        |> URI.to_string()
+
+      _invalid ->
+        :redacted
+    end
   end
 
   defp missing_execution_packages(base_url, service_token, publication, session_context) do
@@ -683,8 +856,11 @@ defmodule Favn.Dev.OrchestratorClient do
           {:ok, missing, batch_limits}
         end
 
-      {:ok, _response} -> {:error, :invalid_missing_execution_packages_response}
-      {:error, reason} -> {:error, reason}
+      {:ok, _response} ->
+        {:error, :invalid_missing_execution_packages_response}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -764,6 +940,7 @@ defmodule Favn.Dev.OrchestratorClient do
         content_hash: version.content_hash,
         schema_version: version.schema_version,
         runner_contract_version: version.runner_contract_version,
+        required_runner_release_id: version.required_runner_release_id,
         serialization_format: version.serialization_format,
         manifest: canonical_json_value(version.manifest)
       },

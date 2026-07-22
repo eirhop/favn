@@ -142,6 +142,7 @@ defmodule Favn.Local.CanonicalSampleProject do
       def asset(ctx) do
         true = ctx.runtime_config.source_system.name != ""
         true = ctx.runtime_config.source_system.token != ""
+        Process.sleep(String.to_integer(ctx.runtime_config.source_system.delay_ms))
         :ok
       end
     end
@@ -172,7 +173,8 @@ defmodule Favn.Local.CanonicalSampleProject do
 
       bundle :source_system,
         name: env!("FAVN_CANONICAL_SOURCE_NAME"),
-        token: secret_env!("FAVN_CANONICAL_SOURCE_TOKEN")
+        token: secret_env!("FAVN_CANONICAL_SOURCE_TOKEN"),
+        delay_ms: env!("FAVN_CANONICAL_DELAY_MS")
 
       bundle :missing_source,
         token: secret_env!("FAVN_CANONICAL_MISSING_SECRET")

@@ -1,9 +1,13 @@
 defmodule Favn.Contracts.ContractLockTest do
   use ExUnit.Case, async: true
 
-  alias Favn.Contracts.RunnerEvent
-  alias Favn.Contracts.RunnerResult
-  alias Favn.Contracts.RunnerWork
+  alias Favn.Contracts.{
+    RelationInspectionRequest,
+    RelationInspectionResult,
+    RunnerEvent,
+    RunnerResult,
+    RunnerWork
+  }
 
   test "runner work contract keys are locked" do
     assert_runner_keys(
@@ -25,6 +29,7 @@ defmodule Favn.Contracts.ContractLockTest do
         :params,
         :pipeline,
         :planned_asset_refs,
+        :required_runner_release_id,
         :run_id,
         :run_started_at,
         :runtime_input_pin,
@@ -43,6 +48,7 @@ defmodule Favn.Contracts.ContractLockTest do
         :manifest_content_hash,
         :manifest_version_id,
         :metadata,
+        :required_runner_release_id,
         :resource_outcomes,
         :run_id,
         :status
@@ -59,9 +65,69 @@ defmodule Favn.Contracts.ContractLockTest do
         :manifest_version_id,
         :occurred_at,
         :payload,
+        :required_runner_release_id,
         :run_id
       ]
     )
+  end
+
+  test "relation inspection request contract keys are locked" do
+    assert_runner_keys(
+      %RelationInspectionRequest{},
+      [
+        :asset_ref,
+        :include,
+        :manifest_content_hash,
+        :manifest_version_id,
+        :relation,
+        :required_runner_release_id,
+        :sample_limit
+      ]
+    )
+  end
+
+  test "relation inspection result contract keys are locked" do
+    assert_runner_keys(
+      %RelationInspectionResult{},
+      [
+        :adapter,
+        :asset_ref,
+        :columns,
+        :error,
+        :inspected_at,
+        :relation,
+        :relation_ref,
+        :required_runner_release_id,
+        :row_count,
+        :sample,
+        :table_metadata,
+        :warnings
+      ]
+    )
+  end
+
+  test "all runner contracts validate one canonical release binding" do
+    release_id = FavnTestSupport.runner_release_id()
+
+    for contract <- [
+          %RunnerWork{required_runner_release_id: release_id},
+          %RunnerResult{required_runner_release_id: release_id},
+          %RunnerEvent{required_runner_release_id: release_id},
+          %RelationInspectionRequest{required_runner_release_id: release_id},
+          %RelationInspectionResult{required_runner_release_id: release_id}
+        ] do
+      assert :ok = apply(contract.__struct__, :validate_release_binding, [contract])
+    end
+  end
+
+  test "runner contracts reject missing and malformed release bindings" do
+    assert {:error, {:invalid_required_runner_release_id, nil}} =
+             RunnerWork.validate_release_binding(%RunnerWork{})
+
+    assert {:error, {:invalid_required_runner_release_id, "rr_INVALID"}} =
+             RunnerResult.validate_release_binding(%RunnerResult{
+               required_runner_release_id: "rr_INVALID"
+             })
   end
 
   defp assert_runner_keys(struct, expected_keys) when is_list(expected_keys) do
