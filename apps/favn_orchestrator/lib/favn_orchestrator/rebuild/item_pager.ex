@@ -20,9 +20,9 @@ defmodule FavnOrchestrator.Rebuild.ItemPager do
   end
 
   defp page(store, context, operation_id, opts, cursor, pages) do
-    query = query(context, operation_id, opts, cursor)
+    page_query = page_query(context, operation_id, opts, cursor)
 
-    case store.page_items(query) do
+    case store.page_items(page_query) do
       {:ok, %{items: items, has_more?: true, next_cursor: next_cursor}}
       when not is_nil(next_cursor) ->
         page(store, context, operation_id, opts, next_cursor, [items | pages])
@@ -39,7 +39,7 @@ defmodule FavnOrchestrator.Rebuild.ItemPager do
   end
 
   defp count_page(store, context, operation_id, opts, predicate, cursor, count) do
-    case store.page_items(query(context, operation_id, opts, cursor)) do
+    case store.page_items(page_query(context, operation_id, opts, cursor)) do
       {:ok, %{items: items} = page} ->
         if Enum.all?(items, predicate) do
           next_count = count + length(items)
@@ -69,7 +69,7 @@ defmodule FavnOrchestrator.Rebuild.ItemPager do
     end
   end
 
-  defp query(context, operation_id, opts, cursor) do
+  defp page_query(context, operation_id, opts, cursor) do
     %PageRebuildItems{
       workspace_context: context,
       operation_id: operation_id,
