@@ -5,6 +5,7 @@ defmodule Favn.Dev.Build.RunnerTest do
   alias Favn.Dev.Build.Artifact
   alias Favn.Dev.Build.RunnerInputs
   alias Favn.Dev.Build.RunnerReleaseInput
+  alias Favn.Dev.Build.SourceInputSet
   alias Favn.RunnerRelease
 
   @control_build_id String.duplicate("a", 64)
@@ -75,6 +76,31 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert latest["runner_release_id"] == result.runner_release_id
     assert latest["descriptor_path"] == result.descriptor_path
     assert latest["manifest_dir"] == result.manifest_dir
+    assert latest["source_inputs"] == result.source_input_summary
+    assert latest["source_inputs"]["application_count"] > 0
+    assert latest["source_inputs"]["file_count"] > 0
+
+    assert latest["source_inputs"]["current_application_roots"] == [
+             "3rd_party",
+             "CMakeLists.txt",
+             "Cargo.lock",
+             "Cargo.toml",
+             "Makefile",
+             "Makefile.win",
+             "bin",
+             "c_src",
+             "checksum.exs",
+             "config/runtime.exs",
+             "include",
+             "lib",
+             "mix.exs",
+             "mix.lock",
+             "native",
+             "priv",
+             "rebar.config",
+             "rebar.lock",
+             "src"
+           ]
 
     expected = [
       "Dockerfile",
@@ -355,6 +381,9 @@ defmodule Favn.Dev.Build.RunnerTest do
     checkout = Path.join(root_dir, "favn-checkout")
     core_source = Path.join(checkout, "apps/favn_core")
     File.mkdir_p!(Path.join(core_source, "lib"))
+    File.mkdir_p!(Path.join(checkout, "scripts"))
+    File.write!(Path.join(checkout, "mix.exs"), "defmodule Favn.Fixture do end\n")
+    File.write!(Path.join(checkout, "scripts/control_plane_build_id.exs"), ":ok\n")
     File.write!(Path.join(core_source, "mix.exs"), "defmodule FavnCore.Fixture do end\n")
     tracked = Path.join(core_source, "lib/selected_input.ex")
     File.write!(tracked, "defmodule Favn.SelectedInput, do: def(value, do: :one)\n")
@@ -616,10 +645,33 @@ defmodule Favn.Dev.Build.RunnerTest do
     sources = dependency_sources()
     original = Map.fetch!(sources, :favn_runner)
     changed = Path.join(root_dir, "changed-favn-runner")
-    assert :ok = Artifact.copy_tree(original, changed)
+    assert {:ok, input_set} = SourceInputSet.application(original)
+    assert :ok = SourceInputSet.copy(input_set, changed)
+    File.write!(Path.join(changed, ".gitignore"), "lib/generated/\n")
+    git!(changed, ["init", "-q"])
+    git!(changed, ["add", "."])
+
+    git!(changed, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-qm",
+      "initial"
+    ])
 
     assert {:ok, first} =
              build(root_dir, dependency_sources: Map.put(sources, :favn_runner, changed))
+
+    File.mkdir_p!(Path.join(changed, "lib/generated"))
+    File.ln_s!("missing-ignored-target", Path.join(changed, "lib/generated/cache"))
+
+    assert {:ok, ignored} =
+             build(root_dir, dependency_sources: Map.put(sources, :favn_runner, changed))
+
+    assert ignored.runner_release_id == first.runner_release_id
+    assert dependency_input_digest(ignored) == dependency_input_digest(first)
 
     File.mkdir_p!(Path.join(changed, "priv"))
     File.write!(Path.join(changed, "priv/dependency-cache-key"), "changed")
@@ -631,17 +683,72 @@ defmodule Favn.Dev.Build.RunnerTest do
     refute dependency_input_digest(first) == dependency_input_digest(second)
   end
 
-  test "rejects secret-bearing source files before writing a context", %{root_dir: root_dir} do
+  test "same-size build-only source changes invalidate the runner release", %{
+    root_dir: root_dir
+  } do
+    changed = Path.join(root_dir, "build-only-helper")
+    File.mkdir_p!(Path.join(changed, "lib"))
+
+    File.write!(
+      Path.join(changed, "mix.exs"),
+      """
+      defmodule BuildOnlyHelper.MixProject do
+        use Mix.Project
+        def project, do: [app: :build_only_helper, version: "0.1.0", deps: []]
+      end
+      """
+    )
+
+    selected = Path.join(changed, "lib/build_only_identity.ex")
+    File.write!(selected, "one")
+    build_sources = %{"build_only_helper" => changed}
+
+    assert {:ok, first} =
+             build(root_dir, build_dependency_sources: build_sources)
+
+    assert File.read!(
+             Path.join(
+               first.dist_dir,
+               "dependency-input/apps/build_only_helper/lib/build_only_identity.ex"
+             )
+           ) == "one"
+
+    File.write!(selected, "two")
+
+    assert {:ok, second} =
+             build(root_dir, build_dependency_sources: build_sources)
+
+    refute first.runner_release_id == second.runner_release_id
+
+    assert {:ok, first_descriptor} =
+             first.descriptor_path |> File.read!() |> RunnerRelease.decode()
+
+    assert {:ok, second_descriptor} =
+             second.descriptor_path |> File.read!() |> RunnerRelease.decode()
+
+    refute first_descriptor.build_metadata["source_input_digest"] ==
+             second_descriptor.build_metadata["source_input_digest"]
+  end
+
+  test "excludes environment profiles and rejects selected secret-bearing files", %{
+    root_dir: root_dir
+  } do
     install!(root_dir)
     customer = Path.join(root_dir, "secret-source")
     File.mkdir_p!(Path.join(customer, "lib"))
     File.write!(Path.join(customer, "mix.exs"), "defmodule Secret.MixProject do end")
     File.write!(Path.join(customer, ".env"), "CUSTOMER_TOKEN=must-not-be-copied")
 
-    assert {:error, {:sensitive_source_file, ".env"}} =
-             build(root_dir, current_app_source: customer)
+    assert {:ok, result} = build(root_dir, current_app_source: customer)
 
-    assert Path.wildcard(Path.join(root_dir, ".favn/dist/runner/*")) == []
+    refute File.exists?(Path.join(result.dist_dir, "application-input/apps/favn_local/.env"))
+
+    credentials = Path.join(customer, "priv/credentials.json")
+    File.mkdir_p!(Path.dirname(credentials))
+    File.write!(credentials, ~s({"token":"must-not-be-copied"}))
+
+    assert {:error, {:sensitive_source_file, "priv/credentials.json"}} =
+             build(root_dir, current_app_source: customer)
   end
 
   test "rejects runtime config import chains that cannot survive the final image", %{
@@ -729,7 +836,7 @@ defmodule Favn.Dev.Build.RunnerTest do
            )
 
     relocated = Path.join(root_dir, "relocated-runner-context")
-    assert :ok = Artifact.copy_tree(result.dist_dir, relocated)
+    File.cp_r!(result.dist_dir, relocated)
     assert {:ok, _removed} = File.rm_rf(result.dist_dir)
 
     image = "favn-runner-release-test:#{System.unique_integer([:positive])}"

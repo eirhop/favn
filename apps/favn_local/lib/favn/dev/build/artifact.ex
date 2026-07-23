@@ -98,117 +98,6 @@ defmodule Favn.Dev.Build.Artifact do
     end
   end
 
-  @spec copy_tree(Path.t(), Path.t()) :: :ok | {:error, term()}
-  def copy_tree(source, destination) do
-    if File.dir?(source) do
-      with :ok <- validate_source_tree(source),
-           :ok <- File.mkdir_p(destination) do
-        source
-        |> Path.join("**/*")
-        |> Path.wildcard(match_dot: true)
-        |> Enum.reject(&ignored_path?(source, &1))
-        |> Enum.reduce_while(:ok, fn path, :ok ->
-          relative = Path.relative_to(path, source)
-          target = Path.join(destination, relative)
-
-          case File.lstat(path) do
-            {:ok, %{type: :directory}} ->
-              continue(File.mkdir_p(target))
-
-            {:ok, %{type: :regular}} ->
-              with :ok <- File.mkdir_p(Path.dirname(target)), do: continue(File.cp(path, target))
-
-            {:ok, %{type: :symlink}} ->
-              {:halt, {:error, {:symlink_not_supported, relative}}}
-
-            {:ok, _other} ->
-              {:cont, :ok}
-
-            {:error, reason} ->
-              {:halt, {:error, {:source_copy_failed, relative, reason}}}
-          end
-        end)
-      end
-    else
-      {:error, {:source_directory_missing, Path.basename(source)}}
-    end
-  end
-
-  defp validate_source_tree(source) do
-    source
-    |> Path.join("**/*")
-    |> Path.wildcard(match_dot: true)
-    |> Enum.reject(&ignored_path?(source, &1))
-    |> Enum.reduce_while(:ok, fn path, :ok ->
-      case File.lstat(path) do
-        {:ok, %{type: :regular}} ->
-          relative = Path.relative_to(path, source)
-
-          if sensitive_source_file?(relative, path) do
-            {:halt, {:error, {:sensitive_source_file, relative}}}
-          else
-            {:cont, :ok}
-          end
-
-        _other ->
-          {:cont, :ok}
-      end
-    end)
-  end
-
-  defp sensitive_source_file?(relative, path) do
-    components = relative |> Path.split() |> Enum.map(&String.downcase/1)
-    basename = List.last(components)
-    extension = Path.extname(basename)
-
-    sensitive_name =
-      basename in [
-        ".env",
-        ".npmrc",
-        ".netrc",
-        "credentials",
-        "credentials.json",
-        "service-account.json",
-        "service_account.json",
-        "id_rsa",
-        "id_ed25519"
-      ] or
-        (String.starts_with?(basename, ".env.") and
-           basename not in [".env.example", ".env.sample", ".env.template"]) or
-        extension in [".key", ".p12", ".pfx"] or
-        Enum.any?(components, &(&1 in [".aws", ".azure", ".kube"]))
-
-    sensitive_name or contains_private_key?(path)
-  end
-
-  defp contains_private_key?(path) do
-    case File.open(path, [:read, :binary], fn device -> IO.binread(device, 1_048_576) end) do
-      {:ok, bytes} when is_binary(bytes) ->
-        prefix = "-----BEGIN "
-        suffix = " KEY-----"
-
-        Enum.any?(
-          Enum.map(["PRIVATE", "RSA PRIVATE", "EC PRIVATE", "OPENSSH PRIVATE"], fn kind ->
-            prefix <> kind <> suffix
-          end),
-          &(:binary.match(bytes, &1) != :nomatch)
-        )
-
-      {:ok, :eof} ->
-        false
-
-      {:error, _reason} ->
-        true
-    end
-  end
-
-  defp ignored_path?(source, path) do
-    case path |> Path.relative_to(source) |> Path.split() do
-      [top | _rest] -> top in [".git", ".favn", "_build", "deps", "test", "doc", "docs"]
-      [] -> false
-    end
-  end
-
   defp metadata_matches?(bundle, expected) do
     Enum.all?(expected, fn {key, value} -> Map.get(bundle, key) == value end)
   end
@@ -280,9 +169,6 @@ defmodule Favn.Dev.Build.Artifact do
   end
 
   defp executable?(mode), do: Bitwise.band(mode, 0o111) != 0
-
-  defp continue(:ok), do: {:cont, :ok}
-  defp continue({:error, reason}), do: {:halt, {:error, reason}}
 
   defp cleanup_error(temp_dir, reason) do
     _ = File.rm_rf(temp_dir)

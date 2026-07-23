@@ -21,6 +21,7 @@ defmodule Favn.Dev.RunnerImage do
           descriptor_path: Path.t(),
           manifest_dir: Path.t(),
           manifest_version_id: String.t(),
+          source_inputs: map(),
           status: :built | :reused
         }
 
@@ -141,7 +142,8 @@ defmodule Favn.Dev.RunnerImage do
          manifest_version_id: manifest_version_id,
          favn_version: descriptor.favn_version,
          runner_contract_version: descriptor.runner_contract_version,
-         target: descriptor.target
+         target: descriptor.target,
+         source_inputs: descriptor.build_metadata["source_inputs"] || %{}
        }}
     else
       _invalid -> {:error, :invalid_runner_latest_state}
@@ -220,7 +222,8 @@ defmodule Favn.Dev.RunnerImage do
         "manifest_dir" => result.manifest_dir,
         "manifest_version_id" => result.manifest_version_id,
         "image_reference" => result.image_reference,
-        "image_id" => result.image_id
+        "image_id" => result.image_id,
+        "source_inputs" => result.source_inputs
       },
       opts
     )

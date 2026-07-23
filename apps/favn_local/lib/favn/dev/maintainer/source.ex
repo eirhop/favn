@@ -7,16 +7,11 @@ defmodule Favn.Dev.Maintainer.Source do
   accidentally with official or unrelated compiler and runner code.
   """
 
+  alias Favn.Dev.Build.SourceInputSet
   alias Favn.Dev.Paths
 
   @checkout_env "FAVN_CHECKOUT"
   @revision ~r/\A[0-9a-f]{40,64}\z/
-  @required_files [
-    "mix.exs",
-    "apps/favn/mix.exs",
-    "apps/favn_local/mix.exs",
-    "scripts/control_plane_build_id.exs"
-  ]
   @required_dependencies %{
     favn: "apps/favn",
     favn_authoring: "apps/favn_authoring",
@@ -35,8 +30,7 @@ defmodule Favn.Dev.Maintainer.Source do
     favn_view: "apps/favn_view"
   }
 
-  @ignored_root_directories [".favn", ".git", "_build", "deps", "docs", "test"]
-  @ignored_app_directories [".favn", ".git", "_build", "deps", "test"]
+  @control_plane_applications [:favn_core, :favn_orchestrator, :favn_storage_postgres, :favn_view]
 
   @enforce_keys [:checkout, :revision, :dirty, :fingerprint]
   defstruct @enforce_keys
@@ -52,19 +46,19 @@ defmodule Favn.Dev.Maintainer.Source do
   @spec resolve(keyword()) :: {:ok, t()} | {:error, term()}
   def resolve(opts \\ []) when is_list(opts) do
     root_dir = opts |> Paths.root_dir() |> Path.expand()
+    dependency_paths = dependency_paths(opts)
 
     with {:ok, value} <- checkout_value(opts),
          checkout <- Path.expand(value, root_dir),
-         :ok <- validate_checkout(checkout),
-         :ok <- validate_dependencies(checkout, dependency_paths(opts)),
-         {:ok, revision, dirty} <- git_identity(checkout, opts),
-         {:ok, fingerprint} <- fingerprint(checkout) do
+         :ok <- validate_dependencies(checkout, dependency_paths),
+         application_dirs <- selected_application_dirs(checkout, dependency_paths),
+         {:ok, identity} <- identity(checkout, application_dirs, opts) do
       {:ok,
        %__MODULE__{
          checkout: checkout,
-         revision: revision,
-         dirty: dirty,
-         fingerprint: fingerprint
+         revision: identity.revision,
+         dirty: identity.dirty,
+         fingerprint: identity.fingerprint
        }}
     end
   end
@@ -72,15 +66,10 @@ defmodule Favn.Dev.Maintainer.Source do
   @doc false
   @spec fingerprint(Path.t()) :: {:ok, String.t()} | {:error, term()}
   def fingerprint(checkout) when is_binary(checkout) do
-    with {:ok, entries} <- fingerprint_entries(checkout, "") do
-      digest =
-        entries
-        |> Enum.sort()
-        |> :erlang.term_to_binary([:deterministic])
-        |> then(&:crypto.hash(:sha256, &1))
-        |> Base.encode16(case: :lower)
+    application_dirs = selected_application_dirs(checkout, %{})
 
-      {:ok, digest}
+    with {:ok, input_set} <- SourceInputSet.maintainer_checkout(checkout, application_dirs) do
+      {:ok, SourceInputSet.fingerprint(input_set)}
     else
       _invalid -> {:error, {:maintainer_checkout_fingerprint_failed, checkout}}
     end
@@ -91,6 +80,38 @@ defmodule Favn.Dev.Maintainer.Source do
   @doc "Returns the environment variable used by consumer `mix.exs` files."
   @spec environment_variable() :: String.t()
   def environment_variable, do: @checkout_env
+
+  @doc false
+  @spec identity(Path.t(), [Path.t()], keyword()) :: {:ok, map()} | {:error, term()}
+  def identity(checkout, application_dirs, opts \\ [])
+      when is_binary(checkout) and is_list(application_dirs) and is_list(opts) do
+    application_dirs =
+      (application_dirs ++ default_application_dirs(checkout))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    runner =
+      if Mix.env() == :test,
+        do: Keyword.get(opts, :maintainer_command_runner, &System.cmd/3),
+        else: &System.cmd/3
+
+    with {:ok, input_set} <-
+           SourceInputSet.maintainer_checkout(checkout, application_dirs),
+         {:ok, revision} <- git_revision(checkout, runner),
+         {:ok, dirty} <- SourceInputSet.git_dirty?(input_set, runner) do
+      {:ok,
+       %{
+         revision: revision,
+         dirty: dirty,
+         fingerprint: SourceInputSet.fingerprint(input_set),
+         input_set: input_set
+       }}
+    else
+      {:error, _reason} = error -> error
+    end
+  rescue
+    error -> {:error, {:maintainer_checkout_git_unavailable, Exception.message(error)}}
+  end
 
   defp checkout_value(opts) do
     value =
@@ -107,23 +128,6 @@ defmodule Favn.Dev.Maintainer.Source do
 
       _missing ->
         {:error, :maintainer_checkout_required}
-    end
-  end
-
-  defp validate_checkout(checkout) do
-    with {:ok, %{type: :directory}} <- File.lstat(checkout) do
-      Enum.reduce_while(@required_files, :ok, fn relative, :ok ->
-        path = Path.join(checkout, relative)
-
-        case File.lstat(path) do
-          {:ok, %{type: :regular}} -> {:cont, :ok}
-          {:ok, %{type: :symlink}} -> {:halt, {:error, {:maintainer_checkout_symlink, path}}}
-          _invalid -> {:halt, {:error, {:invalid_maintainer_checkout, checkout}}}
-        end
-      end)
-    else
-      {:ok, %{type: :symlink}} -> {:error, {:maintainer_checkout_symlink, checkout}}
-      _invalid -> {:error, {:invalid_maintainer_checkout, checkout}}
     end
   end
 
@@ -157,77 +161,37 @@ defmodule Favn.Dev.Maintainer.Source do
     end)
   end
 
-  defp git_identity(checkout, opts) do
-    runner =
-      if Mix.env() == :test,
-        do: Keyword.get(opts, :maintainer_command_runner, &System.cmd/3),
-        else: &System.cmd/3
+  defp selected_application_dirs(checkout, dependency_paths) do
+    dependency_dirs =
+      dependency_paths
+      |> Map.keys()
+      |> Enum.filter(&Map.has_key?(all_dependencies(), &1))
+      |> Enum.map(&Map.fetch!(all_dependencies(), &1))
 
+    (dependency_dirs ++ default_application_dirs(checkout))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp default_application_dirs(checkout) do
+    (@required_dependencies |> Map.keys() |> Kernel.++(@control_plane_applications))
+    |> Enum.uniq()
+    |> Enum.map(&Map.fetch!(all_dependencies(), &1))
+    |> Enum.filter(&File.regular?(Path.join([checkout, &1, "mix.exs"])))
+  end
+
+  defp all_dependencies, do: Map.merge(@required_dependencies, @optional_dependencies)
+
+  defp git_revision(checkout, runner) do
     with {revision, 0} <-
            runner.("git", ["-C", checkout, "rev-parse", "--verify", "HEAD^{commit}"],
              stderr_to_stdout: true
            ),
          revision <- String.trim(revision),
-         true <- Regex.match?(@revision, revision),
-         {status, 0} <-
-           runner.("git", ["-C", checkout, "status", "--porcelain", "--untracked-files=normal"],
-             stderr_to_stdout: true
-           ) do
-      {:ok, revision, String.trim(status) != ""}
+         true <- Regex.match?(@revision, revision) do
+      {:ok, revision}
     else
       _invalid -> {:error, {:maintainer_checkout_git_unavailable, checkout}}
-    end
-  rescue
-    error -> {:error, {:maintainer_checkout_git_unavailable, Exception.message(error)}}
-  end
-
-  defp fingerprint_entries(root, relative) do
-    directory = if relative == "", do: root, else: Path.join(root, relative)
-
-    with {:ok, names} <- File.ls(directory) do
-      names
-      |> Enum.sort()
-      |> Enum.reject(&ignored_fingerprint_directory?(relative, &1))
-      |> Enum.reduce_while({:ok, []}, fn name, {:ok, entries} ->
-        child_relative = if relative == "", do: name, else: Path.join(relative, name)
-        child = Path.join(root, child_relative)
-
-        case File.lstat(child) do
-          {:ok, %{type: :directory}} ->
-            case fingerprint_entries(root, child_relative) do
-              {:ok, children} -> {:cont, {:ok, children ++ entries}}
-              {:error, _reason} = error -> {:halt, error}
-            end
-
-          {:ok, %{type: :regular, mode: mode}} ->
-            case File.read(child) do
-              {:ok, contents} ->
-                executable = if Bitwise.band(mode, 0o111) == 0, do: 0, else: 1
-                {:cont, {:ok, [{child_relative, executable, contents} | entries]}}
-
-              {:error, reason} ->
-                {:halt, {:error, reason}}
-            end
-
-          {:ok, %{type: :symlink}} ->
-            case File.read_link(child) do
-              {:ok, target} -> {:cont, {:ok, [{child_relative, :symlink, target} | entries]}}
-              {:error, reason} -> {:halt, {:error, reason}}
-            end
-
-          _invalid ->
-            {:halt, {:error, :invalid_checkout_entry}}
-        end
-      end)
-    end
-  end
-
-  defp ignored_fingerprint_directory?("", name), do: name in @ignored_root_directories
-
-  defp ignored_fingerprint_directory?(relative, name) do
-    case Path.split(relative) do
-      ["apps", _app] -> name in @ignored_app_directories
-      _other -> false
     end
   end
 end

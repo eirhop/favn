@@ -5,7 +5,7 @@ defmodule Favn.Dev.Build.RunnerInputs do
   alias Favn.RunnerRelease
   alias Favn.RunnerRelease.{ApplicationFingerprint, ModuleClosure, PluginFingerprint}
   alias Favn.RunnerRelease.RuntimeRoots
-  alias Favn.Dev.Build.{RunnerConfig, RunnerReleaseInput}
+  alias Favn.Dev.Build.{RunnerConfig, RunnerReleaseInput, SourceInputSet}
   alias Favn.Dev.Maintainer.{RunnerBuildCapability, Source}
 
   @required_runner_applications [:favn_core, :favn_runner, :favn_sql_runtime]
@@ -27,6 +27,8 @@ defmodule Favn.Dev.Build.RunnerInputs do
           inventory: %{String.t() => inventory_entry()},
           applications: [ApplicationFingerprint.t()],
           application_sources: %{String.t() => Path.t()},
+          application_inputs: %{String.t() => SourceInputSet.t()},
+          source_input_summary: map(),
           dependency_lock: %{String.t() => term()},
           build_only_applications: [String.t()],
           packaged_config: RunnerConfig.t(),
@@ -50,7 +52,12 @@ defmodule Favn.Dev.Build.RunnerInputs do
          {:ok, inventory} <- module_inventory(roots, opts),
          available <- Map.new(inventory, fn {name, entry} -> {name, entry.beam} end),
          {:ok, closure} <- ModuleClosure.build(roots, available),
-         {:ok, applications, sources} <- application_fingerprints(closure, inventory, opts),
+         {:ok, applications, sources, application_inputs} <-
+           application_fingerprints(
+             closure,
+             inventory,
+             opts
+           ),
          {:ok, packaged_config} <- RunnerConfig.finalize(packaged_config, applications, opts),
          {:ok, applications} <-
            bind_runner_config(
@@ -58,22 +65,7 @@ defmodule Favn.Dev.Build.RunnerInputs do
              current_app,
              RunnerConfig.fingerprint(packaged_config)
            ),
-         {:ok, plugins} <- plugin_fingerprints(plugin_entries, closure, inventory),
-         {:ok, descriptor} <-
-           RunnerRelease.new(%{
-             schema_version: RunnerRelease.current_schema_version(),
-             favn_version: RunnerRelease.current_favn_version(),
-             runner_contract_version:
-               Favn.Manifest.Compatibility.current_runner_contract_version(),
-             elixir_version: toolchain.elixir_version,
-             otp_release: toolchain.otp_release,
-             target: RunnerRelease.current_target(),
-             runtime_modules: closure.modules,
-             runtime_applications: applications,
-             plugins: plugins,
-             build_profile: "prod",
-             build_metadata: build_metadata(opts, favn_source)
-           }) do
+         {:ok, plugins} <- plugin_fingerprints(plugin_entries, closure, inventory) do
       build_sources = build_dependency_sources(opts)
       release_sources = Map.merge(build_sources, sources)
 
@@ -83,7 +75,35 @@ defmodule Favn.Dev.Build.RunnerInputs do
         |> Enum.reject(&Map.has_key?(sources, &1))
         |> Enum.sort()
 
-      with {:ok, dependency_lock} <- release_dependency_lock(release_sources, opts) do
+      with {:ok, build_inputs} <- build_source_inputs(build_sources, application_inputs),
+           all_inputs <- Map.merge(build_inputs, application_inputs),
+           source_input_digest <- source_input_digest(all_inputs),
+           {:ok, applications} <-
+             bind_source_inputs(applications, current_app, source_input_digest),
+           source_input_summary <-
+             source_input_summary(all_inputs, Atom.to_string(current_app)),
+           {:ok, dependency_lock} <- release_dependency_lock(release_sources, opts),
+           {:ok, descriptor} <-
+             RunnerRelease.new(%{
+               schema_version: RunnerRelease.current_schema_version(),
+               favn_version: RunnerRelease.current_favn_version(),
+               runner_contract_version:
+                 Favn.Manifest.Compatibility.current_runner_contract_version(),
+               elixir_version: toolchain.elixir_version,
+               otp_release: toolchain.otp_release,
+               target: RunnerRelease.current_target(),
+               runtime_modules: closure.modules,
+               runtime_applications: applications,
+               plugins: plugins,
+               build_profile: "prod",
+               build_metadata:
+                 build_metadata(
+                   opts,
+                   favn_source,
+                   source_input_digest,
+                   source_input_summary
+                 )
+             }) do
         {:ok,
          %{
            descriptor: descriptor,
@@ -92,6 +112,8 @@ defmodule Favn.Dev.Build.RunnerInputs do
            inventory: inventory,
            applications: applications,
            application_sources: release_sources,
+           application_inputs: all_inputs,
+           source_input_summary: source_input_summary,
            dependency_lock: dependency_lock,
            build_only_applications: build_only_applications,
            packaged_config: packaged_config,
@@ -411,30 +433,38 @@ defmodule Favn.Dev.Build.RunnerInputs do
       |> Enum.sort()
 
     apps
-    |> Enum.reduce_while({:ok, [], %{}}, fn app, {:ok, fingerprints, sources} ->
-      with {:ok, version} <- application_version(app),
-           {:ok, source} <- application_source(app, dependency_sources),
-           {:ok, lock_fingerprint} <-
-             application_lock_fingerprint(
-               app,
-               source,
-               Keyword.put(opts, :current_app, current_app)
-             ),
-           {:ok, fingerprint} <-
-             ApplicationFingerprint.new(%{
-               application: app,
-               version: version,
-               lock_fingerprint: lock_fingerprint
-             }) do
-        {:cont,
-         {:ok, [fingerprint | fingerprints], Map.put(sources, Atom.to_string(app), source)}}
-      else
-        {:error, reason} -> {:halt, {:error, reason}}
+    |> Enum.reduce_while(
+      {:ok, [], %{}, %{}},
+      fn app, {:ok, fingerprints, sources, input_sets} ->
+        with {:ok, version} <- application_version(app),
+             {:ok, source} <- application_source(app, dependency_sources),
+             {:ok, input_set} <-
+               application_input_set(app, source, current_app),
+             {:ok, lock_fingerprint} <-
+               application_lock_fingerprint(
+                 app,
+                 input_set,
+                 Keyword.put(opts, :current_app, current_app)
+               ),
+             {:ok, fingerprint} <-
+               ApplicationFingerprint.new(%{
+                 application: app,
+                 version: version,
+                 lock_fingerprint: lock_fingerprint
+               }) do
+          name = Atom.to_string(app)
+
+          {:cont,
+           {:ok, [fingerprint | fingerprints], Map.put(sources, name, source),
+            Map.put(input_sets, name, input_set)}}
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
       end
-    end)
+    )
     |> case do
-      {:ok, fingerprints, sources} ->
-        {:ok, Enum.sort_by(fingerprints, & &1.application), sources}
+      {:ok, fingerprints, sources, input_sets} ->
+        {:ok, Enum.sort_by(fingerprints, & &1.application), sources, input_sets}
 
       {:error, reason} ->
         {:error, reason}
@@ -616,6 +646,48 @@ defmodule Favn.Dev.Build.RunnerInputs do
     end
   end
 
+  defp application_input_set(app, source, current_app) do
+    if app == current_app do
+      SourceInputSet.application(source, runtime_config: true)
+    else
+      SourceInputSet.application(source)
+    end
+  end
+
+  defp build_source_inputs(build_sources, existing) do
+    build_sources
+    |> Enum.reject(fn {app, _source} -> Map.has_key?(existing, app) end)
+    |> Enum.reduce_while({:ok, %{}}, fn {app, source}, {:ok, acc} ->
+      case SourceInputSet.application(source) do
+        {:ok, input_set} -> {:cont, {:ok, Map.put(acc, app, input_set)}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp source_input_summary(input_sets, current_application) do
+    entries = input_sets |> Map.values() |> Enum.flat_map(& &1.entries)
+    current = Map.fetch!(input_sets, current_application)
+    current_summary = SourceInputSet.summary(current)
+
+    %{
+      "application_count" => map_size(input_sets),
+      "file_count" => length(entries),
+      "total_bytes" => Enum.sum(Enum.map(entries, & &1.size)),
+      "current_application_roots" => current_summary["declared_roots"]
+    }
+  end
+
+  defp source_input_digest(input_sets) do
+    input_sets
+    |> Enum.map(fn {application, input_set} ->
+      {to_string(application), SourceInputSet.fingerprint(input_set)}
+    end)
+    |> Enum.sort()
+    |> :erlang.term_to_binary([:deterministic])
+    |> sha256()
+  end
+
   defp application_version(app) do
     case packaged_application_properties(app) do
       {:ok, properties} ->
@@ -629,9 +701,10 @@ defmodule Favn.Dev.Build.RunnerInputs do
     end
   end
 
-  defp application_lock_fingerprint(app, source, opts) do
+  defp application_lock_fingerprint(app, input_set, opts) do
     lock = Keyword.get_lazy(opts, :lock, &Mix.Dep.Lock.read/0)
     current_app = Keyword.get(opts, :current_app)
+    source_fingerprint = SourceInputSet.fingerprint(input_set)
 
     bytes =
       cond do
@@ -641,19 +714,19 @@ defmodule Favn.Dev.Build.RunnerInputs do
               app,
               :customer_runtime_inputs,
               lock |> Enum.sort_by(&elem(&1, 0)),
-              customer_runtime_resource_identity(source)
+              source_fingerprint
             },
             [:deterministic]
           )
 
         Map.has_key?(lock, app) ->
           :erlang.term_to_binary(
-            {app, Map.fetch!(lock, app), source_tree_identity(source)},
+            {app, Map.fetch!(lock, app), source_fingerprint},
             [:deterministic]
           )
 
         true ->
-          source_tree_identity(source)
+          source_fingerprint
       end
 
     {:ok, sha256(bytes)}
@@ -662,13 +735,21 @@ defmodule Favn.Dev.Build.RunnerInputs do
   end
 
   defp bind_runner_config(applications, current_app, fingerprint) do
+    bind_current_application(applications, current_app, :runner_config, fingerprint)
+  end
+
+  defp bind_source_inputs(applications, current_app, fingerprint) do
+    bind_current_application(applications, current_app, :source_inputs, fingerprint)
+  end
+
+  defp bind_current_application(applications, current_app, kind, fingerprint) do
     applications
     |> Enum.reduce_while({:ok, []}, fn application, {:ok, acc} ->
       if application.application == Atom.to_string(current_app) do
         lock_fingerprint =
           sha256(
             :erlang.term_to_binary(
-              {application.lock_fingerprint, :runner_config, fingerprint},
+              {application.lock_fingerprint, kind, fingerprint},
               [:deterministic]
             )
           )
@@ -687,68 +768,6 @@ defmodule Favn.Dev.Build.RunnerInputs do
     end
   end
 
-  defp source_tree_identity(source) do
-    source
-    |> Path.join("**/*")
-    |> Path.wildcard(match_dot: true)
-    |> Enum.filter(&File.regular?/1)
-    |> Enum.reject(&ignored_source_file?(source, &1))
-    |> Enum.sort()
-    |> Enum.map(fn path ->
-      relative = Path.relative_to(path, source)
-      stat = File.stat!(path)
-
-      [
-        <<byte_size(relative)::32>>,
-        relative,
-        <<executable_bit(stat.mode)::8, stat.size::64>>,
-        File.read!(path)
-      ]
-    end)
-    |> IO.iodata_to_binary()
-  end
-
-  defp customer_runtime_resource_identity(source) do
-    selected = [
-      "mix.exs",
-      "config/runtime.exs",
-      "priv",
-      "c_src",
-      "native",
-      "include",
-      "src"
-    ]
-
-    selected
-    |> Enum.flat_map(fn entry ->
-      path = Path.join(source, entry)
-
-      cond do
-        File.regular?(path) -> [path]
-        File.dir?(path) -> Path.wildcard(Path.join(path, "**/*"), match_dot: true)
-        true -> []
-      end
-    end)
-    |> Enum.filter(&File.regular?/1)
-    |> Enum.reject(&ignored_source_file?(source, &1))
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> Enum.map(fn path ->
-      relative = Path.relative_to(path, source)
-      bytes = File.read!(path)
-      mode = File.stat!(path).mode
-
-      [
-        <<byte_size(relative)::32>>,
-        relative,
-        <<executable_bit(mode)::8, byte_size(bytes)::64>>,
-        bytes
-      ]
-    end)
-    |> IO.iodata_to_binary()
-    |> sha256()
-  end
-
   defp put_current_application_source(sources, nil, _opts), do: sources
 
   defp put_current_application_source(sources, current_app, opts) do
@@ -758,17 +777,6 @@ defmodule Favn.Dev.Build.RunnerInputs do
       end)
 
     Map.put(sources, current_app, source)
-  end
-
-  defp ignored_source_file?(source, path) do
-    case path |> Path.relative_to(source) |> Path.split() do
-      [top | _rest] -> top in [".git", ".favn", "_build", "deps", "test"]
-      [] -> false
-    end
-  end
-
-  defp executable_bit(mode) do
-    if Bitwise.band(mode, 0o111) == 0, do: 0, else: 1
   end
 
   defp plugin_fingerprints(entries, closure, inventory) do
@@ -805,7 +813,7 @@ defmodule Favn.Dev.Build.RunnerInputs do
     sources = dependency_sources(opts)
 
     case Map.get(sources, :favn_core) do
-      source when is_binary(source) -> verify_favn_checkout_identity(source, opts)
+      source when is_binary(source) -> verify_favn_checkout_identity(source, sources, opts)
       _missing -> {:error, :favn_source_revision_unidentifiable}
     end
   end
@@ -813,46 +821,57 @@ defmodule Favn.Dev.Build.RunnerInputs do
   @doc false
   @spec verify_favn_checkout(Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def verify_favn_checkout(source, opts \\ []) when is_binary(source) and is_list(opts) do
-    with {:ok, identity} <- verify_favn_checkout_identity(source, opts) do
+    with {:ok, identity} <- verify_favn_checkout_identity(source, %{}, opts) do
       {:ok, identity.revision}
     end
   end
 
-  defp verify_favn_checkout_identity(source, opts) do
+  defp verify_favn_checkout_identity(source, sources, opts) do
     with {root, 0} <- git(source, ["rev-parse", "--show-toplevel"]),
          root = String.trim(root),
-         {revision, 0} <- git(root, ["rev-parse", "--verify", "HEAD"]),
-         revision = String.trim(revision),
-         true <- revision =~ ~r/\A[0-9a-f]{40,64}\z/,
-         {status, 0} <- git(root, ["status", "--porcelain", "--untracked-files=normal"]),
-         dirty = String.trim(status) != "",
-         {:ok, fingerprint} <- Source.fingerprint(root),
-         :ok <- verify_checkout_state(root, revision, dirty, fingerprint, opts) do
-      {:ok, %{root: root, revision: revision, dirty: dirty, fingerprint: fingerprint}}
+         application_dirs <- favn_application_dirs(root, sources),
+         {:ok, identity} <- Source.identity(root, application_dirs, opts),
+         :ok <- verify_checkout_state(root, identity, opts) do
+      {:ok, Map.put(identity, :root, root)}
     else
       {:error, _reason} = error -> error
       _invalid -> {:error, :favn_source_revision_unidentifiable}
     end
   end
 
-  defp verify_checkout_state(root, revision, dirty, fingerprint, opts) do
+  defp verify_checkout_state(root, identity, opts) do
     case Keyword.get(opts, :maintainer_runner_build) do
       %RunnerBuildCapability{} = capability ->
-        verify_maintainer_checkout(capability, root, revision, dirty, fingerprint)
+        verify_maintainer_checkout(capability, root, identity)
 
       nil ->
-        verify_production_checkout(root, dirty, opts)
+        verify_production_checkout(root, identity.dirty, opts)
 
       _invalid ->
         {:error, :invalid_maintainer_runner_build}
     end
   end
 
-  defp verify_maintainer_checkout(capability, root, revision, dirty, fingerprint) do
-    if capability.checkout == Path.expand(root) and capability.revision == revision and
-         capability.dirty == dirty and capability.fingerprint == fingerprint,
+  defp verify_maintainer_checkout(capability, root, identity) do
+    if capability.checkout == Path.expand(root) and capability.revision == identity.revision and
+         capability.dirty == identity.dirty and capability.fingerprint == identity.fingerprint,
        do: :ok,
        else: {:error, :favn_maintainer_checkout_changed}
+  end
+
+  defp favn_application_dirs(root, sources) do
+    sources
+    |> Map.values()
+    |> Enum.map(&Path.expand/1)
+    |> Enum.map(&Path.relative_to(&1, root))
+    |> Enum.filter(fn relative ->
+      case Path.split(relative) do
+        ["apps", _app] -> true
+        _other -> false
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp verify_production_checkout(root, dirty, opts) do
@@ -877,12 +896,14 @@ defmodule Favn.Dev.Build.RunnerInputs do
     _error -> {"", 1}
   end
 
-  defp build_metadata(opts, favn_source) do
+  defp build_metadata(opts, favn_source, source_input_digest, source_input_summary) do
     %{}
     |> maybe_put("source_revision", Keyword.get(opts, :source_revision, git_revision()))
     |> Map.put("favn_source_revision", favn_source.revision)
     |> Map.put("favn_source_dirty", favn_source.dirty)
     |> Map.put("favn_source_fingerprint", favn_source.fingerprint)
+    |> Map.put("source_input_digest", source_input_digest)
+    |> Map.put("source_inputs", source_input_summary)
   end
 
   defp git_revision do

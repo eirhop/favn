@@ -37,6 +37,7 @@ defmodule Favn.Dev.Build.Runner do
           descriptor_path: Path.t(),
           manifest_dir: Path.t(),
           embedded_manifest_dir: Path.t(),
+          source_input_summary: map(),
           manifest_status: :built | :already_built,
           status: :built | :already_built
         }
@@ -154,6 +155,7 @@ defmodule Favn.Dev.Build.Runner do
       descriptor_path: Path.join(dist_dir, "runner-release.json"),
       manifest_dir: nil,
       embedded_manifest_dir: Path.join(dist_dir, "manifest"),
+      source_input_summary: descriptor.build_metadata["source_inputs"] || %{},
       manifest_status: nil,
       status: status
     }
@@ -215,7 +217,8 @@ defmodule Favn.Dev.Build.Runner do
         "dist_dir" => result.dist_dir,
         "descriptor_path" => result.descriptor_path,
         "manifest_dir" => result.manifest_dir,
-        "manifest_version_id" => publication.version.manifest_version_id
+        "manifest_version_id" => publication.version.manifest_version_id,
+        "source_inputs" => result.source_input_summary
       },
       opts
     )

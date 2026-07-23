@@ -486,6 +486,7 @@ defmodule Favn.Dev.ComposeLifecycle do
         "docker" => probe,
         "control_plane" => control_plane_diagnostics(install),
         "deployment_contract" => deployment_contract,
+        "runner_inputs" => runner_input_diagnostics(opts),
         "compose" => compose_status,
         "runtime" => compose_status.runtime
       }
@@ -512,6 +513,24 @@ defmodule Favn.Dev.ComposeLifecycle do
       })
     else
       base
+    end
+  end
+
+  defp runner_input_diagnostics(opts) do
+    case State.read_runner_latest(opts) do
+      {:ok, %{"source_inputs" => source_inputs}} when is_map(source_inputs) ->
+        Map.take(source_inputs, [
+          "application_count",
+          "file_count",
+          "total_bytes",
+          "current_application_roots"
+        ])
+
+      {:ok, _state} ->
+        %{}
+
+      {:error, _reason} ->
+        %{}
     end
   end
 

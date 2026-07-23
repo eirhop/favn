@@ -776,6 +776,12 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
     assert {:ok, report} = ComposeLifecycle.diagnostics(default_opts)
     assert report["deployment_contract"]["compose_file"] == "deploy/team.compose.yml"
+    assert report["runner_inputs"] == %{
+             "application_count" => 3,
+             "file_count" => 12,
+             "total_bytes" => 4_096,
+             "current_application_roots" => ["lib", "mix.exs", "priv"]
+           }
 
     assert :ok = ComposeLifecycle.logs(default_opts)
 
@@ -1212,7 +1218,15 @@ defmodule Favn.Dev.ComposeLifecycleTest do
         ],
         runtime_applications: [],
         plugins: [],
-        build_profile: "prod"
+        build_profile: "prod",
+        build_metadata: %{
+          "source_inputs" => %{
+            "application_count" => 3,
+            "file_count" => 12,
+            "total_bytes" => 4_096,
+            "current_application_roots" => ["lib", "mix.exs", "priv"]
+          }
+        }
       })
 
     descriptor

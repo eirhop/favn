@@ -6,11 +6,20 @@ defmodule Favn.Dev.Build.RunnerInputsTest do
 
   setup do
     root = Path.join("/tmp", "favn_runner_inputs_git_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(root)
-    File.write!(Path.join(root, "tracked"), "initial")
+    File.mkdir_p!(Path.join(root, "apps/favn_core/lib"))
+    File.mkdir_p!(Path.join(root, "scripts"))
+    File.write!(Path.join(root, "mix.exs"), "defmodule Fixture.MixProject do end\n")
+    File.write!(Path.join(root, "apps/favn_core/mix.exs"), "defmodule Core.MixProject do end\n")
+    File.write!(Path.join(root, "apps/favn_core/lib/tracked.ex"), "initial")
+    File.write!(Path.join(root, "scripts/control_plane_build_id.exs"), ":ok\n")
+
+    File.write!(
+      Path.join(root, ".gitignore"),
+      "apps/favn_core/lib/generated/\nignored.log\n"
+    )
 
     git!(root, ["init", "-q"])
-    git!(root, ["add", "tracked"])
+    git!(root, ["add", "."])
 
     git!(root, [
       "-c",
@@ -33,11 +42,12 @@ defmodule Favn.Dev.Build.RunnerInputsTest do
     assert {:ok, revision} = RunnerInputs.verify_favn_checkout(root)
     assert revision =~ ~r/\A[0-9a-f]{40}\z/
 
-    File.write!(Path.join(root, "untracked.ex"), "defmodule Untracked do end")
+    untracked = Path.join(root, "apps/favn_core/lib/untracked.ex")
+    File.write!(untracked, "defmodule Untracked do end")
     assert {:error, :favn_checkout_not_pinned} = RunnerInputs.verify_favn_checkout(root)
-    File.rm!(Path.join(root, "untracked.ex"))
+    File.rm!(untracked)
 
-    File.write!(Path.join(root, "tracked"), "modified")
+    File.write!(Path.join(root, "apps/favn_core/lib/tracked.ex"), "modified")
     assert {:error, :favn_checkout_not_pinned} = RunnerInputs.verify_favn_checkout(root)
   end
 
@@ -56,7 +66,22 @@ defmodule Favn.Dev.Build.RunnerInputsTest do
     assert {:ok, ^revision} =
              RunnerInputs.verify_favn_checkout(root, maintainer_runner_build: clean)
 
-    File.write!(Path.join(root, "tracked"), "modified")
+    cache = Path.join(root, "apps/favn_core/lib/generated")
+    File.mkdir_p!(cache)
+    File.write!(Path.join(cache, "cache"), "one")
+    File.ln_s!("cache", Path.join(cache, "libexample.so"))
+    File.write!(Path.join(root, "ignored.log"), "one")
+
+    assert {:ok, ^revision} =
+             RunnerInputs.verify_favn_checkout(root, maintainer_runner_build: clean)
+
+    File.write!(Path.join(cache, "cache"), "two")
+    File.write!(Path.join(root, "ignored.log"), "two")
+
+    assert {:ok, ^revision} =
+             RunnerInputs.verify_favn_checkout(root, maintainer_runner_build: clean)
+
+    File.write!(Path.join(root, "apps/favn_core/lib/tracked.ex"), "modified")
 
     assert {:error, :favn_maintainer_checkout_changed} =
              RunnerInputs.verify_favn_checkout(root, maintainer_runner_build: clean)
@@ -67,7 +92,9 @@ defmodule Favn.Dev.Build.RunnerInputsTest do
     assert {:ok, ^revision} =
              RunnerInputs.verify_favn_checkout(root, maintainer_runner_build: dirty)
 
-    nested_selected_input = Path.join([root, "lib", "test", "selected.ex"])
+    nested_selected_input =
+      Path.join([root, "apps", "favn_core", "lib", "test", "selected.ex"])
+
     File.mkdir_p!(Path.dirname(nested_selected_input))
     File.write!(nested_selected_input, "defmodule Selected, do: nil\n")
 
