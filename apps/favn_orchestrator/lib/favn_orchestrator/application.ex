@@ -27,8 +27,11 @@ defmodule FavnOrchestrator.Application do
 
   @impl true
   def start(_type, _args) do
+    environment = System.get_env()
+    :ok = configure_log_level_or_raise(environment)
+
     if Application.get_env(:favn_orchestrator, :start_runtime, true) do
-      start_runtime()
+      start_runtime(environment)
     else
       timeout_ms = Application.get_env(:favn_orchestrator, :shutdown_drain_timeout_ms, 120_000)
 
@@ -46,8 +49,8 @@ defmodule FavnOrchestrator.Application do
     end
   end
 
-  defp start_runtime do
-    with :ok <- ControlPlaneRuntimeConfig.apply_from_env_if_configured(),
+  defp start_runtime(environment) do
+    with :ok <- ControlPlaneRuntimeConfig.apply_from_env_if_configured(environment),
          _timezone_database <- Favn.Timezone.database!(),
          :ok <- APIConfig.validate(),
          runtime_config <- RuntimeConfig.from_app_env(),
@@ -112,6 +115,13 @@ defmodule FavnOrchestrator.Application do
   end
 
   def prep_stop(state), do: state
+
+  defp configure_log_level_or_raise(environment) do
+    case Favn.LogLevel.configure_from_env(environment) do
+      :ok -> :ok
+      {:error, reason} -> raise ArgumentError, "invalid FAVN_LOG_LEVEL: #{inspect(reason)}"
+    end
+  end
 
   defp scheduler_children(runtime_config) do
     scheduler_opts = runtime_config.scheduler

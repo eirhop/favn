@@ -339,6 +339,12 @@ defmodule Favn.Dev.Init.Compose do
       io.favn.compose.contract-version: "1"
       io.favn.compose.profile: local
 
+    x-local-logging: &local-logging
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     services:
       # PostgreSQL stores Favn control-plane state. The floating major-version
       # tag receives PostgreSQL 18 patch releases while avoiding an automatic
@@ -347,6 +353,7 @@ defmodule Favn.Dev.Init.Compose do
         image: #{ComposeProject.postgres_image()}
         pull_policy: always
         restart: unless-stopped
+        logging: *local-logging
         labels:
           <<: *favn-local-labels
           io.favn.compose.role: postgres
@@ -354,6 +361,10 @@ defmodule Favn.Dev.Init.Compose do
           POSTGRES_DB: ${FAVN_POSTGRES_DATABASE}
           POSTGRES_USER: ${FAVN_POSTGRES_ADMIN_USER}
           POSTGRES_PASSWORD: ${FAVN_POSTGRES_ADMIN_PASSWORD}
+          POSTGRES_INITDB_ARGS: >-
+            --encoding=UTF8
+            --locale-provider=builtin
+            --builtin-locale=C.UTF-8
           FAVN_POSTGRES_RUNTIME_PASSWORD: ${FAVN_POSTGRES_RUNTIME_PASSWORD}
         volumes:
           - postgres-data:/var/lib/postgresql
@@ -374,6 +385,7 @@ defmodule Favn.Dev.Init.Compose do
       control-plane-ops:
         image: ${FAVN_CONTROL_PLANE_IMAGE}
         profiles: [operations]
+        logging: *local-logging
         labels:
           <<: *favn-local-labels
           io.favn.compose.role: control-plane-ops
@@ -383,6 +395,7 @@ defmodule Favn.Dev.Init.Compose do
         security_opt: ["no-new-privileges:true"]
         tmpfs: ["/tmp/favn:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700"]
         environment: &control-plane-operations-environment
+          FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}
           FAVN_DEPLOYMENT_MODE: local-development
           FAVN_DATABASE_URL: ${FAVN_POSTGRES_ADMIN_DATABASE_URL}
           FAVN_DATABASE_SSL_MODE: disable
@@ -406,6 +419,7 @@ defmodule Favn.Dev.Init.Compose do
       control-plane-verify:
         image: ${FAVN_CONTROL_PLANE_IMAGE}
         profiles: [operations]
+        logging: *local-logging
         labels:
           <<: *favn-local-labels
           io.favn.compose.role: control-plane-verify
@@ -430,6 +444,7 @@ defmodule Favn.Dev.Init.Compose do
       runner:
         image: ${FAVN_RUNNER_IMAGE}
         restart: unless-stopped
+        logging: *local-logging
         user: ${FAVN_RUNNER_UID}:${FAVN_RUNNER_GID}
         labels:
           <<: *favn-local-labels
@@ -478,6 +493,7 @@ defmodule Favn.Dev.Init.Compose do
       control-plane:
         image: ${FAVN_CONTROL_PLANE_IMAGE}
         restart: unless-stopped
+        logging: *local-logging
         labels:
           <<: *favn-local-labels
           io.favn.compose.role: control-plane
@@ -488,6 +504,7 @@ defmodule Favn.Dev.Init.Compose do
         stop_grace_period: 3m
         tmpfs: ["/tmp/favn:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700"]
         environment:
+          FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}
           FAVN_DEPLOYMENT_MODE: local-development
           FAVN_DATABASE_URL: ${FAVN_POSTGRES_RUNTIME_DATABASE_URL}
           FAVN_DATABASE_SSL_MODE: disable
@@ -555,6 +572,7 @@ defmodule Favn.Dev.Init.Compose do
       io.favn.compose.profile: single-host
 
     x-control-plane-environment: &control-plane-environment
+      FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}
       FAVN_DEPLOYMENT_MODE: production
       FAVN_DATABASE_URL: ${FAVN_POSTGRES_RUNTIME_DATABASE_URL}
       FAVN_DATABASE_SSL_MODE: verify_full

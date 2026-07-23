@@ -172,10 +172,13 @@ defmodule FavnOrchestrator.RunnerHealth do
          }}
 
       {:error, _reason} ->
+        result = {:error, :runner_diagnostics_failed}
+        emit_probe(result, System.monotonic_time(:millisecond))
+
         {:noreply,
          state
          |> Map.merge(%{
-           result: {:error, :runner_diagnostics_failed},
+           result: result,
            checked_at_ms: System.monotonic_time(:millisecond)
          })
          |> schedule()}
@@ -204,7 +207,8 @@ defmodule FavnOrchestrator.RunnerHealth do
     OperationalEvents.emit(
       :runner_diagnostic_completed,
       %{duration_ms: max(System.monotonic_time(:millisecond) - started_at_ms, 0)},
-      %{status: status, result: diagnostic_result(result)}
+      %{status: status, result: diagnostic_result(result)},
+      level: if(status == :ok, do: :debug, else: :warning)
     )
   end
 

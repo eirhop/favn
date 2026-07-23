@@ -16,6 +16,7 @@ defmodule FavnRunner.Application do
   @impl true
   def start(_type, _args) do
     environment = System.get_env()
+    :ok = configure_log_level_or_raise(environment)
     :ok = apply_production_runtime_config_or_raise(environment)
     :ok = verify_release_or_raise(environment)
     connections = load_connections_or_raise()
@@ -58,6 +59,13 @@ defmodule FavnRunner.Application do
   end
 
   def prep_stop(state), do: state
+
+  defp configure_log_level_or_raise(environment) do
+    case Favn.LogLevel.configure_from_env(environment) do
+      :ok -> :ok
+      {:error, reason} -> raise ArgumentError, "invalid FAVN_LOG_LEVEL: #{inspect(reason)}"
+    end
+  end
 
   defp apply_production_runtime_config_or_raise(environment) do
     case ProductionRuntimeConfig.apply_from_env_if_configured(environment) do

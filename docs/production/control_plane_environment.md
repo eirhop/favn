@@ -34,6 +34,7 @@ variables.
 
 | Variable | Contract |
 | --- | --- |
+| `FAVN_LOG_LEVEL` | Optional Logger primary and default-handler level, default `info`. Accepted values are `debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, and `emergency`; invalid values stop release startup before they can become VM arguments. |
 | `FAVN_INSTANCE_ID` | Optional stable `1..160` byte identifier; defaults to the control-plane node name. |
 | `FAVN_WORKSPACE_IDS` | Required unique comma-separated IDs; at most 1,000 IDs and 255 bytes per ID. |
 | `FAVN_ORCHESTRATOR_API_BIND_HOST` | IPv4 bind address, default `0.0.0.0`. |
@@ -81,6 +82,9 @@ data-plane adapters. A separate bounded reconciliation pass re-registers active
 manifests after runner-cache restarts. Pending, failed, timed-out, malformed, or
 stale snapshots fail closed; the readiness request itself never performs remote
 adapter or PostgreSQL mutation work.
+Successful periodic runner diagnostics and active-manifest reconciliation log at
+`debug`; failures and timeouts log at `warning`. Both paths emit telemetry at
+every configured log level.
 
 On `SIGTERM`, the application callback enters `draining` before OTP stops the
 supervision tree. New HTTP mutations, run/rerun and backfill submissions,

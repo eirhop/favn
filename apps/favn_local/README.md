@@ -11,7 +11,8 @@ Compose v2 or newer, plus Elixir `1.20.2` on Erlang/OTP `29` for host Mix
 commands. Docker Desktop with the WSL2 amd64 engine is supported. There is one supported
 topology:
 
-- the latest patch release on the floating `postgres:18` tag;
+- the latest patch release on the floating `postgres:18-trixie` tag, with new
+  volumes initialized using PostgreSQL's built-in `C.UTF-8` locale;
 - the prebuilt, version-matched Favn control-plane image;
 - the customer-built runner image.
 
@@ -34,6 +35,9 @@ reference beside it, and the editable runner build under `deploy/runner/`. The
 project owns, reviews, and may extend these files. Favn never overwrites a
 modified scaffold. `--include duckdb-adbc[@VERSION]` adds the tested optional
 native DuckDB driver when the customer project declares `favn_duckdb_adbc`.
+The generated local Compose file bounds every service's Docker logs with the
+`local` driver. PostgreSQL init arguments affect only new volumes; Favn never
+modifies an existing database automatically.
 
 `mix favn.install` is explicit and does not start services. It:
 
