@@ -105,7 +105,10 @@ Code:
   asset materialization planning and emits shared `%Favn.SQL.WritePlan{}` values.
   Pipeline lookback selection is represented by distinct work nodes;
   runtime-input resolution and incremental delete/insert planning preserve each
-  node's exact runtime window rather than expanding lookback in the runner.
+  node's exact runtime window rather than expanding lookback in the runner. The
+  planner also validates declared partition columns and explicit transactional
+  physical-partitioning support without treating layout changes as target
+  compatibility drift.
 - runner-owned execution modules under `apps/favn_runner/lib/favn/`
 
 Tests:

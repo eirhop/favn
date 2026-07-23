@@ -22,8 +22,8 @@ defmodule FavnRunner.WorkerTest do
 
     manifest =
       %Manifest{
-        schema_version: 11,
-        runner_contract_version: 11,
+        schema_version: 12,
+        runner_contract_version: 12,
         required_runner_release_id: FavnTestSupport.runner_release_id(),
         assets: [asset],
         pipelines: [],
@@ -356,8 +356,8 @@ defmodule FavnRunner.WorkerTest do
 
     manifest =
       %Manifest{
-        schema_version: 11,
-        runner_contract_version: 11,
+        schema_version: 12,
+        runner_contract_version: 12,
         required_runner_release_id: FavnTestSupport.runner_release_id(),
         assets: [asset],
         pipelines: [],

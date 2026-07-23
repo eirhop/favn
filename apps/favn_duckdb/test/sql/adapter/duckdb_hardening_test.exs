@@ -8,6 +8,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   alias Favn.SQL.Client
   alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Error
+  alias Favn.SQL.PartitionSpec
   alias Favn.SQL.Relation
   alias Favn.SQL.Session
   alias Favn.SQL.WritePlan
@@ -69,9 +70,20 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
       TestSupport.record({:fetch_all, result_ref})
 
       case TestSupport.mode(:fetch_mode, :ok) do
-        :ok -> [[1]]
-        :error -> :fetch_error
-        :raise -> raise "fetch failed"
+        :ok ->
+          sql = result_sql(result_ref)
+
+          if is_binary(sql) and String.contains?(sql, "duckdb_databases()") do
+            [[TestSupport.mode(:database_type, "ducklake")]]
+          else
+            [[1]]
+          end
+
+        :error ->
+          :fetch_error
+
+        :raise ->
+          raise "fetch failed"
       end
     end
 
@@ -83,10 +95,10 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
         :ok ->
           sql = result_sql(result_ref)
 
-          if is_binary(sql) and String.contains?(sql, "count(*) AS row_count") do
-            ["row_count"]
-          else
-            ["value"]
+          cond do
+            is_binary(sql) and String.contains?(sql, "count(*) AS row_count") -> ["row_count"]
+            is_binary(sql) and String.contains?(sql, "duckdb_databases()") -> ["type"]
+            true -> ["value"]
           end
 
         :error ->
@@ -194,6 +206,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     ]
 
     TestSupport.put_modes(keys, :ok)
+    TestSupport.put_mode(:database_type, "ducklake")
 
     on_exit(fn ->
       TestSupport.reset()
@@ -719,6 +732,92 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
                ~s(CREATE OR REPLACE TABLE "raw"."sales"."products")
              )
            )
+  end
+
+  test "partitioned replacements create an empty table, configure DuckLake, then insert" do
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{catalog: "lake", schema: "mart", name: "events", type: :table},
+      select_sql: "SELECT tenant_id, occurred_at, account_id FROM source_events",
+      replace_existing?: true,
+      partition_spec:
+        PartitionSpec.normalize!([
+          :tenant_id,
+          {:year, :occurred_at},
+          {:month, :occurred_at},
+          {:bucket, 32, :account_id}
+        ])
+    }
+
+    assert {:ok, statements} = DuckDB.materialization_statements(plan, %Capabilities{}, [])
+    sql = Enum.map(statements, &IO.iodata_to_binary/1)
+
+    assert [
+             ~s|CREATE SCHEMA IF NOT EXISTS "lake"."mart"|,
+             create,
+             ~s|ALTER TABLE "lake"."mart"."events" SET PARTITIONED BY ("tenant_id", year("occurred_at"), month("occurred_at"), bucket(32, "account_id"))|,
+             ~s|INSERT INTO "lake"."mart"."events" SELECT tenant_id, occurred_at, account_id FROM source_events|
+           ] = sql
+
+    assert create =~
+             ~s|CREATE OR REPLACE TABLE "lake"."mart"."events" AS SELECT * FROM (SELECT|
+
+    assert create =~ "AS favn_partition_source LIMIT 0"
+  end
+
+  test "partitioned writes verify DuckLake and execute transactionally" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{catalog: "lake", schema: "mart", name: "events", type: :table},
+      select_sql: "SELECT ? AS tenant_id",
+      replace_existing?: true,
+      transactional?: true,
+      partition_spec: PartitionSpec.normalize!([:tenant_id])
+    }
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize}} =
+             DuckDB.materialize(conn, plan, params: [7])
+
+    statements =
+      for {:query, _conn_ref, sql} <- events(),
+          String.starts_with?(sql, ["SELECT type", "CREATE", "ALTER", "INSERT"]),
+          do: sql
+
+    assert Enum.any?(statements, &String.contains?(&1, "duckdb_databases()"))
+    assert Enum.any?(statements, &String.starts_with?(&1, "ALTER TABLE"))
+    assert Enum.any?(statements, &String.starts_with?(&1, "INSERT INTO"))
+
+    assert Enum.any?(events(), fn
+             {:query_params, sql, []} -> String.starts_with?(sql, "ALTER TABLE")
+             _event -> false
+           end)
+
+    assert Enum.any?(events(), &match?({:begin_transaction, _}, &1))
+    assert Enum.any?(events(), &match?({:commit, _}, &1))
+  end
+
+  test "partitioned writes reject native DuckDB target catalogs" do
+    TestSupport.put_mode(:database_type, "duckdb")
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{schema: "main", name: "events", type: :table},
+      select_sql: "SELECT 1 AS tenant_id",
+      replace_existing?: true,
+      transactional?: true,
+      partition_spec: PartitionSpec.normalize!([:tenant_id])
+    }
+
+    assert {:error, %Error{type: :unsupported_capability, operation: :materialize}} =
+             DuckDB.materialize(conn, plan, [])
+
+    refute Enum.any?(events(), fn
+             {:query, _conn_ref, sql} -> String.starts_with?(sql, "CREATE")
+             _event -> false
+           end)
   end
 
   test "catalog-qualified materialization statements reject missing schema" do

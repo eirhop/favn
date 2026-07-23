@@ -242,8 +242,8 @@ defmodule Favn.TargetCompatibilityTest do
           module: Keyword.get(opts, :connection_module, MyApp.Warehouse)
         }
       },
-      manifest_schema_version: 11,
-      runner_contract_version: 11
+      manifest_schema_version: 12,
+      runner_contract_version: 12
     )
   end
 

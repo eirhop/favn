@@ -32,7 +32,7 @@ defmodule Favn.WindowTest do
     assert runtime.anchor_key == anchor.key
   end
 
-  test "normalizes schema 11 persisted window specs" do
+  test "normalizes schema 12 persisted window specs" do
     assert {:ok, %Spec{kind: :month, refresh_from: :day, timezone: nil}} =
              Spec.from_value(%{"kind" => "month", "refresh_from" => "day"})
 

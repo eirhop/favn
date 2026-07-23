@@ -25,6 +25,12 @@ same candidate, atomic-swap, marker-reconciliation, and safe-discard contract as
 the in-process DuckDB adapter. Generation operations use the checked-out ADBC
 connection and surface commit uncertainty instead of retrying a possible write.
 
+DuckLake physical partitioning follows the same transactional empty-table,
+`SET PARTITIONED BY`, then insert sequence as the in-process adapter. Existing
+incremental writes apply the declared current specification before writing.
+Native DuckDB catalogs and bulk-insert paths reject the setting explicitly;
+historical partition layouts remain DuckLake-owned.
+
 The ADBC adapter owns DuckDB config parsing, native script execution, driver
 preflight diagnostics, and default-on runner-local session pooling for ADBC-backed
 sessions. Disable pooling with `pool: [enabled: false]`; tune it with

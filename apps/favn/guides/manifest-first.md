@@ -6,7 +6,7 @@ Use `mix favn.dev`, `mix favn.run`, and the UI for normal local development. Use
 the functions in this guide when building tools, debugging discovery, comparing
 versions, or preparing deployment artifacts.
 
-Favn still uses manifests internally. Schema 11 publishes one compact manifest
+Favn still uses manifests internally. Schema 12 publishes one compact manifest
 index plus immutable, content-addressed execution packages. The index describes
 assets, pipelines, schedules, dependencies, and compact runtime metadata. Each
 manifest is bound to the exact verified runner descriptor it requires, and each

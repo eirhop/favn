@@ -22,6 +22,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.RuntimeConfig.Ref, as: RuntimeConfigRef
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.Check
+  alias Favn.SQL.PartitionSpec
   alias Favn.SQL.SessionRequirements
   alias Favn.SQL.Contract
   alias Favn.SQL.Contract.{Column, Composition, Grain, Lineage, Param, RowCount, UniqueKey}
@@ -104,6 +105,7 @@ defmodule Favn.Manifest.Rehydrate do
       freshness: value |> field_value(:freshness) |> build_freshness(),
       retry_policy: value |> field_value(:retry_policy) |> build_retry_policy(),
       materialization: value |> field_value(:materialization) |> decode_materialization(),
+      partition_spec: value |> field_value(:partition_spec) |> build_partition_spec(),
       relation_inputs: value |> field_value(:relation_inputs, []) |> build_relation_inputs(),
       runtime_config: value |> field_value(:runtime_config, %{}) |> build_runtime_config(),
       session_requirements:
@@ -120,6 +122,10 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_asset(other), do: other
+
+  defp build_partition_spec(nil), do: nil
+  defp build_partition_spec(%PartitionSpec{} = spec), do: PartitionSpec.normalize!(spec)
+  defp build_partition_spec(value), do: PartitionSpec.from_value!(value)
 
   defp build_target_descriptor(value) do
     case TargetDescriptor.from_value(value) do

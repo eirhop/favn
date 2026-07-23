@@ -1771,6 +1771,7 @@ defmodule Favn.SQLAsset.Runtime do
       window_spec: asset.window,
       relation: asset.relation,
       materialization: asset.materialization,
+      partition_spec: asset.partition_spec,
       relation_inputs: asset.relation_inputs,
       session_requirements: asset.session_requirements
     }
@@ -1782,6 +1783,7 @@ defmodule Favn.SQLAsset.Runtime do
        sql: payload.sql,
        template: payload.template,
        materialization: asset.materialization,
+       partition_spec: asset.partition_spec,
        relation_inputs: asset.relation_inputs,
        sql_definitions: payload.sql_definitions,
        checks: payload.checks,

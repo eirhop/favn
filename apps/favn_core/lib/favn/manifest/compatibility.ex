@@ -9,6 +9,7 @@ defmodule Favn.Manifest.Compatibility do
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.TargetDescriptor
   alias Favn.RunnerRelease
+  alias Favn.SQL.PartitionSpec
   alias Favn.Window.Policy
   alias Favn.Window.Spec
 
@@ -128,7 +129,8 @@ defmodule Favn.Manifest.Compatibility do
   defp validate_asset(asset, schema_version, runner_contract_version, runner_release_id) do
     with :ok <- validate_asset_window(asset.window),
          :ok <- validate_asset_coverage(asset.coverage, asset.window),
-         :ok <- validate_asset_freshness(asset.freshness) do
+         :ok <- validate_asset_freshness(asset.freshness),
+         :ok <- validate_asset_partition_spec(asset) do
       validate_asset_generation(
         asset,
         schema_version,
@@ -191,6 +193,33 @@ defmodule Favn.Manifest.Compatibility do
   end
 
   defp validate_asset_freshness(value), do: {:error, {:invalid_asset_freshness, value}}
+
+  defp validate_asset_partition_spec(%Asset{partition_spec: nil}), do: :ok
+
+  defp validate_asset_partition_spec(%Asset{
+         type: :sql,
+         materialization: materialization,
+         partition_spec: %PartitionSpec{} = spec
+       }) do
+    if table_materialization?(materialization) do
+      _spec = PartitionSpec.normalize!(spec)
+      :ok
+    else
+      {:error, :partition_spec_requires_table_materialization}
+    end
+  rescue
+    error in ArgumentError -> {:error, {:invalid_partition_spec, Exception.message(error)}}
+  end
+
+  defp validate_asset_partition_spec(%Asset{partition_spec: %PartitionSpec{}}),
+    do: {:error, :partition_spec_requires_sql_asset}
+
+  defp validate_asset_partition_spec(%Asset{partition_spec: value}),
+    do: {:error, {:invalid_partition_spec, value}}
+
+  defp table_materialization?(:table), do: true
+  defp table_materialization?({:incremental, opts}) when is_list(opts), do: true
+  defp table_materialization?(_materialization), do: false
 
   defp validate_asset_generation(
          %Asset{type: :sql, materialization: materialization} = asset,

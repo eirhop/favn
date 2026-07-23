@@ -94,7 +94,7 @@ defmodule Favn.Window.Spec do
   @doc """
   Normalizes persisted or DSL-shaped values into an asset runtime window spec.
 
-  This accepts the canonical struct, atom/string kind shorthands, and schema 11
+  This accepts the canonical struct, atom/string kind shorthands, and schema 12
   persisted maps. Nil and empty option values are omitted so normal `new/2`
   defaults still apply. Pipeline policy fields such as `lookback` are rejected.
 
