@@ -90,11 +90,25 @@ defmodule Favn.Dev.Build.SourceInputSet do
   @doc false
   @spec fingerprint(t()) :: String.t()
   def fingerprint(%__MODULE__{} = input_set) do
+    fingerprint_entries(input_set.entries)
+  end
+
+  @doc false
+  @spec runner_identity_fingerprint(t()) :: String.t()
+  def runner_identity_fingerprint(%__MODULE__{} = input_set) do
     input_set.entries
+    |> Enum.reject(&within_tree?(&1.path, "lib"))
+    |> fingerprint_entries()
+  end
+
+  defp fingerprint_entries(entries) do
+    entries
     |> Enum.map(&{&1.path, &1.executable, &1.size, &1.sha256})
     |> :erlang.term_to_binary([:deterministic])
     |> sha256()
   end
+
+  defp within_tree?(path, tree), do: String.starts_with?(path, tree <> "/")
 
   @doc false
   @spec summary(t()) :: map()
@@ -436,9 +450,95 @@ defmodule Favn.Dev.Build.SourceInputSet do
 
   defp private_key?(bytes) do
     Enum.any?(
-      ["PRIVATE", "RSA PRIVATE", "EC PRIVATE", "OPENSSH PRIVATE"],
-      &(:binary.match(bytes, "-----BEGIN #{&1} KEY-----") != :nomatch)
+      ["PRIVATE", "RSA PRIVATE", "EC PRIVATE", "OPENSSH PRIVATE", "ENCRYPTED PRIVATE"],
+      &pem_private_key?(bytes, &1)
     )
+  end
+
+  defp pem_private_key?(bytes, kind) do
+    begin_marker = "-----BEGIN #{kind} KEY-----"
+    end_marker = "-----END #{kind} KEY-----"
+
+    case line_marker_offset(bytes, begin_marker) do
+      :nomatch ->
+        false
+
+      offset ->
+        marker_size = byte_size(begin_marker)
+        rest_offset = offset + marker_size
+        rest = binary_part(bytes, rest_offset, byte_size(bytes) - rest_offset)
+
+        case line_marker_offset(rest, end_marker) do
+          :nomatch ->
+            false
+
+          body_size ->
+            body = binary_part(rest, 0, body_size)
+            valid_private_key_body?(body) or pem_private_key?(rest, kind)
+        end
+    end
+  end
+
+  defp line_marker_offset(bytes, marker), do: line_marker_offset(bytes, marker, 0)
+
+  defp line_marker_offset(bytes, marker, consumed) do
+    case :binary.match(bytes, marker) do
+      :nomatch ->
+        :nomatch
+
+      {offset, marker_size} ->
+        if marker_line?(bytes, offset, marker_size) do
+          consumed + offset
+        else
+          rest_offset = offset + marker_size
+          rest = binary_part(bytes, rest_offset, byte_size(bytes) - rest_offset)
+          line_marker_offset(rest, marker, consumed + rest_offset)
+        end
+    end
+  end
+
+  defp marker_line?(bytes, offset, marker_size) do
+    line_prefix_whitespace?(bytes, offset - 1) and
+      line_suffix_whitespace?(bytes, offset + marker_size)
+  end
+
+  defp line_prefix_whitespace?(_bytes, offset) when offset < 0, do: true
+
+  defp line_prefix_whitespace?(bytes, offset) do
+    case :binary.at(bytes, offset) do
+      ?\n -> true
+      whitespace when whitespace in [?\s, ?\t, ?\r] -> line_prefix_whitespace?(bytes, offset - 1)
+      _other -> false
+    end
+  end
+
+  defp line_suffix_whitespace?(bytes, offset) when offset == byte_size(bytes), do: true
+
+  defp line_suffix_whitespace?(bytes, offset) do
+    case :binary.at(bytes, offset) do
+      ?\n -> true
+      whitespace when whitespace in [?\s, ?\t, ?\r] -> line_suffix_whitespace?(bytes, offset + 1)
+      _other -> false
+    end
+  end
+
+  defp valid_private_key_body?(body) do
+    encoded =
+      body
+      |> :binary.split("\n", [:global])
+      |> Enum.map(&remove_horizontal_whitespace/1)
+      |> Enum.reject(fn line ->
+        line == "" or String.starts_with?(line, ["Proc-Type:", "DEK-Info:"])
+      end)
+      |> IO.iodata_to_binary()
+
+    byte_size(encoded) >= 64 and match?({:ok, _decoded}, Base.decode64(encoded))
+  end
+
+  defp remove_horizontal_whitespace(bytes) do
+    Enum.reduce([" ", "\t", "\r"], bytes, fn whitespace, acc ->
+      :binary.replace(acc, whitespace, "", [:global])
+    end)
   end
 
   defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)

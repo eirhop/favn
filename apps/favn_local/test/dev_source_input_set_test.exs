@@ -153,13 +153,35 @@ defmodule Favn.Dev.Build.SourceInputSetTest do
     File.write!(Path.join(root, "Makefile"), "all:\n\t@true\n")
     File.write!(Path.join(root, "checksum.exs"), "%{}\n")
     File.mkdir_p!(Path.join(root, "3rd_party/native_library"))
-    File.write!(Path.join(root, "3rd_party/native_library/source.c"), "int main(void) {return 0;}")
+
+    File.write!(
+      Path.join(root, "3rd_party/native_library/source.c"),
+      "int main(void) {return 0;}"
+    )
 
     assert {:ok, input_set} = SourceInputSet.application(root)
     paths = Enum.map(input_set.entries, & &1.path)
     assert "Makefile" in paths
     assert "checksum.exs" in paths
     assert "3rd_party/native_library/source.c" in paths
+  end
+
+  test "runner identity excludes library source but includes native build inputs", %{
+    root: root
+  } do
+    File.write!(Path.join(root, "Makefile"), "one\n")
+    assert {:ok, initial} = SourceInputSet.application(root, runtime_config: true)
+    initial_fingerprint = SourceInputSet.runner_identity_fingerprint(initial)
+
+    File.write!(Path.join(root, "lib/tracked.ex"), "defmodule Fixture.Changed do end\n")
+    assert {:ok, library_change} = SourceInputSet.application(root, runtime_config: true)
+
+    assert SourceInputSet.runner_identity_fingerprint(library_change) == initial_fingerprint
+
+    File.write!(Path.join(root, "Makefile"), "two\n")
+    assert {:ok, native_build_change} = SourceInputSet.application(root, runtime_config: true)
+
+    refute SourceInputSet.runner_identity_fingerprint(native_build_change) == initial_fingerprint
   end
 
   test "selected symlinks and sensitive files remain rejected", %{root: root} do
@@ -172,6 +194,48 @@ defmodule Favn.Dev.Build.SourceInputSetTest do
     File.write!(Path.join(root, "priv/credentials.json"), ~s({"token":"secret"}))
 
     assert {:error, {:sensitive_source_file, "priv/credentials.json"}} =
+             SourceInputSet.application(root)
+  end
+
+  test "private key detection distinguishes source markers from PEM data", %{root: root} do
+    File.mkdir_p!(Path.join(root, "c_src/duckdb"))
+
+    File.write!(
+      Path.join(root, "c_src/duckdb/duckdb.cpp"),
+      """
+      #define PEM_BEGIN_PRIVATE_KEY_RSA "-----BEGIN RSA PRIVATE KEY-----"
+      #define PEM_END_PRIVATE_KEY_RSA "-----END RSA PRIVATE KEY-----"
+      """
+    )
+
+    assert {:ok, input_set} = SourceInputSet.application(root)
+    assert "c_src/duckdb/duckdb.cpp" in Enum.map(input_set.entries, & &1.path)
+
+    File.write!(
+      Path.join(root, "priv/leaked.pem"),
+      """
+      -----BEGIN PRIVATE KEY-----
+      #{String.duplicate("A", 64)}
+      -----END PRIVATE KEY-----
+      """
+    )
+
+    assert {:error, {:sensitive_source_file, "priv/leaked.pem"}} =
+             SourceInputSet.application(root)
+
+    File.write!(
+      Path.join(root, "priv/leaked.pem"),
+      """
+        -----BEGIN RSA PRIVATE KEY-----#{String.duplicate(" ", 2)}
+        Proc-Type: 4,ENCRYPTED
+        DEK-Info: AES-256-CBC,0123456789ABCDEF0123456789ABCDEF
+
+        #{String.duplicate("A", 64)}
+        -----END RSA PRIVATE KEY-----#{String.duplicate(" ", 2)}
+      """
+    )
+
+    assert {:error, {:sensitive_source_file, "priv/leaked.pem"}} =
              SourceInputSet.application(root)
   end
 

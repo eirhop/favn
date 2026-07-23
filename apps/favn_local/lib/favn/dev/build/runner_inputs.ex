@@ -79,7 +79,7 @@ defmodule Favn.Dev.Build.RunnerInputs do
            all_inputs <- Map.merge(build_inputs, application_inputs),
            source_input_digest <- source_input_digest(all_inputs),
            {:ok, applications} <-
-             bind_source_inputs(applications, current_app, source_input_digest),
+             bind_build_source_inputs(applications, current_app, build_inputs),
            source_input_summary <-
              source_input_summary(all_inputs, Atom.to_string(current_app)),
            {:ok, dependency_lock} <- release_dependency_lock(release_sources, opts),
@@ -704,7 +704,6 @@ defmodule Favn.Dev.Build.RunnerInputs do
   defp application_lock_fingerprint(app, input_set, opts) do
     lock = Keyword.get_lazy(opts, :lock, &Mix.Dep.Lock.read/0)
     current_app = Keyword.get(opts, :current_app)
-    source_fingerprint = SourceInputSet.fingerprint(input_set)
 
     bytes =
       cond do
@@ -714,19 +713,19 @@ defmodule Favn.Dev.Build.RunnerInputs do
               app,
               :customer_runtime_inputs,
               lock |> Enum.sort_by(&elem(&1, 0)),
-              source_fingerprint
+              SourceInputSet.runner_identity_fingerprint(input_set)
             },
             [:deterministic]
           )
 
         Map.has_key?(lock, app) ->
           :erlang.term_to_binary(
-            {app, Map.fetch!(lock, app), source_fingerprint},
+            {app, Map.fetch!(lock, app), SourceInputSet.fingerprint(input_set)},
             [:deterministic]
           )
 
         true ->
-          source_fingerprint
+          SourceInputSet.fingerprint(input_set)
       end
 
     {:ok, sha256(bytes)}
@@ -738,8 +737,18 @@ defmodule Favn.Dev.Build.RunnerInputs do
     bind_current_application(applications, current_app, :runner_config, fingerprint)
   end
 
-  defp bind_source_inputs(applications, current_app, fingerprint) do
-    bind_current_application(applications, current_app, :source_inputs, fingerprint)
+  defp bind_build_source_inputs(applications, _current_app, build_inputs)
+       when map_size(build_inputs) == 0 do
+    {:ok, applications}
+  end
+
+  defp bind_build_source_inputs(applications, current_app, build_inputs) do
+    bind_current_application(
+      applications,
+      current_app,
+      :build_source_inputs,
+      source_input_digest(build_inputs)
+    )
   end
 
   defp bind_current_application(applications, current_app, kind, fingerprint) do

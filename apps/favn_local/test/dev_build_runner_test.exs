@@ -492,10 +492,13 @@ defmodule Favn.Dev.Build.RunnerTest do
     File.write!(Path.join(customer, "mix.exs"), "defmodule SettingsOnly.MixProject do end")
 
     config = Path.join(customer, "config/config.exs")
+    manifest_source = Path.join(customer, "lib/manifest_only.ex")
     File.write!(config, "import Config\nconfig :favn, :asset_modules, []\n")
+    File.write!(manifest_source, "defmodule SettingsOnly.Manifest do\n  @value :one\nend\n")
     assert {:ok, first} = build(root_dir, current_app_source: customer)
 
     File.write!(config, "import Config\nconfig :favn, :asset_modules, [:manifest_only]\n")
+    File.write!(manifest_source, "defmodule SettingsOnly.Manifest do\n  @value :two\nend\n")
     assert {:ok, second} = build(root_dir, current_app_source: customer)
     assert second.runner_release_id == first.runner_release_id
     assert second.status == :already_built
