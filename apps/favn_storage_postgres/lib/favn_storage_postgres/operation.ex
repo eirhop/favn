@@ -150,6 +150,30 @@ defmodule FavnStoragePostgres.Instrumented.Materialization do
     store: :materialization
 end
 
+defmodule FavnStoragePostgres.Instrumented.TargetGenerations do
+  @moduledoc false
+  use FavnStoragePostgres.InstrumentedStore,
+    behaviour: FavnOrchestrator.Persistence.TargetGenerationStore,
+    implementation: FavnStoragePostgres.TargetGenerations.Store,
+    store: :target_generations
+end
+
+defmodule FavnStoragePostgres.Instrumented.Rebuilds do
+  @moduledoc false
+  use FavnStoragePostgres.InstrumentedStore,
+    behaviour: FavnOrchestrator.Persistence.RebuildStore,
+    implementation: FavnStoragePostgres.Rebuilds.Store,
+    store: :rebuilds
+end
+
+defmodule FavnStoragePostgres.Instrumented.TargetOperationLocks do
+  @moduledoc false
+  use FavnStoragePostgres.InstrumentedStore,
+    behaviour: FavnOrchestrator.Persistence.TargetOperationLockStore,
+    implementation: FavnStoragePostgres.TargetOperationLocks.Store,
+    store: :target_operation_locks
+end
+
 defmodule FavnStoragePostgres.Instrumented.ResourceCircuits do
   @moduledoc false
   use FavnStoragePostgres.InstrumentedStore,

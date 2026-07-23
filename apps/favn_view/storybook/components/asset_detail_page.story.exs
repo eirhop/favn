@@ -58,6 +58,80 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           })
       },
       %Variation{
+        id: :incomplete_coverage,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            coverage: coverage(:incomplete),
+            coverage_gaps: coverage_gaps(),
+            coverage_pagination: coverage_pagination(true)
+          })
+      },
+      %Variation{
+        id: :later_missing_coverage_page,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            coverage: coverage(:incomplete),
+            coverage_gaps: coverage_gaps(),
+            coverage_pagination: coverage_pagination(true),
+            coverage_page_cursor: "opaque-page-2-cursor"
+          })
+      },
+      %Variation{
+        id: :unknown_coverage,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            coverage: coverage(:unknown),
+            coverage_policy: nil,
+            coverage_gaps: []
+          })
+      },
+      %Variation{
+        id: :missing_coverage_plan_review,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            coverage: coverage(:incomplete),
+            coverage_gaps: coverage_gaps(),
+            coverage_plan: coverage_plan()
+          })
+      },
+      %Variation{
+        id: :rebuild_available,
+        attributes:
+          base_attributes()
+          |> Map.put(:compatibility, compatibility(:rebuild_available))
+      },
+      %Variation{
+        id: :rebuild_required,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            can_run_asset?: false,
+            compatibility: compatibility(:rebuild_required)
+          })
+      },
+      %Variation{
+        id: :unexpected_target_drift,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            can_run_asset?: false,
+            compatibility: compatibility(:unexpected_drift)
+          })
+      },
+      %Variation{
+        id: :operator_decision_required,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            can_run_asset?: false,
+            compatibility: compatibility(:operator_decision)
+          })
+      },
+      %Variation{
         id: :active_composite_freshness_timeline,
         attributes:
           base_attributes()
@@ -211,11 +285,143 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
       freshness_timeline: freshness_timeline(),
       data_coverage_timeline: data_coverage_timeline(),
       freshness: AssetDetailPage.sample_freshness(:fresh),
+      coverage: coverage(:complete),
+      coverage_policy: coverage_policy(),
+      coverage_gaps: [],
+      coverage_pagination: coverage_pagination(false),
+      compatibility: compatibility(:ready),
       active_mode: :timeline,
       selected_window: nil,
       run_config_open?: false,
       run_config: run_config(:refresh_timeline, :day, "2026-06-12")
     }
+  end
+
+  defp coverage(:complete) do
+    %{
+      status: :complete,
+      evaluated_at: ~U[2026-07-22 12:00:00Z],
+      expected_count: 22,
+      covered_count: 22,
+      missing_count: 0,
+      last_expected_window: %{start_at: ~U[2026-07-21 00:00:00Z]}
+    }
+  end
+
+  defp coverage(:incomplete) do
+    %{
+      status: :incomplete,
+      evaluated_at: ~U[2026-07-22 12:00:00Z],
+      expected_count: 22,
+      covered_count: 20,
+      missing_count: 2,
+      last_expected_window: %{start_at: ~U[2026-07-21 00:00:00Z]}
+    }
+  end
+
+  defp coverage(:unknown),
+    do: %{status: :unknown, unknown_reason: :coverage_not_declared}
+
+  defp coverage_policy do
+    %{
+      timezone: "Europe/Oslo",
+      timezone_source: :application_default,
+      declared_from: ~U[2026-07-01 00:00:00Z],
+      effective_from: ~U[2026-07-01 00:00:00Z],
+      availability_delay_seconds: 21_600
+    }
+  end
+
+  defp coverage_gaps do
+    [
+      %{window_key: "day:Europe/Oslo:2026-07-08"},
+      %{window_key: "day:Europe/Oslo:2026-07-15"}
+    ]
+  end
+
+  defp coverage_pagination(has_more) do
+    %{
+      limit: 100,
+      has_more: has_more,
+      next_cursor: if(has_more, do: "opaque-next-page-cursor")
+    }
+  end
+
+  defp coverage_plan do
+    %{
+      plan_hash: String.duplicate("a", 64),
+      window_count: 2,
+      windows: coverage_gaps()
+    }
+  end
+
+  defp compatibility(:ready) do
+    %{
+      status: :ready,
+      reason_code: "compatible",
+      diff: %{},
+      active_generation_id: "generation-orders-v1",
+      desired_descriptor_hash: String.duplicate("a", 64),
+      physical_fingerprint: String.duplicate("b", 64),
+      persisted?: true,
+      blocks_writes?: false
+    }
+  end
+
+  defp compatibility(:rebuild_available) do
+    compatibility(:ready)
+    |> Map.merge(%{
+      status: :rebuild_available,
+      reason_code: "execution_package_changed",
+      diff: %{
+        execution_package_hash: %{
+          active: String.duplicate("c", 64),
+          desired: String.duplicate("d", 64)
+        }
+      }
+    })
+  end
+
+  defp compatibility(:rebuild_required) do
+    compatibility(:ready)
+    |> Map.merge(%{
+      status: :rebuild_required,
+      reason_code: "incompatible_descriptor",
+      diff: %{
+        window_identity: %{
+          active: %{kind: :day, timezone: "Europe/Oslo"},
+          desired: %{kind: :month, timezone: "Europe/Oslo"}
+        }
+      },
+      blocks_writes?: true
+    })
+  end
+
+  defp compatibility(:unexpected_drift) do
+    compatibility(:ready)
+    |> Map.merge(%{
+      status: :unexpected_drift,
+      reason_code: "physical_fingerprint_mismatch",
+      diff: %{
+        physical_fingerprint: %{
+          active: String.duplicate("b", 64),
+          observed: String.duplicate("e", 64)
+        }
+      },
+      blocks_writes?: true
+    })
+  end
+
+  defp compatibility(:operator_decision) do
+    compatibility(:ready)
+    |> Map.merge(%{
+      status: :operator_decision,
+      reason_code: "unmanaged_physical_target",
+      active_generation_id: nil,
+      physical_fingerprint: nil,
+      diff: %{},
+      blocks_writes?: true
+    })
   end
 
   defp run_contexts do

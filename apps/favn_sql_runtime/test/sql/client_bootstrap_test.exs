@@ -6,6 +6,8 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
   alias Favn.SQL.Capabilities
   alias Favn.SQL.Client
   alias Favn.SQL.Error
+  alias Favn.SQL.GenerationCapabilities
+  alias Favn.SQL.GenerationMarkerInitialization
   alias Favn.SQL.PoolConfig
   alias Favn.SQL.Relation
   alias Favn.SQL.Result
@@ -258,6 +260,18 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
 
     @impl true
     def materialization_statements(_plan, _capabilities, _opts), do: {:ok, []}
+
+    def generation_capabilities(_resolved, _opts), do: {:ok, %GenerationCapabilities{}}
+    def inspect_generation(_conn, _relation, _opts), do: {:ok, :not_found}
+
+    def initialize_generation_marker(conn, _request, _opts) do
+      record({:initialize_generation_marker, conn})
+      {:ok, :initialized}
+    end
+
+    def activate_generation(_conn, _request, _opts), do: {:ok, :activated}
+    def reconcile_generation(_conn, _request, _opts), do: {:ok, nil}
+    def discard_generation(_conn, _request, _opts), do: :ok
 
     defp record(event) do
       if :ets.whereis(@events_table) != :undefined do
@@ -526,6 +540,40 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     Client.disconnect(next)
 
     assert {:disconnect, executed_conn} in events()
+  end
+
+  test "successful marker initialization discards the mutated pooled session", %{
+    registry_name: registry_name
+  } do
+    pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+    start_registry(registry_name, AdapterWithPool, %{pool: pool})
+
+    assert {:ok, session} = Client.connect(:warehouse, registry_name: registry_name)
+    initialized_conn = session.conn
+
+    request = %GenerationMarkerInitialization{
+      logical_target_id: "asset:orders",
+      stable_relation: %Favn.RelationRef{
+        connection: :warehouse,
+        schema: "analytics",
+        name: "orders"
+      },
+      active_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
+      expected_physical_fingerprint: String.duplicate("a", 64),
+      initialization_operation_id: "initial-materialization",
+      initialization_token: "initial-marker-token",
+      initialized_at: ~U[2026-07-22 10:00:00Z]
+    }
+
+    assert {:ok, :initialized} = Client.initialize_generation_marker(session, request, [])
+    Client.disconnect(session)
+
+    assert {:ok, next} = Client.connect(:warehouse, registry_name: registry_name)
+    refute next.conn == initialized_conn
+    Client.disconnect(next)
+
+    assert {:initialize_generation_marker, initialized_conn} in events()
+    assert {:disconnect, initialized_conn} in events()
   end
 
   test "non-owner process cannot run pooled session operations", %{registry_name: registry_name} do

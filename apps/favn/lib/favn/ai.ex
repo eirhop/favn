@@ -58,6 +58,13 @@ defmodule Favn.AI do
     where `freshness` must be attached. For one refresh cadence per exact data
     window, use `Favn.Window.Spec.refresh_from`; explicit `freshness :daily` is
     asset-wide.
+  - To declare expected historical windows, read `Favn.Coverage.Spec`,
+    `Favn.Coverage.Effective`, `Favn.Window`, and the applicable asset DSL.
+    Coverage is independent of freshness: `availability_delay` changes when a
+    closed window becomes expected but never schedules or delays execution.
+    Namespace coverage is one closest-declaration-wins scalar, and `coverage
+    nil` clears it. Environment-wide history narrowing uses `config :favn,
+    coverage_scope: [from: date]`.
   - To author a source-system raw landing asset, read `Favn.Asset`, then
     `Favn.SQLClient`, `Favn.Namespace`, and the standalone tutorial at
     `examples/basic-workflow-tutorial`. The canonical pattern is: declare
@@ -102,7 +109,9 @@ defmodule Favn.AI do
   - To define a pipeline, read `Favn.Pipeline`, then
     `Favn.Triggers.Schedules` if schedules are involved. If the pipeline is
     windowed, also read `Favn.Window`, `Favn.Window.Policy`, and
-    `Favn.Window.Request`. If the pipeline or its assets touch rate-limited
+    `Favn.Window.Request`. Pipeline `lookback` expands only scheduled
+    `Favn.Window.Selection` values; manual and backfill selections remain exact.
+    If the pipeline or its assets touch rate-limited
     source systems or shared infrastructure, read the `max_concurrency` and
     `execution_pool` sections in `Favn.Pipeline` and `Favn.Asset`.
   - To configure retries, reruns, replay input behavior, or runtime-input pins,
@@ -133,21 +142,29 @@ defmodule Favn.AI do
     `FavnOrchestrator.Repair.RuntimeState`, and `Mix.Tasks.Favn.RepairRuntimeState`.
   - To work with windows or one-off run input, read `Favn.Window`, then
     `Favn.Window.Policy` for pipeline/scheduler policy, `Favn.Window.Request`
-    for CLI/API run input, and `Favn plan_asset_run` if you need planning
+    for CLI/API run input, `Favn.Window.Selection` for the persisted requested,
+    expansion, and effective anchors, and `Favn plan_asset_run` if you need planning
     details. Scheduled anchors are explicit
     `:previous_complete_period | :current_period`; schedule cadence does not
     change pipeline window granularity.
   - To work with operational backfill ranges, dry-run planning, compact
-    `--window kind:FROM..TO` input, forced refresh repair, or successful-window
-    backfill reruns, read `Favn.Backfill.RangeRequest`,
+    `--window kind:FROM..TO` input, forced refresh repair, successful-window
+    reruns, or immutable missing-coverage plans, read `Favn.Backfill.RangeRequest`,
     `Favn.Backfill.RangeResolver`, and `FavnOrchestrator.RefreshPolicy`. If you
-    are wiring orchestrator-side submission, planning, or projection, then read
-    `FavnOrchestrator`, `FavnOrchestrator.BackfillManager`, and the internal
-    modules under `FavnOrchestrator.Backfill.*`. If you are changing the
+    are wiring coverage, read `Favn.Coverage.Summary` and the coverage section
+    of `apps/favn/guides/local-development.md`. For orchestrator-side submission,
+    planning, or projection, read `FavnOrchestrator`,
+    `FavnOrchestrator.BackfillManager`, and the internal modules under
+    `FavnOrchestrator.Backfill.*`. If you are changing the
     private service HTTP surface for backfills, also read
     `FavnOrchestrator.API.Router`. For the local operator CLI, read
     `Favn.Dev.Backfill`, `Favn.Dev.Run`, `Mix.Tasks.Favn.Backfill`, and
     `Mix.Tasks.Favn.Run`.
+  - To replace an incompatible managed SQL target, read
+    `Mix.Tasks.Favn.Rebuild`, `Favn.Dev.Rebuild`, and the rebuild section of
+    [Local Development Commands](local-development.html). Planning is read-only
+    and start requires the exact reviewed plan id and hash. An unknown activation
+    outcome must be reconciled; it is never permission for a blind retry.
   - To define connection contracts, read `Favn.Connection`; if connection
     modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
     If connection values come from environment variables or secrets, also read
@@ -200,10 +217,10 @@ defmodule Favn.AI do
     tasks.
   - To compile a manifest, read `Favn generate_manifest`; if the project uses
     `config :favn, discovery: [apps: [...], assets: :all, pipelines: :all,
-    schedules: :all]`, also read `Favn.ModuleDiscovery`. Read
+    schedules: :all, connections: :all]`, also read `Favn.ModuleDiscovery`. Read
     `Favn.Manifest.Generator` if you need internal compilation details. For
     deployment, call `Favn.build_manifest/1` with a verified runner descriptor,
-    followed by `Favn.prepare_manifest_publication/2`: schema 10 has one compact
+    followed by `Favn.prepare_manifest_publication/2`: schema 11 has one compact
     manifest index bound to its exact `required_runner_release_id` and immutable
     content-addressed SQL execution packages, with no inline SQL manifest form
     or compatibility fallback.
@@ -233,6 +250,7 @@ defmodule Favn.AI do
     supported v1 hosts.
     The public local command surface is `mix favn.install`, `mix favn.init`,
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
+    `mix favn.rebuild`,
     `mix favn.runs`, `mix favn.status`, `mix favn.logs`, `mix favn.inspect`,
     `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
     `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
@@ -489,7 +507,8 @@ defmodule Favn.AI do
     cancellation, local SQL inspection/querying, docs lookup, or packaging, not
     asset authoring. Read
     `Favn.Dev.Backfill` for the local `mix favn.backfill` workflow over the
-    private orchestrator backfill endpoints. Read `Favn.Dev.Run` for
+    private orchestrator backfill endpoints. Read `Favn.Dev.Rebuild` for the
+    plan/review/start rebuild workflow. Read `Favn.Dev.Run` for
     `mix favn.run`. Read
     `Favn.Dev.Runs` for `mix favn.runs` list/show/cancel behavior and
     `mix favn.logs RUN_ID`. Read

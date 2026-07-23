@@ -11,7 +11,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   use GenServer
 
   alias Favn.Retry.Policy
-  alias Favn.Window.Anchor
+  alias Favn.Window.{Anchor, Selection}
   alias FavnOrchestrator.Backfills
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Persistence
@@ -127,7 +127,8 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   defp submit_child(context, window, run_id) do
     with {:ok, %Backfill{} = backfill} <- Backfills.get(context, window.backfill_id),
          {:ok, anchor} <- anchor(window),
-         {:ok, opts} <- submission_options(backfill, window, run_id, anchor),
+         {:ok, selection} <- Selection.backfill([anchor], anchor.timezone),
+         {:ok, opts} <- submission_options(backfill, window, run_id, selection),
          {:ok, ^run_id} <- submit_target(context, backfill, opts) do
       {:ok, run_id}
     end
@@ -145,7 +146,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
     end
   end
 
-  defp submission_options(backfill, window, run_id, anchor) do
+  defp submission_options(backfill, window, run_id, selection) do
     metadata = %{
       backfill_id: backfill.backfill_id,
       backfill_window_id: window.window_id,
@@ -156,13 +157,15 @@ defmodule FavnOrchestrator.BackfillDispatcher do
 
     with {:ok, retry_policy} <- Policy.new(field(backfill.metadata, "retry_policy")),
          {:ok, refresh} <- decode_refresh(field(backfill.metadata, "refresh")),
+         {:ok, required_generation} <-
+           decode_required_generation(field(backfill.metadata, "required_generation")),
          {:ok, dependencies} <-
            decode_dependencies(field(backfill.metadata, "dependencies")) do
       {:ok,
        [
          run_id: run_id,
          manifest_version_id: backfill.manifest_version_id,
-         anchor_window: anchor,
+         window_selection: selection,
          parent_run_id: backfill.root_run_id,
          root_run_id: backfill.root_run_id,
          lineage_depth: 1,
@@ -171,6 +174,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
        ]
        |> maybe_put(:timeout_ms, field(backfill.metadata, "timeout_ms"))
        |> maybe_put(:refresh, refresh)
+       |> maybe_put(:required_generation, required_generation)
        |> maybe_put(:dependencies, dependencies)}
     end
   end
@@ -309,6 +313,29 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   defp decode_dependencies("all"), do: {:ok, :all}
   defp decode_dependencies("none"), do: {:ok, :none}
   defp decode_dependencies(_other), do: {:error, :invalid_backfill_dependencies}
+
+  defp decode_required_generation(nil), do: {:ok, nil}
+
+  defp decode_required_generation(generation) when is_map(generation) do
+    target_id = field(generation, "target_id")
+    evidence_generation_id = field(generation, "evidence_generation_id")
+    target_generation_id = field(generation, "target_generation_id")
+
+    if is_binary(target_id) and target_id != "" and is_binary(evidence_generation_id) and
+         evidence_generation_id != "" and
+         (is_nil(target_generation_id) or target_generation_id == evidence_generation_id) do
+      {:ok,
+       %{
+         target_id: target_id,
+         evidence_generation_id: evidence_generation_id,
+         target_generation_id: target_generation_id
+       }}
+    else
+      {:error, :invalid_required_generation}
+    end
+  end
+
+  defp decode_required_generation(_other), do: {:error, :invalid_required_generation}
 
   defp child_run_id(window),
     do: command_id("run-bfw", window.backfill_id <> ":" <> window.window_id)

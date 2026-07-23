@@ -173,11 +173,13 @@ defmodule Favn.Dev.InitTest do
     raw_orders = Module.concat([base, Lakehouse, Raw, Sales, Orders])
     order_summary = Module.concat([base, Lakehouse, Mart, Sales, OrderSummary])
     pipeline = Module.concat([base, Pipelines, LocalSmoke])
+    connection = Module.concat([base, Connections, ImportantLakehouse])
 
     assert {:ok, manifest} =
              FavnAuthoring.generate_manifest(
                asset_modules: [raw_orders, order_summary],
                pipeline_modules: [pipeline],
+               connection_modules: [connection],
                runner_release: FavnTestSupport.runner_release()
              )
 

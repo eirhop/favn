@@ -58,6 +58,7 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
         latest_attempt_at: now,
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
+        evidence_generation_id: Map.fetch!(node, :evidence_generation_id),
         input_versions: Staleness.consumed_input_versions(node, upstream_states),
         metadata: %{reason: Map.get(decision, :reason)},
         updated_at: now

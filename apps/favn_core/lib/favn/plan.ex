@@ -26,6 +26,17 @@ defmodule Favn.Plan do
   @type node_key :: {Ref.t(), term() | nil}
 
   @type plan_node :: %{
+          optional(:target_id) => String.t(),
+          optional(:target_generation_id) => String.t() | nil,
+          optional(:evidence_generation_id) => String.t(),
+          optional(:physical_relation) => map() | nil,
+          optional(:input_generations) => [map()],
+          optional(:target_operation) => :normal_materialization | :rebuild_candidate,
+          optional(:active_relation) => map() | nil,
+          optional(:write_relation) => map() | nil,
+          optional(:rebuild_operation_id) => String.t() | nil,
+          optional(:rebuild_action_id) => String.t() | nil,
+          optional(:rebuild_item_id) => String.t() | nil,
           ref: Ref.t(),
           node_key: node_key(),
           window: Favn.Window.Runtime.t() | nil,

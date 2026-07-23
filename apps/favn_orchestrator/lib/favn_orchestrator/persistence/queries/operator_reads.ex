@@ -136,11 +136,11 @@ end
 defmodule FavnOrchestrator.Persistence.Queries.FreshnessIdentity do
   @moduledoc "One exact asset freshness read-model identity."
 
-  @enforce_keys [:deployment_id, :target_id, :freshness_key]
-  defstruct [:deployment_id, :target_id, :freshness_key]
+  @enforce_keys [:evidence_generation_id, :target_id, :freshness_key]
+  defstruct [:evidence_generation_id, :target_id, :freshness_key]
 
   @type t :: %__MODULE__{
-          deployment_id: String.t(),
+          evidence_generation_id: String.t(),
           target_id: String.t(),
           freshness_key: String.t()
         }
@@ -164,15 +164,52 @@ defmodule FavnOrchestrator.Persistence.Queries.GetAssetWindowStates do
   @moduledoc "Fetches bounded window projections for one deployed asset."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  @enforce_keys [:workspace_context, :deployment_id, :manifest_version_id, :target_id]
-  defstruct [:workspace_context, :deployment_id, :manifest_version_id, :target_id, limit: 200]
+  @enforce_keys [:workspace_context, :evidence_generation_id, :target_id]
+  defstruct [:workspace_context, :evidence_generation_id, :target_id, limit: 200]
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
-          deployment_id: String.t(),
-          manifest_version_id: String.t(),
+          evidence_generation_id: String.t(),
           target_id: String.t(),
           limit: 1..500
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.CountSuccessfulAssetWindows do
+  @moduledoc "Counts successful windows in one exact evidence-generation range."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :evidence_generation_id,
+    :target_id,
+    :first_window_start,
+    :last_window_start
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          evidence_generation_id: String.t(),
+          target_id: String.t(),
+          first_window_start: DateTime.t(),
+          last_window_start: DateTime.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.GetSuccessfulAssetWindowKeys do
+  @moduledoc "Batch-fetches successful keys for one exact evidence generation."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  @enforce_keys [:workspace_context, :evidence_generation_id, :target_id, :window_keys]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          evidence_generation_id: String.t(),
+          target_id: String.t(),
+          window_keys: [String.t()]
         }
 end
 
@@ -439,10 +476,20 @@ end
 
 defmodule FavnOrchestrator.Persistence.Results.FreshnessState do
   @moduledoc "Projected exact asset freshness state."
-  @enforce_keys [:workspace_id, :deployment_id, :target_id, :freshness_key, :status]
+  @enforce_keys [
+    :workspace_id,
+    :evidence_generation_id,
+    :deployment_id,
+    :manifest_version_id,
+    :target_id,
+    :freshness_key,
+    :status
+  ]
   defstruct [
     :workspace_id,
+    :evidence_generation_id,
     :deployment_id,
+    :manifest_version_id,
     :target_id,
     :freshness_key,
     :latest_attempt_materialization_id,
@@ -455,7 +502,9 @@ defmodule FavnOrchestrator.Persistence.Results.FreshnessState do
 
   @type t :: %__MODULE__{
           workspace_id: String.t(),
+          evidence_generation_id: String.t(),
           deployment_id: String.t(),
+          manifest_version_id: String.t(),
           target_id: String.t(),
           freshness_key: String.t(),
           latest_attempt_materialization_id: String.t() | nil,
@@ -469,9 +518,17 @@ end
 
 defmodule FavnOrchestrator.Persistence.Results.AssetWindowState do
   @moduledoc "Projected exact asset window state."
-  @enforce_keys [:workspace_id, :manifest_version_id, :target_id, :window_key, :status]
+  @enforce_keys [
+    :workspace_id,
+    :evidence_generation_id,
+    :manifest_version_id,
+    :target_id,
+    :window_key,
+    :status
+  ]
   defstruct [
     :workspace_id,
+    :evidence_generation_id,
     :manifest_version_id,
     :target_id,
     :window_key,
@@ -487,6 +544,7 @@ defmodule FavnOrchestrator.Persistence.Results.AssetWindowState do
 
   @type t :: %__MODULE__{
           workspace_id: String.t(),
+          evidence_generation_id: String.t(),
           manifest_version_id: String.t(),
           target_id: String.t(),
           window_key: String.t(),

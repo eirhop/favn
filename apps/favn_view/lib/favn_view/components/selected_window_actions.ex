@@ -320,7 +320,7 @@ defmodule FavnView.Components.SelectedWindowActions do
       "Choose one exact data window or an inclusive range. Lookback is not added to target windows."
 
   defp window_context_description(nil, _active_timeline),
-    do: "Choose one run period or an inclusive range. Asset lookback can expand from each period."
+    do: "Choose one exact run period or an inclusive range. Lookback is not added."
 
   defp window_context_description(window, _active_timeline),
     do: "Prefilled from #{window.range_label}. Clear the timeline selection to edit this context."

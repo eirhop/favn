@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias Favn.Run.NodeResult
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Runtime, as: WindowRuntime
+  alias Favn.Window.Selection
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ExactDateTimeCodec
   alias FavnOrchestrator.Storage.JsonSafe
@@ -16,6 +17,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   @format "favn.run_snapshot.storage.v3"
   @legacy_format "favn.run_snapshot.storage.v2"
+  @max_persisted_bytes 4 * 1_024 * 1_024
   # Favn-owned run snapshot atoms are fixed here; consumer module/name atoms come only from
   # the associated manifest record.
   @internal_atom_strings [
@@ -30,6 +32,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "all",
     "anchor_ranges",
     "anchor_window",
+    "window_selection",
     "backfill_range",
     "backoff",
     "cancelled",
@@ -46,6 +49,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "event_seq",
     "execution_id",
     "execution_pool",
+    "evidence_generation_id",
     "finished_at",
     "fixed",
     "freshness_key",
@@ -53,6 +57,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "in_flight_execution_ids",
     "initial_ms",
     "input_versions",
+    "input_generations",
     "inserted_at",
     "kind",
     "lineage_depth",
@@ -126,6 +131,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "submit_ref",
     "submit_kind",
     "target_node_keys",
+    "target_generation_id",
+    "target_id",
     "target_refs",
     "terminal_event_type",
     "timeout_ms",
@@ -171,6 +178,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   rescue
     error -> {:error, {:run_snapshot_encode_failed, error}}
   end
+
+  @doc false
+  @spec max_persisted_bytes() :: pos_integer()
+  def max_persisted_bytes, do: @max_persisted_bytes
 
   @doc false
   @spec encode_plan(Plan.t() | nil) :: {:ok, String.t()} | {:error, term()}
@@ -373,7 +384,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   defp plan_node_to_dto(node) when is_map(node) do
-    %{
+    dto = %{
       "ref" => JsonSafe.ref(Map.get(node, :ref)),
       "node_key" => node_key_to_dto(Map.get(node, :node_key)),
       "window" => window_to_dto(Map.get(node, :window)),
@@ -381,10 +392,29 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "downstream" => Enum.map(List.wrap(Map.get(node, :downstream)), &node_key_to_dto/1),
       "stage" => Map.get(node, :stage),
       "execution_pool" => Map.get(node, :execution_pool) |> atom_to_string(),
+      "target_id" => Map.get(node, :target_id),
+      "target_generation_id" => Map.get(node, :target_generation_id),
+      "evidence_generation_id" => Map.get(node, :evidence_generation_id),
+      "physical_relation" => JsonSafe.data(Map.get(node, :physical_relation)),
+      "input_generations" =>
+        Enum.map(List.wrap(Map.get(node, :input_generations)), &generation_pin_to_dto/1),
       "action" => Map.get(node, :action) |> atom_to_string(),
       "retry_policy" => retry_policy_to_dto(Map.get(node, :retry_policy)),
       "retry_policy_source" => Map.get(node, :retry_policy_source) |> atom_to_string()
     }
+
+    [
+      {"target_operation", Map.get(node, :target_operation) |> atom_to_string()},
+      {"active_relation", JsonSafe.data(Map.get(node, :active_relation))},
+      {"write_relation", JsonSafe.data(Map.get(node, :write_relation))},
+      {"rebuild_operation_id", Map.get(node, :rebuild_operation_id)},
+      {"rebuild_action_id", Map.get(node, :rebuild_action_id)},
+      {"rebuild_item_id", Map.get(node, :rebuild_item_id)}
+    ]
+    |> Enum.reduce(dto, fn
+      {_key, nil}, acc -> acc
+      {key, value}, acc -> Map.put(acc, key, value)
+    end)
   end
 
   defp node_key_to_dto({ref, identity}) do
@@ -515,24 +545,147 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, retry_policy} <- retry_policy_from_dto(Map.get(node, "retry_policy")),
          {:ok, retry_policy_source} <-
            retry_policy_source_from_dto(Map.get(node, "retry_policy_source")),
-         {:ok, window} <- plan_window_from_dto(Map.get(node, "window")) do
+         {:ok, window} <- plan_window_from_dto(Map.get(node, "window")),
+         {:ok, generation_pin} <- generation_pin_from_dto(node) do
       {:ok,
-       %{
-         ref: ref,
-         node_key: node_key,
-         window: window,
-         upstream: upstream,
-         downstream: downstream,
-         stage: Map.get(node, "stage", 0),
-         execution_pool: execution_pool,
-         action: action,
-         retry_policy: retry_policy,
-         retry_policy_source: retry_policy_source
-       }}
+       Map.merge(
+         %{
+           ref: ref,
+           node_key: node_key,
+           window: window,
+           upstream: upstream,
+           downstream: downstream,
+           stage: Map.get(node, "stage", 0),
+           execution_pool: execution_pool,
+           action: action,
+           retry_policy: retry_policy,
+           retry_policy_source: retry_policy_source
+         },
+         generation_pin
+       )}
     end
   end
 
   defp node_from_dto(node, _allowed_atom_strings), do: {:error, {:invalid_plan_node, node}}
+
+  defp generation_pin_to_dto(pin) when is_map(pin) do
+    %{
+      "target_id" => field(pin, :target_id),
+      "target_generation_id" => field(pin, :target_generation_id),
+      "evidence_generation_id" => field(pin, :evidence_generation_id),
+      "physical_relation" => JsonSafe.data(field(pin, :physical_relation))
+    }
+  end
+
+  defp generation_pin_from_dto(node) do
+    target_id = Map.get(node, "target_id")
+    target_generation_id = Map.get(node, "target_generation_id")
+    evidence_generation_id = Map.get(node, "evidence_generation_id")
+    physical_relation = Map.get(node, "physical_relation")
+    input_generations = Map.get(node, "input_generations", [])
+    target_operation = Map.get(node, "target_operation")
+    active_relation = Map.get(node, "active_relation")
+    write_relation = Map.get(node, "write_relation")
+    rebuild_operation_id = Map.get(node, "rebuild_operation_id")
+    rebuild_action_id = Map.get(node, "rebuild_action_id")
+    rebuild_item_id = Map.get(node, "rebuild_item_id")
+
+    cond do
+      Enum.all?(
+        [target_id, target_generation_id, evidence_generation_id, physical_relation],
+        &is_nil/1
+      ) and
+        input_generations == [] and is_nil(target_operation) and is_nil(active_relation) and
+        is_nil(write_relation) and is_nil(rebuild_operation_id) and is_nil(rebuild_action_id) and
+          is_nil(rebuild_item_id) ->
+        {:ok, %{}}
+
+      not valid_optional_plan_id?(target_id) or not valid_optional_plan_id?(target_generation_id) or
+          not valid_optional_plan_id?(evidence_generation_id) ->
+        {:error, {:invalid_plan_generation_pin, node}}
+
+      not (is_nil(physical_relation) or is_map(physical_relation)) or
+        not is_list(input_generations) or
+        target_operation not in [nil, "normal_materialization", "rebuild_candidate"] or
+        not Enum.all?([active_relation, write_relation], &(is_nil(&1) or is_map(&1))) or
+          not Enum.all?(
+            [rebuild_operation_id, rebuild_action_id, rebuild_item_id],
+            &valid_optional_plan_id?/1
+          ) ->
+        {:error, {:invalid_plan_generation_pin, node}}
+
+      true ->
+        with {:ok, decoded_inputs} <- input_generation_pins_from_dto(input_generations) do
+          generation_pin = %{
+            target_id: target_id,
+            target_generation_id: target_generation_id,
+            evidence_generation_id: evidence_generation_id,
+            physical_relation: physical_relation,
+            input_generations: decoded_inputs
+          }
+
+          decoded_optional = [
+            {:target_operation, decode_target_operation(target_operation)},
+            {:active_relation, active_relation},
+            {:write_relation, write_relation},
+            {:rebuild_operation_id, rebuild_operation_id},
+            {:rebuild_action_id, rebuild_action_id},
+            {:rebuild_item_id, rebuild_item_id}
+          ]
+
+          {:ok,
+           Enum.reduce(decoded_optional, generation_pin, fn
+             {_key, nil}, acc -> acc
+             {key, value}, acc -> Map.put(acc, key, value)
+           end)}
+        end
+    end
+  end
+
+  defp input_generation_pins_from_dto(pins) do
+    Enum.reduce_while(pins, {:ok, []}, fn pin, {:ok, acc} ->
+      case input_generation_pin_from_dto(pin) do
+        {:ok, decoded} -> {:cont, {:ok, [decoded | acc]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, pins} -> {:ok, Enum.reverse(pins)}
+      error -> error
+    end)
+  end
+
+  defp input_generation_pin_from_dto(%{} = pin) do
+    target_id = Map.get(pin, "target_id")
+    target_generation_id = Map.get(pin, "target_generation_id")
+    evidence_generation_id = Map.get(pin, "evidence_generation_id")
+    physical_relation = Map.get(pin, "physical_relation")
+
+    if valid_plan_id?(target_id) and valid_optional_plan_id?(target_generation_id) and
+         valid_plan_id?(evidence_generation_id) and
+         (is_nil(physical_relation) or is_map(physical_relation)) do
+      {:ok,
+       %{
+         target_id: target_id,
+         target_generation_id: target_generation_id,
+         evidence_generation_id: evidence_generation_id,
+         physical_relation: physical_relation
+       }}
+    else
+      {:error, {:invalid_plan_generation_pin, pin}}
+    end
+  end
+
+  defp input_generation_pin_from_dto(pin),
+    do: {:error, {:invalid_plan_generation_pin, pin}}
+
+  defp valid_plan_id?(value), do: is_binary(value) and byte_size(value) in 1..255
+  defp valid_optional_plan_id?(nil), do: true
+  defp valid_optional_plan_id?(value), do: valid_plan_id?(value)
+
+  defp decode_target_operation(nil), do: nil
+  defp decode_target_operation("normal_materialization"), do: :normal_materialization
+  defp decode_target_operation("rebuild_candidate"), do: :rebuild_candidate
 
   defp retry_policy_to_dto(nil), do: nil
 
@@ -1089,6 +1242,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp normalize_metadata(%{} = metadata, allowed_atom_strings) do
     metadata
     |> promote_key("pipeline_context", :pipeline_context)
+    |> promote_key("window_selection", :window_selection)
     |> promote_key("pipeline_identity_ref", :pipeline_identity_ref)
     |> promote_key("pipeline_submit_ref", :pipeline_submit_ref)
     |> promote_key("pipeline_target_refs", :pipeline_target_refs)
@@ -1103,6 +1257,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> normalize_metadata_refs(:pipeline_target_refs, allowed_atom_strings)
     |> normalize_metadata_refs(:asset_dependencies, allowed_atom_strings)
     |> normalize_metadata_refs(:pipeline_dependencies, allowed_atom_strings)
+    |> normalize_metadata_window_selection()
     |> normalize_pipeline_context(allowed_atom_strings)
     |> normalize_metadata_atom(:replay_submit_kind, &submit_kind_value_from_dto/1)
     |> normalize_metadata_atom(:replay_mode, &replay_mode_from_dto/1)
@@ -1110,6 +1265,15 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   defp normalize_metadata(value, _allowed_atom_strings), do: value
+
+  defp normalize_metadata_window_selection(%{window_selection: value} = metadata) do
+    case Selection.from_value(value) do
+      {:ok, selection} -> Map.put(metadata, :window_selection, selection)
+      {:error, reason} -> raise ArgumentError, "invalid window selection: #{inspect(reason)}"
+    end
+  end
+
+  defp normalize_metadata_window_selection(metadata), do: metadata
 
   defp normalize_retry_state(%{retry_state: state} = metadata, allowed_atom_strings)
        when is_map(state) do
@@ -1213,6 +1377,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       |> normalize_context_settings(allowed_atom_strings)
       |> normalize_context_refs(:resolved_refs, allowed_atom_strings)
       |> normalize_context_schedule(allowed_atom_strings)
+      |> normalize_context_window_selection()
 
     Map.put(metadata, :pipeline_context, context)
   end
@@ -1233,6 +1398,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "max_concurrency" => :max_concurrency,
       "execution_pool" => :execution_pool,
       "anchor_window" => :anchor_window,
+      "window_selection" => :window_selection,
       "backfill_range" => :backfill_range,
       "anchor_ranges" => :anchor_ranges,
       "source" => :source,
@@ -1242,6 +1408,19 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     Enum.reduce(known_context_keys, context, fn {string_key, atom_key}, acc ->
       promote_key(acc, string_key, atom_key)
     end)
+  end
+
+  defp normalize_context_window_selection(context) when is_map(context) do
+    case Map.fetch(context, :window_selection) do
+      {:ok, value} ->
+        case Selection.from_value(value) do
+          {:ok, selection} -> Map.put(context, :window_selection, selection)
+          {:error, reason} -> raise ArgumentError, "invalid window selection: #{inspect(reason)}"
+        end
+
+      :error ->
+        context
+    end
   end
 
   defp normalize_context_module(context, key, allowed_atom_strings) when is_map(context) do

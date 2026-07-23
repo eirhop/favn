@@ -8,6 +8,8 @@ defmodule Mix.Tasks.Favn.Backfill do
 
       mix favn.backfill submit MyApp.Pipelines.Daily --from 2026-04-01 --to 2026-04-07 --kind day
       mix favn.backfill submit MyApp.Pipelines.Daily --window month:2025-05..2026-05 --refresh force
+      mix favn.backfill missing-plan MyApp.Assets.Orders --plan-file coverage-plan.json
+      mix favn.backfill missing-submit MyApp.Assets.Orders --plan-file coverage-plan.json
       mix favn.backfill windows RUN_ID
       mix favn.backfill coverage-baselines
       mix favn.backfill asset-window-states
@@ -95,12 +97,25 @@ defmodule Mix.Tasks.Favn.Backfill do
     backfill_run_id: :string,
     pipeline_module: :string
   ]
+  @missing_plan_switches [
+    root_dir: :string,
+    plan_file: :string,
+    cursor: :string,
+    limit: :integer
+  ]
+  @missing_submit_switches [root_dir: :string, plan_file: :string]
 
   @impl Mix.Task
   def run(args) do
     case parse_args(args) do
       {:ok, {:submit, pipeline_module, opts}} ->
         submit(pipeline_module, opts)
+
+      {:ok, {:missing_plan, asset, opts}} ->
+        plan_missing(asset, opts)
+
+      {:ok, {:missing_submit, asset, opts}} ->
+        submit_missing(asset, opts)
 
       {:ok, {:windows, run_id, opts}} ->
         list_windows(run_id, opts)
@@ -150,6 +165,23 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   def parse_args(["windows" | args]) do
     parse_one_id_command(args, @windows_switches, :windows, "RUN_ID")
+  end
+
+  def parse_args(["missing-plan" | args]) do
+    parse_one_id_command(args, @missing_plan_switches, :missing_plan, "ASSET")
+  end
+
+  def parse_args(["missing-submit" | args]) do
+    with {:ok, {:missing_submit, asset, opts}} <-
+           parse_one_id_command(args, @missing_submit_switches, :missing_submit, "ASSET"),
+         plan_file when is_binary(plan_file) and plan_file != "" <-
+           Keyword.get(opts, :plan_file) do
+      {:ok, {:missing_submit, asset, opts}}
+    else
+      nil -> {:error, "missing required option: --plan-file"}
+      "" -> {:error, "missing required option: --plan-file"}
+      {:error, _message} = error -> error
+    end
   end
 
   def parse_args(["coverage-baselines" | args]) do
@@ -228,6 +260,30 @@ defmodule Mix.Tasks.Favn.Backfill do
 
       {:error, reason} ->
         Mix.raise(error_message(reason))
+    end
+  end
+
+  defp plan_missing(asset, opts) do
+    case Dev.plan_missing_asset_backfill(asset, opts) do
+      {:ok, plan} ->
+        print_missing_plan("Missing-window backfill plan", plan)
+        maybe_write_plan(plan, Keyword.get(opts, :plan_file))
+
+      {:error, reason} ->
+        Mix.raise(error_message(reason))
+    end
+  end
+
+  defp submit_missing(asset, opts) do
+    with {:ok, plan} <- read_plan(Keyword.fetch!(opts, :plan_file)) do
+      print_missing_plan("Submitting missing-window backfill plan", plan)
+
+      case Dev.submit_missing_asset_backfill(asset, plan, opts) do
+        {:ok, run_id} -> IO.puts("run: #{run_id}")
+        {:error, reason} -> Mix.raise(error_message(reason))
+      end
+    else
+      {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
@@ -361,6 +417,9 @@ defmodule Mix.Tasks.Favn.Backfill do
     do: "--window cannot be combined with --from, --to, or --kind"
 
   defp error_message({:orchestrator_validation_failed, message}), do: message
+  defp error_message({:plan_file_read_failed, reason}), do: "could not read plan file: #{reason}"
+  defp error_message(:invalid_coverage_plan_file), do: "plan file does not contain a JSON object"
+  defp error_message(:missing_coverage_requires_asset), do: "target must be an asset"
   defp error_message(reason), do: "backfill failed: #{inspect(reason)}"
 
   defp print_run(title, run) do
@@ -403,6 +462,43 @@ defmodule Mix.Tasks.Favn.Backfill do
     |> Enum.each(&IO.puts("window: #{&1}"))
   end
 
+  defp print_missing_plan(title, plan) when is_map(plan) do
+    IO.puts(title)
+    IO.puts("plan: #{plan["plan_id"] || "unknown"}")
+    IO.puts("hash: #{plan["plan_hash"] || "unknown"}")
+    IO.puts("manifest: #{plan["manifest_version_id"] || "unknown"}")
+    IO.puts("target: #{plan["target_id"] || "unknown"}")
+    IO.puts("evaluated_at: #{plan["evaluated_at"] || "unknown"}")
+    IO.puts("coverage checksum: #{plan["evaluation_checksum"] || "unknown"}")
+    IO.puts("windows: #{plan["window_count"] || 0}")
+
+    plan
+    |> Map.get("windows", [])
+    |> Enum.each(&IO.puts("window: #{&1["window_key"]}"))
+  end
+
+  defp maybe_write_plan(_plan, nil), do: :ok
+
+  defp maybe_write_plan(plan, path) do
+    case File.write(path, JSON.encode!(plan) <> "\n") do
+      :ok -> IO.puts("saved: #{path}")
+      {:error, reason} -> Mix.raise("could not write plan file: #{:file.format_error(reason)}")
+    end
+  end
+
+  defp read_plan(path) do
+    with {:ok, encoded} <- File.read(path),
+         {:ok, plan} when is_map(plan) <- JSON.decode(encoded) do
+      {:ok, plan}
+    else
+      {:error, reason} when is_atom(reason) ->
+        {:error, {:plan_file_read_failed, :file.format_error(reason)}}
+
+      _invalid ->
+        {:error, :invalid_coverage_plan_file}
+    end
+  end
+
   defp print_repair_report(report) when is_map(report) do
     counts = Map.get(report, "counts", %{})
     IO.puts("Backfill projection repair")
@@ -431,13 +527,15 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   defp command_name(:coverage_baselines), do: "coverage-baselines"
   defp command_name(:asset_window_states), do: "asset-window-states"
+  defp command_name(:missing_plan), do: "missing-plan"
+  defp command_name(:missing_submit), do: "missing-submit"
   defp command_name(command), do: Atom.to_string(command)
 
   defp join_options(options), do: Enum.join(options, ", ")
   defp option_name(key), do: "--" <> (key |> Atom.to_string() |> String.replace("_", "-"))
 
   defp usage do
-    "mix favn.backfill submit|windows|coverage-baselines|asset-window-states|rerun-window|repair"
+    "mix favn.backfill submit|missing-plan|missing-submit|windows|coverage-baselines|asset-window-states|rerun-window|repair"
   end
 
   defp submit_usage do

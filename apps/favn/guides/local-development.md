@@ -276,6 +276,8 @@ Backfills are advanced local/operator workflows.
 ```bash
 mix favn.backfill submit MyApp.Pipelines.Daily --from 2026-04-01 --to 2026-04-07 --kind day
 mix favn.backfill submit MyApp.Pipelines.Daily --window day:2026-04-01..2026-04-07 --dry-run
+mix favn.backfill missing-plan MyApp.Assets.Orders --plan-file coverage-plan.json
+mix favn.backfill missing-submit MyApp.Assets.Orders --plan-file coverage-plan.json
 mix favn.backfill windows RUN_ID
 mix favn.backfill rerun-window RUN_ID --window-key day:2026-04-01
 mix favn.backfill repair --all --apply
@@ -291,6 +293,43 @@ Common submit options:
 | `--dry-run` | Plan without creating runs. |
 | `--refresh force` | Recompute selected windows. |
 | `--wait` / `--no-wait` | Wait is default. |
+
+Missing-window repair has a separate review and submit workflow. `missing-plan`
+evaluates the active asset generation, prints every exact selected window and
+the coverage checksum, and optionally writes the complete immutable plan to
+`--plan-file`. `missing-submit` requires that file, prints the same selection
+again, revalidates its manifest, generation, evaluation, and window keys, and
+then submits it. A stale plan is rejected; the command never silently fills a
+different gap. Use `--limit 1..500` and, when shown by an operator surface,
+`--cursor CURSOR` to plan one bounded page instead of all missing windows.
+
+### Rebuild An Incompatible Asset
+
+An incompatible persisted SQL target blocks ordinary writes but leaves its
+active generation readable. Rebuild it with a separate plan and approval:
+
+```bash
+mix favn.rebuild plan MyApp.Assets.Orders --reason "contract changed"
+# Review the target, action/item counts, expiry, and complete plan in the UI.
+mix favn.rebuild start PLAN_ID --plan-hash PLAN_HASH
+mix favn.rebuild status OPERATION_ID
+```
+
+The plan pins the active manifest, target generations, physical inspections,
+runtime-input expectations, downstream actions, and exact logical work items.
+Each `plan` invocation creates a fresh expiring plan, even when target and reason
+are unchanged; rerun it after expiry instead of replaying an old plan identity.
+`start` revalidates those inputs and rejects a stale plan rather than rebuilding
+something different. Use `mix favn.rebuild cancel OPERATION_ID --reason
+"operator request"` to request safe cancellation. A failed operation can use
+`mix favn.rebuild retry OPERATION_ID` only when the server proves retry is safe.
+Use `mix favn.rebuild reconcile OPERATION_ID` when activation has an unknown
+outcome; do not start a replacement rebuild while the marker is unresolved.
+
+The authenticated UI at `/rebuilds` provides the same plan/review/start flow,
+progress and item pages, and server-authorized cancel, retry, and reconcile
+actions. Rebuild commands require the running local stack and use its private
+orchestrator HTTP boundary; they never connect to PostgreSQL directly.
 
 ## Packaging Commands
 

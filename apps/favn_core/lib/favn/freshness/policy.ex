@@ -12,7 +12,9 @@ defmodule Favn.Freshness.Policy do
   ## Accepted V1 Input Values
 
   - `nil`: no freshness policy.
-  - `:daily` or `:day`: one successful run per local calendar day in `"Etc/UTC"`.
+  - `:daily` or `:day`: one successful run per local calendar day. Manifest
+    construction uses the effective asset-window timezone for a windowed asset,
+    otherwise the application default with the `"Etc/UTC"` fallback.
   - `{:daily, timezone: "Europe/Oslo"}` or `{:day, timezone: "Europe/Oslo"}`:
     daily calendar freshness in the supplied IANA timezone.
   - `[max_age: {:hours, 6}]`: rolling max-age freshness. The tuple is
@@ -60,11 +62,12 @@ defmodule Favn.Freshness.Policy do
           mode: mode(),
           kind: calendar_kind() | nil,
           timezone: String.t() | nil,
+          timezone_source: Favn.Window.Spec.timezone_source(),
           amount: pos_integer() | nil,
           unit: max_age_unit() | nil
         }
 
-  defstruct [:mode, :kind, :timezone, :amount, :unit]
+  defstruct [:mode, :kind, :timezone, :timezone_source, :amount, :unit]
 
   @doc """
   Normalizes a V1 freshness policy value.
@@ -76,10 +79,10 @@ defmodule Favn.Freshness.Policy do
   ## Examples
 
       iex> Favn.Freshness.Policy.from_value(:daily)
-      {:ok, %Favn.Freshness.Policy{mode: :calendar_period, kind: :day, timezone: "Etc/UTC"}}
+      {:ok, %Favn.Freshness.Policy{mode: :calendar_period, kind: :day, timezone: nil, timezone_source: nil}}
 
       iex> Favn.Freshness.Policy.from_value({:daily, timezone: "Europe/Oslo"})
-      {:ok, %Favn.Freshness.Policy{mode: :calendar_period, kind: :day, timezone: "Europe/Oslo"}}
+      {:ok, %Favn.Freshness.Policy{mode: :calendar_period, kind: :day, timezone: "Europe/Oslo", timezone_source: :local}}
 
       iex> Favn.Freshness.Policy.from_value(max_age: {:hours, 24})
       {:ok, %Favn.Freshness.Policy{mode: :max_age, amount: 24, unit: :hour}}
@@ -113,9 +116,13 @@ defmodule Favn.Freshness.Policy do
   def from_value(value) when is_map(value) do
     case normalize_mode(field_value(value, :mode)) do
       :calendar_period ->
-        calendar(normalize_calendar_kind(field_value(value, :kind)),
-          timezone: field_value(value, :timezone)
-        )
+        with {:ok, policy} <-
+               calendar(normalize_calendar_kind(field_value(value, :kind)),
+                 timezone: field_value(value, :timezone)
+               ),
+             {:ok, source} <- decode_timezone_source(field_value(value, :timezone_source)) do
+          {:ok, %{policy | timezone_source: source || policy.timezone_source}}
+        end
 
       :max_age ->
         max_age(
@@ -153,7 +160,8 @@ defmodule Favn.Freshness.Policy do
   @spec validate(t()) :: {:ok, t()} | {:error, term()}
   def validate(%__MODULE__{mode: :calendar_period, kind: kind, timezone: timezone} = policy) do
     with :ok <- validate_calendar_kind(kind),
-         :ok <- Validate.timezone(timezone) do
+         :ok <- validate_optional_timezone(timezone),
+         :ok <- validate_timezone_source(timezone, policy.timezone_source) do
       {:ok, %{policy | amount: nil, unit: nil}}
     end
   end
@@ -161,16 +169,16 @@ defmodule Favn.Freshness.Policy do
   def validate(%__MODULE__{mode: :max_age, amount: amount, unit: unit} = policy) do
     with :ok <- validate_amount(amount),
          :ok <- validate_max_age_unit(unit) do
-      {:ok, %{policy | kind: nil, timezone: nil}}
+      {:ok, %{policy | kind: nil, timezone: nil, timezone_source: nil}}
     end
   end
 
   def validate(%__MODULE__{mode: :window_success} = policy) do
-    {:ok, %{policy | kind: nil, timezone: nil, amount: nil, unit: nil}}
+    {:ok, %{policy | kind: nil, timezone: nil, timezone_source: nil, amount: nil, unit: nil}}
   end
 
   def validate(%__MODULE__{mode: :always} = policy) do
-    {:ok, %{policy | kind: nil, timezone: nil, amount: nil, unit: nil}}
+    {:ok, %{policy | kind: nil, timezone: nil, timezone_source: nil, amount: nil, unit: nil}}
   end
 
   def validate(%__MODULE__{mode: mode}), do: {:error, {:invalid_freshness_policy_mode, mode}}
@@ -182,9 +190,15 @@ defmodule Favn.Freshness.Policy do
   def calendar(kind, opts \\ []) do
     with :ok <- Validate.strict_keyword_opts(opts, [:timezone]),
          :ok <- validate_calendar_kind(kind),
-         timezone <- Keyword.get(opts, :timezone, "Etc/UTC"),
-         :ok <- Validate.timezone(timezone) do
-      {:ok, %__MODULE__{mode: :calendar_period, kind: kind, timezone: timezone}}
+         timezone <- Keyword.get(opts, :timezone),
+         :ok <- validate_optional_timezone(timezone) do
+      {:ok,
+       %__MODULE__{
+         mode: :calendar_period,
+         kind: kind,
+         timezone: timezone,
+         timezone_source: if(is_binary(timezone), do: :local)
+       }}
     end
   end
 
@@ -268,4 +282,68 @@ defmodule Favn.Freshness.Policy do
   defp field_value(value, field) when is_map(value) do
     Map.get(value, field, Map.get(value, Atom.to_string(field)))
   end
+
+  @doc false
+  @spec with_declaration_source(t(), :local | :namespace) :: t()
+  def with_declaration_source(%__MODULE__{timezone: timezone} = policy, source)
+      when source in [:local, :namespace] do
+    %{policy | timezone_source: if(is_binary(timezone), do: source)}
+  end
+
+  @doc false
+  @spec resolve_timezone(t() | nil, Favn.Window.Spec.t() | nil, String.t(), atom()) ::
+          {:ok, t() | nil} | {:error, term()}
+  def resolve_timezone(nil, _window, _default, _default_source), do: {:ok, nil}
+
+  def resolve_timezone(
+        %__MODULE__{mode: :calendar_period} = policy,
+        window,
+        default,
+        default_source
+      ) do
+    {timezone, source} =
+      cond do
+        is_binary(policy.timezone) ->
+          {policy.timezone, policy.timezone_source || :local}
+
+        match?(%Favn.Window.Spec{timezone: timezone} when is_binary(timezone), window) ->
+          {window.timezone, window.timezone_source}
+
+        true ->
+          {default, default_source}
+      end
+
+    with :ok <- Validate.timezone(timezone),
+         :ok <- validate_timezone_source(timezone, source) do
+      {:ok, %{policy | timezone: timezone, timezone_source: source}}
+    end
+  end
+
+  def resolve_timezone(%__MODULE__{} = policy, _window, _default, _default_source),
+    do: {:ok, policy}
+
+  defp validate_optional_timezone(nil), do: :ok
+  defp validate_optional_timezone(timezone), do: Validate.timezone(timezone)
+
+  defp validate_timezone_source(nil, nil), do: :ok
+
+  defp validate_timezone_source(timezone, source)
+       when is_binary(timezone) and
+              source in [:local, :namespace, :application_default, :utc_fallback],
+       do: :ok
+
+  defp validate_timezone_source(_timezone, source),
+    do: {:error, {:invalid_freshness_timezone_source, source}}
+
+  defp decode_timezone_source(nil), do: {:ok, nil}
+
+  defp decode_timezone_source(source)
+       when source in [:local, :namespace, :application_default, :utc_fallback],
+       do: {:ok, source}
+
+  defp decode_timezone_source("local"), do: {:ok, :local}
+  defp decode_timezone_source("namespace"), do: {:ok, :namespace}
+  defp decode_timezone_source("application_default"), do: {:ok, :application_default}
+  defp decode_timezone_source("utc_fallback"), do: {:ok, :utc_fallback}
+  defp decode_timezone_source(source), do: {:error, {:invalid_freshness_timezone_source, source}}
 end

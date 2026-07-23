@@ -11,7 +11,7 @@ defmodule Favn.Pipeline.Resolver do
   alias Favn.Pipeline.Resolution
   alias Favn.Pipeline.SelectorNormalizer
   alias Favn.Triggers.Schedule
-  alias Favn.Window.{Anchor, Policy}
+  alias Favn.Window.{Anchor, Policy, Selection}
 
   @type schedule_lookup :: (module(), atom() -> {:ok, Schedule.unresolved_t()} | {:error, term()})
 
@@ -19,8 +19,11 @@ defmodule Favn.Pipeline.Resolver do
           params: map(),
           trigger: map(),
           anchor_window: Anchor.t() | nil,
+          window_selection: Selection.t() | nil,
           assets: [map()],
-          schedule_lookup: schedule_lookup() | nil
+          schedule_lookup: schedule_lookup() | nil,
+          default_timezone: String.t(),
+          default_timezone_source: :application_default | :utc_fallback
         ]
 
   @spec resolve(Definition.t(), resolve_opts()) :: {:ok, Resolution.t()} | {:error, term()}
@@ -28,23 +31,47 @@ defmodule Favn.Pipeline.Resolver do
     trigger = Keyword.get(opts, :trigger, %{kind: :manual})
     params = Keyword.get(opts, :params, %{})
     anchor_window = Keyword.get(opts, :anchor_window)
+    window_selection = Keyword.get(opts, :window_selection)
     assets_input = Keyword.get(opts, :assets)
     schedule_lookup = Keyword.get(opts, :schedule_lookup)
-    default_timezone = Schedule.default_timezone()
+    default_timezone = Keyword.get(opts, :default_timezone, "Etc/UTC")
+    default_timezone_source = Keyword.get(opts, :default_timezone_source, :utc_fallback)
 
     with {:ok, selectors} <- SelectorNormalizer.normalize(definition.selectors),
-         normalized_definition = %Definition{definition | selectors: selectors},
+         {:ok, window} <-
+           resolve_window(definition.window, default_timezone, default_timezone_source),
+         normalized_definition = %Definition{
+           definition
+           | selectors: selectors,
+             window: window
+         },
          :ok <- validate_definition(normalized_definition),
          :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
          :ok <- validate_anchor_window(anchor_window),
+         :ok <- validate_window_selection(window_selection),
+         :ok <- validate_window_input(anchor_window, window_selection),
+         :ok <- Policy.validate_selection(normalized_definition.window, window_selection),
          :ok <- validate_schedule_lookup(schedule_lookup),
          :ok <- validate_assets_input(assets_input),
          {:ok, schedule} <-
-           resolve_schedule(definition.schedule, default_timezone, schedule_lookup),
+           resolve_schedule(
+             definition.schedule,
+             default_timezone,
+             default_timezone_source,
+             schedule_lookup
+           ),
          {:ok, assets} <- resolve_assets(assets_input),
          {:ok, target_refs} <- resolve_selectors(selectors, assets) do
-      pipeline_ctx = build_pipeline_ctx(definition, target_refs, trigger, anchor_window, schedule)
+      pipeline_ctx =
+        build_pipeline_ctx(
+          normalized_definition,
+          target_refs,
+          trigger,
+          anchor_window,
+          window_selection,
+          schedule
+        )
 
       {:ok,
        %Resolution{
@@ -89,8 +116,6 @@ defmodule Favn.Pipeline.Resolver do
     end
   end
 
-  defp validate_window(value), do: {:error, {:invalid_window, value}}
-
   defp validate_max_concurrency(nil), do: :ok
   defp validate_max_concurrency(value) when is_integer(value) and value > 0, do: :ok
   defp validate_max_concurrency(value), do: {:error, {:invalid_max_concurrency, value}}
@@ -134,6 +159,21 @@ defmodule Favn.Pipeline.Resolver do
 
   defp validate_anchor_window(other), do: {:error, {:invalid_anchor_window, other}}
 
+  defp validate_window_selection(nil), do: :ok
+
+  defp validate_window_selection(%Selection{} = selection) do
+    case Selection.from_value(selection) do
+      {:ok, %Selection{}} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_window_selection(other), do: {:error, {:invalid_window_selection, other}}
+
+  defp validate_window_input(nil, _selection), do: :ok
+  defp validate_window_input(_anchor, nil), do: :ok
+  defp validate_window_input(_anchor, _selection), do: {:error, :ambiguous_window_selection}
+
   defp validate_schedule_lookup(nil), do: :ok
   defp validate_schedule_lookup(fun) when is_function(fun, 2), do: :ok
   defp validate_schedule_lookup(other), do: {:error, {:invalid_schedule_lookup, other}}
@@ -144,25 +184,40 @@ defmodule Favn.Pipeline.Resolver do
 
   defp resolve_assets(values) when is_list(values), do: {:ok, values}
 
-  defp resolve_schedule(nil, _default_timezone, _lookup), do: {:ok, nil}
+  defp resolve_window(nil, _default_timezone, _default_source), do: {:ok, nil}
 
-  defp resolve_schedule({:inline, %Schedule{} = schedule}, default_timezone, _lookup) do
-    Schedule.apply_default_timezone(schedule, default_timezone)
+  defp resolve_window(%Policy{} = policy, default_timezone, default_source),
+    do: Policy.resolve_timezone(policy, default_timezone, default_source)
+
+  defp resolve_schedule(nil, _default_timezone, _default_source, _lookup), do: {:ok, nil}
+
+  defp resolve_schedule(
+         {:inline, %Schedule{} = schedule},
+         default_timezone,
+         default_source,
+         _lookup
+       ) do
+    Schedule.apply_default_timezone(schedule, default_timezone, default_source)
   end
 
-  defp resolve_schedule({:ref, {module, name}}, _default_timezone, nil)
+  defp resolve_schedule({:ref, {module, name}}, _default_timezone, _default_source, nil)
        when is_atom(module) and is_atom(name) do
     {:error, :missing_schedule_lookup}
   end
 
-  defp resolve_schedule({:ref, {module, name}}, default_timezone, schedule_lookup)
+  defp resolve_schedule(
+         {:ref, {module, name}},
+         default_timezone,
+         default_source,
+         schedule_lookup
+       )
        when is_atom(module) and is_atom(name) do
     with {:ok, schedule} <- schedule_lookup.(module, name) do
-      Schedule.apply_default_timezone(schedule, default_timezone)
+      Schedule.apply_default_timezone(schedule, default_timezone, default_source)
     end
   end
 
-  defp resolve_schedule(value, _default_timezone, _lookup),
+  defp resolve_schedule(value, _default_timezone, _default_source, _lookup),
     do: {:error, {:invalid_schedule, value}}
 
   defp resolve_selectors(selectors, assets) when is_list(selectors) do
@@ -238,7 +293,14 @@ defmodule Favn.Pipeline.Resolver do
     end
   end
 
-  defp build_pipeline_ctx(definition, target_refs, trigger, anchor_window, schedule) do
+  defp build_pipeline_ctx(
+         definition,
+         target_refs,
+         trigger,
+         anchor_window,
+         window_selection,
+         schedule
+       ) do
     %{
       module: definition.module,
       name: definition.name,
@@ -247,7 +309,8 @@ defmodule Favn.Pipeline.Resolver do
       settings: definition.settings,
       metadata: definition.meta,
       trigger: trigger,
-      anchor_window: anchor_window,
+      anchor_window: anchor_window || requested_anchor(window_selection),
+      window_selection: window_selection,
       window: definition.window,
       max_concurrency: definition.max_concurrency,
       execution_pool: definition.execution_pool,
@@ -257,4 +320,7 @@ defmodule Favn.Pipeline.Resolver do
       outputs: definition.outputs
     }
   end
+
+  defp requested_anchor(%Selection{requested_anchors: [anchor]}), do: anchor
+  defp requested_anchor(_selection), do: nil
 end

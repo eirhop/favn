@@ -66,7 +66,8 @@ defmodule Favn.FreshnessDSLTest do
     assert asset.freshness == %Policy{
              mode: :calendar_period,
              kind: :day,
-             timezone: "Europe/Oslo"
+             timezone: "Europe/Oslo",
+             timezone_source: :local
            }
   end
 
@@ -115,7 +116,8 @@ defmodule Favn.FreshnessDSLTest do
     assert asset.freshness == %Policy{
              mode: :calendar_period,
              kind: :day,
-             timezone: "Europe/Oslo"
+             timezone: "Europe/Oslo",
+             timezone_source: :local
            }
   end
 

@@ -94,6 +94,155 @@ Do not bypass dependencies merely to make a run cheaper. Scope `none` means the
 operator accepts responsibility for the suitability of the target's current
 upstream inputs.
 
+### Understand Window Selections
+
+A scheduled pipeline run records its one requested anchor, the pipeline
+`lookback` expansion, and the resulting effective anchors separately. Manual
+window submissions and explicit backfill ranges use no expansion: the requested
+anchors and effective anchors are identical. Assets map only the effective
+anchors to their own concrete runtime windows; neither the planner nor runner
+adds lookback.
+
+Reruns and retry-remaining submissions preserve the original selection so the
+same effective anchors are planned again. Inspect `window_selection` in run
+detail or API output when verifying which anchors were requested and executed.
+
+### Inspect And Repair Asset Coverage
+
+Coverage answers a different question from freshness: coverage checks whether
+every window expected at one recorded evaluation time has successful evidence
+in the asset's active evidence generation. A successful zero-row result counts
+as covered. Failed, running, skipped, retired-generation, and candidate-generation
+results do not.
+
+The asset catalogue and detail page show coverage as `complete`, `incomplete`,
+or `unknown` independently from run health and freshness. Unknown responses name
+the reason: coverage is undeclared, the asset is not windowed, a persisted target
+has no active generation, or authoritative state is unavailable. The detail page
+shows the declared and environment-effective start, expected-through boundary,
+availability delay, counts, and a bounded page of exact gaps.
+
+To repair gaps from the CLI:
+
+```bash
+mix favn.backfill missing-plan MyApp.Assets.Orders --plan-file coverage-plan.json
+# Review the printed checksum and every exact window key.
+mix favn.backfill missing-submit MyApp.Assets.Orders --plan-file coverage-plan.json
+```
+
+The plan pins the active manifest, deployment, evidence generation, target
+generation when present, evaluation time, checksum, and exact keys. Submission
+re-evaluates that same selection. If any pinned identity or gap changes, it
+returns `coverage_selection_stale`; create and review a new plan. One submission
+is limited to 10,000 windows. Use a page selection of at most 500 windows when
+the complete missing set is larger. Coverage evaluation itself stops above
+100,000 expected windows rather than loading an unbounded history.
+
+The accepted backfill retains the approved generation pin. Each delayed child
+checks it again before planning, so a generation change after submission fails
+as `coverage_selection_stale` instead of writing the newer generation.
+
+The private operator API exposes the same contract at:
+
+```text
+GET  /api/orchestrator/v1/coverage/assets/:target_id
+GET  /api/orchestrator/v1/coverage/assets/:target_id/missing
+POST /api/orchestrator/v1/coverage/assets/:target_id/backfill/plan
+POST /api/orchestrator/v1/coverage/assets/:target_id/backfill
+```
+
+Missing-window pages default to 100 and accept at most 500. Their opaque cursor
+pins the evaluated boundary, manifest, evidence generation, target generation,
+and checksum; stale cursors return a conflict instead of mixing evaluations.
+
+### Inspect Target Compatibility
+
+For every persisted SQL table, deployment compares the desired manifest target
+descriptor with the active generation and an inspection of the physical
+relation. The result is persisted with the deployment and appears separately
+from health, freshness, and coverage in the asset catalogue and asset detail.
+
+| Status | Ordinary writes | Meaning |
+| --- | --- | --- |
+| `ready` | Allowed | The desired descriptor and physical relation are compatible. |
+| `uninitialized` | Allowed | No managed relation exists yet; the first successful materialization may establish it. |
+| `rebuild_available` | Allowed | Transformation semantics changed, but the physical write contract remains compatible. |
+| `rebuild_required` | Blocked | The desired contract, grain, materialization, relation, connection, or window identity is incompatible with the active generation. |
+| `unexpected_drift` | Blocked | The observed physical relation no longer matches the recorded active fingerprint. |
+| `operator_decision` | Blocked | Favn cannot prove ownership or safe compatibility, including an unmanaged pre-existing relation. |
+
+A deployment containing a blocked target remains active so operators can inspect
+it, and stable reads continue against the active relation. Before an ordinary
+run starts, the orchestrator checks every persisted target on the selected
+dependency path. It returns the exact blocked target and structured reason
+instead of attempting a write. Assets outside that path remain runnable.
+
+For `rebuild_required`, review the desired-versus-active field diff before
+changing the target. For `unexpected_drift`, compare the observed relation with
+the recorded generation and investigate out-of-band DDL. For
+`operator_decision`, establish ownership explicitly; Favn never adopts an
+unmanaged relation automatically. Repeated ordinary runs cannot clear any of
+these blocking states.
+
+### Rebuild A Managed Target
+
+Use a rebuild only for a managed persisted SQL target whose active generation
+must be replaced. Unexpected drift and ownership-unknown targets require an
+operator decision first; Favn does not use rebuild as implicit adoption.
+
+1. Open the blocked asset and follow **Plan rebuild**, or open `/rebuilds`.
+2. Enter the target and a bounded operator reason.
+3. Review the immutable plan, including expiry, hash, affected targets, action
+   order, exact work items, generation pins, and downstream impact.
+4. An administrator explicitly starts that exact plan.
+5. Follow operation progress and logical items. The old active generation stays
+   readable while the candidate is built and validated.
+6. If cancellation is necessary, provide a reason and wait for durable cleanup.
+7. Use **Retry** only when the server exposes it. Use **Reconcile** when
+   activation is unknown.
+
+Planning never mutates customer data. Start returns a conflict if the manifest,
+generation, physical fingerprint, coverage selection, mapping proof, or runtime
+input expectation changed after planning. Create and review a new plan instead
+of forcing the stale one.
+
+`activation_unknown` means the activation request may have committed even though
+the control plane did not receive a conclusive reply. Ordinary writes remain
+blocked. Reconciliation reads the runner's authoritative marker and either
+continues from the candidate, resumes from the previous generation, or preserves
+the unknown state when neither can be proven. Never retry the activation blindly.
+
+The local CLI keeps approval explicit:
+
+```text
+mix favn.rebuild plan ASSET --reason REASON
+mix favn.rebuild start PLAN_ID --plan-hash HASH
+mix favn.rebuild status OPERATION_ID
+mix favn.rebuild cancel OPERATION_ID --reason REASON
+mix favn.rebuild retry OPERATION_ID
+mix favn.rebuild reconcile OPERATION_ID
+```
+
+The private service API uses the same workspace authorization and immutable
+command contract:
+
+```text
+POST /api/orchestrator/v1/rebuilds/plan
+POST /api/orchestrator/v1/rebuilds
+GET  /api/orchestrator/v1/rebuilds
+GET  /api/orchestrator/v1/rebuilds/:operation_id
+GET  /api/orchestrator/v1/rebuilds/:operation_id/items
+POST /api/orchestrator/v1/rebuilds/:operation_id/cancel
+POST /api/orchestrator/v1/rebuilds/:operation_id/retry
+POST /api/orchestrator/v1/rebuilds/:operation_id/reconcile
+```
+
+Planning requires operator authority. Start, cancel, retry, and reconcile require
+administrator authority. Mutations require an idempotency key and write bounded
+actor/session audit evidence for accepted and rejected attempts, including
+whether an accepted result was an idempotent replay. Operation and item pages
+use opaque keyset cursors, default to 100 rows, and accept at most 200.
+
 Common failures:
 
 | Failure | Action |
@@ -106,6 +255,9 @@ Common failures:
 | Duplicate command key | Re-read the existing command result instead of submitting the same side effect again. |
 | Invalid dependency/refresh combination | Use `dependencies=all` with `force_selected_upstream`, or choose a target-only refresh mode. |
 | Resource circuit open | Inspect the blocking execution pool or SQL connection, consecutive count, threshold, and next probe time. Unrelated branches continue. |
+| Rebuild required | Inspect the compatibility diff. Do not retry the ordinary write against the incompatible active generation. |
+| Target drift | Investigate the observed physical fingerprint and any out-of-band DDL before changing control-plane state. |
+| Operator decision required | Confirm ownership and impact explicitly. Do not adopt or overwrite the relation automatically. |
 
 ## Inspect A Run
 

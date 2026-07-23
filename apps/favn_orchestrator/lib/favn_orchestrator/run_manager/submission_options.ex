@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
 
   alias Favn.Retry.Policy
   alias Favn.Window.Anchor
+  alias Favn.Window.Selection
   alias FavnOrchestrator.RunState
 
   @enforce_keys [
@@ -14,11 +15,14 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
     :timeout_ms,
     :dependencies,
     :exact_windows,
+    :required_generation,
+    :rebuild,
     :lineage_depth
   ]
   defstruct @enforce_keys ++
               [
                 :anchor_window,
+                :window_selection,
                 :parent_run_id,
                 :root_run_id,
                 :workspace_id,
@@ -34,7 +38,10 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
           timeout_ms: pos_integer(),
           dependencies: :all | :none,
           anchor_window: Anchor.t() | nil,
+          window_selection: Selection.t() | nil,
           exact_windows: map(),
+          required_generation: map() | nil,
+          rebuild: map() | nil,
           parent_run_id: String.t() | nil,
           root_run_id: String.t() | nil,
           lineage_depth: non_neg_integer(),
@@ -52,7 +59,9 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
   end
 
   defp build(opts, defaults) do
-    with {:ok, retry_policy_override} <- retry_policy_override(opts, defaults) do
+    with {:ok, retry_policy_override} <- retry_policy_override(opts, defaults),
+         {:ok, window_selection} <-
+           window_selection(option(opts, defaults, :window_selection, nil)) do
       values = %{
         run_id: option(opts, defaults, :run_id, new_run_id()),
         params: option(opts, defaults, :params, %{}),
@@ -62,7 +71,10 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
         timeout_ms: option(opts, defaults, :timeout_ms, RunState.default_timeout_ms()),
         dependencies: option(opts, defaults, :dependencies, :all),
         anchor_window: option(opts, defaults, :anchor_window, nil),
+        window_selection: window_selection,
         exact_windows: option(opts, defaults, :exact_windows, %{}),
+        required_generation: option(opts, defaults, :required_generation, nil),
+        rebuild: option(opts, defaults, :rebuild, nil),
         parent_run_id: option(opts, defaults, :parent_run_id, nil),
         root_run_id: option(opts, defaults, :root_run_id, nil),
         lineage_depth: option(opts, defaults, :lineage_depth, 0),
@@ -77,7 +89,10 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
            :ok <- positive_integer(values.timeout_ms, :invalid_timeout_ms),
            :ok <- dependencies(values.dependencies),
            :ok <- anchor(values.anchor_window),
+           :ok <- window_input(values.anchor_window, values.window_selection),
            :ok <- map(values.exact_windows, :invalid_exact_windows),
+           :ok <- required_generation(values.required_generation),
+           :ok <- rebuild(values.rebuild),
            :ok <- optional_string(values.parent_run_id, :invalid_parent_run_id),
            :ok <- optional_string(values.root_run_id, :invalid_root_run_id),
            :ok <- optional_string(values.workspace_id, :invalid_workspace_id),
@@ -113,6 +128,44 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
   defp map(value, _error) when is_map(value), do: :ok
   defp map(_value, error), do: {:error, error}
 
+  defp required_generation(nil), do: :ok
+
+  defp required_generation(%{
+         target_id: target_id,
+         evidence_generation_id: evidence_generation_id,
+         target_generation_id: target_generation_id
+       }) do
+    if non_empty_binary?(target_id) and non_empty_binary?(evidence_generation_id) and
+         (is_nil(target_generation_id) or target_generation_id == evidence_generation_id),
+       do: :ok,
+       else: {:error, :invalid_required_generation}
+  end
+
+  defp required_generation(_value), do: {:error, :invalid_required_generation}
+
+  defp rebuild(nil), do: :ok
+
+  defp rebuild(%{} = rebuild) do
+    required = [
+      :target_id,
+      :candidate_generation_id,
+      :active_relation,
+      :candidate_relation,
+      :input_generations,
+      :operation_id,
+      :action_id,
+      :item_id
+    ]
+
+    if Enum.all?(required, &Map.has_key?(rebuild, &1)),
+      do: :ok,
+      else: {:error, :invalid_rebuild_submission}
+  end
+
+  defp rebuild(_value), do: {:error, :invalid_rebuild_submission}
+
+  defp non_empty_binary?(value), do: is_binary(value) and value != ""
+
   defp positive_integer(value, _error) when is_integer(value) and value > 0, do: :ok
   defp positive_integer(_value, error), do: {:error, error}
 
@@ -125,6 +178,12 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
   defp anchor(nil), do: :ok
   defp anchor(%Anchor{} = anchor), do: Anchor.validate(anchor)
   defp anchor(_value), do: {:error, :invalid_anchor_window}
+
+  defp window_selection(value), do: Selection.from_value(value)
+
+  defp window_input(nil, _selection), do: :ok
+  defp window_input(_anchor, nil), do: :ok
+  defp window_input(_anchor, _selection), do: {:error, :ambiguous_window_selection}
 
   defp new_run_id do
     "run_" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)

@@ -102,26 +102,30 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
 
       true ->
-        work =
-          stage_work(
-            ctx.current_run,
-            ctx.version,
-            ctx.manifest_lease_id,
-            node_key,
-            ctx.stage,
-            ctx.attempt
-          )
+        case stage_work(
+               ctx.current_run,
+               ctx.version,
+               ctx.manifest_index,
+               ctx.manifest_lease_id,
+               node_key,
+               ctx.stage,
+               ctx.attempt
+             ) do
+          {:ok, work} ->
+            entry_context =
+              Map.merge(ctx, %{
+                rest: rest,
+                node_keys: node_keys,
+                node_key: node_key,
+                work: work,
+                batch_count: ctx.batch_count + 1
+              })
 
-        entry_context =
-          Map.merge(ctx, %{
-            rest: rest,
-            node_keys: node_keys,
-            node_key: node_key,
-            work: work,
-            batch_count: ctx.batch_count + 1
-          })
+            admit_execution_capacity(entry_context)
 
-        admit_execution_capacity(entry_context)
+          {:error, reason} ->
+            stop_after_stage_build_failure(ctx, node_key, reason)
+        end
     end
   end
 
@@ -232,6 +236,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     case MaterializationClaims.acquire(
            current_run,
            version,
+           ctx.manifest_index,
            node_key,
            ctx.decisions,
            ctx.freshness_context,
@@ -688,6 +693,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
             resource_circuit_permits: ctx.resource_circuit_permits,
             freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key),
             version: ctx.version,
+            manifest_index: ctx.manifest_index,
             freshness_context: ctx.freshness_context
           })
 
@@ -826,19 +832,21 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp stage_work(
          %RunState{} = run_state,
          %Version{} = version,
+         %Index{} = manifest_index,
          manifest_lease_id,
          node_key,
          stage,
          attempt
        ) do
-    {:ok, %{work: work}} =
-      run_state
-      |> StepAttemptLifecycle.new(version, node_key, stage, attempt)
-      |> StepAttemptLifecycle.build_work()
-
-    work
-    |> StepAttemptLifecycle.attach_deadline(run_state)
-    |> Map.put(:manifest_lease_id, manifest_lease_id)
+    with {:ok, %{work: work}} <-
+           run_state
+           |> StepAttemptLifecycle.new(version, node_key, stage, attempt)
+           |> StepAttemptLifecycle.build_work(manifest_index) do
+      {:ok,
+       work
+       |> StepAttemptLifecycle.attach_deadline(run_state)
+       |> Map.put(:manifest_lease_id, manifest_lease_id)}
+    end
   end
 
   defp safe_retryable?(%RunnerError{retryable?: true, outcome: :safe_failure}), do: true
@@ -870,6 +878,16 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     run_state
     |> RunWorkSet.from_entries(entries)
     |> RunWorkSet.cleanup_all(reason)
+  end
+
+  defp stop_after_stage_build_failure(ctx, node_key, reason) do
+    failure =
+      (ctx.terminal_failure || %{status: :error, error: reason})
+      |> Map.update(:node_statuses, %{node_key => :error}, fn statuses ->
+        Map.put(statuses, node_key, :error)
+      end)
+
+    {:ok, ctx.current_run, entries(ctx), [], ctx.queued_steps, ctx.waiters, failure}
   end
 
   defp fail_claim(ctx, reason) do

@@ -57,6 +57,56 @@ defmodule FavnOrchestrator.Persistence.Commands.DeploymentTarget do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.DeploymentTargetCompatibility do
+  @moduledoc """
+  Frozen compatibility decision persisted with one manifest deployment.
+
+  The expected binding fields pin the state inspected by the orchestrator. The
+  registry store rejects a changed binding instead of publishing a decision
+  calculated from stale generation state.
+  """
+
+  @type compatibility_status ::
+          :ready
+          | :uninitialized
+          | :rebuild_available
+          | :rebuild_required
+          | :unexpected_drift
+          | :operator_decision
+
+  @enforce_keys [
+    :target_id,
+    :desired_descriptor_hash,
+    :compatibility_status,
+    :reason_code,
+    :compatibility_diff,
+    :expected_binding_version,
+    :expected_active_generation_id,
+    :active_physical_fingerprint
+  ]
+  defstruct [
+    :target_id,
+    :desired_descriptor_hash,
+    :compatibility_status,
+    :reason_code,
+    :compatibility_diff,
+    :expected_binding_version,
+    :expected_active_generation_id,
+    :active_physical_fingerprint
+  ]
+
+  @type t :: %__MODULE__{
+          target_id: String.t(),
+          desired_descriptor_hash: String.t(),
+          compatibility_status: compatibility_status(),
+          reason_code: String.t(),
+          compatibility_diff: map(),
+          expected_binding_version: pos_integer() | nil,
+          expected_active_generation_id: String.t() | nil,
+          active_physical_fingerprint: String.t() | nil
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
   @moduledoc "Activates one immutable, exact manifest deployment for a workspace."
 
@@ -83,6 +133,7 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
     :targets,
     :occurred_at,
     :idempotency,
+    target_compatibilities: [],
     schedules: [],
     capacity_scopes: [],
     configuration_version: 1
@@ -96,6 +147,9 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
           configuration: map(),
           configuration_version: pos_integer(),
           targets: [DeploymentTarget.t()],
+          target_compatibilities: [
+            FavnOrchestrator.Persistence.Commands.DeploymentTargetCompatibility.t()
+          ],
           schedules: [FavnOrchestrator.Persistence.Commands.DeploymentSchedule.t()],
           capacity_scopes: [FavnOrchestrator.Persistence.Commands.DeploymentCapacityScope.t()],
           occurred_at: DateTime.t(),

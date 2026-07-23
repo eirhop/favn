@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
 
   alias Favn.Contracts.RunnerResult
   alias FavnOrchestrator.Freshness.StateWriter
+  alias FavnOrchestrator.InitialTargetGenerationReconciler
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.ResourceCircuits
@@ -446,7 +447,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
              Map.get(entry, :materialization_claim),
              result,
              freshness_state
-           ) do
+           ),
+         :ok <- InitialTargetGenerationReconciler.reconcile(entry) do
       :ok
     else
       {:error, reason} -> {:error, reason}

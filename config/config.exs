@@ -76,7 +76,7 @@ config :favn_orchestrator,
   ],
   manifest_publication: [
     compressed_limit_bytes: 8 * 1024 * 1024,
-    decompressed_limit_bytes: 32 * 1024 * 1024
+    decompressed_limit_bytes: 64 * 1024 * 1024
   ],
   api_service_tokens: [],
   api_service_tokens_env: "",

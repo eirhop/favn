@@ -195,7 +195,8 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
       assert Enum.any?(events(), fn
                {:execute, sql, _params} -> String.contains?(sql, expected_sql)
                _event -> false
-             end), "mode=#{mode}"
+             end),
+             "mode=#{mode}"
     end
   end
 
@@ -345,8 +346,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
 
     assert ADBC.poolable?(resolved, [])
 
-    assert {:ok,
-            %{adapter: ADBC, client: FakeClient, driver: "/opt/duckdb/libduckdb.so"},
+    assert {:ok, %{adapter: ADBC, client: FakeClient, driver: "/opt/duckdb/libduckdb.so"},
             preparation} =
              ADBC.prepare_pool(resolved,
                duckdb_adbc_client: FakeClient,
@@ -586,6 +586,13 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     assert_raise ArgumentError, ~r/catalog-qualified relations require schema/, fn ->
       ADBC.row_count(conn, %RelationRef{catalog: "raw", name: "orders"}, [])
     end
+  end
+
+  test "reports explicit generation capabilities independently of ordinary SQL capabilities" do
+    assert {:ok, generation} = ADBC.generation_capabilities(resolved(), [])
+    assert Favn.SQL.GenerationCapabilities.rebuild_supported?(generation)
+    assert generation.snapshots == :unsupported
+    assert generation.max_identifier_bytes == 128
   end
 
   test "production local-file storage rejects memory database before opening DuckDB" do

@@ -11,6 +11,7 @@ defmodule FavnStoragePostgres.Materialization.Store do
   alias FavnOrchestrator.Persistence.Commands.RenewMaterializationClaim
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetMaterializations
+  alias FavnOrchestrator.Persistence.Queries.GetRebuildMaterialization
   alias FavnOrchestrator.Persistence.Results.Materialization, as: MaterializationResult
   alias FavnOrchestrator.Persistence.Results.MaterializationClaim, as: ClaimResult
   alias FavnOrchestrator.Persistence.Results.MaterializationDecision
@@ -22,6 +23,7 @@ defmodule FavnStoragePostgres.Materialization.Store do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.Materialization
   alias FavnStoragePostgres.Schemas.MaterializationClaim
+  alias FavnStoragePostgres.Schemas.TargetOperationLock
 
   @max_batch 500
 
@@ -80,8 +82,43 @@ defmodule FavnStoragePostgres.Materialization.Store do
     error -> {:error, ErrorMapper.map(error)}
   end
 
+  @impl true
+  def get_rebuild(%GetRebuildMaterialization{} = query) do
+    with :ok <- validate_get_rebuild(query) do
+      workspace_id = query.workspace_context.workspace_id
+
+      claim =
+        from(claim in MaterializationClaim,
+          where:
+            claim.workspace_id == ^workspace_id and
+              claim.operation_id == ^query.operation_id and
+              claim.target_id == ^query.target_id and claim.run_id == ^query.run_id and
+              claim.target_generation_id == ^query.target_generation_id and
+              claim.partition_key == ^query.partition_key,
+          limit: 1
+        )
+        |> Repo.one()
+
+      materialization =
+        if claim do
+          from(materialization in Materialization,
+            where:
+              materialization.workspace_id == ^workspace_id and
+                materialization.claim_key == ^claim.claim_key,
+            limit: 1
+          )
+          |> Repo.one()
+        end
+
+      {:ok, lookup_decision(query.run_id, claim, materialization)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
   defp claim!(command) do
     workspace_id = command.workspace_context.workspace_id
+    lock_target_operation_identity!(workspace_id, command.target_id)
     lock_claim_identity!(workspace_id, command.claim_key)
 
     case lock_materialization(workspace_id, command.claim_key) do
@@ -89,12 +126,49 @@ defmodule FavnStoragePostgres.Materialization.Store do
         materialized_decision(materialization)
 
       nil ->
+        ensure_target_operation_admission!(command)
         request_hash = claim_request_hash!(command)
 
         case lock_claim(workspace_id, command.claim_key) do
           nil -> insert_claim!(command, request_hash)
           claim -> resolve_existing_claim!(claim, command, request_hash)
         end
+    end
+  end
+
+  defp lock_target_operation_identity!(workspace_id, target_id) do
+    SQL.query!(
+      Repo,
+      "SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
+      ["favn:target-operation:" <> workspace_id <> ":" <> target_id]
+    )
+
+    :ok
+  end
+
+  defp ensure_target_operation_admission!(command) do
+    operation_lock =
+      from(lock in TargetOperationLock,
+        where:
+          lock.workspace_id == ^command.workspace_context.workspace_id and
+            lock.target_id == ^command.target_id and
+            lock.lease_expires_at > fragment("clock_timestamp()"),
+        lock: "FOR SHARE"
+      )
+      |> Repo.one()
+
+    if is_nil(operation_lock) or operation_lock.operation_id == command.operation_id do
+      :ok
+    else
+      Repo.rollback(
+        Error.new(:conflict, "target operation is in progress",
+          details: %{
+            reason_code: "target_operation_in_progress",
+            target_id: command.target_id,
+            operation_id: operation_lock.operation_id
+          }
+        )
+      )
     end
   end
 
@@ -116,8 +190,11 @@ defmodule FavnStoragePostgres.Materialization.Store do
         deployment_id: command.deployment_id,
         target_kind: Atom.to_string(command.target_kind),
         target_id: command.target_id,
+        target_generation_id: command.target_generation_id,
+        evidence_generation_id: command.evidence_generation_id,
         partition_key: command.partition_key,
         run_id: command.run_id,
+        operation_id: command.operation_id,
         claim_command_id: command.command_id,
         claim_request_hash: request_hash,
         owner_id: command.owner_id,
@@ -153,6 +230,9 @@ defmodule FavnStoragePostgres.Materialization.Store do
             claim_request_hash: request_hash,
             owner_id: command.owner_id,
             run_id: command.run_id,
+            operation_id: command.operation_id,
+            target_generation_id: command.target_generation_id,
+            evidence_generation_id: command.evidence_generation_id,
             fencing_token: claim.fencing_token + 1,
             last_renewal_id: nil,
             last_finish_command_id: nil,
@@ -202,7 +282,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
               AND fencing_token = $4 AND status = 'claimed'
               AND expires_at > clock_timestamp()
             RETURNING workspace_id, claim_key, deployment_id, target_kind, target_id,
-                      partition_key, run_id, owner_id, fencing_token, status, expires_at,
+                      target_generation_id, evidence_generation_id, partition_key, run_id,
+                      owner_id, fencing_token, status, expires_at,
                       completed_at, result, error, version
             """,
             [
@@ -265,7 +346,9 @@ defmodule FavnStoragePostgres.Materialization.Store do
           "materialization_id" => command.materialization_id,
           "claim_key" => claim.claim_key,
           "run_id" => claim.run_id,
-          "target_id" => claim.target_id
+          "target_id" => claim.target_id,
+          "target_generation_id" => claim.target_generation_id,
+          "evidence_generation_id" => claim.evidence_generation_id
         }
       })
 
@@ -277,6 +360,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
         deployment_id: claim.deployment_id,
         target_kind: claim.target_kind,
         target_id: claim.target_id,
+        target_generation_id: claim.target_generation_id,
+        evidence_generation_id: claim.evidence_generation_id,
         partition_key: claim.partition_key,
         run_id: claim.run_id,
         payload: command.payload,
@@ -404,6 +489,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       deployment_id: claim.deployment_id,
       target_kind: String.to_existing_atom(claim.target_kind),
       target_id: claim.target_id,
+      target_generation_id: claim.target_generation_id,
+      evidence_generation_id: claim.evidence_generation_id,
       partition_key: claim.partition_key,
       run_id: claim.run_id,
       owner_id: claim.owner_id,
@@ -423,6 +510,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
          deployment_id,
          target_kind,
          target_id,
+         target_generation_id,
+         evidence_generation_id,
          partition_key,
          run_id,
          owner_id,
@@ -440,6 +529,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       deployment_id: deployment_id,
       target_kind: String.to_existing_atom(target_kind),
       target_id: target_id,
+      target_generation_id: target_generation_id,
+      evidence_generation_id: evidence_generation_id,
       partition_key: partition_key,
       run_id: run_id,
       owner_id: owner_id,
@@ -461,6 +552,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       deployment_id: materialization.deployment_id,
       target_kind: String.to_existing_atom(materialization.target_kind),
       target_id: materialization.target_id,
+      target_generation_id: materialization.target_generation_id,
+      evidence_generation_id: materialization.evidence_generation_id,
       partition_key: materialization.partition_key,
       run_id: materialization.run_id,
       payload: materialization.payload,
@@ -478,7 +571,10 @@ defmodule FavnStoragePostgres.Materialization.Store do
   defp same_logical_identity?(claim, command) do
     claim.claim_key == command.claim_key and claim.deployment_id == command.deployment_id and
       claim.target_kind == Atom.to_string(command.target_kind) and
-      claim.target_id == command.target_id and claim.partition_key == command.partition_key
+      claim.target_id == command.target_id and
+      claim.target_generation_id == command.target_generation_id and
+      claim.evidence_generation_id == command.evidence_generation_id and
+      claim.partition_key == command.partition_key
   end
 
   defp matching_owner?(claim, command),
@@ -492,9 +588,12 @@ defmodule FavnStoragePostgres.Materialization.Store do
       deployment_id: command.deployment_id,
       target_kind: command.target_kind,
       target_id: command.target_id,
+      target_generation_id: command.target_generation_id,
+      evidence_generation_id: command.evidence_generation_id,
       partition_key: command.partition_key,
       run_id: command.run_id,
-      owner_id: command.owner_id
+      owner_id: command.owner_id,
+      operation_id: command.operation_id
     })
   end
 
@@ -549,12 +648,15 @@ defmodule FavnStoragePostgres.Materialization.Store do
              command.claim_key,
              command.deployment_id,
              command.target_id,
+             command.evidence_generation_id,
              command.partition_key,
              command.run_id,
              command.owner_id
            ],
            &valid_id?/1
          ) and command.target_kind in [:asset, :pipeline] and
+         valid_generation_identity?(command.target_generation_id, command.evidence_generation_id) and
+         valid_optional_id?(command.operation_id) and
          valid_duration?(command.lease_duration_ms) and match?(%DateTime{}, command.occurred_at),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
@@ -604,8 +706,27 @@ defmodule FavnStoragePostgres.Materialization.Store do
        else: {:error, ErrorMapper.map(:invalid)}
   end
 
+  defp validate_get_rebuild(query) do
+    valid =
+      workspace_context?(query.workspace_context) and valid_id?(query.operation_id) and
+        valid_id?(query.target_id) and valid_id?(query.run_id) and
+        valid_id?(query.target_generation_id) and valid_id?(query.partition_key)
+
+    if valid, do: :ok, else: {:error, ErrorMapper.map(:invalid)}
+  end
+
   defp workspace_context?(context), do: WorkspaceContext.valid?(context)
 
   defp valid_duration?(duration), do: is_integer(duration) and duration > 0
   defp valid_id?(value), do: is_binary(value) and value != "" and byte_size(value) <= 255
+  defp valid_optional_id?(nil), do: true
+  defp valid_optional_id?(value), do: valid_id?(value)
+
+  defp valid_generation_identity?(nil, evidence_generation_id),
+    do: valid_id?(evidence_generation_id)
+
+  defp valid_generation_identity?(target_generation_id, evidence_generation_id) do
+    target_generation_id == evidence_generation_id and
+      match?({:ok, _uuid}, Ecto.UUID.cast(target_generation_id))
+  end
 end

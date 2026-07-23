@@ -24,7 +24,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
         <div>
           <h2 class="text-sm font-medium">Effective asset windows</h2>
           <p class="text-xs text-base-content/50">
-            Concrete runtime windows after each asset's lookback expansion.
+            Concrete runtime windows mapped from the pipeline's effective selection.
           </p>
         </div>
         <span class="badge badge-ghost">{@run.effective_window_count} windows</span>

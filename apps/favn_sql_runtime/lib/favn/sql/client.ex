@@ -29,8 +29,9 @@ defmodule Favn.SQL.Client do
   eviction. When an adapter fingerprint changes for the same connection and
   session requirements, the pool evicts idle sessions from the superseded
   fingerprint and closes active ones on checkin before creating a replacement.
-  Unrelated incompatible pool scopes can still compete for the same finite
-  catalog capacity.
+  A miss for a different overlapping catalog set evicts conflicting idle
+  sessions before creating a replacement, while incompatible scopes with the
+  same catalog set can still compete for finite catalog capacity.
 
   SQL sessions retain their normalized `:required_catalogs` and
   `:required_resources` scopes. Raw write
@@ -48,6 +49,10 @@ defmodule Favn.SQL.Client do
   alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Deadline
   alias Favn.SQL.Error
+  alias Favn.SQL.GenerationActivation
+  alias Favn.SQL.GenerationDiscard
+  alias Favn.SQL.GenerationMarkerInitialization
+  alias Favn.SQL.GenerationReconciliation
   alias Favn.SQL.Observability
   alias Favn.SQL.PoolConfig
   alias Favn.SQL.PoolKey
@@ -173,6 +178,24 @@ defmodule Favn.SQL.Client do
   @spec capabilities(Session.t()) :: {:ok, Favn.SQL.Capabilities.t()} | {:error, term()}
   def capabilities(%Session{capabilities: capabilities}), do: {:ok, capabilities}
   def capabilities(_session), do: {:error, invalid_session_error()}
+
+  @doc "Returns explicit target-generation capabilities for the session adapter."
+  @spec generation_capabilities(Session.t(), keyword()) :: operation_result()
+  def generation_capabilities(session, opts \\ [])
+
+  def generation_capabilities(%Session{} = session, opts) when is_list(opts) do
+    if generation_adapter?(session.adapter) do
+      session.adapter.generation_capabilities(session.resolved, opts)
+    else
+      {:error, unsupported_generation_error(session, :generation_capabilities)}
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(:generation_capabilities, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(:generation_capabilities, reason)}
+  end
+
+  def generation_capabilities(_session, _opts), do: {:error, invalid_session_error()}
 
   @spec query(Session.t(), iodata(), keyword()) :: operation_result()
   def query(%Session{} = session, statement, opts) when is_list(opts) do
@@ -366,6 +389,180 @@ defmodule Favn.SQL.Client do
   end
 
   def table_metadata(_session, _relation_ref), do: {:error, invalid_session_error()}
+
+  @doc "Inspects and fingerprints one physical generation relation."
+  @spec inspect_generation(Session.t(), RelationRef.t(), keyword()) :: operation_result()
+  def inspect_generation(session, relation_ref, opts \\ [])
+
+  def inspect_generation(%Session{} = session, %RelationRef{} = relation_ref, opts)
+      when is_list(opts) do
+    {_admission_opts, adapter_opts} = split_operation_opts(opts)
+
+    if generation_adapter?(session.adapter) do
+      session
+      |> run_session_operation(
+        :inspect_generation,
+        relation_ref,
+        operation_runtime_opts(opts),
+        fn session ->
+          run_with_optional_retry(:inspect_generation, adapter_opts, fn ->
+            Admission.with_permit(session, :inspect_generation, relation_ref, fn ->
+              session.adapter.inspect_generation(session.conn, relation_ref, adapter_opts)
+            end)
+          end)
+        end
+      )
+    else
+      {:error, unsupported_generation_error(session, :inspect_generation)}
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(:inspect_generation, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(:inspect_generation, reason)}
+  end
+
+  def inspect_generation(_session, _relation_ref, _opts), do: {:error, invalid_session_error()}
+
+  @doc "Initializes the sidecar marker for an already materialized first generation."
+  @spec initialize_generation_marker(Session.t(), GenerationMarkerInitialization.t(), keyword()) ::
+          operation_result()
+  def initialize_generation_marker(session, request, opts \\ [])
+
+  def initialize_generation_marker(
+        %Session{} = session,
+        %GenerationMarkerInitialization{} = request,
+        opts
+      )
+      when is_list(opts) do
+    {_admission_opts, adapter_opts} = split_operation_opts(opts)
+
+    if generation_adapter?(session.adapter) do
+      session
+      |> run_session_operation(
+        :initialize_generation_marker,
+        request,
+        operation_runtime_opts(opts),
+        fn session ->
+          Admission.with_permit(session, :initialize_generation_marker, request, fn ->
+            session.adapter.initialize_generation_marker(session.conn, request, adapter_opts)
+          end)
+        end
+      )
+    else
+      {:error, unsupported_generation_error(session, :initialize_generation_marker)}
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(:initialize_generation_marker, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(:initialize_generation_marker, reason)}
+  end
+
+  def initialize_generation_marker(_session, _request, _opts),
+    do: {:error, invalid_session_error()}
+
+  @doc "Atomically swaps a candidate generation and writes its active marker."
+  @spec activate_generation(Session.t(), GenerationActivation.t(), keyword()) ::
+          operation_result()
+  def activate_generation(session, request, opts \\ [])
+
+  def activate_generation(%Session{} = session, %GenerationActivation{} = request, opts)
+      when is_list(opts) do
+    {_admission_opts, adapter_opts} = split_operation_opts(opts)
+
+    if generation_adapter?(session.adapter) do
+      session
+      |> run_session_operation(
+        :activate_generation,
+        request,
+        operation_runtime_opts(opts),
+        fn session ->
+          Admission.with_permit(session, :activate_generation, request, fn ->
+            session.adapter.activate_generation(session.conn, request, adapter_opts)
+          end)
+        end
+      )
+    else
+      {:error, unsupported_generation_error(session, :activate_generation)}
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(:activate_generation, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(:activate_generation, reason)}
+  end
+
+  def activate_generation(_session, _request, _opts), do: {:error, invalid_session_error()}
+
+  @doc "Reads the data-plane marker used to reconcile an activation outcome."
+  @spec reconcile_generation(Session.t(), GenerationReconciliation.t(), keyword()) ::
+          operation_result()
+  def reconcile_generation(session, request, opts \\ [])
+
+  def reconcile_generation(
+        %Session{} = session,
+        %GenerationReconciliation{} = request,
+        opts
+      )
+      when is_list(opts) do
+    {_admission_opts, adapter_opts} = split_operation_opts(opts)
+
+    if generation_adapter?(session.adapter) do
+      session
+      |> run_session_operation(
+        :reconcile_generation,
+        request,
+        operation_runtime_opts(opts),
+        fn session ->
+          run_with_optional_retry(:reconcile_generation, adapter_opts, fn ->
+            Admission.with_permit(session, :reconcile_generation, request, fn ->
+              session.adapter.reconcile_generation(session.conn, request, adapter_opts)
+            end)
+          end)
+        end
+      )
+    else
+      {:error, unsupported_generation_error(session, :reconcile_generation)}
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(:reconcile_generation, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(:reconcile_generation, reason)}
+  end
+
+  def reconcile_generation(_session, _request, _opts), do: {:error, invalid_session_error()}
+
+  @doc "Drops a candidate or retired generation relation idempotently."
+  @spec discard_generation(Session.t(), GenerationDiscard.t(), keyword()) :: operation_result()
+  def discard_generation(session, request, opts \\ [])
+
+  def discard_generation(%Session{} = session, %GenerationDiscard{} = request, opts)
+      when is_list(opts) do
+    {_admission_opts, adapter_opts} = split_operation_opts(opts)
+
+    if generation_adapter?(session.adapter) do
+      session
+      |> run_session_operation(
+        :discard_generation,
+        request,
+        operation_runtime_opts(opts),
+        fn session ->
+          Admission.with_permit(session, :discard_generation, request, fn ->
+            case session.adapter.discard_generation(session.conn, request, adapter_opts) do
+              :ok -> {:ok, :discarded}
+              {:error, %Error{} = error} -> {:error, error}
+            end
+          end)
+        end
+      )
+    else
+      {:error, unsupported_generation_error(session, :discard_generation)}
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(:discard_generation, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(:discard_generation, reason)}
+  end
+
+  def discard_generation(_session, _request, _opts), do: {:error, invalid_session_error()}
 
   @spec transaction(Session.t(), (Session.t() -> operation_result()), keyword()) ::
           operation_result()
@@ -561,7 +758,9 @@ defmodule Favn.SQL.Client do
     case SessionPool.checkout_or_create(
            key,
            max_creating_per_key: max_creating_per_key,
-           checkout_timeout_ms: Keyword.get(adapter_opts, :checkout_timeout_ms)
+           checkout_timeout_ms: Keyword.get(adapter_opts, :checkout_timeout_ms),
+           connection: resolved.name,
+           required_catalogs: normalized_required_catalogs(adapter_opts)
          ) do
       {:ok, %Session{} = session} ->
         case prepare_warm_session(session, resolved, concurrency_policies, adapter_opts) do
@@ -1306,14 +1505,34 @@ defmodule Favn.SQL.Client do
 
   defp discard_pooled_session_after_success?(operation, opts) when is_list(opts) do
     cond do
-      Keyword.get(opts, :pool_safe?) == true -> false
-      operation == :query -> Keyword.get(opts, :read_only?) != true
-      true -> operation in [:execute, :materialize, :transaction]
+      Keyword.get(opts, :pool_safe?) == true ->
+        false
+
+      operation == :query ->
+        Keyword.get(opts, :read_only?) != true
+
+      true ->
+        operation in [
+          :execute,
+          :materialize,
+          :transaction,
+          :initialize_generation_marker,
+          :activate_generation,
+          :discard_generation
+        ]
     end
   end
 
   defp discard_pooled_session_after_success?(operation, _opts),
-    do: operation in [:execute, :materialize, :transaction]
+    do:
+      operation in [
+        :execute,
+        :materialize,
+        :transaction,
+        :initialize_generation_marker,
+        :activate_generation,
+        :discard_generation
+      ]
 
   defp run_with_optional_retry(:query, opts, fun) when is_function(fun, 0) do
     if Keyword.get(opts, :read_only?) == true do
@@ -1326,7 +1545,15 @@ defmodule Favn.SQL.Client do
   end
 
   defp run_with_optional_retry(operation, _opts, fun) when is_function(fun, 0) do
-    if operation in [:relation, :columns, :row_count, :sample, :table_metadata] do
+    if operation in [
+         :relation,
+         :columns,
+         :row_count,
+         :sample,
+         :table_metadata,
+         :inspect_generation,
+         :reconcile_generation
+       ] do
       fun
       |> Retry.run(phase: :read_only)
       |> put_retry_operation(operation)
@@ -1377,13 +1604,25 @@ defmodule Favn.SQL.Client do
   defp discard_pooled_session?(_operation, _payload, %Error{type: :operation_timeout}), do: true
 
   defp discard_pooled_session?(operation, _payload, %Error{})
-       when operation in [:execute, :materialize, :transaction] do
+       when operation in [
+              :execute,
+              :materialize,
+              :transaction,
+              :initialize_generation_marker,
+              :activate_generation,
+              :discard_generation
+            ] do
     true
   end
 
   defp discard_pooled_session?(_operation, _payload, %Error{} = error) do
     classification = Map.get(error.details || %{}, :classification)
-    classification in [:unknown_commit_state, :unknown_outcome_timeout]
+
+    classification in [
+      :unknown_commit_state,
+      :unknown_outcome_timeout,
+      :activation_outcome_unknown
+    ]
   end
 
   defp discard_reason(operation, %Error{} = error) do
@@ -1434,6 +1673,26 @@ defmodule Favn.SQL.Client do
       connection: connection,
       operation: operation
     }
+  end
+
+  defp unsupported_generation_error(%Session{resolved: %Resolved{name: connection}}, operation) do
+    %Error{
+      type: :unsupported_capability,
+      message: "SQL adapter does not support target generations",
+      retryable?: false,
+      operation: operation,
+      connection: connection,
+      details: %{classification: :unsupported_capability, capability: :target_generations}
+    }
+  end
+
+  defp generation_adapter?(adapter) do
+    function_exported?(adapter, :generation_capabilities, 2) and
+      function_exported?(adapter, :inspect_generation, 3) and
+      function_exported?(adapter, :initialize_generation_marker, 3) and
+      function_exported?(adapter, :activate_generation, 3) and
+      function_exported?(adapter, :reconcile_generation, 3) and
+      function_exported?(adapter, :discard_generation, 3)
   end
 
   defp sample_limit(opts) do

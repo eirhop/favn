@@ -166,6 +166,8 @@ defmodule FavnView.Components.AssetCataloguePage do
             <th class="font-medium">Catalogue</th>
             <th class="font-medium">Type</th>
             <th class="font-medium">Status</th>
+            <th class="font-medium">Coverage</th>
+            <th class="font-medium">Compatibility</th>
             <th class="font-medium">Last run</th>
             <th class="sr-only">Open</th>
           </tr>
@@ -206,6 +208,8 @@ defmodule FavnView.Components.AssetCataloguePage do
       <td class="text-base-content/70">{@asset.catalogue}</td>
       <td class="text-base-content/70">{@asset.type}</td>
       <td><.status_badge status={@asset.status} /></td>
+      <td><.coverage_badge status={coverage_status(@asset)} /></td>
+      <td><.compatibility_badge status={compatibility_status(@asset)} /></td>
       <td class="text-base-content/70">{@asset.last_run_label}</td>
       <td class="text-right">
         <.icon_button
@@ -254,6 +258,8 @@ defmodule FavnView.Components.AssetCataloguePage do
           </div>
           <div class="flex flex-wrap items-center gap-3 text-xs text-base-content/65">
             <.status_badge status={@asset.status} />
+            <.coverage_badge status={coverage_status(@asset)} />
+            <.compatibility_badge status={compatibility_status(@asset)} />
             <span>{@asset.last_run_label}</span>
           </div>
         </div>
@@ -270,6 +276,32 @@ defmodule FavnView.Components.AssetCataloguePage do
     <span class={["badge badge-sm badge-soft gap-2", status_badge_class(@status)]}>
       <span class={["status", status_dot_class(@status)]}></span>
       {status_label(@status)}
+    </span>
+    """
+  end
+
+  attr :status, :atom, required: true
+
+  def coverage_badge(assigns) do
+    ~H"""
+    <span
+      class={["badge badge-sm badge-outline", coverage_badge_class(@status)]}
+      data-testid="asset-coverage-status"
+    >
+      Coverage {coverage_status_label(@status)}
+    </span>
+    """
+  end
+
+  attr :status, :atom, required: true
+
+  def compatibility_badge(assigns) do
+    ~H"""
+    <span
+      class={["badge badge-sm badge-soft", compatibility_badge_class(@status)]}
+      data-testid="asset-compatibility-status"
+    >
+      {compatibility_status_label(@status)}
     </span>
     """
   end
@@ -351,6 +383,12 @@ defmodule FavnView.Components.AssetCataloguePage do
       %{label: "Storage", icon: "hero-circle-stack", href: "#"},
       %{label: "Runs", icon: "hero-rocket-launch", href: "/runs", active: active == :runs},
       %{
+        label: "Rebuilds",
+        icon: "hero-arrow-path-rounded-square",
+        href: "/rebuilds",
+        active: active == :rebuilds
+      },
+      %{
         label: "Schedules",
         icon: "hero-calendar-days",
         href: "/schedules",
@@ -371,6 +409,8 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "sales",
         type: "table",
         status: :healthy,
+        coverage_status: :complete,
+        compatibility_status: :ready,
         last_run_label: "6m ago"
       },
       %{
@@ -380,6 +420,8 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "sales",
         type: "view",
         status: :healthy,
+        coverage_status: :incomplete,
+        compatibility_status: :rebuild_available,
         last_run_label: "12m ago"
       },
       %{
@@ -389,6 +431,8 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "sales",
         type: "view",
         status: :healthy,
+        coverage_status: :unknown,
+        compatibility_status: :uninitialized,
         last_run_label: "18m ago"
       },
       %{
@@ -398,6 +442,7 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "finance",
         type: "file",
         status: :running,
+        compatibility_status: :ready,
         last_run_label: "3m ago"
       },
       %{
@@ -407,6 +452,7 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "sales",
         type: "table",
         status: :fresh,
+        compatibility_status: :rebuild_required,
         last_run_label: "Today 06:00"
       },
       %{
@@ -416,6 +462,7 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "marketing",
         type: "table",
         status: :fresh,
+        compatibility_status: :unexpected_drift,
         last_run_label: "Today 05:45"
       },
       %{
@@ -425,6 +472,7 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "platform",
         type: "metric",
         status: :failed,
+        compatibility_status: :ready,
         last_run_label: "Failed 12m ago"
       },
       %{
@@ -434,6 +482,7 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "finance",
         type: "metric",
         status: :missed,
+        compatibility_status: :ready,
         last_run_label: "Missed 1h ago"
       },
       %{
@@ -443,6 +492,7 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "finance",
         type: "table",
         status: :healthy,
+        compatibility_status: :operator_decision,
         last_run_label: "24m ago"
       },
       %{
@@ -452,6 +502,7 @@ defmodule FavnView.Components.AssetCataloguePage do
         catalogue: "marketing",
         type: "file",
         status: :fresh,
+        compatibility_status: :ready,
         last_run_label: "Today 04:10"
       }
     ]
@@ -500,6 +551,29 @@ defmodule FavnView.Components.AssetCataloguePage do
   defp status_label(:missed), do: "Missed"
   defp status_label(:unknown), do: "Unknown"
   defp status_label(_status), do: "Unknown"
+
+  defp coverage_status(asset), do: Map.get(asset, :coverage_status, :unknown)
+  defp compatibility_status(asset), do: Map.get(asset, :compatibility_status, :ready)
+  defp coverage_badge_class(:complete), do: "badge-success"
+  defp coverage_badge_class(:incomplete), do: "badge-warning"
+  defp coverage_badge_class(:unknown), do: "badge-neutral"
+  defp coverage_badge_class(_status), do: "badge-neutral"
+  defp coverage_status_label(:complete), do: "complete"
+  defp coverage_status_label(:incomplete), do: "incomplete"
+  defp coverage_status_label(_status), do: "unknown"
+
+  defp compatibility_badge_class(:ready), do: "badge-success"
+  defp compatibility_badge_class(:rebuild_available), do: "badge-info"
+  defp compatibility_badge_class(:uninitialized), do: "badge-neutral"
+  defp compatibility_badge_class(_blocking), do: "badge-error"
+
+  defp compatibility_status_label(:ready), do: "Compatible"
+  defp compatibility_status_label(:rebuild_available), do: "Rebuild available"
+  defp compatibility_status_label(:uninitialized), do: "Not initialized"
+  defp compatibility_status_label(:rebuild_required), do: "Rebuild required"
+  defp compatibility_status_label(:unexpected_drift), do: "Target drift"
+  defp compatibility_status_label(:operator_decision), do: "Operator decision"
+  defp compatibility_status_label(_status), do: "Compatibility unknown"
 
   defp asset_route_id(asset), do: Map.get(asset, :route_id, asset.id)
 

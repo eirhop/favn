@@ -6,7 +6,7 @@ defmodule FavnOrchestrator.API.ManifestPublication.ConfigTest do
   test "uses bounded defaults" do
     assert {:ok, config} = Config.new([])
     assert config.compressed_limit_bytes == 8 * 1024 * 1024
-    assert config.decompressed_limit_bytes == 32 * 1024 * 1024
+    assert config.decompressed_limit_bytes == 64 * 1024 * 1024
   end
 
   test "accepts exact maximum limits and rejects values outside them" do

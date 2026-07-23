@@ -9,14 +9,17 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
 ## Authoring and execution
 
 - The `favn` package provides manifest-first asset, SQL-asset, pipeline, schedule,
-  window, freshness, retry, settings, and runtime-input DSLs.
-- Compilation produces a deterministic schema-10 manifest bound to the exact
+  window, coverage, freshness, retry, settings, and runtime-input DSLs.
+- Compilation produces a deterministic schema-11 manifest bound to the exact
   verified runner release, with graph metadata, compact catalogue/planning indexes,
-  and content-addressed SQL execution packages.
+  content-addressed SQL execution packages, environment-resolved timezones and
+  coverage, provenance, and desired SQL target descriptors.
 - SQL output contracts validate ordered columns/types, lineage, grain, uniqueness,
   nullability, and up to 16 ordered conditional row-count claims.
 - Planning supports asset and pipeline targets, dependency selection, refresh
-  modes, windows, stages, retries, replay, and bounded admission.
+  modes, stages, retries, replay, and bounded admission. Scheduled window
+  selections apply pipeline lookback once; manual and backfill selections stay
+  exact, and runs persist requested, expansion, and effective anchors.
 - Packaged runners self-verify their baked descriptor against runtime target and
   versions, selected BEAM digests, and application version/lock fingerprints in
   packaged `.app` files before startup. Stamped application and configured
@@ -55,6 +58,19 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   `NOTIFY` are wake-ups, never correctness authorities.
 - Resource circuits, recovery candidates, schedule occurrences, execution
   ownership, claims, leases, and fencing are durable coordination state.
+- Asset coverage is evaluated against bounded canonical expected windows and
+  successful evidence from only the active semantic or physical generation.
+  Catalogue/API reads distinguish complete, incomplete, and explicit unknown
+  states; operators can review and manually submit an immutable exact-gap
+  backfill plan, with stale selections rejected before mutation.
+- Manifest activation inspects persisted SQL relations through the runner and
+  records desired, active-generation, and physical compatibility per target.
+  Incompatible, drifted, and ownership-unknown targets reject ordinary writes
+  on affected dependency paths; compatible and unrelated paths remain runnable.
+- Operators can plan, approve, inspect, cancel, safely retry, and reconcile
+  immutable generation rebuilds. Rebuilds use isolated candidates, frozen work
+  items, sorted target locks, fenced recovery, physical validation, marker-based
+  activation reconciliation, topological downstream repair, and explicit cleanup.
 - Both runtime BEAMs expose monotonic lifecycle state and reject new mutation or
   execution admission while draining. Readiness flips before bounded shutdown;
   admitted work may settle until the configured deadline, after which ordinary
@@ -87,7 +103,7 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 
 ## Local development and packaging
 
-- `mix favn.init`, `doctor`, `install`, `dev`, `run`, `backfill`, `runs`, `logs`,
+- `mix favn.init`, `doctor`, `install`, `dev`, `run`, `backfill`, `rebuild`, `runs`, `logs`,
   `inspect`, `query`, `diagnostics`, `reload`, `status`, `stop`, and `reset` provide
   the private local developer loop against PostgreSQL.
 - `build.runner` creates an immutable, relocatable customer runner OCI context
@@ -123,13 +139,20 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 
 ## Operator web UI
 
-- Authenticated LiveView routes cover assets, pipelines, schedules, runs, logs,
+- Authenticated LiveView routes cover assets, pipelines, schedules, runs, rebuilds, logs,
   lineage, login/logout, and health through the public orchestrator facade.
 - Workspace-scoped live updates reread durable state after notification.
 - Asset and run detail distinguish requested anchors from exact effective runtime
   windows and use compact projections; event payloads load only on the Events view.
+- The asset catalogue and detail page show persisted target compatibility apart
+  from health, freshness, and coverage. Blocking states include a stable reason,
+  bounded structured diff, active generation, and desired/physical fingerprints.
+- Rebuild pages enforce plan/review/start separation, page bounded operation and
+  item histories, show progress and unknown outcomes, and render only
+  server-authorized cancellation, retry, and reconciliation actions.
 - The UI remains a prototype: some asset-detail modes are placeholders, mutation
-  audit is incomplete, actor/session/audit administration is absent, and there is
+  audit outside the rebuild workflow is incomplete, actor/session/audit
+  administration is absent, and there is
   no production browser acceptance suite.
 
 ## Production limits

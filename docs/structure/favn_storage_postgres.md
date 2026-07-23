@@ -10,7 +10,8 @@ Favn's PostgreSQL 18 control-plane persistence.
 - `FavnStoragePostgres.BackendSupervisor` owns the repo, notification listener,
   publisher, projectors, and bounded maintenance workers.
 - Capability stores live under `registry/`, `runs/`, `run_ownership/`,
-  `scheduler/`, `admission/`, `materialization/`, `backfills/`, `identity/`,
+  `scheduler/`, `admission/`, `target_generations/`, `materialization/`,
+  `backfills/`, `rebuilds/`, `target_operation_locks/`, `identity/`,
   `resource_circuits/`, `logs/`, `operator_reads/`, and `maintenance/`.
 - Ecto schemas live under `schemas/`. Ordinary typed queries use Ecto;
   concurrency-critical commands may use focused SQL.
@@ -24,6 +25,24 @@ Favn's PostgreSQL 18 control-plane persistence.
 - `run_plans` stores one bounded immutable plan per planned run. `runs.snapshot`
   stores only mutable state plus the plan hash, keeping every transition below its
   independent 4 MiB boundary.
+- `asset_target_generations` owns immutable physical-generation identity and
+  `asset_target_bindings` selects the active generation for ordinary writes and
+  current-evidence reads. Initial writes remain `building` until authoritative
+  physical reconciliation records an activation and fingerprint.
+  `rebuild_operations`, `rebuild_plan_actions`, and `rebuild_windows` persist the
+  immutable plan hash, dispatcher and item fences, candidate generations,
+  per-item runtime-input expectations and authoritative materialization ids,
+  activation intent, unknown outcomes, and cleanup checkpoints. Terminal success
+  and failed/cancelled abandonment remain claimable only while their respective
+  relation cleanup is pending or failed.
+  `target_operation_locks` acquires target ids in sorted order, uses database time
+  for leases, increments fences on takeover, and rejects a rebuild while a
+  conflicting materialization claim is live.
+- Materialization ledgers pin both the optional physical target generation and the
+  required evidence generation. A claim may carry a rebuild operation id; target
+  locks admit only that matching operation while excluding new ordinary writes.
+  Window and freshness projections use the evidence generation in their primary
+  identity.
 - `asset_attempt_overviews` projects exact run, asset-step, and effective runtime
   window identities from authoritative run events. It supports bounded operator
   overview reads without loading run snapshots, plans, or event payloads and is

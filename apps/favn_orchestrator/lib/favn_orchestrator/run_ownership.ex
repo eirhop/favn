@@ -91,6 +91,8 @@ defmodule FavnOrchestrator.RunOwnership do
         end),
       owner_id: owner_id,
       lease_duration_ms: Keyword.get(opts, :lease_duration_ms, @default_lease_duration_ms),
+      unowned_grace_period_ms:
+        Keyword.get(opts, :unowned_grace_period_ms, @default_lease_duration_ms),
       limit: Keyword.get(opts, :limit, 100)
     })
   end

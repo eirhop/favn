@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   alias Favn.Contracts.RunnerError
   alias Favn.Run.AssetResult
   alias Favn.SQL.{Check, CheckResult, ContractValidation}
+  alias Favn.Window.Selection
   alias FavnOrchestrator.Redaction
 
   @max_depth 8
@@ -49,6 +50,20 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   def output_metadata(value), do: data(value)
 
+  @doc false
+  @spec window_selection(Selection.t() | nil) :: map() | nil
+  def window_selection(nil), do: nil
+
+  def window_selection(%Selection{} = selection) do
+    %{
+      "intent" => Atom.to_string(selection.intent),
+      "requested_anchors" => Enum.map(selection.requested_anchors, &selection_anchor/1),
+      "expansion" => selection_expansion(selection.expansion),
+      "effective_anchors" => Enum.map(selection.effective_anchors, &selection_anchor/1),
+      "timezone" => selection.timezone
+    }
+  end
+
   @spec error(term()) :: map() | nil
   def error(nil), do: nil
 
@@ -61,6 +76,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "reason" => safe_existing_error_reason(value.reason),
       "details" => data(value.details, "details", @max_depth - 1),
       "retryable" => value.retryable?,
+      "outcome" => value.outcome,
       "redacted" => true,
       "truncated" => false
     }
@@ -143,6 +159,8 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   defp data(%ContractValidation{} = value, _key, _depth),
     do: contract_validation_to_dto(value)
 
+  defp data(%Selection{} = value, _key, _depth), do: window_selection(value)
+
   defp data(_value, _key, depth) when depth <= 0, do: "[TRUNCATED]"
   defp data(%Decimal{} = value, _key, _depth), do: Decimal.to_string(value)
   defp data(%Date{} = value, _key, _depth), do: Date.to_iso8601(value)
@@ -199,6 +217,18 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   defp data(nil, _key, _depth), do: nil
   defp data(value, _key, _depth) when is_atom(value), do: Atom.to_string(value)
   defp data(value, _key, _depth), do: inspect_value(value)
+
+  defp selection_expansion(:none), do: "none"
+  defp selection_expansion({:lookback, count}), do: ["lookback", count]
+
+  defp selection_anchor(anchor) do
+    %{
+      "kind" => Atom.to_string(anchor.kind),
+      "start_at" => DateTime.to_iso8601(anchor.start_at),
+      "end_at" => DateTime.to_iso8601(anchor.end_at),
+      "timezone" => anchor.timezone
+    }
+  end
 
   defp asset_result(%AssetResult{} = result, depth) do
     %{

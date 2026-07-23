@@ -131,6 +131,65 @@ defmodule Favn.Dev.Backfill do
 
   def plan_pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
 
+  @doc "Plans exact currently missing windows for one active asset."
+  @spec plan_missing_asset(module() | String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_missing_asset(asset, opts \\ [])
+
+  def plan_missing_asset(asset, opts)
+      when (is_atom(asset) or is_binary(asset)) and is_list(opts) do
+    with {:ok, base_url, credentials, session_context} <- session(opts),
+         {:ok, target_id} <- resolve_asset_target(base_url, credentials, session_context, asset) do
+      OrchestratorClient.plan_missing_coverage_backfill(
+        base_url,
+        credentials.service_token,
+        session_context,
+        target_id,
+        Keyword.take(opts, [:cursor, :limit])
+      )
+    end
+  end
+
+  def plan_missing_asset(_asset, _opts), do: {:error, :invalid_asset}
+
+  @doc "Submits one previously reviewed exact missing-window plan."
+  @spec submit_missing_asset(module() | String.t(), map(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def submit_missing_asset(asset, plan, opts \\ [])
+
+  def submit_missing_asset(asset, plan, opts)
+      when (is_atom(asset) or is_binary(asset)) and is_map(plan) and is_list(opts) do
+    with {:ok, base_url, credentials, session_context} <- session(opts),
+         {:ok, target_id} <- resolve_asset_target(base_url, credentials, session_context, asset) do
+      OrchestratorClient.submit_missing_coverage_backfill(
+        base_url,
+        credentials.service_token,
+        session_context,
+        target_id,
+        plan
+      )
+    end
+  end
+
+  def submit_missing_asset(_asset, _plan, _opts), do: {:error, :invalid_asset}
+
+  defp resolve_asset_target(base_url, credentials, session_context, asset) do
+    with {:ok, active_manifest} <-
+           OrchestratorClient.active_manifest(
+             base_url,
+             credentials.service_token,
+             session_context
+           ),
+         {:ok, %{"target_type" => "asset", "target_id" => target_id}} <-
+           Run.resolve_run_target(active_manifest, asset) do
+      {:ok, target_id}
+    else
+      {:ok, %{"target_type" => _other}} -> {:error, :missing_coverage_requires_asset}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, :invalid_asset_target}
+    end
+  end
+
   @spec list_windows(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def list_windows(backfill_run_id, opts \\ [])
       when is_binary(backfill_run_id) and is_list(opts) do

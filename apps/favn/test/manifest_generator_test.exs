@@ -3,6 +3,19 @@ defmodule Favn.Manifest.GeneratorTest do
 
   alias Favn.Manifest
 
+  defmodule TestConnection do
+    @behaviour Favn.Connection
+
+    @impl true
+    def definition do
+      %Favn.Connection.Definition{
+        name: :warehouse,
+        adapter: __MODULE__.Adapter,
+        config_schema: []
+      }
+    end
+  end
+
   defmodule TestSchedules do
     use Favn.Triggers.Schedules
 
@@ -35,6 +48,25 @@ defmodule Favn.Manifest.GeneratorTest do
       asset(TestAsset)
       deps(:all)
       schedule({TestSchedules, :daily})
+    end
+  end
+
+  defmodule DelayedAsset do
+    use Favn.Asset
+
+    window(Favn.Window.daily(timezone: "Etc/UTC"))
+    coverage(from: ~D[2026-01-01], availability_delay: {:hours, 6})
+
+    def asset(_ctx), do: :ok
+  end
+
+  defmodule EarlyPipeline do
+    use Favn.Pipeline
+
+    pipeline :early do
+      asset(DelayedAsset)
+      schedule(cron: "0 2 * * *", timezone: "Etc/UTC")
+      window(:daily, timezone: "Etc/UTC")
     end
   end
 
@@ -85,11 +117,12 @@ defmodule Favn.Manifest.GeneratorTest do
                asset_modules: [TestAsset, TestSQLAsset],
                pipeline_modules: [TestPipeline],
                schedule_modules: [TestSchedules],
+               connection_modules: [TestConnection],
                runner_release: runner_release()
              )
 
-    assert manifest.schema_version == 10
-    assert manifest.runner_contract_version == 10
+    assert manifest.schema_version == 11
+    assert manifest.runner_contract_version == 11
     assert manifest.required_runner_release_id == FavnTestSupport.runner_release_id()
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1
@@ -107,6 +140,7 @@ defmodule Favn.Manifest.GeneratorTest do
                asset_modules: [TestAsset, TestSQLAsset],
                pipeline_modules: [TestPipeline],
                schedule_modules: [TestSchedules],
+               connection_modules: [TestConnection],
                runner_release: runner_release()
              )
 
@@ -121,6 +155,17 @@ defmodule Favn.Manifest.GeneratorTest do
     [schedule] = manifest.schedules
     assert schedule.module == TestSchedules
     assert schedule.name == :daily
+  end
+
+  test "build returns non-fatal schedule and coverage diagnostics" do
+    assert {:ok, build} =
+             Favn.build_manifest(
+               asset_modules: [DelayedAsset],
+               pipeline_modules: [EarlyPipeline],
+               runner_release: runner_release()
+             )
+
+    assert Enum.any?(build.diagnostics, &(&1.code == :cron_before_coverage_availability))
   end
 
   test "lists and fetches compiled assets without registry" do

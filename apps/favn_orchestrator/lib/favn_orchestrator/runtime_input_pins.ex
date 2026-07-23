@@ -34,7 +34,9 @@ defmodule FavnOrchestrator.RuntimeInputPins do
 
     case Runs.get_runtime_inputs(context, run.id, [node_key]) do
       {:ok, [%Pin{} = pin]} ->
-        {:ok, attach(work, pin, :runtime_inputs_pin_reused)}
+        with :ok <- validate_expectation(work, pin) do
+          {:ok, attach(work, pin, :runtime_inputs_pin_reused)}
+        end
 
       {:ok, []} ->
         create_pin(context, work, node_key, runner_client, runner_opts)
@@ -60,15 +62,16 @@ defmodule FavnOrchestrator.RuntimeInputPins do
     if function_exported?(runner_client, :resolve_runtime_inputs, 2) do
       case RunnerDispatch.resolve_runtime_inputs(runner_client, work, runner_opts) do
         {:ok, %Resolution{} = resolution} ->
-          persist_and_attach(
-            context,
-            work,
-            Pin.new(work.run_id, node_key, resolution),
-            :runtime_inputs_resolved
-          )
+          pin = Pin.new(work.run_id, node_key, resolution)
+
+          with :ok <- validate_expectation(work, pin) do
+            persist_and_attach(context, work, pin, :runtime_inputs_resolved)
+          end
 
         {:ok, nil} ->
-          {:ok, work}
+          if expectation_present?(work),
+            do: {:error, :rebuild_runtime_input_pin_changed},
+            else: {:ok, work}
 
         {:error, reason} ->
           {:error, reason}
@@ -100,7 +103,8 @@ defmodule FavnOrchestrator.RuntimeInputPins do
   end
 
   defp persist_and_attach(context, work, pin, action) do
-    with {:ok, [persisted]} <- Runs.pin_runtime_inputs(context, work.run_id, [pin]) do
+    with :ok <- validate_expectation(work, pin),
+         {:ok, [persisted]} <- Runs.pin_runtime_inputs(context, work.run_id, [pin]) do
       {:ok, attach(work, persisted, action)}
     end
   end
@@ -118,6 +122,40 @@ defmodule FavnOrchestrator.RuntimeInputPins do
     do: not is_nil(resolver)
 
   defp runtime_inputs?(_package), do: false
+
+  defp validate_expectation(work, pin) do
+    case expectation(work) do
+      :absent ->
+        :ok
+
+      expected when is_map(expected) ->
+        if field(expected, :resolver) == Atom.to_string(pin.resolver) and
+             field(expected, :input_identity) == pin.input_identity and
+             field(expected, :payload_fingerprint) == pin.payload_fingerprint,
+           do: :ok,
+           else: {:error, :rebuild_runtime_input_pin_changed}
+
+      _invalid ->
+        {:error, :rebuild_runtime_input_pin_changed}
+    end
+  end
+
+  defp expectation_present?(work), do: expectation(work) != :absent
+
+  defp expectation(%{metadata: metadata}) do
+    cond do
+      Map.has_key?(metadata, :runtime_input_expectation) ->
+        Map.get(metadata, :runtime_input_expectation)
+
+      Map.has_key?(metadata, "runtime_input_expectation") ->
+        Map.get(metadata, "runtime_input_expectation")
+
+      true ->
+        :absent
+    end
+  end
+
+  defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 
   defp input_mode(metadata) do
     value =

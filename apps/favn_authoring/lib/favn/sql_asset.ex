@@ -41,7 +41,8 @@ defmodule Favn.SQLAsset do
         meta owner: "analytics"
         meta category: :sales
         meta tags: [:mart]
-        window Favn.Window.daily(lookback: 1)
+        window Favn.Window.daily()
+        coverage from: ~D[2020-01-01]
         freshness [window_success: true]
         depends MyApp.Lakehouse.Raw.Sales.Orders
         materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
@@ -63,7 +64,7 @@ defmodule Favn.SQLAsset do
   - provide one effective `materialized` declaration on the asset or an ancestor
     namespace
   - attach `@doc` to `query`; Favn transfers it to the generated `asset/1`
-  - declare `settings`, `meta`, `depends`, `window`, `freshness`, `retry`,
+  - declare `settings`, `meta`, `depends`, `window`, `coverage`, `freshness`, `retry`,
     `materialized`, optional `relation`, optional `resources`, optional
     `runtime_config`, and optional `runtime_inputs` before `query`
   - use `~SQL` for inline SQL bodies
@@ -77,6 +78,7 @@ defmodule Favn.SQLAsset do
   - `meta`: keyword or map metadata such as `owner`, `category`, and `tags`
   - `depends`: repeatable dependency declaration
   - `window`: one `Favn.Window.*` spec
+  - `coverage`: expected historical windows for a windowed asset
   - `freshness`: optional asset freshness policy
   - `retry`: optional node-attempt retry policy overriding the pipeline default
   - `relation`: optional owned relation declaration
@@ -417,7 +419,7 @@ defmodule Favn.SQLAsset do
   - defining more than one query
   - forgetting `materialized`
   - using interpolation inside `~SQL`
-  - using invalid `depends`, `window`, `freshness`, or `relation` values
+  - using invalid `depends`, `window`, `coverage`, `freshness`, or `relation` values
   - using an inline function, capture, MFA tuple, or block instead of
     `runtime_inputs ResolverModule`
   - inheriting or declaring `runtime_config` without an effective
@@ -443,6 +445,7 @@ defmodule Favn.SQLAsset do
 
   alias Favn.Asset
   alias Favn.Asset.RelationResolver
+  alias Favn.Coverage.Spec, as: CoverageSpec
   alias Favn.DSL.AssetDeclarations
   alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Namespace
@@ -492,6 +495,7 @@ defmodule Favn.SQLAsset do
           meta: 1,
           depends: 1,
           window: 1,
+          coverage: 1,
           freshness: 1,
           retry: 1,
           execution_pool: 1,
@@ -848,6 +852,7 @@ defmodule Favn.SQLAsset do
           :meta,
           :depends,
           :window,
+          :coverage,
           :freshness,
           :retry,
           :execution_pool,
@@ -922,6 +927,7 @@ defmodule Favn.SQLAsset do
       meta: AssetDeclarations.take(env.module, :meta),
       depends: AssetDeclarations.take(env.module, :depends),
       window: AssetDeclarations.take(env.module, :window),
+      coverage: AssetDeclarations.take(env.module, :coverage),
       freshness: AssetDeclarations.take(env.module, :freshness),
       retry: AssetDeclarations.take(env.module, :retry),
       execution_pool: AssetDeclarations.take(env.module, :execution_pool),
@@ -995,10 +1001,19 @@ defmodule Favn.SQLAsset do
       |> Namespace.effective_declarations(:window, raw_definition.window)
       |> normalize_window!(raw_definition)
 
+    window_spec = mark_window_source(window_spec, raw_definition.window)
+
+    coverage_spec =
+      namespace
+      |> Namespace.effective_declarations(:coverage, Map.get(raw_definition, :coverage, []))
+      |> normalize_coverage!(window_spec, raw_definition)
+
     freshness =
       namespace
       |> Namespace.effective_declarations(:freshness, raw_definition.freshness)
       |> normalize_freshness!(window_spec, raw_definition)
+
+    freshness = mark_freshness_source(freshness, raw_definition.freshness)
 
     retry_policy = normalize_retry!(raw_definition.retry, raw_definition)
 
@@ -1077,6 +1092,7 @@ defmodule Favn.SQLAsset do
       relation_inputs: relation_inputs,
       session_requirements: session_requirements,
       window_spec: window_spec,
+      coverage_spec: coverage_spec,
       freshness: freshness,
       retry_policy: retry_policy,
       execution_pool: execution_pool,
@@ -1352,6 +1368,63 @@ defmodule Favn.SQLAsset do
       "invalid window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
     )
   end
+
+  defp normalize_coverage!([], _window_spec, _raw_definition), do: nil
+  defp normalize_coverage!([nil], _window_spec, _raw_definition), do: nil
+
+  defp normalize_coverage!([value], %Spec{}, raw_definition) do
+    case CoverageSpec.from_value(value) do
+      {:ok, %CoverageSpec{} = spec} ->
+        spec
+
+      {:error, reason} ->
+        DSLCompiler.compile_error!(
+          raw_definition.file,
+          raw_definition.line,
+          "invalid coverage declaration: #{inspect(reason)}"
+        )
+    end
+  end
+
+  defp normalize_coverage!([_value], nil, raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "coverage requires an effective asset window"
+    )
+  end
+
+  defp normalize_coverage!([_a, _b | _rest], _window_spec, raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "multiple coverage declarations are not allowed; use at most one coverage before query"
+    )
+  end
+
+  defp normalize_coverage!(value, _window_spec, raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "invalid coverage value #{inspect(value)}; expected coverage(from: ...)"
+    )
+  end
+
+  defp mark_window_source(%Spec{} = spec, []),
+    do: Spec.with_declaration_source(spec, :namespace)
+
+  defp mark_window_source(%Spec{} = spec, _local),
+    do: Spec.with_declaration_source(spec, :local)
+
+  defp mark_window_source(nil, _local), do: nil
+
+  defp mark_freshness_source(%Favn.Freshness.Policy{} = policy, []),
+    do: Favn.Freshness.Policy.with_declaration_source(policy, :namespace)
+
+  defp mark_freshness_source(%Favn.Freshness.Policy{} = policy, _local),
+    do: Favn.Freshness.Policy.with_declaration_source(policy, :local)
+
+  defp mark_freshness_source(nil, _local), do: nil
 
   defp normalize_freshness!(freshness, window_spec, raw_definition) do
     Asset.normalize_freshness!(freshness, window_spec, "before query")
@@ -1629,6 +1702,7 @@ defmodule Favn.SQLAsset do
           :meta,
           :depends,
           :window,
+          :coverage,
           :freshness,
           :retry,
           :execution_pool,

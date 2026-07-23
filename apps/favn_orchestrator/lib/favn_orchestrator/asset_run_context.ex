@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.AssetRunContext do
   alias Favn.Manifest.Version
   alias Favn.Window.Anchor
   alias Favn.Window.Policy
+  alias Favn.Window.Selection
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.ManifestTarget
 
@@ -67,6 +68,24 @@ defmodule FavnOrchestrator.AssetRunContext do
   end
 
   def anchor(%__MODULE__{}, %DateTime{}), do: {:error, :asset_run_context_has_no_window_policy}
+
+  @doc "Resolves the exact or scheduled selection represented by this run context."
+  @spec selection(t(), DateTime.t()) :: {:ok, Selection.t()} | {:error, term()}
+  def selection(
+        %__MODULE__{policy: %Policy{}, pipeline: %Pipeline{schedule: nil}} = context,
+        %DateTime{} = due_at
+      ) do
+    with {:ok, anchor} <- anchor(context, due_at) do
+      Selection.manual(anchor, anchor.timezone)
+    end
+  end
+
+  def selection(%__MODULE__{policy: %Policy{} = policy} = context, %DateTime{} = due_at) do
+    Policy.select_scheduled(policy, due_at, context.schedule_timezone)
+  end
+
+  def selection(%__MODULE__{}, %DateTime{}),
+    do: {:error, :asset_run_context_has_no_window_policy}
 
   @doc "Projects a context into the browser-safe operator DTO."
   @spec descriptor(t()) :: map()

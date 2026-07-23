@@ -4,7 +4,7 @@ defmodule FavnOrchestrator.API.DTOTest do
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
-  alias Favn.Window.Policy
+  alias Favn.Window.{Anchor, Policy, Selection}
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -163,6 +163,16 @@ defmodule FavnOrchestrator.API.DTOTest do
   end
 
   test "run DTOs normalize runtime payloads and errors through JsonSafe" do
+    anchor =
+      Anchor.new!(
+        :day,
+        ~U[2026-01-02 00:00:00Z],
+        ~U[2026-01-03 00:00:00Z],
+        timezone: "Etc/UTC"
+      )
+
+    {:ok, window_selection} = Selection.manual(anchor, "Etc/UTC")
+
     asset_result = %AssetResult{
       ref: {SampleAsset, :orders},
       stage: 1,
@@ -225,7 +235,7 @@ defmodule FavnOrchestrator.API.DTOTest do
       target_refs: [{SampleAsset, :orders}],
       params: %{api_token: "hidden", limit: 5},
       trigger: %{kind: :manual},
-      metadata: %{source: :test},
+      metadata: %{source: :test, window_selection: window_selection},
       result: %{rows: 10},
       pipeline: %{module: SamplePipeline},
       pipeline_context: %{attempt: 1},
@@ -252,6 +262,13 @@ defmodule FavnOrchestrator.API.DTOTest do
     refute Map.has_key?(summary, :error)
     assert detail.params == %{"api_token" => "[REDACTED]", "limit" => 5}
     assert detail.required_runner_release_id == FavnTestSupport.runner_release_id()
+    assert detail.window_selection["intent"] == "manual"
+    assert detail.window_selection["expansion"] == "none"
+    assert length(detail.window_selection["requested_anchors"]) == 1
+
+    assert detail.window_selection["requested_anchors"] ==
+             detail.window_selection["effective_anchors"]
+
     assert detail.asset_results == [DTO.asset_result(asset_result)]
     refute Map.has_key?(detail, :retry_backoff_ms)
 

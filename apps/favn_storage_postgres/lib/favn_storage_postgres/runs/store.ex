@@ -50,7 +50,6 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   @max_targets 10_000
   @bulk_insert_size 500
-  @max_snapshot_bytes 4 * 1_024 * 1_024
   @max_plan_bytes 64 * 1_024 * 1_024
   @max_event_bytes 512 * 1_024
   @max_event_types 32
@@ -932,12 +931,15 @@ defmodule FavnStoragePostgres.Runs.Store do
         Repo.insert!(event_row(workspace_id, event_id, outbox.outbox_event_id, encoded))
         insert_targets!(command, event_id)
 
-        Repo.insert!(%RunOwnership{
-          workspace_id: workspace_id,
-          run_id: command.run.id,
-          fencing_token: 0,
-          updated_at: encoded.occurred_at
-        })
+        SQL.query!(
+          Repo,
+          """
+          INSERT INTO favn_control.run_ownerships
+            (workspace_id, run_id, fencing_token, updated_at)
+          VALUES ($1, $2, 0, clock_timestamp())
+          """,
+          [workspace_id, command.run.id]
+        )
 
         maybe_insert_run_capacity_scope!(command, encoded.occurred_at)
 
@@ -1160,7 +1162,7 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   defp encode_write(%RunState{} = run, event, opts \\ []) do
     with {:ok, snapshot_json} <- RunSnapshotCodec.encode_run(run, plan: :reference),
-         :ok <- Payload.validate_encoded(snapshot_json, @max_snapshot_bytes),
+         :ok <- Payload.validate_encoded(snapshot_json, RunSnapshotCodec.max_persisted_bytes()),
          {:ok, snapshot} <- Jason.decode(snapshot_json),
          {:ok, plan} <- encode_plan(run, Keyword.get(opts, :persist_plan?, false)),
          {:ok, normalized_event} <- RunEventCodec.normalize(run.id, event),

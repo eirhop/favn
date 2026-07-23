@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.RunManager.SubmissionOptionsTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Window.{Anchor, Selection}
   alias FavnOrchestrator.RunManager.SubmissionOptions
 
   test "normalizes validated submission options with explicit defaults" do
@@ -53,5 +54,43 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptionsTest do
 
     assert options.retry_policy_override.max_attempts == 3
     assert options.retry_policy_override.backoff.initial_ms == 25
+  end
+
+  test "normalizes one exact selection and rejects competing anchor input" do
+    anchor =
+      Anchor.new!(
+        :month,
+        ~U[2026-07-01 00:00:00Z],
+        ~U[2026-08-01 00:00:00Z],
+        timezone: "Etc/UTC"
+      )
+
+    assert {:ok, selection} = Selection.manual(anchor, "Etc/UTC")
+    assert {:ok, options} = SubmissionOptions.new(window_selection: selection)
+    assert options.window_selection == selection
+
+    assert {:error, :ambiguous_window_selection} =
+             SubmissionOptions.new(window_selection: selection, anchor_window: anchor)
+  end
+
+  test "validates an exact required generation for delayed admission" do
+    required_generation = %{
+      target_id: "asset:orders",
+      evidence_generation_id: "generation-1",
+      target_generation_id: "generation-1"
+    }
+
+    assert {:ok, options} =
+             SubmissionOptions.new(required_generation: required_generation)
+
+    assert options.required_generation == required_generation
+
+    assert {:error, :invalid_required_generation} =
+             SubmissionOptions.new(
+               required_generation: %{
+                 required_generation
+                 | target_generation_id: "generation-2"
+               }
+             )
   end
 end

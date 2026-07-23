@@ -29,6 +29,7 @@ defmodule Favn.SQLAsset.Runtime do
   alias FavnRunner.RuntimeInputResolver
   alias FavnRunner.RuntimeInputResolver.Resolution, as: RuntimeInputResolution
   alias FavnRunner.ManifestHandle
+  alias FavnRunner.GenerationWork
   alias FavnRunner.SQL.MaterializationPlanner
 
   @runner_registry FavnRunner.ConnectionRegistry
@@ -140,9 +141,11 @@ defmodule Favn.SQLAsset.Runtime do
       when (is_struct(manifest_identity, Version) or
               is_struct(manifest_identity, ManifestHandle)) and is_map(relation_by_module) do
     opts = context |> run_opts() |> Keyword.merge(runner_runtime_opts(work))
+    {asset, relation_by_module} = GenerationWork.apply_overrides(asset, relation_by_module, work)
 
     with {:ok, %Definition{} = definition} <-
            manifest_definition(asset, package, relation_by_module),
+         definition <- rebuild_definition(definition, work),
          {:ok, final_context, final_opts} <-
            finalize_execution_window(definition, context, opts) do
       {:ok, definition, final_context, final_opts}
@@ -310,6 +313,7 @@ defmodule Favn.SQLAsset.Runtime do
         result =
           with :ok <- Renderer.validate_contract_params(definition, resolved_opts),
                {:ok, %Render{} = rendered} <- Renderer.render(definition, resolved_opts),
+               rendered <- maybe_empty_generation_render(rendered, resolved_opts),
                {:ok, %CheckedMaterialization{} = output} <-
                  materialize_render(definition, rendered, resolved_opts) do
             {:ok, rendered, output, resolution}
@@ -1555,6 +1559,7 @@ defmodule Favn.SQLAsset.Runtime do
     |> Keyword.put(:require_runtime_input_pin, true)
     |> maybe_put_runtime_input_pin(work.runtime_input_pin)
     |> maybe_put_timeout(deadline_at)
+    |> Keyword.put(:rebuild_empty_generation, work.rebuild_empty_generation)
     |> Keyword.put(
       :cancel_token,
       CancelToken.new(
@@ -1577,6 +1582,39 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp maybe_put_timeout(opts, _deadline_at), do: opts
+
+  defp rebuild_definition(%Definition{} = definition, %RunnerWork{
+         target_operation: :rebuild_candidate,
+         node_identity: %{window: %Runtime{}},
+         rebuild_final_item: final?
+       }) do
+    checks =
+      if final?,
+        do: definition.checks,
+        else: Enum.reject(definition.checks, &(&1.at == :after_materialize))
+
+    %{definition | materialization: {:incremental, strategy: :append}, checks: checks}
+  end
+
+  defp rebuild_definition(%Definition{} = definition, %RunnerWork{
+         target_operation: :rebuild_candidate,
+         rebuild_final_item: false
+       }) do
+    %{definition | checks: Enum.reject(definition.checks, &(&1.at == :after_materialize))}
+  end
+
+  defp rebuild_definition(%Definition{} = definition, %RunnerWork{}), do: definition
+
+  defp maybe_empty_generation_render(%Render{} = rendered, opts) do
+    if Keyword.get(opts, :rebuild_empty_generation, false) do
+      %{
+        rendered
+        | sql: "SELECT * FROM (#{trim_sql(rendered.sql)}) AS favn_empty_generation WHERE FALSE"
+      }
+    else
+      rendered
+    end
+  end
 
   defp session_required_catalogs(%Definition{} = definition, %Render{} = rendered) do
     # Catalog scope comes from manifest-declared relation ownership and resolved
@@ -1729,11 +1767,11 @@ defmodule Favn.SQLAsset.Runtime do
       type: :sql,
       file: "manifest",
       line: 1,
-      settings: asset.settings || %{},
+      settings: asset.settings,
       window_spec: asset.window,
       relation: asset.relation,
       materialization: asset.materialization,
-      relation_inputs: asset.relation_inputs || [],
+      relation_inputs: asset.relation_inputs,
       session_requirements: asset.session_requirements
     }
 
@@ -1744,7 +1782,7 @@ defmodule Favn.SQLAsset.Runtime do
        sql: payload.sql,
        template: payload.template,
        materialization: asset.materialization,
-       relation_inputs: asset.relation_inputs || [],
+       relation_inputs: asset.relation_inputs,
        sql_definitions: payload.sql_definitions,
        checks: payload.checks,
        contract: payload.contract,

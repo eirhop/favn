@@ -328,7 +328,10 @@ defmodule FavnOrchestrator.Identity do
                 Map.fetch!(entry, :action),
                 Map.get(entry, :resource_type, "api_request"),
                 audit_subject_id(entry),
-                key_hash
+                to_string(Map.get(entry, :actor_id, Map.get(entry, "actor_id", "unknown"))),
+                key_hash,
+                to_string(audit_idempotency_replayed?(entry)),
+                to_string(Map.get(entry, :outcome, Map.get(entry, "outcome", "unknown")))
               ],
               <<0>>
             )
@@ -346,6 +349,13 @@ defmodule FavnOrchestrator.Identity do
     case Map.get(entry, :idempotency) || Map.get(entry, "idempotency") do
       value when is_map(value) -> Map.get(value, :key_hash) || Map.get(value, "key_hash")
       _missing -> nil
+    end
+  end
+
+  defp audit_idempotency_replayed?(entry) do
+    case Map.get(entry, :idempotency) || Map.get(entry, "idempotency") do
+      value when is_map(value) -> Map.get(value, :replayed) || Map.get(value, "replayed") || false
+      _missing -> false
     end
   end
 

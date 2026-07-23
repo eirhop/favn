@@ -16,6 +16,8 @@ defmodule FavnRunner.ContextBuilder do
     attempt = normalized_attempt(work.attempt)
     max_attempts = normalized_max_attempts(work.max_attempts)
 
+    relation = work.write_relation || asset.relation
+
     with {:ok, runtime_config} <- RuntimeConfigResolver.resolve_asset(asset.runtime_config || %{}) do
       {:ok,
        %Context{
@@ -24,7 +26,7 @@ defmodule FavnRunner.ContextBuilder do
          target_refs: [asset.ref],
          asset: %AssetContext{
            ref: asset.ref,
-           relation: asset.relation,
+           relation: relation,
            settings: asset.settings || %{}
          },
          runtime_config: runtime_config,

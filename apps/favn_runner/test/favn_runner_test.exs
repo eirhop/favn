@@ -131,7 +131,7 @@ defmodule FavnRunnerTest do
     assert diagnostics.status == :ready
     assert diagnostics.runner_release_id == FavnTestSupport.runner_release_id()
     assert diagnostics.favn_version == Favn.RunnerRelease.current_favn_version()
-    assert diagnostics.runner_contract_version == 10
+    assert diagnostics.runner_contract_version == 11
     assert is_binary(diagnostics.node_name)
     assert diagnostics.data_plane.connection_count == 1
 
@@ -473,8 +473,8 @@ defmodule FavnRunnerTest do
     refs = Enum.map(assets, & &1.ref)
 
     %Manifest{
-      schema_version: 10,
-      runner_contract_version: 10,
+      schema_version: 11,
+      runner_contract_version: 11,
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: assets,
       pipelines: [],

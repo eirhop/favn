@@ -169,7 +169,7 @@ defmodule FavnOrchestrator.Freshness.DeciderTest do
              )
   end
 
-  test "window refresh cadence tracks each lookback month independently per local day" do
+  test "window refresh cadence tracks each selected month independently per local day" do
     june = monthly_runtime_window(~N[2026-06-01 00:00:00])
     july = monthly_runtime_window(~N[2026-07-01 00:00:00])
     june_node = {@raw_ref, june.key}
@@ -183,7 +183,6 @@ defmodule FavnOrchestrator.Freshness.DeciderTest do
 
     spec =
       Spec.new!(:month,
-        lookback: 1,
         refresh_from: :day,
         timezone: "Europe/Oslo"
       )
@@ -476,6 +475,7 @@ defmodule FavnOrchestrator.Freshness.DeciderTest do
         asset_ref_module: module,
         asset_ref_name: name,
         freshness_key: freshness_key,
+        evidence_generation_id: "ag_test",
         status: status,
         freshness_version: Keyword.get(opts, :version, "#{name}:v1"),
         latest_success_run_id: run_id,

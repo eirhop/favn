@@ -53,12 +53,69 @@ defmodule FavnTestSupport do
   @spec with_manifest_contract(map(), String.t()) :: map()
   def with_manifest_contract(manifest, runner_release_id \\ runner_release_id())
       when is_map(manifest) and is_binary(runner_release_id) do
-    Map.merge(manifest, %{
+    manifest =
+      if Map.has_key?(manifest, :assets) do
+        Map.update!(manifest, :assets, fn assets ->
+          Enum.map(assets, &with_semantic_generation(&1, runner_release_id))
+        end)
+      else
+        manifest
+      end
+
+    manifest
+    |> Map.merge(%{
       schema_version: apply(Favn.Manifest.Compatibility, :current_schema_version, []),
       runner_contract_version:
         apply(Favn.Manifest.Compatibility, :current_runner_contract_version, []),
       required_runner_release_id: runner_release_id
     })
+  end
+
+  defp with_semantic_generation(%{target_descriptor: descriptor} = asset, _runner_release_id)
+       when not is_nil(descriptor),
+       do: asset
+
+  defp with_semantic_generation(%{ref: {module, name}} = asset, runner_release_id)
+       when is_atom(module) and is_atom(name) do
+    asset_value = if is_struct(asset), do: Map.from_struct(asset), else: asset
+
+    generation_id =
+      apply(Favn.Manifest.TargetDescriptor, :semantic_generation_id, [
+        asset_value,
+        runner_release_id
+      ])
+
+    Map.put(asset, :semantic_generation_id, generation_id)
+  end
+
+  defp with_semantic_generation(asset, _runner_release_id), do: asset
+
+  @doc """
+  Adds a canonical target descriptor to a persisted SQL manifest asset fixture.
+
+  Descriptor construction is invoked dynamically to preserve
+  `favn_test_support`'s dependency-light compile boundary.
+  """
+  @spec with_target_descriptor(struct()) :: struct()
+  def with_target_descriptor(%{relation: %{connection: connection}} = asset) do
+    schema_version = apply(Favn.Manifest.Compatibility, :current_schema_version, [])
+
+    runner_contract_version =
+      apply(Favn.Manifest.Compatibility, :current_runner_contract_version, [])
+
+    descriptor =
+      apply(Favn.Manifest.TargetDescriptor, :from_asset, [
+        asset,
+        [
+          connection_definitions: %{
+            connection => %{adapter: FavnTestSupport.TargetAdapter, module: nil}
+          },
+          manifest_schema_version: schema_version,
+          runner_contract_version: runner_contract_version
+        ]
+      ])
+
+    Map.put(asset, :target_descriptor, descriptor)
   end
 
   @doc """

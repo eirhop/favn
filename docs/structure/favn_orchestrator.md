@@ -48,6 +48,15 @@ freshness, and execution coordination.
   database operation cannot block unrelated manager calls.
 - `RunOwnership`, `ExecutionAdmission`, `MaterializationClaims`, and scheduler
   runtime modules own fenced distributed coordination.
+- `TargetGenerations` resolves persisted asset writes to one durable physical
+  generation and non-persisted assets to a deterministic semantic generation.
+  Materialization claims pin that identity before execution; freshness and window
+  reads first resolve the active binding so retired-generation evidence is not
+  presented as current. `TargetCompatibilityPlanner` inspects persisted relations
+  through the runner during deployment, classifies desired/active/physical state,
+  and freezes the result into the target binding. `TargetAdmission` rejects only
+  selected dependency paths containing a rebuild-required, drifted, or
+  ownership-unknown target before ordinary mutation.
 - `RunnerClient.BeamNode` is the sole production runner transport. It connects
   to one validated static long node name, performs bounded `:erpc` calls, and
   never loads or calls `favn_runner` inside the control-plane BEAM. Readiness
@@ -80,16 +89,43 @@ freshness, and execution coordination.
   treating a static node environment list as persistence authority.
 - `Backfills` and `BackfillDispatcher` own range expansion, parent/child state,
   dispatch, and compensation.
+- `Rebuilds` creates immutable, hash-addressed manual plans from one active
+  manifest, frozen generation bindings, adapter capabilities, exact logical
+  items, and a conservative topological downstream repair graph. An idempotency
+  key resolves to the original frozen plan; approval revalidates every pin and
+  acquires all write-target locks in canonical order before changing state. Each
+  planned item also freezes the runtime-input resolver identity and payload
+  fingerprint. Execution resolves sensitive values through the normal encrypted
+  run-pin store and must match that frozen expectation.
+  `RebuildDispatcher` resumes fenced operations from PostgreSQL checkpoints,
+  submits candidate items serially, accepts success only with the exact
+  operation/generation/partition materialization ledger, validates the complete
+  authored check and contract result set on the final candidate item, persists activation
+  intent before the runner swap, reconciles unknown replies through the marker,
+  and retries idempotent retired-relation cleanup without changing a successful
+  operation outcome. Ordinary writes to locked targets fail admission; work
+  carrying the matching rebuild operation identity may proceed.
+  Ambiguous child outcomes remain durable and are reconciled against the exact
+  materialization ledger before retry or candidate cleanup. Safe-failure
+  candidates remain available for same-plan resume; cancelled and invalid
+  candidates are discarded through retryable terminal cleanup checkpoints.
+- `Coverage` owns explicit-time expected-window evaluation, active-generation
+  evidence counts, opaque gap pagination, and immutable exact-gap backfill
+  plans. Coverage reads are bounded and remain independent from freshness;
+  submission revalidates every pinned identity before calling `Backfills` with
+  the reviewed non-contiguous window set.
 - `Identity` and `Auth` own accounts, memberships, sessions, service identities,
   policy enforcement, and audit intent.
 - `Operator.Catalogue`, `Operator.Lineage`, `Operator.Schedules`, `Logs`, and the
   facade expose bounded read models to thin clients. Asset catalogue detail
   decodes freshness keys structurally and projects run anchors, exact coverage,
-  and aggregated calendar freshness separately; only anchor and exact-window
-  projections carry submission intent. `AssetRunContext` binds a manifest-pinned
-  asset to one selecting pipeline policy and timezone. Catalogue reads and operator
-  commands share its stable id, reject forged or stale contexts, and surface
-  multi-pipeline ambiguity instead of depending on manifest order.
+  aggregated calendar freshness, and persisted target compatibility separately;
+  only anchor and exact-window projections carry submission intent. Compatibility
+  DTOs expose bounded structured differences and generation/fingerprint identity,
+  never adapter sessions or connection secrets. `AssetRunContext` binds a
+  manifest-pinned asset to one selecting pipeline policy and timezone. Catalogue
+  reads and operator commands share its stable id, reject forged or stale contexts,
+  and surface multi-pipeline ambiguity instead of depending on manifest order.
 - `RunReadModel` keeps requested backfill anchors distinct from exact effective
   asset windows. Its default operator detail path expands compact relational
   projections; the events view is the explicit bounded snapshot/event path.

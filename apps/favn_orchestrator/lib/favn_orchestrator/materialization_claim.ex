@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.MaterializationClaim do
     :asset_ref_name,
     :freshness_key,
     :input_fingerprint,
+    :evidence_generation_id,
     :status,
     :claimed_at,
     :expires_at
@@ -31,6 +32,8 @@ defmodule FavnOrchestrator.MaterializationClaim do
     :runner_execution_id,
     :manifest_version_id,
     :manifest_content_hash,
+    :target_generation_id,
+    :evidence_generation_id,
     :freshness_version,
     :status,
     :error,
@@ -55,6 +58,8 @@ defmodule FavnOrchestrator.MaterializationClaim do
           runner_execution_id: String.t() | nil,
           manifest_version_id: String.t() | nil,
           manifest_content_hash: String.t() | nil,
+          target_generation_id: String.t() | nil,
+          evidence_generation_id: String.t(),
           freshness_version: String.t() | nil,
           status: status(),
           error: term() | nil,
@@ -118,6 +123,7 @@ defmodule FavnOrchestrator.MaterializationClaim do
       :asset_ref_name,
       :freshness_key,
       :input_fingerprint,
+      :evidence_generation_id,
       :status,
       :claimed_at,
       :expires_at
@@ -145,6 +151,13 @@ defmodule FavnOrchestrator.MaterializationClaim do
 
       not is_binary(attrs.input_fingerprint) or attrs.input_fingerprint == "" ->
         {:error, {:invalid_input_fingerprint, attrs.input_fingerprint}}
+
+      not valid_generation_id?(attrs.evidence_generation_id) ->
+        {:error, {:invalid_evidence_generation_id, attrs.evidence_generation_id}}
+
+      not is_nil(Map.get(attrs, :target_generation_id)) and
+          Map.get(attrs, :target_generation_id) != attrs.evidence_generation_id ->
+        {:error, {:target_generation_mismatch, Map.get(attrs, :target_generation_id)}}
 
       true ->
         :ok
@@ -254,6 +267,9 @@ defmodule FavnOrchestrator.MaterializationClaim do
 
   defp timestamp_after_claim?(%DateTime{} = timestamp, %DateTime{} = claimed_at),
     do: DateTime.compare(timestamp, claimed_at) in [:eq, :gt]
+
+  defp valid_generation_id?(value),
+    do: is_binary(value) and byte_size(value) in 1..255
 
   defp field_value(map, field), do: Map.get(map, field) || Map.get(map, Atom.to_string(field))
 end

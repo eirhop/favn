@@ -4,7 +4,7 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodecTest do
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Storage.MaterializationClaimCodec
 
-  @format "favn.materialization_claim.storage.v1"
+  @format "favn.materialization_claim.storage.v2"
 
   test "encodes materialization claims as versioned JSON DTOs" do
     claim = claim()
@@ -12,11 +12,13 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodecTest do
     assert {:ok, payload} = MaterializationClaimCodec.encode(claim)
     assert {:ok, dto} = Jason.decode(payload)
     assert dto["format"] == @format
-    assert dto["schema_version"] == 1
+    assert dto["schema_version"] == 2
     assert dto["claim_key"] == claim.claim_key
     assert dto["asset_ref_module"] == Atom.to_string(claim.asset_ref_module)
     assert dto["asset_ref_name"] == Atom.to_string(claim.asset_ref_name)
     assert dto["status"] == "succeeded"
+    assert dto["target_generation_id"] == claim.target_generation_id
+    assert dto["evidence_generation_id"] == claim.evidence_generation_id
     assert dto["metadata"] == %{"result_status" => "ok"}
     assert dto["node_key"] == %{"type" => "string", "value" => "node:claim_codec"}
 
@@ -115,16 +117,16 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodecTest do
   end
 
   test "rejects unknown DTO format clearly" do
-    payload = Jason.encode!(%{"format" => "other", "schema_version" => 1})
+    payload = Jason.encode!(%{"format" => "other", "schema_version" => 2})
 
     assert {:error, {:invalid_materialization_claim_dto, _dto}} =
              MaterializationClaimCodec.decode(payload)
   end
 
   test "rejects unsupported DTO schema versions clearly" do
-    payload = Jason.encode!(%{"format" => @format, "schema_version" => 2})
+    payload = Jason.encode!(%{"format" => @format, "schema_version" => 3})
 
-    assert {:error, {:unsupported_materialization_claim_schema_version, 2}} =
+    assert {:error, {:unsupported_materialization_claim_schema_version, 3}} =
              MaterializationClaimCodec.decode(payload)
   end
 
@@ -142,6 +144,8 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodecTest do
         runner_execution_id: "runner_codec",
         manifest_version_id: "manifest_codec",
         manifest_content_hash: "hash_codec",
+        target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
+        evidence_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
         freshness_version: "freshness_codec",
         status: :succeeded,
         claimed_at: ~U[2026-05-21 00:00:00Z],

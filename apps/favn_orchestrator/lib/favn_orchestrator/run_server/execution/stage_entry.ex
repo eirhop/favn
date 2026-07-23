@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.RunServer.Execution.StageEntry do
   @moduledoc false
 
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
 
   @fields [
@@ -21,6 +22,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntry do
     :resource_circuit_permits,
     :freshness_key,
     :version,
+    :manifest_index,
     :freshness_context
   ]
   @type t :: %{
@@ -43,6 +45,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntry do
           ],
           required(:freshness_key) => term(),
           required(:version) => Version.t(),
+          required(:manifest_index) => Index.t(),
           required(:freshness_context) => map()
         }
 

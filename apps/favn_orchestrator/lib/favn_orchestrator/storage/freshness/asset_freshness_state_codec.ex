@@ -6,7 +6,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec do
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.PersistedAtom
 
-  @format "favn.freshness.asset_freshness_state.storage.v1"
+  @format "favn.freshness.asset_freshness_state.storage.v2"
   @input_version_fields ~w(upstream_ref upstream_node_key freshness_version success_run_id)
 
   @spec encode(AssetFreshnessState.t()) :: {:ok, String.t()} | {:error, term()}
@@ -21,7 +21,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec do
 
   @spec decode(String.t()) :: {:ok, AssetFreshnessState.t()} | {:error, term()}
   def decode(payload) when is_binary(payload) do
-    with {:ok, %{"format" => @format, "schema_version" => 1} = dto} <- Jason.decode(payload),
+    with {:ok, %{"format" => @format, "schema_version" => 2} = dto} <- Jason.decode(payload),
          {:ok, asset_ref_module} <- PersistedAtom.module(Map.get(dto, "asset_ref_module")),
          {:ok, asset_ref_name} <- PersistedAtom.existing(Map.get(dto, "asset_ref_name")),
          {:ok, latest_success_node_key} <-
@@ -45,6 +45,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec do
         latest_attempt_at: latest_attempt_at,
         manifest_version_id: Map.get(dto, "manifest_version_id"),
         manifest_content_hash: Map.get(dto, "manifest_content_hash"),
+        evidence_generation_id: Map.get(dto, "evidence_generation_id"),
         input_versions: input_versions,
         metadata: metadata,
         updated_at: updated_at
@@ -61,7 +62,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec do
       {:ok,
        %{
          "format" => @format,
-         "schema_version" => 1,
+         "schema_version" => 2,
          "asset_ref_module" => Atom.to_string(state.asset_ref_module),
          "asset_ref_name" => Atom.to_string(state.asset_ref_name),
          "freshness_key" => state.freshness_key,
@@ -75,6 +76,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec do
          "latest_attempt_at" => datetime_to_dto(state.latest_attempt_at),
          "manifest_version_id" => state.manifest_version_id,
          "manifest_content_hash" => state.manifest_content_hash,
+         "evidence_generation_id" => state.evidence_generation_id,
          "input_versions" => input_versions,
          "metadata" => JsonSafe.data(state.metadata || %{}),
          "updated_at" => datetime_to_dto(state.updated_at)

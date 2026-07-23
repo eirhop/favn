@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Freshness.Key, as: FreshnessKey
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.AssetStepIdentity
@@ -29,7 +30,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
   @type claim :: map()
   @type node_key :: Favn.Plan.node_key()
 
-  @spec acquire(RunState.t(), Version.t(), node_key(), map(), map(), RunnerWork.t()) ::
+  @spec acquire(RunState.t(), Version.t(), Index.t(), node_key(), map(), map(), RunnerWork.t()) ::
           {:ok, claim()}
           | {:already_succeeded, claim()}
           | {:already_claimed, claim()}
@@ -37,6 +38,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
   def acquire(
         %RunState{} = run_state,
         %Version{} = version,
+        %Index{} = manifest_index,
         node_key,
         decisions,
         freshness_context,
@@ -48,35 +50,49 @@ defmodule FavnOrchestrator.MaterializationClaims do
     now = DateTime.utc_now()
     freshness_key = decision_freshness_key(decisions, node_key)
 
-    input_versions =
-      Staleness.consumed_input_versions(node, current_upstream_states(node, freshness_context))
-
-    input_fingerprint = Identity.input_fingerprint(input_versions)
-    producer_identity = producer_identity(run_state, version, node_key, decisions)
-
-    claim = %{
-      claim_key:
-        Identity.claim_key(node.ref, freshness_key, input_fingerprint, producer_identity),
-      workspace_id: run_state.workspace_id,
-      deployment_id: run_state.deployment_id,
-      run_id: run_state.id,
-      asset_step_id: work.asset_step_id,
-      node_key: node_key,
-      asset_ref_module: module,
-      asset_ref_name: name,
-      freshness_key: freshness_key,
-      input_fingerprint: input_fingerprint,
-      input_versions: input_versions,
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      owner_id: run_state.storage_owner_id,
-      status: :claimed,
-      claimed_at: now,
-      heartbeat_at: now,
-      expires_at: DateTime.add(now, ttl_ms(run_state), :millisecond)
-    }
-
-    with :ok <- validate_authority(run_state),
+    with {:ok, asset} <- Index.fetch_asset(manifest_index, node.ref),
+         input_versions <-
+           Staleness.consumed_input_versions(
+             node,
+             current_upstream_states(node, freshness_context)
+           ),
+         input_generations <- Map.get(node, :input_generations, []),
+         input_fingerprint <-
+           Identity.input_fingerprint(%{
+             freshness_versions: input_versions,
+             target_generations: input_generations
+           }),
+         :ok <- validate_authority(run_state),
+         {:ok, generation} <- pinned_generation(node, asset),
+         producer_identity <-
+           producer_identity(run_state, version, node_key, decisions) <>
+             ":" <> generation.evidence_generation_id,
+         claim <- %{
+           claim_key:
+             Identity.claim_key(node.ref, freshness_key, input_fingerprint, producer_identity),
+           workspace_id: run_state.workspace_id,
+           deployment_id: run_state.deployment_id,
+           run_id: run_state.id,
+           asset_step_id: work.asset_step_id,
+           node_key: node_key,
+           asset_ref_module: module,
+           asset_ref_name: name,
+           freshness_key: freshness_key,
+           input_fingerprint: input_fingerprint,
+           input_versions: input_versions,
+           input_generations: input_generations,
+           manifest_version_id: version.manifest_version_id,
+           manifest_content_hash: version.content_hash,
+           execution_package_hash: work.execution_package && work.execution_package.content_hash,
+           runtime_input_lineage: Map.get(work.metadata, :runtime_input_lineage),
+           target_generation_id: generation.target_generation_id,
+           evidence_generation_id: generation.evidence_generation_id,
+           owner_id: run_state.storage_owner_id,
+           status: :claimed,
+           claimed_at: now,
+           heartbeat_at: now,
+           expires_at: DateTime.add(now, ttl_ms(run_state), :millisecond)
+         },
          {:ok, %MaterializationDecision{} = decision} <-
            Persistence.stores().materialization.claim(%ClaimMaterialization{
              workspace_context:
@@ -86,6 +102,9 @@ defmodule FavnOrchestrator.MaterializationClaims do
              deployment_id: run_state.deployment_id,
              target_kind: :asset,
              target_id: TargetIdentity.for_asset(node.ref),
+             operation_id: work.rebuild_operation_id,
+             target_generation_id: generation.target_generation_id,
+             evidence_generation_id: generation.evidence_generation_id,
              partition_key: freshness_key,
              run_id: run_state.id,
              owner_id: run_state.storage_owner_id,
@@ -114,11 +133,19 @@ defmodule FavnOrchestrator.MaterializationClaims do
              "asset_step_id" => field(claim, :asset_step_id),
              "input_fingerprint" => field(claim, :input_fingerprint),
              "input_versions" => input_versions_payload(field(claim, :input_versions)),
+             "input_generations" => field(claim, :input_generations),
              "node_key_fingerprint" =>
                AssetStepIdentity.node_fingerprint(field(claim, :node_key)),
              "run_id" => field(claim, :run_id),
              "manifest_version_id" => field(claim, :manifest_version_id),
-             "manifest_content_hash" => field(claim, :manifest_content_hash)
+             "manifest_content_hash" => field(claim, :manifest_content_hash),
+             "execution_package_hash" => field(claim, :execution_package_hash),
+             "runtime_input_lineage" => field(claim, :runtime_input_lineage),
+             "check_results" => result_check_results(result),
+             "contract_validation" => result_contract_validation(result),
+             "rows_affected" => result_rows_affected(result),
+             "target_generation_id" => field(claim, :target_generation_id),
+             "evidence_generation_id" => field(claim, :evidence_generation_id)
            }
          ) do
       {:ok, %MaterializationDecision{}} -> :ok
@@ -213,6 +240,8 @@ defmodule FavnOrchestrator.MaterializationClaims do
     |> Map.put(:fencing_token, persisted.fencing_token)
     |> Map.put(:version, persisted.version)
     |> Map.put(:status, persisted.status)
+    |> Map.put(:target_generation_id, persisted.target_generation_id)
+    |> Map.put(:evidence_generation_id, persisted.evidence_generation_id)
     |> Map.put(:expires_at, persisted.expires_at)
   end
 
@@ -228,7 +257,9 @@ defmodule FavnOrchestrator.MaterializationClaims do
   defp validate_authority(%RunState{}),
     do: {:error, :materialization_run_authority_required}
 
-  defp materialization_id(claim), do: "mat:" <> key(claim)
+  @doc false
+  @spec materialization_id(claim()) :: String.t()
+  def materialization_id(claim), do: "mat:" <> key(claim)
 
   defp command_id(operation, first, second) do
     digest =
@@ -258,6 +289,27 @@ defmodule FavnOrchestrator.MaterializationClaims do
 
   defp reusable_reason?(_reason), do: false
 
+  defp result_check_results(%RunnerResult{asset_results: [result]}) do
+    result.meta
+    |> field(:check_results)
+    |> JsonSafe.data()
+  end
+
+  defp result_check_results(%RunnerResult{}), do: []
+
+  defp result_contract_validation(%RunnerResult{asset_results: [result]}) do
+    result.meta
+    |> field(:contract_validation)
+    |> JsonSafe.data()
+  end
+
+  defp result_contract_validation(%RunnerResult{}), do: nil
+
+  defp result_rows_affected(%RunnerResult{asset_results: [result]}),
+    do: result.meta |> field(:rows_affected)
+
+  defp result_rows_affected(%RunnerResult{}), do: nil
+
   defp producer_identity(%RunState{} = run_state, %Version{} = version, node_key, decisions) do
     base = version.content_hash || version.manifest_version_id || "unknown_manifest"
 
@@ -268,6 +320,47 @@ defmodule FavnOrchestrator.MaterializationClaims do
       Enum.join([base, run_state.id, node_token], ":")
     end
   end
+
+  defp pinned_generation(
+         %{
+           target_id: target_id,
+           target_generation_id: generation_id,
+           evidence_generation_id: generation_id,
+           physical_relation: physical_relation
+         },
+         asset
+       )
+       when is_binary(target_id) and is_binary(generation_id) and is_map(physical_relation) do
+    if target_id == TargetIdentity.for_asset(asset.ref) do
+      {:ok, %{target_generation_id: generation_id, evidence_generation_id: generation_id}}
+    else
+      {:error, {:target_generation_pin_mismatch, asset.ref}}
+    end
+  end
+
+  defp pinned_generation(
+         %{
+           target_id: target_id,
+           target_generation_id: nil,
+           evidence_generation_id: generation_id
+         },
+         %{target_descriptor: nil} = asset
+       )
+       when is_binary(target_id) and is_binary(generation_id) do
+    if target_id == TargetIdentity.for_asset(asset.ref) and
+         generation_id == asset.semantic_generation_id do
+      {:ok, %{target_generation_id: nil, evidence_generation_id: generation_id}}
+    else
+      {:error, {:target_generation_pin_mismatch, asset.ref}}
+    end
+  end
+
+  defp pinned_generation(_node, %{target_descriptor: nil, semantic_generation_id: generation_id})
+       when is_binary(generation_id),
+       do: {:ok, %{target_generation_id: nil, evidence_generation_id: generation_id}}
+
+  defp pinned_generation(_node, asset),
+    do: {:error, {:target_generation_not_pinned, asset.ref}}
 
   defp current_upstream_states(%{upstream: upstream}, freshness_context) do
     Map.new(upstream, fn upstream_node_key ->

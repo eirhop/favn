@@ -82,6 +82,7 @@ reload or stop explicitly for an active stack. Containers left stopped by
 mix favn.status
 mix favn.run MyApp.Pipelines.Daily
 mix favn.runs list --limit 20
+mix favn.rebuild plan MyApp.Assets.Orders --reason "contract changed"
 mix favn.logs --service control-plane --tail 200
 mix favn.logs --service runner --follow
 mix favn.reload

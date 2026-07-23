@@ -5,7 +5,7 @@ defmodule Favn.CheckTestTagTiers do
     acceptance: MapSet.new(["favn_local"]),
     container: MapSet.new(["favn_local"]),
     slow: MapSet.new(["favn", "favn_local", "favn_storage_postgres"]),
-    browser: MapSet.new([])
+    browser: MapSet.new(["favn_view"])
   }
 
   @external_lifecycle_module_tiers %{

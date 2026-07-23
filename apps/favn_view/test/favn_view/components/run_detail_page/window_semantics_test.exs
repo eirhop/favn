@@ -21,7 +21,7 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     assert stats =~ "Effective windows"
     assert stats =~ "asset runtime windows"
     assert overview =~ "Effective asset windows"
-    assert overview =~ "lookback expansion"
+    assert overview =~ "pipeline's effective selection"
   end
 
   test "visibly marks a bounded detail slice while retaining exact header totals" do

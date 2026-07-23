@@ -18,7 +18,9 @@ defmodule Favn.SQL.SessionPool do
   capacity. When an adapter runtime fingerprint changes for the same connection
   and session requirements, idle sessions from the previous fingerprint are
   evicted and active sessions are discarded on checkin. This releases admission
-  leases before a replacement physical session is created.
+  leases before a replacement physical session is created. A miss for a
+  different overlapping catalog set also evicts conflicting idle sessions so a
+  narrow warm session cannot block broader work indefinitely.
   """
 
   use GenServer
@@ -109,7 +111,8 @@ defmodule Favn.SQL.SessionPool do
     try do
       GenServer.call(
         pool_name(opts),
-        {:checkout_or_create, key, self(), max_creating_per_key(opts), checkout_timeout_ms},
+        {:checkout_or_create, key, self(), max_creating_per_key(opts), checkout_timeout_ms,
+         checkout_catalog_scope(opts)},
         checkout_timeout_ms + 1_000
       )
     catch
@@ -212,12 +215,20 @@ defmodule Favn.SQL.SessionPool do
   end
 
   def handle_call(
-        {:checkout_or_create, %PoolKey{} = key, owner, max_creating_per_key, checkout_timeout_ms},
+        {:checkout_or_create, %PoolKey{} = key, owner, max_creating_per_key, checkout_timeout_ms,
+         catalog_scope},
         from,
         %__MODULE__{} = state
       ) do
     state
-    |> checkout_or_reserve(key, owner, from, max_creating_per_key, checkout_timeout_ms)
+    |> checkout_or_reserve(
+      key,
+      owner,
+      from,
+      max_creating_per_key,
+      checkout_timeout_ms,
+      catalog_scope
+    )
     |> case do
       {:reply, reply, state} -> {:reply, reply, state}
       {:noreply, state} -> {:noreply, state}
@@ -457,7 +468,8 @@ defmodule Favn.SQL.SessionPool do
          owner,
          from,
          max_creating_per_key,
-         checkout_timeout_ms
+         checkout_timeout_ms,
+         catalog_scope
        ) do
     state = select_pool_generation(state, key)
     {entry, idle} = pop_idle(state.idle, key)
@@ -470,8 +482,58 @@ defmodule Favn.SQL.SessionPool do
         {:reply, {:ok, session}, state}
 
       nil ->
-        reserve_or_wait(state, key, owner, from, max_creating_per_key, checkout_timeout_ms)
+        state
+        |> evict_conflicting_catalog_sessions(catalog_scope)
+        |> reserve_or_wait(key, owner, from, max_creating_per_key, checkout_timeout_ms)
     end
+  end
+
+  defp evict_conflicting_catalog_sessions(%__MODULE__{} = state, nil), do: state
+
+  defp evict_conflicting_catalog_sessions(
+         %__MODULE__{} = state,
+         {connection, required_catalogs}
+       ) do
+    {conflicts, idle} =
+      Enum.reduce(state.idle, {[], %{}}, fn {hash, entries}, {conflicts, idle} ->
+        {evicted, retained} =
+          Enum.split_with(entries, fn %{session: %Session{} = session} ->
+            catalog_session_conflict?(session, connection, required_catalogs)
+          end)
+
+        idle = if retained == [], do: idle, else: Map.put(idle, hash, retained)
+        {evicted ++ conflicts, idle}
+      end)
+
+    Enum.each(conflicts, &close_session(&1.session, :conflicting_catalog_scope))
+
+    discard_reasons =
+      Enum.reduce(state.active, state.discard_reasons, fn {token, %{session: session}}, reasons ->
+        if catalog_session_conflict?(session, connection, required_catalogs) do
+          Map.put(reasons, token, :conflicting_catalog_scope)
+        else
+          reasons
+        end
+      end)
+
+    %__MODULE__{state | idle: idle, discard_reasons: discard_reasons}
+  end
+
+  defp catalog_session_conflict?(%Session{} = session, connection, required_catalogs) do
+    existing_catalogs = normalize_catalogs(session.required_catalogs)
+
+    session.resolved.name == connection and existing_catalogs != required_catalogs and
+      overlapping_catalogs?(existing_catalogs, required_catalogs)
+  end
+
+  defp overlapping_catalogs?([], _catalogs), do: true
+  defp overlapping_catalogs?(_catalogs, []), do: true
+
+  defp overlapping_catalogs?(left, right) do
+    left
+    |> MapSet.new()
+    |> MapSet.disjoint?(MapSet.new(right))
+    |> Kernel.not()
   end
 
   defp activate_idle_session(%__MODULE__{} = state, %Session{} = session, key, config, owner) do
@@ -939,5 +1001,23 @@ defmodule Favn.SQL.SessionPool do
       value when is_integer(value) and value > 0 -> value
       _other -> 1
     end
+  end
+
+  defp checkout_catalog_scope(opts) do
+    case {Keyword.get(opts, :connection), Keyword.get(opts, :required_catalogs)} do
+      {connection, catalogs} when is_atom(connection) and is_list(catalogs) ->
+        {connection, normalize_catalogs(catalogs)}
+
+      _invalid ->
+        nil
+    end
+  end
+
+  defp normalize_catalogs(catalogs) do
+    catalogs
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 end

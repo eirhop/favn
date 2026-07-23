@@ -64,6 +64,36 @@ defmodule FavnOrchestrator.AssetRunContextTest do
     assert context.pipeline_ref == {pipeline.module, pipeline.name}
   end
 
+  test "scheduled contexts apply lookback while manual contexts stay exact" do
+    asset = %Asset{ref: @asset_ref, module: elem(@asset_ref, 0), name: :asset}
+    version = version_fixture(asset, pipelines(asset), "selections")
+    assert {:ok, contexts} = AssetRunContext.list(version, asset)
+
+    scheduled = Enum.find(contexts, &(&1.pipeline.name == :current))
+    manual = Enum.find(contexts, &(&1.pipeline.name == :previous))
+
+    assert {:ok, scheduled_selection} =
+             AssetRunContext.selection(scheduled, ~U[2026-07-17 10:00:00Z])
+
+    assert scheduled_selection.intent == :scheduled
+    assert scheduled_selection.expansion == {:lookback, 1}
+
+    assert Enum.map(scheduled_selection.effective_anchors, &DateTime.to_date(&1.start_at)) == [
+             ~D[2026-06-01],
+             ~D[2026-07-01]
+           ]
+
+    assert {:ok, manual_selection} =
+             AssetRunContext.selection(manual, ~U[2026-07-17 10:00:00Z])
+
+    assert manual_selection.intent == :manual
+    assert manual_selection.expansion == :none
+
+    assert Enum.map(manual_selection.effective_anchors, &DateTime.to_date(&1.start_at)) == [
+             ~D[2026-06-01]
+           ]
+  end
+
   defp pipelines(_asset) do
     schedule = schedule_fixture()
 
@@ -72,14 +102,23 @@ defmodule FavnOrchestrator.AssetRunContextTest do
         module: __MODULE__.Manual,
         name: :previous,
         selectors: [{:asset, @asset_ref}],
-        window: Policy.new!(:monthly, anchor: :previous_complete_period)
+        window:
+          Policy.new!(:monthly,
+            anchor: :previous_complete_period,
+            timezone: "Etc/UTC"
+          )
       },
       %Pipeline{
         module: __MODULE__.Scheduled,
         name: :current,
         selectors: [{:asset, @asset_ref}],
         schedule: {:ref, schedule.ref},
-        window: Policy.new!(:monthly, anchor: :current_period)
+        window:
+          Policy.new!(:monthly,
+            anchor: :current_period,
+            lookback: 1,
+            timezone: "Europe/Oslo"
+          )
       }
     ]
   end

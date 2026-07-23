@@ -24,6 +24,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Logs, as: LogsTask
   alias Mix.Tasks.Favn.Maintainer.Dev, as: MaintainerDevTask
   alias Mix.Tasks.Favn.Query, as: QueryTask
+  alias Mix.Tasks.Favn.Rebuild, as: RebuildTask
   alias Mix.Tasks.Favn.Reload, as: ReloadTask
   alias Mix.Tasks.Favn.Reload.Configured, as: ConfiguredReloadTask
   alias Mix.Tasks.Favn.Reset, as: ResetTask
@@ -456,6 +457,34 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert message == "invalid option for mix favn.backfill submit"
   end
 
+  test "mix favn.backfill separates missing-window plan and submission" do
+    assert {:ok, {:missing_plan, "Example.Asset", opts}} =
+             BackfillTask.parse_args([
+               "missing-plan",
+               "Example.Asset",
+               "--plan-file",
+               "coverage-plan.json",
+               "--limit",
+               "250"
+             ])
+
+    assert Keyword.fetch!(opts, :plan_file) == "coverage-plan.json"
+    assert Keyword.fetch!(opts, :limit) == 250
+
+    assert {:ok, {:missing_submit, "Example.Asset", opts}} =
+             BackfillTask.parse_args([
+               "missing-submit",
+               "Example.Asset",
+               "--plan-file",
+               "coverage-plan.json"
+             ])
+
+    assert Keyword.fetch!(opts, :plan_file) == "coverage-plan.json"
+
+    assert {:error, "missing required option: --plan-file"} =
+             BackfillTask.parse_args(["missing-submit", "Example.Asset"])
+  end
+
   test "mix favn.backfill parses read and rerun commands" do
     assert {:ok, {:windows, "run_1", opts}} =
              BackfillTask.parse_args([
@@ -539,6 +568,152 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         "2026-04-07",
         "--kind",
         "day",
+        "--root-dir",
+        root_dir
+      ])
+    end
+  end
+
+  test "mix favn.rebuild keeps planning and approval separate" do
+    assert {:ok, {:plan, "Example.Asset", plan_opts}} =
+             RebuildTask.parse_args([
+               "plan",
+               "Example.Asset",
+               "--reason",
+               "schema changed"
+             ])
+
+    assert Keyword.fetch!(plan_opts, :reason) == "schema changed"
+
+    plan_hash = String.duplicate("a", 64)
+
+    assert {:ok, {:start, "rebuild_plan_1", start_opts}} =
+             RebuildTask.parse_args([
+               "start",
+               "rebuild_plan_1",
+               "--plan-hash",
+               plan_hash
+             ])
+
+    assert Keyword.fetch!(start_opts, :plan_hash) == plan_hash
+    assert {:ok, {:status, "rebuild_1", []}} = RebuildTask.parse_args(["status", "rebuild_1"])
+    assert {:ok, {:retry, "rebuild_1", []}} = RebuildTask.parse_args(["retry", "rebuild_1"])
+
+    assert {:ok, {:reconcile, "rebuild_1", []}} =
+             RebuildTask.parse_args(["reconcile", "rebuild_1"])
+
+    assert {:ok, {:cancel, "rebuild_1", cancel_opts}} =
+             RebuildTask.parse_args([
+               "cancel",
+               "rebuild_1",
+               "--reason",
+               "operator request"
+             ])
+
+    assert Keyword.fetch!(cancel_opts, :reason) == "operator request"
+  end
+
+  test "mix favn.rebuild requires explicit reason and plan hash" do
+    assert {:error, "missing required option: --reason"} =
+             RebuildTask.parse_args(["plan", "Example.Asset"])
+
+    assert {:error, "missing required option: --plan-hash"} =
+             RebuildTask.parse_args(["start", "rebuild_plan_1"])
+
+    assert {:error, "missing required option: --reason"} =
+             RebuildTask.parse_args(["plan", "Example.Asset", "--reason", "   "])
+
+    assert {:error, "--plan-hash must be 64 lowercase hexadecimal characters"} =
+             RebuildTask.parse_args(["start", "rebuild_plan_1", "--plan-hash", "ABC"])
+
+    assert {:error, "invalid option for mix favn.rebuild retry"} =
+             RebuildTask.parse_args(["retry", "rebuild_1", "--reason", "invalid"])
+  end
+
+  test "mix favn.rebuild prints the immutable plan details required for approval" do
+    output =
+      capture_io(fn ->
+        RebuildTask.print_plan(%{
+          "plan_id" => "rebuild_plan_1",
+          "plan_hash" => String.duplicate("a", 64),
+          "expires_at" => "2026-07-22T15:00:00Z",
+          "payload" => %{
+            "evaluated_at" => "2026-07-22T14:00:00Z",
+            "root_target_id" => "asset:orders",
+            "manifest_version_id" => "manifest_1",
+            "required_runner_release_id" => "release_1",
+            "deployment_id" => "deployment_1",
+            "coverage" => %{
+              "declared_from" => %{
+                "kind" => "month",
+                "start_at" => "2026-01-01T00:00:00Z",
+                "end_at" => "2026-02-01T00:00:00Z",
+                "timezone" => "Etc/UTC"
+              },
+              "effective_from" => %{
+                "kind" => "month",
+                "start_at" => "2026-03-01T00:00:00Z",
+                "end_at" => "2026-04-01T00:00:00Z",
+                "timezone" => "Etc/UTC"
+              },
+              "through" => "latest_closed",
+              "timezone" => "Etc/UTC",
+              "availability_delay_seconds" => 21_600
+            },
+            "evaluated_range" => %{
+              "start_at" => "2026-03-01T00:00:00Z",
+              "end_at" => "2026-07-01T00:00:00Z"
+            },
+            "active_generation_id" => "generation_old",
+            "candidate_generation_id" => "generation_new",
+            "binding_snapshot" => %{
+              "asset:orders" => %{
+                "compatibility_status" => "rebuild_required",
+                "reason_code" => "schema_changed",
+                "compatibility_diff" => %{"added_columns" => ["country"]}
+              }
+            },
+            "capabilities" => %{
+              "asset:orders" => %{"atomic_generation_activation" => true}
+            },
+            "actions" => [
+              %{
+                "ordinal" => 0,
+                "target_id" => "asset:orders",
+                "action" => "rebuild",
+                "reason" => %{"reason_code" => "schema_changed"},
+                "mapping_proof" => %{"kind" => "identity"},
+                "pinned_input_generation_ids" => [%{"generation_id" => "generation_input"}],
+                "candidate_generation" => %{"target_generation_id" => "generation_new"}
+              }
+            ],
+            "item_count" => 4,
+            "items_digest" => String.duplicate("b", 64)
+          }
+        })
+      end)
+
+    assert output =~
+             "Declared coverage: month · 2026-01-01T00:00:00Z..2026-02-01T00:00:00Z · Etc/UTC"
+
+    assert output =~
+             "Effective coverage: month · 2026-03-01T00:00:00Z..2026-04-01T00:00:00Z · Etc/UTC"
+
+    assert output =~ "Compatibility: rebuild_required"
+    assert output =~ "asset:orders — rebuild"
+    assert output =~ "pinned inputs:"
+    assert output =~ "candidate generation: generation_new"
+    assert output =~ "mix favn.rebuild start rebuild_plan_1 --plan-hash"
+    refute output =~ "activation_token"
+  end
+
+  test "mix favn.rebuild reports stopped local stack", %{root_dir: root_dir} do
+    assert_raise Mix.Error, ~r/stack not running; use mix favn.dev/, fn ->
+      RebuildTask.run([
+        "plan",
+        "Example.Asset",
+        "--reason",
+        "schema changed",
         "--root-dir",
         root_dir
       ])

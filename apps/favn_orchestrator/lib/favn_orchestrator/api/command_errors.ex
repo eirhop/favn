@@ -25,6 +25,23 @@ defmodule FavnOrchestrator.API.CommandErrors do
     invalid_operator_metadata: {"metadata", "Invalid metadata"}
   }
 
+  @admission_messages %{
+    rebuild_required: "Target requires a rebuild before this run can start",
+    target_drift: "Target physical state differs from its recorded generation",
+    operator_decision_required:
+      "Target requires an explicit operator decision before this run can start"
+  }
+
+  @admission_detail_fields [
+    :target_id,
+    :selected_target_id,
+    :blocked_path,
+    :blocked_path_target_count,
+    :blocked_path_truncated,
+    :compatibility_status,
+    :reason_code
+  ]
+
   @doc "Maps an operator field validation failure, or returns `nil` when unknown."
   @spec operator(term()) :: command_error() | nil
   def operator({:refresh_include_upstream_requires_dependencies, :all}) do
@@ -62,6 +79,20 @@ defmodule FavnOrchestrator.API.CommandErrors do
   end
 
   def operator(_reason), do: nil
+
+  @doc "Maps a target-admission failure, or returns `nil` when unknown."
+  @spec admission(term()) :: command_error() | nil
+  def admission({code, details}) when is_map(details) do
+    case Map.fetch(@admission_messages, code) do
+      {:ok, message} ->
+        {:error, 409, Atom.to_string(code), message, Map.take(details, @admission_detail_fields)}
+
+      :error ->
+        nil
+    end
+  end
+
+  def admission(_reason), do: nil
 
   @doc "Maps a run-window policy failure to an idempotent command result."
   @spec window(term()) :: command_error()

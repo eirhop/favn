@@ -86,8 +86,8 @@ Inheritance resolves root-to-leaf and then applies leaf declarations:
 - `relation` merges `connection`, `catalog`, and `schema` by key.
 - `resources` and `runtime_config` compose additively.
 - `settings` and `meta` shallow-merge; the closest value wins per top-level key.
-- `runtime_inputs`, `freshness`, `window`, and `materialized` use the closest
-  declaration; `nil` clears an optional scalar default.
+- `runtime_inputs`, `freshness`, `window`, `coverage`, and `materialized` use the
+  closest declaration; `nil` clears an optional scalar default.
 - Multi-asset child declarations apply after namespace and module defaults.
 
 Each descendant consumes declarations from its own DSL vocabulary. SQL session
@@ -136,6 +136,7 @@ Common declarations:
 | `meta` | Search/filter metadata such as `owner`, `category`, and `tags`. |
 | `depends` | Upstream asset dependencies. May be repeated. |
 | `window` | Time window shape for windowed work. |
+| `coverage` | Historical windows expected from a windowed asset. |
 | `freshness` | When Favn may skip work because output is fresh. |
 | `execution_pool` | Shared execution pool name for runtime admission. |
 | `relation` | Relation owned by the asset. Use `true` to infer it from namespace. |
@@ -487,8 +488,9 @@ Rules:
 - Put all shared declarations before the first child.
 - Shared `settings` and `meta` are shallow-merged with child declarations.
 - Shared dependencies are combined with child dependencies.
-- A child scalar such as `freshness`, `window`, `retry`, `execution_pool`, or
-  `relation` overrides the shared value; explicit `nil` clears it.
+- A child scalar such as `freshness`, `window`, `coverage`, `retry`,
+  `execution_pool`, or `relation` overrides the shared value; explicit `nil`
+  clears it.
 - Nested settings maps replace as one top-level value rather than deep-merging.
 - Module-level runtime config applies to every generated asset.
 - Use `description` inside children and reserve `@doc` for the shared real
@@ -567,7 +569,7 @@ Schedule options:
 | Option | Values | Default |
 | --- | --- | --- |
 | `:cron` | 5-field cron or 6-field cron with leading seconds | required |
-| `:timezone` | IANA timezone string | runtime default |
+| `:timezone` | IANA timezone string | application default (`"Etc/UTC"` fallback) |
 | `:missed` | `:skip`, `:one`, `:all` | `:skip` |
 | `:overlap` | `:forbid`, `:allow`, `:queue_one` | `:forbid` |
 | `:active` | boolean | `true` |
@@ -583,29 +585,29 @@ schedule {MyApp.Schedules, :daily}
 Use asset windows when work should run for a time range.
 
 ```elixir
-window Favn.Window.daily(lookback: 1, timezone: "Europe/Oslo")
+window Favn.Window.daily(timezone: "Europe/Oslo")
 ```
 
 Asset window constructors:
 
 | Constructor | Options |
 | --- | --- |
-| `Favn.Window.hourly/1` | `lookback`, `refresh_from`, `required`, `timezone` |
-| `Favn.Window.daily/1` | `lookback`, `refresh_from`, `required`, `timezone` |
-| `Favn.Window.monthly/1` | `lookback`, `refresh_from`, `required`, `timezone` |
-| `Favn.Window.yearly/1` | `lookback`, `refresh_from`, `required`, `timezone` |
+| `Favn.Window.hourly/1` | `refresh_from`, `required`, `timezone` |
+| `Favn.Window.daily/1` | `refresh_from`, `required`, `timezone` |
+| `Favn.Window.monthly/1` | `refresh_from`, `required`, `timezone` |
+| `Favn.Window.yearly/1` | `refresh_from`, `required`, `timezone` |
 
 Option notes:
 
-- `lookback` is a non-negative integer. Default is `0`.
 - `required: true` means a runtime window must be supplied.
-- `timezone` defaults to `"Etc/UTC"`.
+- An omitted `timezone` uses `config :favn, :default_timezone`, then
+  `"Etc/UTC"`.
 
 Pipeline window policy:
 
 ```elixir
 schedule cron: "0 2 * * *", timezone: "Europe/Oslo"
-window :monthly, anchor: :current_period
+window :monthly, anchor: :current_period, lookback: 1
 ```
 
 Supported kinds: `:hourly`, `:daily`, `:monthly`, `:yearly`, or `:hour`, `:day`,
@@ -617,29 +619,69 @@ Pipeline window options:
 | --- | --- |
 | `:anchor` | `:previous_complete_period` (default) or `:current_period`. |
 | `:timezone` | IANA timezone. |
+| `:lookback` | Non-negative number of prior anchors added to scheduled runs. |
 | `:allow_full_load` | Whether a full load without a window is allowed. |
 
 Schedule cadence and processing-window granularity are independent. The example
 runs daily while selecting the current monthly anchor. Manual runs and backfills
 must still request monthly windows.
 
-Asset `lookback` expands backward from the resolved pipeline anchor:
+Operational lookback belongs to the pipeline. Scheduled July with `lookback: 1`
+selects June and July. Explicit manual windows and backfill ranges stay exact.
+The asset describes only how each supplied anchor maps to its canonical data
+window:
 
 ```elixir
 window Favn.Window.monthly(
-  lookback: 1,
   refresh_from: :day,
   required: true,
   timezone: "Europe/Oslo"
 )
 ```
 
-During July this plans June and July. `refresh_from: :day` tracks today's
-window-success separately for each month. If June succeeded today but July did
-not, only July remains runnable; after both succeed, later same-day occurrences
-skip both. On the next local day both become eligible again. Do not replace this
-with explicit `freshness :daily`, which is one asset-wide daily success rather
-than one daily success per exact data window.
+`refresh_from: :day` tracks today's window-success separately for every exact
+month selected by the pipeline. Do not replace this with explicit `freshness
+:daily`, which is one asset-wide daily success.
+
+Run input and operator responses preserve the requested anchors, the permitted
+expansion, and the effective anchors separately. This makes scheduled lookback,
+manual runs, backfills, reruns, and retries deterministic and visible without
+asking the runner to resolve window policy again.
+
+## Coverage
+
+Coverage declares which canonical windows a windowed asset is expected to have:
+
+```elixir
+coverage from: ~D[2020-01-01],
+         through: :latest_closed,
+         availability_delay: {:hours, 6}
+```
+
+`from` is required and accepts a `Date` or timezone-aware `DateTime`. `through`
+defaults to `:latest_closed` and also accepts `:current`, `Date`, or
+timezone-aware `DateTime`. Fixed boundaries are inclusive. Hourly authored
+boundaries must be `DateTime` values.
+
+`availability_delay` accepts a non-negative `{unit, amount}` using seconds,
+minutes, hours, or days, and is valid only with `:latest_closed`. It delays when
+a closed window becomes expected; it does not delay execution, create a timer,
+or change retries.
+
+Manifest builds warn when a recurring cron occurrence is provably earlier than
+the availability delay for a selected asset. They also warn when a windowed
+pipeline and selected windowed asset use different effective timezones. These
+warnings explain potentially surprising behavior but do not block compilation
+or scheduled execution.
+
+Coverage has no kind or timezone. It uses the effective asset window. Declaring
+coverage without an effective window is a compile error. A windowed asset
+without coverage remains valid and reports unknown coverage.
+
+Coverage is available on `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, and
+`Favn.Namespace`. It is one scalar policy: the closest declaration replaces the
+whole inherited policy, omission inherits it, and `coverage nil` explicitly
+clears it.
 
 ## Freshness
 

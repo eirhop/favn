@@ -9,8 +9,8 @@ defmodule Favn.WindowTest do
   alias Favn.Window.Spec
 
   test "builds canonical window structs and deterministic keys" do
-    assert {:ok, %Spec{kind: :hour, lookback: 0, timezone: "Etc/UTC"}} = Spec.new(:hour)
-    assert {:ok, %Spec{kind: :day, lookback: 2}} = Spec.new(:day, lookback: 2)
+    assert {:ok, %Spec{kind: :hour, timezone: nil}} = Spec.new(:hour)
+    assert {:ok, %Spec{kind: :day}} = Spec.new(:day)
     assert {:ok, %Spec{kind: :month, refresh_from: :day}} = Spec.new(:month, refresh_from: :day)
     assert {:ok, %Spec{kind: :year, required: true}} = Spec.new(:year, required: true)
 
@@ -32,15 +32,19 @@ defmodule Favn.WindowTest do
     assert runtime.anchor_key == anchor.key
   end
 
-  test "normalizes persisted and policy-shaped window specs" do
-    assert {:ok, %Spec{kind: :month, refresh_from: :day, timezone: "Etc/UTC"}} =
+  test "normalizes schema 11 persisted window specs" do
+    assert {:ok, %Spec{kind: :month, refresh_from: :day, timezone: nil}} =
              Spec.from_value(%{"kind" => "month", "refresh_from" => "day"})
-
-    assert {:ok, %Spec{kind: :day, timezone: "Etc/UTC"}} =
-             Spec.from_value(Policy.new!(:daily))
 
     assert {:ok, %Spec{kind: :hour, timezone: "Europe/Oslo"}} =
              Spec.from_value(%{kind: :hourly, timezone: "Europe/Oslo"})
+
+    assert {:error, {:unknown_window_spec_fields, ["lookback"]}} =
+             Spec.from_value(%{"kind" => "day", "lookback" => 1})
+
+    assert {:error, {:unknown_window_spec_fields, unknown}} = Spec.from_value(%Policy{})
+    assert :lookback in unknown
+    assert :anchor in unknown
   end
 
   test "encodes and decodes canonical keys" do
@@ -55,7 +59,8 @@ defmodule Favn.WindowTest do
 
   test "window validation reports precise errors" do
     assert {:error, {:invalid_kind, :week}} = Spec.new(:week)
-    assert {:error, {:invalid_lookback, -1}} = Spec.new(:day, lookback: -1)
+    assert {:error, {:unknown_opt, :lookback}} = Spec.new(:day, lookback: -1)
+    assert {:error, {:invalid_lookback, -1}} = Policy.new(:daily, lookback: -1)
     assert {:error, {:invalid_refresh_from, :day, :month}} = Spec.new(:day, refresh_from: :month)
     assert {:error, {:unknown_opt, :lookbak}} = Spec.new(:day, lookbak: 1)
 
@@ -140,7 +145,11 @@ defmodule Favn.WindowTest do
       DateTime.from_naive!(~N[2026-05-01 03:00:00], "Europe/Oslo", Favn.Timezone.database!())
 
     assert {:ok, anchor} =
-             Policy.resolve_scheduled(Policy.new!(:monthly), due_at, "Europe/Oslo")
+             Policy.resolve_scheduled(
+               Policy.new!(:monthly, timezone: "Europe/Oslo"),
+               due_at,
+               "Europe/Oslo"
+             )
 
     assert anchor.kind == :month
     assert anchor.timezone == "Europe/Oslo"
@@ -215,14 +224,17 @@ defmodule Favn.WindowTest do
 
     assert {:ok, previous} =
              Policy.resolve_scheduled(
-               Policy.new!(:monthly, anchor: :previous_complete_period),
+               Policy.new!(:monthly,
+                 anchor: :previous_complete_period,
+                 timezone: "Europe/Oslo"
+               ),
                due_at,
                "Europe/Oslo"
              )
 
     assert {:ok, current} =
              Policy.resolve_scheduled(
-               Policy.new!(:monthly, anchor: :current_period),
+               Policy.new!(:monthly, anchor: :current_period, timezone: "Europe/Oslo"),
                due_at,
                "Europe/Oslo"
              )

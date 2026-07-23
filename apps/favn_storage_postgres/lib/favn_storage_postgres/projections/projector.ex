@@ -562,11 +562,13 @@ defmodule FavnStoragePostgres.Projections.Projector do
       node_key_hash = decode_node_key_fingerprint(materialization.payload["node_key_fingerprint"])
       input_fingerprint = optional_hash(materialization.payload["input_fingerprint"])
       projected_at = event.published_at || materialization.inserted_at
+      evidence_generation_id = evidence_generation_id(materialization, deployment)
 
       project_asset_window!(
         event,
         deployment,
         materialization,
+        evidence_generation_id,
         window_start,
         window_end,
         projected_at
@@ -576,13 +578,16 @@ defmodule FavnStoragePostgres.Projections.Projector do
         Repo,
         """
         INSERT INTO favn_control.asset_freshness_states
-          (workspace_id, deployment_id, target_id, freshness_key,
+          (workspace_id, evidence_generation_id, deployment_id, manifest_version_id,
+           target_id, freshness_key,
            latest_attempt_materialization_id, latest_success_materialization_id,
            latest_success_node_key_hash, input_fingerprint, status, payload,
            source_publication_id, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $5, $6, $7, 'fresh', $8, $9, $10)
-        ON CONFLICT (workspace_id, deployment_id, target_id, freshness_key) DO UPDATE
-        SET latest_attempt_materialization_id = EXCLUDED.latest_attempt_materialization_id,
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, 'fresh', $10, $11, $12)
+        ON CONFLICT (workspace_id, evidence_generation_id, target_id, freshness_key) DO UPDATE
+        SET deployment_id = EXCLUDED.deployment_id,
+            manifest_version_id = EXCLUDED.manifest_version_id,
+            latest_attempt_materialization_id = EXCLUDED.latest_attempt_materialization_id,
             latest_success_materialization_id = EXCLUDED.latest_success_materialization_id,
             latest_success_node_key_hash = EXCLUDED.latest_success_node_key_hash,
             input_fingerprint = EXCLUDED.input_fingerprint, status = EXCLUDED.status,
@@ -593,7 +598,9 @@ defmodule FavnStoragePostgres.Projections.Projector do
         """,
         [
           event.workspace_id,
+          evidence_generation_id,
           materialization.deployment_id,
+          deployment.manifest_version_id,
           materialization.target_id,
           materialization.partition_key,
           materialization.materialization_id,
@@ -611,6 +618,7 @@ defmodule FavnStoragePostgres.Projections.Projector do
          event,
          deployment,
          %{partition_key: "window:" <> encoded_key} = materialization,
+         evidence_generation_id,
          window_start,
          window_end,
          projected_at
@@ -620,12 +628,14 @@ defmodule FavnStoragePostgres.Projections.Projector do
         Repo,
         """
         INSERT INTO favn_control.asset_window_states
-          (workspace_id, manifest_version_id, target_id, window_key, window_start,
+          (workspace_id, evidence_generation_id, manifest_version_id, target_id,
+           window_key, window_start,
            window_end, status, run_id, materialization_id, payload,
            source_publication_id, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, 'succeeded', $7, $8, $9, $10, $11)
-        ON CONFLICT (workspace_id, manifest_version_id, target_id, window_key) DO UPDATE
-        SET window_start = EXCLUDED.window_start, window_end = EXCLUDED.window_end,
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'succeeded', $8, $9, $10, $11, $12)
+        ON CONFLICT (workspace_id, evidence_generation_id, target_id, window_key) DO UPDATE
+        SET manifest_version_id = EXCLUDED.manifest_version_id,
+            window_start = EXCLUDED.window_start, window_end = EXCLUDED.window_end,
             status = EXCLUDED.status, run_id = EXCLUDED.run_id,
             materialization_id = EXCLUDED.materialization_id, payload = EXCLUDED.payload,
             source_publication_id = EXCLUDED.source_publication_id,
@@ -634,6 +644,7 @@ defmodule FavnStoragePostgres.Projections.Projector do
         """,
         [
           event.workspace_id,
+          evidence_generation_id,
           deployment.manifest_version_id,
           materialization.target_id,
           materialization.partition_key,
@@ -651,8 +662,38 @@ defmodule FavnStoragePostgres.Projections.Projector do
     end
   end
 
-  defp project_asset_window!(_event, _deployment, _materialization, _start, _end, _at),
-    do: :ok
+  defp project_asset_window!(
+         _event,
+         _deployment,
+         _materialization,
+         _generation,
+         _start,
+         _end,
+         _at
+       ),
+       do: :ok
+
+  defp evidence_generation_id(%{evidence_generation_id: value}, _deployment)
+       when is_binary(value),
+       do: value
+
+  defp evidence_generation_id(materialization, deployment) do
+    digest =
+      :crypto.hash(
+        :md5,
+        Enum.join(
+          [
+            materialization.workspace_id,
+            deployment.manifest_version_id,
+            materialization.target_id
+          ],
+          ":"
+        )
+      )
+      |> Base.encode16(case: :lower)
+
+    "legacy_" <> digest
+  end
 
   defp materialization_window(materialization) do
     with start when is_binary(start) <- materialization.payload["window_start"],

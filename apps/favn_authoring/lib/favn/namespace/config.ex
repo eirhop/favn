@@ -5,7 +5,7 @@ defmodule Favn.Namespace.Config do
   alias Favn.SQL.SessionRequirements
 
   @additive_fields [:settings, :meta, :runtime_config]
-  @scalar_fields [:runtime_inputs, :freshness, :window, :materialized]
+  @scalar_fields [:runtime_inputs, :freshness, :window, :coverage, :materialized]
   @relation_keys [:connection, :catalog, :schema]
 
   @type inherited_value :: :unset | {:set, term()}
@@ -19,6 +19,7 @@ defmodule Favn.Namespace.Config do
           runtime_inputs: inherited_value(),
           freshness: inherited_value(),
           window: inherited_value(),
+          coverage: inherited_value(),
           materialized: inherited_value()
         }
 
@@ -30,6 +31,7 @@ defmodule Favn.Namespace.Config do
             runtime_inputs: :unset,
             freshness: :unset,
             window: :unset,
+            coverage: :unset,
             materialized: :unset
 
   @spec new!(map()) :: t()
@@ -43,6 +45,7 @@ defmodule Favn.Namespace.Config do
       runtime_inputs: scalar!(declarations, :runtime_inputs),
       freshness: scalar!(declarations, :freshness),
       window: scalar!(declarations, :window),
+      coverage: scalar!(declarations, :coverage),
       materialized: scalar!(declarations, :materialized)
     }
   end
@@ -62,6 +65,7 @@ defmodule Favn.Namespace.Config do
       runtime_inputs: closest(parent.runtime_inputs, child.runtime_inputs),
       freshness: closest(parent.freshness, child.freshness),
       window: closest(parent.window, child.window),
+      coverage: closest(parent.coverage, child.coverage),
       materialized: closest(parent.materialized, child.materialized)
     }
   end

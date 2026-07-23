@@ -103,9 +103,9 @@ Code:
   cancellation path proves a stronger outcome.
 - `apps/favn_runner/lib/favn_runner/sql/materialization_planner.ex` owns runner SQL
   asset materialization planning and emits shared `%Favn.SQL.WritePlan{}` values.
-  Planner lookback is represented by distinct work nodes; runtime-input resolution
-  and incremental delete/insert planning preserve each node's exact runtime window
-  rather than applying asset lookback again.
+  Pipeline lookback selection is represented by distinct work nodes;
+  runtime-input resolution and incremental delete/insert planning preserve each
+  node's exact runtime window rather than expanding lookback in the runner.
 - runner-owned execution modules under `apps/favn_runner/lib/favn/`
 
 Tests:
@@ -179,6 +179,25 @@ row-count claims reuse normal settings/runtime params and are type-checked befor
 rendering or opening an adapter session. Generated claims execute in authored
 order, so an earlier failure cannot be hidden by a later no-op; values never
 become SQL source or error details.
+
+Persisted SQL work carries an explicit logical target, descriptor hash, target
+generation, stable relation, and write relation. Rebuild-candidate work writes,
+renders `target()`, inspects, and checks the candidate relation while dependency
+references resolve from immutable upstream generation pins. The runner validates
+the manifest descriptor, execution package, generation fields, and every pinned
+upstream asset before SQL execution, and results echo the exact output generation
+and classify the write as succeeded, safely failed, or outcome unknown. The
+runner never changes the PostgreSQL active binding.
+
+The same boundary initializes and reads generation sidecar markers. Initial
+marker creation is permitted only after the stable relation fingerprint matches
+the successful materialization evidence. Activation requests carry the exact
+previous marker identity, and lost mutation replies remain unknown until a
+read-only marker reconciliation proves the data-plane state. The control plane
+persists the complete JSON-safe marker identity and rejects incomplete markers
+or markers for a different target generation before activating a binding.
+Idempotent discard accepts only the deterministic relation for the declared
+candidate or retired generation and first proves that generation is not active.
 
 `FavnRunner.RuntimeInputResolver` owns behaviour-based SQL runtime input
 resolution. The public runner boundary can perform a bounded selection-only

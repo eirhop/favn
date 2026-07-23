@@ -4,6 +4,7 @@ defmodule Favn.Manifest.Rehydrate do
   """
 
   alias Favn.Asset.RelationInput
+  alias Favn.Coverage.Effective, as: EffectiveCoverage
   alias Favn.Freshness.Policy, as: FreshnessPolicy
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -14,6 +15,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.SQLExecution
+  alias Favn.Manifest.TargetDescriptor
   alias Favn.RelationRef
   alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.Retry.Policy, as: RetryPolicy
@@ -98,6 +100,7 @@ defmodule Favn.Manifest.Rehydrate do
       description: field_value(value, :description),
       relation: value |> field_value(:relation) |> build_relation(),
       window: value |> field_value(:window) |> build_window_spec(),
+      coverage: value |> field_value(:coverage) |> build_coverage(),
       freshness: value |> field_value(:freshness) |> build_freshness(),
       retry_policy: value |> field_value(:retry_policy) |> build_retry_policy(),
       materialization: value |> field_value(:materialization) |> decode_materialization(),
@@ -109,12 +112,21 @@ defmodule Favn.Manifest.Rehydrate do
         |> build_session_requirements(),
       execution_package_hash: field_value(value, :execution_package_hash),
       assurance: value |> field_value(:assurance) |> build_assurance(),
+      target_descriptor: value |> field_value(:target_descriptor) |> build_target_descriptor(),
+      semantic_generation_id: field_value(value, :semantic_generation_id),
       execution_pool: value |> field_value(:execution_pool) |> decode_atom_optional(),
       metadata: value |> field_value(:metadata, %{}) |> build_metadata()
     }
   end
 
   defp build_asset(other), do: other
+
+  defp build_target_descriptor(value) do
+    case TargetDescriptor.from_value(value) do
+      {:ok, descriptor} -> descriptor
+      {:error, reason} -> raise ArgumentError, "invalid target descriptor: #{inspect(reason)}"
+    end
+  end
 
   defp build_assurance(nil), do: nil
 
@@ -187,12 +199,21 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_window_spec(value) when is_map(value) do
     case Spec.from_value(value) do
       {:ok, %Spec{} = spec} -> spec
-      {:ok, nil} -> nil
-      {:error, _reason} -> plain_map(value)
+      {:error, reason} -> raise ArgumentError, "invalid manifest asset window: #{inspect(reason)}"
     end
   end
 
   defp build_window_spec(other), do: other
+
+  defp build_coverage(nil), do: nil
+  defp build_coverage(%EffectiveCoverage{} = coverage), do: coverage
+
+  defp build_coverage(value) do
+    case EffectiveCoverage.from_value(value) do
+      {:ok, coverage} -> coverage
+      {:error, reason} -> raise ArgumentError, "invalid manifest coverage: #{inspect(reason)}"
+    end
+  end
 
   defp build_freshness(nil), do: nil
   defp build_freshness(%FreshnessPolicy{} = value), do: FreshnessPolicy.from_value!(value)
@@ -226,7 +247,8 @@ defmodule Favn.Manifest.Rehydrate do
         %{
           mode: mode,
           kind: value |> field_value(:kind) |> decode_known_atom([:day]),
-          timezone: field_value(value, :timezone)
+          timezone: field_value(value, :timezone),
+          timezone_source: field_value(value, :timezone_source)
         }
 
       :max_age ->
@@ -1037,6 +1059,10 @@ defmodule Favn.Manifest.Rehydrate do
       kind: value |> field_value(:kind, :cron) |> decode_known_atom([:cron]),
       cron: field_value(value, :cron),
       timezone: field_value(value, :timezone),
+      timezone_source:
+        value
+        |> field_value(:timezone_source, :utc_fallback)
+        |> decode_known_atom([:local, :application_default, :utc_fallback]),
       missed: value |> field_value(:missed, :skip) |> decode_known_atom([:skip, :one, :all]),
       overlap:
         value

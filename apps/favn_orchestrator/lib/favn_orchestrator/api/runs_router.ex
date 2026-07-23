@@ -205,7 +205,9 @@ defmodule FavnOrchestrator.API.RunsRouter do
     do: {:error, 404, "not_found", "Active manifest is not set", %{}}
 
   defp submit_error(reason) when is_tuple(reason),
-    do: CommandErrors.operator(reason) || CommandErrors.window(reason)
+    do:
+      CommandErrors.admission(reason) || CommandErrors.operator(reason) ||
+        CommandErrors.window(reason)
 
   defp submit_error(reason) do
     Logger.error("run.submit failed after request validation: #{inspect(reason)}")

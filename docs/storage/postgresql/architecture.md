@@ -9,7 +9,8 @@ design rationale and scale budgets remain in the
 
 PostgreSQL stores orchestration metadata: workspaces, immutable manifests and
 execution packages, deployments, runs, events, schedules, leases,
-materializations, resource circuits and recovery candidates, backfills,
+materializations, asset target generations and bindings, rebuild operations,
+resource circuits and recovery candidates, backfills,
 authentication, audit, logs, and repairable
 projections.
 
@@ -37,7 +38,7 @@ The dependency direction is deliberate:
   composition root selects `FavnStoragePostgres.Backend` at boot.
 - `favn_view` calls orchestrator facades only.
 
-`FavnOrchestrator.Persistence.Backend` composes eleven focused store
+`FavnOrchestrator.Persistence.Backend` composes thirteen focused store
 capabilities. No 97-callback database adapter remains, and no generic
 `execute/query` escape hatch is part of the contract.
 
@@ -93,6 +94,8 @@ Important properties:
 - A state transition and its outbox event commit together.
 - Command identities make retries deterministic; conflicting reuse is rejected.
 - Ownership and claim writes require current fencing tokens.
+- Persisted asset writes resolve and pin one target generation before claiming;
+  projection evidence is keyed by that generation rather than deployment identity.
 - Multi-node claimers use row locks and `SKIP LOCKED` where appropriate.
 - Resource circuit acquisition locks requested resources in deterministic order;
   one expiring owner identity holds a half-open probe, and a terminal outcome is
@@ -133,6 +136,31 @@ This prevents large SQL payloads from being repeatedly loaded during catalog,
 planning, or unrelated asset execution. One immutable `run_plans` row stores the
 submitted plan; mutable run snapshots retain its hash instead of rewriting the
 full plan on every transition.
+
+## Target generations
+
+Each persisted asset target has one workspace-scoped binding. The binding points
+to its active physical generation and records the desired manifest descriptor and
+compatibility state. Initial planning creates a `building` generation; an ordinary
+success alone does not activate it. Activation requires authoritative physical
+reconciliation and a recorded fingerprint. Ordinary writes pin the resolved
+generation in the run plan, claim, and immutable materialization ledger.
+
+Asset-window and freshness projections use `evidence_generation_id` in their
+identity. Persisted targets use the physical generation UUID; non-persisted
+targets use their deterministic semantic-generation identity. Reads resolve the
+current binding first, so evidence from a retired physical generation cannot be
+presented as current evidence.
+
+Manual rebuilds persist one immutable operation, topologically ordered actions,
+frozen logical items, candidate generations, and sorted target locks. Operator
+histories use workspace/state keyset indexes ordered by insertion time and
+operation id. Mutating HTTP commands store their replay result in the shared
+idempotency ledger in the same PostgreSQL transaction as the rebuild mutation.
+The dispatcher uses operation and item fencing for recovery; the data-plane
+activation marker remains authoritative when a reply is lost. See
+[Target Generations And Rebuilds](../../architecture/target-generations-and-rebuilds.md)
+for the cross-application lifecycle.
 
 ## Workspace isolation
 
@@ -176,7 +204,10 @@ Redis is not required for correctness or initial multi-node scale.
   shape, unavailable backend modules, or invalid runtime privileges.
 - Lost owners cannot renew or commit with an old fencing token.
 - Recovery claims abandoned runs in bounded batches and reconstructs work from
-  pinned manifests, immutable run plans, and persisted checkpoints.
+  pinned manifests, immutable run plans, and persisted checkpoints. A newly
+  persisted, never-claimed run has one ownership-lease interval to complete its
+  normal RunServer handoff before recovery may claim it; if that handoff crashes,
+  the same row becomes recoverable after the bounded grace period.
 - Derived projections are repairable from authoritative rows/outbox events.
 - Unknown transaction outcomes are resolved using the original command identity.
 - Circuit and recovery rows survive orchestrator restarts. A successful probe

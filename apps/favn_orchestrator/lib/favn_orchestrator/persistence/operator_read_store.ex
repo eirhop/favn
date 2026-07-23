@@ -5,8 +5,10 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
+  alias FavnOrchestrator.Persistence.Queries.CountSuccessfulAssetWindows
   alias FavnOrchestrator.Persistence.Queries.GetFreshnessMany
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
+  alias FavnOrchestrator.Persistence.Queries.GetSuccessfulAssetWindowKeys
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageGroupRuns
   alias FavnOrchestrator.Persistence.Queries.PageGroupWindows
@@ -42,4 +44,8 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
   @callback get_asset_window_states(GetAssetWindowStates.t()) ::
               {:ok, [FavnOrchestrator.Persistence.Results.AssetWindowState.t()]}
               | {:error, Error.t()}
+  @callback count_successful_asset_windows(CountSuccessfulAssetWindows.t()) ::
+              {:ok, non_neg_integer()} | {:error, Error.t()}
+  @callback get_successful_asset_window_keys(GetSuccessfulAssetWindowKeys.t()) ::
+              {:ok, [String.t()]} | {:error, Error.t()}
 end

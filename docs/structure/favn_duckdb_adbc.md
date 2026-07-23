@@ -20,6 +20,11 @@ diagnostics, scoped catalog/resource behavior, ADBC client integration, or
 plugin child specs. Update test support when the ADBC client
 boundary or shared adapter test instrumentation changes.
 
+The ADBC adapter explicitly implements `Favn.SQL.GenerationAdapter` with the
+same candidate, atomic-swap, marker-reconciliation, and safe-discard contract as
+the in-process DuckDB adapter. Generation operations use the checked-out ADBC
+connection and surface commit uncertainty instead of retrying a possible write.
+
 The ADBC adapter owns DuckDB config parsing, native script execution, driver
 preflight diagnostics, and default-on runner-local session pooling for ADBC-backed
 sessions. Disable pooling with `pool: [enabled: false]`; tune it with

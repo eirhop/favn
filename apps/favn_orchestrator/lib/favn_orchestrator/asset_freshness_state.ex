@@ -25,6 +25,7 @@ defmodule FavnOrchestrator.AssetFreshnessState do
     :asset_ref_module,
     :asset_ref_name,
     :freshness_key,
+    :evidence_generation_id,
     :status,
     :updated_at
   ]
@@ -42,6 +43,7 @@ defmodule FavnOrchestrator.AssetFreshnessState do
     :latest_attempt_at,
     :manifest_version_id,
     :manifest_content_hash,
+    :evidence_generation_id,
     input_versions: %{},
     metadata: %{},
     updated_at: nil
@@ -63,6 +65,7 @@ defmodule FavnOrchestrator.AssetFreshnessState do
           latest_attempt_at: DateTime.t() | nil,
           manifest_version_id: String.t() | nil,
           manifest_content_hash: String.t() | nil,
+          evidence_generation_id: String.t(),
           input_versions: map() | list(),
           metadata: map(),
           updated_at: DateTime.t()
@@ -115,6 +118,9 @@ defmodule FavnOrchestrator.AssetFreshnessState do
 
       not is_binary(Map.fetch!(attrs, :freshness_key)) ->
         {:error, {:invalid_freshness_key, Map.fetch!(attrs, :freshness_key)}}
+
+      not is_binary(Map.fetch!(attrs, :evidence_generation_id)) ->
+        {:error, {:invalid_evidence_generation_id, Map.fetch!(attrs, :evidence_generation_id)}}
 
       true ->
         :ok

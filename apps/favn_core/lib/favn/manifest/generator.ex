@@ -26,6 +26,8 @@ defmodule Favn.Manifest.Generator do
   alias Favn.Manifest.Catalog
   alias Favn.Manifest.Compatibility
   alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Environment
+  alias Favn.Manifest.Diagnostics
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Pipeline, as: ManifestPipeline
   alias Favn.Manifest.PlanningIndex
@@ -35,13 +37,16 @@ defmodule Favn.Manifest.Generator do
   @type catalog_opts :: [
           asset_modules: [module()],
           pipeline_modules: [module()],
-          schedule_modules: [module()]
+          schedule_modules: [module()],
+          connection_modules: [module()]
         ]
 
   @type opts :: [
           asset_modules: [module()],
           pipeline_modules: [module()],
           schedule_modules: [module()],
+          connection_modules: [module()],
+          environment: Environment.t(),
           runner_release: RunnerRelease.t()
         ]
 
@@ -53,8 +58,10 @@ defmodule Favn.Manifest.Generator do
   @spec generate(opts()) :: {:ok, Manifest.t()} | {:error, term()}
   def generate(opts \\ []) when is_list(opts) do
     with {:ok, runner_release} <- fetch_runner_release(opts),
-         {:ok, catalog} <- opts |> Keyword.delete(:runner_release) |> build_catalog() do
-      manifest_from_catalog(catalog, runner_release.runner_release_id)
+         {:ok, environment} <- fetch_environment(opts),
+         {:ok, catalog} <-
+           opts |> Keyword.drop([:runner_release, :environment]) |> build_catalog() do
+      manifest_from_catalog(catalog, runner_release.runner_release_id, environment)
     end
   end
 
@@ -66,12 +73,18 @@ defmodule Favn.Manifest.Generator do
   @spec build(opts()) :: {:ok, Build.t()} | {:error, term()}
   def build(opts \\ []) when is_list(opts) do
     with {:ok, runner_release} <- fetch_runner_release(opts),
-         {:ok, catalog} <- opts |> Keyword.delete(:runner_release) |> build_catalog(),
+         {:ok, environment} <- fetch_environment(opts),
+         {:ok, catalog} <-
+           opts |> Keyword.drop([:runner_release, :environment]) |> build_catalog(),
          {:ok, manifest, execution_packages} <-
-           manifest_and_packages_from_catalog(catalog, runner_release.runner_release_id) do
+           manifest_and_packages_from_catalog(
+             catalog,
+             runner_release.runner_release_id,
+             environment
+           ) do
       {:ok,
        Build.new(manifest,
-         diagnostics: catalog.diagnostics,
+         diagnostics: catalog.diagnostics ++ Diagnostics.for_manifest(manifest),
          execution_packages: execution_packages
        )}
     end
@@ -85,9 +98,12 @@ defmodule Favn.Manifest.Generator do
   """
   @spec planning_index(catalog_opts()) :: {:ok, PlanningIndex.t()} | {:error, term()}
   def planning_index(opts \\ []) when is_list(opts) do
-    with {:ok, catalog} <- build_catalog(opts),
+    {environment_value, opts} = Keyword.pop(opts, :environment, Environment.new!())
+
+    with {:ok, environment} <- normalize_environment(environment_value),
+         {:ok, catalog} <- build_catalog(opts),
          {:ok, packages_by_ref} <- execution_packages_from_catalog(catalog),
-         assets <- manifest_assets_from_catalog(catalog, packages_by_ref),
+         assets <- manifest_assets_from_catalog(catalog, packages_by_ref, environment),
          {:ok, graph} <- Graph.build(assets) do
       PlanningIndex.build(graph, assets)
     end
@@ -105,30 +121,44 @@ defmodule Favn.Manifest.Generator do
     with :ok <- validate_opts(opts),
          {:ok, assets, diagnostics} <- compile_assets(resolve_modules(opts, :asset_modules)),
          {:ok, pipelines} <- compile_pipelines(resolve_modules(opts, :pipeline_modules)),
-         {:ok, schedules} <- compile_schedules(resolve_modules(opts, :schedule_modules)) do
+         {:ok, schedules} <- compile_schedules(resolve_modules(opts, :schedule_modules)),
+         {:ok, connection_definitions} <-
+           compile_connections(resolve_modules(opts, :connection_modules)) do
       {:ok,
        %Catalog{
          assets: assets,
          assets_by_ref: Map.new(assets, &{Map.get(&1, :ref), &1}),
          pipelines: pipelines,
          schedules: schedules,
+         connection_definitions: connection_definitions,
          diagnostics: diagnostics
        }}
     end
   end
 
-  defp manifest_from_catalog(%Catalog{} = catalog, required_runner_release_id) do
+  defp manifest_from_catalog(%Catalog{} = catalog, required_runner_release_id, environment) do
     with {:ok, manifest, _packages} <-
-           manifest_and_packages_from_catalog(catalog, required_runner_release_id) do
+           manifest_and_packages_from_catalog(catalog, required_runner_release_id, environment) do
       {:ok, manifest}
     end
   end
 
-  defp manifest_and_packages_from_catalog(%Catalog{} = catalog, required_runner_release_id) do
+  defp manifest_and_packages_from_catalog(
+         %Catalog{} = catalog,
+         required_runner_release_id,
+         %Environment{} = environment
+       ) do
     with {:ok, packages_by_ref} <- execution_packages_from_catalog(catalog) do
-      assets = manifest_assets_from_catalog(catalog, packages_by_ref)
-      pipelines = manifest_pipelines_from_catalog(catalog)
-      schedules = manifest_schedules_from_catalog(catalog)
+      assets =
+        manifest_assets_from_catalog(
+          catalog,
+          packages_by_ref,
+          environment,
+          required_runner_release_id
+        )
+
+      pipelines = manifest_pipelines_from_catalog(catalog, environment)
+      schedules = manifest_schedules_from_catalog(catalog, environment)
 
       with {:ok, graph} <- Graph.build(assets) do
         {:ok,
@@ -140,7 +170,7 @@ defmodule Favn.Manifest.Generator do
            pipelines: pipelines,
            schedules: schedules,
            graph: graph,
-           metadata: %{}
+           metadata: %{environment: environment_metadata(environment)}
          }, packages_by_ref |> Map.values() |> Enum.sort_by(& &1.content_hash)}
       end
     end
@@ -161,24 +191,36 @@ defmodule Favn.Manifest.Generator do
     end)
   end
 
-  defp manifest_assets_from_catalog(%Catalog{} = catalog, packages_by_ref) do
+  defp manifest_assets_from_catalog(
+         %Catalog{} = catalog,
+         packages_by_ref,
+         environment,
+         runner_release_id \\ nil
+       ) do
     catalog.assets
     |> Enum.map(fn asset ->
-      ManifestAsset.from_asset(asset, execution_package: Map.get(packages_by_ref, asset.ref))
+      ManifestAsset.from_asset(asset,
+        execution_package: Map.get(packages_by_ref, asset.ref),
+        environment: environment,
+        runner_release_id: runner_release_id,
+        connection_definitions: catalog.connection_definitions,
+        manifest_schema_version: Compatibility.current_schema_version(),
+        runner_contract_version: Compatibility.current_runner_contract_version()
+      )
     end)
     |> Enum.sort(&compare_assets/2)
   end
 
-  defp manifest_pipelines_from_catalog(%Catalog{} = catalog) do
+  defp manifest_pipelines_from_catalog(%Catalog{} = catalog, environment) do
     catalog.pipelines
-    |> Enum.map(&ManifestPipeline.from_definition/1)
+    |> Enum.map(&ManifestPipeline.from_definition(&1, environment))
     |> Enum.sort(&compare_pipelines/2)
   end
 
-  defp manifest_schedules_from_catalog(%Catalog{} = catalog) do
+  defp manifest_schedules_from_catalog(%Catalog{} = catalog, environment) do
     catalog.schedules
     |> Enum.map(fn {module, name, schedule} ->
-      ManifestSchedule.from_schedule(module, name, schedule)
+      ManifestSchedule.from_schedule(module, name, schedule, environment)
     end)
     |> Enum.sort(&compare_schedules/2)
   end
@@ -188,7 +230,7 @@ defmodule Favn.Manifest.Generator do
   end
 
   defp validate_opts(opts) do
-    allowed = [:asset_modules, :pipeline_modules, :schedule_modules]
+    allowed = [:asset_modules, :pipeline_modules, :schedule_modules, :connection_modules]
 
     case Enum.find(opts, fn {key, _value} -> key not in allowed end) do
       nil -> :ok
@@ -202,6 +244,26 @@ defmodule Favn.Manifest.Generator do
       :error -> {:error, :runner_release_required}
     end
   end
+
+  defp fetch_environment(opts) do
+    opts
+    |> Keyword.get(:environment, Environment.new!())
+    |> normalize_environment()
+  end
+
+  defp normalize_environment(%Environment{} = environment), do: {:ok, environment}
+  defp normalize_environment(value), do: Environment.new(value)
+
+  defp environment_metadata(%Environment{} = environment) do
+    %{
+      default_timezone: environment.default_timezone,
+      default_timezone_source: environment.default_timezone_source,
+      coverage_scope: encode_coverage_scope(environment.coverage_scope)
+    }
+  end
+
+  defp encode_coverage_scope(nil), do: nil
+  defp encode_coverage_scope(%{from: %Date{} = from}), do: %{from: Date.to_iso8601(from)}
 
   defp compile_assets(modules) when is_list(modules) do
     modules
@@ -257,6 +319,40 @@ defmodule Favn.Manifest.Generator do
   end
 
   defp compile_schedules(_invalid), do: {:error, :invalid_schedule_modules}
+
+  defp compile_connections(modules) when is_list(modules) do
+    modules
+    |> Enum.reduce_while({:ok, %{}}, fn module, {:ok, definitions} ->
+      case compile_connection(module) do
+        {:ok, definition} ->
+          if Map.has_key?(definitions, definition.name) do
+            {:halt, {:error, {:duplicate_connection_name, definition.name}}}
+          else
+            {:cont, {:ok, Map.put(definitions, definition.name, definition)}}
+          end
+
+        {:error, reason} ->
+          {:halt, {:error, {:connection_compile_failed, module, reason}}}
+      end
+    end)
+  end
+
+  defp compile_connections(_invalid), do: {:error, :invalid_connection_modules}
+
+  defp compile_connection(module) when is_atom(module) do
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <- function_exported?(module, :definition, 0),
+         %Favn.Connection.Definition{} = definition <- module.definition(),
+         true <- is_atom(definition.name) and not is_nil(definition.name),
+         true <- is_atom(definition.adapter),
+         true <- is_list(definition.config_schema) do
+      {:ok, %{definition | module: definition.module || module}}
+    else
+      _other -> {:error, :invalid_connection_definition}
+    end
+  rescue
+    _error -> {:error, :invalid_connection_definition}
+  end
 
   defp compile_module_schedules(module) do
     with {:module, ^module} <- Code.ensure_loaded(module),

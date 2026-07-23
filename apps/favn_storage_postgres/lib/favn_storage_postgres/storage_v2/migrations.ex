@@ -15,10 +15,13 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddCoordinationAndSchedulingV2
   alias FavnStoragePostgres.Migrations.AddLogsIdentityAndOperationsV2
   alias FavnStoragePostgres.Migrations.AddRuntimeInputKeyInventoryV2
+  alias FavnStoragePostgres.Migrations.AddRebuildOperatorReadsV2
   alias FavnStoragePostgres.Migrations.AddRunnerReleaseIdentityV2
   alias FavnStoragePostgres.Migrations.AddResourceCircuitsV2
   alias FavnStoragePostgres.Migrations.AddScheduleOperatorReadsV2
+  alias FavnStoragePostgres.Migrations.AddTargetGenerationFoundationV2
   alias FavnStoragePostgres.Migrations.CreateStorageV2
+  alias FavnStoragePostgres.Migrations.CompleteRebuildOrchestrationV2
   alias FavnStoragePostgres.Migrations.EnforceRunPlanManifestIdentityV2
   alias FavnStoragePostgres.Migrations.HardenIdempotencyV2
   alias FavnStoragePostgres.Migrations.HardenIdentifierBoundsV2
@@ -56,7 +59,10 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_720_000_000, AddResourceCircuitsV2},
     {20_260_720_010_000, AddAssetAttemptOverviewsV2},
     {20_260_720_020_000, NormalizeResourceCircuitDefinitionsV2},
-    {20_260_721_000_000, AddRunnerReleaseIdentityV2}
+    {20_260_721_000_000, AddRunnerReleaseIdentityV2},
+    {20_260_722_000_000, AddTargetGenerationFoundationV2},
+    {20_260_722_010_000, CompleteRebuildOrchestrationV2},
+    {20_260_722_020_000, AddRebuildOperatorReadsV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -88,6 +94,12 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     resource_recovery_candidates
     materialization_claims
     materializations
+    asset_target_generations
+    asset_target_bindings
+    rebuild_operations
+    rebuild_plan_actions
+    rebuild_windows
+    target_operation_locks
     coverage_baselines
     backfills
     backfill_plan_batches
@@ -165,6 +177,20 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     resource_recovery_candidates_claim_idx
     materialization_claims_expiry_idx
     materializations_target_idx
+    materializations_generation_idx
+    asset_target_generations_command_uidx
+    asset_target_generations_status_idx
+    asset_target_bindings_status_idx
+    rebuild_operations_idempotency_uidx
+    rebuild_operations_recovery_idx
+    rebuild_operations_page_idx
+    rebuild_operations_state_page_idx
+    rebuild_windows_operation_page_idx
+    rebuild_plan_actions_ordinal_uidx
+    rebuild_windows_ordinal_uidx
+    rebuild_windows_key_uidx
+    rebuild_windows_claim_idx
+    target_operation_locks_expiry_idx
     coverage_baselines_target_idx
     backfills_target_idx
     backfill_windows_page_idx
@@ -194,11 +220,15 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "admission_waiters" =>
       ~w(workspace_id waiter_id run_id step_id command_id request_hash requested_scopes blocking_scope_id priority status available_at expires_at claim_owner claim_generation claim_command_id claim_expires_at inserted_at updated_at),
     "asset_freshness_states" =>
-      ~w(workspace_id deployment_id target_id freshness_key latest_attempt_materialization_id latest_success_materialization_id latest_success_node_key_hash input_fingerprint status payload source_publication_id updated_at),
+      ~w(workspace_id evidence_generation_id deployment_id manifest_version_id target_id freshness_key latest_attempt_materialization_id latest_success_materialization_id latest_success_node_key_hash input_fingerprint status payload source_publication_id updated_at),
     "asset_attempt_overviews" =>
       ~w(workspace_id root_run_id run_id asset_step_id asset_ref window_identity window status stage attempt_number execution_pool queue_reason started_at finished_at duration_ms error output_metadata source_publication_id updated_at),
     "asset_window_states" =>
-      ~w(workspace_id manifest_version_id target_id window_key window_start window_end status run_id materialization_id payload source_publication_id updated_at),
+      ~w(workspace_id evidence_generation_id manifest_version_id target_id window_key window_start window_end status run_id materialization_id payload source_publication_id updated_at),
+    "asset_target_generations" =>
+      ~w(workspace_id target_id target_generation_id creating_manifest_id creation_command_id creating_descriptor_hash active_descriptor_hash logical_relation physical_relation physical_schema_fingerprint data_plane_marker activation_token status creating_rebuild_operation_id version created_at activated_at retired_at updated_at),
+    "asset_target_bindings" =>
+      ~w(workspace_id target_id active_generation_id desired_manifest_id desired_descriptor_hash compatibility_status reason_code compatibility_diff active_physical_fingerprint version updated_at),
     "auth_actors" =>
       ~w(actor_id username normalized_username display_name creation_command_id creation_hash status version inserted_at updated_at),
     "auth_audit_entries" =>
@@ -243,9 +273,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
       ~w(content_hash asset_module asset_name runtime_input_resolver payload first_linked_at inserted_at),
     "manifest_execution_packages" => ~w(manifest_version_id package_hash asset_module asset_name),
     "materialization_claims" =>
-      ~w(workspace_id claim_key deployment_id target_kind target_id partition_key run_id claim_command_id claim_request_hash owner_id fencing_token last_renewal_id last_finish_command_id finish_hash status expires_at completed_at result error version inserted_at updated_at),
+      ~w(workspace_id claim_key deployment_id target_kind target_id target_generation_id evidence_generation_id partition_key run_id operation_id claim_command_id claim_request_hash owner_id fencing_token last_renewal_id last_finish_command_id finish_hash status expires_at completed_at result error version inserted_at updated_at),
     "materializations" =>
-      ~w(workspace_id materialization_id claim_key deployment_id target_kind target_id partition_key run_id payload payload_hash outbox_event_id inserted_at),
+      ~w(workspace_id materialization_id claim_key deployment_id target_kind target_id target_generation_id evidence_generation_id partition_key run_id payload payload_hash outbox_event_id inserted_at),
     "outbox_events" =>
       ~w(outbox_event_id workspace_id command_id event_kind aggregate_kind aggregate_id aggregate_version payload_version payload payload_hash occurred_at publication_id published_at inserted_at),
     "outbox_publication_state" =>
@@ -275,12 +305,20 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
       ~w(workspace_id outcome_id resource_kind resource_name run_id asset_step_id attempt status category occurred_at inserted_at),
     "resource_recovery_candidates" =>
       ~w(workspace_id candidate_id source_run_id node_key resource_kind resource_name reason status expires_at claim_owner claim_expires_at recovery_run_id inserted_at updated_at),
+    "rebuild_operations" =>
+      ~w(workspace_id operation_id root_target_id manifest_version_id active_generation_id candidate_generation_id plan_hash plan_version plan_payload trigger actor_id session_id reason idempotency_key evaluated_at coverage_start coverage_end action_count window_count state phase activation_token dispatched_at result_marker unknown_outcome validation_result terminal_error cleanup_state last_command_id dispatcher_owner dispatcher_fencing_token dispatcher_expires_at cancel_requested version started_at completed_at cancelled_at inserted_at updated_at),
+    "rebuild_plan_actions" =>
+      ~w(workspace_id operation_id target_id ordinal action reason upstream_impact mapping_proof pinned_input_generation_ids candidate_generation_id status child_operation_id child_run_id activation_intent validation_result terminal_error cleanup_state activated_at last_command_id version inserted_at updated_at),
+    "rebuild_windows" =>
+      ~w(workspace_id operation_id target_id item_id ordinal work_kind window_key window_start window_end status claim_owner fencing_token claim_command_id last_command_id claim_expires_at child_run_id materialization_id attempt_count row_count last_error candidate_generation_id runtime_input_expectation version inserted_at updated_at),
     "schedule_cursors" =>
       ~w(workspace_id deployment_id target_kind pipeline_target_id schedule_id schedule_fingerprint definition next_due_at cursor version claim_owner claim_generation claim_command_id last_command_id claim_expires_at updated_at),
     "schedule_occurrences" =>
       ~w(workspace_id occurrence_id occurrence_key evaluation_command_id deployment_id pipeline_target_id schedule_id due_at payload status claim_owner claim_generation claim_command_id last_command_id claim_expires_at run_id attempt_count last_error inserted_at updated_at),
     "target_statuses" =>
       ~w(workspace_id deployment_id target_kind target_id status run_id event_id source_publication_id updated_at),
+    "target_operation_locks" =>
+      ~w(workspace_id target_id operation_id operation_type fencing_token lease_owner lease_expires_at version inserted_at updated_at),
     "workspace_deployment_targets" =>
       ~w(workspace_id deployment_id target_kind target_id selection_source customer_visible descriptor inserted_at),
     "workspace_deployments" =>
@@ -295,7 +333,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     workspace_runtime_state outbox_events runs run_plans run_events run_targets runtime_input_pins
     run_ownerships runner_executions schedule_cursors schedule_occurrences capacity_scopes
     execution_leases execution_lease_scopes admission_waiters materialization_claims
-    materializations coverage_baselines backfills backfill_plan_batches backfill_windows
+    materializations asset_target_generations asset_target_bindings rebuild_operations
+    rebuild_plan_actions rebuild_windows target_operation_locks coverage_baselines backfills backfill_plan_batches backfill_windows
     projection_cursors projection_failures execution_group_overviews backfill_overviews
     target_statuses asset_window_states asset_freshness_states asset_attempt_overviews log_batches log_entries
     auth_actors auth_credentials auth_sessions auth_workspace_memberships auth_platform_grants
@@ -305,6 +344,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     manifest_versions execution_packages workspace_deployments outbox_events runs run_events runtime_input_pins
     runner_executions schedule_cursors schedule_occurrences admission_waiters
     materialization_claims materializations coverage_baselines backfills backfill_windows
+    asset_target_generations asset_target_bindings rebuild_operations rebuild_plan_actions rebuild_windows
     projection_failures asset_window_states asset_freshness_states asset_attempt_overviews log_entries
     auth_audit_entries auth_platform_audit_entries maintenance_jobs
   )
@@ -326,6 +366,13 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     schedule_occurrences_values_valid capacity_scopes_scope_valid capacity_scopes_values_valid
     execution_lease_scopes_units_valid execution_leases_values_valid
     admission_waiters_values_valid materialization_claims_values_valid
+    materialization_claims_generation_valid materializations_generation_valid
+    asset_target_generations_values_valid asset_target_bindings_values_valid
+    rebuild_operations_values_valid rebuild_operations_dispatch_valid rebuild_plan_actions_values_valid
+    rebuild_plan_actions_saga_valid rebuild_windows_values_valid
+    materialization_claims_operation_id_valid
+    target_operation_locks_values_valid asset_window_states_evidence_generation_valid
+    asset_freshness_states_evidence_generation_valid
     resource_circuits_values_valid resource_circuits_probe_shape_valid
     resource_circuit_outcomes_values_valid resource_recovery_candidates_values_valid
     coverage_baselines_values_valid backfills_values_valid backfill_plan_batches_values_valid
@@ -348,7 +395,18 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     execution_lease_scopes_lease_fk execution_lease_scopes_scope_fk admission_waiters_run_fk
     admission_waiters_scope_fk materialization_claims_run_fk materialization_claims_target_fk
     materialization_claims_run_target_fk materializations_run_fk materializations_outbox_fk
-    materializations_run_target_fk backfills_root_run_fk
+    materializations_run_target_fk materialization_claims_target_generation_fk
+    materializations_target_generation_fk asset_target_generations_workspace_fk
+    asset_target_generations_manifest_fk asset_target_generations_rebuild_operation_fk
+    asset_target_bindings_workspace_fk asset_target_bindings_manifest_fk
+    asset_target_bindings_active_generation_fk rebuild_operations_workspace_fk
+    rebuild_operations_manifest_fk rebuild_operations_active_generation_fk
+    rebuild_operations_candidate_generation_fk rebuild_plan_actions_operation_fk
+    rebuild_plan_actions_candidate_generation_fk rebuild_plan_actions_child_run_fk
+    rebuild_plan_actions_child_operation_fk
+    rebuild_windows_action_fk rebuild_windows_candidate_generation_fk
+    rebuild_windows_child_run_fk rebuild_windows_materialization_fk
+    target_operation_locks_workspace_fk backfills_root_run_fk
     backfills_deployment_manifest_fk backfills_target_fk backfill_plan_batches_backfill_fk
     backfill_windows_batch_fk backfill_windows_run_fk auth_credentials_actor_fk
     auth_sessions_actor_fk auth_workspace_memberships_workspace_fk auth_workspace_memberships_actor_fk
@@ -356,7 +414,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "6518943513ab2d5c8991a2886be2f7582e99d8baae052692e32c5086ba533194"
+  @expected_definition_fingerprint "0e63f434bcb98d623e9f5d0be78231dd26575c6ef92c731d4f6023828838dea6"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

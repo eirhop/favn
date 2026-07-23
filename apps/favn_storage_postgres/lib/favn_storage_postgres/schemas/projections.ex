@@ -65,7 +65,8 @@ defmodule FavnStoragePostgres.Schemas.AssetWindowState do
   @schema_prefix "favn_control"
   schema "asset_window_states" do
     field(:workspace_id, :string, primary_key: true)
-    field(:manifest_version_id, :string, primary_key: true)
+    field(:evidence_generation_id, :string, primary_key: true)
+    field(:manifest_version_id, :string)
     field(:target_id, :string, primary_key: true)
     field(:window_key, :string, primary_key: true)
     field(:window_start, :utc_datetime_usec)
@@ -87,7 +88,9 @@ defmodule FavnStoragePostgres.Schemas.AssetFreshnessState do
   @schema_prefix "favn_control"
   schema "asset_freshness_states" do
     field(:workspace_id, :string, primary_key: true)
-    field(:deployment_id, :string, primary_key: true)
+    field(:evidence_generation_id, :string, primary_key: true)
+    field(:deployment_id, :string)
+    field(:manifest_version_id, :string)
     field(:target_id, :string, primary_key: true)
     field(:freshness_key, :string, primary_key: true)
     field(:latest_attempt_materialization_id, :string)

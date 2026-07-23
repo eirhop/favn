@@ -219,8 +219,10 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     def concurrency_policies(resolved), do: CatalogConnectAdapter.concurrency_policies(resolved)
 
     def poolable?(%Resolved{}, _opts), do: true
+
     def prepare_pool(%Resolved{}, opts),
       do: {:ok, {__MODULE__, Keyword.get(opts, :pool_marker)}, nil}
+
     def validate_session(_conn, _opts), do: :ok
     def reset_session(_conn, _resolved, _opts), do: :ok
   end
@@ -773,6 +775,85 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
              )
 
     assert :ok = Client.disconnect(second_key)
+  end
+
+  test "overlapping catalog checkout evicts an incompatible idle session", %{
+    tracker: tracker
+  } do
+    registry_name = :admission_overlapping_pooled_catalog_registry
+
+    start_registry(registry_name, PooledCatalogConnectAdapter, tracker, %{
+      admission_timeout_ms: 20,
+      pool: %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+    })
+
+    assert {:ok, mart_session} =
+             Client.connect(:warehouse,
+               registry_name: registry_name,
+               required_catalogs: ["mart"]
+             )
+
+    assert :ok = Client.disconnect(mart_session)
+    assert Agent.get(tracker, & &1.sessions) == 1
+
+    assert {:ok, overlapping_session} =
+             Client.connect(:warehouse,
+               registry_name: registry_name,
+               required_catalogs: ["raw", "mart"]
+             )
+
+    assert :ok = Client.disconnect(overlapping_session)
+    assert Agent.get(tracker, & &1.sessions) == 1
+  end
+
+  test "overlapping catalog checkout retires an incompatible active session on checkin", %{
+    tracker: tracker
+  } do
+    registry_name = :admission_overlapping_active_catalog_registry
+
+    start_registry(registry_name, PooledCatalogConnectAdapter, tracker, %{
+      admission_timeout_ms: 500,
+      pool: %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+    })
+
+    parent = self()
+
+    narrow =
+      Task.async(fn ->
+        {:ok, session} =
+          Client.connect(:warehouse,
+            registry_name: registry_name,
+            required_catalogs: ["mart"]
+          )
+
+        send(parent, {:narrow_session_connected, self()})
+
+        receive do
+          :release_narrow_session -> :ok
+        end
+
+        Client.disconnect(session)
+      end)
+
+    assert_receive {:narrow_session_connected, narrow_owner}, 500
+
+    broader =
+      Task.async(fn ->
+        with {:ok, session} <-
+               Client.connect(:warehouse,
+                 registry_name: registry_name,
+                 required_catalogs: ["raw", "mart"]
+               ) do
+          Client.disconnect(session)
+        end
+      end)
+
+    assert Task.yield(broader, 25) == nil
+    send(narrow_owner, :release_narrow_session)
+
+    assert :ok = Task.await(narrow, 1_000)
+    assert :ok = Task.await(broader, 1_000)
+    assert Agent.get(tracker, & &1.max_sessions) == 1
   end
 
   test "process default required catalogs scope SQL client connect", %{tracker: tracker} do

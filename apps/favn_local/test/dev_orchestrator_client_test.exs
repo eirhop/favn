@@ -473,6 +473,233 @@ defmodule Favn.Dev.OrchestratorClientTest do
     end)
   end
 
+  test "missing coverage helpers preserve the reviewed plan and command identity" do
+    parent = self()
+    plan = %{"plan_id" => "coverage_plan_1", "plan_hash" => String.duplicate("a", 64)}
+
+    {:ok, base_url, _server} =
+      start_server_sequence(
+        [
+          {JSON.encode!(%{data: %{plan: plan}}), 200, 0},
+          {JSON.encode!(%{data: %{run_id: "run_coverage_1"}}), 202, 0}
+        ],
+        parent: parent
+      )
+
+    context = session_context()
+    target_id = "asset:Elixir.MyApp.Orders:orders"
+
+    assert {:ok, ^plan} =
+             OrchestratorClient.plan_missing_coverage_backfill(
+               base_url,
+               "token",
+               context,
+               target_id,
+               limit: 250
+             )
+
+    encoded_target = URI.encode(target_id)
+    plan_path = "/api/orchestrator/v1/coverage/assets/#{encoded_target}/backfill/plan"
+
+    assert_receive {:request_path, ^plan_path}
+
+    assert_receive {:request_headers, _plan_headers}
+    assert_receive {:request_body, plan_body}
+    assert JSON.decode!(plan_body) == %{"limit" => 250}
+
+    assert {:ok, "run_coverage_1"} =
+             OrchestratorClient.submit_missing_coverage_backfill(
+               base_url,
+               "token",
+               context,
+               target_id,
+               plan
+             )
+
+    submit_path = "/api/orchestrator/v1/coverage/assets/#{encoded_target}/backfill"
+    assert_receive {:request_path, ^submit_path}
+
+    assert_receive {:request_headers, submit_headers}
+    assert_idempotency_header(submit_headers)
+    assert_receive {:request_body, submit_body}
+    assert JSON.decode!(submit_body) == %{"plan" => plan}
+  end
+
+  test "rebuild helpers preserve explicit plan approval and mutation identity" do
+    parent = self()
+    plan_hash = String.duplicate("a", 64)
+    plan = %{"plan_id" => "rebuild-plan-1", "plan_hash" => plan_hash}
+    rebuild = %{"operation_id" => "rebuild-plan-1", "plan_hash" => plan_hash, "state" => "queued"}
+
+    {:ok, base_url, _server} =
+      start_server_sequence(
+        [
+          {JSON.encode!(%{data: %{plan: plan}}), 201, 0},
+          {JSON.encode!(%{data: %{rebuild: rebuild}}), 202, 0},
+          {JSON.encode!(%{data: %{rebuild: rebuild}}), 200, 0},
+          {JSON.encode!(%{data: %{rebuild: %{rebuild | "state" => "cancelling"}}}), 202, 0},
+          {JSON.encode!(%{data: %{rebuild: rebuild}}), 202, 0},
+          {JSON.encode!(%{data: %{rebuild: %{rebuild | "state" => "reconciling"}}}), 202, 0}
+        ],
+        parent: parent
+      )
+
+    context = session_context()
+
+    assert {:ok, ^plan} =
+             OrchestratorClient.plan_rebuild(
+               base_url,
+               "token",
+               context,
+               "asset:orders",
+               "schema changed"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/rebuilds/plan"}
+    assert_receive {:request_headers, plan_headers}
+    assert_idempotency_header(plan_headers)
+    assert_receive {:request_body, plan_body}
+
+    assert JSON.decode!(plan_body) == %{
+             "target_id" => "asset:orders",
+             "reason" => "schema changed"
+           }
+
+    assert {:ok, ^rebuild} =
+             OrchestratorClient.start_rebuild(
+               base_url,
+               "token",
+               context,
+               "rebuild-plan-1",
+               plan_hash
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/rebuilds"}
+    assert_receive {:request_headers, start_headers}
+    assert_idempotency_header(start_headers)
+    assert_receive {:request_body, start_body}
+
+    assert JSON.decode!(start_body) == %{
+             "approved" => true,
+             "plan_hash" => plan_hash,
+             "plan_id" => "rebuild-plan-1"
+           }
+
+    assert {:ok, ^rebuild} =
+             OrchestratorClient.get_rebuild(base_url, "token", context, "rebuild-plan-1")
+
+    assert_receive {:request_path, "/api/orchestrator/v1/rebuilds/rebuild-plan-1"}
+    assert_receive {:request_headers, _get_headers}
+    assert_receive {:request_body, ""}
+
+    assert {:ok, %{"state" => "cancelling"}} =
+             OrchestratorClient.cancel_rebuild(
+               base_url,
+               "token",
+               context,
+               "rebuild-plan-1",
+               "operator request"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/rebuilds/rebuild-plan-1/cancel"}
+    assert_receive {:request_headers, cancel_headers}
+    assert_idempotency_header(cancel_headers)
+    assert_receive {:request_body, cancel_body}
+    assert JSON.decode!(cancel_body) == %{"reason" => "operator request"}
+
+    assert {:ok, ^rebuild} =
+             OrchestratorClient.retry_rebuild(
+               base_url,
+               "token",
+               context,
+               "rebuild-plan-1",
+               plan_hash
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/rebuilds/rebuild-plan-1/retry"}
+    assert_receive {:request_headers, retry_headers}
+    assert_idempotency_header(retry_headers)
+    assert_receive {:request_body, retry_body}
+    assert JSON.decode!(retry_body) == %{"plan_hash" => plan_hash}
+
+    assert {:ok, %{"state" => "reconciling"}} =
+             OrchestratorClient.reconcile_rebuild(
+               base_url,
+               "token",
+               context,
+               "rebuild-plan-1"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/rebuilds/rebuild-plan-1/reconcile"}
+    assert_receive {:request_headers, reconcile_headers}
+    assert_idempotency_header(reconcile_headers)
+    assert_receive {:request_body, "{}"}
+  end
+
+  test "repeatable rebuild attempts use fresh command identities" do
+    parent = self()
+    plan_hash = String.duplicate("a", 64)
+    plan = %{data: %{plan: %{plan_id: "plan-1", plan_hash: plan_hash}}}
+    rebuild = %{data: %{rebuild: %{operation_id: "plan-1", plan_hash: plan_hash}}}
+
+    {:ok, base_url, _server} =
+      start_server_sequence(
+        [
+          {JSON.encode!(plan), 201, 0},
+          {JSON.encode!(plan), 201, 0},
+          {JSON.encode!(rebuild), 202, 0},
+          {JSON.encode!(rebuild), 202, 0}
+        ],
+        parent: parent
+      )
+
+    context = session_context()
+
+    assert {:ok, _plan} =
+             OrchestratorClient.plan_rebuild(
+               base_url,
+               "token",
+               context,
+               "asset:orders",
+               "schema changed"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/rebuilds/plan"}
+    assert_receive {:request_headers, first_plan_headers}
+    assert_receive {:request_body, _body}
+
+    assert {:ok, _plan} =
+             OrchestratorClient.plan_rebuild(
+               base_url,
+               "token",
+               context,
+               "asset:orders",
+               "schema changed"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/rebuilds/plan"}
+    assert_receive {:request_headers, second_plan_headers}
+    assert_receive {:request_body, _body}
+
+    assert idempotency_header(first_plan_headers) != idempotency_header(second_plan_headers)
+
+    assert {:ok, _rebuild} =
+             OrchestratorClient.retry_rebuild(base_url, "token", context, "plan-1", plan_hash)
+
+    assert_receive {:request_path, "/api/orchestrator/v1/rebuilds/plan-1/retry"}
+    assert_receive {:request_headers, first_retry_headers}
+    assert_receive {:request_body, _body}
+
+    assert {:ok, _rebuild} =
+             OrchestratorClient.retry_rebuild(base_url, "token", context, "plan-1", plan_hash)
+
+    assert_receive {:request_path, "/api/orchestrator/v1/rebuilds/plan-1/retry"}
+    assert_receive {:request_headers, second_retry_headers}
+    assert_receive {:request_body, _body}
+
+    assert idempotency_header(first_retry_headers) != idempotency_header(second_retry_headers)
+  end
+
   test "separate activation invocations use fresh command identities across renewed sessions" do
     parent = self()
 
@@ -855,6 +1082,11 @@ defmodule Favn.Dev.OrchestratorClientTest do
     refute key =~ "service-token-secret"
     refute key =~ "sess_1"
     refute key =~ "raw_session_token_1"
+  end
+
+  defp idempotency_header(headers) do
+    assert_idempotency_header(headers)
+    Map.fetch!(headers, "idempotency-key")
   end
 
   defp unused_port do

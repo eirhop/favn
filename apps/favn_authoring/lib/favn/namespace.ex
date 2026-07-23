@@ -28,6 +28,8 @@ defmodule Favn.Namespace do
         runtime_config(MyApp.RuntimeConfigs.storage())
         runtime_inputs(MyApp.Lakehouse.Raw.Inputs)
         freshness({:daily, timezone: "Etc/UTC"})
+        window(Favn.Window.daily())
+        coverage(from: ~D[2020-01-01])
       end
 
       defmodule MyApp.Lakehouse.Raw.Sales.Orders do
@@ -54,8 +56,8 @@ defmodule Favn.Namespace do
     same key.
   - `runtime_config` bundles combine through the normal requirement conflict
     validation.
-  - `runtime_inputs`, `freshness`, `window`, and `materialized` use the closest
-    declaration. `nil` clears the optional scalar declarations.
+  - `runtime_inputs`, `freshness`, `window`, `coverage`, and `materialized` use
+    the closest declaration. `nil` clears the optional scalar declarations.
 
   `Favn.MultiAsset` adds its module declarations after namespace defaults and
   child declarations last. Each asset kind consumes the declarations already
@@ -107,6 +109,7 @@ defmodule Favn.Namespace do
     :runtime_inputs,
     :freshness,
     :window,
+    :coverage,
     :materialized,
     :relation,
     :resources
@@ -138,6 +141,7 @@ defmodule Favn.Namespace do
           meta: 1,
           freshness: 1,
           window: 1,
+          coverage: 1,
           relation: 1,
           runtime_config: 1,
           runtime_config: 2,

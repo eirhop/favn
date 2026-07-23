@@ -55,7 +55,11 @@ stays conservative unless a finite catalog policy such as DuckLake
 Idle pooled sessions retain catalog admission until reuse or eviction. That keeps
 physical pooled sessions inside the configured catalog budget. Superseded
 fingerprints in the same stable pool scope are evicted automatically; unrelated
-incompatible scopes can still compete for the same finite catalog capacity.
+incompatible scopes with the same catalog set can still compete for the same
+finite catalog capacity. When a new session needs a different overlapping
+catalog set, the pool closes conflicting idle sessions and marks conflicting
+active sessions for close on checkin. Their catalog permits therefore transfer
+to the broader session as soon as current work finishes.
 
 Catalog-level admission is driven by materialization write plans whose target
 relations include a catalog. Session bootstrap can also acquire catalog permits
@@ -91,6 +95,28 @@ Retry handling must stay operation-aware. Bounded retries are acceptable around
 session creation/bootstrap and read-only inspection/query paths. Blind retries of
 SQL writes are not safe, and unknown commit state must be surfaced rather than
 retried.
+
+Target generations use the optional `Favn.SQL.GenerationAdapter` behavior; a
+general `transactions: :supported` capability never implies generation safety.
+The separate generation capability value explicitly reports candidate isolation,
+physical inspection, transactional DDL, atomic swap, marker reconciliation,
+idempotent discard, and optional snapshots. Rebuild planning must require every
+non-optional capability before creating data-plane work.
+
+Generation inspection, initial-marker creation, activation, reconciliation, and
+discard run only through an owner-exclusive `%Favn.SQL.Session{}`. After an
+ordinary first materialization, marker creation verifies the recorded physical
+fingerprint and writes an idempotency identity in one transaction. Activation
+rechecks the candidate physical fingerprint inside its transaction, compares the
+exact previous marker identity (target, relation, generation, operation id, and
+token), retires the stable table, promotes the candidate, writes the new marker,
+and commits. Marker timestamps are diagnostic and may be normalized by the data
+system; they are not part of the compare-and-swap identity. A commit error after
+a successful transaction body is an explicit unknown outcome and is never
+retried. An idempotent replay returns the marker already stored by the data
+system, including its diagnostic timestamp. Reconciliation reads that marker.
+Discard reads the marker in its transaction and refuses to drop a candidate
+that is already active.
 
 Connection runtime config reserves `circuit_breaker` and normalizes it into
 `%Favn.CircuitBreaker.Policy{}` on `%Favn.Connection.Resolved{}` rather than

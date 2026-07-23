@@ -41,6 +41,9 @@ control-plane database. The canonical technical documentation is:
 [`architecture/postgresql-control-plane-storage-v2.md`](architecture/postgresql-control-plane-storage-v2.md)
 is the concise decision record: use it for rationale, rejected alternatives,
 invariants, and tradeoffs rather than current implementation detail.
+Generation compatibility, immutable rebuild planning, activation, and recovery
+are described in
+[`architecture/target-generations-and-rebuilds.md`](architecture/target-generations-and-rebuilds.md).
 
 ## Historical material
 

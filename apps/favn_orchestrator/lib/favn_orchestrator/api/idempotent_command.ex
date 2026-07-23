@@ -83,10 +83,14 @@ defmodule FavnOrchestrator.API.IdempotentCommand do
 
   @doc "Returns the redacted idempotency metadata stored with audit entries."
   @spec audit_metadata(idempotency(), String.t()) :: map()
-  def audit_metadata(%{operation: operation, key_hash: key_hash}, outcome) do
+  def audit_metadata(idempotency, outcome), do: audit_metadata(idempotency, outcome, false)
+
+  @spec audit_metadata(idempotency(), String.t(), boolean()) :: map()
+  def audit_metadata(%{operation: operation, key_hash: key_hash}, outcome, replayed?)
+      when is_boolean(replayed?) do
     %{
       operation: operation,
-      idempotency: %{outcome: outcome, key_hash: key_hash}
+      idempotency: %{outcome: outcome, key_hash: key_hash, replayed: replayed?}
     }
   end
 

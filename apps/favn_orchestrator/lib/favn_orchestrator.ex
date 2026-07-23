@@ -16,6 +16,7 @@ defmodule FavnOrchestrator do
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.ControlPlaneRuntimeConfig
+  alias FavnOrchestrator.Coverage
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.Logs
@@ -24,7 +25,9 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.ManifestTarget
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.Operator.Catalogue
+  alias FavnOrchestrator.Operator.Audit, as: OperatorAudit
   alias FavnOrchestrator.Operator.Lineage
+  alias FavnOrchestrator.Operator.Rebuilds, as: OperatorRebuilds
   alias FavnOrchestrator.Operator.Commands, as: OperatorCommands
   alias FavnOrchestrator.OperatorContext
   alias FavnOrchestrator.Operator.Schedules
@@ -47,6 +50,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RunnerReplacement
   alias FavnOrchestrator.RunReadModel
+  alias FavnOrchestrator.Rebuilds
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
   alias FavnOrchestrator.Runs
@@ -83,6 +87,8 @@ defmodule FavnOrchestrator do
   @type asset_detail :: Catalogue.asset_detail()
   @type asset_freshness_reason :: Catalogue.asset_freshness_reason()
   @type asset_freshness_detail :: Catalogue.asset_freshness_detail()
+  @type coverage_summary :: Favn.Coverage.Summary.t()
+  @type missing_coverage_page :: Coverage.missing_page()
 
   @doc "Returns a customer-visible lineage graph after operator reauthorization."
   @spec get_operator_lineage_graph(OperatorContext.t(), keyword()) ::
@@ -317,6 +323,316 @@ defmodule FavnOrchestrator do
       Catalogue.active_asset_detail(context, target_id, opts)
     end
   end
+
+  @doc "Returns generation-aware coverage for one active asset after reauthorization."
+  @spec get_asset_coverage(OperatorContext.t(), String.t()) ::
+          {:ok, coverage_summary()} | {:error, term()}
+  def get_asset_coverage(%OperatorContext{} = operator_context, target_id)
+      when is_binary(target_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Coverage.summary(context, target_id)
+    end
+  end
+
+  @doc "Returns one cursor-paged set of missing coverage windows after reauthorization."
+  @spec page_asset_missing_coverage(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, missing_coverage_page()} | {:error, term()}
+  def page_asset_missing_coverage(%OperatorContext{} = operator_context, target_id, opts \\ [])
+      when is_binary(target_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Coverage.missing_windows(context, target_id, opts)
+    end
+  end
+
+  @doc "Plans an exact backfill for all or one page of missing windows."
+  @spec plan_missing_coverage_backfill(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_missing_coverage_backfill(%OperatorContext{} = operator_context, target_id, opts \\ [])
+      when is_binary(target_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator) do
+      Coverage.plan_missing_backfill(context, target_id, opts)
+    end
+  end
+
+  @doc "Submits an exact, revalidated missing-window backfill plan."
+  @spec submit_missing_coverage_backfill(
+          OperatorContext.t(),
+          String.t(),
+          map(),
+          keyword()
+        ) :: {:ok, run_id()} | {:error, term()}
+  def submit_missing_coverage_backfill(
+        %OperatorContext{} = operator_context,
+        target_id,
+        plan,
+        opts \\ []
+      )
+      when is_binary(target_id) and is_map(plan) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         metadata <- %{
+           actor_id: actor.id,
+           session_id: operator_context.session_id,
+           requested_by: :operator
+         },
+         {:ok, opts} <- merge_coverage_metadata(opts, metadata),
+         {:ok, backfill} <- Coverage.submit_missing_backfill(context, target_id, plan, opts) do
+      {:ok, backfill.root_run_id}
+    end
+  end
+
+  defp merge_coverage_metadata(opts, required) do
+    case Keyword.get(opts, :metadata, %{}) do
+      metadata when is_map(metadata) ->
+        {:ok, Keyword.put(opts, :metadata, Map.merge(metadata, required))}
+
+      _invalid ->
+        {:error, :invalid_coverage_backfill_options}
+    end
+  end
+
+  @doc "Creates an immutable manual rebuild plan after operator reauthorization."
+  @spec plan_operator_rebuild(OperatorContext.t(), String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_operator_rebuild(%OperatorContext{} = operator_context, target_id, reason, opts \\ [])
+      when is_binary(target_id) and is_binary(reason) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
+      case Rebuilds.plan(context, target_id, reason, opts) do
+        {:ok, plan} ->
+          audit_operator_rebuild(
+            context,
+            operator_context,
+            actor,
+            "rebuild.plan",
+            plan.plan_id,
+            %{target_id: target_id, reason: reason, plan_hash: plan.plan_hash},
+            "accepted",
+            plan.idempotency_replay?
+          )
+
+          {:ok, OperatorRebuilds.plan(plan, admin?(context))}
+
+        {:error, failure} = error ->
+          audit_operator_rebuild(
+            context,
+            operator_context,
+            actor,
+            "rebuild.plan",
+            target_id,
+            %{target_id: target_id, reason: reason, error_code: rebuild_error_code(failure)},
+            "rejected"
+          )
+
+          error
+      end
+    end
+  end
+
+  @doc "Starts one exact immutable rebuild plan after administrator reauthorization."
+  @spec start_operator_rebuild(OperatorContext.t(), String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def start_operator_rebuild(
+        %OperatorContext{} = operator_context,
+        plan_id,
+        plan_hash,
+        opts \\ []
+      )
+      when is_binary(plan_id) and is_binary(plan_hash) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
+      case Rebuilds.start(context, plan_id, plan_hash, opts) do
+        {:ok, operation} ->
+          audit_operator_rebuild(
+            context,
+            operator_context,
+            actor,
+            "rebuild.start",
+            operation.operation_id,
+            %{plan_hash: plan_hash, state: operation.state},
+            "accepted",
+            operation.idempotency_replay? == true
+          )
+
+          {:ok, OperatorRebuilds.operation(operation, true)}
+
+        {:error, failure} = error ->
+          audit_operator_rebuild(
+            context,
+            operator_context,
+            actor,
+            "rebuild.start",
+            plan_id,
+            %{plan_hash: plan_hash, error_code: rebuild_error_code(failure)},
+            "rejected"
+          )
+
+          error
+      end
+    end
+  end
+
+  @doc "Returns one bounded rebuild detail after viewer reauthorization."
+  @spec get_operator_rebuild(OperatorContext.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def get_operator_rebuild(%OperatorContext{} = operator_context, operation_id)
+      when is_binary(operation_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, operation} <- Rebuilds.get(context, operation_id) do
+      {:ok, OperatorRebuilds.operation(operation, admin?(context))}
+    end
+  end
+
+  @doc "Pages bounded rebuild summaries after viewer reauthorization."
+  @spec page_operator_rebuilds(OperatorContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def page_operator_rebuilds(%OperatorContext{} = operator_context, opts \\ [])
+      when is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, page} <- Rebuilds.page(context, opts) do
+      {:ok,
+       OperatorRebuilds.page(page, &OperatorRebuilds.operation(&1, admin?(context), :summary))}
+    end
+  end
+
+  @doc "Pages bounded logical rebuild items after viewer reauthorization."
+  @spec page_operator_rebuild_items(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def page_operator_rebuild_items(%OperatorContext{} = operator_context, operation_id, opts \\ [])
+      when is_binary(operation_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, page} <- Rebuilds.page_items(context, operation_id, opts) do
+      {:ok, OperatorRebuilds.page(page, &OperatorRebuilds.item/1)}
+    end
+  end
+
+  @doc "Requests cancellation of one rebuild after administrator reauthorization."
+  @spec cancel_operator_rebuild(OperatorContext.t(), String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def cancel_operator_rebuild(
+        %OperatorContext{} = operator_context,
+        operation_id,
+        reason,
+        opts \\ []
+      )
+      when is_binary(operation_id) and is_binary(reason) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
+      finish_operator_rebuild_mutation(
+        Rebuilds.cancel(context, operation_id, reason, opts),
+        context,
+        operator_context,
+        actor,
+        "rebuild.cancel",
+        operation_id,
+        %{reason: reason}
+      )
+    end
+  end
+
+  @doc "Retries safe failed rebuild work after administrator reauthorization."
+  @spec retry_operator_rebuild(OperatorContext.t(), String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def retry_operator_rebuild(
+        %OperatorContext{} = operator_context,
+        operation_id,
+        plan_hash,
+        opts \\ []
+      )
+      when is_binary(operation_id) and is_binary(plan_hash) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
+      finish_operator_rebuild_mutation(
+        Rebuilds.retry(context, operation_id, plan_hash, opts),
+        context,
+        operator_context,
+        actor,
+        "rebuild.retry",
+        operation_id,
+        %{plan_hash: plan_hash}
+      )
+    end
+  end
+
+  @doc "Requests reconciliation of an unknown rebuild outcome after administrator reauthorization."
+  @spec reconcile_operator_rebuild(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def reconcile_operator_rebuild(%OperatorContext{} = operator_context, operation_id, opts \\ [])
+      when is_binary(operation_id) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
+      finish_operator_rebuild_mutation(
+        Rebuilds.reconcile(context, operation_id, opts),
+        context,
+        operator_context,
+        actor,
+        "rebuild.reconcile",
+        operation_id,
+        %{}
+      )
+    end
+  end
+
+  defp finish_operator_rebuild_mutation(
+         result,
+         context,
+         operator_context,
+         actor,
+         action,
+         operation_id,
+         detail
+       ) do
+    case result do
+      {:ok, operation} ->
+        audit_operator_rebuild(
+          context,
+          operator_context,
+          actor,
+          action,
+          operation_id,
+          Map.put(detail, :state, operation.state),
+          "accepted",
+          operation.idempotency_replay? == true
+        )
+
+        {:ok, OperatorRebuilds.operation(operation, true)}
+
+      {:error, failure} = error ->
+        audit_operator_rebuild(
+          context,
+          operator_context,
+          actor,
+          action,
+          operation_id,
+          Map.put(detail, :error_code, rebuild_error_code(failure)),
+          "rejected"
+        )
+
+        error
+    end
+  end
+
+  defp audit_operator_rebuild(
+         context,
+         operator_context,
+         actor,
+         action,
+         operation_id,
+         detail,
+         outcome,
+         replayed? \\ false
+       ) do
+    OperatorAudit.put_best_effort(context, %{
+      action: action,
+      actor_id: actor.id,
+      session_id: operator_context.session_id,
+      resource_type: "rebuild",
+      resource_id: operation_id,
+      service_identity: "same_beam_operator_ui",
+      outcome: outcome,
+      detail: detail,
+      idempotency: %{replayed: replayed?}
+    })
+  end
+
+  defp rebuild_error_code(%PersistenceError{kind: kind, details: details}) do
+    Map.get(details, :reason_code) || Map.get(details, "reason_code") || Atom.to_string(kind)
+  end
+
+  defp rebuild_error_code(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp rebuild_error_code(_reason), do: "rebuild_failed"
 
   @doc "Lists workspace-isolated logs after reauthorizing an operator context."
   @spec list_logs(OperatorContext.t(), term(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -821,6 +1137,7 @@ defmodule FavnOrchestrator do
     |> Keyword.put(:metadata, metadata)
     |> Keyword.put(:trigger, remaining_retry_trigger(plan, child))
     |> maybe_put_opt(:refresh_policy, Map.get(child, :refresh_policy))
+    |> maybe_put_opt(:window_selection, Map.get(child, :window_selection))
     |> maybe_put_opt(:anchor_window, Map.get(child, :anchor_window))
     |> maybe_put_opt(:parent_run_id, Map.get(child, :backfill_run_id))
     |> maybe_put_opt(:root_run_id, Map.get(child, :backfill_run_id))
@@ -1113,6 +1430,8 @@ defmodule FavnOrchestrator do
       {:ok, context, actor}
     end
   end
+
+  defp admin?(%WorkspaceContext{roles: roles}), do: OperatorRebuilds.admin?(roles)
 
   defp operator_backfill_opts(request, actor, operator_context) do
     []

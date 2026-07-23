@@ -44,6 +44,11 @@ remaining item is explicitly removed from the supported product contract.
 
 ## Later
 
+- Standalone, manually approved SQL asset migrations are tracked in
+  [#533](https://github.com/eirhop/favn/issues/533). They follow the target-generation,
+  locking, validation, activation, audit, and unknown-outcome contracts proven by
+  [#532](https://github.com/eirhop/favn/issues/532); migrations remain separate
+  authored operations rather than SQL asset macros.
 - Optional PostgreSQL row-level security as defense in depth.
 - Additional SQL adapters and credential providers driven by customer demand.
 - A smaller development-only storage adapter only if PostgreSQL developer-loop

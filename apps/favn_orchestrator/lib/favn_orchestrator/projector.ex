@@ -397,6 +397,7 @@ defmodule FavnOrchestrator.Projector do
       max_concurrency: Map.get(pipeline_context, :max_concurrency),
       execution_pool: Map.get(pipeline_context, :execution_pool),
       anchor_window: Map.get(pipeline_context, :anchor_window),
+      window_selection: Map.get(pipeline_context, :window_selection),
       backfill_range: Map.get(pipeline_context, :backfill_range),
       anchor_ranges: Map.get(pipeline_context, :anchor_ranges, []),
       source: Map.get(pipeline_context, :source),

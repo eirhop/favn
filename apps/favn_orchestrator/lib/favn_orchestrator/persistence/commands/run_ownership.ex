@@ -14,16 +14,37 @@ defmodule FavnOrchestrator.Persistence.Commands.ClaimRun do
 end
 
 defmodule FavnOrchestrator.Persistence.Commands.ClaimRecoveryBatch do
-  @moduledoc "Claims a bounded batch of active runs whose ownership is available in one workspace."
+  @moduledoc """
+  Claims a bounded batch of active runs whose ownership is available in one workspace.
+
+  `unowned_grace_period_ms` keeps a newly persisted run out of recovery while
+  normal submission hands it to its first RunServer. Never-claimed runs become
+  recoverable after that bounded grace period.
+  """
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  @enforce_keys [:workspace_context, :batch_id, :owner_id, :lease_duration_ms]
-  defstruct [:workspace_context, :batch_id, :owner_id, :lease_duration_ms, limit: 100]
+
+  @enforce_keys [
+    :workspace_context,
+    :batch_id,
+    :owner_id,
+    :lease_duration_ms,
+    :unowned_grace_period_ms
+  ]
+  defstruct [
+    :workspace_context,
+    :batch_id,
+    :owner_id,
+    :lease_duration_ms,
+    :unowned_grace_period_ms,
+    limit: 100
+  ]
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
           batch_id: String.t(),
           owner_id: String.t(),
           lease_duration_ms: pos_integer(),
+          unowned_grace_period_ms: non_neg_integer(),
           limit: 1..500
         }
 end

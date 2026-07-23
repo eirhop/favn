@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   alias Favn.Window.Key, as: WindowKey
   alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Coverage
   alias FavnOrchestrator.Freshness.StateLoader
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Operator.Catalogue.Assurance
@@ -21,11 +22,13 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   alias FavnOrchestrator.Operator.Catalogue.Timeline
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
+  alias FavnOrchestrator.Persistence.Queries.GetTargetBindings
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: PersistenceTargetStatus
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.TargetGenerations
 
   @type manifest_summary :: %{
           required(:manifest_version_id) => String.t(),
@@ -64,7 +67,9 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:status) => :healthy | :running | :failed | :unknown,
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
-          required(:latest_run_at) => DateTime.t() | nil
+          required(:latest_run_at) => DateTime.t() | nil,
+          required(:coverage) => Favn.Coverage.Summary.t(),
+          required(:compatibility) => map()
         }
 
   @type pipeline_catalogue_entry :: %{
@@ -155,6 +160,11 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:selected_run_context) => map() | nil,
           required(:run_context_status) => AssetRunContext.status(),
           required(:freshness) => asset_freshness_detail(),
+          required(:coverage) => Favn.Coverage.Summary.t(),
+          required(:coverage_policy) => map() | nil,
+          required(:coverage_gaps) => [map()],
+          required(:coverage_pagination) => map(),
+          required(:compatibility) => map(),
           required(:assurance) => map() | nil,
           required(:timeline) => [asset_timeline_window()]
         }
@@ -183,8 +193,12 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
          {:ok, targets} <- deployment_target_descriptors(grants, :asset),
-         {:ok, statuses} <- target_statuses(context, runtime, :asset, targets) do
-      {:ok, catalogue_entries(targets, statuses)}
+         {:ok, statuses} <- target_statuses(context, runtime, :asset, targets),
+         {:ok, compatibilities} <- target_compatibilities(context, targets),
+         {:ok, coverages} <-
+           Coverage.summaries(context, Enum.map(targets, & &1.target_id)),
+         :ok <- coverage_snapshot(coverages, runtime.manifest_version_id) do
+      {:ok, catalogue_entries(targets, statuses, coverages, compatibilities)}
     end
   end
 
@@ -238,6 +252,13 @@ defmodule FavnOrchestrator.Operator.Catalogue do
          {:ok, run_context_selection} <-
            AssetRunContext.select(version, asset, Keyword.get(opts, :run_context_id)),
          now <- Keyword.get(opts, :now) || DateTime.utc_now(),
+         {:ok, coverage_page} <-
+           Coverage.missing_windows(context, target_id, evaluated_at: now, limit: 100),
+         :ok <- coverage_snapshot(coverage_page.summary, runtime.manifest_version_id),
+         {:ok, compatibilities} <-
+           target_compatibilities(context, [
+             %{target_id: target_id, persisted?: not is_nil(asset.target_descriptor)}
+           ]),
          freshness_opts <- freshness_opts(opts, run_context_selection),
          {:ok, freshness_plan} <- AssetFreshness.plan(asset, version, now, freshness_opts),
          {:ok, loaded_freshness} <-
@@ -250,7 +271,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
            ),
          {:ok, status} <- target_status(context, runtime, :asset, target_id),
          {:ok, page} <- target_runs(context, runtime, :asset, target_id),
-         {:ok, projected_window_states} <- asset_window_states(context, runtime, target_id),
+         {:ok, projected_window_states} <- asset_window_states(context, asset, target_id),
          {:ok, window_states} <-
            catalogue_window_states(projected_window_states, asset, version) do
       runs = Enum.map(page.items, &Projector.project_run_summary/1)
@@ -260,22 +281,43 @@ defmodule FavnOrchestrator.Operator.Catalogue do
         |> Keyword.put(:now, now)
         |> Keyword.put(:freshness_plan, freshness_plan)
 
-      {:ok,
-       asset_detail_entry(
-         version,
-         asset,
-         target_id,
-         status || unknown_status(context, runtime, :asset, target_id),
-         loaded_freshness.states,
-         window_states,
-         runs,
-         detail_opts,
-         run_context_selection
-       )}
+      detail =
+        asset_detail_entry(
+          version,
+          asset,
+          target_id,
+          status || unknown_status(context, runtime, :asset, target_id),
+          loaded_freshness.states,
+          window_states,
+          runs,
+          detail_opts,
+          run_context_selection
+        )
+        |> Map.put(:coverage, coverage_page.summary)
+        |> Map.put(:coverage_policy, coverage_policy(asset.coverage))
+        |> Map.put(:coverage_gaps, coverage_page.items)
+        |> Map.put(:coverage_pagination, coverage_page.pagination)
+        |> Map.put(:compatibility, Map.fetch!(compatibilities, target_id))
+
+      {:ok, detail}
     else
       false -> {:error, :not_found}
       {:error, _reason} = error -> error
     end
+  end
+
+  defp coverage_snapshot(%Favn.Coverage.Summary{} = summary, manifest_version_id) do
+    if summary.manifest_version_id == manifest_version_id,
+      do: :ok,
+      else: {:error, :catalogue_snapshot_changed}
+  end
+
+  defp coverage_snapshot(coverages, manifest_version_id) when is_map(coverages) do
+    if Enum.all?(coverages, fn {_target_id, summary} ->
+         summary.manifest_version_id == manifest_version_id
+       end),
+       do: :ok,
+       else: {:error, :catalogue_snapshot_changed}
   end
 
   defp normalize_asset_detail_opts(opts) do
@@ -372,14 +414,21 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     })
   end
 
-  defp asset_window_states(context, runtime, target_id) do
-    Persistence.stores().operator_reads.get_asset_window_states(%GetAssetWindowStates{
-      workspace_context: context,
-      deployment_id: runtime.deployment_id,
-      manifest_version_id: runtime.manifest_version_id,
-      target_id: target_id,
-      limit: 200
-    })
+  defp asset_window_states(context, asset, target_id) do
+    with {:ok, generations} <- TargetGenerations.for_reads(context, %{asset.ref => asset}) do
+      case Map.get(generations, asset.ref) do
+        %{evidence_generation_id: generation_id} ->
+          Persistence.stores().operator_reads.get_asset_window_states(%GetAssetWindowStates{
+            workspace_context: context,
+            evidence_generation_id: generation_id,
+            target_id: target_id,
+            limit: 200
+          })
+
+        nil ->
+          {:ok, []}
+      end
+    end
   end
 
   defp catalogue_window_states(states, asset, version) do
@@ -487,14 +536,129 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     end
   end
 
-  defp catalogue_entries(targets, statuses) do
+  defp catalogue_entries(targets, statuses, coverages \\ %{}, compatibilities \\ %{}) do
     targets
     |> Enum.map(fn target ->
       status = Map.fetch!(statuses, target.target_id)
-      Status.put(target, status)
+
+      target
+      |> Status.put(status)
+      |> maybe_put_coverage(coverages)
+      |> maybe_put_compatibility(compatibilities)
     end)
     |> Enum.sort_by(& &1.label)
   end
+
+  defp maybe_put_compatibility(target, compatibilities) do
+    Map.put(
+      target,
+      :compatibility,
+      Map.get(compatibilities, target.target_id, non_persisted_compatibility())
+    )
+  end
+
+  defp target_compatibilities(context, targets) do
+    target_ids = targets |> Enum.map(& &1.target_id) |> Enum.uniq()
+
+    target_ids
+    |> Enum.chunk_every(500)
+    |> Enum.reduce_while({:ok, %{}}, fn chunk, {:ok, acc} ->
+      case Persistence.stores().target_generations.get_bindings(%GetTargetBindings{
+             workspace_context: context,
+             target_ids: chunk
+           }) do
+        {:ok, bindings} ->
+          next = Map.new(bindings, &{&1.target_id, compatibility_view(&1)})
+          {:cont, {:ok, Map.merge(acc, next)}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, compatibilities} ->
+        {:ok,
+         Map.new(targets, fn target ->
+           fallback =
+             if Map.get(target, :persisted?, false),
+               do: missing_binding_compatibility(),
+               else: non_persisted_compatibility()
+
+           {target.target_id, Map.get(compatibilities, target.target_id, fallback)}
+         end)}
+
+      error ->
+        error
+    end)
+  end
+
+  defp compatibility_view(binding) do
+    %{
+      status: binding.compatibility_status,
+      reason_code: binding.reason_code,
+      diff: binding.compatibility_diff,
+      active_generation_id: binding.active_generation_id,
+      desired_descriptor_hash: binding.desired_descriptor_hash,
+      physical_fingerprint: binding.active_physical_fingerprint,
+      persisted?: true,
+      blocks_writes?:
+        binding.compatibility_status in [
+          :rebuild_required,
+          :unexpected_drift,
+          :operator_decision
+        ]
+    }
+  end
+
+  defp non_persisted_compatibility do
+    %{
+      status: :ready,
+      reason_code: "not_persisted",
+      diff: %{},
+      active_generation_id: nil,
+      desired_descriptor_hash: nil,
+      physical_fingerprint: nil,
+      persisted?: false,
+      blocks_writes?: false
+    }
+  end
+
+  defp missing_binding_compatibility do
+    %{
+      status: :operator_decision,
+      reason_code: "target_binding_missing",
+      diff: %{},
+      active_generation_id: nil,
+      desired_descriptor_hash: nil,
+      physical_fingerprint: nil,
+      persisted?: true,
+      blocks_writes?: true
+    }
+  end
+
+  defp maybe_put_coverage(target, coverages) do
+    case Map.fetch(coverages, target.target_id) do
+      {:ok, coverage} -> Map.put(target, :coverage, coverage)
+      :error -> target
+    end
+  end
+
+  defp coverage_policy(nil), do: nil
+
+  defp coverage_policy(coverage) do
+    %{
+      timezone: coverage.timezone,
+      timezone_source: coverage.timezone_source,
+      scope_source: coverage.scope_source,
+      declared_from: coverage.declared_from.start_at,
+      effective_from: coverage.effective_from.start_at,
+      through: coverage_through(coverage.through),
+      availability_delay_seconds: coverage.availability_delay_seconds
+    }
+  end
+
+  defp coverage_through(value) when value in [:current, :latest_closed], do: value
+  defp coverage_through(value), do: value.start_at
 
   defp asset_detail_entry(
          %Version{} = version,

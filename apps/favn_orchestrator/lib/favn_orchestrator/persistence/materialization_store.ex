@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Persistence.MaterializationStore do
   alias FavnOrchestrator.Persistence.Commands.RenewMaterializationClaim
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetMaterializations
+  alias FavnOrchestrator.Persistence.Queries.GetRebuildMaterialization
   alias FavnOrchestrator.Persistence.Results.MaterializationClaim
   alias FavnOrchestrator.Persistence.Results.MaterializationDecision
 
@@ -17,4 +18,6 @@ defmodule FavnOrchestrator.Persistence.MaterializationStore do
               {:ok, MaterializationDecision.t()} | {:error, Error.t()}
   @callback get_many(GetMaterializations.t()) ::
               {:ok, [MaterializationDecision.t()]} | {:error, Error.t()}
+  @callback get_rebuild(GetRebuildMaterialization.t()) ::
+              {:ok, MaterializationDecision.t()} | {:error, Error.t()}
 end

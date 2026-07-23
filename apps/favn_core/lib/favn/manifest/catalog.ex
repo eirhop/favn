@@ -8,6 +8,7 @@ defmodule Favn.Manifest.Catalog do
           assets_by_ref: %{{module(), atom()} => map()},
           pipelines: [map()],
           schedules: [{module(), atom(), map()}],
+          connection_definitions: %{optional(atom()) => Favn.Connection.Definition.t()},
           diagnostics: [term()]
         }
 
@@ -15,5 +16,6 @@ defmodule Favn.Manifest.Catalog do
             assets_by_ref: %{},
             pipelines: [],
             schedules: [],
+            connection_definitions: %{},
             diagnostics: []
 end

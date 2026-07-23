@@ -683,12 +683,12 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
          %AssetRunContext{} = run_context
        ) do
     with {:ok, period} <- calendar_period(kind, value, timezone),
-         {:ok, anchor_window} <- AssetRunContext.anchor(run_context, period.start_at),
+         {:ok, selection} <- AssetRunContext.selection(run_context, period.start_at),
          {:ok, plan} <-
            Planner.plan(asset.ref,
              dependencies: :none,
              planning_index: run_context.index.planning_index,
-             anchor_window: anchor_window
+             anchor_windows: selection.effective_anchors
            ) do
       identities =
         Enum.reduce(plan.target_node_keys, MapSet.new(), fn

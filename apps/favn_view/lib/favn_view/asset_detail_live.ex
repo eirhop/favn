@@ -43,6 +43,12 @@ defmodule FavnView.AssetDetailLive do
         submitting_window_run?: false,
         submitted_run_id: nil,
         selected_window_error: nil,
+        coverage_plan: nil,
+        coverage_page_cursor: nil,
+        coverage_cursor_stack: [],
+        coverage_action_error: nil,
+        planning_coverage?: false,
+        submitting_coverage?: false,
         nav_items: AssetCataloguePage.nav_items()
       )
 
@@ -70,7 +76,13 @@ defmodule FavnView.AssetDetailLive do
          run_config_valid?: true,
          submitting_window_run?: false,
          submitted_run_id: nil,
-         selected_window_error: nil
+         selected_window_error: nil,
+         coverage_plan: nil,
+         coverage_page_cursor: nil,
+         coverage_cursor_stack: [],
+         coverage_action_error: nil,
+         planning_coverage?: false,
+         submitting_coverage?: false
        )}
     end
   end
@@ -81,6 +93,107 @@ defmodule FavnView.AssetDetailLive do
   end
 
   def handle_event("set_mode", _params, socket), do: {:noreply, socket}
+
+  def handle_event("plan_missing_coverage", _params, socket) do
+    asset = socket.assigns.asset
+
+    cond do
+      !socket.assigns.can_submit_runs? ->
+        {:noreply, assign(socket, :coverage_action_error, "Operator role required.")}
+
+      asset && Map.get(asset.compatibility, :blocks_writes?, false) ->
+        {:noreply,
+         assign(socket, :coverage_action_error, "Target compatibility blocks this backfill.")}
+
+      is_nil(asset) or !asset.can_run_asset? ->
+        {:noreply, assign(socket, :coverage_action_error, "Select a valid run context first.")}
+
+      true ->
+        socket =
+          assign(socket,
+            planning_coverage?: true,
+            coverage_action_error: nil,
+            coverage_plan: nil
+          )
+
+        case FavnOrchestrator.plan_missing_coverage_backfill(
+               actor_context(socket),
+               asset.target_id,
+               coverage_page_options(asset, socket.assigns.coverage_page_cursor)
+             ) do
+          {:ok, plan} ->
+            {:noreply, assign(socket, planning_coverage?: false, coverage_plan: plan)}
+
+          {:error, reason} ->
+            {:noreply,
+             assign(socket,
+               planning_coverage?: false,
+               coverage_action_error: coverage_error_label(reason)
+             )}
+        end
+    end
+  end
+
+  def handle_event(
+        "page_missing_coverage",
+        %{"direction" => "next"},
+        %{assigns: %{asset: %{coverage_pagination: %{next_cursor: cursor}}}} = socket
+      )
+      when is_binary(cursor) do
+    load_coverage_page(
+      socket,
+      cursor,
+      [socket.assigns.coverage_page_cursor | socket.assigns.coverage_cursor_stack]
+    )
+  end
+
+  def handle_event(
+        "page_missing_coverage",
+        %{"direction" => "previous"},
+        %{assigns: %{coverage_cursor_stack: [cursor | remaining]}} = socket
+      ) do
+    load_coverage_page(socket, cursor, remaining)
+  end
+
+  def handle_event("page_missing_coverage", _params, socket), do: {:noreply, socket}
+
+  def handle_event(
+        "submit_missing_coverage",
+        _params,
+        %{assigns: %{submitting_coverage?: true}} = socket
+      ),
+      do: {:noreply, socket}
+
+  def handle_event("submit_missing_coverage", _params, socket) do
+    case socket.assigns.coverage_plan do
+      nil ->
+        {:noreply, assign(socket, :coverage_action_error, "Plan missing windows first.")}
+
+      plan ->
+        socket = assign(socket, submitting_coverage?: true, coverage_action_error: nil)
+
+        case FavnOrchestrator.submit_missing_coverage_backfill(
+               actor_context(socket),
+               socket.assigns.asset.target_id,
+               plan,
+               root_run_id: coverage_root_run_id(plan)
+             ) do
+          {:ok, run_id} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Missing-window backfill submitted")
+             |> push_navigate(to: ~p"/runs/#{run_id}")}
+
+          {:error, reason} ->
+            {:noreply,
+             assign(socket,
+               submitting_coverage?: false,
+               coverage_action_error: coverage_error_label(reason),
+               coverage_plan: nil
+             )}
+        end
+    end
+  end
 
   def handle_event("select_window", _params, %{assigns: %{active_timeline: :freshness}} = socket),
     do: {:noreply, socket}
@@ -352,7 +465,18 @@ defmodule FavnView.AssetDetailLive do
       data_coverage_timeline={@asset.data_coverage_timeline}
       active_mode={@active_mode}
       freshness={@asset.freshness}
+      coverage={@asset.coverage}
+      coverage_policy={@asset.coverage_policy}
+      coverage_gaps={@asset.coverage_gaps}
+      coverage_pagination={@asset.coverage_pagination}
+      coverage_page_cursor={@coverage_page_cursor}
+      compatibility={@asset.compatibility}
+      rebuild_target_id={@asset.target_id}
       assurance={@asset.assurance}
+      coverage_plan={@coverage_plan}
+      coverage_action_error={@coverage_action_error}
+      planning_coverage?={@planning_coverage?}
+      submitting_coverage?={@submitting_coverage?}
       selected_window={@selected_window}
       run_config_open?={@run_config_open?}
       run_config={@run_config}
@@ -450,11 +574,19 @@ defmodule FavnView.AssetDetailLive do
       |> Map.get(:run_contexts, [])
       |> Enum.map(&Map.put(&1, :href, run_context_path(asset_id, &1.id)))
 
+    compatibility =
+      Map.get(detail, :compatibility, %{
+        status: :operator_decision,
+        reason_code: "compatibility_unavailable",
+        diff: %{},
+        blocks_writes?: true
+      })
+
     %{
       manifest_version_id: detail.manifest_version_id,
       target_id: detail.target_id,
       canonical_asset_ref: detail.canonical_asset_ref,
-      can_run_asset?: detail.can_run_asset?,
+      can_run_asset?: detail.can_run_asset? and !Map.get(compatibility, :blocks_writes?, true),
       run_contexts: run_contexts,
       selected_run_context: Map.get(detail, :selected_run_context),
       run_context_status: Map.get(detail, :run_context_status, :unavailable),
@@ -464,6 +596,12 @@ defmodule FavnView.AssetDetailLive do
       status: status_label(Map.get(detail, :status)),
       status_tone: status_tone(Map.get(detail, :status)),
       freshness: Map.get(detail, :freshness, missing_freshness_detail()),
+      coverage: Map.get(detail, :coverage),
+      coverage_policy: Map.get(detail, :coverage_policy),
+      coverage_gaps: Map.get(detail, :coverage_gaps, []),
+      coverage_pagination:
+        Map.get(detail, :coverage_pagination, %{limit: 100, has_more: false, next_cursor: nil}),
+      compatibility: compatibility,
       assurance: Map.get(detail, :assurance),
       window_kind_label: window_kind_label(Map.get(detail, :window)),
       refresh_timeline_label: Map.get(detail, :refresh_timeline_label, "Refresh periods"),
@@ -557,6 +695,60 @@ defmodule FavnView.AssetDetailLive do
   defp status_tone(:running), do: :warning
   defp status_tone(:failed), do: :error
   defp status_tone(_status), do: :neutral
+
+  defp coverage_error_label(:coverage_selection_stale),
+    do: "Coverage changed. Refresh the plan and review it again."
+
+  defp coverage_error_label(:coverage_cursor_stale),
+    do: "Coverage changed. Return to the first gap page and try again."
+
+  defp coverage_error_label(:coverage_complete), do: "Coverage is already complete."
+  defp coverage_error_label(:coverage_page_complete), do: "This page has no missing windows."
+  defp coverage_error_label({:coverage_unknown, _reason}), do: "Coverage is unavailable."
+  defp coverage_error_label(_reason), do: "Could not prepare the missing-window backfill."
+
+  defp load_coverage_page(socket, cursor, cursor_stack) do
+    asset = socket.assigns.asset
+
+    case FavnOrchestrator.page_asset_missing_coverage(
+           actor_context(socket),
+           asset.target_id,
+           coverage_page_options(asset, cursor)
+         ) do
+      {:ok, page} ->
+        asset =
+          asset
+          |> Map.put(:coverage, page.summary)
+          |> Map.put(:coverage_gaps, page.items)
+          |> Map.put(:coverage_pagination, page.pagination)
+
+        {:noreply,
+         assign(socket,
+           asset: asset,
+           coverage_page_cursor: cursor,
+           coverage_cursor_stack: cursor_stack,
+           coverage_plan: nil,
+           coverage_action_error: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :coverage_action_error, coverage_error_label(reason))}
+    end
+  end
+
+  defp coverage_page_options(asset, cursor) do
+    [
+      limit: asset.coverage_pagination.limit,
+      evaluated_at: asset.coverage.evaluated_at
+    ]
+    |> maybe_put_coverage_cursor(cursor)
+  end
+
+  defp maybe_put_coverage_cursor(opts, nil), do: opts
+  defp maybe_put_coverage_cursor(opts, cursor), do: Keyword.put(opts, :cursor, cursor)
+
+  defp coverage_root_run_id(plan),
+    do: "run_coverage_" <> String.slice(plan.plan_hash, 0, 40)
 
   defp window_kind_label(%{kind: kind}), do: window_kind_label(kind)
   defp window_kind_label(%{"kind" => kind}), do: window_kind_label(kind)

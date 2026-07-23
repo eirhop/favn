@@ -18,7 +18,8 @@ defmodule Favn.Window.Policy do
 
   Both anchors resolve relative to the schedule occurrence and effective
   timezone. Manual runs instead resolve explicit `%Favn.Window.Request{}` input
-  such as `month:2026-03`.
+  such as `month:2026-03`. Pipeline `lookback` expands scheduled selections only;
+  manual and backfill selections remain exact.
 
   Windowed pipelines do not allow full-load submissions by default. Set
   `allow_full_load: true` only when a windowed pipeline should explicitly accept
@@ -26,7 +27,7 @@ defmodule Favn.Window.Policy do
   """
 
   alias Favn.TimePeriod
-  alias Favn.Window.{Anchor, Request, Validate}
+  alias Favn.Window.{Anchor, Request, Selection, Validate}
 
   @type kind :: Validate.kind()
   @type anchor_policy :: :previous_complete_period | :current_period
@@ -35,10 +36,19 @@ defmodule Favn.Window.Policy do
           kind: kind(),
           anchor: anchor_policy(),
           timezone: String.t() | nil,
+          timezone_source: Favn.Window.Spec.timezone_source(),
+          lookback: non_neg_integer(),
           allow_full_load: boolean()
         }
 
-  defstruct [:kind, anchor: :previous_complete_period, timezone: nil, allow_full_load: false]
+  defstruct [
+    :kind,
+    :timezone,
+    :timezone_source,
+    anchor: :previous_complete_period,
+    lookback: 0,
+    allow_full_load: false
+  ]
 
   @spec new(atom(), keyword()) :: {:ok, t()} | {:error, term()}
   @doc """
@@ -47,18 +57,21 @@ defmodule Favn.Window.Policy do
   ## Examples
 
       iex> Favn.Window.Policy.new(:monthly)
-      {:ok, %Favn.Window.Policy{kind: :month, anchor: :previous_complete_period, timezone: nil, allow_full_load: false}}
+      {:ok, %Favn.Window.Policy{kind: :month, anchor: :previous_complete_period, timezone: nil, timezone_source: nil, lookback: 0, allow_full_load: false}}
 
       iex> Favn.Window.Policy.new(:daily, timezone: "Europe/Oslo")
-      {:ok, %Favn.Window.Policy{kind: :day, anchor: :previous_complete_period, timezone: "Europe/Oslo", allow_full_load: false}}
+      {:ok, %Favn.Window.Policy{kind: :day, anchor: :previous_complete_period, timezone: "Europe/Oslo", timezone_source: :local, lookback: 0, allow_full_load: false}}
   """
   def new(kind, opts \\ []) when is_list(opts) do
-    with :ok <- Validate.strict_keyword_opts(opts, [:anchor, :timezone, :allow_full_load]),
+    with :ok <-
+           Validate.strict_keyword_opts(opts, [:anchor, :timezone, :lookback, :allow_full_load]),
          {:ok, normalized_kind} <- normalize_kind(kind),
          anchor <- Keyword.get(opts, :anchor, :previous_complete_period),
          :ok <- validate_anchor(anchor),
          timezone <- Keyword.get(opts, :timezone),
          :ok <- validate_optional_timezone(timezone),
+         lookback <- Keyword.get(opts, :lookback, 0),
+         :ok <- validate_lookback(lookback),
          allow_full_load <- Keyword.get(opts, :allow_full_load, false),
          :ok <- validate_boolean(:allow_full_load, allow_full_load) do
       {:ok,
@@ -66,6 +79,8 @@ defmodule Favn.Window.Policy do
          kind: normalized_kind,
          anchor: anchor,
          timezone: timezone,
+         timezone_source: if(is_binary(timezone), do: :local),
+         lookback: lookback,
          allow_full_load: allow_full_load
        }}
     end
@@ -97,11 +112,14 @@ defmodule Favn.Window.Policy do
       []
       |> maybe_put(:anchor, field_value(value, :anchor))
       |> maybe_put(:timezone, field_value(value, :timezone))
+      |> maybe_put(:lookback, field_value(value, :lookback))
       |> maybe_put(:allow_full_load, field_value(value, :allow_full_load))
 
     with {:ok, decoded_kind} <- decode_kind(kind),
-         {:ok, decoded_opts} <- decode_opts(opts) do
-      new(decoded_kind, decoded_opts)
+         {:ok, decoded_opts} <- decode_opts(opts),
+         {:ok, policy} <- new(decoded_kind, decoded_opts),
+         {:ok, source} <- decode_timezone_source(field_value(value, :timezone_source)) do
+      {:ok, %{policy | timezone_source: source || policy.timezone_source}}
     end
   end
 
@@ -120,6 +138,8 @@ defmodule Favn.Window.Policy do
     with :ok <- Validate.kind(policy.kind),
          :ok <- validate_anchor(policy.anchor),
          :ok <- validate_optional_timezone(policy.timezone),
+         :ok <- validate_timezone_source(policy.timezone, policy.timezone_source),
+         :ok <- validate_lookback(policy.lookback),
          :ok <- validate_boolean(:allow_full_load, policy.allow_full_load) do
       {:ok, policy}
     end
@@ -170,20 +190,66 @@ defmodule Favn.Window.Policy do
   @doc """
   Resolves a scheduled occurrence using the policy's explicit anchor.
 
-  The policy timezone wins when present; otherwise the schedule timezone is used,
-  falling back to `"Etc/UTC"`.
+  The policy must already carry its independently resolved effective timezone.
+  The schedule timezone argument is retained for caller compatibility and is
+  intentionally ignored.
   """
   def resolve_scheduled(
         %__MODULE__{anchor: anchor} = policy,
         %DateTime{} = due_at,
-        schedule_timezone
+        _schedule_timezone
       )
       when anchor in [:previous_complete_period, :current_period] do
-    timezone = policy.timezone || schedule_timezone || "Etc/UTC"
-
-    with :ok <- Validate.timezone(timezone),
+    with timezone when is_binary(timezone) <- policy.timezone,
+         :ok <- Validate.timezone(timezone),
          {:ok, period} <- scheduled_period(anchor, policy.kind, due_at, timezone) do
       Anchor.new(period.kind, period.start_at, period.end_at, timezone: period.timezone)
+    else
+      nil -> {:error, :unresolved_pipeline_timezone}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Resolves a manual request into an exact selection.
+
+  Full-load requests resolve to `nil`. Manual selections never apply pipeline
+  lookback.
+  """
+  @spec select_manual(t() | nil, Request.t() | map() | nil) ::
+          {:ok, Selection.t() | nil} | {:error, term()}
+  def select_manual(policy, request) do
+    with {:ok, anchor} <- resolve_manual(policy, request) do
+      case anchor do
+        nil -> {:ok, nil}
+        %Anchor{} -> Selection.manual(anchor, anchor.timezone)
+      end
+    end
+  end
+
+  @doc "Resolves one scheduled occurrence and applies pipeline lookback exactly once."
+  @spec select_scheduled(t(), DateTime.t(), String.t() | nil) ::
+          {:ok, Selection.t()} | {:error, term()}
+  def select_scheduled(%__MODULE__{} = policy, %DateTime{} = due_at, schedule_timezone) do
+    with {:ok, anchor} <- resolve_scheduled(policy, due_at, schedule_timezone) do
+      Selection.scheduled(anchor, policy.lookback, anchor.timezone)
+    end
+  end
+
+  @doc "Validates that a selection belongs to this resolved pipeline policy."
+  @spec validate_selection(t() | nil, Selection.t() | nil) :: :ok | {:error, term()}
+  def validate_selection(_policy, nil), do: :ok
+
+  def validate_selection(nil, %Selection{}),
+    do: {:error, :window_selection_without_policy}
+
+  def validate_selection(%__MODULE__{} = policy, %Selection{} = selection) do
+    with {:ok, %Selection{} = selection} <- Selection.from_value(selection),
+         %Anchor{kind: selected_kind} <- List.first(selection.requested_anchors),
+         :ok <- matching_selection_kind(policy.kind, selected_kind),
+         :ok <- matching_selection_timezone(policy.timezone, selection),
+         :ok <- matching_selection_expansion(policy.lookback, selection) do
+      :ok
     end
   end
 
@@ -200,6 +266,36 @@ defmodule Favn.Window.Policy do
   defp ensure_matching_kind(%__MODULE__{kind: expected}, %Request{kind: actual}),
     do: {:error, {:window_kind_mismatch, expected, actual}}
 
+  defp matching_selection_kind(kind, kind), do: :ok
+
+  defp matching_selection_kind(expected, actual),
+    do: {:error, {:window_kind_mismatch, expected, actual}}
+
+  defp matching_selection_timezone(timezone, %Selection{
+         intent: :scheduled,
+         timezone: timezone
+       }),
+       do: :ok
+
+  defp matching_selection_timezone(expected, %Selection{intent: :scheduled, timezone: actual}),
+    do: {:error, {:window_timezone_mismatch, expected, actual}}
+
+  defp matching_selection_timezone(_pipeline_timezone, %Selection{}), do: :ok
+
+  defp matching_selection_expansion(lookback, %Selection{
+         intent: :scheduled,
+         expansion: {:lookback, lookback}
+       }),
+       do: :ok
+
+  defp matching_selection_expansion(expected, %Selection{
+         intent: :scheduled,
+         expansion: {:lookback, actual}
+       }),
+       do: {:error, {:window_lookback_mismatch, expected, actual}}
+
+  defp matching_selection_expansion(_lookback, %Selection{}), do: :ok
+
   defp default_timezone(%__MODULE__{timezone: timezone}) when is_binary(timezone), do: timezone
   defp default_timezone(%__MODULE__{}), do: "Etc/UTC"
 
@@ -215,6 +311,31 @@ defmodule Favn.Window.Policy do
 
   defp validate_optional_timezone(nil), do: :ok
   defp validate_optional_timezone(timezone), do: Validate.timezone(timezone)
+
+  defp validate_lookback(value) when is_integer(value) and value >= 0, do: :ok
+  defp validate_lookback(value), do: {:error, {:invalid_lookback, value}}
+
+  defp validate_timezone_source(nil, nil), do: :ok
+
+  defp validate_timezone_source(timezone, source)
+       when is_binary(timezone) and source in [:local, :application_default, :utc_fallback],
+       do: :ok
+
+  defp validate_timezone_source(_timezone, source),
+    do: {:error, {:invalid_pipeline_window_timezone_source, source}}
+
+  @doc false
+  @spec resolve_timezone(t(), String.t(), :application_default | :utc_fallback) ::
+          {:ok, t()} | {:error, term()}
+  def resolve_timezone(%__MODULE__{timezone: timezone} = policy, default, default_source) do
+    effective = timezone || default
+    source = policy.timezone_source || default_source
+
+    with :ok <- Validate.timezone(effective),
+         :ok <- validate_timezone_source(effective, source) do
+      {:ok, %{policy | timezone: effective, timezone_source: source}}
+    end
+  end
 
   defp validate_boolean(_field, value) when is_boolean(value), do: :ok
   defp validate_boolean(field, value), do: {:error, {:invalid_boolean, field, value}}
@@ -244,6 +365,18 @@ defmodule Favn.Window.Policy do
   rescue
     ArgumentError -> {:error, {:invalid_window_policy_opts, opts}}
   end
+
+  defp decode_timezone_source(nil), do: {:ok, nil}
+
+  defp decode_timezone_source(source)
+       when source in [:local, :application_default, :utc_fallback], do: {:ok, source}
+
+  defp decode_timezone_source("local"), do: {:ok, :local}
+  defp decode_timezone_source("application_default"), do: {:ok, :application_default}
+  defp decode_timezone_source("utc_fallback"), do: {:ok, :utc_fallback}
+
+  defp decode_timezone_source(source),
+    do: {:error, {:invalid_pipeline_window_timezone_source, source}}
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)

@@ -40,7 +40,7 @@ variables.
 | `FAVN_ORCHESTRATOR_API_PORT` | `1..65535`, default `4101`. This listener is private. |
 | `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` | Required bounded set of `versioned_identity[|role+...]:secret` entries. Up to 100 identities may overlap during manual rotation. Only hashes are retained. |
 | `FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES` | `1 MiB..32 MiB`, default `8 MiB`. |
-| `FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES` | At least the compressed limit and at most `128 MiB`, default `32 MiB`. |
+| `FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES` | At least the compressed limit and at most `128 MiB`, default `64 MiB`. |
 | `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL` | `1..2592000` seconds, default `43200`. |
 | `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME` | Required normalized initial operator username. |
 | `FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD` | Required `15..1024` byte initial operator secret. |

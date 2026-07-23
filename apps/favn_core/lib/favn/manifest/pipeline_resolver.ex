@@ -9,7 +9,7 @@ defmodule Favn.Manifest.PipelineResolver do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Pipeline.SelectorNormalizer
-  alias Favn.Window.{Anchor, Policy}
+  alias Favn.Window.{Anchor, Policy, Selection}
   alias Favn.Window.Validate
 
   @type dependencies_mode :: :all | :none
@@ -21,7 +21,12 @@ defmodule Favn.Manifest.PipelineResolver do
           required(:pipeline_ctx) => map()
         }
 
-  @type resolve_opts :: [params: map(), trigger: map(), anchor_window: Anchor.t() | nil]
+  @type resolve_opts :: [
+          params: map(),
+          trigger: map(),
+          anchor_window: Anchor.t() | nil,
+          window_selection: Selection.t() | nil
+        ]
 
   @spec resolve(Index.t(), Pipeline.t() | {module(), atom()}, resolve_opts()) ::
           {:ok, resolution()} | {:error, term()}
@@ -29,6 +34,7 @@ defmodule Favn.Manifest.PipelineResolver do
     trigger = Keyword.get(opts, :trigger, %{kind: :manual})
     params = Keyword.get(opts, :params, %{})
     anchor_window = Keyword.get(opts, :anchor_window)
+    window_selection = Keyword.get(opts, :window_selection)
 
     with {:ok, selectors} <-
            SelectorNormalizer.normalize(
@@ -41,6 +47,9 @@ defmodule Favn.Manifest.PipelineResolver do
          :ok <- validate_trigger(trigger),
          :ok <- validate_params(params),
          :ok <- validate_anchor_window(anchor_window),
+         :ok <- validate_window_selection(window_selection),
+         :ok <- validate_window_input(anchor_window, window_selection),
+         :ok <- Policy.validate_selection(normalized_pipeline.window, window_selection),
          {:ok, resolved_schedule} <- resolve_schedule(index, normalized_pipeline.schedule),
          {:ok, target_refs} <- resolve_selectors(index, selectors) do
       schedule = apply_schedule_identity(resolved_schedule, normalized_pipeline)
@@ -58,7 +67,8 @@ defmodule Favn.Manifest.PipelineResolver do
            settings: normalized_pipeline.settings,
            metadata: normalized_pipeline.metadata,
            trigger: trigger,
-           anchor_window: anchor_window,
+           anchor_window: anchor_window || requested_anchor(window_selection),
+           window_selection: window_selection,
            window: normalized_pipeline.window,
            retry_policy: normalized_pipeline.retry_policy,
            max_concurrency: normalized_pipeline.max_concurrency,
@@ -82,7 +92,13 @@ defmodule Favn.Manifest.PipelineResolver do
   def resolve(%Index{} = _index, _pipeline, _opts), do: {:error, :invalid_pipeline}
 
   defp validate_opts(opts),
-    do: Validate.strict_keyword_opts(opts, [:params, :trigger, :anchor_window])
+    do:
+      Validate.strict_keyword_opts(opts, [
+        :params,
+        :trigger,
+        :anchor_window,
+        :window_selection
+      ])
 
   defp validate_pipeline(%Pipeline{deps: deps, selectors: selectors, window: window} = pipeline) do
     with :ok <- validate_deps(deps),
@@ -157,6 +173,24 @@ defmodule Favn.Manifest.PipelineResolver do
   defp validate_anchor_window(nil), do: :ok
   defp validate_anchor_window(%Anchor{} = anchor), do: Anchor.validate(anchor)
   defp validate_anchor_window(other), do: {:error, {:invalid_anchor_window, other}}
+
+  defp validate_window_selection(nil), do: :ok
+
+  defp validate_window_selection(%Selection{} = selection) do
+    case Selection.from_value(selection) do
+      {:ok, %Selection{}} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_window_selection(other), do: {:error, {:invalid_window_selection, other}}
+
+  defp validate_window_input(nil, _selection), do: :ok
+  defp validate_window_input(_anchor, nil), do: :ok
+  defp validate_window_input(_anchor, _selection), do: {:error, :ambiguous_window_selection}
+
+  defp requested_anchor(%Selection{requested_anchors: [anchor]}), do: anchor
+  defp requested_anchor(_selection), do: nil
 
   defp resolve_schedule(_index, nil), do: {:ok, nil}
 
