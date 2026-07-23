@@ -2,8 +2,7 @@ defmodule Favn.Dev.MaintainerTest do
   use ExUnit.Case, async: false
 
   alias Favn.Dev.Maintainer
-  alias Favn.Dev.Build.RunnerInputs
-  alias Favn.Dev.Maintainer.{Candidate, RunnerBuildCapability, Source}
+  alias Favn.Dev.Maintainer.{Candidate, Source}
 
   @revision String.duplicate("a", 40)
   @build_id String.duplicate("b", 64)
@@ -56,6 +55,12 @@ defmodule Favn.Dev.MaintainerTest do
       File.write!(Path.join(directory, "lib/source.ex"), "#{app}\n")
     end
 
+    File.mkdir_p!(Path.join(checkout, "apps/favn/lib"))
+    File.write!(Path.join(checkout, "apps/favn/lib/selected.ex"), "selected\n")
+    File.write!(Path.join(checkout, "apps/favn/lib/ignored.ex"), "ignored\n")
+    File.write!(Path.join(checkout, ".gitignore"), "apps/favn/lib/ignored.ex\n")
+    assert {_output, 0} = System.cmd("git", ["init", "--quiet", checkout])
+
     on_exit(fn -> File.rm_rf(root) end)
 
     %{checkout: checkout, consumer: consumer, dependency_paths: dependency_paths}
@@ -84,38 +89,6 @@ defmodule Favn.Dev.MaintainerTest do
              Source.resolve(
                source_opts(context)
                |> Keyword.put(:maintainer_command_runner, command_runner)
-             )
-  end
-
-  test "resolved capability matches runner verification's canonical checkout inputs", context do
-    git!(context.checkout, ["init", "-q"])
-    git!(context.checkout, ["add", "."])
-
-    git!(context.checkout, [
-      "-c",
-      "user.name=Test",
-      "-c",
-      "user.email=test@example.com",
-      "commit",
-      "-qm",
-      "initial"
-    ])
-
-    opts = Keyword.delete(source_opts(context), :maintainer_command_runner)
-    assert {:ok, source} = Source.resolve(opts)
-
-    capability = %RunnerBuildCapability{
-      consumer_root: context.consumer,
-      checkout: source.checkout,
-      revision: source.revision,
-      dirty: source.dirty,
-      fingerprint: source.fingerprint
-    }
-
-    assert {:ok, source.revision} ==
-             RunnerInputs.verify_favn_checkout(
-               Path.join(context.checkout, "apps/favn_core"),
-               maintainer_runner_build: capability
              )
   end
 
@@ -201,8 +174,17 @@ defmodule Favn.Dev.MaintainerTest do
        }}
     end
 
-    lifecycle_fun = fn candidate, _opts ->
-      send(parent, {:selected, candidate})
+    lifecycle_fun = fn candidate, opts ->
+      runner_context = opts[:runner_favn_context]
+
+      send(
+        parent,
+        {:selected, candidate, runner_context,
+         File.regular?(Path.join(runner_context, "apps/favn/lib/selected.ex")),
+         File.exists?(Path.join(runner_context, "apps/favn/lib/ignored.ex")),
+         File.exists?(Path.join(runner_context, ".git"))}
+      )
+
       :ok
     end
 
@@ -217,43 +199,14 @@ defmodule Favn.Dev.MaintainerTest do
     assert :ok = Maintainer.run(opts)
     assert_receive {:built_from, checkout}
     assert checkout == context.checkout
-    assert_receive {:selected, %Candidate{image_id: @image_id, checkout: ^checkout}}
-  end
 
-  test "runner build capability is bound to the selected consumer root", context do
-    capability = %RunnerBuildCapability{
-      consumer_root: context.consumer,
-      checkout: context.checkout,
-      revision: @revision,
-      dirty: true,
-      fingerprint: String.duplicate("e", 64)
-    }
+    assert_receive {:selected, %Candidate{image_id: @image_id, checkout: ^checkout},
+                    runner_context, true, false, false}
 
-    assert {:ok, [{environment_variable, token}], cleanup_paths} =
-             RunnerBuildCapability.environment(capability)
-
-    System.put_env(environment_variable, token)
-
-    assert {:error, :invalid_maintainer_runner_build} =
-             RunnerBuildCapability.consume(root_dir: Path.join(context.consumer, "other"))
-
-    System.put_env(environment_variable, token)
-
-    assert {:ok, opts} = RunnerBuildCapability.consume(root_dir: context.consumer)
-    assert Keyword.fetch!(opts, :maintainer_runner_build) == capability
-    assert System.get_env(environment_variable) == nil
-
-    System.put_env(environment_variable, token)
-
-    assert {:error, :invalid_maintainer_runner_build} =
-             RunnerBuildCapability.consume(root_dir: context.consumer)
-
-    assert :ok = RunnerBuildCapability.cleanup(cleanup_paths)
-  end
-
-  test "ordinary runner environment scrubs inherited maintainer capability" do
-    assert {:ok, [{"FAVN_INTERNAL_MAINTAINER_RUNNER_BUILD", nil}], []} =
-             RunnerBuildCapability.environment(nil)
+    assert String.starts_with?(
+             runner_context,
+             Path.join(context.consumer, ".favn/build/maintainer-runner-context/")
+           )
   end
 
   defp source_opts(context) do
@@ -272,10 +225,5 @@ defmodule Favn.Dev.MaintainerTest do
         ["status", "--porcelain", "--untracked-files=all", "--" | _paths] -> {status, 0}
       end
     end
-  end
-
-  defp git!(root, args) do
-    assert {output, 0} = System.cmd("git", ["-C", root | args], stderr_to_stdout: true)
-    String.trim(output)
   end
 end

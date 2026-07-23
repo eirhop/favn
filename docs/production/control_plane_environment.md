@@ -72,8 +72,8 @@ The control-plane readiness response has the stable checks `config`, `api`,
 `view`, `storage`, `schema`, `scheduler`, `lifecycle`, `runner_connection`,
 `runner_release`, and `active_manifests`. A configured workspace may have no
 deployment, so a clean installation can become ready before its first publish.
-Every workspace that does have an active manifest must align with the connected,
-self-verified runner release and be present in its manifest cache.
+Every workspace that does have an active manifest must align with the connected
+operator-identified runner release and be present in its manifest cache.
 
 HTTP readiness reads cached snapshots only. A bounded background runner probe
 checks the runner server, required supervisors and registries, extensions, and

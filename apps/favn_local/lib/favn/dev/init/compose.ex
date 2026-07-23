@@ -46,14 +46,23 @@ defmodule Favn.Dev.Init.Compose do
   @spec render(:local | :single_host, Path.t(), Path.t()) ::
           {:ok, String.t()} | {:error, term()}
   def render(:local, root_dir, output) do
+    output_dir = Path.dirname(output)
+
     postgres_init =
       deployment_relative_path(
         Paths.compose_postgres_init_path(root_dir),
         root_dir,
-        Path.dirname(output)
+        output_dir
       )
 
-    {:ok, local_template(postgres_init)}
+    runner_data =
+      deployment_relative_path(
+        Paths.local_data_dir(root_dir),
+        root_dir,
+        output_dir
+      )
+
+    {:ok, local_template(postgres_init, runner_data)}
   end
 
   def render(:single_host, _root_dir, _output), do: {:ok, single_host_template()}
@@ -84,8 +93,8 @@ defmodule Favn.Dev.Init.Compose do
   defp output_path(root_dir, profile, opts) do
     default =
       case profile do
-        :local -> "deploy/compose.local.yml"
-        :single_host -> "deploy/compose.single-host.yml"
+        :local -> "deploy/local/compose.yml"
+        :single_host -> "deploy/single-host/compose.yml"
       end
 
     value = Keyword.get(opts, :output, default)
@@ -248,13 +257,13 @@ defmodule Favn.Dev.Init.Compose do
 
   defp environment_example(:local) do
     """
-    # Favn local Compose template reference. mix favn.dev writes real values to
-    # .favn/compose/.env; do not put local credentials in this committed file.
+    # Reference values for the committed local Compose template. mix favn.dev
+    # writes actual local values and credentials below .favn/compose/.
     FAVN_COMPOSE_PROJECT=favn-project
     FAVN_POSTGRES_VOLUME=favn-project-postgres-data
-    FAVN_RUNNER_IMAGE=registry.example/favn-runner@sha256:replace
+    FAVN_RUNNER_IMAGE=favn-local/favn-project-runner:dev
+    FAVN_LOG_LEVEL=info
     FAVN_RUNNER_ENV_FILE=/absolute/path/to/.favn/compose/runner.env
-    FAVN_RUNNER_DATA_SOURCE=/absolute/path/to/.favn/data
     FAVN_RUNNER_UID=1000
     FAVN_RUNNER_GID=1000
     FAVN_POSTGRES_DATABASE=favn_dev
@@ -298,6 +307,7 @@ defmodule Favn.Dev.Init.Compose do
     FAVN_RUNTIME_INPUT_PIN_KEY_VERSION=1
 
     # Runner identity and private distribution
+    FAVN_LOG_LEVEL=info
     FAVN_WORKSPACE_ID=production
     FAVN_WORKSPACE_NAME=Production
     FAVN_DISTRIBUTION_COOKIE=set-in-secret-store
@@ -314,17 +324,28 @@ defmodule Favn.Dev.Init.Compose do
     """
   end
 
-  defp local_template(postgres_init) do
+  defp local_template(postgres_init, runner_data) do
     """
+    # Local Favn development topology.
+    #
+    # This file belongs to the customer project. Change ports, local data paths,
+    # and add project services as needed. Keep the io.favn.compose labels: Favn
+    # uses them to identify the services it may start, inspect, and stop.
     name: ${FAVN_COMPOSE_PROJECT}
 
+    # Shared labels form the small contract between this customer-owned file
+    # and Favn's local lifecycle commands.
     x-favn-local-labels: &favn-local-labels
       io.favn.compose.contract-version: "1"
       io.favn.compose.profile: local
 
     services:
+      # PostgreSQL stores Favn control-plane state. The floating major-version
+      # tag receives PostgreSQL 18 patch releases while avoiding an automatic
+      # incompatible major-version upgrade.
       postgres:
         image: #{ComposeProject.postgres_image()}
+        pull_policy: always
         restart: unless-stopped
         labels:
           <<: *favn-local-labels
@@ -347,6 +368,9 @@ defmodule Favn.Dev.Init.Compose do
           default:
             aliases: [postgres.favn.internal]
 
+      # The operations services use the same prebuilt control-plane image for
+      # short-lived database migration and verification commands. Their
+      # profile keeps them out of the steady-state three-container topology.
       control-plane-ops:
         image: ${FAVN_CONTROL_PLANE_IMAGE}
         profiles: [operations]
@@ -401,6 +425,8 @@ defmodule Favn.Dev.Init.Compose do
           default:
             aliases: [control-plane-verify.favn.internal]
 
+      # The runner image is built from deploy/runner/Dockerfile by mix
+      # favn.dev unless the user selects an existing --runner-image.
       runner:
         image: ${FAVN_RUNNER_IMAGE}
         restart: unless-stopped
@@ -416,10 +442,17 @@ defmodule Favn.Dev.Init.Compose do
         env_file: ["${FAVN_RUNNER_ENV_FILE}"]
         tmpfs: ["/tmp/favn:rw,noexec,nosuid,nodev,uid=${FAVN_RUNNER_UID},gid=${FAVN_RUNNER_GID},mode=0700"]
         volumes:
+          # Local application files, including DuckDB data, remain visible in
+          # the repository's .data directory. Change the source when the
+          # project uses another local path. If persistence is unnecessary,
+          # replace this bind mount with a tmpfs mounted at /var/lib/favn/data.
           - type: bind
-            source: ${FAVN_RUNNER_DATA_SOURCE}
+            source: #{runner_data}
             target: /var/lib/favn/data
         environment:
+          # Keep normal development logs at info. Set FAVN_LOG_LEVEL=debug
+          # temporarily when diagnosing a problem.
+          FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}
           FAVN_RUNNER_NODE: favn_runner@runner.favn.internal
           FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.internal
           FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
@@ -440,6 +473,8 @@ defmodule Favn.Dev.Init.Compose do
           default:
             aliases: [runner.favn.internal]
 
+      # The prebuilt control plane contains the Favn web application and
+      # orchestrator. Customer application code runs only in the runner.
       control-plane:
         image: ${FAVN_CONTROL_PLANE_IMAGE}
         restart: unless-stopped
@@ -498,10 +533,13 @@ defmodule Favn.Dev.Init.Compose do
             aliases: [control-plane.favn.internal]
 
     volumes:
+      # Keep PostgreSQL internals in a Docker-managed volume. Do not bind the
+      # database directory into .data; PostgreSQL owns its filesystem layout.
       postgres-data:
         name: ${FAVN_POSTGRES_VOLUME}
 
     networks:
+      # All steady-state services communicate through this private network.
       default:
         name: ${FAVN_COMPOSE_PROJECT}-network
         driver: bridge
@@ -585,6 +623,7 @@ defmodule Favn.Dev.Init.Compose do
         stop_grace_period: 3m
         tmpfs: ["/tmp/favn:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700"]
         environment:
+          FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}
           FAVN_RUNNER_NODE: favn_runner@runner.favn.internal
           FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.internal
           FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}

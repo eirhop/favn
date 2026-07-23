@@ -1,134 +1,91 @@
 # Local Docker Compose development
 
-The supported customer development loop deliberately mirrors production:
-PostgreSQL 18, the version-matched prebuilt control plane, and a customer-built
-runner run as three Docker Compose services on one project-scoped private
-network.
+The supported local topology mirrors production:
 
-## Supported hosts and prerequisites
+1. PostgreSQL 18;
+2. the Favn-published control-plane image; and
+3. a customer-built runner image.
 
-- Linux amd64 with Docker Engine and Docker Compose v2;
-- amd64 WSL2 using Docker Desktop's Linux container engine and Compose v2; and
-- Elixir `1.20.2` running on Erlang/OTP `29` for the host Mix commands; and
-- authenticated pull access to the private GHCR control-plane package.
+For local convenience, Favn invokes the customer-owned runner Dockerfile. It
+does not own that file or the production image pipeline.
 
-Native Windows, arm64, macOS emulation, and Podman are not supported in v1. Host
-compiler and engine probes fail before pulling images or starting services. The
-host compiler must match the pinned runner compiler because authored modules are
-compiled before they are vendored into the reproducible runner image context.
+## Prerequisites
 
-Authenticate Docker with a pull-only GitHub credential outside Favn:
+- Linux amd64 or amd64 WSL2 with Docker Engine and Compose v2;
+- Elixir `1.20.2` on Erlang/OTP `29` for host Mix commands;
+- authenticated access to the private control-plane image.
+
+## First-time setup
 
 ```bash
-docker login ghcr.io
-```
-
-Before Hex publication, check out Favn at an approved tag or commit, detach the
-checkout, keep it clean, and use path dependencies from the customer project.
-The generated runner context vendors its dependency closure; the checkout and
-private Git credentials are not needed when that context is built elsewhere.
-
-## Install and start
-
-```bash
-mix favn.init --duckdb --sample
-mix favn.init --target compose
+mix favn.init
 mix favn.install
-mix favn.doctor
 mix favn.dev
 ```
 
-Compose initialization creates the consumer-owned default
-`deploy/compose.local.yml`. Review and commit it. `mix favn.dev --compose-file`
-overrides `config :favn, :local, compose_file:`, which overrides that default.
-Favn validates versioned role labels and immutable image selections; extra
-unlabeled services and ordinary Compose configuration remain consumer-owned.
+Review and commit the generated documented Compose file under `deploy/local/`
+and runner template under `deploy/runner/`. Both are starting points owned by
+the customer and are never overwritten after edits. The Compose default binds
+the repository `.data/` directory into the runner and uses a Docker-managed
+PostgreSQL volume.
 
-Install pulls `ghcr.io/eirhop/favn-control-plane:v<matching-favn-version>`,
-verifies its labels and platform, resolves its immutable repository digest, and
-records that digest under `.favn/`. It never compiles View, Orchestrator,
-PostgreSQL storage, Phoenix assets, or a source-built control plane. Repeating
-install uses the cached exact digest; `--force` repulls and revalidates the
-version tag.
-Install probes Docker Engine but neither requires Compose nor writes deployment
-topology or credentials.
+`mix favn.dev` generates the opaque local release ID, runs `docker build --pull`
+with the customer Dockerfile, and selects an automatic project-scoped image
+name. An existing image can instead be selected:
 
-Dev builds or reuses the customer runner, starts PostgreSQL, executes the
-release-safe database operations, starts runner then control plane, verifies
-full readiness, and publishes/activates the aligned manifest. Neither runtime
-container mounts the Favn or customer source tree. PostgreSQL, EPMD, and BEAM
-distribution remain private to Compose; only View and the private API bind to
-`127.0.0.1`.
+```elixir
+config :favn, :local,
+  runner_image: "customer/favn-runner:dev"
+```
 
-The generated environment, secrets, runner selection, PostgreSQL bootstrap, and
-`.favn/data` bind source remain under `.favn/`. The Compose YAML is never
-regenerated. The runner mounts `.favn/data` at `/var/lib/favn/data`; the image
-creates that mount point but does not declare it as a Docker volume.
+The `--runner-image` command option overrides configuration, which overrides
+`FAVN_RUNNER_IMAGE`; without any selection, the automatic local build is used.
+Favn validates the image platform and labels, then pins the exact local Docker
+image ID in generated Compose state.
 
-## Reload classification
+Favn builds an aligned manifest with the image's release ID, starts existing
+images with `docker compose up --no-build`, runs the PostgreSQL release
+operations, and publishes and activates the manifest. Neither runtime container
+mounts source code.
 
-`mix favn.reload` recomputes the release contract before changing the stack:
+## Reload
 
-- a SQL, pipeline, schedule, or other manifest-only change publishes and
-  activates a new manifest without rebuilding or replacing either container;
-- an Elixir asset, helper, resolver, plugin, adapter, dependency, or other
-  runner-affecting change builds a new immutable image with stable dependency
-  layers eligible for BuildKit reuse, drains work, replaces only the runner,
-  verifies its new release ID, and activates the aligned manifest;
-- a bounded runner-environment change drains and recreates only the runner with
-  the same image; and
-- a blocked drain leaves the previous runner and active manifest in place.
+Favn does not classify source changes during reload.
 
-If candidate validation or the active-manifest lookup fails before recovery
-state is recorded, reload restores the previous runner image selection so the
-next reload can retry from the active release.
+- If only manifest content changed, run `mix favn.reload` with the same selected
+  runner image.
+- If executable runner content changed, first build a new image with a new
+  release ID, then run `mix favn.reload --runner-image <new-image>`.
+- A bounded runner-environment change recreates the runner with the same pinned
+  image.
 
-The prebuilt control-plane container is never rebuilt or replaced by reload.
+Runner replacement remains drain-first and recoverable. A blocked drain leaves
+the previous pinned image and active manifest unchanged.
 
-## State and cleanup
+## Ownership and cleanup
 
-`mix favn.stop` stops only the recorded control-plane, runner, and local
-PostgreSQL roles. It leaves unlabeled consumer services and every container,
-network, volume, data file, and image in place. A later `mix favn.dev` reuses
-that state. The last successful Compose selection remains recorded after stop.
-After an interrupted start with no runtime record, stop discovers only
-contract-labeled Favn containers in the derived Compose project, even when
-other generated Compose state is missing.
+The customer owns the Compose file, runner Dockerfile, runner images, extra
+services, networks, volumes, registry, and native dependencies. Favn owns only
+generated state below `.favn/` plus lifecycle operations for the labeled
+PostgreSQL, runner, and control-plane roles.
 
-`mix favn.reset` is a dry run that names generated `.favn/` state and verified
-local runner image tags. `--yes` removes only that scope after proving known Favn
-roles are stopped. It preserves `.favn/data`, the Compose file, containers,
-services, networks, volumes, consumer resources, and the official control-plane
-image. A selected Compose file below `.favn/` is explicitly excluded from
-cleanup, and reset fails closed if partial-start role state cannot be inspected.
-It never calls `docker compose down`.
+`mix favn.stop` stops the recorded Favn roles without deleting data.
+`mix favn.reset --yes` removes generated `.favn/` state while preserving
+`.data`, the Compose file, and every customer image and Docker resource. It
+never calls `docker compose down`.
 
-Use these diagnostics before resetting:
+Use:
 
 ```bash
 mix favn.status
 mix favn.doctor
 mix favn.diagnostics --json
-mix favn.logs --service control-plane --tail 200
 mix favn.logs --service runner --tail 200
-mix favn.logs --service postgres --tail 200
 ```
 
-Targeted errors distinguish missing Docker, missing Compose v2, unsupported
-host/engine architecture, GHCR authentication failure, missing version tag,
-image-label or contract mismatch, partial Compose state, and runner/manifest
-misalignment. Logs and diagnostics are bounded and redact generated secrets.
-
-Repository maintainers may build and qualify an unpublished candidate directly
-through `mix favn.build.control_plane --load` and the dedicated
-`mix test.container` contract. A consumer project may use
-`mix favn.maintainer.dev` with `FAVN_CHECKOUT` to build or reuse that checkout's
-candidate by exact local image ID and run the ordinary development stack. That
-path is explicitly non-production and cannot publish. Public `mix favn.install`
-still has no arbitrary-image, candidate-image, or source-build option; it also
-replaces maintainer selection with the version-matched official image.
-
-The public command reference is
-[`apps/favn/guides/local-development.md`](../../apps/favn/guides/local-development.md),
-and implementation-owned state details are in
-[`apps/favn_local/README.md`](../../apps/favn_local/README.md).
+Repository maintainers may build a control-plane candidate with
+`mix favn.build.control_plane --load` or select it through
+`mix favn.maintainer.dev`. When the customer runner is built automatically, the
+validated Favn source selection is materialized as a separate Docker build
+context. The customer project's normal build context is not widened.
+Maintainers can still bypass the automatic build with `--runner-image`.

@@ -5,11 +5,11 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
   alias Favn.SQLClient
   alias Favn.Contracts.RunnerWork
 
-  @duckdb_path ".favn/data/reference_workload.duckdb"
+  @duckdb_path ".data/reference_workload.duckdb"
   @terminal_ref {FavnReferenceWorkload.Warehouse.Ops.ReferenceWorkloadComplete, :asset}
 
   setup do
-    File.mkdir_p!(".favn/data")
+    File.mkdir_p!(".data")
     File.rm(@duckdb_path)
 
     on_exit(fn ->

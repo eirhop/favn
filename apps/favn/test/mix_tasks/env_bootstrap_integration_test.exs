@@ -71,7 +71,7 @@ defmodule Mix.Tasks.Favn.EnvBootstrapIntegrationTest do
   test "public dev and reload evaluate runtime config once with current .env", context do
     %{capture_path: capture_path, consumer_dir: consumer_dir} = context
     env_path = Path.join(consumer_dir, ".env")
-    compose_path = Path.join(consumer_dir, "deploy/compose.local.yml")
+    compose_path = Path.join(consumer_dir, "deploy/local/compose.yml")
 
     File.mkdir_p!(Path.dirname(compose_path))
     File.write!(compose_path, "services: {}\n")

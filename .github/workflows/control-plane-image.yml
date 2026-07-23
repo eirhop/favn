@@ -253,7 +253,7 @@ jobs:
           mix deps.get
           mix compile --warnings-as-errors
 
-      - name: Run production container acceptance
+      - name: Run representative runtime container acceptance
         env:
           FAVN_CONTROL_PLANE_CANDIDATE: favn-control-plane-candidate:${{ needs.discover.outputs.control_plane_build_id }}
           MIX_ENV: test
@@ -648,7 +648,7 @@ jobs:
           mix deps.get
           mix compile --warnings-as-errors
 
-      - name: Run complete pre-publish container acceptance
+      - name: Run representative pre-publish runtime acceptance
         env:
           BUILD_ID: ${{ needs.discover.outputs.control_plane_build_id }}
           EXISTING: ${{ steps.lookup.outputs.exists }}

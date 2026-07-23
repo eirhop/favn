@@ -93,7 +93,7 @@ config :favn,
   local: [
     workspace_id: "local-dev",
     scheduler: false,
-    compose_file: "deploy/compose.local.yml"
+    compose_file: "deploy/local/compose.yml"
   ]
 ```
 
@@ -105,12 +105,13 @@ Common local options:
 | `:orchestrator_port` | `4101` | Local API port. |
 | `:web_port` | `4173` | Local UI port. |
 | `:scheduler` | `false` | Enable with config or `mix favn.dev --scheduler`. |
-| `:compose_file` | `"deploy/compose.local.yml"` | Project-relative consumer-owned Compose file. `mix favn.dev --compose-file PATH` overrides it. |
+| `:compose_file` | `"deploy/local/compose.yml"` | Project-relative consumer-owned Compose file. `mix favn.dev --compose-file PATH` overrides it. |
+| `:runner_image` | automatic local build | Existing customer-built image. `--runner-image` overrides config; `FAVN_RUNNER_IMAGE` is the fallback. |
 
 Compose selection is explicit and deterministic: the command-line
 `--compose-file` value wins over `config :favn, :local`, which wins over the
 default above. The path must be a regular non-symlink file inside the project.
-Run `mix favn.init --target compose` to create the default starting template.
+Run `mix favn.init` to create the complete default scaffold.
 
 The local tooling generates PostgreSQL credentials, service authentication,
 the View session secret, and the distribution cookie into owner-only files
@@ -123,9 +124,9 @@ host path in the manifest:
 
 | Variable | Host default | Local runner value |
 | --- | --- | --- |
-| `FAVN_LOCAL_SAMPLE_DATABASE_PATH` | `.favn/data/local_smoke.duckdb` | `/var/lib/favn/data/local_smoke.duckdb` |
-| `FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH` | `.favn/data/raw.duckdb` | `/var/lib/favn/data/raw.duckdb` |
-| `FAVN_LOCAL_SAMPLE_MART_CATALOG_PATH` | `.favn/data/mart.duckdb` | `/var/lib/favn/data/mart.duckdb` |
+| `FAVN_LOCAL_SAMPLE_DATABASE_PATH` | `.data/local_smoke.duckdb` | `/var/lib/favn/data/local_smoke.duckdb` |
+| `FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH` | `.data/raw.duckdb` | `/var/lib/favn/data/raw.duckdb` |
+| `FAVN_LOCAL_SAMPLE_MART_CATALOG_PATH` | `.data/mart.duckdb` | `/var/lib/favn/data/mart.duckdb` |
 
 An existing shell value wins over `.env`; an `.env` value wins over these host
 defaults. The local Compose service supplies the container paths. If you change
@@ -386,8 +387,11 @@ resolve when a physical-session plan is built; a refresh changes the pool
 fingerprint so a session initialized with the old token is not selected for the
 new plan. Superseded idle sessions for the same connection requirements are
 closed so their admission leases cannot block refreshed session bootstrap.
-Idle-pool timeout is not a maximum session age. In local development,
-`mix favn.reload` restarts the runner and reevaluates runtime config.
+Idle-pool timeout is not a maximum session age. In local development, changing
+an environment value and running `mix favn.reload` recreates the runner
+container with its existing image when required. A `config/runtime.exs` code change is part of the immutable
+customer image: rebuild it with a new runner release ID, then select that image
+with `mix favn.reload --runner-image IMAGE`.
 
 ## DuckDB ADBC Config
 
@@ -397,9 +401,29 @@ Global driver config:
 
 ```elixir
 config :favn, :duckdb_adbc,
-  driver: "/opt/duckdb/1.5.2/libduckdb.so",
+  driver: "/opt/duckdb/1.5.4/libduckdb.so",
   entrypoint: "duckdb_adbc_init"
 ```
+
+`driver` is a path inside the runner environment. The optional
+`favn_duckdb_adbc` plugin loads that path. Request a supported native driver
+when creating the runner scaffold:
+
+```bash
+mix favn.init --include duckdb-adbc
+mix favn.init --include duckdb-adbc@1.5.4
+```
+
+The first form selects the driver version tested by the installed Favn release;
+the second makes the supported version explicit. The generated customer-owned
+Dockerfile contains the verified download, checksum, container path, and exact
+plugin configuration example. Remove that documented section when removing the
+plugin.
+
+The project remains responsible for choosing a supported driver version and for
+production image qualification. A path that exists on the build host is not
+available inside the runner unless the final image contains it or the deployment
+mounts it.
 
 ADBC uses the same `open`, native `duckdb.startup/resources/catalogs`, and
 `pool` shape.

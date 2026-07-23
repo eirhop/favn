@@ -8,14 +8,16 @@ defmodule Favn.Dev.Config do
     :orchestrator_port,
     :web_port,
     :scheduler_enabled,
-    :compose_file
+    :compose_file,
+    :runner_image
   ]
   defstruct [
     :workspace_id,
     :orchestrator_port,
     :web_port,
     :scheduler_enabled,
-    :compose_file
+    :compose_file,
+    :runner_image
   ]
 
   @type t :: %__MODULE__{
@@ -23,7 +25,8 @@ defmodule Favn.Dev.Config do
           orchestrator_port: pos_integer(),
           web_port: pos_integer(),
           scheduler_enabled: boolean(),
-          compose_file: Path.t()
+          compose_file: Path.t(),
+          runner_image: String.t() | nil
         }
 
   @typedoc "Keyword overrides used by local tooling tasks."
@@ -31,7 +34,7 @@ defmodule Favn.Dev.Config do
 
   @default_orchestrator_port 4101
   @default_web_port 4173
-  @default_compose_file "deploy/compose.local.yml"
+  @default_compose_file "deploy/local/compose.yml"
 
   @doc """
   Resolves local tooling configuration from app config plus runtime overrides.
@@ -57,7 +60,8 @@ defmodule Favn.Dev.Config do
       orchestrator_port: orchestrator_port,
       web_port: web_port,
       scheduler_enabled: normalize_bool(Keyword.get(merged, :scheduler, false), false),
-      compose_file: compose_file_value(opts, local_config)
+      compose_file: compose_file_value(opts, local_config),
+      runner_image: runner_image_value(opts, local_config)
     }
   end
 
@@ -88,6 +92,24 @@ defmodule Favn.Dev.Config do
     case Keyword.fetch(opts, :compose_file) do
       {:ok, value} -> value
       :error -> Keyword.get(local_config, :compose_file, @default_compose_file)
+    end
+  end
+
+  defp runner_image_value(opts, local_config) do
+    value =
+      Keyword.get(opts, :runner_image) ||
+        Keyword.get(local_config, :runner_image) ||
+        System.get_env("FAVN_RUNNER_IMAGE")
+
+    case value do
+      image when is_binary(image) ->
+        case String.trim(image) do
+          "" -> nil
+          normalized -> normalized
+        end
+
+      _missing ->
+        nil
     end
   end
 

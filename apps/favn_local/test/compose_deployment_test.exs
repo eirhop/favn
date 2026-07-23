@@ -15,7 +15,7 @@ defmodule Favn.Dev.ComposeDeploymentTest do
       )
 
     File.mkdir_p!(Path.join(root_dir, ".favn/compose"))
-    compose_file = Path.join(root_dir, "deploy/compose.local.yml")
+    compose_file = Path.join(root_dir, "deploy/local/compose.yml")
     env_file = Path.join(root_dir, ".favn/compose/.env")
     File.mkdir_p!(Path.dirname(compose_file))
     File.write!(compose_file, "services: {}\n")
@@ -70,7 +70,7 @@ defmodule Favn.Dev.ComposeDeploymentTest do
     assert deployment.services.runner == "team-runner"
     assert deployment.services.control_plane == "team-control"
     assert deployment.services.postgres == "team-db"
-    assert ComposeDeployment.relative_compose_file(deployment) == "deploy/compose.local.yml"
+    assert ComposeDeployment.relative_compose_file(deployment) == "deploy/local/compose.yml"
     refute Map.has_key?(deployment.services, :redis)
   end
 

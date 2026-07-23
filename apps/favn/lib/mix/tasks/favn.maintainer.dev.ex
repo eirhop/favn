@@ -60,7 +60,8 @@ defmodule Mix.Tasks.Favn.Maintainer.Dev do
     CLIArgs.parse_no_args!("favn.maintainer.dev", args,
       root_dir: :string,
       scheduler: :boolean,
-      compose_file: :string
+      compose_file: :string,
+      runner_image: :string
     )
   end
 

@@ -237,7 +237,7 @@ defmodule Favn.Dev.ComposeDeployment do
   defp require_profile(actual, expected),
     do: {:error, {:unsupported_compose_profile, expected, actual}}
 
-  defp validate_images(rendered, services, install, runner, project, opts) do
+  defp validate_images(rendered, services, install, runner, _project, opts) do
     expected_control = install["image_reference"]
     expected_runner = runner.image_reference
 
@@ -250,7 +250,6 @@ defmodule Favn.Dev.ComposeDeployment do
              expected_control
            ),
          :ok <- validate_role_images(rendered, services, [:runner], expected_runner),
-         :ok <- scoped_runner_reference(expected_runner, project["project_name"], runner),
          {:ok, image} <- Docker.inspect_image(expected_runner, opts),
          true <- image.id == runner.image_id,
          true <- image.labels["io.favn.runner-release-id"] == runner.runner_release_id do
@@ -294,11 +293,6 @@ defmodule Favn.Dev.ComposeDeployment do
 
   defp immutable_control_plane_reference(_reference, _install),
     do: {:error, :mutable_control_plane_reference}
-
-  defp scoped_runner_reference(reference, project_name, runner) do
-    expected = "favn-local-runner-#{project_name}:#{runner.runner_release_id}"
-    if reference == expected, do: :ok, else: {:error, :unscoped_runner_image_reference}
-  end
 
   defp decode_services(encoded, profile) do
     encoded

@@ -10,7 +10,7 @@ defmodule Favn.Dev.ConfigTest do
     assert config.orchestrator_port == 4101
     assert config.web_port == 4173
     assert config.scheduler_enabled == false
-    assert config.compose_file == "deploy/compose.local.yml"
+    assert config.compose_file == "deploy/local/compose.yml"
   end
 
   test "resolve/1 applies runtime overrides" do
@@ -76,7 +76,7 @@ defmodule Favn.Dev.ConfigTest do
 
   test "Compose selection uses CLI, then local config, then the project default" do
     root_dir = temp_project!()
-    default = write_compose!(root_dir, "deploy/compose.local.yml")
+    default = write_compose!(root_dir, "deploy/local/compose.yml")
     configured = write_compose!(root_dir, "deploy/compose.configured.yml")
     cli = write_compose!(root_dir, "deploy/compose.cli.yml")
 
@@ -109,7 +109,7 @@ defmodule Favn.Dev.ConfigTest do
       File.rm(outside)
     end)
 
-    missing = Path.join(root_dir, "deploy/compose.local.yml")
+    missing = Path.join(root_dir, "deploy/local/compose.yml")
 
     assert {:error, {:compose_file_missing, ^missing}} =
              Config.resolve_compose_file(root_dir: root_dir)

@@ -154,7 +154,7 @@ Generate a manifest from explicit modules:
   Favn.generate_manifest(
     asset_modules: [MyApp.Assets.Orders, MyApp.Assets.OrderSummary],
     pipeline_modules: [MyApp.Pipelines.DailySales],
-    runner_release: runner_release
+    runner_release_id: "rr_" <> String.duplicate("a", 64)
   )
 ```
 
@@ -164,7 +164,8 @@ Generate from configured discovery:
 config :favn,
   discovery: [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all]
 
-{:ok, manifest} = Favn.generate_manifest(runner_release: runner_release)
+{:ok, manifest} =
+  Favn.generate_manifest(runner_release_id: "rr_" <> String.duplicate("a", 64))
 ```
 
 Pin, serialize, hash, and validate:
@@ -241,7 +242,7 @@ Manage local runtime:
 
 | Command | Use it for |
 | --- | --- |
-| `mix favn.reload` | Publish a manifest-only change or replace only the runner for executable changes. |
+| `mix favn.reload` | Publish a manifest change or select a newly customer-built runner image. |
 | `mix favn.reset` | Preview generated-state cleanup; data and Compose resources are preserved. |
 | `mix favn.read_doc` | Read compiled Favn docs locally. |
 
@@ -249,8 +250,8 @@ Packaging commands:
 
 | Command | Use it for |
 | --- | --- |
-| `mix favn.build.runner` | Build an immutable customer runner OCI context plus its aligned manifest. |
-| `mix favn.build.manifest --runner-release PATH` | Build a manifest-only release after proving exact runner alignment. |
+| `mix favn.init --target runner` | Create an editable customer-owned runner Dockerfile. |
+| `mix favn.build.manifest --runner-release-id ID` | Build a manifest bound to an explicit runner release ID. |
 | `mix favn.publish --manifest PATH` | Publish missing packages and stage one immutable manifest. |
 | `mix favn.activate --manifest-version ID --workspace-id ID` | Activate an exact staged manifest after runner verification. |
 

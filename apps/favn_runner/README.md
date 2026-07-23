@@ -20,15 +20,12 @@ Must not depend on:
 Current status:
 
 - implemented runner runtime boundary for manifest-backed execution, connection loading, SQL runtime work, and release-aware readiness checks
-- packaged releases verify the fixed private `runner-release.json` descriptor
-  against runtime target/versions, packaged BEAM digests, and application
-  version/lock fingerprints stamped into packaged `.app` files; stamped
-  applications and configured plugins must exactly match descriptor inventories,
-  and option-selected plugin applications/children must already be fingerprinted
-  before any runner service starts
+- packaged releases require an operator-supplied `FAVN_RUNNER_RELEASE_ID` and
+  report it with runtime target/version compatibility; Favn does not inspect
+  customer source or dependency provenance
 - manifest registration, leasing, work, runtime-input resolution, and relation
-  inspection require the exact verified runner release before cache/worker activity
+  inspection require the exact configured runner release before cache/worker activity
 - diagnostics expose only bounded release identity, readiness, and node name;
-  results, events, and inspection results echo the verified release id, and the
+  results, events, and inspection results echo the configured release id, and the
   server discards lifecycle events and replaces results that do not match their
   stored work identity

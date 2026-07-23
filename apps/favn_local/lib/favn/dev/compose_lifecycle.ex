@@ -16,6 +16,7 @@ defmodule Favn.Dev.ComposeLifecycle do
     Install,
     LocalHttpClient,
     Lock,
+    ManifestRelease,
     OrchestratorClient,
     OutputRedactor,
     Paths,
@@ -25,7 +26,7 @@ defmodule Favn.Dev.ComposeLifecycle do
     State
   }
 
-  alias Favn.Dev.Maintainer.{Candidate, RunnerBuildCapability}
+  alias Favn.Dev.Maintainer.Candidate
 
   @runtime_schema_version 6
   @maintenance_schema_version 2
@@ -64,7 +65,7 @@ defmodule Favn.Dev.ComposeLifecycle do
              Keyword.put(opts, :compose_file, compose_file)
            ),
          :ok <- put_runtime_configuration(project, opts),
-         {:ok, runner} <- RunnerImage.ensure(project, opts),
+         {:ok, runner} <- prepare_runner(project, opts),
          {:ok, deployment} <-
            ComposeDeployment.resolve(
              project,
@@ -90,19 +91,43 @@ defmodule Favn.Dev.ComposeLifecycle do
     end
   end
 
+  defp prepare_runner(project, opts) do
+    with {:ok, runner} <- RunnerImage.ensure(project, opts),
+         :ok <- ComposeProject.put_runner_image(project, runner.image_reference),
+         {:ok, manifest} <- ManifestRelease.ensure(runner.runner_release_id, opts) do
+      {:ok,
+       Map.merge(runner, %{
+         manifest_dir: manifest.dist_dir,
+         manifest_path: manifest.manifest_path,
+         manifest_version_id: manifest.manifest_version_id
+       })}
+    end
+  end
+
   defp do_start(install, project, deployment, runner, opts) do
     postgres = ComposeDeployment.service!(deployment, :postgres)
     runner_service = ComposeDeployment.service!(deployment, :runner)
     control_plane = ComposeDeployment.service!(deployment, :control_plane)
 
-    with :ok <- compose(deployment, ["up", "--detach", "--wait", postgres], :postgres, opts),
+    with :ok <-
+           compose(
+             deployment,
+             ["up", "--no-build", "--detach", "--wait", postgres],
+             :postgres,
+             opts
+           ),
          :ok <- release_operations(deployment, opts),
-         :ok <-
-           compose(deployment, ["up", "--detach", "--wait", runner_service], :runner, opts),
          :ok <-
            compose(
              deployment,
-             ["up", "--detach", "--wait", control_plane],
+             ["up", "--no-build", "--detach", "--wait", runner_service],
+             :runner,
+             opts
+           ),
+         :ok <-
+           compose(
+             deployment,
+             ["up", "--no-build", "--detach", "--wait", control_plane],
              :control_plane,
              opts
            ),
@@ -152,38 +177,34 @@ defmodule Favn.Dev.ComposeLifecycle do
   end
 
   defp maintainer_dev_locked(candidate, opts) do
-    with {:ok, capability} <- RunnerBuildCapability.from_candidate(candidate, opts) do
-      opts = Keyword.put(opts, :maintainer_runner_build, capability)
+    case State.read_runtime(opts) do
+      {:error, :not_found} ->
+        with :ok <- Install.select_maintainer(candidate, opts),
+             {:ok, result} <- start_locked(opts) do
+          {:ok, {:started, result}}
+        end
 
-      case State.read_runtime(opts) do
-        {:error, :not_found} ->
+      {:ok,
+       %{
+         "schema_version" => @runtime_schema_version,
+         "control_plane_image_reference" => image_reference
+       }} ->
+        if image_reference == candidate.image_id do
           with :ok <- Install.select_maintainer(candidate, opts),
-               {:ok, result} <- start_locked(opts) do
-            {:ok, {:started, result}}
+               :ok <- reload_locked(opts) do
+            {:ok, :reloaded}
           end
+        else
+          {:error,
+           {:maintainer_restart_required,
+            %{current_image: image_reference, candidate_image: candidate.image_id}}}
+        end
 
-        {:ok,
-         %{
-           "schema_version" => @runtime_schema_version,
-           "control_plane_image_reference" => image_reference
-         }} ->
-          if image_reference == candidate.image_id do
-            with :ok <- Install.select_maintainer(candidate, opts),
-                 :ok <- reload_locked(opts) do
-              {:ok, :reloaded}
-            end
-          else
-            {:error,
-             {:maintainer_restart_required,
-              %{current_image: image_reference, candidate_image: candidate.image_id}}}
-          end
+      {:ok, _stale_runtime} ->
+        {:error, :stale_pre_migration_runtime_state}
 
-        {:ok, _stale_runtime} ->
-          {:error, :stale_pre_migration_runtime_state}
-
-        {:error, reason} ->
-          {:error, {:local_runtime_state_unavailable, reason}}
-      end
+      {:error, reason} ->
+        {:error, {:local_runtime_state_unavailable, reason}}
     end
   end
 
@@ -228,7 +249,7 @@ defmodule Favn.Dev.ComposeLifecycle do
   end
 
   defp reload_candidate(active_deployment, previous_runner, opts) do
-    case prepare_reload_candidate(active_deployment, opts) do
+    case prepare_reload_candidate(active_deployment, previous_runner, opts) do
       {:ok, prepared} ->
         apply_prepared_reload(prepared, previous_runner, opts)
 
@@ -243,10 +264,10 @@ defmodule Favn.Dev.ComposeLifecycle do
     end
   end
 
-  defp prepare_reload_candidate(active_deployment, opts) do
+  defp prepare_reload_candidate(active_deployment, previous_runner, opts) do
     with :ok <- Install.ensure_ready(opts),
          {:ok, install} <- State.read_install(opts),
-         config = Config.resolve(opts),
+         config = reload_config(previous_runner, opts),
          {:ok, secrets} <- Secrets.resolve(config, opts),
          {:ok, project} <-
            ComposeProject.write(
@@ -258,7 +279,7 @@ defmodule Favn.Dev.ComposeLifecycle do
          :ok <- put_runtime_configuration(project, opts),
          {:ok, runner_environment_identity} <-
            ComposeProject.runner_environment_identity(project),
-         {:ok, runner} <- RunnerImage.ensure(project, opts),
+         {:ok, runner} <- prepare_runner(project, opts),
          {:ok, current_deployment} <-
            ComposeDeployment.resolve(
              project,
@@ -278,6 +299,16 @@ defmodule Favn.Dev.ComposeLifecycle do
          runner: runner,
          runner_environment_identity: runner_environment_identity
        }}
+    end
+  end
+
+  defp reload_config(previous_runner, opts) do
+    config = Config.resolve(opts)
+
+    if is_binary(config.runner_image) and config.runner_image != "" do
+      config
+    else
+      %{config | runner_image: previous_runner.image_reference}
     end
   end
 
@@ -486,7 +517,6 @@ defmodule Favn.Dev.ComposeLifecycle do
         "docker" => probe,
         "control_plane" => control_plane_diagnostics(install),
         "deployment_contract" => deployment_contract,
-        "runner_inputs" => runner_input_diagnostics(opts),
         "compose" => compose_status,
         "runtime" => compose_status.runtime
       }
@@ -513,24 +543,6 @@ defmodule Favn.Dev.ComposeLifecycle do
       })
     else
       base
-    end
-  end
-
-  defp runner_input_diagnostics(opts) do
-    case State.read_runner_latest(opts) do
-      {:ok, %{"source_inputs" => source_inputs}} when is_map(source_inputs) ->
-        Map.take(source_inputs, [
-          "application_count",
-          "file_count",
-          "total_bytes",
-          "current_application_roots"
-        ])
-
-      {:ok, _state} ->
-        %{}
-
-      {:error, _reason} ->
-        %{}
     end
   end
 
@@ -827,7 +839,7 @@ defmodule Favn.Dev.ComposeLifecycle do
     active_manifest = get_in(recovery, ["active_manifest", "manifest_version_id"])
 
     cond do
-      previous_release != runner.runner_release_id -> :runner_rebuild
+      previous_release != runner.runner_release_id -> :runner_image
       runtime["runner_environment_identity"] != runner_environment_identity -> :runner_environment
       active_manifest != runner.manifest_version_id -> :manifest_only
       true -> :runner_image_reused
@@ -844,7 +856,7 @@ defmodule Favn.Dev.ComposeLifecycle do
   end
 
   defp apply_runner_change(deployment, recovery, runner, change, opts)
-       when change in [:runner_rebuild, :runner_environment] do
+       when change in [:runner_image, :runner_environment] do
     coordinated_runner_replacement(deployment, recovery, runner, opts)
   end
 
@@ -943,7 +955,15 @@ defmodule Favn.Dev.ComposeLifecycle do
            :ok <-
              compose(
                deployment,
-               ["up", "--detach", "--wait", "--no-deps", "--force-recreate", runner_service],
+               [
+                 "up",
+                 "--no-build",
+                 "--detach",
+                 "--wait",
+                 "--no-deps",
+                 "--force-recreate",
+                 runner_service
+               ],
                :runner_replacement,
                opts
              ),
@@ -1273,15 +1293,6 @@ defmodule Favn.Dev.ComposeLifecycle do
   end
 
   defp verify_unchanged_previous_runner(
-         _deployment,
-         nil,
-         _recovery,
-         _maintenance_token,
-         _opts
-       ),
-       do: {:error, :previous_runner_unavailable}
-
-  defp verify_unchanged_previous_runner(
          deployment,
          previous,
          recovery,
@@ -1301,9 +1312,6 @@ defmodule Favn.Dev.ComposeLifecycle do
     end
   end
 
-  defp restore_previous_runner(_deployment, nil, _recovery, _maintenance_token, _opts),
-    do: {:error, :previous_runner_unavailable}
-
   defp restore_previous_runner(
          deployment,
          %{image_reference: image_reference} = previous,
@@ -1318,7 +1326,15 @@ defmodule Favn.Dev.ComposeLifecycle do
          :ok <-
            compose(
              deployment,
-             ["up", "--detach", "--wait", "--no-deps", "--force-recreate", runner_service],
+             [
+               "up",
+               "--no-build",
+               "--detach",
+               "--wait",
+               "--no-deps",
+               "--force-recreate",
+               runner_service
+             ],
              :runner_rollback,
              opts
            ),
@@ -1358,7 +1374,9 @@ defmodule Favn.Dev.ComposeLifecycle do
          opts
        )
        when is_binary(image_reference) and is_map(state) do
-    with :ok <- Favn.Dev.ComposeProject.put_runner_image(deployment, image_reference),
+    project = %{"env_path" => Paths.compose_env_path(deployment.root_dir)}
+
+    with :ok <- ComposeProject.put_runner_image(project, image_reference),
          :ok <- State.write_runner_latest(state, opts) do
       :ok
     end
@@ -1838,7 +1856,7 @@ defmodule Favn.Dev.ComposeLifecycle do
     do:
       "Runner image reused: #{runner.runner_release_id}; manifest #{deployment.published.manifest_version_id} remains aligned"
 
-  defp reload_message(:runner_rebuild, runner, deployment),
+  defp reload_message(:runner_image, runner, deployment),
     do:
       "Runner reload complete: #{runner.runner_release_id}; activated #{deployment.published.manifest_version_id}"
 

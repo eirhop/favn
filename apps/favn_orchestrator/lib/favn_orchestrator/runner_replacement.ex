@@ -56,7 +56,7 @@ defmodule FavnOrchestrator.RunnerReplacement do
        %{
          runner_release_id: actual_release_id,
          ready?: true,
-         self_verified?: field(diagnostics, :self_verified?) == true,
+         identity_source: field(diagnostics, :identity_source),
          node_name: field(diagnostics, :node_name)
        }}
     else

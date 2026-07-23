@@ -1,95 +1,130 @@
 # Runner and manifest releases
 
-The runner is the customer-code artifact. Favn creates its reproducible build
-context but neither builds the final production image nor pushes it to a
-registry.
+The runner image belongs to the customer. It is built from the customer
+repository with the customer's Dockerfile, dependencies, native libraries, and
+CI policy. Local tooling may invoke that Dockerfile for development. Favn does
+not generate a production OCI context, publish the image, or replace customer
+CI policy.
+
+Favn provides two interfaces:
+
+1. `mix favn.init --target runner` writes an editable starting template under
+   `deploy/runner/`.
+2. The runner image and its manifests share one immutable runner release ID.
+   Local tooling generates it; production CI supplies it explicitly.
 
 ## Identities
 
 | Identity | Meaning |
 | --- | --- |
 | Runner contract version | Compatibility of the control-plane/runner protocol |
-| Runner release ID | Deterministic identity of the exact executable customer runtime |
-| Runner image digest | Exact OCI image built by the customer from that runner release |
-| Manifest version ID | Immutable manifest release and execution-package identity |
-| Required runner release ID | Runner release that may execute a manifest version |
+| Runner release ID | Opaque immutable ID assigned to one customer runner build |
+| Runner image digest | Exact OCI image built and deployed by the customer |
+| Manifest version ID | Immutable manifest and execution-package identity |
+| Required runner release ID | Runner release that may execute a manifest |
 
-The runner release ID and OCI digest are deliberately different. Rebuilding an
-unchanged context can produce a different OCI digest without changing logical
-runtime compatibility; Orchestrator still pins the runner release ID while the
-operator deploys the exact image digest.
+The release ID has the form `rr_` followed by 64 lowercase hexadecimal
+characters. Favn validates its syntax and exact alignment; it does not derive or
+prove its meaning.
 
-## What requires a runner rebuild
+Choose a new ID whenever executable runner behavior may have changed, including
+customer Elixir code, dependencies, plugins, adapters, native libraries,
+compile-time configuration, Favn version, Elixir, OTP, or build target. CI may
+derive the ID from its immutable build inputs or generate a unique ID and record
+it with the image digest. Never assign one release ID to different image
+contents.
 
-A new runner release is required when executable behavior can change, including:
+Manifest-only changes may reuse an existing release ID. Because the build is
+customer-owned, the operator is responsible for deciding that no executable
+runner input changed.
 
-- Elixir assets or imported runtime helpers;
-- SQL runtime-input resolver modules;
-- configured runner plugins, adapters, or supervised children;
-- explicitly declared dynamic modules or applications;
-- selected runtime dependency or lock inputs;
-- relevant compile-time runtime values; or
-- the Favn runner contract, Elixir, OTP, or target.
+## Create and build the customer image
 
-SQL text, templates, checks, output contracts, materialization declarations,
-graphs, pipelines, schedules, and other manifest-only metadata may reuse an
-existing runner release when the executable fingerprint is unchanged.
-
-## Build and publish a runner change
-
-Before Hex publication, use a clean Favn checkout detached at the approved Git
-tag or commit and reference its public packages with path dependencies. Do not
-use a floating or dirty Favn checkout for a production build.
-
-Run the build command with Elixir `1.20.2` on Erlang/OTP `29`, matching the
-pinned runner image builder. Favn rejects another host compiler before it
-compiles or fingerprints customer modules, so a descriptor can never claim a
-different toolchain from the image that will execute it.
-
-From the customer project (installation is not required to build artifacts):
+Create the editable template once:
 
 ```bash
-mix favn.build.runner
+mix favn.init --target runner
 ```
 
-The build writes:
+The template compiles the customer project and creates a `favn_runner` release.
+Edit it like any other application Dockerfile. Generate the tested optional
+DuckDB ADBC native driver section with:
+
+```bash
+mix favn.init --target runner --include duckdb-adbc
+```
+
+Use `duckdb-adbc@VERSION` to select another version supported by the installed
+Favn release.
+
+The customer application is packaged and loaded for its modules, but its
+supervision tree is not started automatically. Declare runner-local services
+through the public runner-plugin contract.
+
+The scaffold is customer-owned and is never overwritten. After upgrading Favn,
+generate a comparison copy with the new compatibility labels and build shape:
+
+```bash
+mix favn.init --target runner \
+  --output deploy/runner-next
+
+diff -ru deploy/runner deploy/runner-next
+```
+
+Merge the relevant changes into the owned Dockerfile, or switch the deployment
+to the fully rendered comparison directory. Then build with a new runner release
+ID. Delete the comparison copy after the upgrade is recorded. If the canonical
+template already differs, `mix favn.init --target runner` fails rather than
+overwriting it.
+
+Normal local development builds this Dockerfile automatically:
+
+```bash
+mix favn.dev
+```
+
+Production CI remains explicit:
+
+```bash
+export FAVN_RUNNER_RELEASE_ID="rr_$(openssl rand -hex 32)"
+
+docker build \
+  --platform linux/amd64 \
+  --build-arg FAVN_RUNNER_RELEASE_ID \
+  --file deploy/runner/Dockerfile \
+  --tag customer/favn-runner:dev \
+  .
+```
+
+The final image must:
+
+- run the `favn_runner` release on Linux amd64;
+- set `FAVN_RUNNER_RELEASE_ID`;
+- carry the labels validated by the generated template:
+  `io.favn.runner-release-id`, `io.favn.version`,
+  `io.favn.runner-contract-version`, and `io.favn.target`; and
+- contain every customer dependency and optional native driver needed at
+  runtime.
+
+Production CI builds, scans, pushes, and deploys this image using customer
+registry credentials. Deploy the returned repository digest, not a mutable tag.
+
+## Build and publish the aligned manifest
+
+Build a manifest with the same release ID:
+
+```bash
+mix favn.build.manifest \
+  --runner-release-id "$FAVN_RUNNER_RELEASE_ID"
+```
+
+The result is written below:
 
 ```text
-.favn/dist/runner/<runner_release_id>/
 .favn/dist/manifest/<manifest_version_id>/
 ```
 
-The runner directory contains `runner-release.json`, an integrity-checked OCI
-context, a digest-pinned Dockerfile, and `operator-notes.md`. The context vendors
-the exact dependency closure and builds without the original Favn checkout or
-private Git credentials.
-
-The context separates `dependency-input/` from `application-input/`. Its
-Dockerfile builds pinned toolchain and dependency stages before copying customer
-application source, selected extra BEAMs, the descriptor, runtime overlay, and
-release files. An ordinary customer-code edit therefore creates a new immutable
-runner release while allowing Docker to reuse the dependency stage. Dependency,
-plugin, adapter, lock, compile-time configuration, Favn runtime, or toolchain
-changes invalidate that stage. No deployment command copies code into a running
-container.
-
-Build and push it with customer-owned tooling, using immutable tags only as
-lookup aliases:
-
-```bash
-docker buildx build \
-  --platform linux/amd64 \
-  --push \
-  --tag registry.example/internal/favn-runner:<immutable-release-alias> \
-  .favn/dist/runner/<runner_release_id>
-```
-
-Record the returned repository digest, deploy that digest to the runner role,
-and keep `runner-release.json` with the deployment record. The runner validates
-its baked descriptor at boot before advertising readiness.
-
-Publish the aligned manifest as staged, then activate the exact returned
-version:
+Publish it as staged, then activate the exact returned version:
 
 ```bash
 export FAVN_ORCHESTRATOR_SERVICE_TOKEN='<versioned-service-token>'
@@ -104,25 +139,9 @@ mix favn.activate \
   --manifest-version <manifest_version_id>
 ```
 
-Activation fails closed until the connected healthy runner advertises the exact
-required runner release. Dispatch and the runner independently repeat the
-alignment check.
+The runner advertises the configured release ID at boot. Activation and dispatch
+fail closed unless the connected ready runner advertises the exact ID required
+by the manifest.
 
-## Manifest-only change
-
-Point `mix favn.build.manifest` at the previously verified descriptor:
-
-```bash
-mix favn.build.manifest \
-  --runner-release .favn/dist/runner/<runner_release_id>/runner-release.json
-```
-
-The command recomputes the executable fingerprint. It returns
-`runner_rebuild_required` rather than producing a mismatched manifest when any
-runner-affecting input changed. On success, publish and activate the new manifest
-version; neither runtime image needs to change.
-
-Keep at least the currently active runner image/descriptor/manifest tuple and
-the immediately preceding compatible tuple for rollback. Never activate a
-manifest merely because its schema is readable: its exact runner requirement
-must be available and healthy.
+Keep at least the current and previous runner image digest, runner release ID,
+and manifest version together as rollback tuples.

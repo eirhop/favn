@@ -33,13 +33,14 @@ defmodule Favn.Dev.Maintainer.Source do
   @control_plane_applications [:favn_core, :favn_orchestrator, :favn_storage_postgres, :favn_view]
 
   @enforce_keys [:checkout, :revision, :dirty, :fingerprint]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [input_set: nil]
 
   @type t :: %__MODULE__{
           checkout: Path.t(),
           revision: String.t(),
           dirty: boolean(),
-          fingerprint: String.t()
+          fingerprint: String.t(),
+          input_set: SourceInputSet.t() | nil
         }
 
   @doc "Resolves and validates the checkout selected through `FAVN_CHECKOUT`."
@@ -58,7 +59,8 @@ defmodule Favn.Dev.Maintainer.Source do
          checkout: checkout,
          revision: identity.revision,
          dirty: identity.dirty,
-         fingerprint: identity.fingerprint
+         fingerprint: identity.fingerprint,
+         input_set: identity.input_set
        }}
     end
   end
@@ -174,7 +176,9 @@ defmodule Favn.Dev.Maintainer.Source do
   end
 
   defp default_application_dirs(checkout) do
-    (@required_dependencies |> Map.keys() |> Kernel.++(@control_plane_applications))
+    @required_dependencies
+    |> Map.keys()
+    |> Kernel.++(@control_plane_applications)
     |> Enum.uniq()
     |> Enum.map(&Map.fetch!(all_dependencies(), &1))
     |> Enum.filter(&File.regular?(Path.join([checkout, &1, "mix.exs"])))

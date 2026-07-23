@@ -9,7 +9,7 @@ versions, or preparing deployment artifacts.
 Favn still uses manifests internally. Schema 12 publishes one compact manifest
 index plus immutable, content-addressed execution packages. The index describes
 assets, pipelines, schedules, dependencies, and compact runtime metadata. Each
-manifest is bound to the exact verified runner descriptor it requires, and each
+manifest is bound to the exact operator-supplied runner release ID it requires, and each
 SQL asset points to exactly one package containing its complete executable SQL payload.
 
 Runtime systems then use a pinned manifest version instead of rediscovering your
@@ -62,14 +62,14 @@ out of that index.
 
 ## Common Manifest Calls
 
-The examples below assume `runner_release` is the verified descriptor produced
-by the runner build. Tooling can decode its JSON with
-`Favn.RunnerRelease.decode/1`; do not invent or pass only a release ID.
+The examples below use the immutable release ID chosen for the customer runner
+image:
 
 Generate from configured discovery:
 
 ```elixir
-{:ok, manifest} = Favn.generate_manifest(runner_release: runner_release)
+runner_release_id = "rr_" <> String.duplicate("a", 64)
+{:ok, manifest} = Favn.generate_manifest(runner_release_id: runner_release_id)
 ```
 
 Generate from explicit modules:
@@ -80,7 +80,7 @@ Generate from explicit modules:
     asset_modules: [MyApp.Lakehouse.Raw.Sales.Orders],
     pipeline_modules: [MyApp.Pipelines.DailySales],
     connection_modules: [MyApp.Connections.Warehouse],
-    runner_release: runner_release
+    runner_release_id: runner_release_id
   )
 ```
 
@@ -100,7 +100,7 @@ Pin, serialize, hash, and validate:
 Prepare the complete deployment publication:
 
 ```elixir
-{:ok, build} = Favn.build_manifest(runner_release: runner_release)
+{:ok, build} = Favn.build_manifest(runner_release_id: runner_release_id)
 {:ok, publication} = Favn.prepare_manifest_publication(build)
 
 publication.version             # compact pinned index
@@ -136,7 +136,7 @@ A manifest can include:
 - JSON-safe asset and pipeline settings
 - runtime config requirements
 - schema and runner contract version 11 data used by the runtime
-- the exact `required_runner_release_id` derived from a verified runner descriptor
+- the exact operator-supplied `required_runner_release_id`
 
 Execution packages contain the full SQL templates, runtime-input resolver refs,
 typed output contracts, and executable generated/custom checks. They are not a
@@ -155,7 +155,7 @@ by hand.
 {:ok, manifest} =
   Favn.generate_manifest(
     asset_modules: [MyApp.Assets.Orders],
-    runner_release: runner_release
+    runner_release_id: runner_release_id
   )
 {:ok, version} = Favn.pin_manifest_version(manifest)
 ```
@@ -176,7 +176,7 @@ provided by the runtime environment.
 
 | Step | What can fail |
 | --- | --- |
-| Generate | The runner descriptor is missing or invalid, a module cannot load, an asset is invalid, dependencies are invalid, or the graph has a cycle. |
+| Generate | The runner release ID is missing or invalid, a module cannot load, an asset is invalid, dependencies are invalid, or the graph has a cycle. |
 | Validate | The manifest is missing required data or uses an unsupported version. |
 | Serialize or hash | The manifest cannot be encoded into the canonical payload. |
 | Pin | Version metadata is invalid or the manifest cannot be validated. |

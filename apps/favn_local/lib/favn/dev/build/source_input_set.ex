@@ -39,21 +39,6 @@ defmodule Favn.Dev.Build.SourceInputSet do
         }
 
   @doc false
-  @spec application(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
-  def application(root, opts \\ []) when is_binary(root) and is_list(opts) do
-    specs =
-      [{"mix.exs", :file}] ++
-        Enum.map(@application_files, &{&1, :file}) ++
-        Enum.map(@application_trees, &{&1, :tree}) ++
-        if(Keyword.get(opts, :runtime_config, false),
-          do: [{"config/runtime.exs", :file}],
-          else: []
-        )
-
-    collect(root, specs, ["mix.exs"])
-  end
-
-  @doc false
   @spec maintainer_checkout(Path.t(), [Path.t()]) :: {:ok, t()} | {:error, term()}
   def maintainer_checkout(root, application_dirs)
       when is_binary(root) and is_list(application_dirs) do
@@ -88,17 +73,32 @@ defmodule Favn.Dev.Build.SourceInputSet do
   end
 
   @doc false
+  @spec runtime_config(Path.t()) :: {:ok, t()} | {:error, term()}
+  def runtime_config(root) when is_binary(root) do
+    collect(root, [{"config/runtime", :tree}], [])
+  end
+
+  @doc false
   @spec fingerprint(t()) :: String.t()
   def fingerprint(%__MODULE__{} = input_set) do
     fingerprint_entries(input_set.entries)
   end
 
   @doc false
-  @spec runner_identity_fingerprint(t()) :: String.t()
-  def runner_identity_fingerprint(%__MODULE__{} = input_set) do
-    input_set.entries
-    |> Enum.reject(&within_tree?(&1.path, "lib"))
-    |> fingerprint_entries()
+  @spec materialize(t(), Path.t()) :: :ok | {:error, term()}
+  def materialize(%__MODULE__{} = input_set, destination) when is_binary(destination) do
+    with false <- File.exists?(destination),
+         :ok <- File.mkdir_p(destination) do
+      Enum.reduce_while(input_set.entries, :ok, fn entry, :ok ->
+        case materialize_entry(input_set.root, destination, entry) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    else
+      true -> {:error, :source_input_destination_exists}
+      {:error, reason} -> {:error, {:source_input_destination_failed, reason}}
+    end
   end
 
   defp fingerprint_entries(entries) do
@@ -106,32 +106,6 @@ defmodule Favn.Dev.Build.SourceInputSet do
     |> Enum.map(&{&1.path, &1.executable, &1.size, &1.sha256})
     |> :erlang.term_to_binary([:deterministic])
     |> sha256()
-  end
-
-  defp within_tree?(path, tree), do: String.starts_with?(path, tree <> "/")
-
-  @doc false
-  @spec summary(t()) :: map()
-  def summary(%__MODULE__{} = input_set) do
-    %{
-      "selection" => Atom.to_string(input_set.selection),
-      "declared_roots" => input_set.declared_roots,
-      "file_count" => length(input_set.entries),
-      "total_bytes" => Enum.sum(Enum.map(input_set.entries, & &1.size))
-    }
-  end
-
-  @doc false
-  @spec copy(t(), Path.t()) :: :ok | {:error, term()}
-  def copy(%__MODULE__{} = input_set, destination) when is_binary(destination) do
-    with :ok <- File.mkdir_p(destination) do
-      Enum.reduce_while(input_set.entries, :ok, fn entry, :ok ->
-        case copy_entry(input_set.root, destination, entry) do
-          :ok -> {:cont, :ok}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-    end
   end
 
   @doc false
@@ -361,12 +335,12 @@ defmodule Favn.Dev.Build.SourceInputSet do
     end
   end
 
-  defp copy_entry(root, destination, %Entry{} = expected) do
+  defp materialize_entry(root, destination, %Entry{} = expected) do
     with {:ok, actual, bytes} <- read_entry(root, expected.path),
          true <- actual == expected,
          target <- Path.join(destination, expected.path),
          :ok <- File.mkdir_p(Path.dirname(target)),
-         :ok <- File.write(target, bytes),
+         :ok <- File.write(target, bytes, [:binary, :exclusive]),
          :ok <- File.chmod(target, if(expected.executable, do: 0o755, else: 0o644)) do
       :ok
     else

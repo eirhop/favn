@@ -1,16 +1,24 @@
 # Getting Started With Favn
 
-This tutorial starts Favn locally, opens the UI, and runs a sample pipeline.
+This tutorial scaffolds and starts Favn locally.
 
 You do not need to call manifest functions by hand for normal local use. Favn's
 local commands build and load what they need from your DSL modules.
+
+The complete first-start path is:
+
+```bash
+mix favn.init
+mix favn.install
+mix favn.dev
+```
 
 ## Prerequisites
 
 - An Elixir Mix project.
 - Linux amd64, or amd64 WSL2 with Linux containers.
 - Docker Engine and Docker Compose v2.
-- Elixir 1.20.2 on Erlang/OTP 29 for runner packaging.
+- Elixir 1.20.2 on Erlang/OTP 29.
 - Pull access to Favn's private GHCR control-plane package.
 - The Favn monorepo or private package source available to your project.
 
@@ -27,9 +35,9 @@ def deps do
 end
 ```
 
-The generated runner context vendors the exact dependency closure and does not
-need this checkout or private Git credentials when built elsewhere. Use your
-approved package version when Favn is published to your package source.
+Your customer-owned Docker build resolves this dependency like any other
+application dependency. Use your approved package version when Favn is
+published to your package source.
 
 If you also want the generated DuckDB sample, add the DuckDB plugin dependency
 when prompted by `mix favn.init` or add it manually from the same checkout.
@@ -48,34 +56,30 @@ approved checkout and an active local checkout should use the
 [`FAVN_CHECKOUT` dependency switch and `mix favn.maintainer.dev`](local-development.md#testing-a-local-favn-checkout).
 The normal checkout remains the default.
 
-## 2. Generate The Local Sample
+## 2. Scaffold Local Favn
 
 Run this from your project root:
 
 ```bash
-mix favn.init --duckdb --sample
+mix favn.init
 ```
 
-This creates a small local setup with:
+This writes the documented customer-owned local Compose file under
+`deploy/local/` and the customer runner Dockerfile under `deploy/runner/`.
+Commit and customize both like ordinary project configuration. Favn never
+overwrites a modified scaffold.
 
-- a connection module
-- namespace modules for a local lakehouse layout
-- one raw Elixir asset
-- one downstream SQL asset
-- a sample pipeline, usually `MyApp.Pipelines.LocalSmoke`
-- local Favn config
-
-## 3. Create The Local Compose File
+When the project declares the optional `favn_duckdb_adbc` runner plugin, request
+the tested native DuckDB driver explicitly:
 
 ```bash
-mix favn.init --target compose
+mix favn.init --include duckdb-adbc
 ```
 
-This writes `deploy/compose.local.yml` and a secret-free environment example.
-Commit and customize the Compose file as ordinary project configuration. Favn
-will validate its labeled service roles but will not overwrite it.
+Use `--include duckdb-adbc@VERSION` to select another version supported by the
+installed Favn release.
 
-## 4. Install The Control Plane Image
+## 3. Install The Control Plane Image
 
 ```bash
 mix favn.install
@@ -85,7 +89,7 @@ This verifies Docker Engine, resolves the version-matched prebuilt control-plane
 image to an immutable digest, and writes image-only install state under
 `.favn/`. It does not compile the control plane or own the Compose file.
 
-## 5. Check The Installed Setup
+## 4. Optionally Check The Installed Setup
 
 ```bash
 mix favn.doctor
@@ -93,11 +97,17 @@ mix favn.doctor
 
 Fix any reported config, dependency, image, or Compose issue before continuing.
 
-## 6. Start Favn Locally
+## 5. Start Favn Locally
 
 ```bash
 mix favn.dev
 ```
+
+Favn generates a local runner release ID, invokes the customer-owned
+`deploy/runner/Dockerfile` with Docker build cache and refreshed base images,
+validates the result, builds the aligned manifest, and starts the three-service
+local topology. Pass `--runner-image IMAGE` only to use an image built or pulled
+outside this workflow.
 
 The command prints local URLs. Open the UI URL, usually:
 
@@ -107,7 +117,7 @@ http://127.0.0.1:4173
 
 Keep `mix favn.dev` running.
 
-## 7. Run The Sample Pipeline
+## 6. Run A Pipeline
 
 In another terminal:
 
@@ -115,10 +125,11 @@ In another terminal:
 mix favn.run MyApp.Pipelines.LocalSmoke
 ```
 
-If your generated pipeline has a different module name, use the name printed by
-`mix favn.init`.
+Replace the example with a pipeline declared by your project. To generate the
+separate legacy DuckDB authoring sample, run
+`mix favn.init --duckdb --sample`.
 
-## 8. Inspect The Result
+## 7. Inspect The Result
 
 List recent runs:
 
@@ -144,7 +155,7 @@ Run a local read-only SQL query:
 mix favn.query "select * from mart.sales.order_summary" --connection important_lakehouse
 ```
 
-## 9. Stop Favn
+## 8. Stop Favn
 
 ```bash
 mix favn.stop
@@ -169,7 +180,8 @@ The generated files show the main authoring pieces you will use in real projects
 | --- | --- |
 | `mix favn.doctor` reports missing config | Check `config/config.exs` and the generated connection modules. |
 | `mix favn.install` fails | Fix the reported dependency, tool, or filesystem issue and run it again. |
-| `mix favn.dev` reports a missing Compose file | Run `mix favn.init --target compose`, review the template, and retry. |
+| `mix favn.dev` reports a missing scaffold file | Run `mix favn.init`, review the generated files, and retry. |
+| The runner needs DuckDB ADBC | Declare `favn_duckdb_adbc`, then initialize with `mix favn.init --include duckdb-adbc`. |
 | `mix favn.dev` reports a Compose contract error | Keep one labeled service for each required Favn role; extra unlabeled services are allowed. |
 | `mix favn.dev` starts but UI does not load | Check the printed web URL, then run `mix favn.status` and `mix favn.diagnostics`. |
 | `mix favn.run` cannot find the pipeline | Use the generated pipeline module name printed by `mix favn.init`. |

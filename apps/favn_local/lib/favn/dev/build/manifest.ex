@@ -1,33 +1,19 @@
 defmodule Favn.Dev.Build.Manifest do
   @moduledoc """
-  Builds an immutable manifest release aligned with one runner descriptor.
+  Builds an immutable manifest release aligned with an explicit runner release ID.
 
-  A descriptor is verified before compilation output can become publishable.
-  The current runtime fingerprint is recomputed after compilation; executable
-  code, dependency, plugin, or runtime-toolchain drift requires a new runner.
+  The caller supplies the release ID: local lifecycle tooling generates it,
+  while production CI chooses it explicitly. This module compiles authored
+  definitions and binds the manifest to that ID; it does not inspect, package,
+  or build customer runtime code.
   """
 
-  alias Favn.Dev.Build.{Artifact, RunnerInputs}
+  alias Favn.Dev.Build.Artifact
   alias Favn.Dev.Paths
   alias Favn.Manifest.{Publication, Serializer}
   alias Favn.RunnerRelease
 
-  @test_only_options [
-    :allow_non_prod_build,
-    :allow_unpinned_favn,
-    :build_dependency_sources,
-    :current_app,
-    :current_app_source,
-    :dependency_sources,
-    :extra_applications,
-    :extra_modules,
-    :host_toolchain,
-    :lock,
-    :module_inventory,
-    :runner_build,
-    :runner_plugins,
-    :skip_compile
-  ]
+  @test_only_options [:allow_non_prod_build, :skip_compile]
 
   @type result :: %{
           manifest_version_id: String.t(),
@@ -37,17 +23,17 @@ defmodule Favn.Dev.Build.Manifest do
           status: :built | :already_built
         }
 
-  @doc "Builds a standalone manifest release from an explicit descriptor path."
+  @doc "Builds a standalone manifest release for an explicit runner release ID."
   @spec run(keyword()) :: {:ok, result()} | {:error, term()}
   def run(opts) when is_list(opts) do
     with :ok <- validate_test_only_options(opts),
          :ok <- ensure_production_build(opts),
-         {:ok, descriptor_path} <- required_path(opts, :runner_release),
-         {:ok, descriptor} <- read_descriptor(descriptor_path),
+         {:ok, runner_release_id} <- required_release_id(opts),
          :ok <- compile_project(opts),
-         {:ok, publication, _inputs} <- build_publication(descriptor, opts) do
-      root_dir = Paths.root_dir(opts)
-      write_release(root_dir, publication)
+         {:ok, publication} <- build_publication(runner_release_id),
+         {:ok, result} <- write_release(Paths.root_dir(opts), publication),
+         :ok <- write_latest(result, opts) do
+      {:ok, result}
     end
   end
 
@@ -69,14 +55,12 @@ defmodule Favn.Dev.Build.Manifest do
   end
 
   @doc false
-  @spec build_publication(RunnerRelease.t(), keyword()) ::
-          {:ok, Publication.t(), RunnerInputs.t()} | {:error, term()}
-  def build_publication(%RunnerRelease{} = descriptor, opts) when is_list(opts) do
-    with {:ok, build} <- FavnAuthoring.build_manifest(runner_release: descriptor),
-         {:ok, inputs} <- RunnerInputs.collect(build, opts),
-         :ok <- RunnerInputs.compare(descriptor, inputs.descriptor),
+  @spec build_publication(String.t()) :: {:ok, Publication.t()} | {:error, term()}
+  def build_publication(runner_release_id) when is_binary(runner_release_id) do
+    with :ok <- RunnerRelease.validate_id(runner_release_id),
+         {:ok, build} <- FavnAuthoring.build_manifest(runner_release_id: runner_release_id),
          {:ok, publication} <- FavnAuthoring.prepare_manifest_publication(build) do
-      {:ok, publication, inputs}
+      {:ok, publication}
     end
   end
 
@@ -103,21 +87,6 @@ defmodule Favn.Dev.Build.Manifest do
              }
            }) do
       :ok
-    end
-  end
-
-  @doc false
-  @spec read_descriptor(Path.t()) :: {:ok, RunnerRelease.t()} | {:error, term()}
-  def read_descriptor(path) when is_binary(path) do
-    with {:ok, bytes} <- File.read(path),
-         {:ok, descriptor} <- RunnerRelease.decode(bytes) do
-      {:ok, descriptor}
-    else
-      {:error, :enoent} ->
-        {:error, :runner_release_descriptor_missing}
-
-      {:error, reason} ->
-        {:error, {:runner_release_descriptor_invalid, descriptor_reason(reason)}}
     end
   end
 
@@ -205,22 +174,29 @@ defmodule Favn.Dev.Build.Manifest do
     end
   end
 
-  defp required_path(opts, key) do
-    case Keyword.get(opts, key) do
-      value when is_binary(value) and value != "" -> {:ok, value}
-      _missing -> {:error, {:missing_required_option, key}}
-    end
+  defp write_latest(result, opts) do
+    Favn.Dev.State.write_manifest_latest(
+      %{
+        "schema_version" => 1,
+        "manifest_version_id" => result.manifest_version_id,
+        "required_runner_release_id" => result.required_runner_release_id,
+        "dist_dir" => result.dist_dir,
+        "manifest_path" => result.manifest_path
+      },
+      opts
+    )
   end
 
-  defp descriptor_reason({:unsupported_runner_release_schema, _actual, _expected}),
-    do: :unsupported_schema
+  defp required_release_id(opts) do
+    case Keyword.get(opts, :runner_release_id) do
+      value when is_binary(value) ->
+        case RunnerRelease.validate_id(value) do
+          :ok -> {:ok, value}
+          {:error, _reason} -> {:error, {:invalid_runner_release_id, value}}
+        end
 
-  defp descriptor_reason({:unsupported_runner_contract, _actual, _expected}),
-    do: :unsupported_runner_contract
-
-  defp descriptor_reason({:unsupported_favn_version, _actual, _expected}),
-    do: :unsupported_favn_version
-
-  defp descriptor_reason({:invalid_runner_release_json, _reason}), do: :invalid_json
-  defp descriptor_reason(_reason), do: :invalid_descriptor
+      _missing ->
+        {:error, {:missing_required_option, :runner_release_id}}
+    end
+  end
 end

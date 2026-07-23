@@ -45,7 +45,6 @@ defmodule Favn.ControlPlaneQualification do
   @runtime_exclusions MapSet.new([
                         "apps/favn_local/lib/favn/dev/backfill.ex",
                         "apps/favn_local/lib/favn/dev/data_inspection.ex",
-                        "apps/favn_local/lib/favn/dev/init.ex",
                         "apps/favn_local/lib/favn/dev/run.ex",
                         "apps/favn_local/lib/favn/dev/runs.ex"
                       ])

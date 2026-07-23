@@ -9,9 +9,7 @@ defmodule Favn.CheckTestTagTiers do
   }
 
   @external_lifecycle_module_tiers %{
-    "apps/favn/test/mix_tasks/env_bootstrap_integration_test.exs" => :slow,
-    "apps/favn_local/test/acceptance/local_compose_acceptance_test.exs" => :container,
-    "apps/favn_local/test/acceptance/local_compose_execution_acceptance_test.exs" => :container
+    "apps/favn/test/mix_tasks/env_bootstrap_integration_test.exs" => :slow
   }
 
   @tag_regex ~r/@(?:module)?tag\s+:?(acceptance|container|slow|browser)\b|(?:acceptance|container|slow|browser):\s*true/

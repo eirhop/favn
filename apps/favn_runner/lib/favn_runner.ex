@@ -3,10 +3,10 @@ defmodule FavnRunner do
   Runtime runner boundary facade for manifest-pinned execution.
 
   `FavnRunner` implements the runner client contract used by the orchestrator
-  and plugin/runtime integrations. Packaged releases self-verify their baked
-  runner descriptor before the server starts. Manifest, work, and inspection
+  and plugin/runtime integrations. Packaged releases install the operator-owned
+  `FAVN_RUNNER_RELEASE_ID` before the server starts. Manifest, work, and inspection
   operations fail before cache or worker activity unless their required release
-  id exactly matches that verified descriptor. It is not an ordinary stable
+  id exactly matches that configured identity. It is not an ordinary stable
   authoring API.
   """
 

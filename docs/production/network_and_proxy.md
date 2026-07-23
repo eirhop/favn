@@ -55,10 +55,10 @@ browser settings. Browser responses include a restrictive Content Security
 Policy; scripts must come from the View origin, while LiveView connections may
 use same-origin WebSocket or long-poll transports.
 
-The container acceptance suite starts the pinned Nginx reference proxy on the
-private Compose network and requires an HTTP `101` LiveView WebSocket upgrade
-through it. This proves the documented proxy headers and upgrade behavior; it
-does not publish or manage a proxy image for operators.
+The representative repository container gate does not start an operator proxy.
+Validate the chosen proxy, forwarded-header allowlist, and a real HTTP `101`
+LiveView WebSocket upgrade in the target deployment. Favn does not publish or
+manage a proxy image for operators.
 
 For direct operator access without a reverse proxy, use a VPN that enters the
 private network and still terminate browser TLS at a trusted endpoint. Do not

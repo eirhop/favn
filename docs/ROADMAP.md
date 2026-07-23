@@ -8,17 +8,17 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
 ## Production release path
 
 1. [#522 — runnable release artifacts and supported deployment topology](https://github.com/eirhop/favn/issues/522)
-   - Ship one reusable Favn control-plane image and one relocatable
-     customer-built runner context with an aligned manifest release.
+   - Ship one reusable Favn control-plane image, an editable customer-owned
+     runner template, and the explicit release-ID manifest interface.
    - Qualify the one-control-plane/one-runner topology, runtime-only
      configuration, environment-only secrets, health, packaging, upgrades, and
      clean-container acceptance.
    - Validate the manifest, runner, and public package boundary through the clean
      canonical customer-project fixture.
-   - Project-owned local/single-host Compose templates, typed role validation,
-     data-preserving lifecycle ownership, and cached immutable customer-runner
-     builds are implemented; remaining #522 work is release qualification and
-     publishing evidence.
+   - Project-owned local/single-host Compose and runner templates, typed role
+     validation, data-preserving lifecycle ownership, and external runner-image
+     selection are implemented; remaining #522 work is release qualification
+     and publishing evidence.
 2. [#525 — durable scheduling and asynchronous orchestration](https://github.com/eirhop/favn/issues/525)
    - Persist submission intent, move work outside scheduler/RunManager critical
      paths, and add bounded workers, recovery, fairness, cancellation, and visibility.

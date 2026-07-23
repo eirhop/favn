@@ -40,23 +40,13 @@ Code:
   the normal result path before OTP stops their supervisors. Deadline interruption
   is an error with unknown outcome and `native_cancel_unknown`, not a claimed safe
   cancellation.
-- `apps/favn_runner/lib/favn_runner/release_verifier.ex` reads the fixed
-  `priv/runner-release.json` artifact before packaged-release startup. It verifies
-  descriptor self-identity, exact target/Favn/Elixir/OTP compatibility, every
-  selected packaged BEAM digest, application name/version/lock fingerprints,
-  and plugin module inclusion. Application checks read packaged `.app` metadata
-  before any plugin application starts; release assembly stamps the canonical
-  `:favn_runner_lock_fingerprint` property into each fingerprinted `.app` file.
-  The stamped application set and configured plugin set must exactly equal their
-  descriptor inventories. Before identity is installed, bounded plugin expansion
-  first requires each configured entrypoint in its own module fingerprints, may
-  start only fingerprinted applications, and may normalize only supervised child
-  roots declared in that plugin fingerprint; unverified plugin/child modules are
-  rejected before their callback or `child_spec/1` code runs. Production startup can
-  install identity only from the fixed private path. Errors are stable and never
-  contain artifact paths or descriptor payloads.
-  Mix-based development may start without the descriptor, but runner operations
-  remain not-ready until a verified descriptor is installed.
+- `apps/favn_runner/lib/favn_runner/release_verifier.ex` installs the immutable
+  `FAVN_RUNNER_RELEASE_ID` supplied by the customer image at startup. It
+  validates canonical ID syntax and reports the running Favn version, runner
+  contract, Elixir, OTP, target, and `identity_source: :operator`. Favn does not
+  inspect packaged customer modules, dependency provenance, or native
+  libraries. Missing or malformed identity fails startup before the runner
+  advertises readiness.
 - `apps/favn_runner/lib/favn_runner/plugin_loader.ex` consumes the public
   `Favn.Runner.Plugin` contract with explicit packaged-application startup,
   bounded callback and child-spec expansion, plugin/child counts, duplicate-id
@@ -136,7 +126,7 @@ absolute deadline explicitly rather than duplicating them inside metadata.
 
 Runner registration stores immutable pinned manifests only in the bounded runner
 manifest cache. Registration and lease acquisition first require the manifest's
-`required_runner_release_id` to equal the baked verified release. Work submission,
+`required_runner_release_id` to equal the configured runner release. Work submission,
 runtime-input resolution, and relation inspection repeat that check before cache
 lookup or worker admission. A mismatch is a stable non-retryable
 `runner_release_mismatch` safe failure containing only the required and actual

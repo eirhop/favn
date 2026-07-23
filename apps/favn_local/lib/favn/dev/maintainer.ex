@@ -10,18 +10,19 @@ defmodule Favn.Dev.Maintainer do
 
   alias Favn.Dev.Build.ControlPlane
   alias Favn.Dev.ComposeLifecycle
-  alias Favn.Dev.Maintainer.{Candidate, Source}
+  alias Favn.Dev.Maintainer.{Candidate, RunnerContext, Source}
 
   @doc "Builds or reuses the selected checkout and applies it to local development."
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts \\ []) when is_list(opts) do
     with :ok <- require_development_environment(),
          {:ok, source} <- Source.resolve(opts),
+         {:ok, runner_context} <- RunnerContext.ensure(source.input_set, opts),
          :ok <- progress(opts, "Preparing local Favn checkout #{source.checkout}"),
          {:ok, build} <- build_candidate(source, opts),
          {:ok, candidate} <- Candidate.from_build(build, source),
          :ok <- progress(opts, candidate_message(candidate, build.image_status)) do
-      run_lifecycle(candidate, opts)
+      run_lifecycle(candidate, runner_context, opts)
     end
   end
 
@@ -50,7 +51,9 @@ defmodule Favn.Dev.Maintainer do
       "checkout #{candidate.checkout_revision}#{dirty}"
   end
 
-  defp run_lifecycle(candidate, opts) do
+  defp run_lifecycle(candidate, runner_context, opts) do
+    opts = Keyword.put(opts, :runner_favn_context, runner_context)
+
     case Keyword.get(opts, :maintainer_lifecycle_fun) do
       fun when is_function(fun, 2) ->
         if Mix.env() == :test,

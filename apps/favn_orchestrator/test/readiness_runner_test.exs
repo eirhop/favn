@@ -53,7 +53,7 @@ defmodule FavnOrchestrator.ReadinessRunnerTest do
          runner_release_id: FavnTestSupport.runner_release_id(),
          favn_version: Favn.RunnerRelease.current_favn_version(),
          runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
-         self_verified?: true,
+         identity_source: :operator,
          node_name: "runner@runner.internal"
        }}
     )
@@ -75,7 +75,7 @@ defmodule FavnOrchestrator.ReadinessRunnerTest do
          runner_release_id: "invalid",
          favn_version: Favn.RunnerRelease.current_favn_version(),
          runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
-         self_verified?: true,
+         identity_source: :operator,
          node_name: "runner@runner.internal"
        }}
     )
@@ -131,7 +131,7 @@ defmodule FavnOrchestrator.ReadinessRunnerTest do
          runner_release_id: FavnTestSupport.runner_release_id(),
          favn_version: Favn.RunnerRelease.current_favn_version(),
          runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
-         self_verified?: true,
+         identity_source: :operator,
          node_name: "runner@runner.internal"
        }}
     )
@@ -151,7 +151,7 @@ defmodule FavnOrchestrator.ReadinessRunnerTest do
          runner_release_id: FavnTestSupport.runner_release_id(),
          favn_version: Favn.RunnerRelease.current_favn_version(),
          runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
-         self_verified?: true,
+         identity_source: :operator,
          node_name: "runner@runner.internal"
        }}
 

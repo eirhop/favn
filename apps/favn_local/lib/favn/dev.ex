@@ -25,19 +25,19 @@ defmodule Favn.Dev do
 
   - `install/1`: prepare local tooling inputs and snapshots
   - `inspect_relation/2`, `inspect_partitions/2`, `query/2`: inspect local SQL data
-  - `init/1`: generate an explicit DuckDB sample or consumer-owned Compose template
+  - `init/1`: generate the complete local Compose/runner scaffold or a DuckDB sample
   - `doctor/1`: validate local project setup before running
   - `dev/1`: start the production-like local Docker Compose topology
   - `maintainer_dev/1`: build or reuse a non-production control plane from `FAVN_CHECKOUT`
   - `status/1`: inspect current stack state
   - `diagnostics/1`: fetch service-authenticated operator diagnostics
-  - `reload/1`: rebuild and republish the manifest
+  - `reload/1`: reload the manifest or apply an explicitly selected runner image
   - `run/2`: submit an asset or pipeline run with optional dependency and refresh intent
   - `plan_rebuild/3`, `start_rebuild/3`, `get_rebuild/2`: plan, approve, and inspect
     local generation rebuilds through the orchestrator API
   - `list_runs/1`, `get_run/2`, `cancel_run/2`, `list_run_events/2`: inspect
     and control local runs through HTTP APIs
-  - `build_runner/1`, `build_manifest/1`: immutable runner and aligned manifest releases
+  - `build_manifest/1`: immutable manifests aligned with a user-owned runner release
   - `publish/1`, `activate/1`: topology-neutral staged deployment operations
 
   See `apps/favn_local/README.md` for the full local-tooling contract and `.favn/`
@@ -46,7 +46,6 @@ defmodule Favn.Dev do
 
   alias Favn.Dev.Backfill
   alias Favn.Dev.Activate
-  alias Favn.Dev.Build.Runner, as: RunnerBuild
   alias Favn.Dev.ComposeLifecycle
   alias Favn.Dev.DataInspection
   alias Favn.Dev.Doctor
@@ -65,9 +64,10 @@ defmodule Favn.Dev do
   @doc """
   Scaffolds local Favn files in the current Mix project.
 
-  Pass `duckdb: true, sample: true` for the authoring sample, or
-  `target: :compose` with an optional `profile: :local | :single_host` and
-  project-relative `output:` path for a consumer-owned deployment template.
+  With no options, writes the complete local Compose and editable customer
+  runner templates. Pass `include: "duckdb-adbc"` to add the tested native
+  DuckDB driver, `duckdb: true, sample: true` for the authoring sample, or an
+  explicit `target` to scaffold only one deployment artifact.
   """
   @spec init(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
   def init(opts \\ []) when is_list(opts), do: Init.run(opts)
@@ -110,9 +110,9 @@ defmodule Favn.Dev do
   def ensure_install_ready(opts \\ []) when is_list(opts), do: Install.ensure_ready(opts)
 
   @doc """
-  Removes generated local state and verified runner image tags after ensuring
-  known Favn roles are stopped. Consumer Compose resources and `.favn/data`
-  remain untouched.
+  Removes generated local state after ensuring known Favn roles are stopped.
+
+  Consumer Compose resources, runner images, and `.data` remain untouched.
   """
   @spec reset(lifecycle_opts()) :: :ok | {:error, term()}
   def reset(opts \\ []) when is_list(opts), do: Reset.run(opts)
@@ -123,13 +123,7 @@ defmodule Favn.Dev do
   @spec logs(keyword()) :: :ok | {:error, term()}
   def logs(opts \\ []) when is_list(opts), do: ComposeLifecycle.logs(opts)
 
-  @doc """
-  Builds the project-local runner packaging target.
-  """
-  @spec build_runner(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
-  def build_runner(opts \\ []) when is_list(opts), do: RunnerBuild.run(opts)
-
-  @doc "Builds a manifest release aligned with an explicit runner descriptor."
+  @doc "Builds a manifest release aligned with an explicit runner release ID."
   @spec build_manifest(keyword()) :: {:ok, map()} | {:error, term()}
   def build_manifest(opts) when is_list(opts), do: Favn.Dev.Build.Manifest.run(opts)
 

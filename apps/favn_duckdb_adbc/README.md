@@ -64,21 +64,23 @@ example is in `apps/favn/guides/runner-plugins.md`.
 
 ## DuckDB ADBC Installation
 
-This plugin requires a DuckDB ADBC driver to be available on the machine. See
-the DuckDB ADBC client documentation for installation and driver setup details:
-https://duckdb.org/docs/stable/clients/adbc.html
-
-By default the adapter asks `:adbc` for its configured DuckDB driver. Configure
-an explicit driver path when production deployments need a pinned DuckDB build:
+This optional plugin requires a compatible DuckDB ADBC driver in the runner
+image. A project can ask `mix favn.init --include duckdb-adbc[@VERSION]` to add
+Favn's tested download/checksum section to its customer-owned Dockerfile. The
+project still owns production image qualification. Configure the driver path:
 
 ```elixir
 config :favn, :duckdb_adbc,
-  driver: "/opt/duckdb/1.5.2/libduckdb.so",
+  driver: "/opt/duckdb/1.5.4/libduckdb.so",
   entrypoint: "duckdb_adbc_init"
 ```
 
-In shell-based smoke tests, the same path can be provided with
-`DUCKDB_ADBC_DRIVER=/opt/duckdb/1.5.2/libduckdb.so`.
+See the
+[DuckDB ADBC configuration guide](../favn/guides/configuration.md#duckdb-adbc-config)
+for local scaffolding, production image packaging, and the complete operator
+responsibility. See the
+[DuckDB ADBC client documentation](https://duckdb.org/docs/stable/clients/adbc.html)
+for native driver installation.
 
 ## Result Bounds
 
@@ -150,7 +152,7 @@ DuckDB ADBC driver is installed or configured:
 
 ```sh
 FAVN_DUCKDB_ADBC_INTEGRATION=1 \
-DUCKDB_ADBC_DRIVER=/opt/duckdb/1.5.3/libduckdb.so \
+DUCKDB_ADBC_DRIVER=/opt/duckdb/1.5.4/libduckdb.so \
 MIX_ENV=test mix test test/sql/adapter/duckdb_adbc_integration_test.exs
 ```
 

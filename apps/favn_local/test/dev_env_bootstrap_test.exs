@@ -121,7 +121,7 @@ defmodule Favn.Dev.EnvBootstrapTest do
     assert loaded["FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH"] == raw_catalog_path
 
     assert loaded["FAVN_LOCAL_SAMPLE_MART_CATALOG_PATH"] ==
-             Path.join(root_dir, ".favn/data/mart.duckdb")
+             Path.join(root_dir, ".data/mart.duckdb")
 
     assert System.get_env(@loaded_key) == "file-value"
   end

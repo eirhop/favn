@@ -1,5 +1,10 @@
 import Config
 
+System.put_env(
+  "FAVN_RUNNER_RELEASE_ID",
+  "rr_c6f1034e7952040808a56ceec5beb1c6c5f24efb7babfaba324d80be2ed8e14c"
+)
+
 config :logger, level: :error
 
 config :favn_orchestrator,

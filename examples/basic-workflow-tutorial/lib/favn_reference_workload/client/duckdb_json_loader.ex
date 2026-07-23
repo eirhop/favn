@@ -17,7 +17,7 @@ defmodule FavnReferenceWorkload.Client.DuckDBJSONLoader do
   alias Favn.RelationRef
   alias Favn.SQLClient
 
-  @payload_dir ".favn/data/reference_workload_api"
+  @payload_dir ".data/reference_workload_api"
 
   @spec replace_relation_from_rows(RelationRef.t(), atom(), [map()], iodata()) ::
           :ok | {:error, term()}
