@@ -143,6 +143,7 @@ defmodule Favn.MultiAsset do
   @doc false
   defmacro runtime_config(scope, fields) do
     caller = __CALLER__
+    file = DSLCompiler.normalize_file(caller.file)
 
     quote do
       Favn.MultiAsset.put_shared_declaration!(
@@ -150,7 +151,7 @@ defmodule Favn.MultiAsset do
         :runtime_config,
         Favn.RuntimeConfig.Bundle.inline!(unquote(scope), unquote(fields),
           module: unquote(caller.module),
-          file: unquote(caller.file),
+          file: unquote(file),
           line: unquote(caller.line)
         )
       )
@@ -297,7 +298,7 @@ defmodule Favn.MultiAsset do
 
     validate_unique_names!(raw_declarations)
     shared = shared_declarations(env.module)
-    context = %{module: env.module, file: env.file, line: env.line}
+    context = %{module: env.module, file: DSLCompiler.normalize_file(env.file), line: env.line}
     {_assets, raw_assets} = finalize_raw_assets(raw_declarations, shared, context)
     Module.put_attribute(env.module, :favn_multi_asset_generating, true)
 
@@ -399,7 +400,7 @@ defmodule Favn.MultiAsset do
           declaration =
             Bundle.inline!(eval_quoted!(scope, env), eval_quoted!(fields, env),
               module: env.module,
-              file: env.file,
+              file: DSLCompiler.normalize_file(env.file),
               line: env.line
             )
 

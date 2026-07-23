@@ -115,6 +115,16 @@ Compose to the exact Docker image ID, builds or reuses the consumer runner, and
 starts the normal local stack. Nothing is pushed to GHCR and local candidates do
 not receive the official scan or attestation evidence.
 
+Unlike the production packaging commands, this explicit maintainer workflow
+accepts the selected checkout while it is attached to a branch and also accepts
+deliberate uncommitted changes. Its progress output reports the exact checkout
+commit and labels the source as clean or dirty. A dirty checkout is never
+represented as the clean commit alone: runner identity fingerprints the actual
+selected runtime source and compiled modules. Unselected files may leave the
+logical runner identity unchanged. This exception is scoped to
+`mix favn.maintainer.dev`; direct `mix favn.build.runner` and
+`mix favn.build.manifest` remain pinned, reproducible production builds.
+
 The first control-plane or runner build does the full work. Later builds use
 BuildKit's cached dependency layers. A manifest-only DSL change publishes only
 the manifest; a compiler, runner, plugin, or executable consumer-code change

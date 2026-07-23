@@ -873,7 +873,8 @@ defmodule Favn.Dev.ComposeLifecycleTest do
       image_source_dirty: true,
       checkout: Path.join(root_dir, "favn"),
       checkout_revision: String.duplicate("d", 40),
-      checkout_dirty: true
+      checkout_dirty: true,
+      checkout_fingerprint: String.duplicate("e", 64)
     }
   end
 

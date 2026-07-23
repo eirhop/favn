@@ -350,6 +350,67 @@ defmodule Favn.Dev.Build.RunnerTest do
     refute replacement.runner_release_id == result.runner_release_id
   end
 
+  test "maintainer dirty source fingerprints the selected files", %{root_dir: root_dir} do
+    install!(root_dir)
+    checkout = Path.join(root_dir, "favn-checkout")
+    core_source = Path.join(checkout, "apps/favn_core")
+    File.mkdir_p!(Path.join(core_source, "lib"))
+    File.write!(Path.join(core_source, "mix.exs"), "defmodule FavnCore.Fixture do end\n")
+    tracked = Path.join(core_source, "lib/selected_input.ex")
+    File.write!(tracked, "defmodule Favn.SelectedInput, do: def(value, do: :one)\n")
+
+    git!(checkout, ["init", "-q"])
+    git!(checkout, ["add", "."])
+
+    git!(checkout, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-qm",
+      "initial"
+    ])
+
+    revision = git!(checkout, ["rev-parse", "HEAD"])
+    sources = Map.put(dependency_sources(), :favn_core, core_source)
+    {:ok, clean_fingerprint} = Favn.Dev.Maintainer.Source.fingerprint(checkout)
+
+    capability = %Favn.Dev.Maintainer.RunnerBuildCapability{
+      consumer_root: root_dir,
+      checkout: checkout,
+      revision: revision,
+      dirty: false,
+      fingerprint: clean_fingerprint
+    }
+
+    assert {:ok, first} =
+             build(root_dir,
+               dependency_sources: sources,
+               maintainer_runner_build: capability
+             )
+
+    File.write!(tracked, "defmodule Favn.SelectedInput, do: def(value, do: :two)\n")
+    {:ok, dirty_fingerprint} = Favn.Dev.Maintainer.Source.fingerprint(checkout)
+
+    assert {:ok, second} =
+             build(root_dir,
+               dependency_sources: sources,
+               maintainer_runner_build: %{
+                 capability
+                 | dirty: true,
+                   fingerprint: dirty_fingerprint
+               }
+             )
+
+    refute second.runner_release_id == first.runner_release_id
+
+    assert {:ok, descriptor} = second.descriptor_path |> File.read!() |> RunnerRelease.decode()
+    assert descriptor.build_metadata["favn_source_revision"] == revision
+    assert descriptor.build_metadata["favn_source_dirty"] == true
+    assert descriptor.build_metadata["favn_source_fingerprint"] == dirty_fingerprint
+  end
+
   test "a SQL-only edit reuses the runner and writes the current standalone manifest", %{
     root_dir: root_dir
   } do
@@ -841,6 +902,11 @@ defmodule Favn.Dev.Build.RunnerTest do
     |> File.read!()
     |> JSON.decode!()
     |> Map.fetch!("digest")
+  end
+
+  defp git!(root, args) do
+    assert {output, 0} = System.cmd("git", ["-C", root | args], stderr_to_stdout: true)
+    String.trim(output)
   end
 
   defp docker_runner("docker", args, _opts) do

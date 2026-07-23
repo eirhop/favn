@@ -25,7 +25,7 @@ defmodule Favn.Dev.ComposeLifecycle do
     State
   }
 
-  alias Favn.Dev.Maintainer.Candidate
+  alias Favn.Dev.Maintainer.{Candidate, RunnerBuildCapability}
 
   @runtime_schema_version 6
   @maintenance_schema_version 2
@@ -152,34 +152,38 @@ defmodule Favn.Dev.ComposeLifecycle do
   end
 
   defp maintainer_dev_locked(candidate, opts) do
-    case State.read_runtime(opts) do
-      {:error, :not_found} ->
-        with :ok <- Install.select_maintainer(candidate, opts),
-             {:ok, result} <- start_locked(opts) do
-          {:ok, {:started, result}}
-        end
+    with {:ok, capability} <- RunnerBuildCapability.from_candidate(candidate, opts) do
+      opts = Keyword.put(opts, :maintainer_runner_build, capability)
 
-      {:ok,
-       %{
-         "schema_version" => @runtime_schema_version,
-         "control_plane_image_reference" => image_reference
-       }} ->
-        if image_reference == candidate.image_id do
+      case State.read_runtime(opts) do
+        {:error, :not_found} ->
           with :ok <- Install.select_maintainer(candidate, opts),
-               :ok <- reload_locked(opts) do
-            {:ok, :reloaded}
+               {:ok, result} <- start_locked(opts) do
+            {:ok, {:started, result}}
           end
-        else
-          {:error,
-           {:maintainer_restart_required,
-            %{current_image: image_reference, candidate_image: candidate.image_id}}}
-        end
 
-      {:ok, _stale_runtime} ->
-        {:error, :stale_pre_migration_runtime_state}
+        {:ok,
+         %{
+           "schema_version" => @runtime_schema_version,
+           "control_plane_image_reference" => image_reference
+         }} ->
+          if image_reference == candidate.image_id do
+            with :ok <- Install.select_maintainer(candidate, opts),
+                 :ok <- reload_locked(opts) do
+              {:ok, :reloaded}
+            end
+          else
+            {:error,
+             {:maintainer_restart_required,
+              %{current_image: image_reference, candidate_image: candidate.image_id}}}
+          end
 
-      {:error, reason} ->
-        {:error, {:local_runtime_state_unavailable, reason}}
+        {:ok, _stale_runtime} ->
+          {:error, :stale_pre_migration_runtime_state}
+
+        {:error, reason} ->
+          {:error, {:local_runtime_state_unavailable, reason}}
+      end
     end
   end
 
