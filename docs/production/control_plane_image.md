@@ -258,9 +258,9 @@ FAVN_CONTROL_PLANE_CANDIDATE=favn-control-plane-candidate:<build-id> \
 This dedicated tier runs the final image with PostgreSQL 18 and a representative
 customer-built runner. It proves that the generated customer Dockerfile builds,
 the control plane and runner remain separate images and applications, the three
-services become healthy, an aligned manifest activates, and stop/start reuses
-the exact runner image and manifest identities. Product code never builds the
-customer image.
+services become healthy, and an aligned manifest activates. The local lifecycle
+invokes the generated customer Dockerfile; production publishing remains
+customer-owned.
 
 Focused owning-app tests cover release operations, compatibility rejection,
 bounded drain policy, conservative recovery, rotation parsing, and reload

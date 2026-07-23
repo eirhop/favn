@@ -104,7 +104,7 @@ defmodule Favn.Dev.StopTest do
       "kind" => "docker_compose",
       "compose_contract_version" => 1,
       "compose_profile" => "local",
-      "compose_file" => Path.join(root_dir, "deploy/compose.local.yml"),
+      "compose_file" => Path.join(root_dir, "deploy/local/compose.yml"),
       "compose_project" => project_name,
       "compose_services" => %{
         "postgres" => "postgres",

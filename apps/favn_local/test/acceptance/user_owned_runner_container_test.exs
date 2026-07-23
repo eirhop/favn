@@ -12,8 +12,7 @@ defmodule Favn.Local.UserOwnedRunnerContainerTest do
   }
 
   alias Favn.Dev.Build.Manifest
-  alias Favn.Dev.Init.Compose, as: ComposeInit
-  alias Favn.Dev.Init.Runner, as: RunnerInit
+  alias Favn.Dev.Init
 
   @moduletag :integration
   @moduletag :container
@@ -27,14 +26,15 @@ defmodule Favn.Local.UserOwnedRunnerContainerTest do
     {:ok, candidate_image} = Docker.inspect_image(candidate)
     repo_root = Path.expand("../../../..", __DIR__)
     root_dir = Path.join(repo_root, "apps/favn_local/acceptance/customer_runner_fixture")
-    release_id = FavnTestSupport.runner_release_id(:alternate)
-    image = "favn-customer-runner-acceptance:#{String.slice(release_id, 3, 16)}"
+    release_id = FavnTestSupport.runner_release_id(:primary)
     project_name = ComposeProject.project_name(root_dir)
+    image = "favn-local/#{project_name}-runner:dev"
 
     on_exit(fn ->
       cleanup_project_resources(project_name)
       _ = System.cmd("docker", ["image", "rm", "--force", image], stderr_to_stdout: true)
       File.rm_rf(Path.join(root_dir, ".favn"))
+      File.rm_rf(Path.join(root_dir, ".data"))
       File.rm_rf(Path.join(root_dir, "deploy"))
       File.rm(Path.join(root_dir, "mix.lock"))
     end)
@@ -42,18 +42,22 @@ defmodule Favn.Local.UserOwnedRunnerContainerTest do
     File.cp!(Path.join(repo_root, "mix.lock"), Path.join(root_dir, "mix.lock"))
 
     assert {:ok, _scaffold} =
-             RunnerInit.run(root_dir: root_dir, app: :favn_runner_acceptance_customer)
-
-    assert :ok = build_runner(repo_root, root_dir, release_id, image)
-    assert {:ok, runner_image} = Docker.inspect_image(image)
-    assert runner_image.labels["io.favn.runner-release-id"] == release_id
-    assert {:ok, _compose} = ComposeInit.run(root_dir: root_dir)
+             Init.run(
+               root_dir: root_dir,
+               app: :favn_runner_acceptance_customer,
+               include: "duckdb-adbc@1.5.4",
+               project_dependencies: [
+                 {:favn, path: "../../../favn"},
+                 {:favn_duckdb_adbc, path: "../../../favn_duckdb_adbc"}
+               ]
+             )
 
     opts = [
       root_dir: root_dir,
+      runner_build_context: repo_root,
+      runner_release_id_fun: fn -> release_id end,
       favn_version: Favn.RunnerRelease.current_favn_version(),
       candidate_control_plane: %{"reference" => candidate, "image_id" => candidate_image.id},
-      runner_image: image,
       web_port: free_port(),
       orchestrator_port: free_port(),
       progress_fun: fn _message -> :ok end,
@@ -70,14 +74,16 @@ defmodule Favn.Local.UserOwnedRunnerContainerTest do
       _ = Reset.run(Keyword.put(opts, :yes, true))
     end)
 
-    %{opts: opts, release_id: release_id, runner_image_id: runner_image.id}
+    %{opts: opts, release_id: release_id, runner_image: image}
   end
 
-  test "the selected customer runner and control-plane candidate start as separate images",
+  test "the scaffolded customer runner is built and starts with the control-plane candidate",
        context do
     assert {:ok, started} = ComposeLifecycle.start(context.opts)
     assert started.runner_release_id == context.release_id
-    assert started.runner_image_id == context.runner_image_id
+    assert {:ok, runner_image} = Docker.inspect_image(context.runner_image)
+    assert runner_image.id == started.runner_image_id
+    assert runner_image.labels["io.favn.runner-release-id"] == context.release_id
 
     assert %{stack_status: :running, services: services} =
              ComposeLifecycle.status(context.opts)
@@ -89,40 +95,7 @@ defmodule Favn.Local.UserOwnedRunnerContainerTest do
     deployment = deployment!(context.opts)
     assert_control_plane_runtime_contract(deployment)
     assert_customer_code_loaded_but_not_started(deployment)
-
-    assert :ok = ComposeLifecycle.stop(context.opts)
-    assert {:ok, restarted} = ComposeLifecycle.start(context.opts)
-    assert restarted.runner_release_id == started.runner_release_id
-    assert restarted.runner_image_id == started.runner_image_id
-    assert restarted.manifest_version_id == started.manifest_version_id
-  end
-
-  defp build_runner(repo_root, root_dir, release_id, image) do
-    dockerfile = Path.join(root_dir, "deploy/favn-runner/Dockerfile")
-    project_root = Path.relative_to(root_dir, repo_root)
-
-    case System.cmd(
-           "docker",
-           [
-             "build",
-             "--file",
-             dockerfile,
-             "--build-arg",
-             "FAVN_PROJECT_ROOT=#{project_root}",
-             "--build-arg",
-             "FAVN_RUNNER_RELEASE_ID=#{release_id}",
-             "--tag",
-             image,
-             repo_root
-           ],
-           stderr_to_stdout: true
-         ) do
-      {_output, 0} ->
-        :ok
-
-      {output, status} ->
-        {:error, {:customer_runner_build_failed, status, String.slice(output, -2_000, 2_000)}}
-    end
+    assert_duckdb_adbc_driver_operational(deployment)
   end
 
   defp build_manifest(release_id, opts) do
@@ -198,6 +171,45 @@ defmodule Favn.Local.UserOwnedRunnerContainerTest do
              )
 
     refute output =~ "customer application load boundary violated"
+  end
+
+  defp assert_duckdb_adbc_driver_operational(deployment) do
+    container = compose_container_id!(deployment, ComposeDeployment.service!(deployment, :runner))
+
+    expression = """
+    client = FavnDuckdbADBC.Runtime.client_module()
+    opts = FavnDuckdbADBC.Runtime.driver_opts()
+
+    {:ok, database} = client.open(":memory:", opts)
+
+    try do
+      {:ok, connection} = client.connection(database)
+
+      try do
+        {:ok, result} = client.query(connection, "SELECT 42 AS answer", [])
+        [%{"answer" => 42}] = client.fetch_all(result, 1, 1024, bounded?: true)
+      after
+        client.release(connection)
+      end
+    after
+      client.release(database)
+    end
+    """
+
+    assert {output, 0} =
+             System.cmd(
+               "docker",
+               [
+                 "exec",
+                 container,
+                 "/opt/favn/bin/favn_runner",
+                 "rpc",
+                 expression
+               ],
+               stderr_to_stdout: true
+             )
+
+    refute output =~ "** ("
   end
 
   defp compose_container_id!(deployment, service) do

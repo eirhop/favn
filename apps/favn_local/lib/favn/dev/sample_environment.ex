@@ -12,7 +12,7 @@ defmodule Favn.Dev.SampleEnvironment do
   @spec install_defaults(map(), keyword()) :: map()
   def install_defaults(env_file, opts) when is_map(env_file) and is_list(opts) do
     root_dir = opts |> Paths.root_dir() |> Path.expand()
-    data_dir = Paths.data_dir(root_dir)
+    data_dir = Paths.local_data_dir(root_dir)
 
     defaults =
       Map.new(@paths, fn {key, filename} ->

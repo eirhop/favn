@@ -6,7 +6,10 @@ defmodule FavnRunnerAcceptanceCustomer.MixProject do
       app: :favn_runner_acceptance_customer,
       version: "0.1.0",
       elixir: "~> 1.20",
-      deps: [{:favn, path: "../../../favn"}]
+      deps: [
+        {:favn, path: "../../../favn"},
+        {:favn_duckdb_adbc, path: "../../../favn_duckdb_adbc"}
+      ]
     ]
   end
 

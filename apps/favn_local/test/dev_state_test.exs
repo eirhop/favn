@@ -17,7 +17,7 @@ defmodule Favn.Dev.StateTest do
     %{root_dir: root_dir}
   end
 
-  test "ensure_layout/1 creates .favn folders", %{root_dir: root_dir} do
+  test "ensure_layout/1 creates generated state and local data folders", %{root_dir: root_dir} do
     assert :ok = State.ensure_layout(root_dir: root_dir)
     assert File.dir?(Path.join(root_dir, ".favn"))
     assert File.dir?(Path.join(root_dir, ".favn/logs"))
@@ -30,7 +30,7 @@ defmodule Favn.Dev.StateTest do
     refute File.exists?(Path.join(root_dir, ".favn/build/web"))
     refute File.exists?(Path.join(root_dir, ".favn/build/orchestrator"))
     refute File.exists?(Path.join(root_dir, ".favn/build/single"))
-    assert File.dir?(Path.join(root_dir, ".favn/data"))
+    assert File.dir?(Path.join(root_dir, ".data"))
     assert File.dir?(Path.join(root_dir, ".favn/manifests"))
     assert File.dir?(Path.join(root_dir, ".favn/manifests/cache"))
     assert File.dir?(Path.join(root_dir, ".favn/history"))

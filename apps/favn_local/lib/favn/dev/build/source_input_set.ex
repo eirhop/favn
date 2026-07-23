@@ -73,9 +73,32 @@ defmodule Favn.Dev.Build.SourceInputSet do
   end
 
   @doc false
+  @spec runtime_config(Path.t()) :: {:ok, t()} | {:error, term()}
+  def runtime_config(root) when is_binary(root) do
+    collect(root, [{"config/runtime", :tree}], [])
+  end
+
+  @doc false
   @spec fingerprint(t()) :: String.t()
   def fingerprint(%__MODULE__{} = input_set) do
     fingerprint_entries(input_set.entries)
+  end
+
+  @doc false
+  @spec materialize(t(), Path.t()) :: :ok | {:error, term()}
+  def materialize(%__MODULE__{} = input_set, destination) when is_binary(destination) do
+    with false <- File.exists?(destination),
+         :ok <- File.mkdir_p(destination) do
+      Enum.reduce_while(input_set.entries, :ok, fn entry, :ok ->
+        case materialize_entry(input_set.root, destination, entry) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    else
+      true -> {:error, :source_input_destination_exists}
+      {:error, reason} -> {:error, {:source_input_destination_failed, reason}}
+    end
   end
 
   defp fingerprint_entries(entries) do
@@ -309,6 +332,20 @@ defmodule Favn.Dev.Build.SourceInputSet do
       {:ok, _other} -> {:error, {:source_input_not_regular, relative}}
       {:error, {:symlink_not_supported, _path}} = error -> error
       {:error, reason} -> {:error, {:source_input_read_failed, relative, reason}}
+    end
+  end
+
+  defp materialize_entry(root, destination, %Entry{} = expected) do
+    with {:ok, actual, bytes} <- read_entry(root, expected.path),
+         true <- actual == expected,
+         target <- Path.join(destination, expected.path),
+         :ok <- File.mkdir_p(Path.dirname(target)),
+         :ok <- File.write(target, bytes, [:binary, :exclusive]),
+         :ok <- File.chmod(target, if(expected.executable, do: 0o755, else: 0o644)) do
+      :ok
+    else
+      false -> {:error, {:source_input_changed, expected.path}}
+      {:error, _reason} = error -> error
     end
   end
 

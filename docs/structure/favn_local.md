@@ -10,14 +10,16 @@ Compose lifecycle implementation behind public `mix favn.*` tasks.
 - official control-plane image resolution and immutable install state;
 - non-overwriting customer Compose and runner-template scaffolds;
 - rendered-Compose validation and generated local credentials/bootstrap state;
-- validation and exact local image-ID pinning of a customer-selected runner;
-- manifest building against that runner's operator-supplied release ID;
+- automatic local invocation and exact image-ID pinning of the customer runner
+  Dockerfile, with an explicit existing-image override;
+- manifest building against that runner's release ID;
 - local start, reload, recovery, status, logs, diagnostics, stop, and reset;
 - manifest publication/activation and local operator commands; and
 - maintainer-only control-plane candidate building.
 
-It does not build, tag, push, remove, or inspect the source provenance of a
-customer runner image. It does not provision production infrastructure.
+It does not own or publish a customer runner image, construct its production
+context, or inspect source provenance. It does not provision production
+infrastructure.
 
 ## Primary code
 
@@ -25,8 +27,8 @@ customer runner image. It does not provision production infrastructure.
 - `apps/favn_local/lib/favn/dev/init/compose.ex`: customer Compose templates.
 - `apps/favn_local/lib/favn/dev/init/runner.ex`: editable runner Dockerfile and
   release wrapper template.
-- `apps/favn_local/lib/favn/dev/runner_image.ex`: external image validation and
-  exact local image-ID selection.
+- `apps/favn_local/lib/favn/dev/runner_image.ex`: default local Dockerfile
+  invocation, external image validation, and exact local image-ID selection.
 - `apps/favn_local/lib/favn/dev/build/manifest.ex`: explicit release-ID manifest
   build.
 - `apps/favn_local/lib/favn/dev/compose_lifecycle.ex`: lifecycle, deployment,
@@ -36,16 +38,16 @@ customer runner image. It does not provision production infrastructure.
 ## Invariants
 
 - Public install selects only the Favn-published control plane.
-- `mix favn.dev` requires an existing customer runner image and uses Compose
-  `--no-build`.
+- `mix favn.dev` builds `deploy/runner/Dockerfile` when no image is selected,
+  then uses the exact inspected image ID with Compose `--no-build`.
 - The selected runner's labels, platform, Favn version, and runner contract are
   validated before start. Local Compose runs the inspected image ID, not a
   mutable tag.
 - Manifest generation uses the image's exact runner release ID.
-- Favn never infers whether customer source requires a new runner. The customer
-  builds a new image and ID before reload when executable content changes.
+- Favn never infers whether customer source requires a new runner during reload.
+  The customer selects a new image before reload when executable content changes.
 - Stop and reset never call Compose `down`, remove customer images, remove
-  volumes, or delete `.favn/data`.
+  volumes, or delete `.data`.
 - Runtime state records only the current deployment. Compose selection remains
   available after stop for bounded diagnostics and restart.
 

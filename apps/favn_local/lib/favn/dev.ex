@@ -25,13 +25,13 @@ defmodule Favn.Dev do
 
   - `install/1`: prepare local tooling inputs and snapshots
   - `inspect_relation/2`, `inspect_partitions/2`, `query/2`: inspect local SQL data
-  - `init/1`: generate a DuckDB sample or consumer-owned Compose/runner template
+  - `init/1`: generate the complete local Compose/runner scaffold or a DuckDB sample
   - `doctor/1`: validate local project setup before running
   - `dev/1`: start the production-like local Docker Compose topology
   - `maintainer_dev/1`: build or reuse a non-production control plane from `FAVN_CHECKOUT`
   - `status/1`: inspect current stack state
   - `diagnostics/1`: fetch service-authenticated operator diagnostics
-  - `reload/1`: rebuild the manifest and apply an externally selected runner image
+  - `reload/1`: reload the manifest or apply an explicitly selected runner image
   - `run/2`: submit an asset or pipeline run with optional dependency and refresh intent
   - `plan_rebuild/3`, `start_rebuild/3`, `get_rebuild/2`: plan, approve, and inspect
     local generation rebuilds through the orchestrator API
@@ -64,9 +64,10 @@ defmodule Favn.Dev do
   @doc """
   Scaffolds local Favn files in the current Mix project.
 
-  Pass `duckdb: true, sample: true` for the authoring sample,
-  `target: :compose` for a deployment template, or `target: :runner` for an
-  editable customer runner image template.
+  With no options, writes the complete local Compose and editable customer
+  runner templates. Pass `include: "duckdb-adbc"` to add the tested native
+  DuckDB driver, `duckdb: true, sample: true` for the authoring sample, or an
+  explicit `target` to scaffold only one deployment artifact.
   """
   @spec init(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
   def init(opts \\ []) when is_list(opts), do: Init.run(opts)
@@ -111,7 +112,7 @@ defmodule Favn.Dev do
   @doc """
   Removes generated local state after ensuring known Favn roles are stopped.
 
-  Consumer Compose resources, runner images, and `.favn/data` remain untouched.
+  Consumer Compose resources, runner images, and `.data` remain untouched.
   """
   @spec reset(lifecycle_opts()) :: :ok | {:error, term()}
   def reset(opts \\ []) when is_list(opts), do: Reset.run(opts)

@@ -21,17 +21,20 @@ Projects upgrading from the removed generated-Compose contract use this
 data-preserving sequence:
 
 1. Before upgrading, run the old `mix favn.stop`.
-2. Upgrade Favn and run `mix favn.init --target compose`.
-3. Review and commit `deploy/compose.local.yml` and its environment example.
-4. Run `mix favn.install` to rewrite image-only installation metadata.
-5. Run `mix favn.dev`.
+2. Upgrade Favn. If the project has local files under `.favn/data` and no
+   `.data` directory, move them once with `mv .favn/data .data`. If both
+   directories exist, reconcile them manually.
+3. Run `mix favn.init`.
+4. Review and commit the new files under `deploy/local/` and `deploy/runner/`.
+5. Run `mix favn.install` to rewrite image-only installation metadata.
+6. Run `mix favn.dev`.
 
-The derived project name, default role names, PostgreSQL volume name, secrets,
-and `.favn/data` location remain stable. After the first successful readiness
-check, Favn removes only the obsolete `.favn/compose/compose.yml`; it does not
-remove the committed Compose file, PostgreSQL volume, data, or containers. Old
-runtime state cannot safely identify a consumer-owned deployment and is
-reported as pre-migration state.
+After the new layout is adopted, the derived project name, default role names,
+PostgreSQL volume name, secrets, and `.data` location remain stable. After the
+first successful readiness check, Favn removes only the obsolete
+`.favn/compose/compose.yml`; it does not remove the committed Compose file,
+PostgreSQL volume, data, or containers. Old runtime state cannot safely identify
+a consumer-owned deployment and is reported as pre-migration state.
 
 ## Control-plane upgrade
 

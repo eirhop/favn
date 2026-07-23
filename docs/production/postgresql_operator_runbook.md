@@ -91,7 +91,7 @@ Docker and PostgreSQL client tools are prerequisites for the repository scripts.
 scripts/postgres/setup
 ```
 
-This starts the digest-pinned PostgreSQL 18 container, migrates `favn_control`,
+This pulls the latest PostgreSQL 18 image, starts the container, migrates `favn_control`,
 grants the runtime role, and provisions the `local-dev` workspace.
 `scripts/postgres/stop` preserves the volume. The destructive
 reset is explicit:

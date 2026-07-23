@@ -3,9 +3,10 @@ defmodule Favn.RunnerRelease do
   Operator-owned identity of one customer runner build.
 
   Favn treats the release ID as an opaque immutable binding between a runner
-  image and the manifests that image may execute. The user or their CI system
-  chooses the ID and supplies it to both image and manifest builds. Favn
-  validates the boundary but does not inspect or package customer source code.
+  image and the manifests that image may execute. Local tooling generates the
+  ID when it invokes the customer-owned Dockerfile. Production CI may choose
+  the ID explicitly. Favn validates exact image/manifest alignment without
+  making the ID a content claim.
   """
 
   alias Favn.Manifest.Compatibility

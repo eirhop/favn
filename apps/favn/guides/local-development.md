@@ -14,22 +14,19 @@ with Elixir `1.20.2` on Erlang/OTP `29`.
 ## First Local Flow
 
 ```bash
-mix favn.init --duckdb --sample
-mix favn.init --target compose
-mix favn.init --target runner
+mix favn.init
 mix favn.install
-mix favn.doctor
-
-export FAVN_RUNNER_RELEASE_ID="rr_$(openssl rand -hex 32)"
-docker build --platform linux/amd64 \
-  --build-arg FAVN_RUNNER_RELEASE_ID \
-  --file deploy/favn-runner/Dockerfile \
-  --tag customer/favn-runner:dev .
-
-mix favn.dev --runner-image customer/favn-runner:dev
+mix favn.dev
 ```
 
 Open the printed UI URL, usually `http://127.0.0.1:4173`.
+
+Projects that declare the optional `favn_duckdb_adbc` plugin can scaffold its
+tested native driver with:
+
+```bash
+mix favn.init --include duckdb-adbc
+```
 
 In another terminal:
 
@@ -44,31 +41,37 @@ mix favn.stop
 
 | Command | Use it for | Common options |
 | --- | --- | --- |
+| `mix favn.init` | Create the complete customer-owned local Compose and runner scaffold. | `--include duckdb-adbc[@VERSION]` |
 | `mix favn.init --duckdb --sample` | Generate local Favn files and a sample DuckDB pipeline. | `--duckdb`, `--sample` |
 | `mix favn.init --target compose` | Create a consumer-owned local or single-host Compose starting template. | `--profile local\|single-host`, `--output PATH` |
-| `mix favn.init --target runner` | Create the editable customer-owned runner template under `deploy/favn-runner/`. | `--output DIRECTORY` |
+| `mix favn.init --target runner` | Create only the editable customer-owned runner template under `deploy/runner/`. | `--include duckdb-adbc[@VERSION]`, `--output DIRECTORY` |
 | `mix favn.doctor` | Check local configuration before running. | `--skip-compile` |
 | `mix favn.install` | Pull and verify the version-matched control-plane image. | `--force`, `--root-dir PATH` |
-| `mix favn.dev` | Validate an existing runner image and Compose file, then start PostgreSQL, runner, and control plane without building images. | `--runner-image IMAGE`, `--compose-file PATH`, `--scheduler`, `--root-dir PATH` |
-| `mix favn.maintainer.dev` | Build or reuse an unpublished control plane from `FAVN_CHECKOUT`, then use an existing customer runner image. | `--runner-image IMAGE`, `--compose-file PATH`, `--scheduler`, `--root-dir PATH` |
+| `mix favn.dev` | Build the local customer runner by default, align its manifest, and start PostgreSQL, runner, and control plane. | `--runner-image IMAGE`, `--compose-file PATH`, `--scheduler`, `--root-dir PATH` |
+| `mix favn.maintainer.dev` | Build or reuse an unpublished control plane from `FAVN_CHECKOUT`, then use the normal automatic or explicit customer runner selection. | `--runner-image IMAGE`, `--compose-file PATH`, `--scheduler`, `--root-dir PATH` |
 
 Runner templates are never overwritten. After a Favn upgrade, use
-`mix favn.init --target runner --output deploy/favn-runner-next` to create a
+`mix favn.init --target runner --output deploy/runner-next` to create a
 fully rendered comparison, merge or adopt it, and build the result with a new
 runner release ID.
 
 `mix favn.dev` stays in the foreground. It prints service logs and URLs. Stop it
 with `mix favn.stop` from another terminal or by ending the foreground process.
-Install never compiles the control plane. Startup validates the selected
-customer image, pins its exact local Docker image ID, builds the aligned
-manifest, then uses Compose `--no-build`. Use `mix favn.install --force` to
-repull and revalidate the version-matched control-plane tag.
+Install never compiles the control plane or customer runner. On startup,
+`mix favn.dev` generates an opaque local release ID and runs `docker build
+--pull` against `deploy/runner/Dockerfile` unless an existing runner image was
+selected. It then validates and pins the exact local image ID, builds the
+aligned manifest, and starts containers with Compose `--no-build`. Use
+`mix favn.install --force` to repull and revalidate the version-matched
+control-plane tag.
 
 The runner selection order is `--runner-image`, then
-`config :favn, :local, runner_image:`, then `FAVN_RUNNER_IMAGE`.
+`config :favn, :local, runner_image:`, then `FAVN_RUNNER_IMAGE`. When none is
+set, Favn builds the generated customer Dockerfile under an automatic
+project-scoped local image name.
 The Compose selection order is `mix favn.dev --compose-file PATH`, then
 `config :favn, :local, compose_file: PATH`, then
-`deploy/compose.local.yml`. A successful start records the canonical path for
+`deploy/local/compose.yml`. A successful start records the canonical path for
 reload, stop, status, logs, and diagnostics. Extra unlabeled services and normal
 Compose settings are allowed; the versioned Favn role labels must remain unique
 and complete.
@@ -85,9 +88,10 @@ only `:favn_sql_runtime`, not the consumer application or its plugins.
 
 ## What Favn Reads And Writes
 
-The customer Docker build decides which project files, dependencies, native
-libraries, and configuration enter the runner. Favn does not scan, fingerprint,
-copy, or compile them.
+The customer Dockerfile decides which project files, dependencies, native
+libraries, and configuration enter the runner. Favn supplies local build
+identity and invokes Docker; it does not reinterpret the Dockerfile, construct a
+production build context, or publish the image.
 
 Local lifecycle commands inspect the selected image's platform and Favn labels,
 read the explicit `.env`, runtime config, and selected Compose file, compile the
@@ -142,15 +146,18 @@ mix favn.maintainer.dev
 
 The command verifies that all loaded Favn path dependencies come from the same
 checkout. It builds or reuses that checkout's local control-plane image and
-starts the normal local stack with the customer image selected by
-`--runner-image` or local configuration. It never builds the runner.
+starts the normal local stack. The runner follows the ordinary rule: use
+`--runner-image` or local configuration when supplied; otherwise build the
+customer Dockerfile automatically. For that automatic maintainer build, Favn
+materializes the validated Favn source selection as a separate Docker build
+context without widening the customer project's normal build context.
 
 This explicit maintainer workflow accepts a branch or deliberate uncommitted
-framework changes and reports the exact checkout state. The customer must build
-a matching runner image from the consumer repository before starting. A View,
-Orchestrator, Storage, or Core change may require a new control-plane candidate;
-a runner-facing framework or customer change requires the customer to build a
-new runner image and release ID.
+framework changes and reports the exact checkout state. A View, Orchestrator,
+Storage, or Core change may require a new control-plane candidate; a
+runner-facing framework or customer change requires a matching customer image
+and release ID. Use `--runner-image` only when you want to bypass the automatic
+customer Dockerfile build.
 
 Run `mix favn.install` to switch the project back to its version-matched official
 control-plane image. Remove `FAVN_CHECKOUT` or leave the directory to switch Mix
@@ -280,7 +287,7 @@ mix favn.reset
 PostgreSQL state, consumer services, networks, volumes, and images. If a crash
 occurred before runtime state was recorded, it discovers only contract-labeled
 Favn containers in the derived Compose project and stops those roles.
-`mix favn.reset --yes` removes generated `.favn/` state except `.favn/data`
+`mix favn.reset --yes` removes generated `.favn/` state but preserves `.data`
 after proving the known Favn roles are stopped.
 It fails closed when partial-start roles cannot be inspected and preserves a
 selected Compose template even when it is below `.favn/`. It does not run

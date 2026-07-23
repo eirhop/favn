@@ -14,7 +14,7 @@ UI completion, managed-provider evidence, and data-plane recovery.
 | Workspace isolation, fencing, idempotency, bounded reads | Implemented | Record load, contention, failover, and recovery evidence. |
 | Lifecycle, readiness, bounded drain | Implemented | Owning-layer tests cover policy; real signal, cancellation, and recovery drills remain target-environment evidence. |
 | Control-plane release image | Implemented | A manual workflow publishes an exact current, green `main` revision to GHCR. Ordinary merges publish nothing. |
-| Customer runner and manifest releases | Implemented boundary | The representative container gate covers customer build, alignment, health, and exact stop/start reuse; execution and upgrade/rollback drills remain. |
+| Customer runner and manifest releases | Implemented boundary | The representative container gate covers automatic customer build, release-ID alignment, health, and DuckDB ADBC loading; execution and upgrade/rollback drills remain. |
 | Operator UI | Prototype | Finish core flows, audit mutations, and add browser acceptance. |
 | DuckDB/DuckLake data plane | Prototype | Define and verify backup, recovery, cancellation, and failure behavior. |
 | Multi-node control-plane coordination | Implemented foundation | Deferred; package and prove it before claiming application-node failover. |

@@ -9,7 +9,7 @@ defmodule Favn.Dev.ComposeProject do
 
   alias Favn.Dev.{ComposeEnv, Config, Paths}
 
-  @postgres_image "postgres@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
+  @postgres_image "postgres:18"
   @safe_identifier ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\z/
   @environment_key ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/
   @max_runner_environment 512
@@ -19,7 +19,7 @@ defmodule Favn.Dev.ComposeProject do
           required(String.t()) => String.t() | pos_integer()
         }
 
-  @doc "Returns the supported digest-pinned PostgreSQL 18 image."
+  @doc "Returns the supported floating PostgreSQL 18 image tag."
   @spec postgres_image() :: String.t()
   def postgres_image, do: @postgres_image
 
@@ -34,7 +34,7 @@ defmodule Favn.Dev.ComposeProject do
          {:ok, uid, gid} <- project_owner(root_dir),
          project = project(root_dir, control_plane_reference, config, uid, gid, opts),
          :ok <- File.mkdir_p(Paths.compose_dir(root_dir)),
-         :ok <- File.mkdir_p(Paths.data_dir(root_dir)),
+         :ok <- File.mkdir_p(Paths.local_data_dir(root_dir)),
          :ok <- atomic_write(project["env_path"], env_file(project, secrets, config), 0o600),
          :ok <- ensure_runner_env(project["runner_env_path"]),
          :ok <- ensure_file(project["postgres_init_path"], postgres_init_script(), 0o555) do
@@ -105,7 +105,6 @@ defmodule Favn.Dev.ComposeProject do
       "env_path" => Paths.compose_env_path(root_dir),
       "runner_env_path" => Paths.compose_runner_env_path(root_dir),
       "postgres_init_path" => Paths.compose_postgres_init_path(root_dir),
-      "data_path" => Paths.data_dir(root_dir),
       "control_plane_image" => control_plane_reference,
       "runner_image" => config.runner_image,
       "view_url" => "http://127.0.0.1:#{config.web_port}",
@@ -182,7 +181,6 @@ defmodule Favn.Dev.ComposeProject do
       {"FAVN_POSTGRES_VOLUME", project["postgres_volume_name"]},
       {"FAVN_RUNNER_IMAGE", project["runner_image"] || ""},
       {"FAVN_RUNNER_ENV_FILE", project["runner_env_path"]},
-      {"FAVN_RUNNER_DATA_SOURCE", project["data_path"]},
       {"FAVN_RUNNER_UID", Integer.to_string(project["runner_uid"])},
       {"FAVN_RUNNER_GID", Integer.to_string(project["runner_gid"])},
       {"FAVN_POSTGRES_DATABASE", database},

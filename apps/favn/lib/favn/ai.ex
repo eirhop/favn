@@ -246,12 +246,16 @@ defmodule Favn.AI do
     runtime config without starting the consumer app, and
     `Favn.Dev.DataInspection` starts `:favn_sql_runtime` before connecting.
   - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
+    Read `Favn.Dev.Init` for scaffold dispatch and `Favn.Dev.Init.Runner` for
+    optional runner-image includes.
     Docker Engine and Compose v2 are mandatory. The supported topology is
-    PostgreSQL, the digest-pinned prebuilt control plane, and one customer-built
-    runner on a project-scoped private Compose network. `mix favn.init --target
-    compose` scaffolds the consumer-owned file; `mix favn.install` owns only the
-    immutable control-plane image. `mix favn.dev --compose-file` overrides
-    `config :favn, :local`, which overrides `deploy/compose.local.yml`. Favn
+    PostgreSQL, the digest-pinned prebuilt control plane, and one customer-owned
+    runner on a project-scoped private Compose network. `mix favn.init`
+    scaffolds the documented local Compose and runner files; optional native
+    runtime dependencies are explicit includes such as
+    `duckdb-adbc@1.5.4`. `mix favn.install` owns only the immutable
+    control-plane image. `mix favn.dev --compose-file` overrides
+    `config :favn, :local`, which overrides `deploy/local/compose.yml`. Favn
     validates versioned role labels but preserves extra consumer services and
     resources. Linux amd64 and amd64 WSL2 with Linux containers are the only
     supported v1 hosts.
@@ -264,8 +268,10 @@ defmodule Favn.AI do
     `mix favn.build.manifest`, `mix favn.publish`, `mix favn.activate`, and
     `mix favn.read_doc`. Dev and reload load the project `.env` before evaluating
     `config/runtime.exs`; existing shell values take precedence. The customer
-    builds the runner image from its repository; Favn validates and selects that
-    image but never copies code into a running container.
+    owns the runner Dockerfile and production image pipeline. Without an
+    explicit image, `mix favn.dev` generates the local release ID and invokes
+    that Dockerfile before validating and selecting the exact image ID. Favn
+    never copies code into a running container.
     `mix favn.run` resolves asset and pipeline targets from the active manifest.
     Direct asset repair can combine `--dependencies all|none` with
     `--refresh auto|missing|force_selected|force_selected_upstream|force_all`;
@@ -511,7 +517,8 @@ defmodule Favn.AI do
   - Read `Favn.Dev` and `apps/favn_local/README.md` when the task is about local
     lifecycle, local pipeline submission, local run investigation or
     cancellation, local SQL inspection/querying, docs lookup, or packaging, not
-    asset authoring. Read
+    asset authoring. Read `Favn.Dev.Init` and `Favn.Dev.Init.Runner` for
+    scaffold targets, ownership, and optional native runner includes. Read
     `Favn.Dev.Backfill` for the local `mix favn.backfill` workflow over the
     private orchestrator backfill endpoints. Read `Favn.Dev.Rebuild` for the
     plan/review/start rebuild workflow. Read `Favn.Dev.Run` for

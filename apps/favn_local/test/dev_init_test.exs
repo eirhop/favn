@@ -201,31 +201,44 @@ defmodule Favn.Dev.InitTest do
            end)
   end
 
-  test "requires explicit duckdb and sample flags", %{root_dir: root_dir} do
-    assert {:error, {:missing_required_flags, [:duckdb, :sample]}} = Init.run(root_dir: root_dir)
+  test "scaffolds the complete local project by default", %{root_dir: root_dir} do
+    assert {:ok, result} = Init.run(root_dir: root_dir, app: :sample_app)
+
+    assert result.target == :project
+    assert result.compose.output == "deploy/local/compose.yml"
+    assert result.runner.output == "deploy/runner"
+
+    assert File.regular?(Path.join(root_dir, "deploy/local/compose.yml"))
+    assert File.regular?(Path.join(root_dir, "deploy/runner/Dockerfile"))
   end
 
   test "scaffolds an idempotent consumer-owned local Compose template", %{root_dir: root_dir} do
     assert {:ok, first} = Init.run(root_dir: root_dir, target: :compose)
 
     assert first.profile == :local
-    assert first.output == "deploy/compose.local.yml"
-    assert first.env_example == "deploy/compose.local.env.example"
+    assert first.output == "deploy/local/compose.yml"
+    assert first.env_example == "deploy/local/compose.env.example"
 
     assert Enum.sort(first.created) ==
-             ["deploy/compose.local.env.example", "deploy/compose.local.yml"]
+             ["deploy/local/compose.env.example", "deploy/local/compose.yml"]
 
     compose = File.read!(Path.join(root_dir, first.output))
     assert compose =~ ~s(io.favn.compose.contract-version: "1")
     assert compose =~ "io.favn.compose.profile: local"
     assert compose =~ "io.favn.compose.role: runner"
-    assert compose =~ "source: ${FAVN_RUNNER_DATA_SOURCE}"
+    assert compose =~ "image: postgres:18"
+    assert compose =~ "pull_policy: always"
+    assert compose =~ "source: ../../.data"
     assert compose =~ "target: /var/lib/favn/data"
     assert compose =~ "user: ${FAVN_RUNNER_UID}:${FAVN_RUNNER_GID}"
     assert compose =~ ~s(env_file: ["${FAVN_RUNNER_ENV_FILE}"])
 
     assert compose =~
-             "../.favn/compose/postgres-init.sh:/docker-entrypoint-initdb.d/10-favn-runtime-role.sh:ro"
+             "../../.favn/compose/postgres-init.sh:/docker-entrypoint-initdb.d/10-favn-runtime-role.sh:ro"
+
+    assert compose =~ "This file belongs to the customer project"
+    assert compose =~ "steady-state three-container topology"
+    refute compose =~ "postgres@sha256:"
 
     assert {:ok, second} = Init.run(root_dir: root_dir, target: :compose)
     assert second.created == []
@@ -237,22 +250,28 @@ defmodule Favn.Dev.InitTest do
              Init.run(root_dir: root_dir, app: :sample_app, target: :runner)
 
     assert first.target == :runner
-    assert first.output == "deploy/favn-runner"
+    assert first.output == "deploy/runner"
+    assert first.includes == []
 
     assert Enum.sort(first.created) ==
              [
-               "deploy/favn-runner/Dockerfile",
-               "deploy/favn-runner/Dockerfile.dockerignore",
-               "deploy/favn-runner/env.sh.eex",
-               "deploy/favn-runner/mix.exs"
+               "deploy/runner/Dockerfile",
+               "deploy/runner/Dockerfile.dockerignore",
+               "deploy/runner/env.sh.eex",
+               "deploy/runner/mix.exs"
              ]
 
-    dockerfile = File.read!(Path.join(root_dir, "deploy/favn-runner/Dockerfile"))
-    release_project = File.read!(Path.join(root_dir, "deploy/favn-runner/mix.exs"))
+    dockerfile = File.read!(Path.join(root_dir, "deploy/runner/Dockerfile"))
+    release_project = File.read!(Path.join(root_dir, "deploy/runner/mix.exs"))
 
     assert dockerfile =~ "ARG FAVN_RUNNER_RELEASE_ID"
     assert dockerfile =~ "mix release favn_runner"
+    refute dockerfile =~ "rel/overlays/releases"
+    refute dockerfile =~ "cp -R ../../config/runtime"
     assert dockerfile =~ ~s(io.favn.runner-release-id="$FAVN_RUNNER_RELEASE_ID")
+    assert dockerfile =~ "FROM --platform=linux/amd64 debian:trixie-slim AS runtime"
+    refute dockerfile =~ "@sha256:"
+    refute dockerfile =~ "DUCKDB_ADBC_DRIVER"
     assert release_project =~ "{:sample_app, path: \"../..\"}"
     assert release_project =~ "{:sample_app, :load}"
     refute release_project =~ "extra_applications: [:sample_app]"
@@ -264,13 +283,80 @@ defmodule Favn.Dev.InitTest do
     assert Enum.sort(second.existing) == Enum.sort(first.created)
   end
 
+  test "packages only nonignored runtime configuration companions", %{root_dir: root_dir} do
+    runtime_dir = Path.join(root_dir, "config/runtime")
+    File.mkdir_p!(runtime_dir)
+    File.write!(Path.join(runtime_dir, "local.exs"), "import Config\n")
+    File.write!(Path.join(runtime_dir, "ignored.exs"), "raise \"must not be packaged\"\n")
+    File.write!(Path.join(root_dir, ".gitignore"), "config/runtime/ignored.exs\n")
+
+    assert {_output, 0} = System.cmd("git", ["init", "--quiet", root_dir])
+    assert {:ok, _result} = Init.run(root_dir: root_dir, app: :sample_app, target: :runner)
+
+    dockerfile = File.read!(Path.join(root_dir, "deploy/runner/Dockerfile"))
+
+    assert dockerfile =~
+             "install -D -m 0644 '../../config/runtime/local.exs' 'overlays/releases/1.0.0/runtime/local.exs'"
+
+    refute dockerfile =~ "ignored.exs"
+    refute dockerfile =~ "cp -R ../../config/runtime"
+  end
+
+  test "adds one supported DuckDB ADBC native driver on explicit include", %{
+    root_dir: root_dir
+  } do
+    assert {:ok, result} =
+             Init.run(
+               root_dir: root_dir,
+               app: :sample_app,
+               target: :runner,
+               include: "duckdb-adbc@1.5.4",
+               project_dependencies: [
+                 {:favn, path: "deps/favn"},
+                 {:favn_duckdb_adbc, path: "deps/favn_duckdb_adbc"}
+               ]
+             )
+
+    assert result.includes == ["duckdb-adbc@1.5.4"]
+
+    dockerfile = File.read!(Path.join(root_dir, "deploy/runner/Dockerfile"))
+
+    assert dockerfile =~ "AS duckdb-adbc-driver"
+    assert dockerfile =~ "releases/download/v1.5.4/libduckdb-linux-amd64.zip"
+
+    assert dockerfile =~
+             "ADD --checksum=sha256:838d98a85e697bab9935010c88a8c67d3312ccedcab4cb4a0ba01da65113bb70"
+
+    assert dockerfile =~
+             ~s(driver: "/opt/duckdb/1.5.4/libduckdb.so")
+  end
+
+  test "validates runner include versions and declared dependencies", %{root_dir: root_dir} do
+    assert {:error, {:runner_include_dependency_missing, "duckdb-adbc", :favn_duckdb_adbc}} =
+             Init.run(
+               root_dir: root_dir,
+               app: :sample_app,
+               target: :runner,
+               include: "duckdb-adbc"
+             )
+
+    assert {:error, {:unsupported_runner_include_version, "duckdb-adbc", "1.6.0", ["1.5.4"]}} =
+             Init.run(
+               root_dir: root_dir,
+               app: :sample_app,
+               target: :runner,
+               include: "duckdb-adbc@1.6.0",
+               project_dependencies: [{:favn_duckdb_adbc, path: "deps/favn_duckdb_adbc"}]
+             )
+  end
+
   test "runner scaffold validates distribution inputs before constructing VM flags", %{
     root_dir: root_dir
   } do
     assert {:ok, _result} =
              Init.run(root_dir: root_dir, app: :sample_app, target: :runner)
 
-    script = Path.join(root_dir, "deploy/favn-runner/env.sh.eex")
+    script = Path.join(root_dir, "deploy/runner/env.sh.eex")
 
     valid = [
       {"FAVN_RUNNER_NODE", "favn_runner@runner.favn.internal"},
@@ -313,6 +399,10 @@ defmodule Favn.Dev.InitTest do
   end
 
   test "renders every project-relative path for a comparison output", %{root_dir: root_dir} do
+    runtime_dir = Path.join(root_dir, "config/runtime")
+    File.mkdir_p!(runtime_dir)
+    File.write!(Path.join(runtime_dir, "local.exs"), "import Config\n")
+
     assert {:ok, result} =
              Init.run(
                root_dir: root_dir,
@@ -333,18 +423,19 @@ defmodule Favn.Dev.InitTest do
     assert dockerfile =~
              "WORKDIR /build/${FAVN_PROJECT_ROOT}/ops/images/favn-runner-next"
 
-    assert dockerfile =~ "[ -d ../../../config/runtime ]"
+    assert dockerfile =~
+             "install -D -m 0644 '../../../config/runtime/local.exs' 'overlays/releases/1.0.0/runtime/local.exs'"
   end
 
   test "rejects a runner output directory symlink", %{root_dir: root_dir} do
     outside = Path.join(System.tmp_dir!(), "favn_runner_output_#{System.unique_integer()}")
-    output = Path.join(root_dir, "deploy/favn-runner")
+    output = Path.join(root_dir, "deploy/runner")
     File.mkdir_p!(outside)
     File.mkdir_p!(Path.dirname(output))
     File.ln_s!(outside, output)
     on_exit(fn -> File.rm_rf(outside) end)
 
-    assert {:error, {:unsafe_runner_output, "deploy/favn-runner"}} =
+    assert {:error, {:unsafe_runner_output, "deploy/runner"}} =
              Init.run(root_dir: root_dir, app: :sample_app, target: :runner)
 
     assert File.ls!(outside) == []
@@ -388,7 +479,7 @@ defmodule Favn.Dev.InitTest do
              Init.run(root_dir: root_dir, target: :compose, profile: :single_host)
 
     compose = File.read!(Path.join(root_dir, result.output))
-    assert result.output == "deploy/compose.single-host.yml"
+    assert result.output == "deploy/single-host/compose.yml"
     assert compose =~ "io.favn.compose.profile: single-host"
     refute compose =~ "io.favn.compose.role: postgres"
     assert compose =~ "FAVN_POSTGRES_ADMIN_DATABASE_URL"

@@ -2,9 +2,10 @@ defmodule Favn.Dev.Build.Manifest do
   @moduledoc """
   Builds an immutable manifest release aligned with an explicit runner release ID.
 
-  The user or their CI system owns the runner image and release ID. This module
-  compiles authored definitions and binds the manifest to that ID; it does not
-  inspect, package, or build customer runtime code.
+  The caller supplies the release ID: local lifecycle tooling generates it,
+  while production CI chooses it explicitly. This module compiles authored
+  definitions and binds the manifest to that ID; it does not inspect, package,
+  or build customer runtime code.
   """
 
   alias Favn.Dev.Build.Artifact

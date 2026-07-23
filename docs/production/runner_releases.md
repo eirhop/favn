@@ -2,22 +2,23 @@
 
 The runner image belongs to the customer. It is built from the customer
 repository with the customer's Dockerfile, dependencies, native libraries, and
-CI policy. Favn does not inspect customer source, generate a production OCI
-context, build the image, or push it.
+CI policy. Local tooling may invoke that Dockerfile for development. Favn does
+not generate a production OCI context, publish the image, or replace customer
+CI policy.
 
 Favn provides two interfaces:
 
 1. `mix favn.init --target runner` writes an editable starting template under
-   `deploy/favn-runner/`.
-2. The runner image and its manifests share one operator-supplied immutable
-   runner release ID.
+   `deploy/runner/`.
+2. The runner image and its manifests share one immutable runner release ID.
+   Local tooling generates it; production CI supplies it explicitly.
 
 ## Identities
 
 | Identity | Meaning |
 | --- | --- |
 | Runner contract version | Compatibility of the control-plane/runner protocol |
-| Runner release ID | Opaque immutable ID chosen for one customer runner build |
+| Runner release ID | Opaque immutable ID assigned to one customer runner build |
 | Runner image digest | Exact OCI image built and deployed by the customer |
 | Manifest version ID | Immutable manifest and execution-package identity |
 | Required runner release ID | Runner release that may execute a manifest |
@@ -46,8 +47,15 @@ mix favn.init --target runner
 ```
 
 The template compiles the customer project and creates a `favn_runner` release.
-Edit it like any other application Dockerfile. Add optional native dependencies
-there, including a DuckDB ADBC driver when that plugin is enabled.
+Edit it like any other application Dockerfile. Generate the tested optional
+DuckDB ADBC native driver section with:
+
+```bash
+mix favn.init --target runner --include duckdb-adbc
+```
+
+Use `duckdb-adbc@VERSION` to select another version supported by the installed
+Favn release.
 
 The customer application is packaged and loaded for its modules, but its
 supervision tree is not started automatically. Declare runner-local services
@@ -58,9 +66,9 @@ generate a comparison copy with the new compatibility labels and build shape:
 
 ```bash
 mix favn.init --target runner \
-  --output deploy/favn-runner-next
+  --output deploy/runner-next
 
-diff -ru deploy/favn-runner deploy/favn-runner-next
+diff -ru deploy/runner deploy/runner-next
 ```
 
 Merge the relevant changes into the owned Dockerfile, or switch the deployment
@@ -69,7 +77,13 @@ ID. Delete the comparison copy after the upgrade is recorded. If the canonical
 template already differs, `mix favn.init --target runner` fails rather than
 overwriting it.
 
-For a local build:
+Normal local development builds this Dockerfile automatically:
+
+```bash
+mix favn.dev
+```
+
+Production CI remains explicit:
 
 ```bash
 export FAVN_RUNNER_RELEASE_ID="rr_$(openssl rand -hex 32)"
@@ -77,7 +91,7 @@ export FAVN_RUNNER_RELEASE_ID="rr_$(openssl rand -hex 32)"
 docker build \
   --platform linux/amd64 \
   --build-arg FAVN_RUNNER_RELEASE_ID \
-  --file deploy/favn-runner/Dockerfile \
+  --file deploy/runner/Dockerfile \
   --tag customer/favn-runner:dev \
   .
 ```

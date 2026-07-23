@@ -55,6 +55,12 @@ defmodule Favn.Dev.MaintainerTest do
       File.write!(Path.join(directory, "lib/source.ex"), "#{app}\n")
     end
 
+    File.mkdir_p!(Path.join(checkout, "apps/favn/lib"))
+    File.write!(Path.join(checkout, "apps/favn/lib/selected.ex"), "selected\n")
+    File.write!(Path.join(checkout, "apps/favn/lib/ignored.ex"), "ignored\n")
+    File.write!(Path.join(checkout, ".gitignore"), "apps/favn/lib/ignored.ex\n")
+    assert {_output, 0} = System.cmd("git", ["init", "--quiet", checkout])
+
     on_exit(fn -> File.rm_rf(root) end)
 
     %{checkout: checkout, consumer: consumer, dependency_paths: dependency_paths}
@@ -168,8 +174,17 @@ defmodule Favn.Dev.MaintainerTest do
        }}
     end
 
-    lifecycle_fun = fn candidate, _opts ->
-      send(parent, {:selected, candidate})
+    lifecycle_fun = fn candidate, opts ->
+      runner_context = opts[:runner_favn_context]
+
+      send(
+        parent,
+        {:selected, candidate, runner_context,
+         File.regular?(Path.join(runner_context, "apps/favn/lib/selected.ex")),
+         File.exists?(Path.join(runner_context, "apps/favn/lib/ignored.ex")),
+         File.exists?(Path.join(runner_context, ".git"))}
+      )
+
       :ok
     end
 
@@ -184,7 +199,14 @@ defmodule Favn.Dev.MaintainerTest do
     assert :ok = Maintainer.run(opts)
     assert_receive {:built_from, checkout}
     assert checkout == context.checkout
-    assert_receive {:selected, %Candidate{image_id: @image_id, checkout: ^checkout}}
+
+    assert_receive {:selected, %Candidate{image_id: @image_id, checkout: ^checkout},
+                    runner_context, true, false, false}
+
+    assert String.starts_with?(
+             runner_context,
+             Path.join(context.consumer, ".favn/build/maintainer-runner-context/")
+           )
   end
 
   defp source_opts(context) do
@@ -204,5 +226,4 @@ defmodule Favn.Dev.MaintainerTest do
       end
     end
   end
-
 end

@@ -7,7 +7,7 @@ defmodule Favn.Local.UserOwnedRunnerAcceptanceTest do
 
   @moduletag :acceptance
 
-  test "the scaffold and manifest builder share one operator-owned release ID" do
+  test "the scaffold and manifest builder share one explicit production release ID" do
     root_dir =
       Path.join(
         Path.expand("../../../../_build/test-artifacts", __DIR__),
@@ -31,7 +31,7 @@ defmodule Favn.Local.UserOwnedRunnerAcceptanceTest do
     assert {:ok, scaffold} = Runner.run(root_dir: root_dir, app: :customer)
     assert scaffold.target == :runner
 
-    dockerfile = File.read!(Path.join(root_dir, "deploy/favn-runner/Dockerfile"))
+    dockerfile = File.read!(Path.join(root_dir, "deploy/runner/Dockerfile"))
     assert dockerfile =~ "ARG FAVN_RUNNER_RELEASE_ID"
     assert dockerfile =~ "io.favn.runner-release-id"
     refute dockerfile =~ "FROM favn"

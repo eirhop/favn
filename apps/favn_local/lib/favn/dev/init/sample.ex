@@ -531,7 +531,7 @@ defmodule Favn.Dev.Init.Sample do
   defp env_example do
     """
     # Optional host overrides for the generated DuckDB sample. Local Favn
-    # commands default these paths to files below .favn/data.
+    # commands default these paths to files below .data.
     # FAVN_LOCAL_SAMPLE_DATABASE_PATH=/path/to/local_smoke.duckdb
     # FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH=/path/to/raw.duckdb
     # FAVN_LOCAL_SAMPLE_MART_CATALOG_PATH=/path/to/mart.duckdb

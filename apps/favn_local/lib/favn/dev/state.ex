@@ -27,7 +27,7 @@ defmodule Favn.Dev.State do
       Paths.build_target_dir(root_dir, "control-plane"),
       Paths.dist_dir(root_dir),
       Paths.dist_target_dir(root_dir, "manifest"),
-      Paths.data_dir(root_dir),
+      Paths.local_data_dir(root_dir),
       Paths.manifests_dir(root_dir),
       Paths.manifest_cache_dir(root_dir),
       Paths.history_dir(root_dir),

@@ -10,6 +10,7 @@ defmodule Favn.Dev.Docker do
   alias Favn.Dev.{Command, ComposeDeployment, OutputRedactor}
 
   @default_timeout_ms 120_000
+  @default_build_timeout_ms 1_200_000
   @max_output_bytes 8_192
   @favn_compose_roles ~w(postgres control-plane-ops control-plane-verify runner control-plane)
 
@@ -69,6 +70,71 @@ defmodule Favn.Dev.Docker do
         {_output, 0} -> :ok
         {output, status} -> pull_error(reference, status, output, opts)
       end
+    end
+  end
+
+  @doc "Builds one customer-owned local runner Dockerfile."
+  @spec build_runner(String.t(), Path.t(), Path.t(), Path.t(), String.t(), opts()) ::
+          :ok | {:error, term()}
+  def build_runner(
+        reference,
+        dockerfile,
+        context,
+        project_root,
+        runner_release_id,
+        opts \\ []
+      )
+      when is_binary(reference) and reference != "" and is_binary(dockerfile) and
+             is_binary(context) and is_binary(project_root) and is_binary(runner_release_id) and
+             is_list(opts) do
+    with {:ok, executable} <- executable(opts) do
+      args =
+        [
+          "build",
+          "--pull",
+          "--platform",
+          "linux/amd64",
+          "--build-arg",
+          "FAVN_PROJECT_ROOT=#{project_root}",
+          "--build-arg",
+          "FAVN_RUNNER_RELEASE_ID=#{runner_release_id}"
+        ] ++
+          maintainer_build_args(opts) ++
+          [
+            "--file",
+            dockerfile,
+            "--tag",
+            reference,
+            context
+          ]
+
+      case command(
+             executable,
+             args,
+             opts,
+             Keyword.get(opts, :docker_build_timeout_ms, @default_build_timeout_ms)
+           ) do
+        {_output, 0} ->
+          :ok
+
+        {output, status} ->
+          {:error, {:runner_image_build_failed, status, safe_bounded(output, opts)}}
+      end
+    end
+  end
+
+  defp maintainer_build_args(opts) do
+    case Keyword.get(opts, :runner_favn_context) do
+      context when is_binary(context) and context != "" ->
+        [
+          "--build-context",
+          "favn-checkout=#{Path.expand(context)}",
+          "--build-arg",
+          "FAVN_BUILD_SOURCE=maintainer-source"
+        ]
+
+      _normal_build ->
+        []
     end
   end
 

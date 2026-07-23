@@ -9,7 +9,7 @@ config :favn,
     connections: :all
   ],
   connections: [
-    warehouse: [database: ".favn/data/reference_workload.duckdb", write_concurrency: 1]
+    warehouse: [database: ".data/reference_workload.duckdb", write_concurrency: 1]
   ],
   local: [workspace_id: "local-dev"],
   runner_plugins: [

@@ -72,7 +72,7 @@ defmodule Favn.Dev.Doctor do
       )
     else
       {:error, {:compose_file_missing, _path}} ->
-        error("compose deployment", "run mix favn.init --target compose")
+        error("compose deployment", "run mix favn.init")
 
       {:error, reason} ->
         error("compose deployment", docker_error(reason))

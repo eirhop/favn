@@ -20,13 +20,13 @@ defmodule Favn.Dev.ResetTest do
     assert {:error, {:confirmation_required, resources}} = Reset.run(root_dir: root_dir)
     assert resources.compose_project == ComposeProject.project_name(root_dir)
     assert resources.generated_state == Path.join(root_dir, ".favn")
-    assert resources.preserved_data == Path.join(root_dir, ".favn/data")
+    assert resources.preserved_data == Path.join(root_dir, ".data")
     refute Map.has_key?(resources, :runner_images)
   end
 
   test "confirmed reset removes generated state but preserves durable data", %{root_dir: root_dir} do
     assert :ok = State.ensure_layout(root_dir: root_dir)
-    data = Path.join(root_dir, ".favn/data/sentinel.duckdb")
+    data = Path.join(root_dir, ".data/sentinel.duckdb")
     generated = Path.join(root_dir, ".favn/logs/generated.log")
     File.write!(data, "durable")
     File.write!(generated, "{}")
@@ -141,7 +141,7 @@ defmodule Favn.Dev.ResetTest do
       "kind" => "docker_compose",
       "compose_contract_version" => 1,
       "compose_profile" => "local",
-      "compose_file" => Path.join(root_dir, "deploy/compose.local.yml"),
+      "compose_file" => Path.join(root_dir, "deploy/local/compose.yml"),
       "compose_project" => project,
       "compose_services" => %{
         "postgres" => "team-db",

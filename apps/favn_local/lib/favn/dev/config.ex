@@ -34,7 +34,7 @@ defmodule Favn.Dev.Config do
 
   @default_orchestrator_port 4101
   @default_web_port 4173
-  @default_compose_file "deploy/compose.local.yml"
+  @default_compose_file "deploy/local/compose.yml"
 
   @doc """
   Resolves local tooling configuration from app config plus runtime overrides.

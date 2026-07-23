@@ -1,15 +1,14 @@
 defmodule Favn.Dev.Init do
   @moduledoc """
-  Dispatches the two explicit Favn initialization modes.
+  Dispatches Favn project, deployment, runner, and sample initialization.
 
-  DuckDB authoring samples and consumer-owned deployment templates have
-  separate ownership and overwrite contracts, so callers must select one
-  mode explicitly.
+  The default project mode scaffolds the complete local deployment and runner
+  starting point. DuckDB authoring samples retain their explicit legacy flags.
   """
 
-  alias Favn.Dev.Init.{Compose, Runner, Sample}
+  alias Favn.Dev.Init.{Compose, Project, Runner, Sample}
 
-  @type result :: Sample.result() | Compose.result() | Runner.result()
+  @type result :: Sample.result() | Compose.result() | Runner.result() | Project.result()
 
   @doc "Initializes the selected authoring sample or deployment template."
   @spec run(keyword()) :: {:ok, result()} | {:error, term()}
@@ -19,8 +18,16 @@ defmodule Favn.Dev.Init do
       "compose" -> Compose.run(opts)
       :runner -> Runner.run(opts)
       "runner" -> Runner.run(opts)
-      nil -> Sample.run(opts)
+      nil -> default_init(opts)
       target -> {:error, {:unsupported_init_target, target}}
+    end
+  end
+
+  defp default_init(opts) do
+    if Keyword.get(opts, :duckdb, false) or Keyword.get(opts, :sample, false) do
+      Sample.run(opts)
+    else
+      Project.run(opts)
     end
   end
 end

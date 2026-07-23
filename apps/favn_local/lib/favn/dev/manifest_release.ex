@@ -1,9 +1,9 @@
 defmodule Favn.Dev.ManifestRelease do
   @moduledoc """
-  Builds the local manifest for a user-selected runner release ID.
+  Builds the local manifest for the prepared runner release ID.
 
-  This operation compiles authored definitions only. It never builds or
-  modifies the customer runner image.
+  This operation compiles authored definitions only. Runner image preparation
+  remains a separate customer-Dockerfile boundary.
   """
 
   alias Favn.Dev.{Command, OutputRedactor, Paths, State}

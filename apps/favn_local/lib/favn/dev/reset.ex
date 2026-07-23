@@ -3,7 +3,7 @@ defmodule Favn.Dev.Reset do
   Removes generated local Favn state without deleting consumer-owned resources.
 
   Reset never runs Compose `down`, removes volumes or networks, stops consumer
-  services, deletes the selected Compose file, or deletes `.favn/data`.
+  services, deletes the selected Compose file, or deletes `.data`.
   """
 
   alias Favn.Dev.{
@@ -32,7 +32,7 @@ defmodule Favn.Dev.Reset do
     %{
       compose_project: project_name,
       generated_state: Paths.favn_dir(root_dir),
-      preserved_data: Paths.data_dir(root_dir),
+      preserved_data: Paths.local_data_dir(root_dir),
       preserved_compose_file: selected_compose_file(opts)
     }
   end

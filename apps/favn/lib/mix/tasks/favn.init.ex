@@ -1,15 +1,18 @@
 defmodule Mix.Tasks.Favn.Init do
   use Mix.Task
 
-  @shortdoc "Scaffolds a Favn sample or deployment template"
+  @shortdoc "Scaffolds a complete local Favn project"
 
   @moduledoc """
-  Scaffolds either a local DuckDB sample or a consumer-owned Compose template.
+  Scaffolds the customer-owned local Compose and runner templates by default.
 
+      mix favn.init
+      mix favn.init --include duckdb-adbc
+      mix favn.init --include duckdb-adbc@1.5.4
       mix favn.init --duckdb --sample
       mix favn.init --target compose
       mix favn.init --target compose --profile single-host
-      mix favn.init --target compose --output deploy/compose.team.yml
+      mix favn.init --target compose --output deploy/team/compose.yml
       mix favn.init --target runner
   """
 
@@ -20,13 +23,15 @@ defmodule Mix.Tasks.Favn.Init do
     sample: :boolean,
     target: :string,
     profile: :string,
-    output: :string
+    output: :string,
+    include: :keep
   ]
   @usage """
   usage:
+    mix favn.init [--include duckdb-adbc[@VERSION]]
     mix favn.init --duckdb --sample
     mix favn.init --target compose [--profile local|single-host] [--output PATH.yml]
-    mix favn.init --target runner [--output DIRECTORY]
+    mix favn.init --target runner [--include duckdb-adbc[@VERSION]] [--output DIRECTORY]
   """
 
   @impl Mix.Task
@@ -58,6 +63,24 @@ defmodule Mix.Tasks.Favn.Init do
       {:error, {:runner_scaffold_modified, path}} ->
         Mix.raise(
           "init failed: #{path} contains consumer changes; choose a different --output directory to generate a comparison copy"
+        )
+
+      {:error, {:unsupported_runner_include, value, supported}} ->
+        Mix.raise(
+          "init failed: unsupported runner include #{inspect(value)}\nsupported includes: #{Enum.join(supported, ", ")}"
+        )
+
+      {:error, {:unsupported_runner_include_version, include, version, supported}} ->
+        Mix.raise(
+          "init failed: #{include} version #{inspect(version)} is not supported by this Favn release\nsupported versions: #{Enum.join(supported, ", ")}"
+        )
+
+      {:error, {:duplicate_runner_include, include}} ->
+        Mix.raise("init failed: runner include #{inspect(include)} was supplied more than once")
+
+      {:error, {:runner_include_dependency_missing, include, dependency}} ->
+        Mix.raise(
+          "init failed: --include #{include} requires #{inspect(dependency)} in the customer project's dependencies"
         )
 
       {:error, {:unsupported_compose_profile, profile}} ->
@@ -98,6 +121,16 @@ defmodule Mix.Tasks.Favn.Init do
         print_paths("created", result.created)
         print_paths("already present", result.existing)
         IO.puts("runner template: #{result.output}")
+        print_includes(result.includes)
+
+      result[:target] == :project ->
+        IO.puts("Favn local project ready")
+        print_paths("created", result.created)
+        print_paths("already present", result.existing)
+        IO.puts("deployment: #{result.compose.output}")
+        IO.puts("runner template: #{result.runner.output}")
+        print_includes(result.runner.includes)
+        IO.puts("next: #{next_command()}")
 
       true ->
         IO.puts("Favn Compose template ready")
@@ -114,16 +147,17 @@ defmodule Mix.Tasks.Favn.Init do
     sample? = Keyword.get(opts, :duckdb, false) or Keyword.get(opts, :sample, false)
     deployment_options? = Keyword.has_key?(opts, :profile) or Keyword.has_key?(opts, :output)
     profile? = Keyword.has_key?(opts, :profile)
+    includes? = Keyword.has_key?(opts, :include)
 
     cond do
       target == "compose" ->
-        not sample?
+        not sample? and not includes?
 
       target == "runner" ->
         not sample? and not profile?
 
       target == nil ->
-        not deployment_options?
+        not deployment_options? and not (sample? and includes?)
 
       true ->
         false
@@ -168,5 +202,21 @@ defmodule Mix.Tasks.Favn.Init do
   defp print_paths(label, paths) do
     IO.puts("#{label}:")
     Enum.each(paths, &IO.puts("  - #{&1}"))
+  end
+
+  defp print_includes([]), do: :ok
+
+  defp print_includes(includes) do
+    IO.puts("runner includes: #{Enum.join(includes, ", ")}")
+  end
+
+  defp next_command do
+    case System.get_env("FAVN_CHECKOUT") do
+      value when is_binary(value) ->
+        if String.trim(value) == "", do: "mix favn.install", else: "mix favn.maintainer.dev"
+
+      _missing ->
+        "mix favn.install"
+    end
   end
 end

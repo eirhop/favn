@@ -13,6 +13,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
   }
 
   alias Favn.Dev.Init.Compose, as: ComposeInit
+  alias Favn.Dev.Init.Runner, as: RunnerInit
   alias Favn.Dev.Maintainer.Candidate
   alias Favn.RunnerRelease
 
@@ -31,6 +32,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     File.mkdir_p!(root_dir)
     File.write!(Path.join(root_dir, "mix.exs"), "defmodule Fixture.MixProject do end\n")
     assert {:ok, _scaffold} = ComposeInit.run(root_dir: root_dir)
+    assert {:ok, _runner} = RunnerInit.run(root_dir: root_dir, app: :fixture)
 
     {:ok, state} =
       Agent.start_link(fn ->
@@ -120,8 +122,30 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     runner_env = File.read!(Paths.compose_runner_env_path(context.root_dir))
     assert runner_env =~ ~s(FAVN_CUSTOM_TOKEN='runtime-secret')
 
-    refute File.read!(Path.join(context.root_dir, "deploy/compose.local.yml")) =~
+    refute File.read!(Path.join(context.root_dir, "deploy/local/compose.yml")) =~
              "runtime-secret"
+  end
+
+  test "default startup builds the generated customer runner automatically", context do
+    release = descriptor("automatic-local-build")
+
+    opts =
+      context
+      |> lifecycle_opts()
+      |> Keyword.delete(:runner_image)
+      |> Keyword.put(:runner_release_id_fun, fn -> release.runner_release_id end)
+
+    assert {:ok, result} = ComposeLifecycle.start(opts)
+    assert result.runner_release_id == release.runner_release_id
+
+    assert Enum.any?(commands(context.state), fn
+             ["build", "--pull", "--platform", "linux/amd64" | args] ->
+               "FAVN_RUNNER_RELEASE_ID=#{release.runner_release_id}" in args and
+                 Path.join(context.root_dir, "deploy/runner/Dockerfile") in args
+
+             _other ->
+               false
+           end)
   end
 
   test "manifest-only reload leaves the runner container unchanged", context do
@@ -677,7 +701,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     opts = lifecycle_opts(context)
     assert {:ok, _result} = ComposeLifecycle.start(opts)
 
-    compose_file = Path.join(context.root_dir, "deploy/compose.local.yml")
+    compose_file = Path.join(context.root_dir, "deploy/local/compose.yml")
     File.write!(compose_file, "malformed: [\n")
     base_runner = docker_runner(context.state)
 
@@ -735,7 +759,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
   test "successful start preserves a selected consumer Compose file under .favn", context do
     selected = Paths.compose_path(context.root_dir)
-    File.cp!(Path.join(context.root_dir, "deploy/compose.local.yml"), selected)
+    File.cp!(Path.join(context.root_dir, "deploy/local/compose.yml"), selected)
 
     opts = context |> lifecycle_opts() |> Keyword.put(:compose_file, selected)
 
@@ -747,7 +771,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
   test "stop preserves the successful CLI Compose selection for status and diagnostics",
        context do
     selected = Path.join(context.root_dir, "deploy/team.compose.yml")
-    File.cp!(Path.join(context.root_dir, "deploy/compose.local.yml"), selected)
+    File.cp!(Path.join(context.root_dir, "deploy/local/compose.yml"), selected)
 
     opts = context |> lifecycle_opts() |> Keyword.put(:compose_file, selected)
     assert {:ok, _result} = ComposeLifecycle.start(opts)
@@ -822,7 +846,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
                docker_command_runner: docker_runner(context.state)
              )
 
-    assert File.dir?(Paths.data_dir(context.root_dir))
+    assert File.dir?(Paths.local_data_dir(context.root_dir))
     refute File.exists?(Paths.install_path(context.root_dir))
     refute Enum.any?(commands(context.state), &Enum.member?(&1, "--volumes"))
     refute Enum.any?(commands(context.state), &Enum.member?(&1, "down"))
@@ -988,6 +1012,15 @@ defmodule Favn.Dev.ComposeLifecycleTest do
         ["compose", "version", "--short"] ->
           {"2.39.1\n", 0}
 
+        ["build" | build_args] ->
+          release_id =
+            build_args
+            |> Enum.find(&String.starts_with?(&1, "FAVN_RUNNER_RELEASE_ID="))
+            |> String.replace_prefix("FAVN_RUNNER_RELEASE_ID=", "")
+
+          Agent.update(state, &Map.put(&1, :runner, descriptor_for_release_id(release_id)))
+          {"built", 0}
+
         ["image", "inspect", reference] ->
           {JSON.encode!([image_inspection(reference, state)]), 0}
 
@@ -1133,18 +1166,16 @@ defmodule Favn.Dev.ComposeLifecycleTest do
   end
 
   defp image_inspection(reference, state) do
-    case reference do
-      @runner_image ->
-        release = Agent.get(state, & &1.runner)
-        image_id = runner_image_id(release.runner_release_id)
-        Agent.update(state, &put_in(&1.runner_images[image_id], release))
-        runner_image_inspection(image_id, release)
-
-      image_id ->
-        case Agent.get(state, &Map.get(&1.runner_images, image_id)) do
-          %RunnerRelease{} = release -> runner_image_inspection(image_id, release)
-          nil -> control_image_inspection(state)
-        end
+    if reference == @runner_image or String.starts_with?(reference, "favn-local/") do
+      release = Agent.get(state, & &1.runner)
+      image_id = runner_image_id(release.runner_release_id)
+      Agent.update(state, &put_in(&1.runner_images[image_id], release))
+      runner_image_inspection(image_id, release)
+    else
+      case Agent.get(state, &Map.get(&1.runner_images, reference)) do
+        %RunnerRelease{} = release -> runner_image_inspection(reference, release)
+        nil -> control_image_inspection(state)
+      end
     end
   end
 
@@ -1195,6 +1226,10 @@ defmodule Favn.Dev.ComposeLifecycleTest do
         (:crypto.hash(:sha256, module_name)
          |> Base.encode16(case: :lower))
 
+    descriptor_for_release_id(runner_release_id)
+  end
+
+  defp descriptor_for_release_id(runner_release_id) do
     {:ok, descriptor} =
       RunnerRelease.new(%{
         runner_release_id: runner_release_id,

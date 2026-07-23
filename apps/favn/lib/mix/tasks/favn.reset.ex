@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Favn.Reset do
   @moduledoc """
   Removes generated local state after proving known Favn roles are stopped. It
   preserves the consumer Compose file, runner images, services, containers,
-  networks, volumes, and `.favn/data`.
+  networks, volumes, and `.data`.
 
       mix favn.reset --yes
 

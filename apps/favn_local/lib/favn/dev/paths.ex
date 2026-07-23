@@ -33,8 +33,8 @@ defmodule Favn.Dev.Paths do
   def dist_manifest_dir(root_dir, manifest_version_id),
     do: Path.join(dist_target_dir(root_dir, "manifest"), manifest_version_id)
 
-  @spec data_dir(Path.t()) :: Path.t()
-  def data_dir(root_dir), do: Path.join(favn_dir(root_dir), "data")
+  @spec local_data_dir(Path.t()) :: Path.t()
+  def local_data_dir(root_dir), do: Path.join(root_dir, ".data")
 
   @spec manifests_dir(Path.t()) :: Path.t()
   def manifests_dir(root_dir), do: Path.join(favn_dir(root_dir), "manifests")

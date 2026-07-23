@@ -305,7 +305,7 @@ Current config:
 ```elixir
 config :favn,
   connections: [
-    warehouse: [database: ".favn/data/reference_workload.duckdb", write_concurrency: 1]
+    warehouse: [database: ".data/reference_workload.duckdb", write_concurrency: 1]
   ]
 ```
 
@@ -376,7 +376,7 @@ For beginners, keep `deps(:all)` until you are comfortable with graph behavior.
 ## Expected files and data
 
 Data plane (DuckDB):
-- `.favn/data/reference_workload.duckdb`
+- `.data/reference_workload.duckdb`
 
 Local Compose runtime state (when `mix favn.*` starts normally):
 - `.favn/runtime.json`

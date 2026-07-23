@@ -108,9 +108,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - `mix favn.init`, `doctor`, `install`, `dev`, `run`, `backfill`, `rebuild`, `runs`, `logs`,
   `inspect`, `query`, `diagnostics`, `reload`, `status`, `stop`, and `reset` provide
   the private local developer loop against PostgreSQL.
-- `mix favn.init --target runner` creates a non-overwriting editable customer
-  Dockerfile/release template. Customers own runner builds, dependencies,
-  registries, scanning, and deployment.
+- `mix favn.init` creates the non-overwriting documented local Compose and
+  editable customer Dockerfile/release templates. Optional versioned native
+  dependencies are explicit includes such as `duckdb-adbc@1.5.4`.
 - Repository maintainers use `build.control_plane` for the deterministic,
   integrity-checked official image context and optional unpublished local
   candidate. Consumer projects can use `FAVN_CHECKOUT` with
@@ -126,14 +126,14 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   read only from the environment.
 - `mix favn.install` resolves the version-matched prebuilt control plane to an
   immutable digest and keeps install state independent of deployment topology.
-  `mix favn.init --target compose` scaffolds non-overwriting local and
+  The target-specific init forms remain available for comparison copies and
   single-host consumer templates. `mix favn.dev` applies explicit
-  command/config/default Compose selection, validates versioned role labels and
-  immutable images, pins the inspected customer runner by local image ID, and
-  runs PostgreSQL, the control plane, and the runner with Compose `--no-build`.
-  It does not own extra consumer services or resources.
+  command/config/default Compose selection, automatically invokes the local
+  customer Dockerfile unless an image is selected, validates versioned role
+  labels, pins the inspected runner by local image ID, and runs PostgreSQL, the
+  control plane, and runner with Compose `--no-build`.
 - Local sample DuckDB paths are runtime references with host defaults below
-  `.favn/data` and container paths below `/var/lib/favn/data`. Stop and reset
+  `.data` and container paths below `/var/lib/favn/data`. Stop and reset
   preserve the consumer Compose file, containers, networks, volumes, services,
   and data.
 
