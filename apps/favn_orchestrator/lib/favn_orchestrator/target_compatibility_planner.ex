@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
+  alias Favn.RelationRef
   alias Favn.TargetCompatibility
   alias Favn.TargetCompatibility.PhysicalFingerprint
   alias FavnOrchestrator.ManifestStore
@@ -27,8 +28,6 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   alias FavnOrchestrator.RuntimeConfig
 
   @binding_batch 500
-  @max_concurrency 8
-
   @doc "Returns one frozen decision for every selected persisted SQL asset."
   @spec plan(PlatformContext.t(), WorkspaceContext.t(), Version.t(), DeploymentPlanner.t()) ::
           {:ok, [DeploymentTargetCompatibility.t()]} | {:error, term()}
@@ -43,21 +42,12 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          {:ok, bindings} <- fetch_bindings(workspace_context, persisted),
          {:ok, active_versions} <- active_versions(platform_context, bindings),
          :ok <- ensure_inspection_versions(active_versions, version) do
-      persisted
-      |> Task.async_stream(
-        fn target ->
+      decisions =
+        Enum.map(persisted, fn target ->
           classify_target(target, bindings, active_versions, version)
-        end,
-        max_concurrency: min(System.schedulers_online(), @max_concurrency),
-        ordered: true,
-        timeout: 30_000
-      )
-      |> Enum.zip(persisted)
-      |> Enum.reduce_while({:ok, []}, &collect_decision/2)
-      |> then(fn
-        {:ok, decisions} -> {:ok, Enum.reverse(decisions)}
-        {:error, _reason} = error -> error
-      end)
+        end)
+
+      {:ok, decisions}
     end
   end
 
@@ -133,10 +123,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
           {:error, _reason} = error -> {:halt, error}
         end
       else
-        {:halt,
-         {:error,
-          {:runner_release_mismatch, version.required_runner_release_id,
-           desired_version.required_runner_release_id}}}
+        {:cont, :ok}
       end
     end)
   end
@@ -145,10 +132,30 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     binding = Map.get(bindings, target.target_id)
     active_target = active_target(binding, target.target_id, active_versions)
     active_descriptor = active_target && active_target.descriptor
-    inspection_asset = (active_target && active_target.asset) || target.asset
-    inspection_version = (active_target && active_target.version) || desired_version
 
-    case inspect_physical(inspection_asset, inspection_version) do
+    case inspection_target(active_target, binding, target.asset, desired_version) do
+      {:ok, inspection_target, inspection_version} ->
+        classify_inspected_target(
+          target,
+          binding,
+          active_descriptor,
+          inspection_target,
+          inspection_version
+        )
+
+      {:error, _reason} ->
+        inspection_unavailable_decision(target, binding)
+    end
+  end
+
+  defp classify_inspected_target(
+         target,
+         binding,
+         active_descriptor,
+         inspection_target,
+         inspection_version
+       ) do
+    case inspect_physical(inspection_target, inspection_version) do
       {:ok, observed} ->
         result =
           TargetCompatibility.classify(
@@ -161,15 +168,45 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
         decision(target, binding, result.status, result.reason_code, result.diff)
 
       {:error, _reason} ->
-        decision(
-          target,
-          binding,
-          :operator_decision,
-          :physical_inspection_unavailable,
-          %{inspection: %{status: :unavailable}}
-        )
+        inspection_unavailable_decision(target, binding)
     end
   end
+
+  defp inspection_target(
+         %{version: active_version} = active_target,
+         binding,
+         _desired_asset,
+         desired_version
+       ) do
+    if active_version.required_runner_release_id == desired_version.required_runner_release_id do
+      {:ok, {:asset, active_target.asset}, active_version}
+    else
+      with {:ok, relation} <- active_physical_relation(binding, active_target) do
+        {:ok, {:relation, relation}, desired_version}
+      end
+    end
+  end
+
+  defp inspection_target(nil, _binding, desired_asset, desired_version),
+    do: {:ok, {:asset, desired_asset}, desired_version}
+
+  defp active_physical_relation(%{active_physical_relation: relation}, active_target)
+       when is_map(relation) do
+    connection = active_target.asset.relation.connection
+
+    relation =
+      relation
+      |> Map.drop([:connection, "connection"])
+      |> Map.put(:connection, connection)
+      |> RelationRef.new!()
+
+    {:ok, relation}
+  rescue
+    ArgumentError -> {:error, :invalid_active_physical_relation}
+  end
+
+  defp active_physical_relation(_binding, _active_target),
+    do: {:error, :active_physical_relation_missing}
 
   defp active_target(nil, _target_id, _versions), do: nil
 
@@ -187,17 +224,10 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     end
   end
 
-  defp inspect_physical(asset, version) do
+  defp inspect_physical(target, version) do
     runtime = RuntimeConfig.current()
 
-    request = %RelationInspectionRequest{
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
-      asset_ref: asset.ref,
-      include: [:relation, :columns, :table_metadata],
-      sample_limit: 0
-    }
+    request = inspection_request(target, version)
 
     with {:ok, %RelationInspectionResult{} = result} <-
            RunnerDispatch.inspect_relation(
@@ -219,6 +249,38 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     end
   end
 
+  defp inspection_request({:asset, asset}, version) do
+    %RelationInspectionRequest{
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      required_runner_release_id: version.required_runner_release_id,
+      asset_ref: asset.ref,
+      include: [:relation, :columns, :table_metadata],
+      sample_limit: 0
+    }
+  end
+
+  defp inspection_request({:relation, %RelationRef{} = relation}, version) do
+    %RelationInspectionRequest{
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      required_runner_release_id: version.required_runner_release_id,
+      relation: relation,
+      include: [:relation, :columns, :table_metadata],
+      sample_limit: 0
+    }
+  end
+
+  defp inspection_unavailable_decision(target, binding) do
+    decision(
+      target,
+      binding,
+      :operator_decision,
+      :physical_inspection_unavailable,
+      %{inspection: %{status: :unavailable}}
+    )
+  end
+
   defp decision(target, binding, status, reason_code, diff) do
     %DeploymentTargetCompatibility{
       target_id: target.target_id,
@@ -231,16 +293,4 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
       active_physical_fingerprint: binding && binding.active_physical_fingerprint
     }
   end
-
-  defp collect_decision(
-         {{:ok, %DeploymentTargetCompatibility{} = decision}, _target},
-         {:ok, acc}
-       ),
-       do: {:cont, {:ok, [decision | acc]}}
-
-  defp collect_decision({{:ok, {:error, reason}}, target}, _acc),
-    do: {:halt, {:error, {:target_compatibility_failed, target.target_id, reason}}}
-
-  defp collect_decision({{:exit, reason}, target}, _acc),
-    do: {:halt, {:error, {:target_compatibility_failed, target.target_id, reason}}}
 end

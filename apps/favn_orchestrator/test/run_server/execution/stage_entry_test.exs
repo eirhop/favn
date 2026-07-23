@@ -23,14 +23,22 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntryTest do
       freshness_key: :freshness_key
     }
 
-    assert_raise ArgumentError, ~r/version.*freshness_context/, fn ->
+    assert_raise ArgumentError, ~r/version.*manifest_index.*freshness_context/, fn ->
       StageEntry.new!(attrs)
     end
 
-    assert %{version: :version, freshness_context: %{now: :now}} =
+    assert %{
+             version: :version,
+             manifest_index: :manifest_index,
+             freshness_context: %{now: :now}
+           } =
              entry =
              StageEntry.new!(
-               Map.merge(attrs, %{version: :version, freshness_context: %{now: :now}})
+               Map.merge(attrs, %{
+                 version: :version,
+                 manifest_index: :manifest_index,
+                 freshness_context: %{now: :now}
+               })
              )
 
     assert is_map(entry)

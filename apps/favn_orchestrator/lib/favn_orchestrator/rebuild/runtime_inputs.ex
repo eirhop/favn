@@ -60,7 +60,7 @@ defmodule FavnOrchestrator.Rebuild.RuntimeInputs do
          {:ok, lifecycle} <-
            run
            |> StepAttemptLifecycle.new(version, node_key, Map.get(node, :stage, 0), 1)
-           |> StepAttemptLifecycle.build_work(),
+           |> StepAttemptLifecycle.build_work(index),
          {:ok, work} <-
            ExecutionPackages.attach(
              context,

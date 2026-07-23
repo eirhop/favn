@@ -29,10 +29,9 @@ defmodule FavnRunner.GenerationOperations do
 
   @runner_registry FavnRunner.ConnectionRegistry
 
-  @spec capabilities(Version.t(), Favn.Ref.t()) :: {:ok, map()} | {:error, term()}
-  def capabilities(%Version{} = version, asset_ref) when is_tuple(asset_ref) do
-    with {:ok, asset} <- find_asset(version, asset_ref),
-         {:ok, relation} <- persisted_relation(asset),
+  @spec capabilities(Asset.t()) :: {:ok, map()} | {:error, term()}
+  def capabilities(%Asset{} = asset) do
+    with {:ok, relation} <- persisted_relation(asset),
          {:ok, session} <- connect(asset, relation) do
       try do
         with {:ok, capabilities} <- Client.generation_capabilities(session) do
@@ -62,11 +61,9 @@ defmodule FavnRunner.GenerationOperations do
     end
   end
 
-  @spec marker(Version.t(), Favn.Ref.t()) :: {:ok, ContractMarker.t() | nil} | {:error, term()}
-  def marker(%Version{} = version, asset_ref) when is_tuple(asset_ref) do
-    with {:ok, %Asset{target_descriptor: %TargetDescriptor{target_id: target_id}} = asset} <-
-           find_asset(version, asset_ref),
-         {:ok, relation} <- persisted_relation(asset),
+  @spec marker(Asset.t()) :: {:ok, ContractMarker.t() | nil} | {:error, term()}
+  def marker(%Asset{target_descriptor: %TargetDescriptor{target_id: target_id}} = asset) do
+    with {:ok, relation} <- persisted_relation(asset),
          {:ok, session} <- connect(asset, relation) do
       try do
         case Client.reconcile_generation(session, %GenerationReconciliation{
@@ -80,11 +77,10 @@ defmodule FavnRunner.GenerationOperations do
       after
         Client.disconnect(session)
       end
-    else
-      {:ok, %Asset{}} -> {:error, :generation_target_not_supported}
-      {:error, _reason} = error -> error
     end
   end
+
+  def marker(%Asset{}), do: {:error, :generation_target_not_supported}
 
   @spec activate(GenerationActivationRequest.t(), Version.t()) ::
           {:ok, GenerationActivationResult.t()} | {:error, term()}
@@ -367,13 +363,6 @@ defmodule FavnRunner.GenerationOperations do
 
       nil ->
         {:error, :generation_target_not_found}
-    end
-  end
-
-  defp find_asset(%Version{} = version, asset_ref) do
-    case Enum.find(version.manifest.assets, &match?(%Asset{ref: ^asset_ref}, &1)) do
-      %Asset{} = asset -> {:ok, asset}
-      nil -> {:error, :asset_not_found}
     end
   end
 

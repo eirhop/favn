@@ -191,8 +191,11 @@ defmodule FavnRunner.GenerationOperationsTest do
 
   test "runner maps activation and reconciliation through exact boundary contracts" do
     {version, asset} = registered_target()
+    manifest_identity = %{version | manifest: nil}
 
-    assert {:ok, capabilities} = FavnRunner.generation_capabilities(version, asset.ref)
+    assert {:ok, capabilities} =
+             FavnRunner.generation_capabilities(manifest_identity, asset.ref)
+
     assert capabilities.atomic_swap == :supported
     assert capabilities.marker_reconciliation == :supported
 
@@ -202,7 +205,9 @@ defmodule FavnRunner.GenerationOperationsTest do
              FavnRunner.initialize_generation_marker(initialization)
 
     assert initialized.physical_fingerprint == @active_fingerprint
-    assert {:ok, initialized.observed_marker} == FavnRunner.generation_marker(version, asset.ref)
+
+    assert {:ok, initialized.observed_marker} ==
+             FavnRunner.generation_marker(manifest_identity, asset.ref)
 
     request = activation_request(version, asset, initialized.observed_marker)
 
@@ -276,6 +281,16 @@ defmodule FavnRunner.GenerationOperationsTest do
     assert discard_result.observed_marker.active_generation_id == @candidate_generation_id
     assert discard_result.candidate_present == nil
     assert :ok = GenerationDiscardResult.validate(discard_result, active_discard)
+  end
+
+  test "full manifest generation reads do not depend on manifest cache residency" do
+    {version, asset} = registered_target()
+    {:ok, empty_store} = start_supervised({FavnRunner.ManifestStore, name: nil})
+
+    assert {:ok, capabilities} =
+             FavnRunner.generation_capabilities(version, asset.ref, manifest_store: empty_store)
+
+    assert capabilities.atomic_swap == :supported
   end
 
   defp registered_target do

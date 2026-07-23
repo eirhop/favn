@@ -29,8 +29,9 @@ defmodule Favn.SQL.Client do
   eviction. When an adapter fingerprint changes for the same connection and
   session requirements, the pool evicts idle sessions from the superseded
   fingerprint and closes active ones on checkin before creating a replacement.
-  Unrelated incompatible pool scopes can still compete for the same finite
-  catalog capacity.
+  A miss for a different overlapping catalog set evicts conflicting idle
+  sessions before creating a replacement, while incompatible scopes with the
+  same catalog set can still compete for finite catalog capacity.
 
   SQL sessions retain their normalized `:required_catalogs` and
   `:required_resources` scopes. Raw write
@@ -757,7 +758,9 @@ defmodule Favn.SQL.Client do
     case SessionPool.checkout_or_create(
            key,
            max_creating_per_key: max_creating_per_key,
-           checkout_timeout_ms: Keyword.get(adapter_opts, :checkout_timeout_ms)
+           checkout_timeout_ms: Keyword.get(adapter_opts, :checkout_timeout_ms),
+           connection: resolved.name,
+           required_catalogs: normalized_required_catalogs(adapter_opts)
          ) do
       {:ok, %Session{} = session} ->
         case prepare_warm_session(session, resolved, concurrency_policies, adapter_opts) do

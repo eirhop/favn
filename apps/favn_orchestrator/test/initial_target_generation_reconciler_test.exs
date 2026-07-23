@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
   alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.TargetCompatibility.PhysicalFingerprint
@@ -138,7 +139,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     end)
 
     version = version()
-    {:ok, version: version, entry: entry(version)}
+    {:ok, index} = Index.build_from_version(version)
+    {:ok, version: version, entry: entry(%{version | manifest: nil}, index)}
   end
 
   test "inspects and reconciles the first successful persisted materialization", %{
@@ -292,10 +294,11 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     version
   end
 
-  defp entry(version) do
+  defp entry(version, manifest_index) do
     %{
       asset_ref: @ref,
       version: version,
+      manifest_index: manifest_index,
       materialization_claim: %{
         claim_key: "claim-1",
         workspace_id: "workspace-1",

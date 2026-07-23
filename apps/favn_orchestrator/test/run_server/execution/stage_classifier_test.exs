@@ -63,6 +63,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifierTest do
              StageClassifier.classify(run, version, 0, node_keys, context, nil)
 
     assert length(runnable) == 4
+    assert runnable == Enum.take(node_keys, 4)
     assert length(remaining) == 6
     assert map_size(decisions) == 4
     assert Enum.all?(decisions, fn {_node_key, decision} -> decision.reason == :forced end)

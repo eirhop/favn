@@ -34,6 +34,14 @@ available for diagnosis.
 Admission rechecks compatibility immediately before a persisted write. A
 deployment-time result is operator evidence, not permission to write forever.
 
+Runner replacement does not reject the whole manifest because the active
+generation was created by an older runner release. The new runner inspects the
+persisted active physical relation directly through the desired manifest; it
+does not load old executable code. Missing or drifted physical state takes
+precedence over descriptor differences. Once inspection proves the recorded
+active generation is intact, immutable active-versus-desired descriptor
+differences determine whether a rebuild is required.
+
 ## Immutable planning and approval
 
 Planning is read-only from the operator's perspective. It freezes:

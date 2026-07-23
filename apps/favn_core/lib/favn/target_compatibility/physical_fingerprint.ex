@@ -88,24 +88,47 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprint do
 
   def new(_attrs), do: {:error, :invalid_physical_fingerprint}
 
-  @doc "Returns adapter or relation-identity differences from the desired target."
+  @doc """
+  Returns adapter or relation-identity differences from the desired target.
+
+  An omitted catalog or schema in the logical target accepts the concrete
+  default namespace reported by the adapter. Explicit namespaces still match
+  exactly.
+  """
   @spec identity_diff(TargetDescriptor.t(), t()) :: [map()]
   def identity_diff(%TargetDescriptor{} = desired, %__MODULE__{} = observed) do
     desired_relation = Map.take(desired.relation, [:catalog, :schema, :name])
     observed_relation = Map.take(observed.relation, [:catalog, :schema, :name])
 
     [
-      {:adapter, desired.adapter, observed.adapter},
-      {:relation, desired_relation, observed_relation},
-      {:relation_kind, "table", observed.relation.kind},
-      {:contract_fingerprint, desired.contract_fingerprint,
-       observed_contract_fingerprint(desired.contract_fingerprint, observed.columns)}
+      identity_difference(:adapter, desired.adapter, observed.adapter),
+      relation_identity_difference(desired_relation, observed_relation),
+      identity_difference(:relation_kind, "table", observed.relation.kind),
+      identity_difference(
+        :contract_fingerprint,
+        desired.contract_fingerprint,
+        observed_contract_fingerprint(desired.contract_fingerprint, observed.columns)
+      )
     ]
-    |> Enum.flat_map(fn
-      {_field, value, value} -> []
-      {field, expected, actual} -> [%{field: field, desired: expected, observed: actual}]
-    end)
+    |> List.flatten()
   end
+
+  defp relation_identity_difference(desired, observed) do
+    if desired.name == observed.name and
+         namespace_matches?(desired.catalog, observed.catalog) and
+         namespace_matches?(desired.schema, observed.schema),
+       do: [],
+       else: identity_difference(:relation, desired, observed)
+  end
+
+  defp namespace_matches?(nil, _observed), do: true
+  defp namespace_matches?(value, value), do: true
+  defp namespace_matches?(_desired, _observed), do: false
+
+  defp identity_difference(_field, value, value), do: []
+
+  defp identity_difference(field, desired, observed),
+    do: [%{field: field, desired: desired, observed: observed}]
 
   defp observed_contract_fingerprint(nil, _columns), do: nil
 

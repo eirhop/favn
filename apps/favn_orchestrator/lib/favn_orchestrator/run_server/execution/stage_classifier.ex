@@ -149,12 +149,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
     Enum.reduce_while(node_keys, {[], node_keys, 0}, fn node_key, {batch, remaining, count} ->
       if count >= @max_batch_nodes or
            (count > 0 and System.monotonic_time(:millisecond) - started_at >= @max_batch_ms) do
-        {:halt, {Enum.reverse(batch), remaining, count}}
+        {:halt, {batch, remaining, count}}
       else
         {:cont, {[node_key | batch], tl(remaining), count + 1}}
       end
     end)
-    |> then(fn {batch, remaining, _count} -> {batch, remaining} end)
+    |> then(fn {batch, remaining, _count} -> {Enum.reverse(batch), remaining} end)
   end
 
   defp forced_node_keys(run_state, freshness_context, opts) do

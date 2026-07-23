@@ -27,8 +27,9 @@ defmodule FavnRunner do
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
-  alias Favn.Manifest.Version
+  alias Favn.Manifest
   alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Resolution
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
@@ -395,8 +396,8 @@ defmodule FavnRunner do
   def generation_capabilities(%Version{} = version, asset_ref, opts \\ [])
       when is_tuple(asset_ref) and is_list(opts) do
     with_admission(opts, fn ->
-      with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
-        GenerationOperations.capabilities(version, asset_ref)
+      with {:ok, asset} <- generation_asset(version, asset_ref, opts) do
+        GenerationOperations.capabilities(asset)
       end
     end)
   end
@@ -408,8 +409,8 @@ defmodule FavnRunner do
   def generation_marker(%Version{} = version, asset_ref, opts \\ [])
       when is_tuple(asset_ref) and is_list(opts) do
     with_admission(opts, fn ->
-      with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
-        GenerationOperations.marker(version, asset_ref)
+      with {:ok, asset} <- generation_asset(version, asset_ref, opts) do
+        GenerationOperations.marker(asset)
       end
     end)
   end
@@ -475,6 +476,24 @@ defmodule FavnRunner do
 
   defp with_admission(opts, fun) do
     Lifecycle.with_admission(fun, Keyword.get(opts, :lifecycle, Lifecycle))
+  end
+
+  defp generation_asset(%Version{manifest: %Manifest{}} = version, asset_ref, _opts) do
+    with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+      ManifestResolver.resolve_asset(version, asset_ref)
+    end
+  end
+
+  defp generation_asset(%Version{manifest: nil} = version, asset_ref, opts) do
+    manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+
+    with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id),
+         {:ok, handle} <-
+           ManifestStore.fetch_handle(version.manifest_version_id, version.content_hash,
+             server: manifest_store
+           ) do
+      ManifestStore.fetch_asset(handle, asset_ref, server: manifest_store)
+    end
   end
 
   defp generation_version(request, opts) do

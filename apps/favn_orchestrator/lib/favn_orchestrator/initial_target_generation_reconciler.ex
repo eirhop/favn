@@ -13,10 +13,10 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
   alias Favn.Contracts.GenerationMarker
   alias Favn.Contracts.GenerationMarkerInitializationRequest
   alias Favn.Contracts.GenerationMarkerInitializationResult
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias Favn.TargetCompatibility.PhysicalFingerprint
   alias FavnOrchestrator.MaterializationClaims
-  alias FavnOrchestrator.ManifestTarget
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.ReconcileInitialTargetGeneration
   alias FavnOrchestrator.Persistence.Queries.GetTargetBinding
@@ -72,13 +72,16 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
 
   defp inspect_and_reconcile(entry, claim, generation_id, target_id, manifest_id, context) do
     version = field(entry, :version)
+    manifest_index = field(entry, :manifest_index)
     asset_ref = field(entry, :asset_ref)
 
-    with %Version{manifest_version_id: ^manifest_id} <- version,
-         {:ok, fingerprint} <- inspect_physical(version, asset_ref),
+    with %Index{} <- manifest_index,
+         %Version{manifest_version_id: ^manifest_id} <- version,
+         {:ok, fingerprint} <- inspect_physical(version, manifest_index, asset_ref),
          {:ok, data_plane_marker} <-
            initialize_data_plane_marker(
              version,
+             manifest_index,
              asset_ref,
              target_id,
              generation_id,
@@ -100,7 +103,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
       :ok
     else
       %Version{} -> {:error, :initial_target_generation_manifest_mismatch}
-      nil -> {:error, :initial_target_generation_manifest_missing}
+      nil -> {:error, :initial_target_generation_manifest_index_missing}
       {:error, reason} -> {:error, {:initial_target_generation_reconciliation_failed, reason}}
       _invalid -> {:error, :initial_target_generation_manifest_invalid}
     end
@@ -108,6 +111,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
 
   defp initialize_data_plane_marker(
          version,
+         manifest_index,
          asset_ref,
          target_id,
          generation_id,
@@ -129,6 +133,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
               runner,
               runtime.runner_client_opts,
               version,
+              manifest_index,
               asset_ref,
               target_id,
               generation_id,
@@ -157,6 +162,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
          runner,
          runner_opts,
          version,
+         manifest_index,
          asset_ref,
          target_id,
          generation_id,
@@ -171,7 +177,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
       required_runner_release_id: version.required_runner_release_id,
       target_id: target_id,
       target_generation_id: generation_id,
-      active_relation: target_relation(version, asset_ref),
+      active_relation: target_relation(manifest_index, asset_ref),
       expected_physical_fingerprint: fingerprint.fingerprint,
       initialization_operation_id: operation_id,
       initialization_token: marker_token(operation_id)
@@ -226,13 +232,10 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
     )
   end
 
-  defp target_relation(version, asset_ref) do
-    version.manifest.assets
-    |> Enum.find(&(&1.ref == asset_ref))
-    |> Map.fetch!(:relation)
-  end
+  defp target_relation(%Index{} = manifest_index, asset_ref),
+    do: manifest_index.assets_by_ref |> Map.fetch!(asset_ref) |> Map.fetch!(:relation)
 
-  defp inspect_physical(version, asset_ref) do
+  defp inspect_physical(version, manifest_index, asset_ref) do
     runtime = RuntimeConfig.current()
 
     request = %RelationInspectionRequest{
@@ -254,8 +257,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
            ),
          {:ok, %PhysicalFingerprint{} = fingerprint} <-
            PhysicalFingerprint.from_inspection(result),
-         {:ok, asset} <-
-           ManifestTarget.resolve_asset(version, Favn.TargetIdentity.for_asset(asset_ref)),
+         {:ok, asset} <- Index.fetch_asset(manifest_index, asset_ref),
          [] <- PhysicalFingerprint.identity_diff(asset.target_descriptor, fingerprint) do
       {:ok, fingerprint}
     else

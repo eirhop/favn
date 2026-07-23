@@ -13,12 +13,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   alias Favn.Contracts.RunnerWork
   alias Favn.Contracts.TargetGenerationPin
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Index
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias Favn.Plan.NodeIdentity
   alias Favn.RelationRef
   alias Favn.Retry.Policy
   alias Favn.Run.AssetResult
+  alias Favn.TargetIdentity
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunServer.Execution.ExecutionPool
   alias FavnOrchestrator.RunState
@@ -87,11 +89,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
     }
   end
 
-  @doc "Builds runner work for this attempt."
-  @spec build_work(t()) :: {:ok, t()} | {:error, term()}
-  def build_work(%__MODULE__{} = lifecycle) do
+  @doc "Builds runner work for this attempt from the compact execution index."
+  @spec build_work(t(), Index.t()) :: {:ok, t()} | {:error, term()}
+  def build_work(%__MODULE__{} = lifecycle, %Index{} = manifest_index) do
     with {:ok, node_identity} <- node_identity(lifecycle),
-         {:ok, generation_fields} <- generation_fields(lifecycle) do
+         {:ok, generation_fields} <- generation_fields(lifecycle, manifest_index) do
       work =
         %RunnerWork{
           run_id: lifecycle.run.id,
@@ -306,30 +308,27 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
      })}
   end
 
-  defp generation_fields(%__MODULE__{
-         run: %RunState{plan: %Favn.Plan{nodes: nodes}},
-         version: %Version{} = version,
-         node_key: node_key
-       }) do
-    with {:ok, node} <- Map.fetch(nodes, node_key) do
-      case version.manifest do
-        %{assets: assets} when is_list(assets) ->
-          assets = Map.new(assets, &{&1.ref, &1})
-
-          with {:ok, asset} <- Map.fetch(assets, node.ref) do
-            generation_fields(asset, node, nodes, assets)
-          end
-
-        _missing when is_nil(node.target_generation_id) and is_nil(node.physical_relation) ->
-          {:ok, %{}}
-
-        _missing ->
-          {:error, :invalid_manifest}
-      end
+  defp generation_fields(
+         %__MODULE__{
+           run: %RunState{plan: %Favn.Plan{nodes: nodes}},
+           node_key: node_key
+         },
+         %Index{assets_by_ref: assets} = manifest_index
+       ) do
+    with {:ok, node} <- fetch_plan_node(nodes, node_key),
+         {:ok, asset} <- Index.fetch_asset(manifest_index, node.ref) do
+      generation_fields(asset, node, nodes, assets)
     end
   end
 
-  defp generation_fields(%__MODULE__{}), do: {:ok, %{}}
+  defp generation_fields(%__MODULE__{}, %Index{}), do: {:ok, %{}}
+
+  defp fetch_plan_node(nodes, node_key) do
+    case Map.fetch(nodes, node_key) do
+      {:ok, node} -> {:ok, node}
+      :error -> {:error, {:plan_node_not_found, node_key}}
+    end
+  end
 
   defp generation_fields(%Asset{target_descriptor: nil}, node, nodes, assets) do
     with {:ok, upstream_pins} <- upstream_generation_pins(node, nodes, assets) do
@@ -402,8 +401,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   defp input_generation_pin(identity, assets) when is_map(identity) do
     target_id = field(identity, :target_id)
 
-    case Enum.find(assets, fn {_ref, asset} ->
-           match?(%TargetDescriptor{target_id: ^target_id}, asset.target_descriptor)
+    case Enum.find(assets, fn {ref, _asset} ->
+           TargetIdentity.for_asset(ref) == target_id
          end) do
       {_ref, %Asset{} = asset} -> upstream_generation_pin(identity, asset)
       nil -> {:error, {:missing_upstream_generation_asset, target_id}}

@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
   alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.TargetCompatibility.PhysicalFingerprint
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Persistence.DeploymentPlanner
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Results.TargetBinding
@@ -117,6 +118,26 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     assert request.sample_limit == 0
   end
 
+  test "keeps compatibility inspection inside the caller's maintenance admission", contexts do
+    {version, asset} = persisted_version("manifest-maintenance-inspection")
+    put_versions([version])
+    Application.put_env(:favn_orchestrator, :compatibility_test_bindings, [])
+    Application.put_env(:favn_orchestrator, :compatibility_test_inspection, inspection(version))
+
+    token = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    assert {:ok, ^token} = Lifecycle.begin_maintenance(:runner_replacement, token)
+    assert {:ok, permit} = Lifecycle.acquire_maintenance_admission(token)
+
+    try do
+      assert {:ok, [decision]} = plan(version, asset, contexts)
+      assert decision.compatibility_status == :uninitialized
+      assert_received {:inspect_relation, _request}
+    after
+      assert :ok = Lifecycle.release_admission(permit)
+      assert :ok = Lifecycle.end_maintenance(token)
+    end
+  end
+
   test "does not adopt an observed drift fingerprint", contexts do
     {version, asset} = persisted_version("manifest-active")
 
@@ -210,6 +231,155 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     assert request.asset_ref == active_asset.ref
   end
 
+  test "runner release changes inspect compatible targets through the desired manifest",
+       contexts do
+    {active_version, active_asset} = persisted_version("manifest-before-runner-change")
+
+    {desired_version, desired_asset} =
+      persisted_version(
+        "manifest-after-runner-change",
+        "sales_summary",
+        FavnTestSupport.runner_release_id(:alternate)
+      )
+
+    observed =
+      inspection(desired_version,
+        relation: %{catalog: nil, schema: "gold", name: "sales_summary", type: :table}
+      )
+
+    {:ok, recorded} = PhysicalFingerprint.from_inspection(observed)
+
+    binding = %TargetBinding{
+      workspace_id: contexts.workspace_context.workspace_id,
+      target_id: active_asset.target_descriptor.target_id,
+      active_generation_id: Ecto.UUID.generate(),
+      active_manifest_id: active_version.manifest_version_id,
+      active_descriptor_hash: active_asset.target_descriptor.descriptor_hash,
+      desired_manifest_id: active_version.manifest_version_id,
+      desired_descriptor_hash: active_asset.target_descriptor.descriptor_hash,
+      compatibility_status: :ready,
+      reason_code: "compatible",
+      compatibility_diff: %{},
+      active_physical_relation: Map.from_struct(active_asset.relation),
+      active_physical_fingerprint: recorded.fingerprint,
+      version: 5,
+      updated_at: @now
+    }
+
+    put_versions([active_version, desired_version])
+    Application.put_env(:favn_orchestrator, :compatibility_test_bindings, [binding])
+    Application.put_env(:favn_orchestrator, :compatibility_test_inspection, observed)
+
+    assert {:ok, [decision]} = plan(desired_version, desired_asset, contexts)
+    assert decision.compatibility_status == :ready
+    assert decision.reason_code == "compatible"
+    refute_received {:ensure_manifest, _active_manifest_id}
+    assert_received {:inspect_relation, request}
+    assert request.manifest_version_id == desired_version.manifest_version_id
+    assert request.required_runner_release_id == desired_version.required_runner_release_id
+    assert request.asset_ref == nil
+    assert request.relation == active_asset.relation
+  end
+
+  test "runner release changes inspect structural changes without loading old code", contexts do
+    {active_version, active_asset} =
+      persisted_version("manifest-before-cross-release-relation-change", "sales_summary")
+
+    {desired_version, desired_asset} =
+      persisted_version(
+        "manifest-after-cross-release-relation-change",
+        "sales_summary_v2",
+        FavnTestSupport.runner_release_id(:alternate)
+      )
+
+    observed =
+      inspection(desired_version,
+        relation: %{catalog: nil, schema: "gold", name: "sales_summary", type: :table}
+      )
+
+    {:ok, recorded} = PhysicalFingerprint.from_inspection(observed)
+
+    binding = %TargetBinding{
+      workspace_id: contexts.workspace_context.workspace_id,
+      target_id: active_asset.target_descriptor.target_id,
+      active_generation_id: Ecto.UUID.generate(),
+      active_manifest_id: active_version.manifest_version_id,
+      active_descriptor_hash: active_asset.target_descriptor.descriptor_hash,
+      desired_manifest_id: active_version.manifest_version_id,
+      desired_descriptor_hash: active_asset.target_descriptor.descriptor_hash,
+      compatibility_status: :ready,
+      reason_code: "compatible",
+      compatibility_diff: %{},
+      active_physical_relation: Map.from_struct(active_asset.relation),
+      active_physical_fingerprint: recorded.fingerprint,
+      version: 6,
+      updated_at: @now
+    }
+
+    put_versions([active_version, desired_version])
+    Application.put_env(:favn_orchestrator, :compatibility_test_bindings, [binding])
+
+    Application.put_env(
+      :favn_orchestrator,
+      :compatibility_test_inspection,
+      observed
+    )
+
+    assert {:ok, [decision]} = plan(desired_version, desired_asset, contexts)
+    assert decision.compatibility_status == :rebuild_required
+    assert decision.reason_code == "incompatible_descriptor"
+    assert Enum.any?(decision.compatibility_diff.descriptor, &(&1.field == :relation))
+    refute_received {:ensure_manifest, _active_manifest_id}
+    assert_received {:inspect_relation, request}
+    assert request.asset_ref == nil
+    assert request.relation == active_asset.relation
+  end
+
+  test "runner release changes preserve missing-relation drift over descriptor changes",
+       contexts do
+    {active_version, active_asset} =
+      persisted_version("manifest-before-cross-release-missing-relation", "sales_summary")
+
+    {desired_version, desired_asset} =
+      persisted_version(
+        "manifest-after-cross-release-missing-relation",
+        "sales_summary_v2",
+        FavnTestSupport.runner_release_id(:alternate)
+      )
+
+    binding = %TargetBinding{
+      workspace_id: contexts.workspace_context.workspace_id,
+      target_id: active_asset.target_descriptor.target_id,
+      active_generation_id: Ecto.UUID.generate(),
+      active_manifest_id: active_version.manifest_version_id,
+      active_descriptor_hash: active_asset.target_descriptor.descriptor_hash,
+      desired_manifest_id: active_version.manifest_version_id,
+      desired_descriptor_hash: active_asset.target_descriptor.descriptor_hash,
+      compatibility_status: :ready,
+      reason_code: "compatible",
+      compatibility_diff: %{},
+      active_physical_relation: Map.from_struct(active_asset.relation),
+      active_physical_fingerprint: String.duplicate("f", 64),
+      version: 7,
+      updated_at: @now
+    }
+
+    put_versions([active_version, desired_version])
+    Application.put_env(:favn_orchestrator, :compatibility_test_bindings, [binding])
+
+    Application.put_env(
+      :favn_orchestrator,
+      :compatibility_test_inspection,
+      inspection(desired_version)
+    )
+
+    assert {:ok, [decision]} = plan(desired_version, desired_asset, contexts)
+    assert decision.compatibility_status == :unexpected_drift
+    assert decision.reason_code == "physical_relation_missing"
+    assert_received {:inspect_relation, request}
+    assert request.relation == active_asset.relation
+  end
+
   defp plan(version, asset, contexts) do
     selection = %DeploymentPlanner{
       common_assets: [asset.ref],
@@ -226,7 +396,11 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     )
   end
 
-  defp persisted_version(manifest_id, relation_name \\ "sales_summary") do
+  defp persisted_version(
+         manifest_id,
+         relation_name \\ "sales_summary",
+         runner_release_id \\ FavnTestSupport.runner_release_id()
+       ) do
     ref = {MyApp.SalesSummary, :asset}
 
     asset =
@@ -243,7 +417,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     manifest =
       %Manifest{assets: [asset]}
       |> FavnTestSupport.with_manifest_graph()
-      |> FavnTestSupport.with_manifest_contract()
+      |> FavnTestSupport.with_manifest_contract(runner_release_id)
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_id)
     {version, hd(version.manifest.assets)}

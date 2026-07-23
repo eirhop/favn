@@ -281,7 +281,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
          {:ok, %{work: work} = lifecycle} <-
            state.run
            |> StepAttemptLifecycle.new(state.version, node_key, stage, attempt)
-           |> StepAttemptLifecycle.build_work(),
+           |> StepAttemptLifecycle.build_work(state.manifest_index),
          work <-
            work
            |> StepAttemptLifecycle.attach_deadline(state.run)
