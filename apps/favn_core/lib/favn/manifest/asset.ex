@@ -23,6 +23,7 @@ defmodule Favn.Manifest.Asset do
   alias Favn.Manifest.Compatibility
   alias Favn.Manifest.TargetDescriptor
   alias Favn.RuntimeConfig.Requirements
+  alias Favn.SQL.PartitionSpec
   alias Favn.SQL.SessionRequirements
   alias Favn.Window.Spec, as: WindowSpec
 
@@ -44,6 +45,7 @@ defmodule Favn.Manifest.Asset do
           freshness: FreshnessPolicy.t() | nil,
           retry_policy: Favn.Retry.Policy.t() | nil,
           materialization: map() | struct() | nil,
+          partition_spec: PartitionSpec.t() | nil,
           relation_inputs: [map() | struct()],
           runtime_config: Requirements.declarations(),
           session_requirements: SessionRequirements.t(),
@@ -70,6 +72,7 @@ defmodule Favn.Manifest.Asset do
     freshness: nil,
     retry_policy: nil,
     materialization: nil,
+    partition_spec: nil,
     relation_inputs: [],
     runtime_config: %{},
     session_requirements: %SessionRequirements{version: 1},
@@ -104,6 +107,7 @@ defmodule Favn.Manifest.Asset do
       freshness: freshness,
       retry_policy: normalize_retry_policy(Map.get(asset, :retry_policy)),
       materialization: Map.get(asset, :materialization),
+      partition_spec: normalize_partition_spec(Map.get(asset, :partition_spec)),
       relation_inputs: normalize_list(Map.get(asset, :relation_inputs, [])),
       runtime_config: normalize_runtime_config(Map.get(asset, :runtime_config, %{})),
       session_requirements: normalize_session_requirements(Map.get(asset, :session_requirements)),
@@ -144,6 +148,9 @@ defmodule Favn.Manifest.Asset do
 
   defp normalize_execution_pool(value) when is_atom(value), do: value
   defp normalize_execution_pool(_other), do: nil
+
+  defp normalize_partition_spec(nil), do: nil
+  defp normalize_partition_spec(value), do: PartitionSpec.normalize!(value)
 
   defp execution_package(%{type: :sql, ref: ref, module: module})
        when is_tuple(ref) and is_atom(module) do

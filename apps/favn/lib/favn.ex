@@ -67,7 +67,7 @@ defmodule Favn do
       {:ok, build} = Favn.build_manifest(runner_release: runner_release)
       {:ok, publication} = Favn.prepare_manifest_publication(build)
 
-  `publication.version` is the compact schema-11 manifest index. It is bound to
+  `publication.version` is the compact schema-12 manifest index. It is bound to
   the exact verified runner descriptor through `required_runner_release_id`.
   SQL assets point to immutable entries in `publication.execution_packages` by
   content hash. In these examples, `runner_release` is the descriptor produced

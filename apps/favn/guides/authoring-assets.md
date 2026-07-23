@@ -303,6 +303,43 @@ Materialization values:
 | `{:incremental, strategy: :append}` | Append new rows. Requires `window`. |
 | `{:incremental, strategy: :delete_insert, window_column: :order_date}` | Replace one window by deleting and inserting. Requires `window`. |
 
+### DuckLake Physical Partitioning
+
+For table or incremental assets written to DuckLake, declare the physical file
+layout separately:
+
+```elixir
+materialized {:incremental,
+              strategy: :delete_insert,
+              window_column: :partition_month}
+
+partitioned_by [
+  :tenant_id,
+  {:year, :occurred_at},
+  {:month, :occurred_at},
+  {:bucket, 32, :account_id}
+]
+```
+
+Plain atoms or strings are identity keys. Supported structured transforms are
+`{:year, column}`, `{:month, column}`, `{:day, column}`, `{:hour, column}`, and
+`{:bucket, positive_count, column}`.
+
+`window_column` controls the transactional delete scope for one incremental
+window. `partitioned_by` controls DuckLake's physical layout for new files.
+Neither implies the other.
+
+Favn validates the structured declaration and referenced query columns. Other
+adapters reject it explicitly. For a new DuckLake target, Favn creates the
+empty table, applies the partition specification, and then inserts candidate
+rows in the same transaction. For later writes, it reapplies the declared
+specification; DuckLake treats an unchanged specification as a no-op.
+
+Changing `partitioned_by` affects only subsequently written DuckLake data.
+Favn does not track historical partition layouts or claim that existing files
+were rewritten. Older data may retain its previous layout. Use a full Favn
+rebuild when all table data should be rewritten with the current specification.
+
 ### Declare The Output Contract
 
 Table and incremental assets may declare one typed output contract:

@@ -4,6 +4,7 @@ defmodule Favn.SQL.WritePlan do
   """
 
   alias Favn.SQL.Relation
+  alias Favn.SQL.PartitionSpec
   alias Favn.Window.Runtime
 
   @type materialization :: :view | :table | :incremental
@@ -29,6 +30,7 @@ defmodule Favn.SQL.WritePlan do
     :window_column,
     :unique_key,
     :incremental_predicate_sql,
+    :partition_spec,
     :bootstrap?,
     pre_statements: [],
     post_statements: [],
@@ -55,6 +57,7 @@ defmodule Favn.SQL.WritePlan do
           window_column: String.t() | nil,
           unique_key: [binary()] | nil,
           incremental_predicate_sql: iodata() | nil,
+          partition_spec: PartitionSpec.t() | nil,
           bootstrap?: boolean() | nil,
           pre_statements: [iodata()],
           post_statements: [iodata()],

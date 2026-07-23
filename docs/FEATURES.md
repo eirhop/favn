@@ -10,7 +10,7 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
 
 - The `favn` package provides manifest-first asset, SQL-asset, pipeline, schedule,
   window, coverage, freshness, retry, settings, and runtime-input DSLs.
-- Compilation produces a deterministic schema-11 manifest bound to the exact
+- Compilation produces a deterministic schema-12 manifest bound to the exact
   verified runner release, with graph metadata, compact catalogue/planning indexes,
   content-addressed SQL execution packages, environment-resolved timezones and
   coverage, provenance, and desired SQL target descriptors.
@@ -36,6 +36,10 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
   readiness requires connected, ready diagnostics with a valid release ID.
 - DuckDB and DuckDB ADBC support bounded queries, typed configuration, catalog
   requirements, session scripts, and runner-local exclusive sessions.
+- DuckLake SQL tables support structured declarative physical partitioning with
+  identity, year, month, day, hour, and bucket keys. The declared current spec
+  is operator-visible; historical layout evolution remains DuckLake-owned, and
+  a full rebuild is the explicit whole-table rewrite.
 
 Authoring and manifest contracts are comparatively mature. Planning, execution,
 runtime inputs, and SQL integrations remain pre-v1 and may change.

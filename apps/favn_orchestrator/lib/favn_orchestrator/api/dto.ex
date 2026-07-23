@@ -141,6 +141,7 @@ defmodule FavnOrchestrator.API.DTO do
       runtime_config: normalize(field(target, :runtime_config, %{})),
       depends_on: Enum.map(List.wrap(field(target, :depends_on, [])), &ref_to_string/1),
       materialization: normalize(field(target, :materialization)),
+      partition_spec: normalize(field(target, :partition_spec)),
       window: normalize(field(target, :window))
     }
     |> maybe_put(:execution_pool, atom_name(field(target, :execution_pool)))

@@ -215,12 +215,16 @@ defmodule Favn.AI do
     inference; Favn does not parse arbitrary SQL for target catalogs. SQL
     sessions are process-owned and must not be shared concurrently across child
     tasks.
+  - For declarative DuckLake physical partitioning, read `Favn.SQLAsset` and
+    the authoring-assets guide. Keep `partitioned_by` separate from incremental
+    `window_column`; a changed DuckLake specification affects new files only,
+    and a full Favn rebuild is the explicit whole-table rewrite path.
   - To compile a manifest, read `Favn generate_manifest`; if the project uses
     `config :favn, discovery: [apps: [...], assets: :all, pipelines: :all,
     schedules: :all, connections: :all]`, also read `Favn.ModuleDiscovery`. Read
     `Favn.Manifest.Generator` if you need internal compilation details. For
     deployment, call `Favn.build_manifest/1` with a verified runner descriptor,
-    followed by `Favn.prepare_manifest_publication/2`: schema 11 has one compact
+    followed by `Favn.prepare_manifest_publication/2`: schema 12 has one compact
     manifest index bound to its exact `required_runner_release_id` and immutable
     content-addressed SQL execution packages, with no inline SQL manifest form
     or compatibility fallback.

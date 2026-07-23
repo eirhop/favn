@@ -121,8 +121,8 @@ defmodule Favn.Manifest.GeneratorTest do
                runner_release: runner_release()
              )
 
-    assert manifest.schema_version == 11
-    assert manifest.runner_contract_version == 11
+    assert manifest.schema_version == 12
+    assert manifest.runner_contract_version == 12
     assert manifest.required_runner_release_id == FavnTestSupport.runner_release_id()
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1

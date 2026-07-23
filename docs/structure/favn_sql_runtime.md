@@ -5,6 +5,9 @@ control, adapter bootstrap hooks, backend concurrency policy contracts, and safe
 read-only relation inspection primitives used by local data preview flows.
 SQL asset materialization planning is runner-owned; this app owns the shared
 client/session primitives and `%Favn.SQL.WritePlan{}` adapter contract they use.
+That write plan may carry an optional structured `Favn.SQL.PartitionSpec`;
+`physical_partitioning` is an explicit adapter capability and defaults to
+unsupported.
 
 Code:
 - `apps/favn_sql_runtime/lib/favn/connection/`

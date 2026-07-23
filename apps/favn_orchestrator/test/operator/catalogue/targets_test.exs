@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.TargetsTest do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Pipeline
   alias Favn.RuntimeConfig.Ref, as: RuntimeConfigRef
+  alias Favn.SQL.PartitionSpec
   alias FavnOrchestrator.Operator.Catalogue.Targets
 
   test "projects stable asset target ids and normalizes nested manifest values" do
@@ -11,6 +12,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.TargetsTest do
       ref: {MyApp.Assets.Orders, :asset},
       module: MyApp.Assets.Orders,
       name: :asset,
+      partition_spec: PartitionSpec.normalize!([:tenant_id, {:month, :occurred_at}]),
       runtime_config: %{{:provider, :key} => :value}
     }
 
@@ -18,6 +20,14 @@ defmodule FavnOrchestrator.Operator.Catalogue.TargetsTest do
 
     assert target.target_id == "asset:Elixir.MyApp.Assets.Orders:asset"
     assert target.asset_ref == "Elixir.MyApp.Assets.Orders:asset"
+
+    assert target.partition_spec == %{
+             "keys" => [
+               %{"bucket_count" => nil, "column" => "tenant_id", "transform" => "identity"},
+               %{"bucket_count" => nil, "column" => "occurred_at", "transform" => "month"}
+             ]
+           }
+
     assert target.runtime_config == %{"{:provider, :key}" => "value"}
   end
 

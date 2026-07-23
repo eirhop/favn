@@ -9,6 +9,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
   alias Favn.SQL.Adapter.DuckDB.ADBC.Client.ADBC, as: ADBCClient
   alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Error
+  alias Favn.SQL.PartitionSpec
   alias Favn.SQL.Relation
   alias Favn.SQL.WritePlan
   alias FavnDuckdbADBC.TestSupport
@@ -68,10 +69,15 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     defp columns_for(result_ref) do
       sql = result_sql(result_ref)
 
-      if is_binary(sql) and String.contains?(sql, "SELECT version() AS duckdb_version") do
-        ["duckdb_version"]
-      else
-        ["value"]
+      cond do
+        is_binary(sql) and String.contains?(sql, "SELECT version() AS duckdb_version") ->
+          ["duckdb_version"]
+
+        is_binary(sql) and String.contains?(sql, "duckdb_databases()") ->
+          ["type"]
+
+        true ->
+          ["value"]
       end
     end
 
@@ -120,10 +126,15 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     defp row(result_ref) do
       sql = result_sql(result_ref)
 
-      if is_binary(sql) and String.contains?(sql, "SELECT version() AS duckdb_version") do
-        %{duckdb_version: "v1.5.2"}
-      else
-        %{value: 1}
+      cond do
+        is_binary(sql) and String.contains?(sql, "SELECT version() AS duckdb_version") ->
+          %{duckdb_version: "v1.5.2"}
+
+        is_binary(sql) and String.contains?(sql, "duckdb_databases()") ->
+          %{type: TestSupport.mode(:database_type, "ducklake")}
+
+        true ->
+          %{value: 1}
       end
     end
 
@@ -151,6 +162,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     TestSupport.put_mode(:rollback_mode, :ok)
     TestSupport.put_mode(:begin_mode, :ok)
     TestSupport.put_mode(:commit_mode, :ok)
+    TestSupport.put_mode(:database_type, "ducklake")
 
     on_exit(fn -> TestSupport.reset() end)
 
@@ -514,6 +526,62 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
              sql,
              &String.starts_with?(&1, ~s(CREATE OR REPLACE TABLE "raw"."sales"."products"))
            )
+  end
+
+  test "partitioned incremental writes always apply the current DuckLake specification first" do
+    plan = %WritePlan{
+      materialization: :incremental,
+      strategy: :append,
+      mode: :incremental,
+      target: %Relation{catalog: "lake", schema: "mart", name: "events", type: :table},
+      select_sql: "SELECT occurred_at, account_id FROM source_events",
+      partition_spec:
+        PartitionSpec.normalize!([
+          {:day, :occurred_at},
+          {:bucket, 8, :account_id}
+        ])
+    }
+
+    assert {:ok, statements} = ADBC.materialization_statements(plan, %Capabilities{}, [])
+    sql = Enum.map(statements, &IO.iodata_to_binary/1)
+
+    assert [
+             ~s|CREATE SCHEMA IF NOT EXISTS "lake"."mart"|,
+             ~s|ALTER TABLE "lake"."mart"."events" SET PARTITIONED BY (day("occurred_at"), bucket(8, "account_id"))|,
+             ~s|INSERT INTO "lake"."mart"."events" SELECT occurred_at, account_id FROM source_events|
+           ] = sql
+  end
+
+  test "partitioned ADBC writes verify DuckLake before executing statements" do
+    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
+
+    plan = %WritePlan{
+      materialization: :incremental,
+      strategy: :append,
+      mode: :incremental,
+      target: %Relation{catalog: "lake", schema: "mart", name: "events", type: :table},
+      select_sql: "SELECT ? AS tenant_id",
+      transactional?: true,
+      partition_spec: PartitionSpec.normalize!([:tenant_id])
+    }
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize}} =
+             ADBC.materialize(conn, plan, params: [7])
+
+    assert Enum.any?(events(), fn
+             {:query, _result_ref, sql, []} -> String.contains?(sql, "duckdb_databases()")
+             _event -> false
+           end)
+
+    assert Enum.any?(events(), fn
+             {:execute, sql, []} -> String.starts_with?(sql, "ALTER TABLE")
+             _event -> false
+           end)
+
+    assert Enum.any?(events(), fn
+             {:execute, sql, [7]} -> String.starts_with?(sql, "INSERT INTO")
+             _event -> false
+           end)
   end
 
   test "catalog-qualified materialization statements reject missing schema" do

@@ -138,6 +138,11 @@ defmodule FavnOrchestrator.API.DTOTest do
                  runtime_config: %{secret_key: "hidden"},
                  depends_on: ["Elixir.Upstream:orders"],
                  materialization: %{mode: :replace},
+                 partition_spec: %{
+                   keys: [
+                     %{column: "occurred_at", transform: :month, bucket_count: nil}
+                   ]
+                 },
                  window: %{kind: :calendar}
                }
              ],
@@ -155,6 +160,15 @@ defmodule FavnOrchestrator.API.DTOTest do
                  runtime_config: %{"secret_key" => "[REDACTED]"},
                  depends_on: ["Elixir.Upstream:orders"],
                  materialization: %{"mode" => "replace"},
+                 partition_spec: %{
+                   "keys" => [
+                     %{
+                       "bucket_count" => nil,
+                       "column" => "occurred_at",
+                       "transform" => "month"
+                     }
+                   ]
+                 },
                  window: %{"kind" => "calendar"}
                }
              ],
