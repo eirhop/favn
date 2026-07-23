@@ -155,12 +155,8 @@ defmodule FavnOrchestrator.RebuildsTest do
       maintenance: Store
     }
 
-    assert {:ok, pid} =
-             PersistenceRuntime.start_link(%PersistenceRuntime{
-               backend: __MODULE__,
-               options: [],
-               stores: stores
-             })
+    runtime = %PersistenceRuntime{backend: __MODULE__, options: [], stores: stores}
+    start_supervised!({PersistenceRuntime, runtime})
 
     Process.put(:rebuild_test_pid, self())
     {version, root, downstream, packages} = version()
@@ -193,7 +189,6 @@ defmodule FavnOrchestrator.RebuildsTest do
     ])
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
       restore_env(:runner_client, previous_client)
       restore_env(:runner_client_opts, previous_opts)
     end)

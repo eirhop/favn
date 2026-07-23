@@ -128,12 +128,11 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     }
 
     runtime = %PersistenceRuntime{backend: __MODULE__, options: [], stores: stores}
-    assert {:ok, pid} = PersistenceRuntime.start_link(runtime)
+    start_supervised!({PersistenceRuntime, runtime})
 
     Process.put(:test_pid, self())
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
       restore_env(:runner_client, previous_client)
       restore_env(:runner_client_opts, previous_opts)
     end)

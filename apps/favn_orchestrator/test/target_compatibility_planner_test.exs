@@ -81,16 +81,10 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
         maintenance: Store
       )
 
-    assert {:ok, pid} =
-             PersistenceRuntime.start_link(%PersistenceRuntime{
-               backend: __MODULE__,
-               options: [],
-               stores: stores
-             })
+    runtime = %PersistenceRuntime{backend: __MODULE__, options: [], stores: stores}
+    start_supervised!({PersistenceRuntime, runtime})
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
-
       Enum.each(previous, fn
         {key, :missing} -> Application.delete_env(:favn_orchestrator, key)
         {key, value} -> Application.put_env(:favn_orchestrator, key, value)
