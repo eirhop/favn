@@ -198,6 +198,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
             batch_id: "recovery:#{fixture.workspace_id}:#{owner_id}",
             owner_id: owner_id,
             lease_duration_ms: 60_000,
+            unowned_grace_period_ms: 0,
             limit: 20
           })
         end,
@@ -231,6 +232,41 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
                  occurred_at: DateTime.utc_now()
                }
              })
+  end
+
+  test "recovery gives a newly persisted unowned run time to claim its first owner", fixture do
+    stale_submission_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    run = create_run!(fixture, occurred_at: stale_submission_at)
+
+    command = %ClaimRecoveryBatch{
+      workspace_context: fixture.workspace_context,
+      batch_id: "fresh-unowned:" <> run.id,
+      owner_id: "recovery-node",
+      lease_duration_ms: 60_000,
+      unowned_grace_period_ms: 30_000,
+      limit: 1
+    }
+
+    assert {:ok, []} = RunOwnershipStore.claim_recovery_batch(command)
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.run_ownerships
+      SET updated_at = clock_timestamp() - interval '31 seconds'
+      WHERE workspace_id = $1 AND run_id = $2
+      """,
+      [fixture.workspace_id, run.id]
+    )
+
+    assert {:ok, [claim]} =
+             RunOwnershipStore.claim_recovery_batch(%{
+               command
+               | batch_id: "stale-unowned:" <> run.id
+             })
+
+    assert claim.run_id == run.id
+    assert claim.owner_id == "recovery-node"
   end
 
   @tag :slow
@@ -308,6 +344,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
               batch_id: "multi-node-recovery:#{fixture.workspace_id}:#{peer.owner_id}",
               owner_id: peer.owner_id,
               lease_duration_ms: 60_000,
+              unowned_grace_period_ms: 0,
               limit: 20
             }
           ])
@@ -1334,15 +1371,24 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     }
   end
 
-  defp create_run!(fixture) do
+  defp create_run!(fixture, opts \\ []) do
     run_id = "concurrent-run-#{random_id()}"
 
-    run = new_run(fixture, run_id)
+    run =
+      fixture
+      |> new_run(run_id)
+      |> maybe_put_run_occurred_at(Keyword.get(opts, :occurred_at))
 
     assert {:ok, _created} =
              fixture |> create_run_command(run) |> RunStore.create_run()
 
     run
+  end
+
+  defp maybe_put_run_occurred_at(run, nil), do: run
+
+  defp maybe_put_run_occurred_at(run, %DateTime{} = occurred_at) do
+    %{run | inserted_at: occurred_at, updated_at: occurred_at}
   end
 
   defp new_run(fixture, run_id) do

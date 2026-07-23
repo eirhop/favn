@@ -116,8 +116,6 @@ defmodule Favn.Pipeline.Resolver do
     end
   end
 
-  defp validate_window(value), do: {:error, {:invalid_window, value}}
-
   defp validate_max_concurrency(nil), do: :ok
   defp validate_max_concurrency(value) when is_integer(value) and value > 0, do: :ok
   defp validate_max_concurrency(value), do: {:error, {:invalid_max_concurrency, value}}

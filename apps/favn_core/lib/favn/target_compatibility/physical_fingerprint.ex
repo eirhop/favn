@@ -118,7 +118,7 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprint do
         nullable: column.nullable
       }
     end)
-    |> Serializer.encode_manifest!()
+    |> Serializer.encode_canonical!()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end

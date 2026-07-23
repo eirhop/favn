@@ -576,6 +576,7 @@ end
 defmodule FavnOrchestrator.Persistence.Commands.ReleaseTargetOperationLocks do
   @moduledoc "Releases every matching lock held by one operation."
 
+  alias FavnOrchestrator.Persistence.Commands.RenewTargetOperationLocks
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
   @enforce_keys [

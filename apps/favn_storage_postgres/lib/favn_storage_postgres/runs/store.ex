@@ -931,12 +931,15 @@ defmodule FavnStoragePostgres.Runs.Store do
         Repo.insert!(event_row(workspace_id, event_id, outbox.outbox_event_id, encoded))
         insert_targets!(command, event_id)
 
-        Repo.insert!(%RunOwnership{
-          workspace_id: workspace_id,
-          run_id: command.run.id,
-          fencing_token: 0,
-          updated_at: encoded.occurred_at
-        })
+        SQL.query!(
+          Repo,
+          """
+          INSERT INTO favn_control.run_ownerships
+            (workspace_id, run_id, fencing_token, updated_at)
+          VALUES ($1, $2, 0, clock_timestamp())
+          """,
+          [workspace_id, command.run.id]
+        )
 
         maybe_insert_run_capacity_scope!(command, encoded.occurred_at)
 

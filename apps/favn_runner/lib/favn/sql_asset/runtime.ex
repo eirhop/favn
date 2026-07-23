@@ -1767,11 +1767,11 @@ defmodule Favn.SQLAsset.Runtime do
       type: :sql,
       file: "manifest",
       line: 1,
-      settings: asset.settings || %{},
+      settings: asset.settings,
       window_spec: asset.window,
       relation: asset.relation,
       materialization: asset.materialization,
-      relation_inputs: asset.relation_inputs || [],
+      relation_inputs: asset.relation_inputs,
       session_requirements: asset.session_requirements
     }
 
@@ -1782,7 +1782,7 @@ defmodule Favn.SQLAsset.Runtime do
        sql: payload.sql,
        template: payload.template,
        materialization: asset.materialization,
-       relation_inputs: asset.relation_inputs || [],
+       relation_inputs: asset.relation_inputs,
        sql_definitions: payload.sql_definitions,
        checks: payload.checks,
        contract: payload.contract,

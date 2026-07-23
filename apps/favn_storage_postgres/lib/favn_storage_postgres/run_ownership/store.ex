@@ -216,8 +216,14 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
             ON run.workspace_id = ownership.workspace_id AND run.run_id = ownership.run_id
           WHERE ownership.workspace_id = $1
             AND run.status IN ('pending', 'running')
-            AND (ownership.owner_id IS NULL OR ownership.released_at IS NOT NULL
-                 OR ownership.expires_at IS NULL OR ownership.expires_at <= clock_timestamp())
+            AND (
+              (ownership.owner_id IS NULL
+               AND ownership.updated_at <=
+                 clock_timestamp() - ($6 * interval '1 millisecond'))
+              OR ownership.released_at IS NOT NULL
+              OR ownership.expires_at <= clock_timestamp()
+              OR (ownership.owner_id IS NOT NULL AND ownership.expires_at IS NULL)
+            )
           ORDER BY ownership.updated_at, ownership.run_id
           LIMIT $2
           FOR UPDATE OF ownership SKIP LOCKED
@@ -241,7 +247,8 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
           command.limit,
           command.owner_id,
           command.batch_id,
-          command.lease_duration_ms
+          command.lease_duration_ms,
+          command.unowned_grace_period_ms
         ]
       )
 
@@ -592,7 +599,8 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
              command.owner_id,
              command.lease_duration_ms
            ),
-         true <- is_integer(command.limit) and command.limit >= 1 and command.limit <= 500 do
+         true <- is_integer(command.limit) and command.limit >= 1 and command.limit <= 500,
+         true <- valid_unowned_grace_period?(command.unowned_grace_period_ms) do
       :ok
     else
       _value -> {:error, :invalid}
@@ -687,6 +695,9 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
     do: where(query, [execution], is_nil(execution.terminal_at))
 
   defp maybe_filter_active(query, false), do: query
+
+  defp valid_unowned_grace_period?(value),
+    do: is_integer(value) and value >= 0 and value <= 3_600_000
 
   defp validate_owner_command(context, command_id, run_id, owner_id, duration) do
     if workspace_context?(context) and Enum.all?([command_id, run_id, owner_id], &valid_id?/1) and

@@ -204,7 +204,10 @@ Redis is not required for correctness or initial multi-node scale.
   shape, unavailable backend modules, or invalid runtime privileges.
 - Lost owners cannot renew or commit with an old fencing token.
 - Recovery claims abandoned runs in bounded batches and reconstructs work from
-  pinned manifests, immutable run plans, and persisted checkpoints.
+  pinned manifests, immutable run plans, and persisted checkpoints. A newly
+  persisted, never-claimed run has one ownership-lease interval to complete its
+  normal RunServer handoff before recovery may claim it; if that handoff crashes,
+  the same row becomes recoverable after the bounded grace period.
 - Derived projections are repairable from authoritative rows/outbox events.
 - Unknown transaction outcomes are resolved using the original command identity.
 - Circuit and recovery rows survive orchestrator restarts. A successful probe

@@ -474,6 +474,7 @@ defmodule Favn.MultiAsset do
     depends = Enum.uniq(shared.depends ++ child.depends)
     window_values = select_scalar(namespace, :window, shared.window, child.window)
     window = scalar_value!(:window, [], window_values, env, nil)
+    validate_window!(window)
     window = mark_window_source(window, shared.window, child.window)
 
     coverage_values = select_scalar(namespace, :coverage, shared.coverage, child.coverage)
@@ -500,7 +501,6 @@ defmodule Favn.MultiAsset do
       |> Requirements.merge_all!(consumer: declaration.module)
 
     validate_description!(description)
-    validate_window!(window)
     validate_execution_pool!(execution_pool)
     validate_relation!(relation)
 

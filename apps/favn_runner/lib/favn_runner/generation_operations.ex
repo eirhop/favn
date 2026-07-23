@@ -429,7 +429,7 @@ defmodule FavnRunner.GenerationOperations do
       candidate_relation: request.candidate_relation,
       retired_relation: request.retired_relation,
       expected_active_generation_id: request.previous_generation_id,
-      expected_active_marker: maybe_sql_marker(request.expected_marker),
+      expected_active_marker: sql_marker(request.expected_marker),
       candidate_generation_id: request.candidate_generation_id,
       expected_candidate_fingerprint: request.expected_candidate_fingerprint,
       activation_operation_id: request.rebuild_operation_id,
@@ -504,9 +504,7 @@ defmodule FavnRunner.GenerationOperations do
   defp maybe_contract_marker(nil), do: nil
   defp maybe_contract_marker(%SQLMarker{} = marker), do: contract_marker(marker)
 
-  defp maybe_sql_marker(nil), do: nil
-
-  defp maybe_sql_marker(%ContractMarker{} = marker) do
+  defp sql_marker(%ContractMarker{} = marker) do
     %SQLMarker{
       logical_target_id: marker.target_id,
       active_relation: marker.active_relation,
@@ -518,10 +516,7 @@ defmodule FavnRunner.GenerationOperations do
   end
 
   defp previous_marker?(%SQLMarker{} = observed, activation) do
-    case activation.expected_marker do
-      %ContractMarker{} = expected -> marker_identity(observed) == marker_identity(expected)
-      nil -> false
-    end
+    marker_identity(observed) == marker_identity(activation.expected_marker)
   end
 
   defp marker_identity(marker) do
