@@ -27,7 +27,9 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RebuildAction, as: ActionResult
   alias FavnOrchestrator.Persistence.Results.RebuildItem, as: ItemResult
+  alias FavnOrchestrator.Persistence.Results.RebuildLease
   alias FavnOrchestrator.Persistence.Results.RebuildOperation, as: OperationResult
+  alias FavnOrchestrator.Persistence.Results.RebuildTimestamps
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
@@ -1203,15 +1205,19 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
       terminal_error: operation.terminal_error,
       cleanup_state: String.to_existing_atom(operation.cleanup_state),
       cancel_requested: operation.cancel_requested,
-      dispatcher_owner: operation.dispatcher_owner,
-      dispatcher_fencing_token: operation.dispatcher_fencing_token,
-      dispatcher_expires_at: operation.dispatcher_expires_at,
+      dispatcher: %RebuildLease{
+        owner: operation.dispatcher_owner,
+        fencing_token: operation.dispatcher_fencing_token,
+        expires_at: operation.dispatcher_expires_at
+      },
       version: operation.version,
-      started_at: operation.started_at,
-      completed_at: operation.completed_at,
-      cancelled_at: operation.cancelled_at,
-      inserted_at: operation.inserted_at,
-      updated_at: operation.updated_at,
+      timestamps: %RebuildTimestamps{
+        started_at: operation.started_at,
+        completed_at: operation.completed_at,
+        cancelled_at: operation.cancelled_at,
+        inserted_at: operation.inserted_at,
+        updated_at: operation.updated_at
+      },
       actions: actions,
       progress: progress
     }

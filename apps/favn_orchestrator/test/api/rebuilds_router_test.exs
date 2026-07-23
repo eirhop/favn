@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
   alias FavnOrchestrator.Persistence.Results.Actor
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RebuildOperation
+  alias FavnOrchestrator.Persistence.Results.RebuildTimestamps
   alias FavnOrchestrator.Persistence.Results.Session, as: SessionResult
   alias FavnOrchestrator.Persistence.Runtime
   alias FavnOrchestrator.Persistence.Stores
@@ -28,6 +29,7 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
     alias FavnOrchestrator.Persistence.Queries.PageRebuildOperations
     alias FavnOrchestrator.Persistence.Results.CursorPage
     alias FavnOrchestrator.Persistence.Results.RebuildOperation
+    alias FavnOrchestrator.Persistence.Results.RebuildTimestamps
     alias FavnOrchestrator.Persistence.Selectors.ActorById
     alias FavnOrchestrator.Persistence.Selectors.SessionByTokenHash
 
@@ -68,10 +70,8 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
          phase: :planned,
          cleanup_state: :not_started,
          cancel_requested: false,
-         dispatcher_fencing_token: 0,
          version: 1,
-         inserted_at: now,
-         updated_at: now
+         timestamps: %RebuildTimestamps{inserted_at: now, updated_at: now}
        }}
     end
 
@@ -112,7 +112,7 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
                 cancel_requested: true,
                 version: operation.version + 1,
                 idempotency_replay?: false,
-                updated_at: command.occurred_at
+                timestamps: %{operation.timestamps | updated_at: command.occurred_at}
             }
 
             put_value(:router_rebuilds, operation_key, cancelled)
@@ -442,10 +442,8 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
       phase: :queued,
       cleanup_state: :not_started,
       cancel_requested: false,
-      dispatcher_fencing_token: 0,
       version: 1,
-      inserted_at: now,
-      updated_at: now
+      timestamps: %RebuildTimestamps{inserted_at: now, updated_at: now}
     }
 
     Process.put(

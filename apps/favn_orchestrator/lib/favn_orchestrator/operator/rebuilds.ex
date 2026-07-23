@@ -36,9 +36,9 @@ defmodule FavnOrchestrator.Operator.Rebuilds do
       progress: operation.progress,
       cleanup_state: operation.cleanup_state,
       cancel_requested: operation.cancel_requested,
-      started_at: operation.started_at,
-      completed_at: operation.completed_at,
-      updated_at: operation.updated_at
+      started_at: operation.timestamps.started_at,
+      completed_at: operation.timestamps.completed_at,
+      updated_at: operation.timestamps.updated_at
     }
 
     if mode == :detail do
@@ -53,8 +53,8 @@ defmodule FavnOrchestrator.Operator.Rebuilds do
         unknown_outcome: safe_diagnostic(operation.unknown_outcome),
         validation_result: safe_diagnostic(operation.validation_result),
         terminal_error: safe_error(operation.terminal_error),
-        cancelled_at: operation.cancelled_at,
-        inserted_at: operation.inserted_at,
+        cancelled_at: operation.timestamps.cancelled_at,
+        inserted_at: operation.timestamps.inserted_at,
         permissions: permissions(operation, admin?)
       })
       |> Map.put(:plan, Redaction.redact(operation.plan_payload))

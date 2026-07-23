@@ -479,7 +479,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                operation_id: operation_id
              })
 
-    assert claimed_operation.dispatcher_fencing_token == 1
+    assert claimed_operation.dispatcher.fencing_token == 1
 
     assert {:ok, building} =
              RebuildStore.transition_operation(%TransitionRebuildOperation{
@@ -487,7 +487,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                command_id: "rebuild:building:" <> fixture.workspace_id,
                operation_id: operation_id,
                owner_id: "rebuild-dispatcher",
-               fencing_token: claimed_operation.dispatcher_fencing_token,
+               fencing_token: claimed_operation.dispatcher.fencing_token,
                expected_version: claimed_operation.version,
                expected_states: [:queued],
                state: :building,
@@ -565,7 +565,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                operation_id: operation_id,
                target_id: fixture.target_id,
                owner_id: "rebuild-dispatcher",
-               operation_fencing_token: building.dispatcher_fencing_token,
+               operation_fencing_token: building.dispatcher.fencing_token,
                expected_version: planned_action.version,
                expected_statuses: [:planned],
                status: :running,
@@ -579,7 +579,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                operation_id: operation_id,
                target_id: fixture.target_id,
                owner_id: "rebuild-dispatcher",
-               operation_fencing_token: building.dispatcher_fencing_token,
+               operation_fencing_token: building.dispatcher.fencing_token,
                expected_version: running_action.version,
                expected_statuses: [:running],
                status: :failed,
@@ -595,7 +595,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                command_id: "rebuild:failed:" <> fixture.workspace_id,
                operation_id: operation_id,
                owner_id: "rebuild-dispatcher",
-               fencing_token: building.dispatcher_fencing_token,
+               fencing_token: building.dispatcher.fencing_token,
                expected_version: building.version,
                expected_states: [:building],
                state: :failed,
@@ -633,7 +633,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         command_id: "rebuild:#{label}:" <> fixture.workspace_id,
         operation_id: operation_id,
         owner_id: "rebuild-dispatcher",
-        fencing_token: current.dispatcher_fencing_token,
+        fencing_token: current.dispatcher.fencing_token,
         expected_version: current.version,
         expected_states: [current.state],
         state: next_state,
@@ -705,7 +705,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              )
 
     assert cleaned.cleanup_state == :complete
-    assert cleaned.completed_at == succeeded.completed_at
+    assert cleaned.timestamps.completed_at == succeeded.timestamps.completed_at
 
     cancel_operation_id = "rebuild-cancel-store:" <> fixture.workspace_id
     cancel_candidate_id = Ecto.UUID.generate()
@@ -769,7 +769,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                command_id: "rebuild:cancel-building:" <> fixture.workspace_id,
                operation_id: cancel_operation_id,
                owner_id: "rebuild-dispatcher",
-               fencing_token: cancel_claim.dispatcher_fencing_token,
+               fencing_token: cancel_claim.dispatcher.fencing_token,
                expected_version: cancel_claim.version,
                expected_states: [:queued],
                state: :building,
@@ -786,7 +786,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                operation_id: cancel_operation_id,
                target_id: fixture.target_id,
                owner_id: "rebuild-dispatcher",
-               operation_fencing_token: cancel_building.dispatcher_fencing_token,
+               operation_fencing_token: cancel_building.dispatcher.fencing_token,
                expected_version: cancel_planned_action.version,
                expected_statuses: [:planned],
                status: :running,
@@ -800,7 +800,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                operation_id: cancel_operation_id,
                target_id: fixture.target_id,
                owner_id: "rebuild-dispatcher",
-               operation_fencing_token: cancel_building.dispatcher_fencing_token,
+               operation_fencing_token: cancel_building.dispatcher.fencing_token,
                expected_version: cancel_running_action.version,
                expected_statuses: [:running],
                status: :outcome_unknown,
@@ -826,7 +826,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                operation_id: cancel_operation_id,
                target_id: fixture.target_id,
                owner_id: "rebuild-dispatcher",
-               operation_fencing_token: cancel_requested.dispatcher_fencing_token,
+               operation_fencing_token: cancel_requested.dispatcher.fencing_token,
                expected_version: cancel_unknown_action.version,
                expected_statuses: [:outcome_unknown],
                status: :cancelled,
@@ -843,7 +843,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                target_id: fixture.target_id,
                candidate_generation_id: cancel_candidate_id,
                owner_id: "rebuild-dispatcher",
-               operation_fencing_token: cancel_requested.dispatcher_fencing_token,
+               operation_fencing_token: cancel_requested.dispatcher.fencing_token,
                status: :discarded,
                occurred_at: occurred_at
              })
@@ -854,7 +854,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                command_id: "rebuild:cancel-cleanup-failed:" <> fixture.workspace_id,
                operation_id: cancel_operation_id,
                owner_id: "rebuild-dispatcher",
-               fencing_token: cancel_requested.dispatcher_fencing_token,
+               fencing_token: cancel_requested.dispatcher.fencing_token,
                expected_version: cancel_requested.version,
                expected_states: [:cancelling],
                state: :cancelled,
@@ -880,7 +880,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                command_id: "rebuild:cancel-cleanup-complete:" <> fixture.workspace_id,
                operation_id: cancel_operation_id,
                owner_id: "rebuild-dispatcher",
-               fencing_token: cancel_cleanup_claim.dispatcher_fencing_token,
+               fencing_token: cancel_cleanup_claim.dispatcher.fencing_token,
                expected_version: cancel_cleanup_claim.version,
                expected_states: [:cancelled],
                state: :cancelled,

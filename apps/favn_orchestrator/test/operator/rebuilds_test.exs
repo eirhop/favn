@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.Operator.RebuildsTest do
 
   alias FavnOrchestrator.Operator.Rebuilds
   alias FavnOrchestrator.Persistence.Results.RebuildAction
+  alias FavnOrchestrator.Persistence.Results.RebuildLease
   alias FavnOrchestrator.Persistence.Results.RebuildOperation
   alias FavnOrchestrator.Rebuild.Plan
 
@@ -13,8 +14,7 @@ defmodule FavnOrchestrator.Operator.RebuildsTest do
       state: :activation_unknown,
       phase: :reconciling,
       cleanup_state: :not_started,
-      dispatcher_owner: "node-secret",
-      dispatcher_fencing_token: 42,
+      dispatcher: %RebuildLease{owner: "node-secret", fencing_token: 42},
       activation_token: "activation-secret",
       plan_payload: %{
         "binding_snapshot" => %{

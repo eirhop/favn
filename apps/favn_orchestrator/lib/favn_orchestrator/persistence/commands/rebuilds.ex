@@ -637,8 +637,34 @@ defmodule FavnOrchestrator.Persistence.Queries.PageRebuildItems do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Results.RebuildLease do
+  @moduledoc "Dispatcher lease attached to an authoritative rebuild operation."
+  defstruct [:owner, :expires_at, fencing_token: 0]
+
+  @type t :: %__MODULE__{
+          owner: String.t() | nil,
+          fencing_token: non_neg_integer(),
+          expires_at: DateTime.t() | nil
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Results.RebuildTimestamps do
+  @moduledoc "Lifecycle timestamps attached to an authoritative rebuild operation."
+  defstruct [:started_at, :completed_at, :cancelled_at, :inserted_at, :updated_at]
+
+  @type t :: %__MODULE__{
+          started_at: DateTime.t() | nil,
+          completed_at: DateTime.t() | nil,
+          cancelled_at: DateTime.t() | nil,
+          inserted_at: DateTime.t(),
+          updated_at: DateTime.t()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Results.RebuildOperation do
   @moduledoc "Authoritative rebuild operation and compact progress."
+  alias FavnOrchestrator.Persistence.Results.{RebuildLease, RebuildTimestamps}
+
   defstruct [
     :workspace_id,
     :operation_id,
@@ -667,18 +693,12 @@ defmodule FavnOrchestrator.Persistence.Results.RebuildOperation do
     :terminal_error,
     :cleanup_state,
     :cancel_requested,
-    :dispatcher_owner,
-    :dispatcher_fencing_token,
-    :dispatcher_expires_at,
     :version,
-    :started_at,
-    :completed_at,
-    :cancelled_at,
-    :inserted_at,
-    :updated_at,
     :idempotency_replay?,
     actions: [],
-    progress: %{}
+    progress: %{},
+    dispatcher: %RebuildLease{},
+    timestamps: %RebuildTimestamps{}
   ]
 
   @type t :: %__MODULE__{
@@ -709,15 +729,9 @@ defmodule FavnOrchestrator.Persistence.Results.RebuildOperation do
           terminal_error: map() | nil,
           cleanup_state: atom(),
           cancel_requested: boolean(),
-          dispatcher_owner: String.t() | nil,
-          dispatcher_fencing_token: non_neg_integer(),
-          dispatcher_expires_at: DateTime.t() | nil,
+          dispatcher: RebuildLease.t(),
           version: pos_integer(),
-          started_at: DateTime.t() | nil,
-          completed_at: DateTime.t() | nil,
-          cancelled_at: DateTime.t() | nil,
-          inserted_at: DateTime.t(),
-          updated_at: DateTime.t(),
+          timestamps: RebuildTimestamps.t(),
           idempotency_replay?: boolean() | nil,
           actions: [FavnOrchestrator.Persistence.Results.RebuildAction.t()],
           progress: map()

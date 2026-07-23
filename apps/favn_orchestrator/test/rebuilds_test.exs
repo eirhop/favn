@@ -31,6 +31,7 @@ defmodule FavnOrchestrator.RebuildsTest do
     alias FavnOrchestrator.Persistence.Error
     alias FavnOrchestrator.Persistence.Queries.GetRebuild
     alias FavnOrchestrator.Persistence.Results.RebuildOperation
+    alias FavnOrchestrator.Persistence.Results.RebuildTimestamps
 
     def get(%GetRebuild{operation_id: operation_id}) do
       case Process.get({:rebuild_operation, operation_id}) do
@@ -81,10 +82,11 @@ defmodule FavnOrchestrator.RebuildsTest do
         phase: :planned,
         cleanup_state: :not_started,
         cancel_requested: false,
-        dispatcher_fencing_token: 0,
         version: 1,
-        inserted_at: command.occurred_at,
-        updated_at: command.occurred_at
+        timestamps: %RebuildTimestamps{
+          inserted_at: command.occurred_at,
+          updated_at: command.occurred_at
+        }
       }
 
       Process.put({:rebuild_operation, command.operation_id}, operation)
