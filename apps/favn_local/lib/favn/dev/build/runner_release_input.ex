@@ -1,7 +1,7 @@
 defmodule Favn.Dev.Build.RunnerReleaseInput do
   @moduledoc false
 
-  alias Favn.Dev.Build.Artifact
+  alias Favn.Dev.Build.{Artifact, SourceInputSet}
   alias Favn.RunnerRelease
 
   @builder_image "hexpm/elixir:1.20.2-erlang-29.0.3-debian-trixie-20260713-slim@sha256:6fcd8ea864221b960c1ec418e3b10fa488298ff9e70c9e0f3db18070e610fb8a"
@@ -130,10 +130,10 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
   end
 
   defp copy_dependency_applications(dependency_input, inputs) do
-    inputs.application_sources
+    inputs.application_inputs
     |> Map.delete(inputs.current_application)
-    |> Enum.reduce_while(:ok, fn {app, source}, :ok ->
-      case Artifact.copy_tree(source, Path.join([dependency_input, "apps", app])) do
+    |> Enum.reduce_while(:ok, fn {app, input_set}, :ok ->
+      case SourceInputSet.copy(input_set, Path.join([dependency_input, "apps", app])) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -141,10 +141,10 @@ defmodule Favn.Dev.Build.RunnerReleaseInput do
   end
 
   defp copy_current_application(application_input, inputs) do
-    case Map.fetch(inputs.application_sources, inputs.current_application) do
-      {:ok, source} ->
-        Artifact.copy_tree(
-          source,
+    case Map.fetch(inputs.application_inputs, inputs.current_application) do
+      {:ok, input_set} ->
+        SourceInputSet.copy(
+          input_set,
           Path.join([application_input, "apps", inputs.current_application])
         )
 

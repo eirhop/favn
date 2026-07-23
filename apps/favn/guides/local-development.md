@@ -65,6 +65,38 @@ on env-file values. Existing shell values take precedence. `mix favn.reload`,
 `.env` or `config/runtime.exs` are picked up together. The inspection commands
 start only `:favn_sql_runtime`, not the consumer application or its plugins.
 
+## What Favn Reads And Writes
+
+Runner builds use a fixed project boundary. For the customer application and
+its production Mix dependency closure, Favn selects only `mix.exs`, `mix.lock`,
+`lib/`, `priv/`, and the customer application's `config/runtime.exs`.
+Applications that compile native code may also use the conventional build files
+`Makefile`, `Makefile.win`, `CMakeLists.txt`, `rebar.config`, `rebar.lock`,
+`checksum.exs`, `Cargo.toml`, and `Cargo.lock`, with sources under `c_src/`,
+`native/`, `include/`, `src/`, `3rd_party/`, or `bin/`. Files elsewhere in the
+repository—such as root tests, docs, notebooks, deployment files, local data,
+editor caches, and `_build`—are not runner build inputs. Favn does not scan the
+project's whole `deps/` tree; it reads only dependencies in the production
+closure resolved by Mix.
+
+Git is optional for ordinary projects and dependencies. When Git is available
+and a selected source belongs to a non-ignored checkout, Git ignore rules filter
+files inside those fixed roots. Otherwise Favn applies the same structural
+boundary directly to the filesystem. This means Favn does not require the
+customer project to use Git. The maintainer-only `FAVN_CHECKOUT` workflow still
+requires Git because it must identify the exact framework commit being tested.
+
+Favn validates, fingerprints, and copies the same selected file set. A selected
+symlink, special file, secret-bearing file, or file changed during copying stops
+the build. Unselected files are not inspected. The generated project state and
+build output stay under `.favn`; customer runner images are built locally and
+are not uploaded by Favn. Local lifecycle commands additionally read the
+explicit `.env`, runtime config, and selected Compose file described above, and
+operate only the labeled Favn roles in that Compose deployment.
+
+`mix favn.diagnostics` reports the selected application, file, and byte counts
+and the fixed customer application roots without listing file names or content.
+
 ## Testing A Local Favn Checkout
 
 This is an explicit, non-production workflow for a Favn maintainer testing a

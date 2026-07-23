@@ -2,6 +2,7 @@ defmodule Favn.Dev.MaintainerTest do
   use ExUnit.Case, async: false
 
   alias Favn.Dev.Maintainer
+  alias Favn.Dev.Build.RunnerInputs
   alias Favn.Dev.Maintainer.{Candidate, RunnerBuildCapability, Source}
 
   @revision String.duplicate("a", 40)
@@ -43,6 +44,18 @@ defmodule Favn.Dev.MaintainerTest do
         fn {app, relative} -> {app, Path.join(checkout, relative)} end
       )
 
+    Enum.each(dependency_paths, fn {_app, directory} ->
+      File.mkdir_p!(directory)
+      File.write!(Path.join(directory, "mix.exs"), "fixture\n")
+    end)
+
+    for app <- ~w(favn_orchestrator favn_storage_postgres favn_view) do
+      directory = Path.join(checkout, "apps/#{app}")
+      File.mkdir_p!(Path.join(directory, "lib"))
+      File.write!(Path.join(directory, "mix.exs"), "fixture\n")
+      File.write!(Path.join(directory, "lib/source.ex"), "#{app}\n")
+    end
+
     on_exit(fn -> File.rm_rf(root) end)
 
     %{checkout: checkout, consumer: consumer, dependency_paths: dependency_paths}
@@ -71,6 +84,38 @@ defmodule Favn.Dev.MaintainerTest do
              Source.resolve(
                source_opts(context)
                |> Keyword.put(:maintainer_command_runner, command_runner)
+             )
+  end
+
+  test "resolved capability matches runner verification's canonical checkout inputs", context do
+    git!(context.checkout, ["init", "-q"])
+    git!(context.checkout, ["add", "."])
+
+    git!(context.checkout, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-qm",
+      "initial"
+    ])
+
+    opts = Keyword.delete(source_opts(context), :maintainer_command_runner)
+    assert {:ok, source} = Source.resolve(opts)
+
+    capability = %RunnerBuildCapability{
+      consumer_root: context.consumer,
+      checkout: source.checkout,
+      revision: source.revision,
+      dirty: source.dirty,
+      fingerprint: source.fingerprint
+    }
+
+    assert {:ok, source.revision} ==
+             RunnerInputs.verify_favn_checkout(
+               Path.join(context.checkout, "apps/favn_core"),
+               maintainer_runner_build: capability
              )
   end
 
@@ -224,8 +269,13 @@ defmodule Favn.Dev.MaintainerTest do
     fn "git", args, _opts ->
       case Enum.drop(args, 2) do
         ["rev-parse", "--verify", "HEAD^{commit}"] -> {@revision <> "\n", 0}
-        ["status", "--porcelain", "--untracked-files=normal"] -> {status, 0}
+        ["status", "--porcelain", "--untracked-files=all", "--" | _paths] -> {status, 0}
       end
     end
+  end
+
+  defp git!(root, args) do
+    assert {output, 0} = System.cmd("git", ["-C", root | args], stderr_to_stdout: true)
+    String.trim(output)
   end
 end

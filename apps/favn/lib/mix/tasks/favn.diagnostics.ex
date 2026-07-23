@@ -30,6 +30,7 @@ defmodule Mix.Tasks.Favn.Diagnostics do
     docker = report["docker"] || %{}
     control = report["control_plane"] || %{}
     deployment = report["deployment_contract"] || %{}
+    runner_inputs = report["runner_inputs"] || %{}
     compose = report["compose"] || %{}
 
     IO.puts("Favn local Docker diagnostics")
@@ -54,6 +55,18 @@ defmodule Mix.Tasks.Favn.Diagnostics do
     IO.puts("deployment contract: #{deployment["status"]}")
 
     if deployment["error"], do: IO.puts("deployment error: #{deployment["error"]}")
+
+    if map_size(runner_inputs) > 0 do
+      IO.puts(
+        "runner inputs: #{runner_inputs["application_count"]} applications, " <>
+          "#{runner_inputs["file_count"]} files, #{runner_inputs["total_bytes"]} bytes"
+      )
+
+      IO.puts(
+        "runner project roots: " <>
+          Enum.join(runner_inputs["current_application_roots"] || [], ", ")
+      )
+    end
 
     IO.puts("runtime: #{inspect(report["runtime"], limit: 50, printable_limit: 4_096)}")
   end
