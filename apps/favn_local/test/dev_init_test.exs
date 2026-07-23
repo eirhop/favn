@@ -232,6 +232,7 @@ defmodule Favn.Dev.InitTest do
     assert compose =~ "target: /var/lib/favn/data"
     assert compose =~ "user: ${FAVN_RUNNER_UID}:${FAVN_RUNNER_GID}"
     assert compose =~ ~s(env_file: ["${FAVN_RUNNER_ENV_FILE}"])
+    assert compose =~ "FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}"
 
     assert compose =~
              "../../.favn/compose/postgres-init.sh:/docker-entrypoint-initdb.d/10-favn-runtime-role.sh:ro"
@@ -367,6 +368,35 @@ defmodule Favn.Dev.InitTest do
 
     assert {_output, 0} = System.cmd("sh", [script], env: valid, stderr_to_stdout: true)
 
+    assert {logger_flags, 0} =
+             System.cmd(
+               "sh",
+               ["-c", ~s(. "$1"; printf '%s' "$ERL_AFLAGS"), "sh", script],
+               env: valid,
+               stderr_to_stdout: true
+             )
+
+    assert logger_flags =~ "-kernel logger_level info"
+
+    assert {debug_flags, 0} =
+             System.cmd(
+               "sh",
+               ["-c", ~s(. "$1"; printf '%s' "$ERL_AFLAGS"), "sh", script],
+               env: [{"FAVN_LOG_LEVEL", "debug"} | valid],
+               stderr_to_stdout: true
+             )
+
+    assert debug_flags =~ "-kernel logger_level debug"
+
+    assert {log_output, log_status} =
+             System.cmd("sh", [script],
+               env: [{"FAVN_LOG_LEVEL", "debug -s init stop"} | valid],
+               stderr_to_stdout: true
+             )
+
+    assert log_status != 0
+    assert log_output =~ "invalid FAVN_LOG_LEVEL"
+
     assert {node_output, node_status} =
              System.cmd("sh", [script],
                env:
@@ -484,6 +514,7 @@ defmodule Favn.Dev.InitTest do
     refute compose =~ "io.favn.compose.role: postgres"
     assert compose =~ "FAVN_POSTGRES_ADMIN_DATABASE_URL"
     assert compose =~ "FAVN_POSTGRES_RUNTIME_DATABASE_URL"
+    assert compose =~ "FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}"
     refute compose =~ "internal: true"
   end
 

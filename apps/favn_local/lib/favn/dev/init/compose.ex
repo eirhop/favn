@@ -262,6 +262,7 @@ defmodule Favn.Dev.Init.Compose do
     FAVN_COMPOSE_PROJECT=favn-project
     FAVN_POSTGRES_VOLUME=favn-project-postgres-data
     FAVN_RUNNER_IMAGE=favn-local/favn-project-runner:dev
+    FAVN_LOG_LEVEL=info
     FAVN_RUNNER_ENV_FILE=/absolute/path/to/.favn/compose/runner.env
     FAVN_RUNNER_UID=1000
     FAVN_RUNNER_GID=1000
@@ -306,6 +307,7 @@ defmodule Favn.Dev.Init.Compose do
     FAVN_RUNTIME_INPUT_PIN_KEY_VERSION=1
 
     # Runner identity and private distribution
+    FAVN_LOG_LEVEL=info
     FAVN_WORKSPACE_ID=production
     FAVN_WORKSPACE_NAME=Production
     FAVN_DISTRIBUTION_COOKIE=set-in-secret-store
@@ -448,6 +450,9 @@ defmodule Favn.Dev.Init.Compose do
             source: #{runner_data}
             target: /var/lib/favn/data
         environment:
+          # Keep normal development logs at info. Set FAVN_LOG_LEVEL=debug
+          # temporarily when diagnosing a problem.
+          FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}
           FAVN_RUNNER_NODE: favn_runner@runner.favn.internal
           FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.internal
           FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
@@ -618,6 +623,7 @@ defmodule Favn.Dev.Init.Compose do
         stop_grace_period: 3m
         tmpfs: ["/tmp/favn:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700"]
         environment:
+          FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}
           FAVN_RUNNER_NODE: favn_runner@runner.favn.internal
           FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.internal
           FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}

@@ -69,6 +69,9 @@ The runner selection order is `--runner-image`, then
 `config :favn, :local, runner_image:`, then `FAVN_RUNNER_IMAGE`. When none is
 set, Favn builds the generated customer Dockerfile under an automatic
 project-scoped local image name.
+Generated runner releases default to `info` logging. Set `FAVN_LOG_LEVEL=debug`
+only while diagnosing a problem; the Compose templates pass this setting
+explicitly to the runner.
 The Compose selection order is `mix favn.dev --compose-file PATH`, then
 `config :favn, :local, compose_file: PATH`, then
 `deploy/local/compose.yml`. A successful start records the canonical path for

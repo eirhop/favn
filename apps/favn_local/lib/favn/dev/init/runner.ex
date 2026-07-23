@@ -540,14 +540,21 @@ defmodule Favn.Dev.Init.Runner do
       exit 1
     fi
 
+    FAVN_LOG_LEVEL="${FAVN_LOG_LEVEL:-info}"
+    case "$FAVN_LOG_LEVEL" in
+      debug|info|notice|warning|error|critical|alert|emergency) ;;
+      *) echo "invalid FAVN_LOG_LEVEL" >&2; exit 1 ;;
+    esac
+
     export RELEASE_DISTRIBUTION=name
     export RELEASE_NODE="$FAVN_RUNNER_NODE"
     export RELEASE_COOKIE="$FAVN_DISTRIBUTION_COOKIE"
     export ERL_EPMD_PORT
+    export ERL_AFLAGS="${ERL_AFLAGS:-} -kernel logger_level $FAVN_LOG_LEVEL"
 
     case "${RELEASE_COMMAND:-}" in
       start|start_iex|daemon|daemon_iex)
-        export ERL_AFLAGS="${ERL_AFLAGS:-} -kernel inet_dist_listen_min $FAVN_BEAM_DISTRIBUTION_PORT inet_dist_listen_max $FAVN_BEAM_DISTRIBUTION_PORT"
+        export ERL_AFLAGS="$ERL_AFLAGS -kernel inet_dist_listen_min $FAVN_BEAM_DISTRIBUTION_PORT inet_dist_listen_max $FAVN_BEAM_DISTRIBUTION_PORT"
         ;;
     esac
     """

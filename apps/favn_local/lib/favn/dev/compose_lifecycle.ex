@@ -1293,15 +1293,6 @@ defmodule Favn.Dev.ComposeLifecycle do
   end
 
   defp verify_unchanged_previous_runner(
-         _deployment,
-         nil,
-         _recovery,
-         _maintenance_token,
-         _opts
-       ),
-       do: {:error, :previous_runner_unavailable}
-
-  defp verify_unchanged_previous_runner(
          deployment,
          previous,
          recovery,
@@ -1320,9 +1311,6 @@ defmodule Favn.Dev.ComposeLifecycle do
       :ok
     end
   end
-
-  defp restore_previous_runner(_deployment, nil, _recovery, _maintenance_token, _opts),
-    do: {:error, :previous_runner_unavailable}
 
   defp restore_previous_runner(
          deployment,
@@ -1386,7 +1374,9 @@ defmodule Favn.Dev.ComposeLifecycle do
          opts
        )
        when is_binary(image_reference) and is_map(state) do
-    with :ok <- Favn.Dev.ComposeProject.put_runner_image(deployment, image_reference),
+    project = %{"env_path" => Paths.compose_env_path(deployment.root_dir)}
+
+    with :ok <- ComposeProject.put_runner_image(project, image_reference),
          :ok <- State.write_runner_latest(state, opts) do
       :ok
     end
