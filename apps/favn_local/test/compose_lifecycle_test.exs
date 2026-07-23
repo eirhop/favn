@@ -8,7 +8,6 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     Lock,
     Paths,
     Reset,
-    RunnerImage,
     Secrets,
     State
   }
@@ -20,6 +19,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
   @version "0.5.0-dev"
   @control_build_id String.duplicate("a", 64)
   @control_image_id "sha256:" <> String.duplicate("b", 64)
+  @runner_image "customer/favn-runner:test"
 
   setup do
     root_dir =
@@ -39,6 +39,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
           commands: [],
           services: %{},
           events: [],
+          runner_images: %{},
           project_name: Favn.Dev.ComposeProject.project_name(root_dir)
         }
       end)
@@ -95,7 +96,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
     commands = commands(context.state)
 
-    assert command_index(commands, ["up", "--detach", "--wait", "postgres"]) <
+    assert command_index(commands, ["up", "--no-build", "--detach", "--wait", "postgres"]) <
              operation_index(commands, "migrate")
 
     assert operation_index(commands, "migrate") < operation_index(commands, "grant-runtime")
@@ -105,7 +106,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
              operation_index(commands, "provision-workspace")
 
     assert operation_index(commands, "provision-workspace") <
-             command_index(commands, ["up", "--detach", "--wait", "runner"])
+             command_index(commands, ["up", "--no-build", "--detach", "--wait", "runner"])
 
     assert {:ok, runtime} = State.read_runtime(root_dir: context.root_dir)
     assert runtime["kind"] == "docker_compose"
@@ -114,10 +115,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
     env = File.read!(Paths.compose_env_path(context.root_dir))
 
-    expected_image =
-      RunnerImage.image_reference(runtime["compose_project"], result.runner_release_id)
-
-    assert env =~ "FAVN_RUNNER_IMAGE='#{expected_image}'"
+    assert env =~ "FAVN_RUNNER_IMAGE='#{runner_image_id(result.runner_release_id)}'"
 
     runner_env = File.read!(Paths.compose_runner_env_path(context.root_dir))
     assert runner_env =~ ~s(FAVN_CUSTOM_TOKEN='runtime-secret')
@@ -131,7 +129,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     assert {:ok, _result} = ComposeLifecycle.start(opts)
     before = commands(context.state)
 
-    assert :ok = ComposeLifecycle.reload(opts)
+    assert :ok = ComposeLifecycle.reload(Keyword.delete(opts, :runner_image))
     after_reload = commands(context.state) -- before
 
     refute Enum.any?(after_reload, &command_suffix?(&1, ["stop", "--timeout", "180", "runner"]))
@@ -164,7 +162,10 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
     refute Enum.any?(
              after_reload,
-             &command_suffix?(&1, ["up", "--detach", "--wait", "control-plane"])
+             &command_suffix?(
+               &1,
+               ["up", "--no-build", "--detach", "--wait", "control-plane"]
+             )
            )
   end
 
@@ -211,14 +212,8 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     assert {:ok, restored_latest} = State.read_runner_latest(root_dir: context.root_dir)
     assert restored_latest == initial_latest
 
-    expected_image =
-      RunnerImage.image_reference(
-        Favn.Dev.ComposeProject.project_name(context.root_dir),
-        initial.runner_release_id
-      )
-
     assert File.read!(Paths.compose_env_path(context.root_dir)) =~
-             "FAVN_RUNNER_IMAGE='#{expected_image}'"
+             "FAVN_RUNNER_IMAGE='#{runner_image_id(initial.runner_release_id)}'"
 
     assert :ok = ComposeLifecycle.reload(opts)
     assert {:ok, retried_latest} = State.read_runner_latest(root_dir: context.root_dir)
@@ -253,14 +248,8 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     assert {:ok, restored_latest} = State.read_runner_latest(root_dir: context.root_dir)
     assert restored_latest == initial_latest
 
-    expected_image =
-      RunnerImage.image_reference(
-        Favn.Dev.ComposeProject.project_name(context.root_dir),
-        initial.runner_release_id
-      )
-
     assert File.read!(Paths.compose_env_path(context.root_dir)) =~
-             "FAVN_RUNNER_IMAGE='#{expected_image}'"
+             "FAVN_RUNNER_IMAGE='#{runner_image_id(initial.runner_release_id)}'"
 
     assert :ok = ComposeLifecycle.reload(retry_opts)
     assert {:ok, retried_latest} = State.read_runner_latest(root_dir: context.root_dir)
@@ -325,6 +314,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     assert Enum.any?(commands, fn command ->
              command_suffix?(command, [
                "up",
+               "--no-build",
                "--detach",
                "--wait",
                "--no-deps",
@@ -365,13 +355,9 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     assert {:ok, latest} = State.read_runner_latest(root_dir: context.root_dir)
     assert latest["runner_release_id"] == initial.runner_release_id
 
-    assert {:ok, runtime} = State.read_runtime(root_dir: context.root_dir)
     env = File.read!(Paths.compose_env_path(context.root_dir))
 
-    expected_image =
-      RunnerImage.image_reference(runtime["compose_project"], initial.runner_release_id)
-
-    assert env =~ "FAVN_RUNNER_IMAGE='#{expected_image}'"
+    assert env =~ "FAVN_RUNNER_IMAGE='#{runner_image_id(initial.runner_release_id)}'"
     assert_receive :runner_replacement_finish
     assert {:error, :not_found} = State.read_maintenance(root_dir: context.root_dir)
   end
@@ -385,6 +371,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     failing_runner = fn executable, args, command_opts ->
       if command_suffix?(args, [
            "up",
+           "--no-build",
            "--detach",
            "--wait",
            "--no-deps",
@@ -468,6 +455,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
       force_recreate? =
         command_suffix?(args, [
           "up",
+          "--no-build",
           "--detach",
           "--wait",
           "--no-deps",
@@ -615,8 +603,9 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
     failing_runner = fn executable, args, opts ->
       cond do
-        Enum.take(args, -4) == [
+        Enum.take(args, -5) == [
           "up",
+          "--no-build",
           "--detach",
           "--wait",
           "control-plane"
@@ -776,12 +765,7 @@ defmodule Favn.Dev.ComposeLifecycleTest do
 
     assert {:ok, report} = ComposeLifecycle.diagnostics(default_opts)
     assert report["deployment_contract"]["compose_file"] == "deploy/team.compose.yml"
-    assert report["runner_inputs"] == %{
-             "application_count" => 3,
-             "file_count" => 12,
-             "total_bytes" => 4_096,
-             "current_application_roots" => ["lib", "mix.exs", "priv"]
-           }
+    refute Map.has_key?(report, "runner_inputs")
 
     assert :ok = ComposeLifecycle.logs(default_opts)
 
@@ -847,7 +831,8 @@ defmodule Favn.Dev.ComposeLifecycleTest do
   defp lifecycle_opts(context) do
     context.opts ++
       [
-        runner_build_fun: &write_runner(&1, context.state),
+        runner_image: @runner_image,
+        manifest_build_fun: &write_manifest(&1, &2, context.state),
         readiness_fun: fn _url -> :ok end,
         deploy_fun: fn project, runner, opts ->
           record_event(context.state, {:deploy, runner.runner_release_id})
@@ -884,32 +869,25 @@ defmodule Favn.Dev.ComposeLifecycleTest do
     }
   end
 
-  defp write_runner(opts, state) do
-    descriptor = Agent.get(state, & &1.runner)
+  defp write_manifest(runner_release_id, opts, _state) do
     root_dir = Paths.root_dir(opts)
-    dist_dir = Paths.dist_runner_dir(root_dir, descriptor.runner_release_id)
 
     manifest_version_id =
-      descriptor.runner_release_id
+      runner_release_id
       |> then(&:crypto.hash(:sha256, &1))
       |> Base.encode16(case: :lower)
 
     manifest_dir = Paths.dist_manifest_dir(root_dir, manifest_version_id)
-    descriptor_path = Path.join(dist_dir, "runner-release.json")
 
-    File.mkdir_p!(dist_dir)
     File.mkdir_p!(manifest_dir)
-    {:ok, encoded} = RunnerRelease.encode(descriptor)
-    File.write!(descriptor_path, encoded)
     File.write!(Path.join(manifest_dir, "manifest-index.json"), "{}\n")
 
-    State.write_runner_latest(
+    State.write_manifest_latest(
       %{
         "schema_version" => 1,
-        "runner_release_id" => descriptor.runner_release_id,
-        "dist_dir" => dist_dir,
-        "descriptor_path" => descriptor_path,
-        "manifest_dir" => manifest_dir,
+        "required_runner_release_id" => runner_release_id,
+        "dist_dir" => manifest_dir,
+        "manifest_path" => Path.join(manifest_dir, "manifest-index.json"),
         "manifest_version_id" => manifest_version_id
       },
       opts
@@ -1155,29 +1133,39 @@ defmodule Favn.Dev.ComposeLifecycleTest do
   end
 
   defp image_inspection(reference, state) do
-    if String.starts_with?(reference, "favn-local-runner-") do
-      release_id = reference |> String.split(":") |> List.last()
+    case reference do
+      @runner_image ->
+        release = Agent.get(state, & &1.runner)
+        image_id = runner_image_id(release.runner_release_id)
+        Agent.update(state, &put_in(&1.runner_images[image_id], release))
+        runner_image_inspection(image_id, release)
 
-      %{
-        "Id" => "sha256:" <> release_id,
-        "RepoDigests" => [],
-        "Architecture" => "amd64",
-        "Os" => "linux",
-        "Config" => %{
-          "User" => "10001:10001",
-          "Labels" => %{
-            "io.favn.runner-release-id" => release_id,
-            "io.favn.version" => RunnerRelease.current_favn_version(),
-            "io.favn.runner-contract-version" =>
-              Favn.Manifest.Compatibility.current_runner_contract_version()
-              |> Integer.to_string(),
-            "io.favn.target" => "linux/amd64"
-          }
+      image_id ->
+        case Agent.get(state, &Map.get(&1.runner_images, image_id)) do
+          %RunnerRelease{} = release -> runner_image_inspection(image_id, release)
+          nil -> control_image_inspection(state)
+        end
+    end
+  end
+
+  defp runner_image_inspection(image_id, release) do
+    %{
+      "Id" => image_id,
+      "RepoDigests" => [],
+      "Architecture" => "amd64",
+      "Os" => "linux",
+      "Config" => %{
+        "User" => "10001:10001",
+        "Labels" => %{
+          "io.favn.runner-release-id" => release.runner_release_id,
+          "io.favn.version" => RunnerRelease.current_favn_version(),
+          "io.favn.runner-contract-version" =>
+            Favn.Manifest.Compatibility.current_runner_contract_version()
+            |> Integer.to_string(),
+          "io.favn.target" => "linux/amd64"
         }
       }
-    else
-      control_image_inspection(state)
-    end
+    }
   end
 
   defp control_image_inspection(_state) do
@@ -1202,34 +1190,29 @@ defmodule Favn.Dev.ComposeLifecycleTest do
   end
 
   defp descriptor(module_name) do
+    runner_release_id =
+      "rr_" <>
+        (:crypto.hash(:sha256, module_name)
+         |> Base.encode16(case: :lower))
+
     {:ok, descriptor} =
       RunnerRelease.new(%{
-        schema_version: RunnerRelease.current_schema_version(),
+        runner_release_id: runner_release_id,
         favn_version: RunnerRelease.current_favn_version(),
         runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
         elixir_version: System.version(),
         otp_release: to_string(:erlang.system_info(:otp_release)),
         target: RunnerRelease.current_target(),
-        runtime_modules: [
-          %{
-            module: "Elixir.Fixture.#{module_name}",
-            digest: :crypto.hash(:sha256, module_name) |> Base.encode16(case: :lower)
-          }
-        ],
-        runtime_applications: [],
-        plugins: [],
-        build_profile: "prod",
-        build_metadata: %{
-          "source_inputs" => %{
-            "application_count" => 3,
-            "file_count" => 12,
-            "total_bytes" => 4_096,
-            "current_application_roots" => ["lib", "mix.exs", "priv"]
-          }
-        }
+        build_profile: "prod"
       })
 
     descriptor
+  end
+
+  defp runner_image_id(runner_release_id) do
+    "sha256:" <>
+      (:crypto.hash(:sha256, runner_release_id)
+       |> Base.encode16(case: :lower))
   end
 
   defp commands(state), do: Agent.get(state, & &1.commands)

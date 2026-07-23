@@ -34,7 +34,6 @@ defmodule FavnAuthoring do
   alias Favn.ModuleDiscovery
   alias Favn.Pipeline
   alias Favn.Pipeline.Resolver
-  alias FavnAuthoring.RuntimeRoots
   alias Favn.Triggers.Schedules, as: PipelineSchedules
 
   @type asset_ref :: Favn.Ref.t()
@@ -46,7 +45,7 @@ defmodule FavnAuthoring do
           pipeline_modules: [module()] | :all,
           schedule_modules: [module()] | :all,
           connection_modules: [module()] | :all,
-          runner_release: Favn.RunnerRelease.t()
+          runner_release_id: String.t()
         ]
 
   @doc """
@@ -151,8 +150,8 @@ defmodule FavnAuthoring do
   def get_pipeline(_invalid), do: {:error, :not_pipeline_module}
 
   @doc """
-  Generates a manifest from explicit modules or app config and a verified
-  runner release descriptor.
+  Generates a manifest from explicit modules or app config and an
+  operator-owned runner release ID.
   """
   @spec generate_manifest(manifest_opts()) :: {:ok, Manifest.t()} | {:error, term()}
   def generate_manifest(opts \\ []) when is_list(opts) do
@@ -164,8 +163,8 @@ defmodule FavnAuthoring do
 
   @doc """
   Generates a manifest build output with build-only metadata separated from
-  canonical runtime payload data. The required runner release ID is derived
-  from the supplied descriptor and cannot be supplied independently.
+  canonical runtime payload data. The required runner release ID is supplied
+  explicitly by the user or their CI system.
   """
   @spec build_manifest(manifest_opts()) :: {:ok, Build.t()} | {:error, term()}
   def build_manifest(opts \\ []) when is_list(opts) do
@@ -213,17 +212,6 @@ defmodule FavnAuthoring do
   def prepare_manifest_publication(%Build{} = build, opts \\ []) when is_list(opts) do
     Publication.new(build, opts)
   end
-
-  @doc """
-  Collects the authoring-owned executable roots required by one manifest build.
-
-  Runner build tooling extends these roots with configured plugins, supervised
-  children, and dependency applications before calculating the release identity.
-  """
-  @spec runtime_roots(Build.t()) ::
-          {:ok, Favn.RunnerRelease.RuntimeRoots.t()}
-          | {:error, Favn.RunnerRelease.RuntimeRoots.error()}
-  def runtime_roots(%Build{} = build), do: RuntimeRoots.collect(build)
 
   defp with_default_manifest_modules(opts) when is_list(opts) do
     with {:ok, opts} <-
@@ -337,7 +325,7 @@ defmodule FavnAuthoring do
       opts =
         opts
         |> Keyword.delete(:asset_modules)
-        |> Keyword.delete(:runner_release)
+        |> Keyword.delete(:runner_release_id)
         |> Keyword.put(:planning_index, planning_index)
 
       Planner.plan(target_refs, opts)

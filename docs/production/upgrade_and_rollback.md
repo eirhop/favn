@@ -55,22 +55,22 @@ readiness, and repeat the smoke run. If a migration is not backward compatible,
 restore through the rehearsed PostgreSQL recovery procedure instead of guessing
 or running an unproven downgrade.
 
-The exact container qualification exercises a compatible control-plane upgrade
-and image rollback against preserved PostgreSQL state. The database-specific
-commands and compatibility checks are in
+The representative repository container gate does not exercise this full
+upgrade/rollback drill. Qualify it against the target PostgreSQL service and
+deployment image set before production use. The database-specific commands and
+compatibility checks are in
 [`postgresql_operator_runbook.md`](postgresql_operator_runbook.md).
 
 ## Runner plus manifest upgrade
 
-1. Build the new runner context and aligned manifest release.
-   BuildKit may reuse the stable toolchain/dependency stages, but the executable
-   change still receives a new runner release ID and immutable image.
-2. Build, push, scan, and select the customer runner image by digest.
+1. Choose a new runner release ID and build the customer-owned runner image.
+2. Build the manifest with that same ID, then push, scan, and select the runner
+   image by digest.
 3. Publish the aligned manifest as staged; leave the current manifest active.
 4. Stop admission, allow current work to drain, and replace the runner with the
    new digest.
-5. Require the runner to self-verify and the control plane to report its exact
-   release ID.
+5. Require the runner to report its configured release ID and compatible
+   runtime contract.
 6. Activate the staged manifest version and resume admission.
 7. Execute SQL and Elixir smoke runs.
 
@@ -81,10 +81,12 @@ runner with a manifest that requires the new release, or vice versa.
 
 ## Manifest-only upgrade
 
-Build against the existing verified runner descriptor. A successful
-`mix favn.build.manifest` proves the runner fingerprint is unchanged. Publish the
-new release as staged, activate its exact version, and execute a smoke run. No
-container restart is required.
+Reuse the existing runner release ID only after the operator has established
+that no executable runner input changed. Build with
+`mix favn.build.manifest --runner-release-id ID`, publish the new release as
+staged, activate its exact version, and execute a smoke run. Favn validates the
+ID binding but does not inspect the customer build inputs. No container restart
+is required.
 
 Rollback activates the previous immutable manifest version after the same
 runner-alignment check. Publication and activation remain separate so a staged

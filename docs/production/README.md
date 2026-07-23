@@ -1,10 +1,10 @@
 # Production Readiness
 
 PostgreSQL 18 is Favn's only control-plane database. Storage V2, immutable
-control-plane and runner releases, Docker-first local development, and the
-portable container acceptance contract are implemented. Remaining product work
-includes operator UI completion, managed-provider evidence, and data-plane
-recovery.
+control-plane and customer-owned runner releases, Docker-first local
+development, and a representative container compatibility gate are
+implemented. Remaining product work includes full deployment drills, operator
+UI completion, managed-provider evidence, and data-plane recovery.
 
 ## Current status
 
@@ -12,17 +12,18 @@ recovery.
 | --- | --- | --- |
 | PostgreSQL Storage V2 | Implemented | Prove it against a production-sized restored snapshot and managed-provider PITR. |
 | Workspace isolation, fencing, idempotency, bounded reads | Implemented | Record load, contention, failover, and recovery evidence. |
-| Lifecycle, readiness, bounded drain | Implemented | Container acceptance covers idle/active SIGTERM, bounded cancellation, and recovery. |
+| Lifecycle, readiness, bounded drain | Implemented | Owning-layer tests cover policy; real signal, cancellation, and recovery drills remain target-environment evidence. |
 | Control-plane release image | Implemented | A manual workflow publishes an exact current, green `main` revision to GHCR. Ordinary merges publish nothing. |
-| Customer runner and manifest releases | Implemented | Container acceptance covers execution, alignment, restart, upgrade, and rollback. |
+| Customer runner and manifest releases | Implemented boundary | The representative container gate covers customer build, alignment, health, and exact stop/start reuse; execution and upgrade/rollback drills remain. |
 | Operator UI | Prototype | Finish core flows, audit mutations, and add browser acceptance. |
 | DuckDB/DuckLake data plane | Prototype | Define and verify backup, recovery, cancellation, and failure behavior. |
 | Multi-node control-plane coordination | Implemented foundation | Deferred; package and prove it before claiming application-node failover. |
 
-Favn has deterministic release inputs, runnable OCI artifacts, Docker-first
-installation, and executable upgrade, rotation, and production-container
-qualification. Operators still own the platform network, firewall, reverse
-proxy, database service, and immutable deployment configuration.
+Favn has deterministic control-plane inputs, runnable OCI artifacts,
+Docker-first installation, documented upgrade and rotation procedures, and a
+representative production-container compatibility gate. Operators still own
+the platform network, firewall, reverse proxy, database service, customer
+runner image, and deployment-specific qualification.
 
 Local development now uses the same ownership boundary: install selects only
 the immutable control-plane image, while the customer commits and may extend a

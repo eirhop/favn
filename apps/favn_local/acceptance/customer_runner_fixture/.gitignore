@@ -1,0 +1,5 @@
+/.favn/
+/_build/
+/deps/
+/deploy/
+/mix.lock

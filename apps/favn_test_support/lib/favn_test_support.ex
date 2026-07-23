@@ -8,35 +8,31 @@ defmodule FavnTestSupport do
 
   @doc "Returns a canonical deterministic runner release ID for tests."
   @spec runner_release_id(:primary | :alternate) :: String.t()
-  def runner_release_id(name \\ :primary), do: runner_release(name).runner_release_id
+  def runner_release_id(name \\ :primary) when name in [:primary, :alternate] do
+    digest =
+      :crypto.hash(:sha256, "favn-test-runner-" <> Atom.to_string(name))
+      |> Base.encode16(case: :lower)
+
+    "rr_" <> digest
+  end
 
   @doc """
-  Returns a deterministic, fully validated runner descriptor for tests.
+  Returns a deterministic, validated runner identity for tests.
 
   The constructor is invoked dynamically to preserve `favn_test_support`'s
   dependency-light compile boundary.
   """
   @spec runner_release(:primary | :alternate) :: struct()
   def runner_release(name \\ :primary) when name in [:primary, :alternate] do
-    runtime_modules =
-      case name do
-        :primary -> []
-        :alternate -> [%{module: "Elixir.FavnTestAlternate", digest: String.duplicate("a", 64)}]
-      end
-
     attrs = %{
-      schema_version: apply(Favn.RunnerRelease, :current_schema_version, []),
       favn_version: apply(Favn.RunnerRelease, :current_favn_version, []),
       runner_contract_version:
         apply(Favn.Manifest.Compatibility, :current_runner_contract_version, []),
       elixir_version: System.version(),
       otp_release: :erlang.system_info(:otp_release) |> to_string(),
       target: apply(Favn.RunnerRelease, :current_target, []),
-      runtime_modules: runtime_modules,
-      runtime_applications: [],
-      plugins: [],
-      build_profile: "prod",
-      build_metadata: %{"fixture" => Atom.to_string(name)}
+      runner_release_id: runner_release_id(name),
+      build_profile: "prod"
     }
 
     {:ok, runner_release} = apply(Favn.RunnerRelease, :new, [attrs])

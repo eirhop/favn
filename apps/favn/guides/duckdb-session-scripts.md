@@ -369,8 +369,10 @@ resolved connection, and an idle timeout is not a maximum physical-session age.
 Prefer native providers that refresh credentials themselves. When a deployment
 rotates an environment-resolved value, restart the runner so it resolves the new
 value and closes its old session pool; do not assume the next asset or pool
-checkout will do that. In local development, `mix favn.reload` performs that
-runner restart and reevaluates runtime config.
+checkout will do that. In local development, `mix favn.reload` recreates the
+selected image when an environment value changes. A `config/runtime.exs` code
+change requires a rebuilt image with a new runner release ID and an explicit
+`mix favn.reload --runner-image IMAGE`.
 
 Supported deferred `Favn.RuntimeValue` parameters have a different lifecycle:
 they resolve while Favn builds the session plan. The Azure token ref uses this

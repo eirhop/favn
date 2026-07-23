@@ -22,9 +22,11 @@ and deploys immutable OCI digests.
 | Manifest release | Customer project | `manifest_version_id` plus `required_runner_release_id` |
 | PostgreSQL database | Operator | PostgreSQL 18 service and Favn schema version |
 
-Favn publishes no runner image. `mix favn.build.runner` creates a relocatable OCI
-build context and an aligned manifest release; the customer builds and pushes
-that context with their own registry credentials.
+Favn publishes no runner image and does not create a production runner build
+context. `mix favn.init --target runner` provides an editable starting template;
+the customer owns the Dockerfile, build inputs, native dependencies, registry,
+and CI pipeline. `mix favn.build.manifest --runner-release-id ID` binds a
+manifest to the release ID chosen for that image.
 
 `mix favn.init --target compose --profile single-host` creates a non-secret
 starting template for this topology. The operator owns the resulting file and
@@ -59,7 +61,8 @@ runner node-level trust. Use it only inside the isolated trust zone described in
 ## Deployment order
 
 1. Select the control-plane image by immutable digest.
-2. Build the aligned customer runner and manifest release as described in
+2. Build the customer runner with an operator-chosen release ID, build the
+   manifest with the same ID as described in
    [`runner_releases.md`](runner_releases.md), then select the runner image by
    immutable digest.
 3. Back up PostgreSQL and run the candidate control-plane image's release-safe
@@ -73,8 +76,8 @@ runner node-level trust. Use it only inside the isolated trust zone described in
    [`control_plane_environment.md`](control_plane_environment.md).
 6. Require liveness and readiness before routing operator traffic. Readiness
    proves PostgreSQL schema/grants, lifecycle admission, scheduler health,
-   runner connectivity, the self-verified runner release, and every active
-   manifest's exact runner alignment.
+   runner connectivity, the operator-supplied runner identity, protocol
+   compatibility, and every active manifest's exact runner alignment.
 7. Publish a manifest release, then activate its exact version for the intended
    workspace. Publication may occur while the runner is unavailable; activation
    cannot.

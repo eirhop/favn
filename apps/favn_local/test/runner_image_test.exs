@@ -2,117 +2,95 @@ defmodule Favn.Dev.RunnerImageTest do
   use ExUnit.Case, async: true
 
   alias Favn.Dev.RunnerImage
-  alias Favn.Dev.Maintainer.RunnerBuildCapability
+  alias Favn.Manifest.Compatibility
+  alias Favn.RunnerRelease
 
   setup do
     root_dir =
-      Path.join(System.tmp_dir!(), "favn_runner_image_test_#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "favn_runner_image_test_#{System.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(root_dir)
     on_exit(fn -> File.rm_rf(root_dir) end)
     %{root_dir: root_dir}
   end
 
-  test "runner release build output is redacted while streamed and returned", %{
-    root_dir: root_dir
-  } do
+  test "selects an existing compatible customer image without building it", context do
+    reference = "registry.example/customer-runner:test"
+    release_id = FavnTestSupport.runner_release_id()
     parent = self()
-    secret = "runner-build-secret-value"
-    database_url = "postgresql://build-user:build-password@db.internal/favn"
 
-    command_runner = fn _mix, _args, command_opts ->
-      writer = Keyword.fetch!(command_opts, :output_writer)
-      writer.("building with runner-build-")
-      writer.("secret-value and #{database_url}\n")
-      {"build failed with #{secret} and #{database_url}", 9}
+    runner = fn _docker, ["image", "inspect", ^reference], _opts ->
+      send(parent, :inspected)
+      {Jason.encode!([inspection(release_id)]), 0}
     end
 
-    assert {:error, {:runner_release_build_failed, 9, returned}} =
+    assert {:ok, selected} =
              RunnerImage.ensure(
-               %{"project_name" => "redaction-test"},
-               root_dir: root_dir,
-               env_file_loaded: %{"FAVN_BUILD_CREDENTIAL" => secret},
-               progress_fun: &send(parent, {:streamed, &1}),
-               runner_command_runner: command_runner
+               %{"runner_image" => reference},
+               root_dir: context.root_dir,
+               docker_executable: "/usr/bin/docker",
+               docker_command_runner: runner
              )
 
-    assert_receive {:streamed, streamed}
-    assert streamed =~ "[REDACTED]"
-    assert streamed =~ "[REDACTED_URL]"
-    refute streamed =~ secret
-    refute streamed =~ database_url
-
-    assert returned =~ "[REDACTED]"
-    assert returned =~ "[REDACTED_URL]"
-    refute returned =~ secret
-    refute returned =~ database_url
+    assert_received :inspected
+    assert selected.selected_reference == reference
+    assert selected.image_reference == "sha256:" <> String.duplicate("a", 64)
+    assert selected.image_id == selected.image_reference
+    assert selected.runner_release_id == release_id
+    assert selected.status == :selected
   end
 
-  test "maintainer runner builds receive the scoped internal capability", %{root_dir: root_dir} do
-    parent = self()
-    revision = String.duplicate("a", 40)
+  test "requires the user to select and build the image", context do
+    assert {:error, :runner_image_required} = RunnerImage.ensure(%{})
 
-    capability = %RunnerBuildCapability{
-      consumer_root: root_dir,
-      checkout: Path.join(root_dir, "favn"),
-      revision: revision,
-      dirty: true,
-      fingerprint: String.duplicate("b", 64)
+    assert {:error, {:docker_image_unavailable, "customer:missing"}} =
+             RunnerImage.ensure(
+               %{"runner_image" => "customer:missing"},
+               root_dir: context.root_dir,
+               docker_executable: "/usr/bin/docker",
+               docker_command_runner: fn _docker, _args, _opts -> {"missing", 1} end
+             )
+  end
+
+  test "rejects missing or incompatible runner labels", context do
+    reference = "customer:invalid"
+
+    runner = fn _docker, ["image", "inspect", ^reference], _opts ->
+      invalid =
+        inspection("latest")
+        |> put_in(["Config", "Labels", "io.favn.runner-contract-version"], "999")
+
+      {Jason.encode!([invalid]), 0}
+    end
+
+    assert {:error, {:runner_image_release_id_invalid, "latest"}} =
+             RunnerImage.ensure(
+               %{"runner_image" => reference},
+               root_dir: context.root_dir,
+               docker_executable: "/usr/bin/docker",
+               docker_command_runner: runner
+             )
+  end
+
+  defp inspection(release_id) do
+    %{
+      "Id" => "sha256:" <> String.duplicate("a", 64),
+      "RepoDigests" => [],
+      "Architecture" => "amd64",
+      "Os" => "linux",
+      "Config" => %{
+        "User" => "10001:10001",
+        "Labels" => %{
+          "io.favn.runner-release-id" => release_id,
+          "io.favn.version" => RunnerRelease.current_favn_version(),
+          "io.favn.runner-contract-version" =>
+            Integer.to_string(Compatibility.current_runner_contract_version()),
+          "io.favn.target" => RunnerRelease.current_target()
+        }
+      }
     }
-
-    command_runner = fn _mix, args, command_opts ->
-      send(parent, {:runner_build, args, Keyword.fetch!(command_opts, :env)})
-      {"stopped after capability capture", 9}
-    end
-
-    assert {:error, {:runner_release_build_failed, 9, _output}} =
-             RunnerImage.ensure(
-               %{"project_name" => "maintainer-capability"},
-               root_dir: root_dir,
-               maintainer_runner_build: capability,
-               runner_command_runner: command_runner
-             )
-
-    assert_receive {:runner_build, ["favn.build.runner", "--root-dir", ^root_dir], environment}
-    assert {"MIX_ENV", "prod"} in environment
-
-    assert Enum.any?(environment, fn
-             {"FAVN_INTERNAL_MAINTAINER_RUNNER_BUILD", value} -> value != ""
-             _other -> false
-           end)
-
-    token =
-      environment
-      |> Enum.find_value(fn
-        {"FAVN_INTERNAL_MAINTAINER_RUNNER_BUILD", value} -> value
-        _other -> nil
-      end)
-
-    capability_path =
-      Path.join([root_dir, ".favn", "build", "maintainer-runner-capabilities", token])
-
-    refute File.exists?(capability_path)
-    refute File.exists?(capability_path <> ".consuming")
-  end
-
-  test "ordinary runner builds explicitly unset an inherited maintainer capability", %{
-    root_dir: root_dir
-  } do
-    parent = self()
-
-    command_runner = fn _mix, _args, command_opts ->
-      send(parent, {:environment, Keyword.fetch!(command_opts, :env)})
-      {"stopped after environment capture", 9}
-    end
-
-    assert {:error, {:runner_release_build_failed, 9, _output}} =
-             RunnerImage.ensure(
-               %{"project_name" => "ordinary-capability-scrub"},
-               root_dir: root_dir,
-               runner_command_runner: command_runner
-             )
-
-    assert_receive {:environment, environment}
-    assert {"FAVN_INTERNAL_MAINTAINER_RUNNER_BUILD", nil} in environment
   end
 end

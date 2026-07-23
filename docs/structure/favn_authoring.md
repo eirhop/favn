@@ -3,10 +3,10 @@
 Purpose: internal implementation for authoring DSLs and manifest-facing public
 facade delegation.
 
-Canonical manifest generation requires a verified `%Favn.RunnerRelease{}` and
-derives `required_runner_release_id`; callers cannot supply that ID separately.
+Canonical manifest generation requires an explicit validated
+`runner_release_id` and records it as `required_runner_release_id`.
 Planning-only APIs build a planning index without pretending to create a
-publishable manifest and therefore do not require a runner descriptor.
+publishable manifest and therefore do not require a runner release ID.
 
 Code:
 - `apps/favn_authoring/lib/favn.ex`

@@ -261,54 +261,6 @@ defmodule Favn.Dev.Docker do
     redact_result(result, opts)
   end
 
-  @doc false
-  @spec build_image(String.t(), Path.t(), opts()) :: :ok | {:error, term()}
-  def build_image(tag, context_dir, opts \\ [])
-      when is_binary(tag) and is_binary(context_dir) and is_list(opts) do
-    with {:ok, executable} <- executable(opts) do
-      case command(
-             executable,
-             ["build", "--tag", tag, context_dir],
-             opts,
-             Keyword.get(opts, :docker_build_timeout_ms, 1_200_000)
-           ) do
-        {_output, 0} ->
-          :ok
-
-        {output, status} ->
-          {:error, {:runner_image_build_failed, status, safe_bounded(output, opts)}}
-      end
-    end
-  end
-
-  @doc false
-  @spec remove_images([String.t()], opts()) :: :ok | {:error, term()}
-  def remove_images(references, opts \\ []) when is_list(references) and is_list(opts) do
-    references = Enum.filter(references, &(is_binary(&1) and &1 != "")) |> Enum.uniq()
-
-    case {references, executable(opts)} do
-      {[], _result} ->
-        :ok
-
-      {references, {:ok, executable}} ->
-        case command(
-               executable,
-               ["image", "rm", "--force" | references],
-               opts,
-               Keyword.get(opts, :docker_image_remove_timeout_ms, 120_000)
-             ) do
-          {_output, 0} ->
-            :ok
-
-          {output, status} ->
-            {:error, {:runner_image_remove_failed, status, safe_bounded(output, opts)}}
-        end
-
-      {_references, {:error, _reason} = error} ->
-        error
-    end
-  end
-
   defp inspect_project_role_containers(_executable, _project_name, [], _opts), do: {:ok, []}
 
   defp inspect_project_role_containers(executable, project_name, ids, opts) do

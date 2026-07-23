@@ -39,6 +39,10 @@ defmodule Favn.ControlPlaneQualificationTest do
              "apps/favn_local/lib/favn/dev/compose_lifecycle.ex"
            ) == [:runtime]
 
+    assert ControlPlaneQualification.path_categories("apps/favn_local/lib/favn/dev/init.ex") == [
+             :runtime
+           ]
+
     assert ControlPlaneQualification.path_categories("security/control-plane-grype.yaml") == [
              :scan
            ]
@@ -69,6 +73,7 @@ defmodule Favn.ControlPlaneQualificationTest do
   test "runtime input collection excludes unrelated local commands" do
     assert {:ok, paths} = ControlPlaneQualification.input_paths(@repo_root, :runtime)
     assert "apps/favn_local/lib/favn/dev/compose_lifecycle.ex" in paths
+    assert "apps/favn_local/lib/favn/dev/init.ex" in paths
     assert "apps/favn_duckdb/lib/favn_duckdb.ex" in paths
     refute "apps/favn_local/lib/favn/dev/backfill.ex" in paths
     refute Enum.any?(paths, &String.starts_with?(&1, "apps/favn_duckdb_adbc/"))

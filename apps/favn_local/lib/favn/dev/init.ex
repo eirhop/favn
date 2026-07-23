@@ -7,9 +7,9 @@ defmodule Favn.Dev.Init do
   mode explicitly.
   """
 
-  alias Favn.Dev.Init.{Compose, Sample}
+  alias Favn.Dev.Init.{Compose, Runner, Sample}
 
-  @type result :: Sample.result() | Compose.result()
+  @type result :: Sample.result() | Compose.result() | Runner.result()
 
   @doc "Initializes the selected authoring sample or deployment template."
   @spec run(keyword()) :: {:ok, result()} | {:error, term()}
@@ -17,6 +17,8 @@ defmodule Favn.Dev.Init do
     case Keyword.get(opts, :target) do
       :compose -> Compose.run(opts)
       "compose" -> Compose.run(opts)
+      :runner -> Runner.run(opts)
+      "runner" -> Runner.run(opts)
       nil -> Sample.run(opts)
       target -> {:error, {:unsupported_init_target, target}}
     end

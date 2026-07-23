@@ -149,7 +149,7 @@ defmodule Favn.CoverageDSLTest do
                pipeline_modules: [],
                schedule_modules: [],
                connection_modules: [],
-               runner_release: FavnTestSupport.runner_release()
+               runner_release_id: FavnTestSupport.runner_release_id()
              )
 
     assert [asset] = manifest.assets
@@ -207,7 +207,7 @@ defmodule Favn.CoverageDSLTest do
                pipeline_modules: [],
                schedule_modules: [],
                connection_modules: [connection],
-               runner_release: FavnTestSupport.runner_release()
+               runner_release_id: FavnTestSupport.runner_release_id()
              )
 
     assert [asset] = manifest.assets

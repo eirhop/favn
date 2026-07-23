@@ -21,7 +21,7 @@ defmodule Favn.Dev.ResetTest do
     assert resources.compose_project == ComposeProject.project_name(root_dir)
     assert resources.generated_state == Path.join(root_dir, ".favn")
     assert resources.preserved_data == Path.join(root_dir, ".favn/data")
-    assert resources.runner_images == []
+    refute Map.has_key?(resources, :runner_images)
   end
 
   test "confirmed reset removes generated state but preserves durable data", %{root_dir: root_dir} do

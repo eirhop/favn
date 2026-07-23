@@ -202,7 +202,9 @@ defmodule Favn.AI do
     PostgreSQL requests `https://ossrdbms-aad.database.windows.net` and injects
     the ref as the password in a native DuckDB PostgreSQL secret. Pool idle
     timeout is not a maximum physical-session age. In local development,
-    `mix favn.reload` performs that runner restart and reevaluates runtime config.
+    environment changes can recreate the selected image. A `config/runtime.exs`
+    code change requires a rebuilt image with a new runner release ID and
+    `mix favn.reload --runner-image IMAGE`.
     If the deployment uses ADBC, also read `Favn.SQL.Adapter.DuckDB.ADBC`. Keep
     DuckLake `write_concurrency` conservative because one logical writer may use
     several PostgreSQL backend connections.
@@ -223,7 +225,8 @@ defmodule Favn.AI do
     `config :favn, discovery: [apps: [...], assets: :all, pipelines: :all,
     schedules: :all, connections: :all]`, also read `Favn.ModuleDiscovery`. Read
     `Favn.Manifest.Generator` if you need internal compilation details. For
-    deployment, call `Favn.build_manifest/1` with a verified runner descriptor,
+    deployment, call `Favn.build_manifest/1` with the operator-supplied
+    `runner_release_id`,
     followed by `Favn.prepare_manifest_publication/2`: schema 12 has one compact
     manifest index bound to its exact `required_runner_release_id` and immutable
     content-addressed SQL execution packages, with no inline SQL manifest form
@@ -257,13 +260,12 @@ defmodule Favn.AI do
     `mix favn.rebuild`,
     `mix favn.runs`, `mix favn.status`, `mix favn.logs`, `mix favn.inspect`,
     `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
-    `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
+    `mix favn.stop`, `mix favn.reset`, `mix favn.init --target runner`,
     `mix favn.build.manifest`, `mix favn.publish`, `mix favn.activate`, and
     `mix favn.read_doc`. Dev and reload load the project `.env` before evaluating
-    `config/runtime.exs`; existing shell values take precedence. Runner builds
-    remain immutable but split stable dependency input from mutable application
-    input so BuildKit can reuse dependency compilation; never copy code into a
-    running container.
+    `config/runtime.exs`; existing shell values take precedence. The customer
+    builds the runner image from its repository; Favn validates and selects that
+    image but never copies code into a running container.
     `mix favn.run` resolves asset and pipeline targets from the active manifest.
     Direct asset repair can combine `--dependencies all|none` with
     `--refresh auto|missing|force_selected|force_selected_upstream|force_all`;

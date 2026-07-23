@@ -161,7 +161,7 @@ defmodule FavnOrchestrator.Readiness do
         runner_release_id: release_id,
         favn_version: Map.get(diagnostics, :favn_version),
         runner_contract_version: Map.get(diagnostics, :runner_contract_version),
-        self_verified?: Map.fetch!(diagnostics, :self_verified?)
+        identity_source: Map.fetch!(diagnostics, :identity_source)
       })
     else
       {:error, reason} -> error(:runner_release, reason)

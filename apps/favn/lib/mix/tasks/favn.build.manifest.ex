@@ -2,11 +2,11 @@ defmodule Mix.Tasks.Favn.Build.Manifest do
   use Mix.Task
 
   @requirements ["app.config"]
-  @shortdoc "Builds a manifest release aligned with a runner descriptor"
+  @shortdoc "Builds a manifest release aligned with a user-owned runner"
 
   @moduledoc """
-  Builds `.favn/dist/manifest/<manifest_version_id>` after proving that the
-  current executable fingerprint exactly matches `--runner-release`.
+  Builds `.favn/dist/manifest/<manifest_version_id>` for the immutable
+  `--runner-release-id` selected by the user or CI system.
   """
 
   alias Favn.Dev
@@ -29,9 +29,6 @@ defmodule Mix.Tasks.Favn.Build.Manifest do
         IO.puts("runner release: #{result.required_runner_release_id}")
         IO.puts("dist: #{result.dist_dir}")
 
-      {:error, {:runner_rebuild_required, categories}} ->
-        Mix.raise("runner_rebuild_required: #{Enum.join(categories, ",")}")
-
       {:error, reason} ->
         Mix.raise("manifest build failed: #{format_reason(reason)}")
     end
@@ -41,18 +38,17 @@ defmodule Mix.Tasks.Favn.Build.Manifest do
   def parse_args(args) do
     opts =
       CLIArgs.parse_no_args!("favn.build.manifest", args,
-        runner_release: :string,
+        runner_release_id: :string,
         root_dir: :string
       )
 
-    if present?(opts[:runner_release]) do
+    if present?(opts[:runner_release_id]) do
       opts
     else
-      Mix.raise("missing required option(s): --runner-release")
+      Mix.raise("missing required option(s): --runner-release-id")
     end
   end
 
   defp present?(value), do: is_binary(value) and value != ""
-  defp format_reason({:runner_release_descriptor_invalid, reason}), do: Atom.to_string(reason)
   defp format_reason(reason), do: inspect(reason)
 end

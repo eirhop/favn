@@ -64,7 +64,8 @@ defmodule Mix.Tasks.Favn.Dev do
       CLIArgs.parse_no_args!("favn.dev", args,
         root_dir: :string,
         scheduler: :boolean,
-        compose_file: :string
+        compose_file: :string,
+        runner_image: :string
       )
 
     opts
@@ -133,11 +134,12 @@ defmodule Mix.Tasks.Favn.Dev do
   defp error_message({:unsupported_docker_host, os, architecture}),
     do: "unsupported Docker host #{os}/#{architecture}; Linux amd64 or WSL2 amd64 is required"
 
-  defp error_message({:runner_release_build_failed, status, output}),
-    do: "customer runner release build failed (status=#{inspect(status)}): #{output}"
+  defp error_message(:runner_image_required),
+    do:
+      "customer runner image required; set FAVN_RUNNER_IMAGE, configure :favn, :local, or pass --runner-image"
 
-  defp error_message({:runner_image_build_failed, status, output}),
-    do: "customer runner image build failed (status=#{inspect(status)}): #{output}"
+  defp error_message({:docker_image_unavailable, image}),
+    do: "customer runner image is unavailable: #{image}; build or pull it before mix favn.dev"
 
   defp error_message({:compose_command_failed, phase, status, output}),
     do: "Docker Compose phase #{inspect(phase)} failed (status=#{inspect(status)}): #{output}"

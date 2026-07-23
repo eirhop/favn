@@ -79,10 +79,11 @@ The stable `v1` API should focus on the parts users build authored projects on:
 load `.env` before consumer runtime config and start only the SQL runtime before
 connecting. They do not start the consumer app or configured plugins.
 
-The public deployment command surface is `mix favn.build.runner`,
+The public deployment command surface is `mix favn.init --target runner`,
 `mix favn.build.manifest`, `mix favn.publish`, and `mix favn.activate`. Favn
-publishes the control-plane image; the customer builds and publishes the runner
-image from the generated immutable OCI context.
+publishes the control-plane image; the customer owns and publishes the runner
+image. The generated runner template is editable guidance, not a Favn-owned
+production build.
 The supported production topology and artifact ownership are documented in
 [`deployment_topology.md`](deployment_topology.md) and
 [`runner_releases.md`](runner_releases.md).

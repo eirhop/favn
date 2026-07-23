@@ -29,10 +29,6 @@ defmodule Favn.Dev.Paths do
   def dist_target_dir(root_dir, target) when is_binary(target),
     do: Path.join(dist_dir(root_dir), target)
 
-  @spec dist_runner_dir(Path.t(), String.t()) :: Path.t()
-  def dist_runner_dir(root_dir, build_id),
-    do: Path.join(dist_target_dir(root_dir, "runner"), build_id)
-
   @spec dist_manifest_dir(Path.t(), String.t()) :: Path.t()
   def dist_manifest_dir(root_dir, manifest_version_id),
     do: Path.join(dist_target_dir(root_dir, "manifest"), manifest_version_id)
@@ -87,8 +83,7 @@ defmodule Favn.Dev.Paths do
     do: Path.join(compose_dir(root_dir), "postgres-init.sh")
 
   @spec runner_latest_path(Path.t()) :: Path.t()
-  def runner_latest_path(root_dir),
-    do: Path.join(dist_target_dir(root_dir, "runner"), "latest.json")
+  def runner_latest_path(root_dir), do: Path.join(favn_dir(root_dir), "runner.json")
 
   @spec secrets_path(Path.t()) :: Path.t()
   def secrets_path(root_dir), do: Path.join(favn_dir(root_dir), "secrets.json")

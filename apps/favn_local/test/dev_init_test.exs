@@ -180,7 +180,7 @@ defmodule Favn.Dev.InitTest do
                asset_modules: [raw_orders, order_summary],
                pipeline_modules: [pipeline],
                connection_modules: [connection],
-               runner_release: FavnTestSupport.runner_release()
+               runner_release_id: FavnTestSupport.runner_release_id()
              )
 
     assert length(manifest.assets) == 2
@@ -230,6 +230,124 @@ defmodule Favn.Dev.InitTest do
     assert {:ok, second} = Init.run(root_dir: root_dir, target: :compose)
     assert second.created == []
     assert Enum.sort(second.existing) == Enum.sort(first.created)
+  end
+
+  test "scaffolds an editable customer-owned runner image", %{root_dir: root_dir} do
+    assert {:ok, first} =
+             Init.run(root_dir: root_dir, app: :sample_app, target: :runner)
+
+    assert first.target == :runner
+    assert first.output == "deploy/favn-runner"
+
+    assert Enum.sort(first.created) ==
+             [
+               "deploy/favn-runner/Dockerfile",
+               "deploy/favn-runner/Dockerfile.dockerignore",
+               "deploy/favn-runner/env.sh.eex",
+               "deploy/favn-runner/mix.exs"
+             ]
+
+    dockerfile = File.read!(Path.join(root_dir, "deploy/favn-runner/Dockerfile"))
+    release_project = File.read!(Path.join(root_dir, "deploy/favn-runner/mix.exs"))
+
+    assert dockerfile =~ "ARG FAVN_RUNNER_RELEASE_ID"
+    assert dockerfile =~ "mix release favn_runner"
+    assert dockerfile =~ ~s(io.favn.runner-release-id="$FAVN_RUNNER_RELEASE_ID")
+    assert release_project =~ "{:sample_app, path: \"../..\"}"
+    assert release_project =~ "{:sample_app, :load}"
+    refute release_project =~ "extra_applications: [:sample_app]"
+
+    assert {:ok, second} =
+             Init.run(root_dir: root_dir, app: :sample_app, target: :runner)
+
+    assert second.created == []
+    assert Enum.sort(second.existing) == Enum.sort(first.created)
+  end
+
+  test "runner scaffold validates distribution inputs before constructing VM flags", %{
+    root_dir: root_dir
+  } do
+    assert {:ok, _result} =
+             Init.run(root_dir: root_dir, app: :sample_app, target: :runner)
+
+    script = Path.join(root_dir, "deploy/favn-runner/env.sh.eex")
+
+    valid = [
+      {"FAVN_RUNNER_NODE", "favn_runner@runner.favn.internal"},
+      {"FAVN_DISTRIBUTION_COOKIE", "0123456789abcdefghijklmnopqrstuvwxyzABCD"},
+      {"FAVN_BEAM_DISTRIBUTION_PORT", "9100"},
+      {"ERL_EPMD_PORT", "4369"}
+    ]
+
+    assert {_output, 0} = System.cmd("sh", [script], env: valid, stderr_to_stdout: true)
+
+    assert {node_output, node_status} =
+             System.cmd("sh", [script],
+               env:
+                 List.keystore(
+                   valid,
+                   "FAVN_RUNNER_NODE",
+                   0,
+                   {"FAVN_RUNNER_NODE", "runner@localhost"}
+                 ),
+               stderr_to_stdout: true
+             )
+
+    assert node_status != 0
+    assert node_output =~ "invalid FAVN_RUNNER_NODE"
+
+    assert {port_output, port_status} =
+             System.cmd("sh", [script],
+               env:
+                 List.keystore(
+                   valid,
+                   "FAVN_BEAM_DISTRIBUTION_PORT",
+                   0,
+                   {"FAVN_BEAM_DISTRIBUTION_PORT", "9100 -s init stop"}
+                 ),
+               stderr_to_stdout: true
+             )
+
+    assert port_status != 0
+    assert port_output =~ "invalid FAVN_BEAM_DISTRIBUTION_PORT"
+  end
+
+  test "renders every project-relative path for a comparison output", %{root_dir: root_dir} do
+    assert {:ok, result} =
+             Init.run(
+               root_dir: root_dir,
+               app: :sample_app,
+               target: :runner,
+               output: "ops/images/favn-runner-next"
+             )
+
+    assert result.output == "ops/images/favn-runner-next"
+
+    mix_project = File.read!(Path.join(root_dir, "#{result.output}/mix.exs"))
+    dockerfile = File.read!(Path.join(root_dir, "#{result.output}/Dockerfile"))
+
+    assert mix_project =~ ~s(config_path: "../../../config/config.exs")
+    assert mix_project =~ ~s(lockfile: "../../../mix.lock")
+    assert mix_project =~ ~s({:sample_app, path: "../../.."})
+
+    assert dockerfile =~
+             "WORKDIR /build/${FAVN_PROJECT_ROOT}/ops/images/favn-runner-next"
+
+    assert dockerfile =~ "[ -d ../../../config/runtime ]"
+  end
+
+  test "rejects a runner output directory symlink", %{root_dir: root_dir} do
+    outside = Path.join(System.tmp_dir!(), "favn_runner_output_#{System.unique_integer()}")
+    output = Path.join(root_dir, "deploy/favn-runner")
+    File.mkdir_p!(outside)
+    File.mkdir_p!(Path.dirname(output))
+    File.ln_s!(outside, output)
+    on_exit(fn -> File.rm_rf(outside) end)
+
+    assert {:error, {:unsafe_runner_output, "deploy/favn-runner"}} =
+             Init.run(root_dir: root_dir, app: :sample_app, target: :runner)
+
+    assert File.ls!(outside) == []
   end
 
   test "refuses a modified scaffold without partially writing its companion", %{

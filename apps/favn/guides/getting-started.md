@@ -10,7 +10,7 @@ local commands build and load what they need from your DSL modules.
 - An Elixir Mix project.
 - Linux amd64, or amd64 WSL2 with Linux containers.
 - Docker Engine and Docker Compose v2.
-- Elixir 1.20.2 on Erlang/OTP 29 for runner packaging.
+- Elixir 1.20.2 on Erlang/OTP 29.
 - Pull access to Favn's private GHCR control-plane package.
 - The Favn monorepo or private package source available to your project.
 
@@ -27,9 +27,9 @@ def deps do
 end
 ```
 
-The generated runner context vendors the exact dependency closure and does not
-need this checkout or private Git credentials when built elsewhere. Use your
-approved package version when Favn is published to your package source.
+Your customer-owned Docker build resolves this dependency like any other
+application dependency. Use your approved package version when Favn is
+published to your package source.
 
 If you also want the generated DuckDB sample, add the DuckDB plugin dependency
 when prompted by `mix favn.init` or add it manually from the same checkout.
@@ -75,7 +75,20 @@ This writes `deploy/compose.local.yml` and a secret-free environment example.
 Commit and customize the Compose file as ordinary project configuration. Favn
 will validate its labeled service roles but will not overwrite it.
 
-## 4. Install The Control Plane Image
+## 4. Create And Build The Runner
+
+```bash
+mix favn.init --target runner
+export FAVN_RUNNER_RELEASE_ID="rr_$(openssl rand -hex 32)"
+docker build --platform linux/amd64 \
+  --build-arg FAVN_RUNNER_RELEASE_ID \
+  --file deploy/favn-runner/Dockerfile \
+  --tag customer/favn-runner:dev .
+```
+
+The generated Dockerfile is an editable starting point owned by your project.
+
+## 5. Install The Control Plane Image
 
 ```bash
 mix favn.install
@@ -85,7 +98,7 @@ This verifies Docker Engine, resolves the version-matched prebuilt control-plane
 image to an immutable digest, and writes image-only install state under
 `.favn/`. It does not compile the control plane or own the Compose file.
 
-## 5. Check The Installed Setup
+## 6. Check The Installed Setup
 
 ```bash
 mix favn.doctor
@@ -93,10 +106,10 @@ mix favn.doctor
 
 Fix any reported config, dependency, image, or Compose issue before continuing.
 
-## 6. Start Favn Locally
+## 7. Start Favn Locally
 
 ```bash
-mix favn.dev
+mix favn.dev --runner-image customer/favn-runner:dev
 ```
 
 The command prints local URLs. Open the UI URL, usually:
@@ -107,7 +120,7 @@ http://127.0.0.1:4173
 
 Keep `mix favn.dev` running.
 
-## 7. Run The Sample Pipeline
+## 8. Run The Sample Pipeline
 
 In another terminal:
 
@@ -118,7 +131,7 @@ mix favn.run MyApp.Pipelines.LocalSmoke
 If your generated pipeline has a different module name, use the name printed by
 `mix favn.init`.
 
-## 8. Inspect The Result
+## 9. Inspect The Result
 
 List recent runs:
 
@@ -144,7 +157,7 @@ Run a local read-only SQL query:
 mix favn.query "select * from mart.sales.order_summary" --connection important_lakehouse
 ```
 
-## 9. Stop Favn
+## 10. Stop Favn
 
 ```bash
 mix favn.stop

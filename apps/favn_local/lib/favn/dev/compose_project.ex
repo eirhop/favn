@@ -3,11 +3,11 @@ defmodule Favn.Dev.ComposeProject do
   Owns generated local Compose interpolation state, never deployment YAML.
 
   The selected Compose file is consumer-owned. This module writes only ignored
-  credentials, image selections, bounded runner environment, and the local
+  credentials, selected image references, bounded runner environment, and the local
   PostgreSQL role bootstrap below `.favn/`.
   """
 
-  alias Favn.Dev.{ComposeDeployment, ComposeEnv, Config, Paths}
+  alias Favn.Dev.{ComposeEnv, Config, Paths}
 
   @postgres_image "postgres@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
   @safe_identifier ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\z/
@@ -61,18 +61,17 @@ defmodule Favn.Dev.ComposeProject do
     end
   end
 
-  @doc "Atomically changes only the generated local runner image reference."
-  @spec put_runner_image(project() | ComposeDeployment.t(), String.t()) ::
-          :ok | {:error, term()}
-  def put_runner_image(project, image)
-      when is_map(project) and is_binary(image) and image != "" do
-    replace_env_file(project, "FAVN_RUNNER_IMAGE", image)
-  end
-
   @doc "Atomically changes the scheduler flag consumed on control-plane recreation."
   @spec put_scheduler_enabled(project(), boolean()) :: :ok | {:error, term()}
   def put_scheduler_enabled(project, enabled?) when is_map(project) and is_boolean(enabled?) do
     replace_env_file(project, "FAVN_SCHEDULER_ENABLED", if(enabled?, do: "true", else: "false"))
+  end
+
+  @doc false
+  @spec put_runner_image(project(), String.t()) :: :ok | {:error, term()}
+  def put_runner_image(project, image)
+      when is_map(project) and is_binary(image) and image != "" do
+    replace_env_file(project, "FAVN_RUNNER_IMAGE", image)
   end
 
   @doc "Returns the stable Compose project name for one canonical project root."
@@ -108,6 +107,7 @@ defmodule Favn.Dev.ComposeProject do
       "postgres_init_path" => Paths.compose_postgres_init_path(root_dir),
       "data_path" => Paths.data_dir(root_dir),
       "control_plane_image" => control_plane_reference,
+      "runner_image" => config.runner_image,
       "view_url" => "http://127.0.0.1:#{config.web_port}",
       "orchestrator_url" => "http://127.0.0.1:#{config.orchestrator_port}",
       "view_port" => config.web_port,
@@ -180,7 +180,7 @@ defmodule Favn.Dev.ComposeProject do
     values = [
       {"FAVN_COMPOSE_PROJECT", project["project_name"]},
       {"FAVN_POSTGRES_VOLUME", project["postgres_volume_name"]},
-      {"FAVN_RUNNER_IMAGE", "favn-local-runner-#{project["project_name"]}:unbuilt"},
+      {"FAVN_RUNNER_IMAGE", project["runner_image"] || ""},
       {"FAVN_RUNNER_ENV_FILE", project["runner_env_path"]},
       {"FAVN_RUNNER_DATA_SOURCE", project["data_path"]},
       {"FAVN_RUNNER_UID", Integer.to_string(project["runner_uid"])},

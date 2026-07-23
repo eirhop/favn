@@ -13,7 +13,6 @@ defmodule Favn.Dev.Reset do
     Docker,
     Lock,
     Paths,
-    RunnerImage,
     State
   }
 
@@ -21,8 +20,7 @@ defmodule Favn.Dev.Reset do
           compose_project: String.t(),
           generated_state: Path.t(),
           preserved_data: Path.t(),
-          preserved_compose_file: Path.t() | nil,
-          runner_images: [String.t()]
+          preserved_compose_file: Path.t() | nil
         }
 
   @doc "Returns the exact generated resources reset would remove and preserve."
@@ -35,8 +33,7 @@ defmodule Favn.Dev.Reset do
       compose_project: project_name,
       generated_state: Paths.favn_dir(root_dir),
       preserved_data: Paths.data_dir(root_dir),
-      preserved_compose_file: selected_compose_file(opts),
-      runner_images: runner_images(root_dir, project_name)
+      preserved_compose_file: selected_compose_file(opts)
     }
   end
 
@@ -57,8 +54,6 @@ defmodule Favn.Dev.Reset do
   defp confirmed_reset(resources, opts) do
     with :ok <- ensure_safe_state_root(resources.generated_state),
          :ok <- ensure_known_roles_stopped(opts),
-         {:ok, verified_images} <- verified_runner_images(resources.runner_images, opts),
-         :ok <- Docker.remove_images(verified_images, opts),
          :ok <- remove_generated_state(resources) do
       :ok
     end
@@ -109,31 +104,6 @@ defmodule Favn.Dev.Reset do
     end
   end
 
-  defp verified_runner_images(references, opts) do
-    references
-    |> Enum.reduce_while({:ok, []}, fn reference, {:ok, verified} ->
-      release_id = reference |> String.split(":") |> List.last()
-
-      case Docker.inspect_image(reference, opts) do
-        {:ok, %{labels: %{"io.favn.runner-release-id" => ^release_id}}} ->
-          {:cont, {:ok, [reference | verified]}}
-
-        {:error, {:docker_image_unavailable, ^reference}} ->
-          {:cont, {:ok, verified}}
-
-        {:ok, _forged} ->
-          {:halt, {:error, {:unverified_runner_image, reference}}}
-
-        {:error, _reason} = error ->
-          {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, verified} -> {:ok, Enum.reverse(verified)}
-      {:error, _reason} = error -> error
-    end
-  end
-
   defp selected_compose_file(opts) do
     case State.read_runtime(opts) do
       {:ok, %{"compose_file" => path}} when is_binary(path) ->
@@ -151,23 +121,6 @@ defmodule Favn.Dev.Reset do
             end
         end
     end
-  end
-
-  defp runner_images(root_dir, project_name) do
-    root_dir
-    |> Paths.dist_target_dir("runner")
-    |> Path.join("*/runner-release.json")
-    |> Path.wildcard()
-    |> Enum.flat_map(fn descriptor_path ->
-      with {:ok, bytes} <- File.read(descriptor_path),
-           {:ok, descriptor} <- Favn.RunnerRelease.decode(bytes) do
-        [RunnerImage.image_reference(project_name, descriptor.runner_release_id)]
-      else
-        _invalid -> []
-      end
-    end)
-    |> Enum.uniq()
-    |> Enum.sort()
   end
 
   defp ensure_safe_state_root(favn_dir) do

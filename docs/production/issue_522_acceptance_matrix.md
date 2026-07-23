@@ -1,43 +1,45 @@
 # Issue 522 Production Acceptance Matrix
 
-The executable container suites are:
+The production container gate runs
+`apps/favn_local/test/acceptance/user_owned_runner_container_test.exs` through
+`mix test.container`. Set `FAVN_CONTROL_PLANE_CANDIDATE` to the exact
+repository-built control-plane candidate. The suite requires Docker Engine,
+Compose v2, and PostgreSQL 18.
 
-- `apps/favn_local/test/acceptance/local_compose_acceptance_test.exs`;
-- `apps/favn_local/test/acceptance/local_compose_execution_acceptance_test.exs`.
+The test acts as a customer rather than calling a Favn runner build API:
 
-Run both through `mix test.container` with
-`FAVN_CONTROL_PLANE_CANDIDATE` set to the exact repository-built candidate
-image. The suites require Docker Engine, Compose v2, and PostgreSQL 18. They do
-not substitute in-memory or SQLite persistence.
+1. it scaffolds the editable runner Dockerfile in a fixture project;
+2. it builds that Dockerfile directly with an explicit runner release ID;
+3. it gives the resulting external image to Favn local tooling;
+4. it starts PostgreSQL, the supplied control-plane candidate, and the customer
+   runner as separate containers;
+5. it builds and activates a manifest bound to the same release ID;
+6. it stops and restarts the stack using the same exact runner image ID.
 
 | Contract | Executable evidence |
 | --- | --- |
-| Artifact truthfulness | Builds and starts the minimal control-plane release and customer runner release without source or Mix in either final image. |
-| Compose isolation | Runs PostgreSQL, control plane, and runner on one private project network; only View and private API ports bind to loopback. |
-| Release-safe storage | Runs migrate, grant, schema verification, and workspace provisioning as one-shot control-plane release operations before startup. |
-| Runner alignment | Verifies the baked runner descriptor, publishes an aligned manifest, rejects forged mismatches, and activates only the exact release. |
-| Product execution | Authenticates through View and executes one SQL asset plus one Elixir asset across the control-plane/runner boundary. |
-| Manifest-only update | Publishes and activates a SQL-only change without changing the runner image or restarting either runtime service. |
-| Durable restart | Restarts control plane and runner independently and proves persisted deployment and run state remain usable. |
-| Shutdown honesty | Exercises idle and active SIGTERM, bounded drain, cancellation, abrupt loss, and recovery without invented success. |
-| Manual rotation | Authenticates a browser session, rotates service tokens, runtime-input keys, and the View session key through controlled container recreation, then proves the old browser cookie is rejected. |
-| Upgrade/rollback | Qualifies a compatible control-plane upgrade and rollback against the preserved PostgreSQL authority. |
-| Security | Checks non-root/read-only containers, secret redaction, private BEAM/PostgreSQL ports, immutable image identity, the absence of unexpected applications, and a real LiveView WebSocket upgrade through the pinned Nginx reference proxy. |
+| Customer ownership | The test invokes Docker directly. Product code only inspects and selects the finished customer image. |
+| Artifact truthfulness | The generated customer Dockerfile produces a non-root runner release with immutable Favn compatibility labels. |
+| Control-plane separation | The candidate starts without runner or Mix code in its final image. |
+| Runner isolation | Customer modules are packaged and loaded, while the customer OTP application is not started automatically. Runner plugins remain the explicit service-start boundary. |
+| Compose topology | PostgreSQL, control plane, and runner become healthy as separate services on the project-scoped Compose deployment. |
+| Runner alignment | The inspected image release ID matches the activated manifest and the runtime-reported runner identity. |
+| Immutable reuse | Stop/start reuses the recorded exact runner image ID and manifest version. Compose lifecycle commands use `--no-build`. |
+
+Focused non-container tests cover malformed image metadata, unsupported targets,
+manifest/release mismatch, reload classification, recovery state, Compose role
+validation, and scaffold pre-VM input validation. The acceptance slice also
+builds a manifest from the same operator-owned release ID used by the scaffold.
+
+This gate deliberately does not claim to qualify every possible customer
+Dockerfile, native dependency, plugin, or managed PostgreSQL deployment. Those
+artifacts remain operator-owned. The repository-owned gate proves Favn's public
+boundary against one representative customer build.
 
 Fast CI also runs the warning-grade Credo baseline, whole-umbrella Dialyzer,
-and strict Sobelow scans for both Phoenix boundaries. Dialyzer uses the tracked
-strict-description baseline in `.dialyzer_ignore.exs`, rejects warnings outside
-that baseline, and rejects obsolete filters so existing debt cannot silently
-grow or disappear from the baseline. Dialyxir is pinned to the immutable
-upstream commit that classifies the warning forms emitted by the pinned OTP 29
-toolchain; the immutable pin prevents static-analysis behavior from drifting.
-Intentional Sobelow suppressions remain function-local and are accepted only
-where the surrounding code bounds and validates the value before the flagged
-operation. Pull-request CI reports quick formatting, repository guard, Credo,
-Sobelow, and dependency-audit results independently from fast tests and full
-Dialyzer analysis. All slices still feed the stable required `CI / CI` aggregate,
-and a newer push cancels obsolete work for the same pull request without
-canceling `main` runs.
+strict Sobelow scans for both Phoenix boundaries, dependency audits, and the
+repository test-tag guard. All slices feed the stable required `CI / CI`
+aggregate.
 
 The single control-plane and single runner topology is the first supported
 scale point, not a single-BEAM runtime. Multi-node coordination remains a

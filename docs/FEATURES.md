@@ -20,14 +20,12 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
   modes, stages, retries, replay, and bounded admission. Scheduled window
   selections apply pipeline lookback once; manual and backfill selections stay
   exact, and runs persist requested, expansion, and effective anchors.
-- Packaged runners self-verify their baked descriptor against runtime target and
-  versions, selected BEAM digests, and application version/lock fingerprints in
-  packaged `.app` files before startup. Stamped application and configured
-  plugin inventories must exactly match the descriptor; plugin callbacks may
-  select only descriptor-fingerprinted applications and supervised child roots.
-  Runner
-  work, inspection, results, and events carry the exact verified release id in
-  addition to the manifest and execution-package identity. The server discards
+- Customer-built runners validate and advertise an operator-supplied immutable
+  release ID together with the running Favn version, runner contract, Elixir,
+  OTP, and target. Favn validates compatibility and exact manifest alignment but
+  does not inspect customer source or dependency provenance. Runner work,
+  inspection, results, and events carry the exact release ID in addition to the
+  manifest and execution-package identity. The server discards
   events that do not exactly match stored work and replaces mismatched results
   with bounded errors. Ownership leases and fencing prevent stale executors
   from committing.
@@ -110,8 +108,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - `mix favn.init`, `doctor`, `install`, `dev`, `run`, `backfill`, `rebuild`, `runs`, `logs`,
   `inspect`, `query`, `diagnostics`, `reload`, `status`, `stop`, and `reset` provide
   the private local developer loop against PostgreSQL.
-- `build.runner` creates an immutable, relocatable customer runner OCI context
-  keyed by the deterministic runner release ID; Favn does not push it.
+- `mix favn.init --target runner` creates a non-overwriting editable customer
+  Dockerfile/release template. Customers own runner builds, dependencies,
+  registries, scanning, and deployment.
 - Repository maintainers use `build.control_plane` for the deterministic,
   integrity-checked official image context and optional unpublished local
   candidate. Consumer projects can use `FAVN_CHECKOUT` with
@@ -121,8 +120,8 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   revision to GHCR, records immutable digest aliases, scans the image, and
   attaches provenance and SPDX SBOM attestations. Ordinary merges publish no
   image.
-- `build.manifest` allows manifest-only deployment only after exact runner
-  fingerprint alignment. `publish` stages content-addressed artifacts and
+- `build.manifest --runner-release-id ID` binds content-addressed manifests to
+  an explicit operator-owned runner identity. `publish` stages artifacts and
   `activate` selects one exact version for one workspace using a service token
   read only from the environment.
 - `mix favn.install` resolves the version-matched prebuilt control plane to an
@@ -130,12 +129,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   `mix favn.init --target compose` scaffolds non-overwriting local and
   single-host consumer templates. `mix favn.dev` applies explicit
   command/config/default Compose selection, validates versioned role labels and
-  immutable images, and runs PostgreSQL, the control plane, and the
-  customer-built runner without owning extra consumer services or resources.
-- Customer runner contexts separate stable dependency inputs from mutable
-  application/release inputs. BuildKit can reuse dependency compilation after
-  ordinary customer-code edits while every executable change still produces a
-  new immutable runner image; no live container receives copied source or BEAMs.
+  immutable images, pins the inspected customer runner by local image ID, and
+  runs PostgreSQL, the control plane, and the runner with Compose `--no-build`.
+  It does not own extra consumer services or resources.
 - Local sample DuckDB paths are runtime references with host defaults below
   `.favn/data` and container paths below `/var/lib/favn/data`. Stop and reset
   preserve the consumer Compose file, containers, networks, volumes, services,

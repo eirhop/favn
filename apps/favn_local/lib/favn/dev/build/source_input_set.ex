@@ -39,21 +39,6 @@ defmodule Favn.Dev.Build.SourceInputSet do
         }
 
   @doc false
-  @spec application(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
-  def application(root, opts \\ []) when is_binary(root) and is_list(opts) do
-    specs =
-      [{"mix.exs", :file}] ++
-        Enum.map(@application_files, &{&1, :file}) ++
-        Enum.map(@application_trees, &{&1, :tree}) ++
-        if(Keyword.get(opts, :runtime_config, false),
-          do: [{"config/runtime.exs", :file}],
-          else: []
-        )
-
-    collect(root, specs, ["mix.exs"])
-  end
-
-  @doc false
   @spec maintainer_checkout(Path.t(), [Path.t()]) :: {:ok, t()} | {:error, term()}
   def maintainer_checkout(root, application_dirs)
       when is_binary(root) and is_list(application_dirs) do
@@ -93,45 +78,11 @@ defmodule Favn.Dev.Build.SourceInputSet do
     fingerprint_entries(input_set.entries)
   end
 
-  @doc false
-  @spec runner_identity_fingerprint(t()) :: String.t()
-  def runner_identity_fingerprint(%__MODULE__{} = input_set) do
-    input_set.entries
-    |> Enum.reject(&within_tree?(&1.path, "lib"))
-    |> fingerprint_entries()
-  end
-
   defp fingerprint_entries(entries) do
     entries
     |> Enum.map(&{&1.path, &1.executable, &1.size, &1.sha256})
     |> :erlang.term_to_binary([:deterministic])
     |> sha256()
-  end
-
-  defp within_tree?(path, tree), do: String.starts_with?(path, tree <> "/")
-
-  @doc false
-  @spec summary(t()) :: map()
-  def summary(%__MODULE__{} = input_set) do
-    %{
-      "selection" => Atom.to_string(input_set.selection),
-      "declared_roots" => input_set.declared_roots,
-      "file_count" => length(input_set.entries),
-      "total_bytes" => Enum.sum(Enum.map(input_set.entries, & &1.size))
-    }
-  end
-
-  @doc false
-  @spec copy(t(), Path.t()) :: :ok | {:error, term()}
-  def copy(%__MODULE__{} = input_set, destination) when is_binary(destination) do
-    with :ok <- File.mkdir_p(destination) do
-      Enum.reduce_while(input_set.entries, :ok, fn entry, :ok ->
-        case copy_entry(input_set.root, destination, entry) do
-          :ok -> {:cont, :ok}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-    end
   end
 
   @doc false
@@ -358,20 +309,6 @@ defmodule Favn.Dev.Build.SourceInputSet do
       {:ok, _other} -> {:error, {:source_input_not_regular, relative}}
       {:error, {:symlink_not_supported, _path}} = error -> error
       {:error, reason} -> {:error, {:source_input_read_failed, relative, reason}}
-    end
-  end
-
-  defp copy_entry(root, destination, %Entry{} = expected) do
-    with {:ok, actual, bytes} <- read_entry(root, expected.path),
-         true <- actual == expected,
-         target <- Path.join(destination, expected.path),
-         :ok <- File.mkdir_p(Path.dirname(target)),
-         :ok <- File.write(target, bytes),
-         :ok <- File.chmod(target, if(expected.executable, do: 0o755, else: 0o644)) do
-      :ok
-    else
-      false -> {:error, {:source_input_changed, expected.path}}
-      {:error, _reason} = error -> error
     end
   end
 

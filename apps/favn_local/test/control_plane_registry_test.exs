@@ -237,13 +237,13 @@ defmodule Favn.Dev.ControlPlaneRegistryTest do
       |> List.last()
       |> String.split("  record-main-verification:", parts: 2)
 
-    assert main_job =~ "- name: Run complete pre-publish container acceptance"
+    assert main_job =~ "- name: Run representative pre-publish runtime acceptance"
 
     refute main_job =~
              "- name: Compile production container acceptance tests\n        if: steps.lookup.outputs.exists == 'false'"
 
     refute main_job =~
-             "- name: Run complete pre-publish container acceptance\n        if: steps.lookup.outputs.exists == 'false'"
+             "- name: Run representative pre-publish runtime acceptance\n        if: steps.lookup.outputs.exists == 'false'"
 
     assert main_job =~ "Scan reused official control plane"
     assert main_job =~ "needs.discover.outputs.security_scan_changed == 'true'"

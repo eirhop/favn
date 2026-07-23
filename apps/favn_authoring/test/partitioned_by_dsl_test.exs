@@ -61,7 +61,7 @@ defmodule Favn.PartitionedByDSLTest do
                pipeline_modules: [],
                schedule_modules: [],
                connection_modules: [Connection],
-               runner_release: FavnTestSupport.runner_release()
+               runner_release_id: FavnTestSupport.runner_release_id()
              )
 
     assert [%Favn.Manifest.Asset{partition_spec: %PartitionSpec{} = expected}] = manifest.assets

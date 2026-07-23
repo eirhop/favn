@@ -18,11 +18,13 @@ defmodule Mix.Tasks.Favn.DeploymentTasksTest do
     :ok
   end
 
-  test "build.manifest requires an explicit runner descriptor" do
-    assert_raise Mix.Error, ~r/--runner-release/, fn -> Manifest.parse_args([]) end
+  test "build.manifest requires an explicit runner release ID" do
+    assert_raise Mix.Error, ~r/--runner-release-id/, fn -> Manifest.parse_args([]) end
 
-    assert Manifest.parse_args(["--runner-release", "runner-release.json"]) ==
-             [runner_release: "runner-release.json"]
+    release_id = FavnTestSupport.runner_release_id()
+
+    assert Manifest.parse_args(["--runner-release-id", release_id]) ==
+             [runner_release_id: release_id]
   end
 
   test "maintainer control-plane build exposes only the candidate load switch" do

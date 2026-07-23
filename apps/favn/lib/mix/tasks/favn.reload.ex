@@ -1,21 +1,21 @@
 defmodule Mix.Tasks.Favn.Reload do
   use Mix.Task
 
-  @shortdoc "Rebuilds and reloads manifest into running local stack"
+  @shortdoc "Reloads a manifest and selected customer runner image"
 
   @moduledoc """
-  Rebuilds the customer release contract and applies one Docker Compose change.
+  Builds the manifest for the selected customer runner and applies one Docker
+  Compose change.
 
   Manifest-only and exact-image-reuse changes publish and activate without
   restarting containers. Runner environment changes recreate only the runner
-  with its existing image. Executable changes build a new immutable image using
-  cached dependency layers, then acquire a
-  recoverable maintenance lease, drain admitted work, replace and verify only
-  the runner, and then activate the aligned manifest. Rollback restores
-  admission only after both the previous runner and active manifest are
-  verified.
+  with its existing image. A customer-selected image with a new release ID
+  acquires a recoverable maintenance lease, drains admitted work, replaces and
+  verifies only the runner, and then activates the aligned manifest. Favn never
+  builds that image. Rollback restores admission only after both the previous
+  runner and active manifest are verified.
   The project's `.env` is loaded before the consumer `config/runtime.exs` is
-  evaluated for the production runner build. Reload always revalidates the
+  evaluated for manifest compilation. Reload always revalidates the
   Compose file recorded by the successful start; it cannot switch deployments.
   """
 
@@ -62,7 +62,7 @@ defmodule Mix.Tasks.Favn.Reload do
   @doc false
   @spec parse_args([String.t()]) :: keyword()
   def parse_args(args) when is_list(args),
-    do: CLIArgs.parse_no_args!("favn.reload", args, root_dir: :string)
+    do: CLIArgs.parse_no_args!("favn.reload", args, root_dir: :string, runner_image: :string)
 
   defp run_reload(opts) do
     case Dev.reload(opts) do

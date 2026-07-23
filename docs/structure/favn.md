@@ -23,12 +23,12 @@ Use when changing public APIs, public docs breadcrumbs, public SQL client access
 or public Mix task argument/dispatch behavior, including `mix favn.runs cancel`,
 `mix favn.publish`, `mix favn.activate`, and `mix favn.diagnostics`.
 
-The public deployment surface is deliberately small: `mix favn.build.runner`
-creates the customer-owned runner context and aligned manifest,
-`mix favn.build.manifest` proves a manifest-only change still matches an existing
-runner descriptor, and `mix favn.publish` plus `mix favn.activate` stage and select
-immutable manifest releases. Favn publishes the control-plane image; consumer
-projects do not build or depend on its implementation applications. The operator
+The public deployment surface is deliberately small:
+`mix favn.init --target runner` scaffolds an editable customer-owned image,
+`mix favn.build.manifest --runner-release-id ID` binds a manifest to the
+operator's image identity, and `mix favn.publish` plus `mix favn.activate` stage
+and select immutable manifest releases. Favn publishes the control-plane image;
+consumer projects build the runner from their own repository. The operator
 contract starts at `docs/production/deployment_topology.md`.
 
 For local deployment, `mix favn.init --target compose` scaffolds a

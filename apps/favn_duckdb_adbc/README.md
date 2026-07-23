@@ -64,12 +64,9 @@ example is in `apps/favn/guides/runner-plugins.md`.
 
 ## DuckDB ADBC Installation
 
-This plugin requires a DuckDB ADBC driver to be available on the machine. See
-the DuckDB ADBC client documentation for installation and driver setup details:
-https://duckdb.org/docs/stable/clients/adbc.html
-
-By default the adapter asks `:adbc` for its configured DuckDB driver. Configure
-an explicit driver path when production deployments need a pinned DuckDB build:
+This optional plugin requires the operator to provide a compatible DuckDB ADBC
+driver. Favn does not choose, download, or install it. Configure the path that
+the driver has inside the runner:
 
 ```elixir
 config :favn, :duckdb_adbc,
@@ -77,8 +74,12 @@ config :favn, :duckdb_adbc,
   entrypoint: "duckdb_adbc_init"
 ```
 
-In shell-based smoke tests, the same path can be provided with
-`DUCKDB_ADBC_DRIVER=/opt/duckdb/1.5.2/libduckdb.so`.
+See the
+[DuckDB ADBC configuration guide](../favn/guides/configuration.md#duckdb-adbc-config)
+for local read-only mounts, production image packaging, and the complete
+operator responsibility. See the
+[DuckDB ADBC client documentation](https://duckdb.org/docs/stable/clients/adbc.html)
+for native driver installation.
 
 ## Result Bounds
 

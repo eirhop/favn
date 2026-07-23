@@ -16,7 +16,7 @@ Every rotation is operator-controlled:
 6. remove the old value only after the replacement is proven.
 
 Never pass secrets as command-line arguments or place them in Compose YAML,
-manifests, runner descriptors, image labels, logs, diagnostics, telemetry,
+manifests, runner identities, image labels, logs, diagnostics, telemetry,
 support bundles, or shell history.
 
 ## Service token

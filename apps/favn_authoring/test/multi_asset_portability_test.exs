@@ -1,8 +1,6 @@
 defmodule Favn.MultiAssetPortabilityTest do
   use ExUnit.Case, async: false
 
-  alias Favn.RunnerRelease.BeamDigest
-
   @module Favn.MultiAssetPortableConsumer
 
   test "generated runtime code is independent of the consumer workspace root" do
@@ -29,17 +27,15 @@ defmodule Favn.MultiAssetPortabilityTest do
       File.rm_rf(root_b)
     end)
 
-    beam_a = compile_in(root_a, source)
+    generated_a = compile_in(root_a, source)
     unload(@module)
-    beam_b = compile_in(root_b, source)
+    generated_b = compile_in(root_b, source)
 
-    assert {:ok, digest_a} = BeamDigest.digest(beam_a)
-    assert {:ok, digest_b} = BeamDigest.digest(beam_b)
-    assert digest_a == digest_b
+    assert generated_a == generated_b
 
-    assert {:ok, canonical} = BeamDigest.canonical_binary(beam_b)
-    refute canonical =~ root_a
-    refute canonical =~ root_b
+    encoded = :erlang.term_to_binary(generated_b, [:deterministic])
+    refute encoded =~ root_a
+    refute encoded =~ root_b
   end
 
   defp compile_in(root, source) do
@@ -48,8 +44,8 @@ defmodule Favn.MultiAssetPortabilityTest do
     File.write!(source_path, source)
 
     File.cd!(root, fn ->
-      assert [{@module, beam}] = Code.compile_file(source_path)
-      beam
+      assert [{@module, _beam}] = Code.compile_file(source_path)
+      {apply(@module, :__favn_assets__, []), apply(@module, :__favn_assets_raw__, [])}
     end)
   end
 

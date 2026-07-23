@@ -47,7 +47,7 @@ defmodule Favn.Manifest.Generator do
           schedule_modules: [module()],
           connection_modules: [module()],
           environment: Environment.t(),
-          runner_release: RunnerRelease.t()
+          runner_release_id: String.t()
         ]
 
   @doc """
@@ -57,11 +57,11 @@ defmodule Favn.Manifest.Generator do
   """
   @spec generate(opts()) :: {:ok, Manifest.t()} | {:error, term()}
   def generate(opts \\ []) when is_list(opts) do
-    with {:ok, runner_release} <- fetch_runner_release(opts),
+    with {:ok, runner_release_id} <- fetch_runner_release_id(opts),
          {:ok, environment} <- fetch_environment(opts),
          {:ok, catalog} <-
-           opts |> Keyword.drop([:runner_release, :environment]) |> build_catalog() do
-      manifest_from_catalog(catalog, runner_release.runner_release_id, environment)
+           opts |> Keyword.drop([:runner_release_id, :environment]) |> build_catalog() do
+      manifest_from_catalog(catalog, runner_release_id, environment)
     end
   end
 
@@ -72,14 +72,14 @@ defmodule Favn.Manifest.Generator do
   """
   @spec build(opts()) :: {:ok, Build.t()} | {:error, term()}
   def build(opts \\ []) when is_list(opts) do
-    with {:ok, runner_release} <- fetch_runner_release(opts),
+    with {:ok, runner_release_id} <- fetch_runner_release_id(opts),
          {:ok, environment} <- fetch_environment(opts),
          {:ok, catalog} <-
-           opts |> Keyword.drop([:runner_release, :environment]) |> build_catalog(),
+           opts |> Keyword.drop([:runner_release_id, :environment]) |> build_catalog(),
          {:ok, manifest, execution_packages} <-
            manifest_and_packages_from_catalog(
              catalog,
-             runner_release.runner_release_id,
+             runner_release_id,
              environment
            ) do
       {:ok,
@@ -94,7 +94,7 @@ defmodule Favn.Manifest.Generator do
   Builds the planning index for authored assets without creating a publishable manifest.
 
   Planning does not depend on a runner release. Only canonical manifest generation
-  accepts and binds a runner descriptor.
+  accepts and binds an explicit runner release ID.
   """
   @spec planning_index(catalog_opts()) :: {:ok, PlanningIndex.t()} | {:error, term()}
   def planning_index(opts \\ []) when is_list(opts) do
@@ -238,10 +238,16 @@ defmodule Favn.Manifest.Generator do
     end
   end
 
-  defp fetch_runner_release(opts) do
-    case Keyword.fetch(opts, :runner_release) do
-      {:ok, runner_release} -> RunnerRelease.verify(runner_release)
-      :error -> {:error, :runner_release_required}
+  defp fetch_runner_release_id(opts) do
+    case Keyword.fetch(opts, :runner_release_id) do
+      {:ok, runner_release_id} ->
+        case RunnerRelease.validate_id(runner_release_id) do
+          :ok -> {:ok, runner_release_id}
+          {:error, _reason} -> {:error, {:invalid_runner_release_id, runner_release_id}}
+        end
+
+      :error ->
+        {:error, :runner_release_id_required}
     end
   end
 

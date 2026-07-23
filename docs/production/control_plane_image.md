@@ -33,7 +33,7 @@ credential is required. Authority is scoped by event and job:
 | Event | Expensive work | Registry/repository authority | Required result |
 | --- | --- | --- | --- |
 | Pull request to `main` | Build, inspect, scan, and create an SBOM only when the control-plane identity changes; otherwise run only changed runtime-compatibility or scan qualification | `contents: read`; no package or release writes | Unpublished candidate or exact verified-image evidence |
-| Manual dispatch on the current green `main` revision | Reuse a compatible digest, or build, scan, run complete container qualification, push, attest, and cleanly verify it | `actions: read`, `contents: read`, `packages: write`, `attestations: write`, `id-token: write` | `build-<id>`, `verified-build-<id>`, and `sha-<git-sha>` all name the verified digest |
+| Manual dispatch on the current green `main` revision | Reuse a compatible digest, or build, scan, run representative runtime qualification, push, attest, and cleanly verify it | `actions: read`, `contents: read`, `packages: write`, `attestations: write`, `id-token: write` | `build-<id>`, `verified-build-<id>`, and `sha-<git-sha>` all name the verified digest |
 | Semantic `v<release_version>` tag | Qualify an existing digest; never rebuild | `actions: read`, `contents: write`, `packages: write`, `attestations: read` | Exact main-SHA and verified-build markers match before the immutable version alias and GitHub Release are created |
 
 The image's OCI source label links the GHCR package to `eirhop/favn`.
@@ -175,7 +175,7 @@ builds an unpublished candidate instead of blocking on publication.
 Merging to `main` never publishes an image. A maintainer manually dispatches the
 workflow for the exact current `main` SHA after required CI succeeds. The
 workflow builds or reuses that immutable build, always rescans it, reruns the
-complete container qualification, and rechecks that `main` has not moved before
+representative runtime qualification, and rechecks that `main` has not moved before
 adding aliases. Only after both attestations and clean qualification succeed
 does it add the immutable build, verified-build, and exact-SHA aliases. An
 interruption before either attestation therefore leaves no official build cache
@@ -255,28 +255,25 @@ FAVN_CONTROL_PLANE_CANDIDATE=favn-control-plane-candidate:<build-id> \
   mix test.container
 ```
 
-This dedicated tier runs the final image with PostgreSQL 18 and a canonical
-customer-built runner. It proves release operations, private networking,
-non-root/read-only/capability restrictions, control-plane/runner application
-separation, a real SQL-only manifest update without an image replacement,
-stale-descriptor and forged-release rejection, runner-plus-manifest upgrade and
-rollback, and a compatible control-plane image upgrade from a down-level schema
-fixture. The upgrade drill stops the application, runs preflight, migration,
-runtime grants, and exact schema verification as external release operations,
-then proves login plus SQL/Elixir execution after both upgrade and image
-rollback. The tier also proves restart persistence and sends real
-SIGTERM and abrupt-loss signals to active control-plane and runner containers,
-proving successful in-window drain, deadline cancellation, conservative
-uncertain-outcome recovery, and restored readiness. Service-token overlap and
-removal plus runtime-input key add/switch/inventory/removal run against the same
-stack. The suite also authenticates a browser session, rotates the View session
-key through control-plane recreation, and proves the old cookie is rejected.
-The detailed bounded shutdown/error matrices remain at their owning app layers
-in the ordinary CI test suite.
+This dedicated tier runs the final image with PostgreSQL 18 and a representative
+customer-built runner. It proves that the generated customer Dockerfile builds,
+the control plane and runner remain separate images and applications, the three
+services become healthy, an aligned manifest activates, and stop/start reuses
+the exact runner image and manifest identities. Product code never builds the
+customer image.
+
+Focused owning-app tests cover release operations, compatibility rejection,
+bounded drain policy, conservative recovery, rotation parsing, and reload
+rollback state. The representative container tier does not currently execute
+SQL/Elixir smoke runs, real signal-loss drills, secret rotation, or
+control-plane/runner upgrade and rollback. Those target-environment drills
+remain required before a deployment claims production qualification. The exact
+current evidence is listed in
+[`issue_522_acceptance_matrix.md`](issue_522_acceptance_matrix.md).
 
 Pull requests that change control-plane build inputs build and scan a candidate
 and run this tier without registry write permission. Runner, in-process DuckDB,
-runner-build, and Compose changes use the current verified digest when it exists;
+runner-template, and Compose changes use the current verified digest when it exists;
 when delayed manual publication means it does not, the job builds the same
 unpublished candidate locally. Scan-policy changes rescan the exact verified
 image or the equivalent unpublished candidate. Unrelated local commands, ADBC,

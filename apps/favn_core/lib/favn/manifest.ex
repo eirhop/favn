@@ -5,7 +5,7 @@ defmodule Favn.Manifest do
   `%Favn.Manifest{}` is the stable payload that gets serialized, hashed, and
   pinned into `%Favn.Manifest.Version{}`. Build-only fields such as timestamps
   and diagnostics do not belong here. Every valid current manifest is bound to
-  the exact verified runner descriptor through `required_runner_release_id`;
+  the operator-selected runner build through `required_runner_release_id`;
   that required field participates in canonical serialization and identity.
   """
 
