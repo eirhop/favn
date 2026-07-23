@@ -172,8 +172,8 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprintTest do
       materialization: %{kind: "table"},
       write_semantics: %{mode: "replace"},
       execution_package_hash: String.duplicate("a", 64),
-      manifest_schema_version: 11,
-      runner_contract_version: 11,
+      manifest_schema_version: 12,
+      runner_contract_version: 12,
       descriptor_hash: String.duplicate("b", 64)
     }
   end

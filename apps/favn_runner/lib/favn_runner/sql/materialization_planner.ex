@@ -7,7 +7,7 @@ defmodule FavnRunner.SQL.MaterializationPlanner do
   """
 
   alias Favn.RelationRef
-  alias Favn.SQL.{Client, Params, Render, Session, WritePlan}
+  alias Favn.SQL.{Client, Params, PartitionSpec, Render, Session, WritePlan}
   alias Favn.SQLAsset.{Definition, Error}
   alias Favn.Window.Runtime
 
@@ -30,10 +30,10 @@ defmodule FavnRunner.SQL.MaterializationPlanner do
       ) do
     case render.materialization do
       :view ->
-        {:ok, view_write_plan(render)}
+        with_partition_spec(session, definition, render, column_source, view_write_plan(render))
 
       :table ->
-        {:ok, table_write_plan(render)}
+        with_partition_spec(session, definition, render, column_source, table_write_plan(render))
 
       {:incremental, opts} ->
         build_incremental(session, definition, render, opts, column_source)
@@ -55,12 +55,78 @@ defmodule FavnRunner.SQL.MaterializationPlanner do
            validate_strategy_shape(strategy, opts, session, render, column_source),
          {:ok, _} <-
            maybe_validate_existing_target(strategy, opts, session, render, target_exists?) do
-      if target_exists? do
-        incremental_write_plan(render, strategy, opts, runtime_window)
-      else
-        bootstrap_write_plan(render, strategy, runtime_window)
+      plan_result =
+        if target_exists? do
+          incremental_write_plan(render, strategy, opts, runtime_window)
+        else
+          bootstrap_write_plan(render, strategy, runtime_window)
+        end
+
+      with {:ok, plan} <- plan_result do
+        with_partition_spec(session, definition, render, column_source, plan)
       end
     end
+  end
+
+  defp with_partition_spec(
+         _session,
+         %Definition{partition_spec: nil},
+         _render,
+         _column_source,
+         %WritePlan{} = plan
+       ),
+       do: {:ok, plan}
+
+  defp with_partition_spec(
+         _session,
+         %Definition{partition_spec: %PartitionSpec{}},
+         %Render{} = render,
+         _column_source,
+         %WritePlan{materialization: :view}
+       ) do
+    {:error,
+     %Error{
+       type: :unsupported_materialization,
+       phase: :materialize,
+       asset_ref: render.asset_ref,
+       message: "partitioned_by requires a table materialization"
+     }}
+  end
+
+  defp with_partition_spec(
+         %Session{capabilities: %{physical_partitioning: :supported, transactions: :supported}} =
+           session,
+         %Definition{partition_spec: %PartitionSpec{} = spec},
+         %Render{} = render,
+         column_source,
+         %WritePlan{} = plan
+       ) do
+    with {:ok, columns} <- rendered_columns(session, render, column_source),
+         :ok <-
+           ensure_partition_columns_present(columns, spec, render, source_name(column_source)) do
+      {:ok, %{plan | partition_spec: spec, transactional?: true}}
+    end
+  end
+
+  defp with_partition_spec(
+         %Session{} = session,
+         %Definition{partition_spec: %PartitionSpec{}},
+         %Render{} = render,
+         _column_source,
+         %WritePlan{}
+       ) do
+    {:error,
+     %Error{
+       type: :unsupported_materialization,
+       phase: :materialize,
+       asset_ref: render.asset_ref,
+       message: "partitioned_by requires transactional physical partitioning support",
+       details: %{
+         connection: session.resolved.name,
+         physical_partitioning: session.capabilities.physical_partitioning,
+         transactions: session.capabilities.transactions
+       }
+     }}
   end
 
   defp bootstrap_write_plan(%Render{} = render, strategy, %Runtime{} = window) do
@@ -293,6 +359,35 @@ defmodule FavnRunner.SQL.MaterializationPlanner do
          asset_ref: render.asset_ref,
          message: "incremental delete scope column is missing",
          details: %{window_column: column, source: source, columns: columns}
+       }}
+    end
+  end
+
+  defp ensure_partition_columns_present(
+         columns,
+         %PartitionSpec{keys: keys},
+         %Render{} = render,
+         source
+       )
+       when is_list(columns) do
+    normalized_columns = MapSet.new(columns, &normalize_column_name/1)
+
+    missing =
+      keys
+      |> Enum.map(& &1.column)
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(normalized_columns, &1))
+
+    if missing == [] do
+      :ok
+    else
+      {:error,
+       %Error{
+         type: :materialization_planning_failed,
+         phase: :materialize,
+         asset_ref: render.asset_ref,
+         message: "partitioned_by references columns missing from the materialized query",
+         details: %{partition_columns: missing, source: source, columns: columns}
        }}
     end
   end

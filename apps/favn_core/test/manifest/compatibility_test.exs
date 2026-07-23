@@ -1,7 +1,9 @@
 defmodule Favn.Manifest.CompatibilityTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Manifest.Asset
   alias Favn.Manifest.Compatibility
+  alias Favn.SQL.PartitionSpec
 
   test "accepts current schema and runner contract versions" do
     manifest = current_manifest()
@@ -9,23 +11,23 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects the previous schema version" do
-    manifest = current_manifest(%{schema_version: 9})
+    manifest = current_manifest(%{schema_version: 11})
 
-    assert {:error, {:unsupported_schema_version, 9, 11}} =
+    assert {:error, {:unsupported_schema_version, 11, 12}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported schema version" do
-    manifest = current_manifest(%{schema_version: 12})
+    manifest = current_manifest(%{schema_version: 13})
 
-    assert {:error, {:unsupported_schema_version, 12, 11}} =
+    assert {:error, {:unsupported_schema_version, 13, 12}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported runner contract version" do
-    manifest = current_manifest(%{runner_contract_version: 12})
+    manifest = current_manifest(%{runner_contract_version: 13})
 
-    assert {:error, {:unsupported_runner_contract_version, 12, 11}} =
+    assert {:error, {:unsupported_runner_contract_version, 13, 12}} =
              Compatibility.validate_manifest(manifest)
   end
 
@@ -59,9 +61,9 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects the previous runner contract version" do
-    manifest = current_manifest(%{runner_contract_version: 9})
+    manifest = current_manifest(%{runner_contract_version: 11})
 
-    assert {:error, {:unsupported_runner_contract_version, 9, 11}} =
+    assert {:error, {:unsupported_runner_contract_version, 11, 12}} =
              Compatibility.validate_manifest(manifest)
   end
 
@@ -96,6 +98,59 @@ defmodule Favn.Manifest.CompatibilityTest do
   test "rejects non-map compatibility input with tagged error" do
     assert {:error, {:invalid_manifest_input, :invalid}} =
              Compatibility.validate_manifest(:invalid)
+  end
+
+  test "partition specs require SQL table or incremental assets" do
+    spec = PartitionSpec.normalize!([:tenant_id])
+
+    view = %Asset{
+      ref: {MyApp.View, :asset},
+      module: MyApp.View,
+      name: :asset,
+      type: :sql,
+      materialization: :view,
+      partition_spec: spec,
+      execution_package_hash: String.duplicate("a", 64)
+    }
+
+    assert {:error,
+            {:invalid_manifest_asset, {MyApp.View, :asset},
+             :partition_spec_requires_table_materialization}} =
+             current_manifest(%{assets: [view]})
+             |> Compatibility.validate_manifest()
+
+    elixir_asset = %Asset{
+      ref: {MyApp.ElixirAsset, :asset},
+      module: MyApp.ElixirAsset,
+      name: :asset,
+      type: :elixir,
+      partition_spec: spec
+    }
+
+    assert {:error,
+            {:invalid_manifest_asset, {MyApp.ElixirAsset, :asset},
+             :partition_spec_requires_sql_asset}} =
+             current_manifest(%{assets: [elixir_asset]})
+             |> Compatibility.validate_manifest()
+  end
+
+  test "malformed partition structs produce typed compatibility errors" do
+    asset = %Asset{
+      ref: {MyApp.Table, :asset},
+      module: MyApp.Table,
+      name: :asset,
+      type: :sql,
+      materialization: :table,
+      partition_spec: %PartitionSpec{keys: nil},
+      execution_package_hash: String.duplicate("a", 64)
+    }
+
+    assert {:error,
+            {:invalid_manifest_asset, {MyApp.Table, :asset}, {:invalid_partition_spec, message}}} =
+             current_manifest(%{assets: [asset]})
+             |> Compatibility.validate_manifest()
+
+    assert message =~ "keys must be a non-empty list"
   end
 
   defp current_manifest(overrides \\ %{}) do

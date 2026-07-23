@@ -10,6 +10,7 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
     Capabilities,
     Column,
     Params,
+    PartitionSpec,
     Relation,
     Render,
     Result,
@@ -39,6 +40,47 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
     assert write_plan.select_sql == "SELECT 1 AS id"
     assert write_plan.replace_existing? == true
     assert write_plan.metadata == %{rebuild?: true}
+  end
+
+  test "adds validated partitioning to a transactional write plan" do
+    partition_spec = PartitionSpec.normalize!([:partition_day, {:bucket, 16, :id}])
+
+    assert {:ok, %WritePlan{} = write_plan} =
+             MaterializationPlanner.build(
+               session(transactions: :supported, physical_partitioning: :supported),
+               definition(:table, nil, partition_spec),
+               render(:table)
+             )
+
+    assert write_plan.partition_spec == partition_spec
+    assert write_plan.transactional? == true
+  end
+
+  test "rejects unsupported partitioning and missing partition columns before mutation" do
+    partition_spec = PartitionSpec.normalize!([:partition_day])
+
+    assert {:error, unsupported} =
+             MaterializationPlanner.build(
+               session(),
+               definition(:table, nil, partition_spec),
+               render(:table)
+             )
+
+    assert unsupported.type == :unsupported_materialization
+    assert unsupported.details.physical_partitioning == :unsupported
+
+    assert {:error, missing} =
+             MaterializationPlanner.build(
+               session(
+                 [transactions: :supported, physical_partitioning: :supported],
+                 query_columns: ["id"]
+               ),
+               definition(:table, nil, partition_spec),
+               render(:table)
+             )
+
+    assert missing.type == :materialization_planning_failed
+    assert missing.details.partition_columns == ["partition_day"]
   end
 
   test "uses rehydrated options and the exact planned incremental window" do
@@ -176,7 +218,7 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
     %Render{render(materialization) | runtime: runtime}
   end
 
-  defp definition(materialization, window_spec \\ nil) do
+  defp definition(materialization, window_spec \\ nil, partition_spec \\ nil) do
     template =
       Template.compile!("SELECT 1 AS id",
         file: "test/fixtures/materialization_planner_test.sql",
@@ -194,7 +236,8 @@ defmodule FavnRunner.SQLMaterializationPlannerTest do
       },
       sql: template.source,
       template: template,
-      materialization: materialization
+      materialization: materialization,
+      partition_spec: partition_spec
     }
   end
 

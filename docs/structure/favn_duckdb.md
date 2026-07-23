@@ -26,6 +26,13 @@ sidecar-marker reconciliation, and marker-safe idempotent discard. Candidate and
 retired names are deterministic and identifier-bounded. Activation and discard
 remain owner-exclusive mutation sessions and are never blindly retried.
 
+For DuckLake targets, the adapter implements structured physical partitioning.
+Replacement/bootstrap writes create an empty table, apply `SET PARTITIONED BY`,
+and insert rows transactionally. Existing incremental writes apply the current
+specification immediately before the write; DuckLake treats an unchanged
+specification as a no-op. The adapter verifies that the target catalog type is
+DuckLake. It does not inspect or reconcile historical file layouts.
+
 DuckDB connection config is adapter-owned. The public runtime shape uses
 `open: [...]` for the session database, default-on connection-level pooling for
 runner-local warm session reuse, and native SQL files through

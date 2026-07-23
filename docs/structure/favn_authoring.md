@@ -66,6 +66,11 @@ contract before emitting manifest runtime data. It validates
 phase/policy/condition combinations at compile time; no authoring module is
 loaded to execute a check.
 
+`Favn.SQLAsset.partitioned_by/1` compiles an ordered, structured
+`Favn.SQL.PartitionSpec` independently of incremental `window_column`. It is
+leaf-owned, valid only for table and incremental materializations, and contains
+no raw SQL.
+
 `runtime_inputs ResolverModule` is optional, must appear at most once before
 `query`, and accepts only a compiled module that explicitly implements
 `Favn.SQLAsset.RuntimeInputs` and exports `resolve/1`. Authoring emits one typed

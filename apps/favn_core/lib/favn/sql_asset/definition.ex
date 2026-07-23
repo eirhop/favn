@@ -8,6 +8,7 @@ defmodule Favn.SQLAsset.Definition do
   alias Favn.SQL
   alias Favn.SQL.Check
   alias Favn.SQL.Contract
+  alias Favn.SQL.PartitionSpec
   alias Favn.SQL.SessionRequirements
   alias Favn.SQLAsset.Materialization
 
@@ -18,6 +19,7 @@ defmodule Favn.SQLAsset.Definition do
     :sql,
     :template,
     :materialization,
+    :partition_spec,
     :runtime_inputs,
     :contract,
     session_requirements: %SessionRequirements{version: 1},
@@ -41,6 +43,7 @@ defmodule Favn.SQLAsset.Definition do
           sql: String.t(),
           template: SQL.Template.t(),
           materialization: Materialization.t(),
+          partition_spec: PartitionSpec.t() | nil,
           runtime_inputs: RuntimeInputResolverRef.t() | nil,
           contract: Contract.t() | nil,
           session_requirements: SessionRequirements.t(),

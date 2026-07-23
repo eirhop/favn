@@ -5,6 +5,7 @@ defmodule Favn.Manifest.TargetDescriptorTest do
   alias Favn.Coverage.Spec, as: CoverageSpec
   alias Favn.Manifest.TargetDescriptor
   alias Favn.RelationRef
+  alias Favn.SQL.PartitionSpec
   alias Favn.Window.Spec, as: WindowSpec
 
   @package_hash String.duplicate("a", 64)
@@ -15,8 +16,8 @@ defmodule Favn.Manifest.TargetDescriptorTest do
     descriptor =
       TargetDescriptor.from_asset(asset,
         connection_definitions: connection_definitions(),
-        manifest_schema_version: 11,
-        runner_contract_version: 11
+        manifest_schema_version: 12,
+        runner_contract_version: 12
       )
 
     assert descriptor.target_id == "asset:Elixir.MyApp.Target:asset"
@@ -81,6 +82,20 @@ defmodule Favn.Manifest.TargetDescriptorTest do
     refute original.grain_fingerprint == structural.grain_fingerprint
   end
 
+  test "physical partition declarations do not become target compatibility identity" do
+    asset = persisted_asset(WindowSpec.new!(:day, timezone: "Etc/UTC"))
+
+    partitioned =
+      Map.put(
+        asset,
+        :partition_spec,
+        PartitionSpec.normalize!([:tenant_id, {:month, :occurred_at}])
+      )
+
+    assert TargetDescriptor.from_asset(asset, versions()).descriptor_hash ==
+             TargetDescriptor.from_asset(partitioned, versions()).descriptor_hash
+  end
+
   test "JSON roundtrip preserves the complete canonical descriptor" do
     window = WindowSpec.new!(:day, timezone: "Europe/Oslo")
 
@@ -127,10 +142,10 @@ defmodule Favn.Manifest.TargetDescriptorTest do
 
     assert {:error,
             {:target_descriptor_asset_mismatch, :contract_fingerprint, _actual, _expected}} =
-             TargetDescriptor.validate_asset(contract_descriptor, asset, 11, 11)
+             TargetDescriptor.validate_asset(contract_descriptor, asset, 12, 12)
 
     assert {:error, {:target_descriptor_asset_mismatch, :grain_fingerprint, _actual, _expected}} =
-             TargetDescriptor.validate_asset(grain_descriptor, asset, 11, 11)
+             TargetDescriptor.validate_asset(grain_descriptor, asset, 12, 12)
   end
 
   test "views are not persisted rebuild targets" do
@@ -162,8 +177,8 @@ defmodule Favn.Manifest.TargetDescriptorTest do
   defp versions do
     [
       connection_definitions: connection_definitions(),
-      manifest_schema_version: 11,
-      runner_contract_version: 11
+      manifest_schema_version: 12,
+      runner_contract_version: 12
     ]
   end
 

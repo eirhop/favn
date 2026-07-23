@@ -9,7 +9,11 @@ defmodule Favn.Manifest do
   that required field participates in canonical serialization and identity.
   """
 
+  alias Favn.Manifest.ContractVersions
   alias Favn.Manifest.Graph
+
+  @schema_version ContractVersions.manifest_schema_version()
+  @runner_contract_version ContractVersions.runner_contract_version()
 
   @type t :: %__MODULE__{
           schema_version: pos_integer(),
@@ -22,8 +26,8 @@ defmodule Favn.Manifest do
           metadata: map()
         }
 
-  defstruct schema_version: 11,
-            runner_contract_version: 11,
+  defstruct schema_version: @schema_version,
+            runner_contract_version: @runner_contract_version,
             required_runner_release_id: nil,
             assets: [],
             pipelines: [],

@@ -119,6 +119,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
     GenerationMarkerInitialization,
     GenerationReconciliation,
     GenerationTransaction,
+    PartitionSpec,
     Relation,
     Result,
     WritePlan
@@ -266,6 +267,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
        replace_table: :supported,
        transactions: :supported,
        merge: :unsupported,
+       physical_partitioning: :supported,
        materialized_views: :unsupported,
        relation_comments: :unsupported,
        column_comments: :unsupported,
@@ -570,10 +572,12 @@ defmodule Favn.SQL.Adapter.DuckDB do
     target = qualified_relation(plan.target)
 
     statements =
-      case plan.materialization do
-        :view -> [create_view_statement(target, plan)]
-        :table -> [create_table_statement(target, plan)]
-        :incremental -> incremental_statements(target, plan)
+      case {plan.materialization, plan.partition_spec} do
+        {:table, %PartitionSpec{}} -> partitioned_replacement_statements(target, plan)
+        {:incremental, %PartitionSpec{}} -> partitioned_incremental_statements(target, plan)
+        {:view, nil} -> [create_view_statement(target, plan)]
+        {:table, nil} -> [create_table_statement(target, plan)]
+        {:incremental, nil} -> incremental_statements(target, plan)
       end
 
     {:ok,
@@ -720,6 +724,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
     rows = appender_rows(plan, opts)
 
     cond do
+      not is_nil(plan.partition_spec) and rows != [] ->
+        partitioned_bulk_write_error(conn, plan, :appender)
+
       plan.materialization == :table and rows != [] and is_binary(plan.target.catalog) ->
         {:error,
          %Error{
@@ -771,7 +778,8 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp run_materialization_statements(%Conn{} = conn, %WritePlan{} = plan, opts) do
     params = Keyword.get(opts, :params, [])
 
-    with {:ok, statements} <- materialization_statements(plan, %Capabilities{}, opts) do
+    with :ok <- ensure_ducklake_target(conn, plan),
+         {:ok, statements} <- materialization_statements(plan, %Capabilities{}, opts) do
       schema_setup_count = length(schema_setup_statements(plan))
 
       statements
@@ -799,6 +807,53 @@ defmodule Favn.SQL.Adapter.DuckDB do
           {:error, error}
       end
     end
+  end
+
+  defp ensure_ducklake_target(_conn, %WritePlan{partition_spec: nil}), do: :ok
+
+  defp ensure_ducklake_target(%Conn{} = conn, %WritePlan{} = plan) do
+    catalog = plan.target.catalog
+
+    catalog_filter =
+      if is_binary(catalog) and catalog != "" do
+        ["database_name = ", quote_literal(catalog)]
+      else
+        "database_name = current_database()"
+      end
+
+    sql = ["SELECT type FROM duckdb_databases() WHERE ", catalog_filter, " LIMIT 1"]
+
+    with {:ok, %Result{rows: [row | _]}} <- query(conn, sql, []),
+         type when is_binary(type) <- Map.get(row, "type"),
+         true <- String.downcase(type) == "ducklake" do
+      :ok
+    else
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      _other ->
+        {:error,
+         %Error{
+           type: :unsupported_capability,
+           message: "partitioned_by is supported only for DuckLake target catalogs",
+           retryable?: false,
+           operation: :materialize,
+           connection: conn.connection,
+           details: %{catalog: catalog, capability: :physical_partitioning}
+         }}
+    end
+  end
+
+  defp partitioned_bulk_write_error(%Conn{} = conn, %WritePlan{} = plan, mode) do
+    {:error,
+     %Error{
+       type: :unsupported_capability,
+       message: "partitioned_by is not supported by the DuckDB bulk-write path",
+       retryable?: false,
+       operation: :materialize,
+       connection: conn.connection,
+       details: %{mode: mode, catalog: plan.target.catalog}
+     }}
   end
 
   defp appender_materialize(%Conn{} = conn, %WritePlan{} = plan, rows) do
@@ -1075,6 +1130,60 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp create_table_statement(target, %WritePlan{select_sql: sql}),
     do: ["CREATE TABLE ", target, " AS ", sql]
 
+  defp partitioned_replacement_statements(target, %WritePlan{} = plan) do
+    [
+      create_table_statement(target, empty_table_plan(plan)),
+      set_partitioned_by_statement(target, plan.partition_spec),
+      ["INSERT INTO ", target, " ", plan.select_sql]
+    ]
+  end
+
+  defp partitioned_incremental_statements(target, %WritePlan{mode: :bootstrap} = plan),
+    do: partitioned_replacement_statements(target, plan)
+
+  defp partitioned_incremental_statements(target, %WritePlan{} = plan) do
+    [
+      set_partitioned_by_statement(target, plan.partition_spec)
+      | incremental_statements(target, plan)
+    ]
+  end
+
+  defp empty_table_plan(%WritePlan{} = plan) do
+    %WritePlan{
+      plan
+      | select_sql: [
+          "SELECT * FROM (",
+          plan.select_sql,
+          ") AS favn_partition_source LIMIT 0"
+        ]
+    }
+  end
+
+  defp set_partitioned_by_statement(target, %PartitionSpec{keys: keys}) do
+    [
+      "ALTER TABLE ",
+      target,
+      " SET PARTITIONED BY (",
+      Enum.intersperse(Enum.map(keys, &partition_key_sql/1), ", "),
+      ")"
+    ]
+  end
+
+  defp partition_key_sql(%{transform: :identity, column: column}), do: quote_ident(column)
+
+  defp partition_key_sql(%{transform: transform, column: column})
+       when transform in [:year, :month, :day, :hour] do
+    [Atom.to_string(transform), "(", quote_ident(column), ")"]
+  end
+
+  defp partition_key_sql(%{
+         transform: :bucket,
+         column: column,
+         bucket_count: bucket_count
+       }) do
+    ["bucket(", Integer.to_string(bucket_count), ", ", quote_ident(column), ")"]
+  end
+
   defp incremental_statements(target, %WritePlan{mode: :bootstrap} = plan),
     do: [create_table_statement(target, plan)]
 
@@ -1113,14 +1222,19 @@ defmodule Favn.SQL.Adapter.DuckDB do
          statement,
          params
        ) do
-    if IO.iodata_to_binary(statement) |> String.starts_with?("DELETE FROM") do
-      []
-    else
-      params
-    end
+    statement = IO.iodata_to_binary(statement)
+
+    if String.starts_with?(statement, "DELETE FROM") or
+         String.starts_with?(statement, "ALTER TABLE"),
+       do: [],
+       else: params
   end
 
-  defp statement_params(_plan, _statement, params), do: params
+  defp statement_params(_plan, statement, params) do
+    if IO.iodata_to_binary(statement) |> String.starts_with?("ALTER TABLE"),
+      do: [],
+      else: params
+  end
 
   defp materialization_statement_params(_plan, _statement, _params, index, schema_setup_count)
        when index < schema_setup_count,

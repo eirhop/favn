@@ -16,6 +16,7 @@ defmodule Favn.DSL.AssetDeclarations do
     :freshness,
     :materialized,
     :meta,
+    :partitioned_by,
     :relation,
     :resources,
     :rest,

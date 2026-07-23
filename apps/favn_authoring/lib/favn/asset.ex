@@ -462,6 +462,7 @@ defmodule Favn.Asset do
           execution_pool: atom() | nil,
           relation: RelationRef.t() | nil,
           materialization: Favn.SQLAsset.Materialization.t() | nil,
+          partition_spec: Favn.SQL.PartitionSpec.t() | nil,
           relation_inputs: [RelationInput.t()],
           runtime_config: Requirements.declarations(),
           session_requirements: SessionRequirements.t(),
@@ -494,6 +495,7 @@ defmodule Favn.Asset do
     execution_pool: nil,
     relation: nil,
     materialization: nil,
+    partition_spec: nil,
     relation_inputs: [],
     runtime_config: %{},
     session_requirements: %SessionRequirements{version: 1},
@@ -527,8 +529,20 @@ defmodule Favn.Asset do
     validate_session_requirements!(asset.session_requirements)
     validate_type!(asset.type)
     validate_materialization!(asset.materialization)
+    validate_partition_spec!(asset.partition_spec)
 
     %{asset | meta: meta, settings: settings}
+  end
+
+  defp validate_partition_spec!(nil), do: :ok
+
+  defp validate_partition_spec!(%Favn.SQL.PartitionSpec{} = spec) do
+    _ = Favn.SQL.PartitionSpec.normalize!(spec)
+    :ok
+  end
+
+  defp validate_partition_spec!(value) do
+    raise ArgumentError, "invalid asset partition specification: #{inspect(value)}"
   end
 
   @doc """

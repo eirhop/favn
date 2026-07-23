@@ -15,7 +15,7 @@ defmodule Favn.Manifest.SerializerTest do
     assert {:ok, encoded} = Serializer.encode_manifest(manifest)
 
     assert encoded ==
-             ~s|{"a":2,"required_runner_release_id":"#{release_id}","runner_contract_version":11,"schema_version":11,"z":1}|
+             ~s|{"a":2,"required_runner_release_id":"#{release_id}","runner_contract_version":12,"schema_version":12,"z":1}|
   end
 
   test "generic canonical encoding preserves non-manifest build metadata" do
@@ -58,7 +58,7 @@ defmodule Favn.Manifest.SerializerTest do
 
     assert {:ok, encoded} = Serializer.encode_manifest(build)
     assert {:ok, decoded} = Serializer.decode_manifest(encoded)
-    assert decoded["schema_version"] == 11
+    assert decoded["schema_version"] == 12
     assert decoded["required_runner_release_id"] == FavnTestSupport.runner_release_id()
     refute Map.has_key?(decoded, "diagnostics")
   end

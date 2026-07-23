@@ -46,6 +46,7 @@ defmodule Favn.SQLAsset do
         freshness [window_success: true]
         depends MyApp.Lakehouse.Raw.Sales.Orders
         materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
+        partitioned_by [:tenant_id, {:month, :order_date}]
 
         query do
           ~SQL\"""
@@ -65,8 +66,9 @@ defmodule Favn.SQLAsset do
     namespace
   - attach `@doc` to `query`; Favn transfers it to the generated `asset/1`
   - declare `settings`, `meta`, `depends`, `window`, `coverage`, `freshness`, `retry`,
-    `materialized`, optional `relation`, optional `resources`, optional
-    `runtime_config`, and optional `runtime_inputs` before `query`
+    `materialized`, optional `partitioned_by`, optional `relation`, optional
+    `resources`, optional `runtime_config`, and optional `runtime_inputs` before
+    `query`
   - use `~SQL` for inline SQL bodies
   - use `query file: "..."` for asset-local file-backed SQL loaded at compile
     time
@@ -84,6 +86,8 @@ defmodule Favn.SQLAsset do
   - `relation`: optional owned relation declaration
   - `materialized`: SQL materialization strategy, required either locally or by
     namespace inheritance
+  - `partitioned_by`: optional structured physical partition keys for a
+    DuckLake table
   - `resources`: optional list of named physical-session resources
   - `runtime_config`: optional runtime-configuration bundle or inline requirements
   - `runtime_inputs`: optional module implementing `Favn.SQLAsset.RuntimeInputs`
@@ -154,6 +158,34 @@ defmodule Favn.SQLAsset do
   - `:append` does not accept `:window_column`
   - `:delete_insert` requires `:window_column`
   - `:merge`, `:replace`, and `unique_key` are not currently supported
+
+  ## DuckLake physical partitioning
+
+  `partitioned_by` is separate from incremental replacement. A
+  `window_column` limits which rows `:delete_insert` replaces; it does not
+  choose the table's physical file layout.
+
+      materialized {:incremental,
+                    strategy: :delete_insert,
+                    window_column: :partition_month}
+
+      partitioned_by [
+        :tenant_id,
+        {:year, :occurred_at},
+        {:month, :occurred_at},
+        {:bucket, 32, :account_id}
+      ]
+
+  Identity columns and the structured `:year`, `:month`, `:day`, `:hour`, and
+  `:bucket` transforms are supported. Favn validates the declaration and query
+  column references, rejects unsupported adapters, and applies the current
+  specification before DuckLake writes. A new table is created empty,
+  partitioned, and then populated in one transaction.
+
+  DuckLake applies a changed specification only to newly written data. Favn
+  does not track old partition layouts or imply that historical files were
+  rewritten. Run a full Favn rebuild when the whole table should use the new
+  layout.
 
   ## Output Contracts
 
@@ -458,6 +490,7 @@ defmodule Favn.SQLAsset do
   alias Favn.SQL.Contract
   alias Favn.SQL.Contract.{Composition, Fragment, Param}
   alias Favn.SQL.Definition, as: SQLDefinition
+  alias Favn.SQL.PartitionSpec
   alias Favn.SQL.SessionRequirements
   alias Favn.SQL.Source
   alias Favn.SQL.Template
@@ -476,6 +509,7 @@ defmodule Favn.SQLAsset do
 
       Favn.DSL.AssetDeclarations.register!(__MODULE__, [
         :materialized,
+        :partitioned_by,
         :runtime_inputs,
         :resources
       ])
@@ -514,6 +548,7 @@ defmodule Favn.SQLAsset do
           contract: 1,
           materialized: 1,
           param: 1,
+          partitioned_by: 1,
           query: 1,
           resources: 1,
           runtime_inputs: 1
@@ -527,6 +562,19 @@ defmodule Favn.SQLAsset do
   defmacro materialized(value) do
     quote do
       Favn.DSL.AssetDeclarations.put(__MODULE__, :materialized, unquote(value))
+    end
+  end
+
+  @doc """
+  Declares ordered physical partition keys for a DuckLake table.
+
+  Identity keys are atoms or strings. Structured transforms use
+  `{:year, column}`, `{:month, column}`, `{:day, column}`,
+  `{:hour, column}`, or `{:bucket, bucket_count, column}`.
+  """
+  defmacro partitioned_by(keys) do
+    quote do
+      Favn.DSL.AssetDeclarations.put(__MODULE__, :partitioned_by, unquote(keys))
     end
   end
 
@@ -859,6 +907,7 @@ defmodule Favn.SQLAsset do
           :relation,
           :runtime_config,
           :materialized,
+          :partitioned_by,
           :runtime_inputs,
           :resources
         ],
@@ -934,6 +983,7 @@ defmodule Favn.SQLAsset do
       relation: AssetDeclarations.take(env.module, :relation),
       runtime_config: AssetDeclarations.take(env.module, :runtime_config),
       materialized: AssetDeclarations.take(env.module, :materialized),
+      partitioned_by: AssetDeclarations.take(env.module, :partitioned_by),
       runtime_inputs: AssetDeclarations.take(env.module, :runtime_inputs),
       resources: resources
     }
@@ -1022,6 +1072,11 @@ defmodule Favn.SQLAsset do
       |> Namespace.effective_declarations(:materialized, raw_definition.materialized)
       |> normalize_materialized!(window_spec, raw_definition)
 
+    partition_spec =
+      raw_definition
+      |> Map.get(:partitioned_by, [])
+      |> normalize_partition_spec!(materialization, raw_definition)
+
     runtime_inputs =
       namespace
       |> Namespace.effective_declarations(
@@ -1098,6 +1153,7 @@ defmodule Favn.SQLAsset do
       execution_pool: execution_pool,
       relation: relation,
       materialization: materialization,
+      partition_spec: partition_spec,
       runtime_config: runtime_config
     }
 
@@ -1113,6 +1169,7 @@ defmodule Favn.SQLAsset do
       sql_definitions: Map.values(known_definitions),
       checks: checks,
       materialization: materialization,
+      partition_spec: partition_spec,
       raw_asset: raw_definition
     }
 
@@ -1548,6 +1605,33 @@ defmodule Favn.SQLAsset do
   defp validate_incremental_materialized!(materialization, _window_spec, _raw_definition),
     do: materialization
 
+  defp normalize_partition_spec!([], _materialization, _raw_definition), do: nil
+
+  defp normalize_partition_spec!([keys], :view, raw_definition) do
+    _ = keys
+
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "partitioned_by is valid only for table and incremental materializations"
+    )
+  end
+
+  defp normalize_partition_spec!([keys], _materialization, raw_definition) do
+    PartitionSpec.normalize!(keys)
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
+  end
+
+  defp normalize_partition_spec!([_first, _second | _rest], _materialization, raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "multiple partitioned_by declarations are not allowed"
+    )
+  end
+
   defp normalize_runtime_inputs!([], _raw_definition), do: nil
   defp normalize_runtime_inputs!([nil], _raw_definition), do: nil
 
@@ -1709,6 +1793,7 @@ defmodule Favn.SQLAsset do
           :relation,
           :runtime_config,
           :materialized,
+          :partitioned_by,
           :runtime_inputs,
           :resources
         ],
