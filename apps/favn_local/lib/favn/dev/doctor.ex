@@ -340,7 +340,8 @@ defmodule Favn.Dev.Doctor do
     connection = relation_field(relation, :connection)
     catalog = relation_field(relation, :catalog)
 
-    if is_atom(connection) and (is_binary(catalog) or is_nil(catalog)) do
+    if is_atom(connection) and not is_nil(connection) and
+         (is_binary(catalog) or is_nil(catalog)) do
       [%{connection: connection, catalog: catalog}]
     else
       []

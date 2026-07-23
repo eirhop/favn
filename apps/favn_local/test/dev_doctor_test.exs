@@ -119,12 +119,13 @@ defmodule Favn.Dev.DoctorTest do
     assert Enum.any?(checks, &(&1.name == "manifest" and &1.status == :error))
   end
 
-  test "validates catalog-qualified asset relations against adapter catalogs", %{
+  test "validates catalog-qualified relations and ignores assets without owned relations", %{
     root_dir: root_dir
   } do
     suffix = System.unique_integer([:positive])
     base = Module.concat([Favn, Dev, DoctorTest, "CatalogConfigured#{suffix}"])
     asset = Module.concat([base, Asset])
+    operational_asset = Module.concat([base, OperationalAsset])
     pipeline = Module.concat([base, Pipeline])
     connection = Module.concat([base, Connection])
     adapter = Module.concat([base, Adapter])
@@ -157,17 +158,23 @@ defmodule Favn.Dev.DoctorTest do
       def asset(_ctx), do: :ok
     end
 
+    defmodule #{inspect(operational_asset)} do
+      use Favn.Asset
+
+      def asset(_ctx), do: :ok
+    end
+
     defmodule #{inspect(pipeline)} do
       use Favn.Pipeline
 
       pipeline :doctor_catalogs do
-        asset(#{inspect(asset)})
+        assets([#{inspect(asset)}, #{inspect(operational_asset)}])
         deps(:all)
       end
     end
     """)
 
-    Application.put_env(:favn, :asset_modules, [asset])
+    Application.put_env(:favn, :asset_modules, [asset, operational_asset])
     Application.put_env(:favn, :pipeline_modules, [pipeline])
     Application.put_env(:favn, :connection_modules, [connection])
 
