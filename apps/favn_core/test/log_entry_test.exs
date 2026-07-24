@@ -63,4 +63,12 @@ defmodule Favn.Log.EntryTest do
     assert entry.message == "failed"
     assert entry.metadata == %{reason: :boom}
   end
+
+  test "normalization bounds messages to the persistence contract" do
+    entry = Entry.normalize(%{message: String.duplicate("x", Entry.max_message_bytes() + 100)})
+
+    assert byte_size(entry.message) == Entry.max_message_bytes()
+    assert String.ends_with?(entry.message, "[TRUNCATED]")
+    assert entry.truncated
+  end
 end

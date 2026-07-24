@@ -112,6 +112,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.PageRebuildOperations
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.CommandIdempotency
+  alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.Persistence.Selectors.ActorByUsername
   alias FavnOrchestrator.Persistence.Selectors.SessionByTokenHash
@@ -161,6 +163,33 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @service_token "B7yN3kQ9wR4mT8xZ2cV6pL1sD5fH0jA7"
+
+  defmodule FailingBackfillStore do
+    @behaviour FavnOrchestrator.Persistence.BackfillStore
+
+    alias FavnOrchestrator.Persistence.Error
+
+    @impl true
+    def start_plan(_command), do: {:error, Error.new(:invalid, "injected plan failure")}
+
+    @impl true
+    defdelegate append_plan_batch(command), to: FavnStoragePostgres.Instrumented.Backfills
+
+    @impl true
+    defdelegate activate_plan(command), to: FavnStoragePostgres.Instrumented.Backfills
+
+    @impl true
+    defdelegate claim_windows(command), to: FavnStoragePostgres.Instrumented.Backfills
+
+    @impl true
+    defdelegate transition_window(command), to: FavnStoragePostgres.Instrumented.Backfills
+
+    @impl true
+    defdelegate get_backfill(query), to: FavnStoragePostgres.Instrumented.Backfills
+
+    @impl true
+    defdelegate page_windows(query), to: FavnStoragePostgres.Instrumented.Backfills
+  end
 
   setup_all do
     url =
@@ -2392,6 +2421,43 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert length(page.items) == 2
     assert page.has_more?
     assert Enum.all?(page.items, &(&1.status == :ready))
+  end
+
+  test "failed pipeline backfill planning marks its committed root as failed", fixture do
+    stores = %{Backend.stores() | backfills: FailingBackfillStore}
+    runtime = %PersistenceRuntime{backend: Backend, options: [], stores: stores}
+    start_supervised!({PersistenceRuntime, runtime})
+
+    root_run_id = "run-backfill-failed-#{System.unique_integer([:positive])}"
+
+    range = %{
+      "kind" => "day",
+      "from" => "2026-07-01",
+      "to" => "2026-07-01",
+      "timezone" => "Etc/UTC"
+    }
+
+    assert {:error, %Error{kind: :invalid, message: "injected plan failure"}} =
+             Backfills.submit_pipeline(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.pipeline_target_id,
+               range,
+               root_run_id: root_run_id
+             )
+
+    assert {:ok, root} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: root_run_id
+             })
+
+    assert root.status == :error
+    assert root.event_seq == 2
+    assert root.result[:status] == "failed"
+    assert root.result["type"] == "backfill_submission_failed"
+    assert root.error["kind"] == "invalid"
+    assert root.error["message"] == "injected plan failure"
   end
 
   test "asset backfills use the same resumable V2 ledger", fixture do

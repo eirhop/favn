@@ -115,16 +115,8 @@ defmodule FavnOrchestrator.Backfills do
                selection,
                opts
              ),
-           {:ok, _root} <- ensure_root_run(submission),
-           {:ok, planning} <- start_plan(submission),
-           {:ok, appended} <-
-             append_batches(
-               context,
-               planning,
-               submission.batches,
-               submission.batch_hashes
-             ) do
-        activate(context, appended)
+           {:ok, _root} <- ensure_root_run(submission) do
+        persist_submission(submission)
       end
     end)
   end
@@ -184,16 +176,8 @@ defmodule FavnOrchestrator.Backfills do
                selection,
                opts
              ),
-           {:ok, _root} <- ensure_root_run(submission),
-           {:ok, planning} <- start_plan(submission),
-           {:ok, appended} <-
-             append_batches(
-               context,
-               planning,
-               submission.batches,
-               submission.batch_hashes
-             ) do
-        activate(context, appended)
+           {:ok, _root} <- ensure_root_run(submission) do
+        persist_submission(submission)
       end
     end)
   end
@@ -265,11 +249,8 @@ defmodule FavnOrchestrator.Backfills do
                selection,
                opts
              ),
-           {:ok, _root} <- ensure_root_run(submission),
-           {:ok, planning} <- start_plan(submission),
-           {:ok, appended} <-
-             append_batches(context, planning, submission.batches, submission.batch_hashes) do
-        activate(context, appended)
+           {:ok, _root} <- ensure_root_run(submission) do
+        persist_submission(submission)
       end
     end)
   end
@@ -487,6 +468,44 @@ defmodule FavnOrchestrator.Backfills do
       {:ok, root}
     else
       {:error, :backfill_root_conflict}
+    end
+  end
+
+  defp persist_submission(%Submission{} = submission) do
+    with {:ok, planning} <- start_plan(submission),
+         {:ok, appended} <-
+           append_batches(
+             submission.context,
+             planning,
+             submission.batches,
+             submission.batch_hashes
+           ),
+         {:ok, _backfill} = result <- activate(submission.context, appended) do
+      result
+    else
+      {:error, reason} = error ->
+        _ = record_submission_failure(submission, reason)
+        error
+    end
+  end
+
+  defp record_submission_failure(%Submission{} = submission, reason) do
+    with {:ok, root} <- Runs.get(submission.context, submission.root_run_id) do
+      failed =
+        RunState.transition(root,
+          status: :error,
+          result: %{status: :failed, type: :backfill_submission_failed},
+          error: reason
+        )
+
+      TransitionWriter.persist_transition(
+        submission.context,
+        failed,
+        :run_failed,
+        %{status: :error, type: :backfill_submission_failed, error: reason},
+        command_id: "backfill-root:fail:#{submission.backfill_id}",
+        return_commit?: true
+      )
     end
   end
 

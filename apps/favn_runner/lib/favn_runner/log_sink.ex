@@ -10,7 +10,7 @@ defmodule FavnRunner.LogSink do
 
   defp build_entry(attrs) do
     case Code.ensure_loaded(Favn.Log.Entry) do
-      {:module, Favn.Log.Entry} -> struct(Favn.Log.Entry, attrs)
+      {:module, Favn.Log.Entry} -> Favn.Log.Entry.normalize(attrs)
       _other -> attrs
     end
   end

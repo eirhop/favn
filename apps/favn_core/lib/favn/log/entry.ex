@@ -12,7 +12,7 @@ defmodule Favn.Log.Entry do
   @levels [:debug, :info, :warning, :error]
   @sources [:orchestrator, :runner, :sql_runtime, :adapter, :user_code, :system]
   @streams [:stdout, :stderr, :system]
-  @max_message_bytes 65_536
+  @max_message_bytes 8_192
 
   @type level :: :debug | :info | :warning | :error
   @type source :: :orchestrator | :runner | :sql_runtime | :adapter | :user_code | :system
