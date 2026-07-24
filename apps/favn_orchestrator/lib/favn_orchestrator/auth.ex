@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.Auth do
   """
 
   alias FavnOrchestrator.Auth.Store
+  alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Identity
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
@@ -41,6 +42,27 @@ defmodule FavnOrchestrator.Auth do
     with {:ok, actor} <- Store.authenticate_password(context, username, password, opts),
          {:ok, session} <- Store.issue_session(context, actor.id, provider: "password_local") do
       {:ok, session, actor}
+    end
+  end
+
+  @doc false
+  @spec trusted_local_development_login(String.t(), String.t(), String.t()) ::
+          {:ok, session()} | {:error, :trusted_local_development_unavailable}
+  def trusted_local_development_login(workspace_id, username, capability)
+      when is_binary(workspace_id) and is_binary(username) and is_binary(capability) do
+    with :ok <- authorize_trusted_local_development(workspace_id, username, capability),
+         {:ok, context} <-
+           WorkspaceContext.new(
+             workspace_id,
+             "auth:trusted-local-development",
+             [:workspace_admin]
+           ),
+         actor_id <- deterministic_bootstrap_actor_id(username),
+         {:ok, session} <-
+           Store.issue_session(context, actor_id, provider: "trusted_local_dev") do
+      {:ok, session}
+    else
+      _unavailable -> {:error, :trusted_local_development_unavailable}
     end
   end
 
@@ -192,5 +214,25 @@ defmodule FavnOrchestrator.Auth do
       |> Base.url_encode64(padding: false)
 
     "act_bootstrap_" <> String.slice(digest, 0, 32)
+  end
+
+  defp authorize_trusted_local_development(workspace_id, username, capability) do
+    case Application.get_env(:favn_orchestrator, :trusted_local_development_auth) do
+      %{
+        workspace_id: ^workspace_id,
+        username: ^username,
+        capability_hash: expected_hash
+      }
+      when is_binary(expected_hash) ->
+        provided_hash = ServiceTokens.hash_token(capability)
+
+        if byte_size(provided_hash) == byte_size(expected_hash) and
+             Plug.Crypto.secure_compare(provided_hash, expected_hash),
+           do: :ok,
+           else: {:error, :invalid_capability}
+
+      _disabled ->
+        {:error, :disabled}
+    end
   end
 end

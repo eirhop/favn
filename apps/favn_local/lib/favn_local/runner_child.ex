@@ -35,7 +35,8 @@ defmodule FavnLocal.RunnerChild do
               {~c"FAVN_LOCAL_OPERATOR_NODE",
                config.operator_node |> Atom.to_string() |> String.to_charlist()},
               {~c"FAVN_RUNNER_RELEASE_ID", String.to_charlist(release_id)},
-              {~c"FAVN_RUNNER_BUILD_PROFILE", ~c"source"}
+              {~c"FAVN_RUNNER_BUILD_PROFILE", ~c"source"},
+              {~c"FAVN_LOG_LEVEL", config.log_level |> Atom.to_string() |> String.to_charlist()}
             ]
           ]
         )

@@ -115,7 +115,10 @@ freshness, and execution coordination.
   submission revalidates every pinned identity before calling `Backfills` with
   the reviewed non-contiguous window set.
 - `Identity` and `Auth` own accounts, memberships, sessions, service identities,
-  policy enforcement, and audit intent.
+  policy enforcement, and audit intent. Source development may issue
+  `trusted_local_dev` operator sessions only through an explicit,
+  capability-gated FavnLocal boot contract; normal View boot paths cannot
+  enable that provider implicitly.
 - `Operator.Catalogue`, `Operator.Lineage`, `Operator.Schedules`, `Logs`, and the
   facade expose bounded read models to thin clients. Asset catalogue detail
   decodes freshness keys structurally and projects run anchors, exact coverage,

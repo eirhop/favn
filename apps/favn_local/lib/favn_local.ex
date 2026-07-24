@@ -13,20 +13,62 @@ defmodule FavnLocal do
   alias FavnLocal.Preflight
   alias FavnLocal.Publication
 
+  @type progress_event ::
+          {:configuration_loaded,
+           %{view_url: String.t(), orchestrator_url: String.t(), workspace_id: String.t()}}
+          | :postgres_ready
+          | {:manifest_built, %{manifest_version_id: String.t()}}
+          | {:orchestrator_ready, %{url: String.t()}}
+          | {:view_ready, %{url: String.t()}}
+          | :runner_starting
+
+  @type progress_fun :: (progress_event() -> term())
+
   @spec dev(keyword()) :: {:ok, map()} | {:error, term()}
   def dev(opts \\ []) when is_list(opts) do
-    with {:ok, config} <- Config.load(opts),
-         :ok <- start_operator_node(config),
-         :ok <- Config.apply(config),
-         :ok <- Preflight.run(config),
-         {:ok, publication} <- Publication.build(config.runner_release_id),
-         {:ok, _applications} <- Application.ensure_all_started(:favn_orchestrator),
-         {:ok, _applications} <- Application.ensure_all_started(:favn_view),
-         {:ok, supervisor} <-
-           FavnLocal.Supervisor.start_link(config: config, publication: publication) do
-      Process.unlink(supervisor)
-      await_startup(supervisor, Keyword.get(opts, :startup_timeout_ms, 60_000))
+    result =
+      with {:ok, progress_fun} <- progress_fun(opts),
+           {:ok, config} <- Config.load(opts),
+           :ok <-
+             notify_progress(
+               progress_fun,
+               {:configuration_loaded,
+                %{
+                  view_url: view_url(config),
+                  orchestrator_url: orchestrator_url(config),
+                  workspace_id: config.workspace_id
+                }}
+             ),
+           :ok <- start_operator_node(config),
+           :ok <- Config.apply(config),
+           :ok <- Preflight.run(config),
+           :ok <- notify_progress(progress_fun, :postgres_ready),
+           {:ok, publication} <- Publication.build(config.runner_release_id),
+           :ok <-
+             notify_progress(
+               progress_fun,
+               {:manifest_built, %{manifest_version_id: publication.version.manifest_version_id}}
+             ),
+           {:ok, _applications} <- Application.ensure_all_started(:favn_orchestrator),
+           :ok <-
+             notify_progress(
+               progress_fun,
+               {:orchestrator_ready, %{url: orchestrator_url(config)}}
+             ),
+           {:ok, _applications} <- Application.ensure_all_started(:favn_view),
+           :ok <- notify_progress(progress_fun, {:view_ready, %{url: view_url(config)}}),
+           :ok <- notify_progress(progress_fun, :runner_starting),
+           {:ok, supervisor} <-
+             FavnLocal.Supervisor.start_link(config: config, publication: publication) do
+        Process.unlink(supervisor)
+        await_startup(supervisor, Keyword.get(opts, :startup_timeout_ms, 60_000))
+      end
+
+    if match?({:error, _reason}, result) do
+      Config.clear_source_development_auth()
     end
+
+    result
   end
 
   @spec reload(keyword()) :: {:ok, map()} | {:error, term()}
@@ -103,6 +145,26 @@ defmodule FavnLocal do
       end
     end
   end
+
+  defp progress_fun(opts) do
+    case Keyword.get(opts, :progress_fun) do
+      nil -> {:ok, fn _event -> :ok end}
+      fun when is_function(fun, 1) -> {:ok, fun}
+      _invalid -> {:error, {:invalid_dev_config, :progress_fun}}
+    end
+  end
+
+  defp notify_progress(progress_fun, event) do
+    _ = progress_fun.(event)
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp view_url(config), do: "http://127.0.0.1:#{config.view_port}"
+  defp orchestrator_url(config), do: "http://127.0.0.1:#{config.orchestrator_port}"
 
   defp random_hex(bytes), do: bytes |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
 end

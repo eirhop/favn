@@ -27,16 +27,11 @@ defmodule Mix.Tasks.Favn.Dev do
       )
 
     Mix.Task.run("compile")
+    print_start()
 
-    case FavnLocal.dev(opts) do
+    case FavnLocal.dev(Keyword.put(opts, :progress_fun, &print_progress/1)) do
       {:ok, summary} ->
-        IO.puts("Favn development is ready")
-        IO.puts("View: #{summary.view_url}")
-        IO.puts("Orchestrator: #{summary.orchestrator_url}")
-        IO.puts("Workspace: #{summary.workspace_id}")
-        IO.puts("Runner release: #{summary.runner_release_id}")
-        IO.puts("Local administrator: admin")
-        IO.puts("Local administrator password is stored in .favn/local/credentials.json")
+        print_ready(summary)
         FavnLocal.await_shutdown(summary.supervisor)
 
       {:error, reason} ->
@@ -53,8 +48,51 @@ defmodule Mix.Tasks.Favn.Dev do
   defp error_message({:workspace_not_found, workspace_id, command}),
     do: "workspace #{workspace_id} is not provisioned; run #{command}"
 
+  defp error_message({:invalid_env, "FAVN_LOG_LEVEL", expected}),
+    do: "invalid FAVN_LOG_LEVEL; expected #{expected}"
+
   defp error_message({:legacy_local_state, path}),
     do: "obsolete Docker-era local state exists at #{path}; remove that generated directory once"
 
   defp error_message(reason), do: "failed to start Favn development: #{inspect(reason)}"
+
+  @doc false
+  @spec print_start() :: :ok
+  def print_start do
+    IO.puts("Starting Favn development")
+  end
+
+  @doc false
+  @spec print_progress(FavnLocal.progress_event()) :: :ok
+  def print_progress({:configuration_loaded, summary}) do
+    IO.puts("  View: #{summary.view_url} (starting)")
+  end
+
+  def print_progress(:postgres_ready), do: IO.puts("  PostgreSQL: ready")
+  def print_progress({:manifest_built, _summary}), do: IO.puts("  Manifest: built")
+
+  def print_progress({:orchestrator_ready, summary}) do
+    IO.puts("  Orchestrator: #{summary.url}")
+  end
+
+  def print_progress({:view_ready, summary}) do
+    IO.puts("  View: #{summary.url} (listening)")
+  end
+
+  def print_progress(:runner_starting), do: IO.puts("  Runner: starting")
+
+  @doc false
+  @spec print_ready(map()) :: :ok
+  def print_ready(summary) when is_map(summary) do
+    IO.puts("  Runner: ready")
+    IO.puts("  Manifest: active")
+    IO.puts("")
+    IO.puts("Favn development is ready")
+    IO.puts("Open Favn: #{summary.view_url}")
+    IO.puts("Orchestrator: #{summary.orchestrator_url}")
+    IO.puts("Workspace: #{summary.workspace_id}")
+    IO.puts("Authentication: automatic (local development)")
+    IO.puts("")
+    IO.puts("Press Ctrl+C to stop.")
+  end
 end

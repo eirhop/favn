@@ -109,6 +109,11 @@ environment. Local tooling generates short-lived process credentials and
 stores the stable local UI password with the connection locator under
 `.favn/local/`.
 
+`FAVN_LOG_LEVEL` controls both source-development BEAMs. It defaults to `info`;
+set it to `debug`, `notice`, `warning`, `error`, `critical`, `alert`, or
+`emergency` when a different threshold is required. Invalid values stop startup
+before the runtime applications are started.
+
 The generated DuckDB sample uses project-relative `.data` paths directly. It
 therefore needs no sample-specific environment variables.
 

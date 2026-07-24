@@ -10,6 +10,7 @@ defmodule FavnLocal.Lifecycle do
   use GenServer
 
   alias Favn.Manifest.Publication
+  alias FavnLocal.Config
   alias FavnLocal.Locator
   alias FavnLocal.Publication, as: LocalPublication
   alias FavnLocal.RunnerChild
@@ -169,6 +170,7 @@ defmodule FavnLocal.Lifecycle do
   @impl true
   def terminate(_reason, state) do
     finish_runner_replacement(state.maintenance_token)
+    Config.clear_source_development_auth()
     Locator.delete(state.config.root_dir)
     :ok
   end

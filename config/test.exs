@@ -21,3 +21,4 @@ config :favn_view, FavnView.Endpoint,
   server: false
 
 config :favn_view, dev_routes: false
+config :favn_view, session_cookie_options: [secure: false]

@@ -107,41 +107,10 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
         {:reconcile, token},
         %{task: nil, schedule: %{token: token}} = state
       ) do
-    parent = self()
-    task_token = make_ref()
-    state = %{state | schedule: nil}
-
-    case Task.Supervisor.start_child(state.task_supervisor, fn ->
-           result =
-             Lifecycle.with_admission(
-               fn -> reconcile(state) end,
-               state.lifecycle
-             )
-
-           send(parent, {:reconcile_result, task_token, result})
-         end) do
-      {:ok, pid} ->
-        monitor = Process.monitor(pid)
-        timeout = Process.send_after(self(), {:reconcile_timeout, task_token}, state.timeout_ms)
-
-        {:noreply,
-         %{
-           state
-           | task: %{pid: pid, monitor: monitor, timeout: timeout, token: task_token}
-         }}
-
-      {:error, reason} ->
-        _ = reason
-        result = {:error, :active_manifest_reconciliation_task_unavailable}
-        emit_completed(result, 0)
-
-        {:noreply,
-         state
-         |> Map.merge(%{
-           result: result,
-           checked_at_ms: System.monotonic_time(:millisecond)
-         })
-         |> schedule(state.interval_ms)}
+    if Lifecycle.ensure_accepting(state.lifecycle) == :ok do
+      start_reconciliation(state)
+    else
+      {:noreply, state |> Map.put(:schedule, nil) |> schedule(state.interval_ms)}
     end
   end
 
@@ -197,6 +166,45 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
   end
 
   def handle_info(_message, state), do: {:noreply, state}
+
+  defp start_reconciliation(state) do
+    parent = self()
+    task_token = make_ref()
+    state = %{state | schedule: nil}
+
+    case Task.Supervisor.start_child(state.task_supervisor, fn ->
+           result =
+             Lifecycle.with_admission(
+               fn -> reconcile(state) end,
+               state.lifecycle
+             )
+
+           send(parent, {:reconcile_result, task_token, result})
+         end) do
+      {:ok, pid} ->
+        monitor = Process.monitor(pid)
+        timeout = Process.send_after(self(), {:reconcile_timeout, task_token}, state.timeout_ms)
+
+        {:noreply,
+         %{
+           state
+           | task: %{pid: pid, monitor: monitor, timeout: timeout, token: task_token}
+         }}
+
+      {:error, reason} ->
+        _ = reason
+        result = {:error, :active_manifest_reconciliation_task_unavailable}
+        emit_completed(result, 0)
+
+        {:noreply,
+         state
+         |> Map.merge(%{
+           result: result,
+           checked_at_ms: System.monotonic_time(:millisecond)
+         })
+         |> schedule(state.interval_ms)}
+    end
+  end
 
   defp reconcile(state) do
     summary =
