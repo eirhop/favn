@@ -1,7 +1,8 @@
 # Configuration
 
 This guide documents the main public `config :favn` options for authoring, local
-development, SQL connections, DuckDB, ADBC, pooling, and env files.
+development, SQL connections, DuckDB, ADBC, pooling, and process environment
+variables.
 
 Start with the generated config from `mix favn.init --duckdb --sample`, then edit
 only what your project needs.
@@ -79,22 +80,18 @@ values.
 
 ## Local Runtime Config
 
-Local dev reads `config :favn, :local`. Task flags override config values.
-`mix favn.dev`, `mix favn.reload`, `mix favn.inspect`, and `mix favn.query` first
-load the project's `.env`, then evaluate the consumer project's
-`config/runtime.exs` in a fresh Mix process. Dev collects connection,
-execution-pool, and plugin configuration for the local runner.
-Environment-specific values from `.env` may therefore be read in runtime config.
+Local development reads the small non-secret `config :favn, :dev` surface.
+The caller loads process environment variables before invoking Mix.
 
 Minimal local configuration:
 
 ```elixir
-config :favn,
-  local: [
-    workspace_id: "local-dev",
-    scheduler: false,
-    compose_file: "deploy/local/compose.yml"
-  ]
+config :favn, :dev,
+  workspace_id: "local-dev",
+  scheduler_enabled: false,
+  orchestrator_port: 4101,
+  view_port: 4173,
+  database_pool_size: 10
 ```
 
 Common local options:
@@ -103,34 +100,17 @@ Common local options:
 | --- | --- | --- |
 | `:workspace_id` | `"local-dev"` | Workspace selected by local CLI/UI requests. |
 | `:orchestrator_port` | `4101` | Local API port. |
-| `:web_port` | `4173` | Local UI port. |
-| `:scheduler` | `false` | Enable with config or `mix favn.dev --scheduler`. |
-| `:compose_file` | `"deploy/local/compose.yml"` | Project-relative consumer-owned Compose file. `mix favn.dev --compose-file PATH` overrides it. |
-| `:runner_image` | automatic local build | Existing customer-built image. `--runner-image` overrides config; `FAVN_RUNNER_IMAGE` is the fallback. |
+| `:view_port` | `4173` | Local UI port. |
+| `:scheduler_enabled` | `false` | Enable with config or `mix favn.dev --scheduler`. |
+| `:database_pool_size` | `10` | PostgreSQL pool size for the local Orchestrator. |
 
-Compose selection is explicit and deterministic: the command-line
-`--compose-file` value wins over `config :favn, :local`, which wins over the
-default above. The path must be a regular non-symlink file inside the project.
-Run `mix favn.init` to create the complete default scaffold.
+Set `FAVN_DATABASE_URL` and `FAVN_RUNTIME_INPUT_PIN_KEY` in the process
+environment. Local tooling generates short-lived process credentials and
+stores the stable local UI password with the connection locator under
+`.favn/local/`.
 
-The local tooling generates PostgreSQL credentials, service authentication,
-the View session secret, and the distribution cookie into owner-only files
-under `.favn/`. PostgreSQL and all control-plane storage configuration belong
-to the selected consumer Compose application; a customer does not supply a host
-database URL or select a storage adapter through Favn config.
-
-The generated DuckDB sample uses runtime path references instead of embedding a
-host path in the manifest:
-
-| Variable | Host default | Local runner value |
-| --- | --- | --- |
-| `FAVN_LOCAL_SAMPLE_DATABASE_PATH` | `.data/local_smoke.duckdb` | `/var/lib/favn/data/local_smoke.duckdb` |
-| `FAVN_LOCAL_SAMPLE_RAW_CATALOG_PATH` | `.data/raw.duckdb` | `/var/lib/favn/data/raw.duckdb` |
-| `FAVN_LOCAL_SAMPLE_MART_CATALOG_PATH` | `.data/mart.duckdb` | `/var/lib/favn/data/mart.duckdb` |
-
-An existing shell value wins over `.env`; an `.env` value wins over these host
-defaults. The local Compose service supplies the container paths. If you change
-the runner data mount, update those service environment values together.
+The generated DuckDB sample uses project-relative `.data` paths directly. It
+therefore needs no sample-specific environment variables.
 
 ## SQL Connection Modules
 
@@ -490,26 +470,24 @@ Favn.SQLClient.execute(session, sql, admission: [required_catalogs: ["raw", "mar
 Favn does not parse arbitrary SQL to infer write targets. Use explicit admission
 options for raw writes.
 
-## `.env` Files
+## Environment variables
 
-`mix favn.dev`, `mix favn.reload`, `mix favn.inspect`, and `mix favn.query` load
-`.env` from the project root before `config/runtime.exs`, compile, or runtime
-startup. Each command reads the file once and evaluates runtime config in a
-fresh Mix process.
+Favn reads the operating-system process environment. It does not parse `.env`
+files or choose an environment-file format.
 
-Rules:
+For local work, load variables before invoking Mix. Use shell exports, `direnv`,
+your IDE, or your team's secret tool. If a project deliberately uses a
+shell-compatible `.env`, Bash can load it explicitly:
 
-- Missing default `.env` is fine.
-- Set `FAVN_ENV_FILE` to use another env file.
-- If `FAVN_ENV_FILE` is set and missing, startup fails.
-- Existing process env wins over values in the file.
-- Supports `KEY=value`, optional `export`, quotes, comments, and blank lines.
-
-For example:
-
-```dotenv
-FAVN_RUNTIME_MODE=cloud
+```bash
+set -a
+source .env
+set +a
+mix favn.dev
 ```
+
+Do not commit secret values. `config/runtime.exs` can use the standard Elixir
+environment API:
 
 ```elixir
 # config/runtime.exs
@@ -524,6 +502,21 @@ database =
 config :favn, :connections,
   warehouse: [open: [database: database]]
 ```
+
+Deployment platforms inject configured values into the container process. For
+example, Azure Container Apps supports manual environment values and references
+to Container App secrets. In both cases the Elixir release receives an ordinary
+environment variable; Favn does not call Azure APIs to retrieve it.
+
+See Azure's documentation for
+[container environment variables](https://learn.microsoft.com/en-us/azure/container-apps/environment-variables)
+and [secret references](https://learn.microsoft.com/en-us/azure/container-apps/manage-secrets).
+
+Map sensitive values such as `FAVN_DATABASE_URL`,
+`FAVN_RUNTIME_INPUT_PIN_KEYS`, service tokens, distribution cookies, and
+`FAVN_VIEW_SECRET_KEY_BASE` from the platform secret store. Configuration
+changes generally create a new deployment revision. Restart or replace running
+replicas when a platform does not automatically refresh a changed secret.
 
 ## Common Config Failures
 

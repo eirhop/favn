@@ -20,21 +20,13 @@ RUN test "$(cat /usr/local/lib/erlang/releases/29/OTP_VERSION)" = 29.0.3 \
     && elixir -e 'IO.write(System.version())' > /build/runtime-versions/ELIXIR_VERSION \
     && test "$(cat /build/runtime-versions/ELIXIR_VERSION)" = 1.20.2
 
-COPY mix.exs mix.lock ./
-COPY config/ config/
-COPY rel/control_plane/ rel/control_plane/
-COPY apps/favn_core/mix.exs apps/favn_core/mix.exs
-COPY apps/favn_orchestrator/mix.exs apps/favn_orchestrator/mix.exs
-COPY apps/favn_storage_postgres/mix.exs apps/favn_storage_postgres/mix.exs
-COPY apps/favn_view/mix.exs apps/favn_view/mix.exs
+COPY . .
 RUN mix deps.get --only prod --check-locked && mix deps.compile
 RUN mix do --app favn_view cmd mix tailwind.install \
     && echo 'dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a  /build/_build/tailwind-linux-x64-4.3.3' | sha256sum --check --strict
 RUN mix do --app favn_view cmd mix esbuild.install \
     && echo '0c6588b092a2c291a72bab90659f3c9e0e25e0fe59c9ac12b4dae4d945e5548c  /build/_build/esbuild-linux-x64' | sha256sum --check --strict
 
-COPY apps/ apps/
-COPY control-plane-build.json control-plane-build.json
 RUN mix do --app favn_view cmd mix assets.deploy
 RUN mix release favn_control_plane --overwrite \
     && elixir rel/control_plane/sanitize_sys_config.exs _build/prod/rel/favn_control_plane
@@ -54,7 +46,6 @@ RUN sed -i \
 
 WORKDIR /app
 COPY --from=builder --chown=10001:10001 /build/_build/prod/rel/favn_control_plane/ /app/
-COPY --from=builder --chown=10001:10001 /build/control-plane-build.json /app/control-plane-build.json
 COPY --from=builder --chown=10001:10001 /build/runtime-versions/ /app/runtime-versions/
 RUN rm -f /app/releases/COOKIE \
     && find /app -type f -name '*.map' -delete \
@@ -63,12 +54,11 @@ RUN rm -f /app/releases/COOKIE \
        done \
     && chmod 0555 /app/bin/favn_control_plane_health /app/bin/favn_control_plane_ops
 
-ARG FAVN_CONTROL_PLANE_BUILD_ID
 ARG FAVN_SOURCE_REVISION=unknown
 ARG FAVN_BUILD_TIMESTAMP=unknown
-ARG FAVN_CONTROL_PLANE_VERSION
-ARG FAVN_MANIFEST_SCHEMA_VERSION
-ARG FAVN_RUNNER_CONTRACT_VERSION
+ARG FAVN_CONTROL_PLANE_VERSION=0.5.0-dev
+ARG FAVN_MANIFEST_SCHEMA_VERSION=12
+ARG FAVN_RUNNER_CONTRACT_VERSION=12
 
 LABEL org.opencontainers.image.title="Favn control plane" \
       org.opencontainers.image.description="Favn View and Orchestrator production control plane" \
@@ -77,7 +67,6 @@ LABEL org.opencontainers.image.title="Favn control plane" \
       org.opencontainers.image.revision="$FAVN_SOURCE_REVISION" \
       org.opencontainers.image.created="$FAVN_BUILD_TIMESTAMP" \
       org.opencontainers.image.version="$FAVN_CONTROL_PLANE_VERSION" \
-      io.favn.control-plane.build-id="$FAVN_CONTROL_PLANE_BUILD_ID" \
       io.favn.manifest-schema-version="$FAVN_MANIFEST_SCHEMA_VERSION" \
       io.favn.runner-contract-version="$FAVN_RUNNER_CONTRACT_VERSION" \
       io.favn.elixir-version="1.20.2" \

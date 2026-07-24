@@ -19,31 +19,17 @@ defmodule FavnOrchestrator.ControlPlaneRuntimeConfig do
   @doc "Loads and applies the unified process environment once when configured."
   @spec apply_from_env_if_configured() :: :ok | {:error, map()}
   def apply_from_env_if_configured do
-    cond do
-      Application.get_env(:favn_orchestrator, :local_dev_mode, false) ->
-        :ok
-
-      Application.get_env(:favn_orchestrator, :control_plane_runtime_config, false) ->
-        load_process_environment_once()
-
-      true ->
-        :ok
-    end
+    if Application.get_env(:favn_orchestrator, :control_plane_runtime_config, false),
+      do: load_process_environment_once(),
+      else: :ok
   end
 
   @doc "Loads an explicit environment map for tests and non-release composition roots."
   @spec apply_from_env_if_configured(map()) :: :ok | {:error, map()}
   def apply_from_env_if_configured(env) when is_map(env) do
-    cond do
-      Application.get_env(:favn_orchestrator, :local_dev_mode, false) ->
-        :ok
-
-      Application.get_env(:favn_orchestrator, :control_plane_runtime_config, false) ->
-        load_once(env)
-
-      true ->
-        ProductionRuntimeConfig.apply_from_env_if_configured(env)
-    end
+    if Application.get_env(:favn_orchestrator, :control_plane_runtime_config, false),
+      do: load_once(env),
+      else: ProductionRuntimeConfig.apply_from_env_if_configured(env)
   end
 
   defp load_process_environment_once do

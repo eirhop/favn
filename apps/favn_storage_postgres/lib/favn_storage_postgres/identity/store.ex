@@ -951,7 +951,7 @@ defmodule FavnStoragePostgres.Identity.Store do
     if workspace_context?(command.workspace_context) and
          Enum.all?([command.command_id, command.session_id, command.actor_id], &valid_id?/1) and
          is_binary(command.token_hash) and byte_size(command.token_hash) >= 32 and
-         command.provider in ["password_local", "trusted_local_dev"] and
+         command.provider == "password_local" and
          match?(%DateTime{}, command.expires_at) and match?(%DateTime{}, command.occurred_at) and
          DateTime.compare(command.expires_at, command.occurred_at) == :gt,
        do: :ok,

@@ -26,7 +26,7 @@ defmodule FavnView.Endpoint do
 
   # Code reloading can be explicitly enabled under the
   # :code_reloader configuration of your endpoint.
-  if code_reloading? do
+  if code_reloading? and Code.ensure_loaded?(Phoenix.LiveReloader) do
     socket "/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket
     plug Phoenix.LiveReloader
     plug Phoenix.CodeReloader

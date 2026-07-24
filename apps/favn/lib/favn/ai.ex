@@ -32,10 +32,10 @@ defmodule Favn.AI do
   Do not add internal runtime/control-plane apps such as `:favn_storage_postgres`,
   `:favn_orchestrator`, `:favn_runner`, `:favn_local`, `:favn_core`, or
   `:favn_sql_runtime` as ordinary consumer dependencies. Local control-plane
-  storage uses PostgreSQL through Favn's runtime tooling. Maintainers testing a
-  local framework checkout in a consumer project should follow the
-  `FAVN_CHECKOUT` and `mix favn.maintainer.dev` flow in the Local Development
-  Commands guide instead of adding those internal applications directly.
+  source development uses a PostgreSQL database supplied by the developer.
+  Maintainers testing framework image changes build `rel/control_plane/Dockerfile`
+  directly from the Favn repository, then select that image in their own
+  deployment configuration.
 
   ## What To Read
 
@@ -158,10 +158,10 @@ defmodule Favn.AI do
     `FavnOrchestrator.Backfill.*`. If you are changing the
     private service HTTP surface for backfills, also read
     `FavnOrchestrator.API.Router`. For the local operator CLI, read
-    `Favn.Dev.Backfill`, `Favn.Dev.Run`, `Mix.Tasks.Favn.Backfill`, and
+    `Favn.CLI.Backfill`, `Favn.CLI.Run`, `Mix.Tasks.Favn.Backfill`, and
     `Mix.Tasks.Favn.Run`.
   - To replace an incompatible managed SQL target, read
-    `Mix.Tasks.Favn.Rebuild`, `Favn.Dev.Rebuild`, and the rebuild section of
+    `Mix.Tasks.Favn.Rebuild`, `Favn.CLI.Rebuild`, and the rebuild section of
     [Local Development Commands](local-development.html). Planning is read-only
     and start requires the exact reviewed plan id and hash. An unknown activation
     outcome must be reconciled; it is never permission for a blind retry.
@@ -202,9 +202,7 @@ defmodule Favn.AI do
     PostgreSQL requests `https://ossrdbms-aad.database.windows.net` and injects
     the ref as the password in a native DuckDB PostgreSQL secret. Pool idle
     timeout is not a maximum physical-session age. In local development,
-    environment changes can recreate the selected image. A `config/runtime.exs`
-    code change requires a rebuilt image with a new runner release ID and
-    `mix favn.reload --runner-image IMAGE`.
+    environment changes require `mix favn.stop` followed by `mix favn.dev`.
     If the deployment uses ADBC, also read `Favn.SQL.Adapter.DuckDB.ADBC`. Keep
     DuckLake `write_concurrency` conservative because one logical writer may use
     several PostgreSQL backend connections.
@@ -237,46 +235,34 @@ defmodule Favn.AI do
     `Favn.Assets.Planner` if needed.
   - To inspect or cancel local runs, inspect run events, inspect relation
     metadata, inspect relation partitions, or run ad hoc read-only SQL, read
-    `Favn.Dev.Runs`, `Favn.Dev.DataInspection`, `Mix.Tasks.Favn.Runs`,
-    `Mix.Tasks.Favn.Logs`, `Mix.Tasks.Favn.Inspect`, and `Mix.Tasks.Favn.Query`.
+    `Favn.CLI.Runs`, `Favn.CLI.DataInspection`, `Mix.Tasks.Favn.Runs`,
+    `Mix.Tasks.Favn.Inspect`, and `Mix.Tasks.Favn.Query`.
     `mix favn.runs cancel RUN_ID` requests cancellation through the local
     orchestrator HTTP boundary; add `--wait` to poll the run until it is
     terminal. `mix favn.inspect ...` and `mix favn.query "select ..."` are direct
-    local operator entrypoints: their Mix tasks load `.env` before consumer
-    runtime config without starting the consumer app, and
-    `Favn.Dev.DataInspection` starts `:favn_sql_runtime` before connecting.
-  - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
-    Read `Favn.Dev.Init` for scaffold dispatch and `Favn.Dev.Init.Runner` for
-    optional runner-image includes.
-    Docker Engine and Compose v2 are mandatory. The supported topology is
-    PostgreSQL, the digest-pinned prebuilt control plane, and one customer-owned
-    runner on a project-scoped private Compose network. `mix favn.init`
-    scaffolds the documented local Compose and runner files; optional native
-    runtime dependencies are explicit includes such as
-    `duckdb-adbc@1.5.4`. `mix favn.install` owns only the immutable
-    control-plane image. `mix favn.dev --compose-file` overrides
-    `config :favn, :local`, which overrides `deploy/local/compose.yml`. Favn
-    validates versioned role labels but preserves extra consumer services and
-    resources. Linux amd64 and amd64 WSL2 with Linux containers are the only
-    supported v1 hosts.
-    The public local command surface is `mix favn.install`, `mix favn.init`,
+    local operator entrypoints. Environment variables must already be present
+    in the process; `Favn.CLI.DataInspection` starts `:favn_sql_runtime` before
+    connecting.
+  - To run local tooling, read `FavnLocal`, then `apps/favn_local/README.md`.
+    Source development is Docker-free: the developer supplies PostgreSQL, loads
+    environment variables, and runs the Orchestrator and View in the current
+    BEAM plus one child runner BEAM.
+    The public local command surface is `mix favn.init`,
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
     `mix favn.rebuild`,
-    `mix favn.runs`, `mix favn.status`, `mix favn.logs`, `mix favn.inspect`,
+    `mix favn.runs`, `mix favn.inspect`,
     `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
-    `mix favn.stop`, `mix favn.reset`, `mix favn.init --target runner`,
+    `mix favn.stop`, `mix favn.init --target deployment`,
     `mix favn.build.manifest`, `mix favn.publish`, `mix favn.activate`, and
-    `mix favn.read_doc`. Dev and reload load the project `.env` before evaluating
-    `config/runtime.exs`; existing shell values take precedence. The customer
-    owns the runner Dockerfile and production image pipeline. Without an
-    explicit image, `mix favn.dev` generates the local release ID and invokes
-    that Dockerfile before validating and selecting the exact image ID. Favn
-    never copies code into a running container.
+    `mix favn.read_doc`. Favn does not parse `.env` files or manage PostgreSQL.
+    The customer owns production Compose/platform configuration and the runner
+    image pipeline; `mix favn.init --target deployment` copies a non-overwriting
+    example.
     `mix favn.run` resolves asset and pipeline targets from the active manifest.
     Direct asset repair can combine `--dependencies all|none` with
     `--refresh auto|missing|force_selected|force_selected_upstream|force_all`;
     pipeline runs have the narrower `auto|missing|force_all` refresh contract and
-    do not accept `--dependencies`. Read `Mix.Tasks.Favn.Run` and `Favn.Dev.Run`
+    do not accept `--dependencies`. Read `Mix.Tasks.Favn.Run` and `Favn.CLI.Run`
     before changing this boundary.
   - To inspect the public helper functions collected in one place, read `Favn`.
 
@@ -514,21 +500,13 @@ defmodule Favn.AI do
     successful-window rerun, or expanding operator intent into concrete anchors.
     Read `FavnOrchestrator.Backfill.*` only for internal control-plane
     persistence, projection, and parent/child orchestration work.
-  - Read `Favn.Dev` and `apps/favn_local/README.md` when the task is about local
-    lifecycle, local pipeline submission, local run investigation or
-    cancellation, local SQL inspection/querying, docs lookup, or packaging, not
-    asset authoring. Read `Favn.Dev.Init` and `Favn.Dev.Init.Runner` for
-    scaffold targets, ownership, and optional native runner includes. Read
-    `Favn.Dev.Backfill` for the local `mix favn.backfill` workflow over the
-    private orchestrator backfill endpoints. Read `Favn.Dev.Rebuild` for the
-    plan/review/start rebuild workflow. Read `Favn.Dev.Run` for
-    `mix favn.run`. Read
-    `Favn.Dev.Runs` for `mix favn.runs` list/show/cancel behavior and
-    `mix favn.logs RUN_ID`. Read
-    `Favn.Dev.DataInspection` for `mix favn.inspect` and `mix favn.query`.
-    `Mix.Tasks.Favn.Inspect` and `Mix.Tasks.Favn.Query` own guarded `.env`
-    bootstrap for local SQL inspection without consumer app startup;
-    `Favn.Dev.DataInspection` owns SQL runtime startup before opening sessions.
+  - Read the local-development guide when the task is about source lifecycle,
+    local pipeline submission, run investigation or cancellation, SQL
+    inspection/querying, or deployment examples rather than asset authoring.
+    Use `mix help favn.init`, `mix help favn.backfill`,
+    `mix help favn.rebuild`, `mix help favn.run`, `mix help favn.runs`,
+    `mix help favn.inspect`, or `mix help favn.query` for exact command
+    contracts. The caller loads environment variables before invoking Mix.
 
   ## Related docs outside BEAM docs
 

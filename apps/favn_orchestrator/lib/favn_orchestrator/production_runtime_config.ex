@@ -64,14 +64,10 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @doc "Applies production env config only for the production control-plane profile."
   @spec apply_from_env_if_configured(map()) :: :ok | {:error, term()}
   def apply_from_env_if_configured(env) when is_map(env) do
-    if Application.get_env(:favn_orchestrator, :local_dev_mode, false) do
-      :ok
+    if Application.get_env(:favn_orchestrator, :production_runtime_config, false) do
+      apply_from_env(env)
     else
-      if Application.get_env(:favn_orchestrator, :production_runtime_config, false) do
-        apply_from_env(env)
-      else
-        :ok
-      end
+      :ok
     end
   end
 
@@ -153,12 +149,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       :favn_orchestrator,
       :auth_bootstrap_roles,
       Keyword.fetch!(config.auth_bootstrap, :roles)
-    )
-
-    Application.put_env(
-      :favn_orchestrator,
-      :local_dev_mode,
-      config.deployment_mode == :local_development
     )
 
     Application.put_env(
@@ -331,32 +321,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     end
   end
 
-  defp postgres_tls(env, :local_development) do
-    case fetch(env, "FAVN_DATABASE_SSL_MODE") do
-      {:ok, "disable"} ->
-        {:ok, [ssl_mode: :disable, deployment_mode: :local_development]}
-
-      {:ok, _mode} ->
-        {:error, {:invalid_env, "FAVN_DATABASE_SSL_MODE", "disable in local-development"}}
-
-      :error ->
-        {:error, {:missing_env, "FAVN_DATABASE_SSL_MODE"}}
-    end
-  end
-
   defp deployment_database_url(_url, :production), do: :ok
-
-  defp deployment_database_url(url, :local_development) do
-    case URI.parse(url) do
-      %URI{host: "postgres.favn.internal", port: port} when port in [nil, 5432] ->
-        :ok
-
-      _invalid ->
-        {:error,
-         {:invalid_env, "FAVN_DATABASE_URL", :redacted,
-          "postgres.favn.internal:5432 in local-development"}}
-    end
-  end
 
   defp api_server(env) do
     with {:ok, host} <- required_or_default(env, "FAVN_ORCHESTRATOR_API_BIND_HOST", "0.0.0.0"),

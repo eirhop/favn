@@ -8,7 +8,6 @@ First local run:
 
 ```bash
 mix favn.init --duckdb --sample
-mix favn.install
 mix favn.doctor
 mix favn.dev
 mix favn.run MyApp.Pipelines.LocalSmoke
@@ -219,11 +218,10 @@ Local setup:
 | Command | Use it for |
 | --- | --- |
 | `mix favn.init --duckdb --sample` | Generate local Favn files and an optional sample. |
-| `mix favn.init --target compose` | Scaffold a consumer-owned Compose template. |
-| `mix favn.install` | Verify Docker Engine and install the prebuilt control-plane digest. |
-| `mix favn.doctor` | Check the installed local configuration. |
-| `mix favn.dev` | Validate the selected Compose file and start the Favn roles. |
-| `mix favn.stop` | Stop only the recorded Favn roles. |
+| `mix favn.init --target deployment` | Copy a customer-owned deployment example once. |
+| `mix favn.doctor` | Check environment, PostgreSQL, workspace, and manifest compilation. |
+| `mix favn.dev` | Start Docker-free View, Orchestrator, and runner BEAMs. |
+| `mix favn.stop` | Stop the local BEAMs without changing PostgreSQL. |
 
 Run and inspect work:
 
@@ -232,25 +230,22 @@ Run and inspect work:
 | `mix favn.run` | Submit an asset or pipeline run. |
 | `mix favn.backfill` | Submit or inspect backfill work. |
 | `mix favn.runs` | List, inspect, cancel, or retry runs. |
-| `mix favn.logs` | Read run or asset-step logs. |
 | `mix favn.inspect` | Inspect relation metadata and samples. |
 | `mix favn.query` | Run local read-only SQL inspection. |
 | `mix favn.diagnostics` | Show runtime diagnostics. |
-| `mix favn.status` | Show local runtime status. |
 
 Manage local runtime:
 
 | Command | Use it for |
 | --- | --- |
-| `mix favn.reload` | Publish a manifest change or select a newly customer-built runner image. |
-| `mix favn.reset` | Preview generated-state cleanup; data and Compose resources are preserved. |
+| `mix favn.reload` | Compile changes, replace the runner BEAM, and deploy the aligned manifest. |
 | `mix favn.read_doc` | Read compiled Favn docs locally. |
 
 Packaging commands:
 
 | Command | Use it for |
 | --- | --- |
-| `mix favn.init --target runner` | Create an editable customer-owned runner Dockerfile. |
+| `mix favn.init --target deployment` | Copy the Compose, runner Dockerfile, and environment example. |
 | `mix favn.build.manifest --runner-release-id ID` | Build a manifest bound to an explicit runner release ID. |
 | `mix favn.publish --manifest PATH` | Publish missing packages and stage one immutable manifest. |
 | `mix favn.activate --manifest-version ID --workspace-id ID` | Activate an exact staged manifest after runner verification. |
@@ -259,7 +254,7 @@ Packaging commands:
 
 - Depend on `:favn` from application code.
 - Add optional plugin packages only when you need them, such as DuckDB support.
-- Use `mix favn.init`, `mix favn.install`, `mix favn.doctor`, and `mix favn.dev`
+- Use `mix favn.init`, `mix favn.doctor`, and `mix favn.dev`
   for first local setup.
 - Do not depend on Favn runtime, storage, or UI implementation apps directly.
 - Use public `mix favn.*` commands for local runtime work.

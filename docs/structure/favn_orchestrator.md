@@ -176,8 +176,10 @@ latest bounded check result; `favn_view` does not reconstruct this state.
   `apps/favn_orchestrator/test/`.
 - PostgreSQL transaction, concurrency, authority, tenancy, and query tests:
   `apps/favn_storage_postgres/test/storage_v2/`.
-- Product-level container qualification:
-  `apps/favn_local/test/acceptance/user_owned_runner_container_test.exs`.
+- Product-level deployment artifact qualification:
+  `apps/favn/test/acceptance/deployment_artifacts_test.exs`.
+- Docker-free source lifecycle acceptance:
+  `apps/favn/test/acceptance/docker_free_local_lifecycle_test.exs`.
 
 Use this app when changing lifecycle semantics, persistence contracts, workspace
 authorization, private API behavior, live-event DTOs, backfills, scheduling,

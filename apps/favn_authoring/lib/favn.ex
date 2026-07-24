@@ -15,7 +15,7 @@ defmodule FavnAuthoring do
   - `Favn`: public facade
   - `Favn.ModuleDiscovery`: app-scoped `:all` discovery for assets, pipelines,
     schedules, and connections
-  - `Favn.Dev`: local tooling owner
+  - `FavnLocal`: Docker-free source-development lifecycle
   - `Favn.Manifest.Generator`, `Favn.Pipeline.Resolver`, `Favn.Assets.Planner`:
     deeper internals
   """

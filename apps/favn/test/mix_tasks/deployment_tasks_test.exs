@@ -3,7 +3,6 @@ defmodule Mix.Tasks.Favn.DeploymentTasksTest do
 
   alias Mix.Tasks.Favn.Activate
   alias Mix.Tasks.Favn.Build.Manifest
-  alias Mix.Tasks.Favn.Build.ControlPlane
   alias Mix.Tasks.Favn.Publish
 
   setup do
@@ -25,19 +24,6 @@ defmodule Mix.Tasks.Favn.DeploymentTasksTest do
 
     assert Manifest.parse_args(["--runner-release-id", release_id]) ==
              [runner_release_id: release_id]
-  end
-
-  test "maintainer control-plane build exposes only the candidate load switch" do
-    assert ControlPlane.parse_args([]) == []
-    assert ControlPlane.parse_args(["--load"]) == [load: true]
-
-    assert_raise Mix.Error, ~r/invalid option/, fn ->
-      ControlPlane.parse_args(["--image", "untrusted:latest"])
-    end
-
-    assert_raise Mix.Error, ~r/invalid option/, fn ->
-      ControlPlane.parse_args(["--root-dir", "/tmp/other"])
-    end
   end
 
   test "publish and activate use the canonical orchestrator URL environment" do

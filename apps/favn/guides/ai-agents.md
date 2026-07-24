@@ -15,7 +15,7 @@ Follow its module pointers with `mix favn.read_doc ModuleName` or
 | Task | Read next |
 | --- | --- |
 | Assets, pipelines, namespaces, windows, or freshness | `Favn.Asset`, `Favn.Pipeline`, `Favn.Namespace`, then [Authoring Assets](authoring-assets.md) |
-| Local commands and runtime | `Favn.Dev`, then [Local Development](local-development.md) |
+| Local commands and runtime | [Local Development](local-development.md), then `mix help favn.dev` or the relevant `mix favn.*` task |
 | SQL assets | `Favn.SQLAsset`, then the relevant SQL guide |
 | Output schema and evolution | `Favn.SQLAsset contract`, `Favn.SQL.Contract`, then [SQL Output Contracts](sql-output-contracts.md) |
 | Transactional checks | `Favn.SQLAsset check`, `Favn.SQL.CheckResult`, then [SQL Asset Checks](sql-asset-checks.md) |

@@ -33,7 +33,7 @@ defmodule Mix.Tasks.Favn.Backfill do
   backfill window.
   """
 
-  alias Favn.Dev
+  alias Favn.CLI
 
   @submit_switches [
     root_dir: :string,
@@ -239,7 +239,7 @@ defmodule Mix.Tasks.Favn.Backfill do
     do: {:error, "unknown subcommand #{inspect(unknown)}; usage: #{usage()}"}
 
   defp submit(pipeline_module, opts) do
-    case Dev.submit_backfill(pipeline_module, opts) do
+    case CLI.submit_backfill(pipeline_module, opts) do
       {:ok, run_or_plan} ->
         if Keyword.get(opts, :dry_run, false) do
           print_plan("Backfill dry run", run_or_plan)
@@ -264,7 +264,7 @@ defmodule Mix.Tasks.Favn.Backfill do
   end
 
   defp plan_missing(asset, opts) do
-    case Dev.plan_missing_asset_backfill(asset, opts) do
+    case CLI.plan_missing_asset_backfill(asset, opts) do
       {:ok, plan} ->
         print_missing_plan("Missing-window backfill plan", plan)
         maybe_write_plan(plan, Keyword.get(opts, :plan_file))
@@ -278,7 +278,7 @@ defmodule Mix.Tasks.Favn.Backfill do
     with {:ok, plan} <- read_plan(Keyword.fetch!(opts, :plan_file)) do
       print_missing_plan("Submitting missing-window backfill plan", plan)
 
-      case Dev.submit_missing_asset_backfill(asset, plan, opts) do
+      case CLI.submit_missing_asset_backfill(asset, plan, opts) do
         {:ok, run_id} -> IO.puts("run: #{run_id}")
         {:error, reason} -> Mix.raise(error_message(reason))
       end
@@ -288,35 +288,35 @@ defmodule Mix.Tasks.Favn.Backfill do
   end
 
   defp list_windows(run_id, opts) do
-    case Dev.list_backfill_windows(run_id, opts) do
+    case CLI.list_backfill_windows(run_id, opts) do
       {:ok, page} -> print_page("Backfill windows", page)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp list_coverage_baselines(opts) do
-    case Dev.list_coverage_baselines(opts) do
+    case CLI.list_coverage_baselines(opts) do
       {:ok, page} -> print_page("Coverage baselines", page)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp list_asset_window_states(opts) do
-    case Dev.list_asset_window_states(opts) do
+    case CLI.list_asset_window_states(opts) do
       {:ok, page} -> print_page("Asset window states", page)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp rerun_window(run_id, opts) do
-    case Dev.rerun_backfill_window(run_id, Keyword.fetch!(opts, :window_key), opts) do
+    case CLI.rerun_backfill_window(run_id, Keyword.fetch!(opts, :window_key), opts) do
       {:ok, run} -> print_run("Submitted backfill window rerun", run)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp repair(opts) do
-    case Dev.repair_backfill_projections(opts) do
+    case CLI.repair_backfill_projections(opts) do
       {:ok, report} -> print_repair_report(report)
       {:error, reason} -> Mix.raise(error_message(reason))
     end

@@ -11,46 +11,23 @@ defmodule Mix.Tasks.Favn.Inspect do
 
   Pass `--connection NAME` when more than one Favn SQL connection is configured.
 
-  The project's `.env` is loaded before `config/runtime.exs` is evaluated. The
-  task starts only `:favn_sql_runtime`, including the supervised SQL session
-  pool; it does not start the consumer application or configured plugins.
+  Environment variables must be loaded before invoking Mix. The task starts
+  only `:favn_sql_runtime`; it does not start the consumer application.
   """
 
-  alias Favn.Dev
-  alias Favn.Dev.EnvBootstrap
+  alias Favn.CLI
 
-  @switches [connection: :string, root_dir: :string]
+  @switches [connection: :string]
 
-  @requirements ["loadpaths"]
+  @requirements ["app.config"]
 
   @impl Mix.Task
   def run(args) do
+    Mix.Task.run("compile")
+
     case parse_args(args) do
-      {:ok, {_command, _relation, opts}} ->
-        run_bootstrapped(args, opts)
-
-      {:error, message} ->
-        Mix.raise(message)
-    end
-  end
-
-  @doc false
-  @spec run_configured([String.t()]) :: :ok | no_return()
-  def run_configured(args) do
-    with {:ok, {command, relation, opts}} <- parse_args(args),
-         {:ok, opts} <- EnvBootstrap.consume(:inspect, opts) do
-      run_command(command, relation, inspection_opts(opts))
-    else
-      {:error, message} when is_binary(message) ->
-        Mix.raise(message)
-
-      {:error, :env_bootstrap_required} ->
-        Mix.raise("favn.inspect.configured is an internal task; run mix favn.inspect")
-
-      {:error, reason} ->
-        Mix.raise(
-          "invalid favn.inspect environment bootstrap: #{inspect(reason)}; run mix favn.inspect"
-        )
+      {:ok, {command, relation, opts}} -> run_command(command, relation, opts)
+      {:error, message} -> Mix.raise(message)
     end
   end
 
@@ -70,29 +47,18 @@ defmodule Mix.Tasks.Favn.Inspect do
   end
 
   defp run_command("relation", relation, opts) do
-    case Dev.inspect_relation(relation, opts) do
+    case CLI.inspect_relation(relation, opts) do
       {:ok, result} -> print_relation(result)
       {:error, reason} -> Mix.raise(format_error(reason))
     end
   end
 
   defp run_command("partitions", relation, opts) do
-    case Dev.inspect_partitions(relation, opts) do
+    case CLI.inspect_partitions(relation, opts) do
       {:ok, result} -> print_partitions(result)
       {:error, reason} -> Mix.raise(format_error(reason))
     end
   end
-
-  defp run_bootstrapped(args, opts) do
-    case EnvBootstrap.exec(:inspect, args, opts) do
-      {:ok, 0} -> :ok
-      {:ok, status} -> System.halt(status)
-      {:error, reason} -> Mix.raise("inspect environment bootstrap failed: #{inspect(reason)}")
-    end
-  end
-
-  defp inspection_opts(opts),
-    do: Keyword.drop(opts, [:env_bootstrap, :env_file_loaded, :root_dir])
 
   defp print_relation(result) do
     IO.puts("relation: #{format_relation(result.relation)}")

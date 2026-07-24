@@ -5,7 +5,7 @@ defmodule FavnOrchestrator.Auth.Session do
 
   @default_ttl_seconds 43_200
   @max_ttl_seconds 2_592_000
-  @providers ["password_local", "trusted_local_dev"]
+  @providers ["password_local"]
   @token_pattern ~r/\A[A-Za-z0-9_-]{43}\z/
 
   @spec issue(String.t(), keyword()) :: {:ok, map()} | {:error, term()}

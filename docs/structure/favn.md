@@ -16,27 +16,24 @@ Tests:
   package-boundary check while full fresh-project dependency resolution runs in
   the `:slow` tier
 - public Mix task tests under `apps/favn/test/mix_tasks/`
-- lifecycle, deployment, and diagnostics task argument coverage in
-  `apps/favn/test/mix_tasks/public_tasks_test.exs`
+- Docker-free lifecycle and removed-task coverage in
+  `apps/favn/test/mix_tasks/local_workflow_test.exs`
 
 Use when changing public APIs, public docs breadcrumbs, public SQL client access,
 or public Mix task argument/dispatch behavior, including `mix favn.runs cancel`,
 `mix favn.publish`, `mix favn.activate`, and `mix favn.diagnostics`.
 
 The public deployment surface is deliberately small:
-`mix favn.init` scaffolds the documented local Compose and editable
-customer-owned runner image,
+`mix favn.init --target deployment` copies the documented customer-owned
+Compose and runner-image example,
 `mix favn.build.manifest --runner-release-id ID` binds a manifest to the
 operator's image identity, and `mix favn.publish` plus `mix favn.activate` stage
 and select immutable manifest releases. Favn publishes the control-plane image;
 consumer projects build the runner from their own repository. The operator
 contract starts at `docs/production/deployment_topology.md`.
 
-For local deployment, `mix favn.install` selects only the immutable
-control-plane image, and `mix favn.dev` builds the generated customer Dockerfile
-unless an image is explicitly selected. `--compose-file PATH` has highest
-selection precedence over `config :favn, :local` and
-`deploy/local/compose.yml`.
+For source development, `mix favn.dev` starts no containers and builds no
+images. The developer supplies PostgreSQL and environment variables.
 
 Public SQL output-contract authoring is documented in
 `apps/favn/guides/sql-output-contracts.md` and routed from `Favn.AI`.

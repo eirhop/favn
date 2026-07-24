@@ -1,0 +1,11 @@
+.git
+.favn
+.data
+.env
+.env.*
+_build
+deps
+cover
+doc
+test
+tmp

@@ -1,8 +1,8 @@
 # Production Readiness
 
 PostgreSQL 18 is Favn's only control-plane database. Storage V2, immutable
-control-plane and customer-owned runner releases, Docker-first local
-development, and a representative container compatibility gate are
+control-plane and customer-owned runner releases, Docker-free source
+development, and a direct image compatibility gate are
 implemented. Remaining product work includes full deployment drills, operator
 UI completion, managed-provider evidence, and data-plane recovery.
 
@@ -13,23 +13,20 @@ UI completion, managed-provider evidence, and data-plane recovery.
 | PostgreSQL Storage V2 | Implemented | Prove it against a production-sized restored snapshot and managed-provider PITR. |
 | Workspace isolation, fencing, idempotency, bounded reads | Implemented | Record load, contention, failover, and recovery evidence. |
 | Lifecycle, readiness, bounded drain | Implemented | Owning-layer tests cover policy; real signal, cancellation, and recovery drills remain target-environment evidence. |
-| Control-plane release image | Implemented | A manual workflow publishes an exact current, green `main` revision to GHCR. Ordinary merges publish nothing. |
-| Customer runner and manifest releases | Implemented boundary | The representative container gate covers automatic customer build, release-ID alignment, health, and DuckDB ADBC loading; execution and upgrade/rollback drills remain. |
+| Control-plane release image | Implemented | CI directly builds, scans, attests, and publishes green commit images. |
+| Customer runner and manifest releases | Implemented boundary | Customer CI and target-environment execution and upgrade/rollback drills remain. |
 | Operator UI | Prototype | Finish core flows, audit mutations, and add browser acceptance. |
 | DuckDB/DuckLake data plane | Prototype | Define and verify backup, recovery, cancellation, and failure behavior. |
 | Multi-node control-plane coordination | Implemented foundation | Deferred; package and prove it before claiming application-node failover. |
 
-Favn has deterministic control-plane inputs, runnable OCI artifacts,
-Docker-first installation, documented upgrade and rotation procedures, and a
-representative production-container compatibility gate. Operators still own
+Favn has runnable OCI artifacts, documented upgrade and rotation procedures,
+and a direct production-image compatibility gate. Operators still own
 the platform network, firewall, reverse proxy, database service, customer
 runner image, and deployment-specific qualification.
 
-Local development now uses the same ownership boundary: install selects only
-the immutable control-plane image, while the customer commits and may extend a
-versioned, labeled Compose template. Favn-generated credentials and image
-selections stay under `.favn/`; stop and reset never delete consumer Compose
-resources or durable data.
+Local development is a separate Docker-free workflow. Developers supply
+PostgreSQL and environment variables; Favn starts local BEAM processes and
+never manages containers or durable database data.
 
 ## Release gates
 
@@ -55,7 +52,7 @@ Multi-node application failover is a later topology claim.
 - [`deployment_topology.md`](deployment_topology.md) defines artifact ownership,
   operator-owned infrastructure, startup order, and runtime limitations.
 - [`control_plane_image.md`](control_plane_image.md) defines the immutable OCI
-  image, GHCR publishing, selective build identity, and maintainer candidate path.
+  images, direct repository build, publishing, and maintainer candidate path.
 - [`runner_releases.md`](runner_releases.md) defines runner/manifest identities,
   rebuild classification, customer image ownership, publication, and activation.
 - [`upgrade_and_rollback.md`](upgrade_and_rollback.md) defines control-plane,
@@ -64,8 +61,8 @@ Multi-node application failover is a later topology claim.
   private ports, distributed-Erlang limitations, and reverse-proxy contract.
 - [`secret_rotation.md`](secret_rotation.md) defines environment-only manual
   overlap, restart, inventory, and invalidation procedures.
-- [`local_docker_compose.md`](local_docker_compose.md) defines prerequisites,
-  private GHCR access, Compose parity, reload classification, and cleanup.
+- [`local_docker_compose.md`](local_docker_compose.md) defines the optional
+  customer-owned single-host deployment example.
 - [`issue_522_acceptance_matrix.md`](issue_522_acceptance_matrix.md) maps the
   portable production contract to executable container evidence.
 - [`../storage/postgresql/architecture.md`](../storage/postgresql/architecture.md)
