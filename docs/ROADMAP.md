@@ -15,10 +15,10 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
      clean-container acceptance.
    - Validate the manifest, runner, and public package boundary through the clean
      canonical customer-project fixture.
-   - Project-owned local/single-host Compose and runner templates, typed role
-     validation, data-preserving lifecycle ownership, and external runner-image
-     selection are implemented; remaining #522 work is release qualification
-     and publishing evidence.
+   - A direct control-plane build, customer-owned single-host deployment
+     example, explicit external PostgreSQL, and runner/manifest identity
+     boundary are implemented; remaining #522 work is target deployment
+     qualification and publishing evidence.
 2. [#525 — durable scheduling and asynchronous orchestration](https://github.com/eirhop/favn/issues/525)
    - Persist submission intent, move work outside scheduler/RunManager critical
      paths, and add bounded workers, recovery, fairness, cancellation, and visibility.

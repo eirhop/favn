@@ -35,18 +35,15 @@ In a new or existing Mix project, generate a DuckDB sample:
 
 ```bash
 mix favn.init --duckdb --sample
-mix favn.install
 mix favn.doctor
 mix favn.dev
 ```
 
 Open the printed local UI URL, usually `http://127.0.0.1:4173`.
-Install pulls and verifies the version-matched prebuilt control-plane image;
-it never compiles the control plane. Dev builds or reuses only the customer
-runner, then starts PostgreSQL, control plane, and runner as isolated Docker
-Compose services. Subsequent unchanged starts reuse the pinned control-plane
-digest and runner release. Use `mix favn.install --force` to repull and
-revalidate the control-plane tag.
+PostgreSQL must already be running, migrated, and provisioned. Export
+`FAVN_DATABASE_URL` and `FAVN_RUNTIME_INPUT_PIN_KEY` before starting. Favn does
+not load `.env` or manage PostgreSQL. Dev runs the View and Orchestrator in the
+current BEAM and a separate runner BEAM; Docker is not involved.
 
 In another terminal, run the generated sample pipeline:
 
@@ -128,7 +125,7 @@ not depend on Favn runtime, storage, or UI implementation apps directly.
 - [Authoring Assets](guides/authoring-assets.md): define assets, SQL assets, multi-assets, namespaces, pipelines, schedules, windows, and freshness.
 - [Transactional SQL Asset Checks](guides/sql-asset-checks.md): validate staged candidates and published targets atomically with fail, warn, and successful no-op policies.
 - [Local Development](guides/local-development.md): use `mix favn.*` commands locally.
-- [Configuration](guides/configuration.md): configure discovery, local runtime, SQL connections, DuckDB, ADBC, pooling, and env files.
+- [Configuration](guides/configuration.md): configure discovery, runtime environment, SQL connections, DuckDB, ADBC, and pooling.
 - [SQL Client](guides/sql-client.md): use `Favn.SQLClient` from Elixir code.
 - [Adapters](guides/adapters.md): understand SQL plugins and runtime storage adapters.
 - [AI Agent Development](guides/ai-agents.md): use `Favn.AI` and `mix favn.read_doc` for AI-assisted development.

@@ -26,9 +26,13 @@ defmodule FavnLocal.MixProject do
     [
       internal_dep(:favn_authoring, "../favn_authoring"),
       internal_dep(:favn_core, "../favn_core"),
+      internal_dep(:favn_orchestrator, "../favn_orchestrator", runtime: false),
       internal_dep(:favn_runner, "../favn_runner", runtime: false),
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
+      internal_dep(:favn_storage_postgres, "../favn_storage_postgres", runtime: false),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
+      internal_dep(:favn_view, "../favn_view", runtime: false),
+      {:lazy_html, ">= 0.1.0", only: :test, runtime: false},
       {:mint, "~> 1.6", runtime: false}
     ]
   end

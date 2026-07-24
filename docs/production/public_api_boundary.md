@@ -70,20 +70,19 @@ The stable `v1` API should focus on the parts users build authored projects on:
   runner lifecycle services, plus `Favn.RuntimeValue` for integration boundaries
   that explicitly document deferred-value support
 - supported local commands: `mix favn.init`, `mix favn.doctor`,
-  `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
-  `mix favn.runs`, `mix favn.reload`, `mix favn.status`, `mix favn.logs`,
+  `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
+  `mix favn.runs`, `mix favn.reload`,
   `mix favn.inspect`, `mix favn.query`, `mix favn.diagnostics`, `mix favn.stop`,
-  `mix favn.reset`, and `mix favn.read_doc`
+  and `mix favn.read_doc`
 
 `mix favn.inspect` and `mix favn.query` are direct local command boundaries: they
-load `.env` before consumer runtime config and start only the SQL runtime before
-connecting. They do not start the consumer app or configured plugins.
+use the caller's environment and start only the SQL runtime before connecting.
+They do not start the consumer app or configured plugins.
 
 The public deployment command surface is `mix favn.init`,
 `mix favn.build.manifest`, `mix favn.publish`, and `mix favn.activate`. Favn
 publishes the control-plane image; the customer owns and publishes the runner
-image. Local tooling invokes the editable generated Dockerfile by default but
-does not make it a Favn-owned production build.
+image. Local tooling does not invoke deployment Dockerfiles.
 The supported production topology and artifact ownership are documented in
 [`deployment_topology.md`](deployment_topology.md) and
 [`runner_releases.md`](runner_releases.md).

@@ -61,7 +61,7 @@ defmodule FavnStoragePostgres.StorageV2.ConfigTest do
              )
   end
 
-  test "release environment permits plaintext only for generated local Compose DNS" do
+  test "release environment rejects the removed local deployment mode" do
     Application.put_env(:favn_storage_postgres, :environment, :prod)
 
     local_env = %{
@@ -71,14 +71,8 @@ defmodule FavnStoragePostgres.StorageV2.ConfigTest do
       "FAVN_DATABASE_SSL_MODE" => "disable"
     }
 
-    assert {:ok, options} = Config.repo_options_from_env(local_env)
-    assert options[:ssl] == false
-    refute Keyword.has_key?(options, :deployment_mode)
-
-    assert {:error, :invalid_local_development_database_url} =
-             local_env
-             |> Map.put("FAVN_DATABASE_URL", "ecto://runtime:top-secret@database.example/favn")
-             |> Config.repo_options_from_env()
+    assert {:error, {:invalid_env, "FAVN_DEPLOYMENT_MODE", "production"}} =
+             Config.repo_options_from_env(local_env)
   end
 
   test "database URL query parameters cannot override validated connection options" do

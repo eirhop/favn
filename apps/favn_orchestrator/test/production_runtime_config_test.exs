@@ -129,36 +129,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.runner_client_opts[:runner_await_timeout_buffer_ms] == 500
   end
 
-  test "local-development mode permits only the generated private PostgreSQL endpoint", %{
-    ca_file: ca_file
-  } do
-    env =
-      ca_file
-      |> base_env()
-      |> Map.drop(["FAVN_DATABASE_SSL_CA_FILE"])
-      |> Map.merge(%{
-        "FAVN_DEPLOYMENT_MODE" => "local-development",
-        "FAVN_DATABASE_URL" =>
-          "ecto://favn_runtime:local-password@postgres.favn.internal:5432/favn_dev",
-        "FAVN_DATABASE_SSL_MODE" => "disable"
-      })
-
-    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
-    assert config.deployment_mode == :local_development
-    assert config.postgres[:ssl_mode] == :disable
-    assert config.postgres[:deployment_mode] == :local_development
-
-    assert {:error,
-            %{
-              error:
-                {:invalid_env, "FAVN_DATABASE_URL",
-                 "postgres.favn.internal:5432 in local-development"}
-            }} =
-             env
-             |> Map.put("FAVN_DATABASE_URL", "ecto://favn:secret@database.example/favn")
-             |> ProductionRuntimeConfig.validate()
-  end
-
   test "production composition is always PostgreSQL and requires no storage selector", %{
     ca_file: ca_file
   } do
@@ -373,8 +343,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :auth_bootstrap_username,
       :auth_bootstrap_password,
       :auth_bootstrap_display_name,
-      :auth_bootstrap_roles,
-      :local_dev_mode
+      :auth_bootstrap_roles
     ]
 
     postgres_keys = [
@@ -429,7 +398,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert Application.get_env(:favn_orchestrator, :workspace_ids) == ["salmon-one", "salmon-two"]
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_username) == "admin"
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == [:admin]
-    assert Application.get_env(:favn_orchestrator, :local_dev_mode) == false
 
     assert Application.get_env(:favn_orchestrator, :instance_id) ==
              "control@control-plane.internal"

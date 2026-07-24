@@ -2,14 +2,10 @@ defmodule Favn.CheckTestTagTiers do
   @moduledoc false
 
   @allowed_apps %{
-    acceptance: MapSet.new(["favn_local"]),
+    acceptance: MapSet.new(["favn", "favn_local"]),
     container: MapSet.new(["favn_local"]),
     slow: MapSet.new(["favn", "favn_duckdb", "favn_local", "favn_storage_postgres"]),
     browser: MapSet.new(["favn_view"])
-  }
-
-  @external_lifecycle_module_tiers %{
-    "apps/favn/test/mix_tasks/env_bootstrap_integration_test.exs" => :slow
   }
 
   @tag_regex ~r/@(?:module)?tag\s+:?(acceptance|container|slow|browser)\b|(?:acceptance|container|slow|browser):\s*true/
@@ -45,7 +41,6 @@ defmodule Favn.CheckTestTagTiers do
       end
     end)
     |> Kernel.++(disjoint_tag_violations(path, tags))
-    |> Kernel.++(external_lifecycle_tier_violations(path))
   end
 
   defp tags_in_file(path) do
@@ -80,21 +75,6 @@ defmodule Favn.CheckTestTagTiers do
   defp maybe_add_disjoint_violation(violations, true, message), do: [message | violations]
   defp maybe_add_disjoint_violation(violations, false, _message), do: violations
 
-  defp external_lifecycle_tier_violations(path) do
-    case @external_lifecycle_module_tiers do
-      %{^path => tier} ->
-        module_tag_regex = Regex.compile!("@moduletag\\s+:#{tier}\\b")
-
-        if Regex.match?(module_tag_regex, File.read!(path)) do
-          []
-        else
-          ["#{path}: external BEAM lifecycle module must have @moduletag :#{tier}"]
-        end
-
-      %{} ->
-        []
-    end
-  end
 end
 
 Favn.CheckTestTagTiers.run()

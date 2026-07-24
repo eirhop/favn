@@ -9,8 +9,6 @@ defmodule Mix.Tasks.Favn.Doctor do
       mix favn.doctor
   """
 
-  alias Favn.Dev
-
   @switches [skip_compile: :boolean]
 
   @impl Mix.Task
@@ -26,7 +24,7 @@ defmodule Mix.Tasks.Favn.Doctor do
   defp doctor(opts) do
     unless Keyword.get(opts, :skip_compile, false), do: Mix.Task.run("compile")
 
-    case Dev.doctor(opts) do
+    case FavnLocal.Doctor.run(opts) do
       {:ok, checks} ->
         print_checks(checks)
         IO.puts("Favn doctor passed")

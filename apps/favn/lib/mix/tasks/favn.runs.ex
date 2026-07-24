@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Favn.Runs do
   wait timeout expires.
   """
 
-  alias Favn.Dev
+  alias Favn.CLI
 
   @list_switches [root_dir: :string, status: :string, limit: :integer]
   @show_switches [root_dir: :string]
@@ -78,21 +78,21 @@ defmodule Mix.Tasks.Favn.Runs do
     do: {:error, "unknown subcommand #{inspect(unknown)}; usage: #{usage()}"}
 
   defp list_runs(opts) do
-    case Dev.list_runs(opts) do
+    case CLI.list_runs(opts) do
       {:ok, runs} -> print_runs(runs)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp show_run(run_id, opts) do
-    case Dev.get_run(run_id, opts) do
+    case CLI.get_run(run_id, opts) do
       {:ok, run} -> IO.puts(JSON.encode!(run))
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp cancel_run(run_id, opts) do
-    case Dev.cancel_run(run_id, opts) do
+    case CLI.cancel_run(run_id, opts) do
       {:ok, run_or_result} ->
         print_cancel_result(run_id, run_or_result, Keyword.get(opts, :wait, false))
 
@@ -153,7 +153,7 @@ defmodule Mix.Tasks.Favn.Runs do
   defp atom_key("run_id"), do: :run_id
   defp atom_key("cancelled"), do: :cancelled
 
-  defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
+  defp error_message(:not_running), do: "Favn is not running; use mix favn.dev"
 
   defp error_message(reason), do: "run inspection failed: #{inspect(reason)}"
 
@@ -175,7 +175,7 @@ defmodule Mix.Tasks.Favn.Runs do
     "orchestrator #{operation_label(operation)} failed: HTTP #{status}: #{http_error_message(payload)}"
   end
 
-  defp cancel_error_message(:stack_not_running), do: error_message(:stack_not_running)
+  defp cancel_error_message(:not_running), do: error_message(:not_running)
   defp cancel_error_message(reason), do: "run cancellation failed: #{inspect(reason)}"
 
   defp operation_label(operation) when is_atom(operation),

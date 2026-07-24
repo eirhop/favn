@@ -77,13 +77,9 @@ unrelated to DuckLake metadata connection or write-concurrency budgets.
 ## Repository storage development
 
 These scripts are for Favn repository contributors working on the storage layer.
-Customer projects use the production-like `mix favn.install` and `mix favn.dev`
-Compose workflow documented in
-[`local_docker_compose.md`](local_docker_compose.md).
-Their committed Compose file owns the local PostgreSQL service and the labeled
-one-shot operation roles. `mix favn.dev` discovers those roles, starts
-PostgreSQL, and invokes `migrate`, `grant-runtime`, `verify-schema`, and
-`provision-workspace`; install owns only the control-plane image selection.
+Customer projects supply PostgreSQL through their own local or managed tooling.
+`mix favn.dev` requires a ready schema and explicitly provisioned workspace; it
+never starts PostgreSQL or invokes migrations.
 
 Docker and PostgreSQL client tools are prerequisites for the repository scripts.
 

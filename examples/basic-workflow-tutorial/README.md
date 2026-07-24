@@ -219,14 +219,18 @@ What this means:
 Use the local tooling loop from this consumer-style project:
 
 ```bash
-mix favn.install
+export FAVN_DATABASE_URL='ecto://postgres:postgres@127.0.0.1/favn_dev'
+export FAVN_RUNTIME_INPUT_PIN_KEY="$(openssl rand -base64 32)"
+mix favn.postgres.migrate
+mix favn.postgres.provision_workspace \
+  --id local-dev \
+  --slug local-dev \
+  --name "Local Development"
+mix favn.doctor
 mix favn.dev
 mix favn.run FavnReferenceWorkload.Pipelines.ReferenceWorkloadDaily
-mix favn.status
-mix favn.logs --service control-plane --tail 200
 mix favn.reload
 mix favn.stop
-mix favn.reset
 ```
 
 `mix favn.run` submits the tutorial pipeline to the running local orchestrator
@@ -257,10 +261,12 @@ Why this matters:
 - you are looking directly at the data products produced by the workload
 - this is the "business output" side of the architecture
 
-## Local stack configuration
+## Local development configuration
 
-The local CLI path uses Favn's loopback-only local-dev context and does not need
-orchestrator usernames or passwords.
+Favn runs the View and Orchestrator in the current Mix process and starts a
+separate runner BEAM. It does not use Docker or start PostgreSQL. Start a
+PostgreSQL instance using your team's normal tools and load its connection URL
+into the process environment before invoking Mix.
 
 The source-system raw landing example also needs deterministic local source
 credentials when it runs through the runner:
@@ -276,21 +282,19 @@ identity, never the raw segment ID or token.
 
 Then open the View URL printed by `mix favn.dev`. The generated local operator
 username is `admin`; its owner-only generated password is the
-`bootstrap_password` value in `.favn/secrets.json`. The login page always uses
-orchestrator-owned password authentication.
+`bootstrap_password` value in `.favn/local/credentials.json`. The login page
+always uses orchestrator-owned password authentication.
 
-Install freshness notes:
-- `mix favn.install` pulls and verifies the version-matched prebuilt control
-  plane, then records its immutable digest under `.favn/install`
-- repeating install reuses the exact valid local digest
-- `mix favn.install --force` repulls, revalidates, and regenerates Compose state
+Favn reads environment variables already present in the process. It does not
+load `.env` files. Use shell exports, `direnv`, IDE settings, or source your
+team-owned `.env` before running Mix. Restart `mix favn.dev` after changing
+environment variables or runtime configuration. Use `mix favn.reload` after
+ordinary asset, pipeline, SQL, or Elixir runner code changes.
 
-The generated Compose application owns PostgreSQL and its credentials; no host
-database setup or `FAVN_DATABASE_URL` is required. The scheduler is disabled by
-default so one-time local ETL does not run active schedules unexpectedly. To
-exercise the tutorial's 15-second scheduled smoke flow, start the stack with
-`mix favn.dev --scheduler` instead. After changing `.env`, use `mix favn.reload`
-for runner/runtime changes or restart the stack when changing service settings.
+The scheduler is disabled by default so one-time local ETL does not run active
+schedules unexpectedly. Run `mix favn.dev --scheduler` (or set
+`scheduler_enabled: true` under `config :favn, :dev`) to exercise the
+tutorial's 15-second scheduled smoke flow.
 
 ## Alternative configurations you can try
 
@@ -327,15 +331,15 @@ PostgreSQL is the only supported control-plane backend. The tutorial selects the
 workspace in application config:
 
 ```elixir
-config :favn, :local,
+config :favn, :dev,
   workspace_id: "local-dev"
 ```
 
-The generated Compose application owns its PostgreSQL image, volume, database,
-roles, and credentials. A consumer project cannot select another local
-control-plane database through `config :favn`, `.env`, or
-`FAVN_DATABASE_URL`. Do not add `:favn_storage_postgres` to the consumer
-project's `mix.exs`.
+You supply a reachable database through `FAVN_DATABASE_URL`, then run the
+explicit migration and workspace-provisioning commands from Step 4. Favn does
+not install, start, migrate, or provision PostgreSQL when `mix favn.dev`
+starts. Do not add `:favn_storage_postgres` to the consumer project's
+`mix.exs`; the public `:favn` dependency already provides the required tasks.
 
 Production database configuration is a separate deployment concern and is
 supplied to the prebuilt control plane through its documented runtime
@@ -363,8 +367,9 @@ and a `*/15 * * * * *` schedule for local scheduler smoke testing. The schedule
 uses `overlap: :forbid` because the tutorial smoke should prove the local loop,
 not stress-test concurrent DuckDB writes.
 
-Scheduled local runs require `mix favn.dev --scheduler` or `scheduler: true` in
-`config :favn, :local`; otherwise run the pipeline manually with `mix favn.run`.
+Scheduled local runs require `mix favn.dev --scheduler` or
+`scheduler_enabled: true` in `config :favn, :dev`; otherwise run the pipeline
+manually with `mix favn.run`.
 
 Possible alternatives in pipeline definitions:
 - use a narrower target asset for faster development loops
@@ -378,16 +383,19 @@ For beginners, keep `deps(:all)` until you are comfortable with graph behavior.
 Data plane (DuckDB):
 - `.data/reference_workload.duckdb`
 
-Local Compose runtime state (when `mix favn.*` starts normally):
-- `.favn/runtime.json`
-- `.favn/compose/compose.yml`
+Local source-development state:
+- `.favn/local/credentials.json`
+- `.favn/local/state.json`
 
 ## Troubleshooting
 
-- Docker Engine or Compose is unavailable
-  - start the Linux-container Docker daemon and verify `docker compose version`
-- a Compose service is partial or unhealthy
-  - inspect `mix favn.status` and `mix favn.logs`, then run `mix favn.stop` before retrying
+- `mix favn.doctor` reports a missing variable
+  - export the named variable in the same shell that runs Mix
+- PostgreSQL is unavailable or unprepared
+  - start your database, check `FAVN_DATABASE_URL`, then run the explicit
+    migration and workspace-provisioning commands from Step 4
+- local processes do not start cleanly
+  - run `mix favn.stop`, then retry `mix favn.doctor` and `mix favn.dev`
 
 ## Where to look in code
 

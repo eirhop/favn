@@ -9,14 +9,14 @@ defmodule Mix.Tasks.Favn.Publish do
   Authentication is accepted only through `FAVN_ORCHESTRATOR_SERVICE_TOKEN`.
   """
 
-  alias Favn.Dev
+  alias Favn.CLI
   alias Mix.Tasks.Favn.CLIArgs
 
   @impl Mix.Task
   def run(args) do
     opts = parse_args(args)
 
-    case Dev.publish(opts) do
+    case CLI.publish(opts) do
       {:ok, summary} ->
         IO.puts("Favn manifest publication complete")
         IO.puts("manifest version: #{summary.manifest_version_id}")

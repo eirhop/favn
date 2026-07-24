@@ -1712,8 +1712,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       display_name: "Release Workspace"
     }
 
+    assert {:error,
+            %{
+              operation: :verify_workspace,
+              status: :error,
+              code: :workspace_not_found,
+              workspace_id: ^workspace_id
+            }} = Release.verify_workspace(workspace_id)
+
     assert {:ok, %{operation: :provision_workspace, status: :ok, workspace_id: ^workspace_id}} =
              Release.provision_workspace(workspace)
+
+    assert {:ok, %{operation: :verify_workspace, status: :ok, workspace_id: ^workspace_id}} =
+             Release.verify_workspace(workspace_id)
 
     assert {:ok, %{operation: :provision_workspace, status: :ok, workspace_id: ^workspace_id}} =
              Release.provision_workspace(workspace)

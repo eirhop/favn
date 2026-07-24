@@ -22,19 +22,17 @@ and deploys immutable OCI digests.
 | Manifest release | Customer project | `manifest_version_id` plus `required_runner_release_id` |
 | PostgreSQL database | Operator | PostgreSQL 18 service and Favn schema version |
 
-Favn publishes no runner image and does not create a production runner build
-context. `mix favn.init --target runner` provides an editable starting template;
-the customer owns the Dockerfile, build inputs, native dependencies, registry,
-and CI pipeline. `mix favn.build.manifest --runner-release-id ID` binds a
-manifest to the release ID chosen for that image.
+Favn publishes no runner image. `mix favn.init --target deployment` copies an
+editable runner Dockerfile and single-host example; the customer owns the
+Dockerfile, build inputs, native dependencies, registry, and CI pipeline.
+`mix favn.build.manifest --runner-release-id ID` binds a manifest to the release
+ID chosen for that image.
 
-`mix favn.init --target compose --profile single-host` creates a non-secret
-starting template for this topology. The operator owns the resulting file and
+The copied `deploy/favn/compose.yml` is a non-secret starting template for this
+topology. The operator owns the resulting file and
 must adapt its external PostgreSQL, secret injection, registry, ingress,
-durability, and monitoring configuration. The versioned Favn labels identify
-the `control-plane-ops`, `control-plane-verify`, `runner`, and `control-plane`
-roles; extra unlabeled platform services are outside Favn ownership. Its
-example network permits outbound connections because PostgreSQL is external;
+durability, and monitoring configuration. Its example network permits outbound
+connections because PostgreSQL is external;
 the operator must restrict that egress with the host or platform firewall.
 
 ## Required infrastructure

@@ -22,6 +22,7 @@ defmodule FavnStoragePostgres.Release do
   alias FavnStoragePostgres.Registry.Store
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RuntimeInputKeyInventory
+  alias FavnStoragePostgres.Schemas.Workspace
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @current_manifest_schema Compatibility.current_schema_version()
@@ -33,6 +34,7 @@ defmodule FavnStoragePostgres.Release do
   @type operation ::
           :migrate
           | :verify_schema
+          | :verify_workspace
           | :verify_restore
           | :grant_runtime
           | :provision_workspace
@@ -84,6 +86,34 @@ defmodule FavnStoragePostgres.Release do
         {:error, reason} ->
           database_error(:verify_schema, reason)
       end
+    end)
+  end
+
+  @doc """
+  Verifies that one explicitly provisioned workspace exists.
+
+  Source-development startup uses this read-only check after schema
+  verification. It never provisions the workspace implicitly.
+  """
+  @spec verify_workspace(String.t()) :: result()
+  def verify_workspace(workspace_id) when is_binary(workspace_id) and workspace_id != "" do
+    database_operation(:verify_workspace, fn ->
+      case Repo.get(Workspace, workspace_id) do
+        %Workspace{status: "active"} ->
+          ok(:verify_workspace, workspace_id: workspace_id)
+
+        %Workspace{} ->
+          error(:verify_workspace, :workspace_not_active, workspace_id: workspace_id)
+
+        nil ->
+          error(:verify_workspace, :workspace_not_found, workspace_id: workspace_id)
+      end
+    end)
+  end
+
+  def verify_workspace(_workspace_id) do
+    release_operation(:verify_workspace, fn ->
+      error(:verify_workspace, :invalid_workspace, reason: :workspace_id_required)
     end)
   end
 

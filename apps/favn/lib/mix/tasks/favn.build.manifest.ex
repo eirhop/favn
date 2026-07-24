@@ -9,20 +9,23 @@ defmodule Mix.Tasks.Favn.Build.Manifest do
   `--runner-release-id` selected by the user or CI system.
   """
 
-  alias Favn.Dev
+  alias FavnAuthoring.Deployment.ManifestBuilder
   alias Mix.Tasks.Favn.CLIArgs
-  alias Mix.Tasks.Favn.ProductionBuild
 
   @impl Mix.Task
   def run(args) do
     opts = parse_args(args)
 
-    ProductionBuild.run("favn.build.manifest", args, fn -> run_build(opts) end)
+    if Mix.env() == :prod do
+      run_build(opts)
+    else
+      Mix.raise("manifest builds require MIX_ENV=prod")
+    end
   end
 
   @doc false
   def run_build(opts) when is_list(opts) do
-    case Dev.build_manifest(opts) do
+    case ManifestBuilder.run(opts) do
       {:ok, result} ->
         IO.puts("Favn manifest build complete")
         IO.puts("manifest version: #{result.manifest_version_id}")

@@ -26,8 +26,8 @@ defmodule Favn.ConsumerDependencyInstallTest do
     refute Enum.any?(deps, fn dep -> Keyword.has_key?(dep_opts(dep), :in_umbrella) end)
 
     assert runtime_deps(deps) == [:favn_sql_runtime]
-    assert build_only_deps(deps) == [:favn_authoring, :favn_local]
-    assert test_only_deps(deps) == [:favn_orchestrator, :favn_test_support]
+    assert build_only_deps(deps) == [:favn_authoring, :favn_local, :favn_orchestrator]
+    assert test_only_deps(deps) == [:favn_test_support]
 
     local_deps = FavnLocal.MixProject.project()[:deps]
     refute :favn_runner in runtime_deps(local_deps)

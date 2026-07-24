@@ -224,26 +224,6 @@ defmodule FavnView.ProductionRuntimeConfig do
     end
   end
 
-  defp validate_public_origin(origin, :local_development) do
-    case URI.parse(origin) do
-      %URI{
-        scheme: "http",
-        host: "127.0.0.1",
-        path: path,
-        query: nil,
-        fragment: nil,
-        userinfo: nil,
-        port: port
-      }
-      when path in [nil, ""] and port in 1..65_535 ->
-        {:ok, origin}
-
-      _other ->
-        {:error,
-         {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", "loopback http origin in local-development"}}
-    end
-  end
-
   @doc """
   Validates browser session cookie options required for production.
   """
@@ -267,23 +247,13 @@ defmodule FavnView.ProductionRuntimeConfig do
     end
   end
 
-  defp session_cookie_options(deployment_mode) do
+  defp session_cookie_options(:production) do
     options = Application.get_env(:favn_view, :session_cookie_options, [])
 
-    case deployment_mode do
-      :production ->
-        if Application.get_env(:favn_view, :require_secure_cookies, false) do
-          with :ok <- validate_session_cookie_options(options), do: {:ok, options}
-        else
-          {:ok, options}
-        end
-
-      :local_development ->
-        options = Keyword.put(options, :secure, false)
-
-        if Keyword.get(options, :http_only) == true and Keyword.get(options, :same_site) == "Lax",
-          do: {:ok, options},
-          else: {:error, {:invalid_session_cookie, :invalid_local_options}}
+    if Application.get_env(:favn_view, :require_secure_cookies, false) do
+      with :ok <- validate_session_cookie_options(options), do: {:ok, options}
+    else
+      {:ok, options}
     end
   end
 

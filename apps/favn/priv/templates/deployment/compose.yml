@@ -1,0 +1,58 @@
+services:
+  control-plane:
+    image: ${FAVN_CONTROL_PLANE_IMAGE:?set FAVN_CONTROL_PLANE_IMAGE to an immutable digest}
+    environment:
+      FAVN_DATABASE_URL: ${FAVN_DATABASE_URL}
+      FAVN_DATABASE_SSL_MODE: ${FAVN_DATABASE_SSL_MODE:-disable}
+      FAVN_DATABASE_SSL_CA_FILE: ${FAVN_DATABASE_SSL_CA_FILE:-}
+      FAVN_RUNTIME_INPUT_PIN_KEYS: ${FAVN_RUNTIME_INPUT_PIN_KEYS}
+      FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: ${FAVN_RUNTIME_INPUT_PIN_KEY_VERSION:-1}
+      FAVN_ORCHESTRATOR_API_SERVICE_TOKENS: ${FAVN_ORCHESTRATOR_API_SERVICE_TOKENS}
+      FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME: ${FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME}
+      FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD: ${FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD}
+      FAVN_WORKSPACE_IDS: ${FAVN_WORKSPACE_IDS}
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
+      FAVN_RUNNER_NODE: favn_runner@runner
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_BEAM_DISTRIBUTION_PORT: "9100"
+      FAVN_VIEW_SECRET_KEY_BASE: ${FAVN_VIEW_SECRET_KEY_BASE}
+      FAVN_VIEW_PUBLIC_ORIGIN: ${FAVN_VIEW_PUBLIC_ORIGIN}
+      FAVN_VIEW_BIND_HOST: 0.0.0.0
+      FAVN_VIEW_PORT: "4173"
+      FAVN_VIEW_TRUSTED_PROXY_CIDRS: ${FAVN_VIEW_TRUSTED_PROXY_CIDRS}
+    ports:
+      - "4173:4173"
+    networks:
+      - favn-private
+    depends_on:
+      runner:
+        condition: service_healthy
+    restart: unless-stopped
+
+  runner:
+    image: ${FAVN_RUNNER_IMAGE:?set FAVN_RUNNER_IMAGE to an immutable digest}
+    environment:
+      FAVN_RUNNER_NODE: favn_runner@runner
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_BEAM_DISTRIBUTION_PORT: "9100"
+    expose:
+      - "4369"
+      - "9100"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/opt/favn/bin/favn_runner",
+          "rpc",
+          "case FavnRunner.readiness() do :ok -> :ok; other -> raise inspect(other) end",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - favn-private
+    restart: unless-stopped
+
+networks:
+  favn-private: {}

@@ -60,18 +60,16 @@ From the umbrella root, prefer an app-scoped command:
 MIX_ENV=test mix do --app favn_storage_postgres cmd mix test --no-compile
 ```
 
-Use the exact owning test for regressions. The production-like PostgreSQL,
-control-plane, and runner topology is covered by the container acceptance:
+Use the exact owning test for regressions. The control-plane image contract is
+qualified separately from PostgreSQL integration:
 
 ```bash
-FAVN_CONTROL_PLANE_CANDIDATE=favn-control-plane-candidate:<build-id> \
-  mix test.container
+docker build -f rel/control_plane/Dockerfile -t favn-control-plane:test .
+scripts/control_plane_image_contract.sh favn-control-plane:test
 ```
 
-Failed Compose startup preserves bounded, redacted diagnostics under
-`.favn/logs/compose-failure.log`. Use `mix favn.logs --service control-plane`
-and `mix favn.logs --service runner` for the current service logs; a connection
-refusal alone does not identify the first startup failure.
+For source development, inspect the `mix favn.dev` terminal and
+`mix favn.diagnostics`. Deployment logs belong to the chosen platform.
 
 ## CI topology
 

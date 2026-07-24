@@ -6,7 +6,7 @@ zero-downtime rolling upgrade.
 
 Before every change, record this rollback tuple:
 
-- control-plane image digest and control-plane build ID;
+- control-plane image digest and source revision;
 - runner image digest, runner release ID, and runner contract version;
 - active manifest version and required runner release ID for each workspace;
 - PostgreSQL schema version and a tested recovery point; and
@@ -15,26 +15,19 @@ Before every change, record this rollback tuple:
 Do not deploy mutable tags. Tags may locate an artifact, but the platform must
 run the resolved digest.
 
-## Local tooling migration to project-owned Compose
+## Migration from Docker-based development
 
-Projects upgrading from the removed generated-Compose contract use this
-data-preserving sequence:
+Stop the old stack with the version that created it. Preserve or export any
+PostgreSQL data before removing old Compose resources. After upgrading:
 
-1. Before upgrading, run the old `mix favn.stop`.
-2. Upgrade Favn. If the project has local files under `.favn/data` and no
-   `.data` directory, move them once with `mv .favn/data .data`. If both
-   directories exist, reconcile them manually.
-3. Run `mix favn.init`.
-4. Review and commit the new files under `deploy/local/` and `deploy/runner/`.
-5. Run `mix favn.install` to rewrite image-only installation metadata.
-6. Run `mix favn.dev`.
+1. remove obsolete generated `.favn/` Docker state;
+2. provide a running PostgreSQL database;
+3. export the required environment variables;
+4. run explicit migrations and workspace provisioning;
+5. start the Docker-free loop with `mix favn.dev`.
 
-After the new layout is adopted, the derived project name, default role names,
-PostgreSQL volume name, secrets, and `.data` location remain stable. After the
-first successful readiness check, Favn removes only the obsolete
-`.favn/compose/compose.yml`; it does not remove the committed Compose file,
-PostgreSQL volume, data, or containers. Old runtime state cannot safely identify
-a consumer-owned deployment and is reported as pre-migration state.
+Favn does not infer ownership of old containers, networks, volumes, or
+databases and does not delete them.
 
 ## Control-plane upgrade
 
