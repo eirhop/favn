@@ -61,7 +61,7 @@ defmodule FavnView.OperatorSessionController do
                username,
                capability
              ) do
-          {:ok, session, _actor} ->
+          {:ok, session} ->
             {:ok, Auth.log_in_operator(conn, workspace_id, session, return_to)}
 
           {:error, :trusted_local_development_unavailable} ->
