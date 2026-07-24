@@ -29,9 +29,9 @@ defmodule Favn.SQL.Client do
   eviction. When an adapter fingerprint changes for the same connection and
   session requirements, the pool evicts idle sessions from the superseded
   fingerprint and closes active ones on checkin before creating a replacement.
-  A miss for a different overlapping catalog set evicts conflicting idle
-  sessions before creating a replacement, while incompatible scopes with the
-  same catalog set can still compete for finite catalog capacity.
+  An incompatible pool-key miss with overlapping catalog requirements evicts
+  conflicting idle sessions before creating a replacement, including when the
+  normalized catalog sets are equal. Exact-key reuse remains unchanged.
 
   SQL sessions retain their normalized `:required_catalogs` and
   `:required_resources` scopes. Raw write

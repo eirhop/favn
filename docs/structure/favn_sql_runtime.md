@@ -58,11 +58,11 @@ stays conservative unless a finite catalog policy such as DuckLake
 Idle pooled sessions retain catalog admission until reuse or eviction. That keeps
 physical pooled sessions inside the configured catalog budget. Superseded
 fingerprints in the same stable pool scope are evicted automatically; unrelated
-incompatible scopes with the same catalog set can still compete for the same
-finite catalog capacity. When a new session needs a different overlapping
-catalog set, the pool closes conflicting idle sessions and marks conflicting
-active sessions for close on checkin. Their catalog permits therefore transfer
-to the broader session as soon as current work finishes.
+incompatible pool keys with overlapping catalog requirements evict idle sessions
+before reserving replacement capacity, including when their normalized catalog
+sets are equal. Conflicting active sessions are marked for close on checkin, so
+their permits transfer after current work finishes. Exact-key reuse remains
+unchanged.
 
 Catalog-level admission is driven by materialization write plans whose target
 relations include a catalog. Session bootstrap can also acquire catalog permits

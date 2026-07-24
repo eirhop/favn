@@ -728,14 +728,14 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     assert Agent.get(tracker, & &1.max_sessions) == 1
   end
 
-  test "idle pooled sessions hold catalog admission for incompatible pool keys until eviction", %{
+  test "incompatible pool key evicts idle session with the same required catalogs", %{
     tracker: tracker
   } do
     registry_name = :admission_pooled_idle_catalog_registry
 
     start_registry(registry_name, PooledCatalogConnectAdapter, tracker, %{
       admission_timeout_ms: 20,
-      pool: %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 1_000}
+      pool: %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
     })
 
     assert {:ok, session} =
@@ -748,25 +748,6 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     assert :ok = Client.disconnect(session)
     assert Agent.get(tracker, & &1.sessions) == 1
 
-    assert {:error, %Favn.SQL.Error{type: :admission_timeout}} =
-             Client.connect(:warehouse,
-               registry_name: registry_name,
-               required_catalogs: ["raw"],
-               pool_marker: :second
-             )
-
-    assert Agent.get(tracker, & &1.max_sessions) == 1
-
-    assert {:ok, reused} =
-             Client.connect(:warehouse,
-               registry_name: registry_name,
-               required_catalogs: ["raw"],
-               pool_marker: :first
-             )
-
-    assert :ok = Client.disconnect(reused)
-    assert eventually(fn -> Agent.get(tracker, & &1.sessions) == 0 end, 150)
-
     assert {:ok, second_key} =
              Client.connect(:warehouse,
                registry_name: registry_name,
@@ -775,6 +756,8 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
              )
 
     assert :ok = Client.disconnect(second_key)
+    assert Agent.get(tracker, & &1.max_sessions) == 1
+    assert Agent.get(tracker, & &1.sessions) == 1
   end
 
   test "overlapping catalog checkout evicts an incompatible idle session", %{
@@ -1138,17 +1121,6 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
   catch
     :exit, _reason -> :ok
   end
-
-  defp eventually(fun, attempts) when attempts > 0 do
-    if fun.() do
-      true
-    else
-      Process.sleep(10)
-      eventually(fun, attempts - 1)
-    end
-  end
-
-  defp eventually(_fun, 0), do: false
 
   defp eventually_acquire(policy, attempts \\ 20)
 

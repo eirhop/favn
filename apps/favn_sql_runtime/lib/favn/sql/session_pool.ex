@@ -18,9 +18,9 @@ defmodule Favn.SQL.SessionPool do
   capacity. When an adapter runtime fingerprint changes for the same connection
   and session requirements, idle sessions from the previous fingerprint are
   evicted and active sessions are discarded on checkin. This releases admission
-  leases before a replacement physical session is created. A miss for a
-  different overlapping catalog set also evicts conflicting idle sessions so a
-  narrow warm session cannot block broader work indefinitely.
+  leases before a replacement physical session is created. Any incompatible
+  pool-key miss with overlapping catalog requirements also evicts conflicting
+  idle sessions so a warm session cannot block replacement work indefinitely.
   """
 
   use GenServer
@@ -483,22 +483,29 @@ defmodule Favn.SQL.SessionPool do
 
       nil ->
         state
-        |> evict_conflicting_catalog_sessions(catalog_scope)
+        |> evict_conflicting_catalog_sessions(key, catalog_scope)
         |> reserve_or_wait(key, owner, from, max_creating_per_key, checkout_timeout_ms)
     end
   end
 
-  defp evict_conflicting_catalog_sessions(%__MODULE__{} = state, nil), do: state
+  defp evict_conflicting_catalog_sessions(%__MODULE__{} = state, _key, nil), do: state
 
   defp evict_conflicting_catalog_sessions(
          %__MODULE__{} = state,
+         %PoolKey{} = requested_key,
          {connection, required_catalogs}
        ) do
     {conflicts, idle} =
       Enum.reduce(state.idle, {[], %{}}, fn {hash, entries}, {conflicts, idle} ->
         {evicted, retained} =
-          Enum.split_with(entries, fn %{session: %Session{} = session} ->
-            catalog_session_conflict?(session, connection, required_catalogs)
+          Enum.split_with(entries, fn %{session: %Session{} = session, key: existing_key} ->
+            catalog_session_conflict?(
+              session,
+              existing_key,
+              requested_key,
+              connection,
+              required_catalogs
+            )
           end)
 
         idle = if retained == [], do: idle, else: Map.put(idle, hash, retained)
@@ -508,21 +515,34 @@ defmodule Favn.SQL.SessionPool do
     Enum.each(conflicts, &close_session(&1.session, :conflicting_catalog_scope))
 
     discard_reasons =
-      Enum.reduce(state.active, state.discard_reasons, fn {token, %{session: session}}, reasons ->
-        if catalog_session_conflict?(session, connection, required_catalogs) do
-          Map.put(reasons, token, :conflicting_catalog_scope)
-        else
-          reasons
-        end
+      Enum.reduce(state.active, state.discard_reasons, fn
+        {token, %{session: session, key: existing_key}}, reasons ->
+          if catalog_session_conflict?(
+               session,
+               existing_key,
+               requested_key,
+               connection,
+               required_catalogs
+             ) do
+            Map.put(reasons, token, :conflicting_catalog_scope)
+          else
+            reasons
+          end
       end)
 
     %__MODULE__{state | idle: idle, discard_reasons: discard_reasons}
   end
 
-  defp catalog_session_conflict?(%Session{} = session, connection, required_catalogs) do
+  defp catalog_session_conflict?(
+         %Session{} = session,
+         %PoolKey{} = existing_key,
+         %PoolKey{} = requested_key,
+         connection,
+         required_catalogs
+       ) do
     existing_catalogs = normalize_catalogs(session.required_catalogs)
 
-    session.resolved.name == connection and existing_catalogs != required_catalogs and
+    existing_key.hash != requested_key.hash and session.resolved.name == connection and
       overlapping_catalogs?(existing_catalogs, required_catalogs)
   end
 
