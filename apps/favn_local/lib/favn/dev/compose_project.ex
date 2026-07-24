@@ -9,7 +9,7 @@ defmodule Favn.Dev.ComposeProject do
 
   alias Favn.Dev.{ComposeEnv, Config, Paths}
 
-  @postgres_image "postgres:18"
+  @postgres_image "postgres:18-trixie"
   @safe_identifier ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\z/
   @environment_key ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/
   @max_runner_environment 512
@@ -19,7 +19,7 @@ defmodule Favn.Dev.ComposeProject do
           required(String.t()) => String.t() | pos_integer()
         }
 
-  @doc "Returns the supported floating PostgreSQL 18 image tag."
+  @doc "Returns the supported floating PostgreSQL 18 Trixie image tag."
   @spec postgres_image() :: String.t()
   def postgres_image, do: @postgres_image
 

@@ -2,7 +2,7 @@
 
 The supported local topology mirrors production:
 
-1. PostgreSQL 18;
+1. PostgreSQL 18 on the floating `postgres:18-trixie` tag;
 2. the Favn-published control-plane image; and
 3. a customer-built runner image.
 
@@ -28,6 +28,19 @@ and runner template under `deploy/runner/`. Both are starting points owned by
 the customer and are never overwritten after edits. The Compose default binds
 the repository `.data/` directory into the runner and uses a Docker-managed
 PostgreSQL volume.
+
+New local PostgreSQL volumes are initialized with UTF-8 and PostgreSQL's
+built-in `C.UTF-8` locale provider. They therefore do not inherit collation
+versions from the image's operating-system libc. The init arguments run only
+when PostgreSQL creates a new cluster. Favn does not delete, reindex, or refresh
+existing databases. Existing libc-based volumes must be recreated deliberately
+when their data is disposable, or repaired explicitly using the appropriate
+PostgreSQL collation maintenance procedure.
+
+Every service in the generated local template, including the one-shot
+operations services, uses Docker's bounded `local` logging driver with three
+10 MB files. This is a local scaffold default only. The single-host production
+template leaves logging ownership to the deployment's external logging system.
 
 `mix favn.dev` generates the opaque local release ID, runs `docker build --pull`
 with the customer Dockerfile, and selects an automatic project-scoped image

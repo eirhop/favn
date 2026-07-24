@@ -59,6 +59,7 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
       runner_opts: Keyword.get(opts, :runner_opts, runtime_config.runner_client_opts),
       load_manifest: Keyword.get(opts, :load_manifest, &load_active_manifest/1),
       task: nil,
+      schedule: nil,
       result: {:error, :active_manifest_reconciliation_pending},
       checked_at_ms: nil,
       stale_after_ms:
@@ -69,8 +70,7 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
         )
     }
 
-    send(self(), :reconcile)
-    {:ok, state}
+    {:ok, schedule(state, 0)}
   end
 
   @impl true
@@ -92,20 +92,24 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
 
   def handle_call(:refresh, _from, state) do
     state = cancel_task(state)
-    send(self(), :reconcile)
 
     {:reply, :ok,
-     %{
-       state
-       | result: {:error, :active_manifest_reconciliation_pending},
-         checked_at_ms: nil
-     }}
+     state
+     |> Map.merge(%{
+       result: {:error, :active_manifest_reconciliation_pending},
+       checked_at_ms: nil
+     })
+     |> schedule(0)}
   end
 
   @impl true
-  def handle_info(:reconcile, %{task: nil} = state) do
+  def handle_info(
+        {:reconcile, token},
+        %{task: nil, schedule: %{token: token}} = state
+      ) do
     parent = self()
-    token = make_ref()
+    task_token = make_ref()
+    state = %{state | schedule: nil}
 
     case Task.Supervisor.start_child(state.task_supervisor, fn ->
            result =
@@ -114,12 +118,17 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
                state.lifecycle
              )
 
-           send(parent, {:reconcile_result, token, result})
+           send(parent, {:reconcile_result, task_token, result})
          end) do
       {:ok, pid} ->
         monitor = Process.monitor(pid)
-        timeout = Process.send_after(self(), {:reconcile_timeout, token}, state.timeout_ms)
-        {:noreply, %{state | task: %{pid: pid, monitor: monitor, timeout: timeout, token: token}}}
+        timeout = Process.send_after(self(), {:reconcile_timeout, task_token}, state.timeout_ms)
+
+        {:noreply,
+         %{
+           state
+           | task: %{pid: pid, monitor: monitor, timeout: timeout, token: task_token}
+         }}
 
       {:error, reason} ->
         _ = reason
@@ -132,11 +141,11 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
            result: result,
            checked_at_ms: System.monotonic_time(:millisecond)
          })
-         |> schedule()}
+         |> schedule(state.interval_ms)}
     end
   end
 
-  def handle_info(:reconcile, state), do: {:noreply, state}
+  def handle_info({:reconcile, _stale_token}, state), do: {:noreply, state}
 
   def handle_info(
         {:reconcile_result, token, result},
@@ -153,7 +162,7 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
        result: result,
        checked_at_ms: System.monotonic_time(:millisecond)
      })
-     |> schedule()}
+     |> schedule(state.interval_ms)}
   end
 
   def handle_info({:reconcile_timeout, token}, %{task: %{token: token} = task} = state) do
@@ -169,7 +178,7 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
        result: result,
        checked_at_ms: System.monotonic_time(:millisecond)
      })
-     |> schedule()}
+     |> schedule(state.interval_ms)}
   end
 
   def handle_info({:DOWN, monitor, :process, _pid, reason}, %{task: %{monitor: monitor}} = state) do
@@ -184,7 +193,7 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
        result: result,
        checked_at_ms: System.monotonic_time(:millisecond)
      })
-     |> schedule()}
+     |> schedule(state.interval_ms)}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -243,9 +252,18 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
     |> ManifestStore.get_active_manifest()
   end
 
-  defp schedule(state) do
-    Process.send_after(self(), :reconcile, state.interval_ms)
-    state
+  defp schedule(state, delay_ms) do
+    state = cancel_schedule(state)
+    token = make_ref()
+    timer = Process.send_after(self(), {:reconcile, token}, delay_ms)
+    %{state | schedule: %{timer: timer, token: token}}
+  end
+
+  defp cancel_schedule(%{schedule: nil} = state), do: state
+
+  defp cancel_schedule(%{schedule: schedule} = state) do
+    _ = Process.cancel_timer(schedule.timer)
+    %{state | schedule: nil}
   end
 
   defp cancel_task(%{task: nil} = state), do: state
@@ -274,7 +292,8 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
     OperationalEvents.emit(
       :active_manifest_reconciliation_completed,
       measurements,
-      %{status: status, timeout_ms: timeout_ms}
+      %{status: status, timeout_ms: timeout_ms},
+      level: if(status == :ok, do: :debug, else: :warning)
     )
   end
 end

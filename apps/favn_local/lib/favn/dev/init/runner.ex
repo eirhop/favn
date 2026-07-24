@@ -546,6 +546,7 @@ defmodule Favn.Dev.Init.Runner do
       *) echo "invalid FAVN_LOG_LEVEL" >&2; exit 1 ;;
     esac
 
+    export FAVN_LOG_LEVEL
     export RELEASE_DISTRIBUTION=name
     export RELEASE_NODE="$FAVN_RUNNER_NODE"
     export RELEASE_COOKIE="$FAVN_DISTRIBUTION_COOKIE"

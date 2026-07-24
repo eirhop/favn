@@ -332,8 +332,9 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
              )
 
     for {release_command, expected} <- [
-          {"start", "-kernel inet_dist_listen_min 9101 inet_dist_listen_max 9101"},
-          {"eval", ""}
+          {"start",
+           "-kernel logger_level info -kernel inet_dist_listen_min 9101 inet_dist_listen_max 9101"},
+          {"eval", "-kernel logger_level info"}
         ] do
       assert {erl_aflags, 0} =
                System.cmd(
@@ -350,6 +351,37 @@ defmodule Favn.Dev.Build.ControlPlaneTest do
                )
 
       assert String.trim(erl_aflags) == expected
+    end
+
+    assert {debug_flags, 0} =
+             System.cmd(
+               "sh",
+               ["-c", ~s(. "$1"; printf '%s|%s' "$FAVN_LOG_LEVEL" "$ERL_AFLAGS"), "sh", release_env],
+               env: [
+                 {"FAVN_LOG_LEVEL", "debug"},
+                 {"ERL_AFLAGS", ""},
+                 {"FAVN_CONTROL_PLANE_NODE", "control@control.internal"},
+                 {"FAVN_DISTRIBUTION_COOKIE", valid_cookie},
+                 {"FAVN_BEAM_DISTRIBUTION_PORT", "9101"}
+               ],
+               stderr_to_stdout: true
+             )
+
+    assert debug_flags == "debug| -kernel logger_level debug"
+
+    for invalid_level <- ["verbose", "debug -s init stop"] do
+      assert {output, 1} =
+               System.cmd("sh", [release_env],
+                 env: [
+                   {"FAVN_LOG_LEVEL", invalid_level},
+                   {"FAVN_CONTROL_PLANE_NODE", "control@control.internal"},
+                   {"FAVN_DISTRIBUTION_COOKIE", valid_cookie},
+                   {"FAVN_BEAM_DISTRIBUTION_PORT", "9101"}
+                 ],
+                 stderr_to_stdout: true
+               )
+
+      assert output =~ "invalid FAVN_LOG_LEVEL"
     end
 
     for invalid_node <- ["control@localhost", "control@127.2.3.4", "control@@internal", "control"] do
