@@ -113,7 +113,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Error
-  alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.Persistence.Selectors.ActorByUsername
   alias FavnOrchestrator.Persistence.Selectors.SessionByTokenHash
@@ -163,33 +162,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @service_token "B7yN3kQ9wR4mT8xZ2cV6pL1sD5fH0jA7"
-
-  defmodule FailingBackfillStore do
-    @behaviour FavnOrchestrator.Persistence.BackfillStore
-
-    alias FavnOrchestrator.Persistence.Error
-
-    @impl true
-    def start_plan(_command), do: {:error, Error.new(:invalid, "injected plan failure")}
-
-    @impl true
-    defdelegate append_plan_batch(command), to: FavnStoragePostgres.Instrumented.Backfills
-
-    @impl true
-    defdelegate activate_plan(command), to: FavnStoragePostgres.Instrumented.Backfills
-
-    @impl true
-    defdelegate claim_windows(command), to: FavnStoragePostgres.Instrumented.Backfills
-
-    @impl true
-    defdelegate transition_window(command), to: FavnStoragePostgres.Instrumented.Backfills
-
-    @impl true
-    defdelegate get_backfill(query), to: FavnStoragePostgres.Instrumented.Backfills
-
-    @impl true
-    defdelegate page_windows(query), to: FavnStoragePostgres.Instrumented.Backfills
-  end
 
   setup_all do
     url =
@@ -2376,7 +2348,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       "kind" => "day",
       "from" => "2026-07-01",
       "to" => "2026-07-03",
-      "timezone" => "Etc/UTC"
+      "timezone" => "Europe/Oslo"
     }
 
     assert {:ok, %{window_count: 3, target_id: target_id, window_selection: window_selection}} =
@@ -2405,6 +2377,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert backfill.status == :ready
     assert backfill.expected_window_count == 3
     assert backfill.appended_window_count == 3
+    assert backfill.range_start == ~U[2026-06-30 22:00:00.000000Z]
+    assert backfill.range_end == ~U[2026-07-03 22:00:00.000000Z]
 
     assert {:ok, pipeline_root} =
              RunStore.get_run(%GetRun{
@@ -2424,10 +2398,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   test "failed pipeline backfill planning marks its committed root as failed", fixture do
-    stores = %{Backend.stores() | backfills: FailingBackfillStore}
-    runtime = %PersistenceRuntime{backend: Backend, options: [], stores: stores}
-    start_supervised!({PersistenceRuntime, runtime})
-
     root_run_id = "run-backfill-failed-#{System.unique_integer([:positive])}"
 
     range = %{
@@ -2437,13 +2407,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       "timezone" => "Etc/UTC"
     }
 
-    assert {:error, %Error{kind: :invalid, message: "injected plan failure"}} =
+    assert {:error, %Error{kind: :invalid, message: "backfill plan metadata is invalid"}} =
              Backfills.submit_pipeline(
                fixture.workspace_context,
                fixture.version.manifest_version_id,
                fixture.pipeline_target_id,
                range,
-               root_run_id: root_run_id
+               root_run_id: root_run_id,
+               metadata: %{"large" => String.duplicate("x", 70_000)}
              )
 
     assert {:ok, root} =
@@ -2457,7 +2428,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert root.result[:status] == "failed"
     assert root.result["type"] == "backfill_submission_failed"
     assert root.error["kind"] == "invalid"
-    assert root.error["message"] == "injected plan failure"
+    assert root.error["message"] == "backfill plan metadata is invalid"
   end
 
   test "asset backfills use the same resumable V2 ledger", fixture do

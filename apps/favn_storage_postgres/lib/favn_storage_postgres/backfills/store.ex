@@ -646,7 +646,11 @@ defmodule FavnStoragePostgres.Backfills.Store do
 
   defp decode_datetime(_value), do: {:error, :invalid_datetime}
 
-  defp database_datetime(%DateTime{} = datetime), do: DateTime.add(datetime, 0, :microsecond)
+  defp database_datetime(%DateTime{} = datetime) do
+    datetime
+    |> DateTime.shift_zone!("Etc/UTC")
+    |> DateTime.add(0, :microsecond)
+  end
 
   defp database_now! do
     %{rows: [[now]]} = SQL.query!(Repo, "SELECT clock_timestamp()", [])
