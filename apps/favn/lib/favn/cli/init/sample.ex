@@ -137,7 +137,7 @@ defmodule Favn.CLI.Init.Sample do
   defp ensure_duckdb_dependency(project) do
     case File.read(project.mix_exs) do
       {:ok, content} ->
-        if String.contains?(content, ":favn_duckdb") do
+        if String.contains?(content, ":favn_duckdb_adbc") do
           {:ok, add_path(empty_result(), :existing, relative(project.root_dir, project.mix_exs))}
         else
           case duckdb_dependency_line(project) do
@@ -153,12 +153,12 @@ defmodule Favn.CLI.Init.Sample do
 
   defp duckdb_dependency_line(project) do
     with {:ok, favn_path} <- favn_dependency_path(),
-         duckdb_path <- Path.expand("../favn_duckdb", favn_path),
+         duckdb_path <- Path.expand("../favn_duckdb_adbc", favn_path),
          true <- File.regular?(Path.join(duckdb_path, "mix.exs")) do
       relative_path = Path.relative_to(duckdb_path, project.root_dir)
-      {:ok, ~s({:favn_duckdb, path: "#{relative_path}"})}
+      {:ok, ~s({:favn_duckdb_adbc, path: "#{relative_path}"})}
     else
-      _unavailable -> {:error, :favn_duckdb_source_unavailable}
+      _unavailable -> {:error, :favn_duckdb_adbc_source_unavailable}
     end
   end
 
@@ -208,7 +208,7 @@ defmodule Favn.CLI.Init.Sample do
   end
 
   defp dependency_warning(reason) do
-    "could not resolve local favn_duckdb path (#{inspect(reason)}); add the favn_duckdb dependency manually"
+    "could not resolve local favn_duckdb_adbc path (#{inspect(reason)}); add the favn_duckdb_adbc dependency manually"
   end
 
   defp write_file(path, content, root_dir) do
@@ -276,11 +276,21 @@ defmodule Favn.CLI.Init.Sample do
         ]
       ],
       runner_plugins: [
-        {FavnDuckdb, execution_mode: :in_process}
+        {FavnDuckdbADBC, execution_mode: :in_process}
       ],
       dev: [
         workspace_id: "local-dev"
       ]
+
+    case System.get_env("DUCKDB_ADBC_DRIVER") do
+      driver when is_binary(driver) and driver != "" ->
+        config :favn, :duckdb_adbc,
+          driver: driver,
+          entrypoint: "duckdb_adbc_init"
+
+      _missing ->
+        :ok
+    end
     '''
   end
 
@@ -301,7 +311,7 @@ defmodule Favn.CLI.Init.Sample do
       def definition do
         %Favn.Connection.Definition{
           name: :important_lakehouse,
-          adapter: Favn.SQL.Adapter.DuckDB,
+          adapter: Favn.SQL.Adapter.DuckDB.ADBC,
           doc: "Local DuckDB lakehouse session for Favn smoke runs",
           metadata: %{scope: :local_smoke},
           config_schema: duckdb_config_schema_fields()
@@ -309,7 +319,7 @@ defmodule Favn.CLI.Init.Sample do
       end
 
       defp duckdb_config_schema_fields do
-        adapter = Module.concat([Favn.SQL.Adapter, DuckDB])
+        adapter = Module.concat([Favn.SQL.Adapter.DuckDB, ADBC])
 
         if Code.ensure_loaded?(adapter) and function_exported?(adapter, :config_schema_fields, 0) do
           apply(adapter, :config_schema_fields, [])
@@ -514,6 +524,7 @@ defmodule Favn.CLI.Init.Sample do
     # environment tooling after replacing the example values.
     FAVN_DATABASE_URL=ecto://postgres:postgres@127.0.0.1/favn_dev
     FAVN_RUNTIME_INPUT_PIN_KEY=replace-with-32-random-bytes-or-base64
+    DUCKDB_ADBC_DRIVER=/absolute/path/to/libduckdb.so
     """
   end
 

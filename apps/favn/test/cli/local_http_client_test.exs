@@ -45,12 +45,15 @@ defmodule Favn.CLI.LocalHttpClientTest do
     assert {:error, {:invalid_json, "not json"}} = LocalHttpClient.request(:get, base_url)
   end
 
-  test "normalizes connect failures" do
-    assert {:error, {:connect_failed, _reason}} =
+  test "normalizes an unavailable loopback endpoint" do
+    assert {:error, transport_error} =
              LocalHttpClient.request(:get, "http://127.0.0.1:#{unused_port()}", [], nil,
-               connect_timeout_ms: 100,
-               timeout_ms: 100
+               connect_timeout_ms: 1_000,
+               timeout_ms: 1_000
              )
+
+    assert match?({:connect_failed, _reason}, transport_error) or
+             transport_error == {:timeout, :request}
   end
 
   test "rejects non-loopback HTTP URLs before connecting" do

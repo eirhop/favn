@@ -10,7 +10,7 @@ Use these pages to find ownership and test locations for an umbrella application
 - `favn_local.md`: developer tooling and deployment builders
 - `favn_view.md`: Phoenix/LiveView boundary
 - `favn_sql_runtime.md`: SQL session and execution boundary
-- `favn_duckdb.md` and `favn_duckdb_adbc.md`: DuckDB integrations
+- `favn_duckdb_adbc.md`: DuckDB integration
 - `favn_test_support.md`: shared test fixtures and helpers
 
 Current persistence implementation is documented under `docs/storage/postgresql/`;

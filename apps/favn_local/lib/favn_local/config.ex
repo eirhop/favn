@@ -139,7 +139,8 @@ defmodule FavnLocal.Config do
       runner_node: config.runner_node,
       runner_module: FavnRunner,
       runner_rpc_timeout_ms: 15_000,
-      runner_diagnostics_timeout_ms: 5_000
+      runner_diagnostics_timeout_ms: 5_000,
+      runner_identity_source: :source
     )
 
     Application.put_env(

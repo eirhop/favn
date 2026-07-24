@@ -68,6 +68,13 @@ config :argon2_elixir,
   m_cost: if(Mix.env() == :test, do: 8, else: 15),
   parallelism: 1
 
+config :favn_runner,
+  build_profile: if(config_env() in [:dev, :test], do: "source", else: "prod")
+
+if match?({:win32, _}, :os.type()) do
+  config :phoenix_live_view, :colocated_assets, disable_symlink_warning: true
+end
+
 config :favn_orchestrator,
   api_server: [
     enabled: false,

@@ -7,7 +7,7 @@ defmodule FavnReferenceWorkload.Connections.Warehouse do
   - `@behaviour Favn.Connection` means this module must return a connection
     definition.
   - `name: :warehouse` is the symbolic name assets refer to.
-  - `adapter: Favn.SQL.Adapter.DuckDB` chooses DuckDB as execution backend.
+  - `adapter: Favn.SQL.Adapter.DuckDB.ADBC` chooses DuckDB through ADBC.
   - `config_schema` declares required runtime config (`:database` path).
 
   Alternative configurations:
@@ -23,7 +23,7 @@ defmodule FavnReferenceWorkload.Connections.Warehouse do
   def definition do
     %Favn.Connection.Definition{
       name: :warehouse,
-      adapter: Favn.SQL.Adapter.DuckDB,
+      adapter: Favn.SQL.Adapter.DuckDB.ADBC,
       doc: "Reference workload DuckDB warehouse",
       metadata: %{scope: :reference_workload},
       config_schema: [

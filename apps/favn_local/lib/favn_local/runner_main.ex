@@ -3,6 +3,7 @@ defmodule FavnLocal.RunnerMain do
 
   @spec run(Path.t()) :: no_return()
   def run(root_dir) when is_binary(root_dir) do
+    {:ok, _applications} = Application.ensure_all_started(:mix)
     :ok = load_project_config(root_dir)
 
     case Application.ensure_all_started(:favn_runner) do

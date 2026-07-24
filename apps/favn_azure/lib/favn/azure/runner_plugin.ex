@@ -7,7 +7,7 @@ defmodule Favn.Azure.RunnerPlugin do
       config :favn,
         runner_plugins: [
           Favn.Azure.RunnerPlugin,
-          FavnDuckdb
+          FavnDuckdbADBC
         ]
 
   Supported options are `:refresh_before_seconds`, `:fetch_timeout`,

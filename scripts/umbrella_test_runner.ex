@@ -11,7 +11,6 @@ defmodule Favn.UmbrellaTestRunner do
     :favn_runner,
     :favn_orchestrator,
     :favn_storage_postgres,
-    :favn_duckdb,
     :favn_duckdb_adbc,
     :favn_local,
     :favn_view

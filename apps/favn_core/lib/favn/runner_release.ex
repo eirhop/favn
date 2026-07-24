@@ -1,18 +1,19 @@
 defmodule Favn.RunnerRelease do
   @moduledoc """
-  Operator-owned identity of one customer runner build.
+  Identity of one customer runner build or local source runtime.
 
   Favn treats the release ID as an opaque immutable binding between a runner
-  image and the manifests that image may execute. Local tooling generates the
-  ID when it invokes the customer-owned Dockerfile. Production CI may choose
-  the ID explicitly. Favn validates exact image/manifest alignment without
-  making the ID a content claim.
+  and the manifests that runner may execute. Production identities describe
+  customer-owned Linux images. Source identities describe the host runtime
+  started by local development tooling. Favn validates exact
+  runner/manifest alignment without making the ID a content claim.
   """
 
   alias Favn.Manifest.Compatibility
 
   @target "linux/amd64"
-  @build_profile "prod"
+  @production_build_profile "prod"
+  @source_build_profile "source"
   @runner_release_id ~r/\Arr_[0-9a-f]{64}\z/
   @fallback_favn_version "0.5.0-dev"
 
@@ -31,7 +32,7 @@ defmodule Favn.RunnerRelease do
     :otp_release,
     :target,
     :runner_release_id,
-    build_profile: @build_profile
+    build_profile: @production_build_profile
   ]
 
   @type t :: %__MODULE__{
@@ -61,8 +62,8 @@ defmodule Favn.RunnerRelease do
          {:ok, elixir_version} <- required_string(attrs, :elixir_version),
          {:ok, otp_release} <- required_string(attrs, :otp_release),
          {:ok, target} <- required_string(attrs, :target),
-         :ok <- validate_target(target),
-         {:ok, build_profile} <- optional_build_profile(attrs) do
+         {:ok, build_profile} <- optional_build_profile(attrs),
+         :ok <- validate_target(target, build_profile) do
       {:ok,
        %__MODULE__{
          favn_version: favn_version,
@@ -145,8 +146,9 @@ defmodule Favn.RunnerRelease do
   end
 
   defp optional_build_profile(attrs) do
-    case Map.get(attrs, :build_profile, @build_profile) do
-      @build_profile -> {:ok, @build_profile}
+    case Map.get(attrs, :build_profile, @production_build_profile) do
+      @production_build_profile -> {:ok, @production_build_profile}
+      @source_build_profile -> {:ok, @source_build_profile}
       _value -> {:error, {:invalid_runner_release_field, :build_profile, :unsupported_value}}
     end
   end
@@ -158,8 +160,9 @@ defmodule Favn.RunnerRelease do
         {:error, {:invalid_runner_release_field, :runner_contract_version, :unsupported_value}}
   end
 
-  defp validate_target(@target), do: :ok
+  defp validate_target(@target, @production_build_profile), do: :ok
+  defp validate_target(_target, @source_build_profile), do: :ok
 
-  defp validate_target(_value),
+  defp validate_target(_value, @production_build_profile),
     do: {:error, {:invalid_runner_release_field, :target, :unsupported_value}}
 end

@@ -16,7 +16,7 @@ It provides:
 config :favn,
   runner_plugins: [
     Favn.Azure.RunnerPlugin,
-    {FavnDuckdb, execution_mode: :in_process}
+    {FavnDuckdbADBC, execution_mode: :in_process}
   ]
 ```
 

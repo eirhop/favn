@@ -14,6 +14,12 @@ during development or publish it for the customer.
 | Manifest version ID | Immutable authored manifest and package identity |
 | Required runner release ID | Exact runner release permitted to execute a manifest |
 
+A production runner identity always has build profile `prod` and target
+`linux/amd64`. Docker-free local development uses build profile `source` and
+records the actual host target, such as `windows/amd64` or `linux/amd64`.
+Source identities preserve manifest/runner alignment but do not describe a
+deployable production artifact.
+
 A runner release ID is `rr_` plus 64 lowercase hexadecimal characters. Assign a
 new ID whenever executable runner behavior may have changed: code,
 dependencies, plugins, native libraries, compile-time configuration, Favn,

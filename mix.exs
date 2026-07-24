@@ -11,7 +11,6 @@ defmodule FavnUmbrella.MixProject do
         :favn_authoring,
         :favn_azure,
         :favn_core,
-        :favn_duckdb,
         :favn_duckdb_adbc,
         :favn_local,
         :favn_orchestrator,
@@ -72,7 +71,6 @@ defmodule FavnUmbrella.MixProject do
       ],
       "test.slow": [
         "do --app favn cmd mix test --no-compile --only slow --timeout 1200000",
-        "do --app favn_duckdb cmd mix test --no-compile --only slow --timeout 1200000",
         "do --app favn_storage_postgres cmd mix test --no-compile --only slow --timeout 1200000"
       ]
     ]

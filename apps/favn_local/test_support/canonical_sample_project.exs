@@ -67,7 +67,8 @@ defmodule Favn.Local.CanonicalSampleProject do
       defp deps do
         [
           {:favn, path: #{inspect(Path.join(@repo_root, "apps/favn"))}},
-          {:favn_duckdb, path: #{inspect(Path.join(@repo_root, "apps/favn_duckdb"))}}
+          {:favn_duckdb_adbc,
+           path: #{inspect(Path.join(@repo_root, "apps/favn_duckdb_adbc"))}}
         ]
       end
     end
@@ -103,8 +104,18 @@ defmodule Favn.Local.CanonicalSampleProject do
         ]
       ],
       runner_plugins: [
-        {FavnDuckdb, execution_mode: :in_process}
+        {FavnDuckdbADBC, execution_mode: :in_process}
       ]
+
+    case System.get_env("DUCKDB_ADBC_DRIVER") do
+      driver when is_binary(driver) and driver != "" ->
+        config :favn, :duckdb_adbc,
+          driver: driver,
+          entrypoint: "duckdb_adbc_init"
+
+      _missing ->
+        :ok
+    end
     """
   end
 
@@ -119,10 +130,10 @@ defmodule Favn.Local.CanonicalSampleProject do
       def definition do
         %Favn.Connection.Definition{
           name: :issue262_warehouse,
-          adapter: Favn.SQL.Adapter.DuckDB,
+          adapter: Favn.SQL.Adapter.DuckDB.ADBC,
           doc: "Issue #262 canonical DuckDB warehouse",
           metadata: %{scope: :issue262_acceptance},
-          config_schema: Favn.SQL.Adapter.DuckDB.config_schema_fields()
+          config_schema: Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields()
         }
       end
     end

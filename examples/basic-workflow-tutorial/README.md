@@ -352,7 +352,7 @@ Current plugin config:
 ```elixir
 config :favn,
   runner_plugins: [
-    {FavnDuckdb, execution_mode: :in_process}
+    {FavnDuckdbADBC, execution_mode: :in_process}
   ]
 ```
 

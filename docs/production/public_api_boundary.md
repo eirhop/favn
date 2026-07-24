@@ -17,9 +17,8 @@ Use `favn` for:
 - `Favn.SQLClient` access to named Favn connections from authored Elixir code
 - supported `mix favn.*` local commands
 
-Add `favn_duckdb` when the project needs bundled local/in-memory DuckDB
-execution, or `favn_duckdb_adbc` when the project needs ADBC-backed DuckDB
-execution with explicit shared-library/driver control:
+Add `favn_duckdb_adbc` when the project needs DuckDB execution through ADBC
+with explicit shared-library/driver control:
 
 - DuckDB-backed SQL asset materialization
 - DuckDB named connections used through `Favn.SQLClient`
@@ -50,8 +49,7 @@ The other umbrella apps are not ordinary user dependencies:
 
 Before Hex publishing, local private consumer projects may use path dependencies
 from one checkout. The supported shape is `favn` plus optional plugins such as
-`favn_duckdb_adbc`, `favn_duckdb`, or `favn_azure`, not manually listing
-internal runtime apps.
+`favn_duckdb_adbc` or `favn_azure`, not manually listing internal runtime apps.
 
 ## Stable V1 API Focus
 

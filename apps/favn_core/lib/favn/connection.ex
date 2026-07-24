@@ -58,14 +58,15 @@ defmodule Favn.Connection do
   DuckDB connections can use adapter-owned schema fields for the DuckDB session
   database and bootstrap SQL:
 
-  `Favn.SQL.Adapter.DuckDB` is provided by the public `:favn_duckdb`
-  adapter/plugin dependency. Consumers should add `:favn_duckdb` for DuckDB
-  execution rather than depending on internal SQL runtime or runner apps directly.
+  `Favn.SQL.Adapter.DuckDB.ADBC` is provided by the public
+  `:favn_duckdb_adbc` adapter/plugin dependency. Consumers should add
+  `:favn_duckdb_adbc` for DuckDB execution rather than depending on internal
+  SQL runtime or runner apps directly.
 
       %Favn.Connection.Definition{
         name: :warehouse,
-        adapter: Favn.SQL.Adapter.DuckDB,
-        config_schema: Favn.SQL.Adapter.DuckDB.config_schema_fields()
+        adapter: Favn.SQL.Adapter.DuckDB.ADBC,
+        config_schema: Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields()
       }
 
   Runtime config then uses `open: [database: ...]` for the DuckDB session

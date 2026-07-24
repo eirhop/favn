@@ -33,9 +33,16 @@ defmodule FavnLocal.LocatorTest do
     assert state.workspace_id == "local-dev"
     assert state.runner_release_id == context.config.runner_release_id
 
+    locator = Path.join([context.root_dir, ".favn", "local", "state.json"])
     credentials = Path.join([context.root_dir, ".favn", "local", "credentials.json"])
-    assert {:ok, %{mode: mode}} = File.stat(credentials)
-    assert Bitwise.band(mode, 0o777) == 0o600
+
+    refute File.read!(locator) =~ context.config.service_token
+    assert File.read!(credentials) =~ context.config.service_token
+
+    if match?({:unix, _}, :os.type()) do
+      assert {:ok, %{mode: mode}} = File.stat(credentials)
+      assert Bitwise.band(mode, 0o777) == 0o600
+    end
   end
 
   test "refuses to silently reuse Docker-era generated state", context do

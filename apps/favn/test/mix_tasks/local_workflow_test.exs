@@ -81,12 +81,14 @@ defmodule Mix.Tasks.Favn.LocalWorkflowTest do
     assert config =~ ~s(database_path: ".data/raw.duckdb")
     assert config =~ ~s(database_path: ".data/mart.duckdb")
     assert config =~ "dev: ["
+    assert config =~ ~s|System.get_env("DUCKDB_ADBC_DRIVER")|
     refute config =~ "FAVN_LOCAL_SAMPLE_"
     refute config =~ "local: ["
 
     assert env_example =~ "Favn does not load this file"
     assert env_example =~ "FAVN_DATABASE_URL="
     assert env_example =~ "FAVN_RUNTIME_INPUT_PIN_KEY="
+    assert env_example =~ "DUCKDB_ADBC_DRIVER="
   end
 
   test "deployment template is copied once and remains customer-owned" do

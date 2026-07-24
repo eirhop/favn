@@ -30,19 +30,7 @@ SQL asset tables and warehouse data are separate from Favn's runtime records.
 
 ## DuckDB Plugin
 
-Use `:favn_duckdb` for the standard bundled DuckDB path:
-
-```elixir
-def deps do
-  [
-    {:favn, path: "../favn/apps/favn"},
-    {:favn_duckdb, path: "../favn/apps/favn_duckdb"}
-  ]
-end
-```
-
-Use `:favn_duckdb_adbc` when a deployment needs explicit DuckDB shared-library or
-driver control:
+Use `:favn_duckdb_adbc` for DuckDB:
 
 ```elixir
 def deps do
@@ -52,6 +40,9 @@ def deps do
   ]
 end
 ```
+
+The adapter uses Arrow Database Connectivity and requires a DuckDB
+ADBC-capable shared library in the runner environment.
 
 Do not add runtime implementation apps directly for DuckDB support.
 
@@ -65,8 +56,8 @@ defmodule MyApp.Connections.Warehouse do
   def definition do
     %Favn.Connection.Definition{
       name: :warehouse,
-      adapter: Favn.SQL.Adapter.DuckDB,
-      config_schema: Favn.SQL.Adapter.DuckDB.config_schema_fields()
+      adapter: Favn.SQL.Adapter.DuckDB.ADBC,
+      config_schema: Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields()
     }
   end
 end
@@ -98,7 +89,7 @@ option reference.
 
 | Problem | What to do |
 | --- | --- |
-| DuckDB dependency is missing | Add `:favn_duckdb` or `:favn_duckdb_adbc`. |
+| DuckDB dependency is missing | Add `:favn_duckdb_adbc`. |
 | Connection cannot load | Check the `Favn.Connection` module and discovery config. |
 | Missing `open.database` | Add `open: [database: ...]`. |
 | DuckDB session script fails | Read the reported startup/resource id, then run the redacted SQL directly against the pinned DuckDB version. |

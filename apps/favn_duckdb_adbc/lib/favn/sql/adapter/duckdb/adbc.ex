@@ -72,9 +72,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   ## Native session scripts
 
-  This adapter supports the same `open: [database: ...]` and native
-  `duckdb: [startup: ..., resources: ..., catalogs: ...]` runtime config as
-  `Favn.SQL.Adapter.DuckDB`:
+  This adapter supports `open: [database: ...]` and native
+  `duckdb: [startup: ..., resources: ..., catalogs: ...]` runtime config:
 
       duckdb: [
         startup: [file: {:priv, :my_app, "duckdb/startup.sql"}],
@@ -491,10 +490,18 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     policy = ConcurrencyPolicy.catalog(resolved, catalog.name, catalog.write_concurrency)
 
     scope =
-      if catalog.write_scope, do: {:duckdb_write_scope, catalog.write_scope}, else: policy.scope
+      if catalog.write_scope,
+        do: {:duckdb_write_scope, normalize_write_scope(catalog.write_scope)},
+        else: policy.scope
 
     %{policy | scope: scope}
   end
+
+  defp normalize_write_scope(scope) when is_binary(scope) do
+    if Path.type(scope) == :absolute, do: Path.expand(scope), else: scope
+  end
+
+  defp normalize_write_scope(scope), do: scope
 
   defp normalize_shared_policy_limits(policies) do
     limits_by_scope =

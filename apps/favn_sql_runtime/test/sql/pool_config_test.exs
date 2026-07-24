@@ -37,7 +37,7 @@ defmodule FavnSQLRuntime.SQLPoolConfigTest do
   test "connection validator reserves and normalizes pool config" do
     definition = %Definition{
       name: :warehouse,
-      adapter: Favn.SQL.Adapter.DuckDB,
+      adapter: Favn.SQL.Adapter.DuckDB.ADBC,
       module: __MODULE__,
       config_schema: [%{key: :database, required: true, type: :path}]
     }

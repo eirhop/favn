@@ -28,7 +28,7 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibilityTest do
         favn_version: Keyword.get(opts, :favn_version, release.favn_version),
         runner_contract_version:
           Keyword.get(opts, :runner_contract_version, release.runner_contract_version),
-        identity_source: :operator,
+        identity_source: Keyword.get(opts, :identity_source, :operator),
         node_name: Keyword.get(opts, :node_name, "runner@runner.internal")
       }
 
@@ -90,6 +90,19 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibilityTest do
                runner_release_id: primary,
                runner_node: :expected@runner,
                node_name: "different@runner"
+             )
+
+    assert :ok =
+             RunnerReleaseCompatibility.verify_runner(ReadyClient, version,
+               runner_release_id: primary,
+               identity_source: :source,
+               runner_identity_source: :source
+             )
+
+    assert {:error, :runner_release_info_unavailable} =
+             RunnerReleaseCompatibility.verify_runner(ReadyClient, version,
+               runner_release_id: primary,
+               identity_source: :source
              )
   end
 

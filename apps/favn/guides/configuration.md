@@ -124,8 +124,8 @@ defmodule MyApp.Connections.Warehouse do
   def definition do
     %Favn.Connection.Definition{
       name: :warehouse,
-      adapter: Favn.SQL.Adapter.DuckDB,
-      config_schema: Favn.SQL.Adapter.DuckDB.config_schema_fields()
+      adapter: Favn.SQL.Adapter.DuckDB.ADBC,
+      config_schema: Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields()
     }
   end
 end
@@ -211,11 +211,9 @@ The generated DuckDB sample uses its execution plugin:
 ```elixir
 config :favn,
   runner_plugins: [
-    {FavnDuckdb, execution_mode: :in_process}
+    {FavnDuckdbADBC, execution_mode: :in_process}
   ]
 ```
-
-Use `FavnDuckdbADBC` instead when using the ADBC DuckDB plugin.
 
 For ordinary consumer-owned OTP children, use the built-in simple path:
 
@@ -245,7 +243,7 @@ The optional Azure package contributes a cached credential service:
 config :favn,
   runner_plugins: [
     Favn.Azure.RunnerPlugin,
-    {FavnDuckdb, execution_mode: :in_process}
+    {FavnDuckdbADBC, execution_mode: :in_process}
   ]
 ```
 
@@ -375,18 +373,23 @@ with `mix favn.reload --runner-image IMAGE`.
 
 ## DuckDB ADBC Config
 
-Use `:favn_duckdb_adbc` when a deployment needs explicit DuckDB driver control.
+Use `:favn_duckdb_adbc` for DuckDB execution and explicit driver control.
 
-Global driver config:
+Read the driver path from the deployment environment instead of committing a
+machine-specific path:
 
 ```elixir
+driver = System.fetch_env!("DUCKDB_ADBC_DRIVER")
+
 config :favn, :duckdb_adbc,
-  driver: "/opt/duckdb/1.5.4/libduckdb.so",
+  driver: driver,
   entrypoint: "duckdb_adbc_init"
 ```
 
-`driver` is a path inside the runner environment. The optional
-`favn_duckdb_adbc` plugin loads that path. Request a supported native driver
+In source development, the generated sample and the Favn repository read
+`DUCKDB_ADBC_DRIVER` automatically. In a deployment, `driver` is a path inside
+the runner environment. The optional `favn_duckdb_adbc` plugin loads that path.
+Request a supported native driver
 when creating the runner scaffold:
 
 ```bash

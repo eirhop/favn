@@ -1,8 +1,7 @@
 # `apps/favn_duckdb_adbc`
 
 DuckDB SQL adapter and runner plugin backed by Arrow Database Connectivity.
-This is a supported DuckDB plugin alongside `favn_duckdb`, which remains the
-supported `duckdbex`-backed plugin for bundled local/in-memory DuckDB execution.
+This is Favn's supported DuckDB integration.
 
 ## Purpose
 
@@ -35,7 +34,7 @@ Must not depend on:
 ## Usage
 
 Use `Favn.SQL.Adapter.DuckDB.ADBC` in connection definitions. The adapter exposes
-the same DuckDB bootstrap schema helpers as the `favn_duckdb` adapter.
+the DuckDB bootstrap schema helpers used by this adapter.
 
 ```elixir
 config :favn, :runner_plugins, [FavnDuckdbADBC]
@@ -65,13 +64,16 @@ example is in `apps/favn/guides/runner-plugins.md`.
 ## DuckDB ADBC Installation
 
 This optional plugin requires a compatible DuckDB ADBC driver in the runner
-image. A project can ask `mix favn.init --include duckdb-adbc[@VERSION]` to add
-Favn's tested download/checksum section to its customer-owned Dockerfile. The
-project still owns production image qualification. Configure the driver path:
+environment. A project can ask `mix favn.init --include duckdb-adbc[@VERSION]`
+to add Favn's tested download/checksum section to its customer-owned
+Dockerfile. The project still owns production image qualification. Configure
+the driver path from the environment:
 
 ```elixir
+driver = System.fetch_env!("DUCKDB_ADBC_DRIVER")
+
 config :favn, :duckdb_adbc,
-  driver: "/opt/duckdb/1.5.4/libduckdb.so",
+  driver: driver,
   entrypoint: "duckdb_adbc_init"
 ```
 
