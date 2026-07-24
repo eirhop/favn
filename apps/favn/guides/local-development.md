@@ -83,9 +83,19 @@ mix favn.dev
 
 The command prints the View URL, normally `http://127.0.0.1:4173`, and stores
 local credentials in `.favn/local/credentials.json`. Favn applies owner-only
-mode bits on Unix; Windows uses the containing directory's ACLs. The UI
-password is reused across stop/start cycles because the administrator record is
-durable PostgreSQL state.
+mode bits on Unix; Windows uses the containing directory's ACLs. The file
+includes the View workspace ID, username, and password. The UI password and
+encrypted browser-session key are reused across normal stop/start cycles, so an
+active login survives a local Favn restart. Source development also signs a
+local browser in as the generated administrator automatically; the credential
+file remains available for recovery and non-browser clients. Changing the
+configured workspace, signing out, or reaching the normal session expiry
+creates a fresh local browser session without presenting a password form.
+
+Source development logs at `info` by default in both the local control plane and
+runner. Use `FAVN_LOG_LEVEL=debug mix favn.dev` for verbose troubleshooting or
+`FAVN_LOG_LEVEL=warning mix favn.dev` for quieter output. The startup milestones
+and final View URL remain visible at every supported log level.
 
 After changing assets, pipelines, SQL, or ordinary Elixir runner code:
 

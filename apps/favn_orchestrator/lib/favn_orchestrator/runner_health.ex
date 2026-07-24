@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.RunnerHealth do
 
   use GenServer
 
+  alias Favn.Contracts.RunnerError
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.RunnerClientValidator
@@ -15,6 +16,13 @@ defmodule FavnOrchestrator.RunnerHealth do
 
   @default_interval_ms 5_000
   @minimum_stale_after_ms 15_000
+  @startup_grace_ms 30_000
+  @startup_connection_error_types [
+    :runner_node_unreachable,
+    :runner_distribution_unavailable,
+    :runner_connect_timeout,
+    :runner_connect_failed
+  ]
 
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -53,6 +61,9 @@ defmodule FavnOrchestrator.RunnerHealth do
       timeout_ms: Keyword.get(opts, :timeout_ms, timeout_ms),
       stale_after_ms:
         Keyword.get(opts, :stale_after_ms, max(timeout_ms * 3, @minimum_stale_after_ms)),
+      startup_grace_ms: Keyword.get(opts, :startup_grace_ms, @startup_grace_ms),
+      started_at_ms: System.monotonic_time(:millisecond),
+      ready_once?: false,
       task: nil,
       result: {:error, :runner_diagnostics_pending},
       checked_at_ms: nil
@@ -101,13 +112,14 @@ defmodule FavnOrchestrator.RunnerHealth do
     _ = Process.cancel_timer(task.timeout)
     Process.demonitor(task.monitor, [:flush])
     result = normalize_result(result)
-    emit_probe(result, task.started_at_ms)
+    emit_probe(result, task.started_at_ms, state)
 
     {:noreply,
      state
      |> Map.merge(%{
        task: nil,
        result: result,
+       ready_once?: state.ready_once? or match?({:ok, _diagnostics}, result),
        checked_at_ms: System.monotonic_time(:millisecond)
      })
      |> schedule()}
@@ -117,7 +129,7 @@ defmodule FavnOrchestrator.RunnerHealth do
     Process.exit(task.pid, :kill)
     Process.demonitor(task.monitor, [:flush])
     result = {:error, :runner_diagnostics_timeout}
-    emit_probe(result, task.started_at_ms)
+    emit_probe(result, task.started_at_ms, state)
 
     {:noreply,
      state
@@ -134,7 +146,7 @@ defmodule FavnOrchestrator.RunnerHealth do
         %{task: %{monitor: monitor} = task} = state
       ) do
     result = {:error, :runner_diagnostics_failed}
-    emit_probe(result, task.started_at_ms)
+    emit_probe(result, task.started_at_ms, state)
 
     {:noreply,
      state
@@ -173,7 +185,7 @@ defmodule FavnOrchestrator.RunnerHealth do
 
       {:error, _reason} ->
         result = {:error, :runner_diagnostics_failed}
-        emit_probe(result, System.monotonic_time(:millisecond))
+        emit_probe(result, System.monotonic_time(:millisecond), state)
 
         {:noreply,
          state
@@ -201,20 +213,35 @@ defmodule FavnOrchestrator.RunnerHealth do
   defp normalize_result({:error, reason}), do: {:error, reason}
   defp normalize_result(_invalid), do: {:error, :runner_diagnostics_failed}
 
-  defp emit_probe(result, started_at_ms) do
+  defp emit_probe(result, started_at_ms, state) do
     status = if match?({:ok, _diagnostics}, result), do: :ok, else: :error
 
     OperationalEvents.emit(
       :runner_diagnostic_completed,
       %{duration_ms: max(System.monotonic_time(:millisecond) - started_at_ms, 0)},
       %{status: status, result: diagnostic_result(result)},
-      level: if(status == :ok, do: :debug, else: :warning)
+      level: probe_log_level(result, state)
     )
   end
 
   defp diagnostic_result({:ok, _diagnostics}), do: :ready_snapshot
+  defp diagnostic_result({:error, %RunnerError{type: type}}), do: type
   defp diagnostic_result({:error, reason}) when is_atom(reason), do: reason
   defp diagnostic_result({:error, _reason}), do: :runner_diagnostics_failed
+
+  defp probe_log_level({:ok, _diagnostics}, _state), do: :debug
+
+  defp probe_log_level(
+         {:error, %RunnerError{type: type}},
+         %{ready_once?: false} = state
+       )
+       when type in @startup_connection_error_types do
+    if System.monotonic_time(:millisecond) - state.started_at_ms < state.startup_grace_ms,
+      do: :debug,
+      else: :warning
+  end
+
+  defp probe_log_level({:error, _reason}, _state), do: :warning
 
   defp schedule(state) do
     Process.send_after(self(), :probe, state.interval_ms)

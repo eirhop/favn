@@ -8,6 +8,10 @@ Ownership rules:
 
 - `apps/favn_view/lib/favn_view/` contains the endpoint, router, LiveViews,
   controllers, components, and web helpers.
+- `FavnView.ApplicationConfig` owns the baseline endpoint and browser-session
+  configuration used both inside the umbrella and when Favn starts from a
+  consumer project. Boot owners may add listener and runtime overrides without
+  duplicating those View internals.
 - `apps/favn_view/lib/favn_view/readiness.ex` and
   `apps/favn_view/lib/favn_view/production_runtime_config.ex` own web health,
   readiness, and web-owned production config validation.

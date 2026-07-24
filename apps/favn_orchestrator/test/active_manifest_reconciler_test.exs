@@ -132,6 +132,43 @@ defmodule FavnOrchestrator.ActiveManifestReconcilerTest do
     assert failure_log =~ "status: :error"
   end
 
+  test "does not reconcile or warn before the runtime accepts work" do
+    lifecycle = unique_name(:lifecycle)
+    supervisor = unique_name(:tasks)
+    reconciler = unique_name(:reconciler)
+    test_pid = self()
+
+    log =
+      capture_log([level: :debug], fn ->
+        start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 1_000})
+        start_supervised!({Task.Supervisor, name: supervisor})
+
+        start_supervised!(
+          {ActiveManifestReconciler,
+           name: reconciler,
+           lifecycle: lifecycle,
+           task_supervisor: supervisor,
+           workspace_ids: ["workspace"],
+           runner_client: RunnerClient,
+           runner_opts: [cache: self(), test_pid: self()],
+           load_manifest: fn workspace_id ->
+             send(test_pid, {:reconciled, workspace_id})
+             {:error, Error.new(:not_found, "workspace has no active deployment")}
+           end,
+           interval_ms: 20,
+           timeout_ms: 500}
+        )
+
+        Process.sleep(50)
+        refute_receive {:reconciled, "workspace"}
+
+        assert {:error, :active_manifest_reconciliation_pending} =
+                 ActiveManifestReconciler.snapshot(reconciler)
+      end)
+
+    refute log =~ "favn.operator.active_manifest_reconciliation_completed"
+  end
+
   defp capture_reconciliation_log(load_manifest) do
     lifecycle = unique_name(:lifecycle)
     supervisor = unique_name(:tasks)

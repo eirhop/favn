@@ -35,9 +35,14 @@ defmodule FavnLocal.LocatorTest do
 
     locator = Path.join([context.root_dir, ".favn", "local", "state.json"])
     credentials = Path.join([context.root_dir, ".favn", "local", "credentials.json"])
+    credentials_data = credentials |> File.read!() |> JSON.decode!()
 
     refute File.read!(locator) =~ context.config.service_token
-    assert File.read!(credentials) =~ context.config.service_token
+    assert credentials_data["service_token"] == context.config.service_token
+    assert credentials_data["view_workspace_id"] == context.config.workspace_id
+    assert credentials_data["view_username"] == "admin"
+    assert credentials_data["view_password"] == context.config.bootstrap_password
+    assert credentials_data["view_secret_key_base"] == context.config.view_secret_key_base
 
     if match?({:unix, _}, :os.type()) do
       assert {:ok, %{mode: mode}} = File.stat(credentials)

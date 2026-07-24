@@ -7,7 +7,8 @@ defmodule FavnView.Application do
 
   @impl true
   def start(_type, _args) do
-    with :ok <- ensure_runtime_config() do
+    with :ok <- FavnView.ApplicationConfig.configure(),
+         :ok <- ensure_runtime_config() do
       start_storybook()
 
       children = [

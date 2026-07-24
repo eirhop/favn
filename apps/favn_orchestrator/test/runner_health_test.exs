@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.RunnerHealthTest do
 
   import ExUnit.CaptureLog
 
+  alias Favn.Contracts.RunnerError
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.RunnerHealth
 
@@ -34,6 +35,29 @@ defmodule FavnOrchestrator.RunnerHealthTest do
     def cancel_work(_execution_id, _reason, _opts), do: {:ok, %{status: :not_found}}
     def inspect_relation(_request, _opts), do: {:error, :not_used}
     def diagnostics(_opts), do: {:error, :runner_unreachable}
+  end
+
+  defmodule StartingRunnerClient do
+    def register_manifest(_version, _opts), do: :ok
+    def ensure_manifest(_version, _opts), do: :ok
+    def acquire_manifest(_version, _lease_id, _expires_at, _refs, _opts), do: :ok
+    def renew_manifest(_lease_id, _expires_at, _opts), do: :ok
+    def release_manifest(_lease_id, _opts), do: :ok
+    def submit_work(_work, _opts), do: {:ok, "exec"}
+    def await_result(_execution_id, _timeout, _opts), do: {:error, :not_used}
+    def cancel_work(_execution_id, _reason, _opts), do: {:ok, %{status: :not_found}}
+    def inspect_relation(_request, _opts), do: {:error, :not_used}
+
+    def diagnostics(_opts) do
+      {:error,
+       RunnerError.new(
+         kind: :boundary,
+         type: :runner_node_unreachable,
+         reason: :nodedown,
+         retryable?: true,
+         outcome: :safe_failure
+       )}
+    end
   end
 
   setup do
@@ -145,6 +169,39 @@ defmodule FavnOrchestrator.RunnerHealthTest do
 
     assert log =~ "[warning] favn.operator.runner_diagnostic_completed"
     assert log =~ "status: :error"
+  end
+
+  test "runner connection failures during the startup grace period log at debug" do
+    lifecycle = unique_name(:lifecycle)
+    supervisor = unique_name(:tasks)
+    health = unique_name(:health)
+
+    log =
+      capture_log([level: :debug], fn ->
+        start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 1_000})
+        start_supervised!({Task.Supervisor, name: supervisor})
+        :ok = Lifecycle.mark_accepting(lifecycle)
+
+        start_supervised!(
+          {RunnerHealth,
+           name: health,
+           lifecycle: lifecycle,
+           task_supervisor: supervisor,
+           runner_client: StartingRunnerClient,
+           runner_opts: [],
+           timeout_ms: 200,
+           interval_ms: 1_000,
+           startup_grace_ms: 30_000}
+        )
+
+        assert_eventually(fn ->
+          match?({:error, %RunnerError{}}, RunnerHealth.snapshot(health))
+        end)
+      end)
+
+    assert log =~ "[debug] favn.operator.runner_diagnostic_completed"
+    assert log =~ "result: :runner_node_unreachable"
+    refute log =~ "[warning] favn.operator.runner_diagnostic_completed"
   end
 
   defp assert_eventually(fun, attempts \\ 50)

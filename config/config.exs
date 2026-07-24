@@ -12,17 +12,6 @@ import Config
 config :favn_view,
   generators: [context_app: false]
 
-config :favn_view,
-  session_cookie_options: [
-    store: :cookie,
-    key: "_favn_view_key",
-    signing_salt: "zqy+dPTK",
-    encryption_salt: "favn-view-session-v1",
-    same_site: "Lax",
-    http_only: true,
-    secure: Mix.env() == :prod
-  ]
-
 config :phoenix, :json_library, Jason
 
 config :favn_storage_postgres,
@@ -32,16 +21,6 @@ config :favn_storage_postgres,
 config :favn_orchestrator,
   persistence_backend: Module.concat([FavnStoragePostgres, Backend]),
   persistence_options: []
-
-config :favn_view, FavnView.Endpoint,
-  url: [host: "localhost"],
-  adapter: Bandit.PhoenixAdapter,
-  render_errors: [
-    formats: [html: FavnView.ErrorHTML, json: FavnView.ErrorJSON],
-    layout: false
-  ],
-  pubsub_server: FavnView.PubSub,
-  live_view: [signing_salt: "Pqi8zx5Q"]
 
 config :esbuild,
   version: "0.28.1",

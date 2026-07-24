@@ -147,8 +147,10 @@ defmodule FavnLocal.Locator do
              JSON.encode!(%{
                "cookie" => config.distribution_cookie,
                "service_token" => config.service_token,
+               "view_workspace_id" => config.workspace_id,
                "view_username" => "admin",
-               "view_password" => config.bootstrap_password
+               "view_password" => config.bootstrap_password,
+               "view_secret_key_base" => config.view_secret_key_base
              })
            ),
          :ok <- File.chmod(path, 0o600) do

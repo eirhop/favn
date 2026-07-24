@@ -5,6 +5,7 @@ defmodule FavnLocal.RunnerMain do
   def run(root_dir) when is_binary(root_dir) do
     {:ok, _applications} = Application.ensure_all_started(:mix)
     :ok = load_project_config(root_dir)
+    :ok = Favn.LogLevel.configure_from_env(System.get_env())
 
     case Application.ensure_all_started(:favn_runner) do
       {:ok, _applications} ->

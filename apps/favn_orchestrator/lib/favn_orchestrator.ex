@@ -203,6 +203,15 @@ defmodule FavnOrchestrator do
     end
   end
 
+  @doc false
+  @spec trusted_local_development_login(String.t(), String.t(), String.t()) ::
+          {:ok, operator_session(), operator_actor()}
+          | {:error, :trusted_local_development_unavailable}
+  def trusted_local_development_login(workspace_id, username, capability)
+      when is_binary(workspace_id) and is_binary(username) and is_binary(capability) do
+    Auth.trusted_local_development_login(workspace_id, username, capability)
+  end
+
   @doc "Resolves an operator session within one explicit workspace membership."
   @spec introspect_operator_session(String.t(), String.t()) ::
           {:ok, operator_session(), operator_actor()} | {:error, :invalid_session}

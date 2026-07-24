@@ -5,6 +5,7 @@ defmodule FavnLocal.Config do
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.RunnerClient.BeamNode
   alias FavnStoragePostgres.Config, as: PostgresConfig
+  alias FavnView.ApplicationConfig, as: ViewConfig
 
   @default_workspace_id "local-dev"
   @default_orchestrator_port 4101
@@ -16,6 +17,7 @@ defmodule FavnLocal.Config do
     :workspace_id,
     :orchestrator_port,
     :view_port,
+    :log_level,
     :operator_node,
     :runner_node,
     :distribution_cookie,
@@ -33,6 +35,7 @@ defmodule FavnLocal.Config do
           workspace_id: String.t(),
           orchestrator_port: :inet.port_number(),
           view_port: :inet.port_number(),
+          log_level: Logger.level(),
           operator_node: node(),
           runner_node: node(),
           distribution_cookie: String.t(),
@@ -53,6 +56,7 @@ defmodule FavnLocal.Config do
 
     with {:ok, database_url} <- required_env(env, "FAVN_DATABASE_URL"),
          {:ok, pin_key} <- runtime_input_pin_key(env),
+         {:ok, log_level} <- log_level(env),
          {:ok, postgres_options} <-
            PostgresConfig.repo_options(
              url: database_url,
@@ -69,6 +73,7 @@ defmodule FavnLocal.Config do
                Keyword.get(dev, :workspace_id, @default_workspace_id)
              )
            ),
+         view_credentials <- view_credentials(root_dir, workspace_id),
          {:ok, orchestrator_port} <-
            port(
              Keyword.get(
@@ -88,12 +93,13 @@ defmodule FavnLocal.Config do
          workspace_id: workspace_id,
          orchestrator_port: orchestrator_port,
          view_port: view_port,
+         log_level: log_level,
          operator_node: String.to_atom("favn_local_operator_#{suffix}@127.0.0.1"),
          runner_node: String.to_atom("favn_local_runner_#{suffix}@127.0.0.1"),
          distribution_cookie: random_secret(48),
          service_token: random_secret(48),
-         view_secret_key_base: Base.encode64(:crypto.strong_rand_bytes(64)),
-         bootstrap_password: bootstrap_password(root_dir),
+         view_secret_key_base: view_credentials.secret_key_base,
+         bootstrap_password: view_credentials.password,
          runner_release_id: runner_release_id,
          postgres_options: postgres_options,
          runtime_input_pin_key: pin_key,
@@ -105,6 +111,11 @@ defmodule FavnLocal.Config do
 
   @spec apply(t()) :: :ok
   def apply(%__MODULE__{} = config) do
+    :ok =
+      Favn.LogLevel.configure_from_env(%{
+        "FAVN_LOG_LEVEL" => Atom.to_string(config.log_level)
+      })
+
     service_tokens = [
       %{
         service_identity: "favn-local",
@@ -164,25 +175,47 @@ defmodule FavnLocal.Config do
     Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Local Administrator")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
 
-    endpoint =
-      :favn_view
-      |> Application.get_env(FavnView.Endpoint, [])
-      |> Keyword.merge(
-        server: true,
-        http: [ip: {127, 0, 0, 1}, port: config.view_port],
-        url: [host: "127.0.0.1", port: config.view_port],
-        check_origin: false,
-        code_reloader: false,
-        reloadable_apps: [],
-        watchers: [],
-        live_reload: nil,
-        secret_key_base: config.view_secret_key_base
-      )
+    capability_hash = ServiceTokens.hash_token(config.service_token)
+
+    Application.put_env(:favn_orchestrator, :trusted_local_development_auth, %{
+      workspace_id: config.workspace_id,
+      username: "admin",
+      capability_hash: capability_hash
+    })
 
     Application.put_env(:favn_view, :production_runtime_config, false)
     Application.put_env(:favn_view, :dev_routes, false)
-    Application.put_env(:favn_view, FavnView.Endpoint, endpoint)
 
+    Application.put_env(:favn_view, :source_development_passwordless_login, %{
+      workspace_id: config.workspace_id,
+      username: "admin",
+      capability: config.service_token
+    })
+
+    :ok =
+      ViewConfig.configure(
+        [
+          server: true,
+          http: [ip: {127, 0, 0, 1}, port: config.view_port],
+          url: [host: "127.0.0.1", port: config.view_port],
+          check_origin: false,
+          code_reloader: false,
+          reloadable_apps: [],
+          watchers: [],
+          live_reload: nil,
+          secret_key_base: config.view_secret_key_base
+        ],
+        secure: false
+      )
+
+    :ok
+  end
+
+  @doc false
+  @spec clear_source_development_auth() :: :ok
+  def clear_source_development_auth do
+    Application.delete_env(:favn_view, :source_development_passwordless_login)
+    Application.delete_env(:favn_orchestrator, :trusted_local_development_auth)
     :ok
   end
 
@@ -231,6 +264,18 @@ defmodule FavnLocal.Config do
     end
   end
 
+  defp log_level(env) do
+    case Favn.LogLevel.parse(Map.get(env, "FAVN_LOG_LEVEL", "info")) do
+      {:ok, level} ->
+        {:ok, level}
+
+      {:error, :invalid_log_level} ->
+        {:error,
+         {:invalid_env, "FAVN_LOG_LEVEL",
+          "debug, info, notice, warning, error, critical, alert, or emergency"}}
+    end
+  end
+
   defp configured_integer(config, key, default) do
     case Keyword.get(config, key, default) do
       value when is_integer(value) and value > 0 -> value
@@ -260,15 +305,34 @@ defmodule FavnLocal.Config do
   defp random_secret(bytes),
     do: bytes |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
 
-  defp bootstrap_password(root_dir) do
+  defp view_credentials(root_dir, workspace_id) do
     credentials_path = Path.join([root_dir, ".favn", "local", "credentials.json"])
 
-    with {:ok, bytes} <- File.read(credentials_path),
-         {:ok, %{"view_password" => password}} <- JSON.decode(bytes),
-         true <- is_binary(password) and password != "" do
-      password
-    else
-      _missing_or_invalid -> random_secret(48)
+    persisted =
+      with {:ok, bytes} <- File.read(credentials_path),
+           {:ok, credentials} when is_map(credentials) <- JSON.decode(bytes) do
+        credentials
+      else
+        _missing_or_invalid -> %{}
+      end
+
+    %{
+      password: persisted_secret(persisted, "view_password", 1, fn -> random_secret(48) end),
+      secret_key_base:
+        if persisted["view_workspace_id"] == workspace_id do
+          persisted_secret(persisted, "view_secret_key_base", 64, fn ->
+            Base.encode64(:crypto.strong_rand_bytes(64))
+          end)
+        else
+          Base.encode64(:crypto.strong_rand_bytes(64))
+        end
+    }
+  end
+
+  defp persisted_secret(credentials, key, minimum_bytes, fallback) do
+    case Map.get(credentials, key) do
+      value when is_binary(value) and byte_size(value) >= minimum_bytes -> value
+      _missing_or_invalid -> fallback.()
     end
   end
 end
