@@ -20,6 +20,7 @@ defmodule FavnRunner.ReleaseVerifier do
           :runner_release_not_verified
           | :runner_release_id_missing
           | {:invalid_runner_release_id, term()}
+          | {:invalid_runner_build_profile, term()}
           | {:unsupported_runner_target, term(), String.t()}
           | PluginLoader.reason()
 
@@ -71,7 +72,7 @@ defmodule FavnRunner.ReleaseVerifier do
          otp_release: release.otp_release,
          target: release.target,
          build_profile: release.build_profile,
-         identity_source: :operator
+         identity_source: identity_source(release.build_profile)
        }}
     end
   end
@@ -82,9 +83,15 @@ defmodule FavnRunner.ReleaseVerifier do
   def runtime_target(
         os_type \\ :os.type(),
         architecture \\ :erlang.system_info(:system_architecture)
-      )
+      ),
+      do: runtime_target("prod", os_type, architecture)
 
-  def runtime_target({:unix, :linux}, architecture) do
+  @doc false
+  @spec runtime_target(String.t(), term(), term()) ::
+          {:ok, String.t()} | {:error, {:unsupported_runner_target, term(), String.t()}}
+  def runtime_target(build_profile, os_type, architecture)
+
+  def runtime_target("prod", {:unix, :linux}, architecture) do
     architecture = to_string(architecture)
 
     if architecture == "amd64" or String.starts_with?(architecture, "x86_64"),
@@ -92,8 +99,19 @@ defmodule FavnRunner.ReleaseVerifier do
       else: {:error, {:unsupported_runner_target, {:unix, :linux}, architecture}}
   end
 
-  def runtime_target(os_type, architecture),
+  def runtime_target("prod", os_type, architecture),
     do: {:error, {:unsupported_runner_target, os_type, to_string(architecture)}}
+
+  def runtime_target("source", os_type, architecture) do
+    architecture = to_string(architecture)
+
+    with {:ok, os} <- source_os(os_type),
+         {:ok, arch} <- source_architecture(architecture) do
+      {:ok, "#{os}/#{arch}"}
+    else
+      :error -> {:error, {:unsupported_runner_target, os_type, architecture}}
+    end
+  end
 
   @doc "Checks one manifest/work requirement against the configured release."
   @spec verify_required_release(term()) :: :ok | {:error, RunnerError.t()}
@@ -121,7 +139,9 @@ defmodule FavnRunner.ReleaseVerifier do
 
   defp install_from_environment(environment) do
     with {:ok, runner_release_id} <- release_id(environment),
-         {:ok, target} <- runtime_target(),
+         {:ok, build_profile} <- build_profile(environment),
+         {:ok, target} <-
+           runtime_target(build_profile, :os.type(), :erlang.system_info(:system_architecture)),
          {:ok, release} <-
            RunnerRelease.new(%{
              runner_release_id: runner_release_id,
@@ -130,7 +150,7 @@ defmodule FavnRunner.ReleaseVerifier do
              elixir_version: System.version(),
              otp_release: to_string(:erlang.system_info(:otp_release)),
              target: target,
-             build_profile: "prod"
+             build_profile: build_profile
            }),
          {:ok, children} <- load_plugins() do
       :persistent_term.put(@persistent_key, release)
@@ -151,6 +171,33 @@ defmodule FavnRunner.ReleaseVerifier do
         {:error, :runner_release_id_missing}
     end
   end
+
+  defp build_profile(environment) do
+    profile =
+      Map.get(
+        environment,
+        "FAVN_RUNNER_BUILD_PROFILE",
+        Application.get_env(:favn_runner, :build_profile, "prod")
+      )
+
+    if profile in ["prod", "source"],
+      do: {:ok, profile},
+      else: {:error, {:invalid_runner_build_profile, profile}}
+  end
+
+  defp source_os({:win32, :nt}), do: {:ok, "windows"}
+  defp source_os({:unix, :linux}), do: {:ok, "linux"}
+  defp source_os({:unix, :darwin}), do: {:ok, "darwin"}
+  defp source_os(_os_type), do: :error
+
+  defp source_architecture("amd64"), do: {:ok, "amd64"}
+  defp source_architecture("x86_64" <> _rest), do: {:ok, "amd64"}
+  defp source_architecture("arm64"), do: {:ok, "arm64"}
+  defp source_architecture("aarch64" <> _rest), do: {:ok, "arm64"}
+  defp source_architecture(_architecture), do: :error
+
+  defp identity_source("source"), do: :source
+  defp identity_source("prod"), do: :operator
 
   defp ensure_prepared_plugins do
     case prepared_plugin_children() do

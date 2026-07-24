@@ -16,7 +16,7 @@ defmodule FavnRunner.ReleaseVerifierTest do
     :ok
   end
 
-  test "installs bounded operational identity from operator configuration" do
+  test "installs bounded operational identity from source configuration" do
     release_id = FavnTestSupport.runner_release_id(:alternate)
 
     assert :ok =
@@ -26,15 +26,22 @@ defmodule FavnRunner.ReleaseVerifierTest do
 
     assert {:ok, info} = FavnRunner.release_info()
 
+    assert {:ok, source_target} =
+             ReleaseVerifier.runtime_target(
+               "source",
+               :os.type(),
+               :erlang.system_info(:system_architecture)
+             )
+
     assert info == %{
              runner_release_id: release_id,
              favn_version: RunnerRelease.current_favn_version(),
              runner_contract_version: Compatibility.current_runner_contract_version(),
              elixir_version: System.version(),
              otp_release: to_string(:erlang.system_info(:otp_release)),
-             target: RunnerRelease.current_target(),
-             build_profile: "prod",
-             identity_source: :operator
+             target: source_target,
+             build_profile: "source",
+             identity_source: :source
            }
   end
 
@@ -45,6 +52,12 @@ defmodule FavnRunner.ReleaseVerifierTest do
     assert {:error, {:invalid_runner_release_id, "latest"}} =
              ReleaseVerifier.verify_test_startup(%{
                "FAVN_RUNNER_RELEASE_ID" => "latest"
+             })
+
+    assert {:error, {:invalid_runner_build_profile, "preview"}} =
+             ReleaseVerifier.verify_test_startup(%{
+               "FAVN_RUNNER_RELEASE_ID" => FavnTestSupport.runner_release_id(),
+               "FAVN_RUNNER_BUILD_PROFILE" => "preview"
              })
   end
 
@@ -57,6 +70,20 @@ defmodule FavnRunner.ReleaseVerifierTest do
 
     assert {:error, {:unsupported_runner_target, {:win32, :nt}, "x86_64-pc-windows"}} =
              ReleaseVerifier.runtime_target({:win32, :nt}, "x86_64-pc-windows")
+
+    assert {:ok, "windows/amd64"} =
+             ReleaseVerifier.runtime_target(
+               "source",
+               {:win32, :nt},
+               "x86_64-pc-windows"
+             )
+
+    assert {:ok, "linux/amd64"} =
+             ReleaseVerifier.runtime_target(
+               "source",
+               {:unix, :linux},
+               "x86_64-pc-linux-gnu"
+             )
   end
 
   test "checks manifest requirements against the configured release" do

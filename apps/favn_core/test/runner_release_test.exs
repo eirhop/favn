@@ -33,6 +33,22 @@ defmodule Favn.RunnerReleaseTest do
              |> RunnerRelease.new()
   end
 
+  test "accepts an explicit source runtime target without weakening production targets" do
+    assert {:ok, release} =
+             release_attrs()
+             |> Map.put(:target, "windows/amd64")
+             |> Map.put(:build_profile, "source")
+             |> RunnerRelease.new()
+
+    assert release.target == "windows/amd64"
+    assert release.build_profile == "source"
+
+    assert {:error, {:invalid_runner_release_field, :build_profile, :unsupported_value}} =
+             release_attrs()
+             |> Map.put(:build_profile, "development")
+             |> RunnerRelease.new()
+  end
+
   defp release_attrs do
     %{
       favn_version: RunnerRelease.current_favn_version(),

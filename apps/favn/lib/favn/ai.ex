@@ -24,8 +24,9 @@ defmodule Favn.AI do
   ## Consumer Dependency Shape
 
   A normal consumer project depends on `:favn` for the public DSL, helper
-  functions, and `mix favn.*` tasks. Add `:favn_duckdb` only when the project
-  executes DuckDB-backed SQL assets or uses DuckDB through `Favn.SQLClient`.
+  functions, and `mix favn.*` tasks. Add `:favn_duckdb_adbc` only when the
+  project executes DuckDB-backed SQL assets or uses DuckDB through
+  `Favn.SQLClient`.
   Add the optional `:favn_azure` package when runner code or DuckDB session
   scripts need cached Azure CLI or managed-identity access tokens.
 
@@ -184,7 +185,7 @@ defmodule Favn.AI do
   - To configure DuckDB/DuckLake physical-session setup, read
     [DuckDB Session Scripts And Resources](duckdb-session-scripts.html), then
     `Favn.Connection`, `Favn.RuntimeConfig.Ref`, `Favn.SQLAsset`,
-    `Favn.Namespace`, and `Favn.SQL.Adapter.DuckDB`. The canonical shape is
+    `Favn.Namespace`, and `Favn.SQL.Adapter.DuckDB.ADBC`. The canonical shape is
     `open: [...]` plus `duckdb: [startup: ..., resources: ..., catalogs: ...]`.
     Native SQL files own `INSTALL`, `LOAD`, `SET`, `CREATE SECRET`, `ATTACH`,
     `USE`, and extension-specific syntax; the removed structured
@@ -421,12 +422,10 @@ defmodule Favn.AI do
     metadata
   - `Favn.RuntimeConfig.Ref`: when you need the manifest-safe representation of
     required environment values and secret environment values
-  - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs
+  - `Favn.SQL.Adapter.DuckDB.ADBC`: when a DuckDB connection needs
     `config_schema_fields/0`, `open: [database: ...]`, native startup/resource
-    SQL files, catalog-to-resource metadata, script pool fingerprints, or
-    catalog-level write admission
-  - `Favn.SQL.Adapter.DuckDB.ADBC`: when the ADBC DuckDB adapter needs the same
-    DuckDB/DuckLake config shape with explicit DuckDB driver control
+    SQL files, catalog-to-resource metadata, script pool fingerprints,
+    catalog-level write admission, and explicit DuckDB driver control
 
   ## Working Style
 

@@ -15,7 +15,7 @@ defmodule FavnOrchestrator.RunnerDiagnostics do
   def validate_ready(diagnostics, opts \\ []) when is_map(diagnostics) and is_list(opts) do
     with :ok <- validate_readiness(diagnostics),
          {:ok, release_id} <- validate_release_id(diagnostics),
-         :ok <- validate_identity_source(diagnostics),
+         :ok <- validate_identity_source(diagnostics, opts),
          :ok <- validate_runtime_contract(diagnostics),
          :ok <- validate_node_identity(diagnostics, opts) do
       {:ok, release_id}
@@ -41,11 +41,18 @@ defmodule FavnOrchestrator.RunnerDiagnostics do
     end
   end
 
-  defp validate_identity_source(diagnostics) do
-    if field(diagnostics, :identity_source) in [:operator, "operator"],
+  defp validate_identity_source(diagnostics, opts) do
+    expected = normalize_identity_source(Keyword.get(opts, :runner_identity_source, :operator))
+    actual = normalize_identity_source(field(diagnostics, :identity_source))
+
+    if not is_nil(expected) and actual == expected,
       do: :ok,
       else: {:error, :runner_release_info_unavailable}
   end
+
+  defp normalize_identity_source(value) when value in [:operator, "operator"], do: :operator
+  defp normalize_identity_source(value) when value in [:source, "source"], do: :source
+  defp normalize_identity_source(_value), do: nil
 
   defp validate_runtime_contract(diagnostics) do
     expected_favn_version = RunnerRelease.current_favn_version()

@@ -29,6 +29,15 @@ Start PostgreSQL using your team's preferred tooling, then export:
 ```bash
 export FAVN_DATABASE_URL='ecto://postgres:postgres@127.0.0.1/favn_dev'
 export FAVN_RUNTIME_INPUT_PIN_KEY="$(openssl rand -base64 32)"
+export DUCKDB_ADBC_DRIVER='/absolute/path/to/libduckdb.so'
+```
+
+PowerShell:
+
+```powershell
+$env:FAVN_DATABASE_URL = 'ecto://postgres:postgres@127.0.0.1/favn_dev'
+$env:FAVN_RUNTIME_INPUT_PIN_KEY = '<32-byte value or base64-encoded 32-byte value>'
+$env:DUCKDB_ADBC_DRIVER = 'C:\absolute\path\to\duckdb.dll'
 ```
 
 Favn does not install PostgreSQL and does not load `.env`. The variables must

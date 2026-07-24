@@ -41,7 +41,8 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
     :runner_rpc_timeout_ms,
     :runner_dispatch_timeout_ms,
     :runner_diagnostics_timeout_ms,
-    :runner_await_timeout_buffer_ms
+    :runner_await_timeout_buffer_ms,
+    :runner_identity_source
   ]
   @safe_read_operations [
     :diagnostics,
@@ -60,6 +61,7 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
           | {:runner_rpc_timeout_ms, pos_integer()}
           | {:runner_diagnostics_timeout_ms, pos_integer()}
           | {:runner_await_timeout_buffer_ms, non_neg_integer()}
+          | {:runner_identity_source, :operator | :source}
 
   @impl true
   @spec register_manifest(Version.t(), [opt()]) :: :ok | {:error, term()}

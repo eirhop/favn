@@ -10,7 +10,7 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
   test "allows reserved runtime write concurrency config" do
     definition = %Definition{
       name: :warehouse,
-      adapter: Favn.SQL.Adapter.DuckDB,
+      adapter: Favn.SQL.Adapter.DuckDB.ADBC,
       module: __MODULE__,
       config_schema: [%{key: :database, required: true, type: :path}]
     }
@@ -26,7 +26,7 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
   test "extracts circuit breaker policy instead of passing it to the adapter" do
     definition = %Definition{
       name: :warehouse,
-      adapter: Favn.SQL.Adapter.DuckDB,
+      adapter: Favn.SQL.Adapter.DuckDB.ADBC,
       module: __MODULE__,
       config_schema: [%{key: :database, required: true, type: :path}]
     }
@@ -62,7 +62,7 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
 
     definition = %Definition{
       name: :warehouse,
-      adapter: Favn.SQL.Adapter.DuckDB,
+      adapter: Favn.SQL.Adapter.DuckDB.ADBC,
       module: __MODULE__,
       config_schema: [
         %{key: :database, required: true, type: :path},
@@ -116,7 +116,7 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
 
     definition = %Definition{
       name: :warehouse,
-      adapter: Favn.SQL.Adapter.DuckDB,
+      adapter: Favn.SQL.Adapter.DuckDB.ADBC,
       module: __MODULE__,
       config_schema: [
         %{key: :database, required: true, type: :path},
@@ -145,7 +145,7 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
   test "preserves deferred runtime values and records their secret paths" do
     definition = %Definition{
       name: :warehouse,
-      adapter: Favn.SQL.Adapter.DuckDB,
+      adapter: Favn.SQL.Adapter.DuckDB.ADBC,
       module: __MODULE__,
       config_schema: [
         %{key: :database, required: true, type: :path},
@@ -160,7 +160,10 @@ defmodule FavnSQLRuntime.ConnectionValidatorTest do
                database: ":memory:",
                duckdb: [
                  resources: [
-                   storage: [file: "/tmp/storage.sql", params: [token: token_ref]]
+                    storage: [
+                      file: Path.join(System.tmp_dir!(), "storage.sql"),
+                      params: [token: token_ref]
+                    ]
                  ]
                ]
              })

@@ -81,7 +81,7 @@ defmodule Favn.ConsumerDependencyInstallTest do
 
     File.write!(
       Path.join(consumer_dir, "mix.exs"),
-      consumer_mix_exs("file://#{snapshot_dir}", ref)
+      consumer_mix_exs(file_url(snapshot_dir), ref)
     )
 
     assert {output, 0} = System.cmd("mix", ["deps.get"], cd: consumer_dir, stderr_to_stdout: true)
@@ -175,17 +175,29 @@ defmodule Favn.ConsumerDependencyInstallTest do
 
     File.mkdir_p!(destination)
 
-    Enum.each(Enum.chunk_every(paths, 200), fn batch ->
-      {output, status} =
-        System.cmd(
-          "cp",
-          ["--parents", "--no-dereference", "--target-directory", destination, "--" | batch],
-          cd: source,
-          stderr_to_stdout: true
-        )
+    Enum.each(paths, fn relative ->
+      source_path = Path.join(source, relative)
+      destination_path = Path.join(destination, relative)
+      File.mkdir_p!(Path.dirname(destination_path))
 
-      assert status == 0, output
+      case File.lstat!(source_path) do
+        %{type: :symlink} ->
+          source_path
+          |> File.read_link!()
+          |> File.ln_s!(destination_path)
+
+        _regular ->
+          File.cp!(source_path, destination_path)
+      end
     end)
+  end
+
+  defp file_url(path) do
+    normalized = path |> Path.expand() |> String.replace("\\", "/")
+
+    if Regex.match?(~r/^[A-Za-z]:\//, normalized),
+      do: "file:///" <> normalized,
+      else: "file://" <> normalized
   end
 
   defp consumer_mix_exs(repo_url, ref) do
@@ -238,7 +250,8 @@ defmodule Favn.ConsumerDependencyInstallTest do
       defp deps do
         [
           {:favn, path: "#{Path.join(repo_root, "apps/favn")}"},
-          {:favn_duckdb, path: "#{Path.join(repo_root, "apps/favn_duckdb")}"},
+          {:favn_duckdb_adbc,
+           path: "#{Path.join(repo_root, "apps/favn_duckdb_adbc")}"},
           {:favn_azure, path: "#{Path.join(repo_root, "apps/favn_azure")}"}
         ]
       end

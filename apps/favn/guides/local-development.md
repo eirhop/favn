@@ -4,6 +4,9 @@ Local development is intentionally Docker-free. Favn runs the View and
 Orchestrator in the current Mix process and starts one separate runner BEAM
 using the consumer project's compiled code.
 
+The local runner uses a `source` identity with the actual host target. The
+Linux-only `prod` identity remains reserved for deployable customer images.
+
 You provide:
 
 - a running PostgreSQL database;
@@ -32,6 +35,15 @@ Load the required variables into the shell:
 ```bash
 export FAVN_DATABASE_URL='ecto://postgres:postgres@127.0.0.1/favn_dev'
 export FAVN_RUNTIME_INPUT_PIN_KEY="$(openssl rand -base64 32)"
+export DUCKDB_ADBC_DRIVER='/absolute/path/to/libduckdb.so'
+```
+
+PowerShell:
+
+```powershell
+$env:FAVN_DATABASE_URL = 'ecto://postgres:postgres@127.0.0.1/favn_dev'
+$env:FAVN_RUNTIME_INPUT_PIN_KEY = '<32-byte value or base64-encoded 32-byte value>'
+$env:DUCKDB_ADBC_DRIVER = 'C:\absolute\path\to\duckdb.dll'
 ```
 
 Favn reads the process environment. It does not read `.env`. Teams commonly use
@@ -70,9 +82,10 @@ mix favn.dev
 ```
 
 The command prints the View URL, normally `http://127.0.0.1:4173`, and stores
-local credentials in `.favn/local/credentials.json` with owner-only
-permissions. The UI password is reused across stop/start cycles because the
-administrator record is durable PostgreSQL state.
+local credentials in `.favn/local/credentials.json`. Favn applies owner-only
+mode bits on Unix; Windows uses the containing directory's ACLs. The UI
+password is reused across stop/start cycles because the administrator record is
+durable PostgreSQL state.
 
 After changing assets, pipelines, SQL, or ordinary Elixir runner code:
 

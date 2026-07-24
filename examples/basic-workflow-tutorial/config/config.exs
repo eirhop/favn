@@ -13,5 +13,5 @@ config :favn,
   ],
   local: [workspace_id: "local-dev"],
   runner_plugins: [
-    {FavnDuckdb, execution_mode: :in_process}
+    {FavnDuckdbADBC, execution_mode: :in_process}
   ]

@@ -4,6 +4,7 @@ import Config
 # development is composed explicitly by `mix favn.dev`.
 database_url = System.get_env("FAVN_DATABASE_URL")
 runtime_input_pin_key = System.get_env("FAVN_RUNTIME_INPUT_PIN_KEY")
+duckdb_adbc_driver = System.get_env("DUCKDB_ADBC_DRIVER")
 
 if is_binary(database_url) and database_url != "" and is_binary(runtime_input_pin_key) and
      runtime_input_pin_key != "" do
@@ -19,6 +20,12 @@ if is_binary(database_url) and database_url != "" and is_binary(runtime_input_pi
   config :favn_storage_postgres,
     runtime_input_pin_keys: %{1 => runtime_input_pin_key},
     runtime_input_pin_current_key_version: 1
+end
+
+if is_binary(duckdb_adbc_driver) and duckdb_adbc_driver != "" do
+  config :favn, :duckdb_adbc,
+    driver: duckdb_adbc_driver,
+    entrypoint: "duckdb_adbc_init"
 end
 
 # For development, we disable any cache and enable

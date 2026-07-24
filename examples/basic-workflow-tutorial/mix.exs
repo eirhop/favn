@@ -20,7 +20,7 @@ defmodule FavnReferenceWorkload.MixProject do
   defp deps do
     [
       {:favn, path: "../../apps/favn"},
-      {:favn_duckdb, path: "../../apps/favn_duckdb"}
+      {:favn_duckdb_adbc, path: "../../apps/favn_duckdb_adbc"}
     ]
   end
 end

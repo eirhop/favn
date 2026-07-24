@@ -187,15 +187,22 @@ defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
 
     if started_distribution? do
       assert {_, 0} = System.cmd("epmd", ["-daemon"], stderr_to_stdout: true)
-      client_name = String.to_atom("favn_beam_client_#{System.unique_integer([:positive])}")
-      assert {:ok, _pid} = Node.start(client_name, :shortnames)
+
+      client_name =
+        String.to_atom("favn_beam_client_#{System.unique_integer([:positive])}@127.0.0.1")
+
+      assert {:ok, _pid} = Node.start(client_name, name_domain: :longnames)
     end
 
-    peer_name = "favn_beam_runner_#{System.unique_integer([:positive])}"
+    peer_name =
+      "favn_beam_runner_#{System.unique_integer([:positive])}"
+      |> String.to_charlist()
 
     assert {:ok, peer, peer_node} =
              :peer.start_link(%{
                name: peer_name,
+               host: ~c"127.0.0.1",
+               longnames: true,
                connection: :standard_io,
                wait_boot: 10_000
              })
