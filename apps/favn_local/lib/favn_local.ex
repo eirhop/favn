@@ -7,6 +7,7 @@ defmodule FavnLocal do
   """
 
   alias FavnLocal.Config
+  alias FavnLocal.Distribution
   alias FavnLocal.Lifecycle
   alias FavnLocal.Locator
   alias FavnLocal.Preflight
@@ -93,9 +94,8 @@ defmodule FavnLocal do
     if Node.alive?() do
       {:error, {:node_already_running, node()}}
     else
-      case Node.start(config.operator_node, :longnames) do
-        {:ok, _pid} ->
-          Node.set_cookie(String.to_atom(config.distribution_cookie))
+      case Distribution.start(config.operator_node, config.distribution_cookie) do
+        :ok ->
           :ok
 
         {:error, reason} ->

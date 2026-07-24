@@ -2,6 +2,7 @@ defmodule FavnLocal.Locator do
   @moduledoc false
 
   alias FavnLocal.Config
+  alias FavnLocal.Distribution
 
   @state_schema 1
 
@@ -105,9 +106,8 @@ defmodule FavnLocal.Locator do
       suffix = System.unique_integer([:positive, :monotonic])
       name = String.to_atom("favn_local_client_#{suffix}@127.0.0.1")
 
-      case Node.start(name, :longnames) do
-        {:ok, _pid} ->
-          Node.set_cookie(String.to_atom(cookie))
+      case Distribution.start(name, cookie) do
+        :ok ->
           :ok
 
         {:error, reason} ->
