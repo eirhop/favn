@@ -979,8 +979,6 @@ defmodule Favn.CLI.OrchestratorClient do
     |> Map.new()
   end
 
-  defp idempotency_session_context(_session_context), do: %{}
-
   defp canonicalize(nil), do: %{"__type__" => "null"}
 
   defp canonicalize(value) when is_boolean(value),

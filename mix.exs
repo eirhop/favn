@@ -67,12 +67,12 @@ defmodule FavnUmbrella.MixProject do
       test: &test/1,
       "test.acceptance": [
         "do --app favn cmd mix test --no-compile --only acceptance --timeout 1200000",
+        "do --app favn_local cmd mix test --no-compile --only acceptance --timeout 1200000",
         "do --app favn_view cmd mix test --no-compile --only browser --timeout 1200000"
       ],
       "test.slow": [
         "do --app favn cmd mix test --no-compile --only slow --timeout 1200000",
         "do --app favn_duckdb cmd mix test --no-compile --only slow --timeout 1200000",
-        "do --app favn_local cmd mix test --no-compile --only slow --timeout 1200000",
         "do --app favn_storage_postgres cmd mix test --no-compile --only slow --timeout 1200000"
       ]
     ]

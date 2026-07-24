@@ -27,6 +27,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.API.SSE.Cursor
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Runs
 
   plug(Plug.RequestId)
@@ -240,7 +241,7 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, sequence} <- Cursor.run(header(conn, "last-event-id"), run_id) do
       stream(conn, context, {:run, run_id, sequence})
     else
-      {:error, :not_found} ->
+      {:error, %Error{kind: :not_found}} ->
         error(conn, 404, "not_found", "Run was not found")
 
       {:error, :forbidden} ->

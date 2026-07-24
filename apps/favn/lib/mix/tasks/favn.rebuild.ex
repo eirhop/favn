@@ -305,8 +305,7 @@ defmodule Mix.Tasks.Favn.Rebuild do
   defp count(_items), do: 0
   defp present?(value), do: not is_nil(value) and value != ""
 
-  defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
-  defp error_message(:invalid_local_secrets), do: "local service credentials are unavailable"
+  defp error_message(:not_running), do: "Favn is not running; use mix favn.dev"
   defp error_message(:rebuild_requires_asset), do: "rebuild target must be an asset"
   defp error_message(_reason), do: "rebuild request failed; inspect orchestrator logs for details"
 

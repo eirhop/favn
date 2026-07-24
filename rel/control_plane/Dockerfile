@@ -24,7 +24,11 @@ COPY . .
 RUN mix deps.get --only prod --check-locked && mix deps.compile
 RUN mix do --app favn_view cmd mix tailwind.install \
     && echo 'dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a  /build/_build/tailwind-linux-x64-4.3.3' | sha256sum --check --strict
-RUN mix do --app favn_view cmd mix esbuild.install \
+RUN for attempt in 1 2 3; do \
+      mix do --app favn_view cmd mix esbuild.install && break; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      sleep $((attempt * 5)); \
+    done \
     && echo '0c6588b092a2c291a72bab90659f3c9e0e25e0fe59c9ac12b4dae4d945e5548c  /build/_build/esbuild-linux-x64' | sha256sum --check --strict
 
 RUN mix do --app favn_view cmd mix assets.deploy

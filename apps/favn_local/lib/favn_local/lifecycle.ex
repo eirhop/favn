@@ -15,6 +15,8 @@ defmodule FavnLocal.Lifecycle do
   alias FavnLocal.RunnerChild
 
   @probe_interval_ms 100
+  @runner_drain_probe_interval_ms 50
+  @runner_drain_timeout_ms 10_000
   @runner_start_timeout_ms 30_000
   @runner_stop_timeout_ms 15_000
   @request_timeout_ms 60_000
@@ -89,29 +91,15 @@ defmodule FavnLocal.Lifecycle do
   def handle_call({:reload, publication, runner_release_id}, from, %{status: :ready} = state) do
     token = random_token()
 
-    with {:ok, ^token} <- FavnOrchestrator.begin_runner_replacement(token),
-         %{active_admissions: 0} <- FavnOrchestrator.runner_replacement_status() do
-      :ok = RunnerChild.stop(state.runner)
-
-      Process.send_after(
-        self(),
-        {:runner_stop_timeout, state.runner.port},
-        @runner_stop_timeout_ms
-      )
-
-      {:noreply,
-       %{
-         state
-         | status: :reloading,
-           request: {from, publication, runner_release_id},
-           maintenance_token: token,
-           deadline: now_ms() + @runner_start_timeout_ms
-       }}
+    with {:ok, ^token} <- FavnOrchestrator.begin_runner_replacement(token) do
+      continue_runner_replacement(%{
+        state
+        | status: :reloading,
+          request: {from, publication, runner_release_id},
+          maintenance_token: token,
+          deadline: now_ms() + @runner_drain_timeout_ms
+      })
     else
-      %{active_admissions: count} when is_integer(count) and count > 0 ->
-        _ = FavnOrchestrator.finish_runner_replacement(token)
-        {:reply, {:error, {:runs_in_flight, count}}, state}
-
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
@@ -147,6 +135,9 @@ defmodule FavnLocal.Lifecycle do
         {:noreply, state}
     end
   end
+
+  def handle_info(:probe_runner_drain, %{status: :reloading} = state),
+    do: continue_runner_replacement(state)
 
   def handle_info({port, {:data, bytes}}, %{runner: %{port: port}} = state) do
     IO.write(bytes)
@@ -225,6 +216,50 @@ defmodule FavnLocal.Lifecycle do
   end
 
   defp runner_exited(state, status), do: fail(state, {:runner_exited, status})
+
+  defp continue_runner_replacement(state) do
+    case FavnOrchestrator.runner_replacement_status() do
+      %{active_admissions: 0} ->
+        :ok = RunnerChild.stop(state.runner)
+
+        Process.send_after(
+          self(),
+          {:runner_stop_timeout, state.runner.port},
+          @runner_stop_timeout_ms
+        )
+
+        {:noreply, %{state | deadline: now_ms() + @runner_start_timeout_ms}}
+
+      %{active_admissions: count} when is_integer(count) and count > 0 ->
+        if now_ms() >= state.deadline do
+          abort_runner_replacement(state, {:runs_in_flight, count})
+        else
+          Process.send_after(self(), :probe_runner_drain, @runner_drain_probe_interval_ms)
+          {:noreply, state}
+        end
+
+      status ->
+        abort_runner_replacement(state, {:runner_drain_unavailable, status})
+    end
+  end
+
+  defp abort_runner_replacement(state, reason) do
+    finish_runner_replacement(state.maintenance_token)
+
+    case state.request do
+      {from, %Publication{}, _release_id} -> GenServer.reply(from, {:error, reason})
+      _none -> :ok
+    end
+
+    {:noreply,
+     %{
+       state
+       | status: :ready,
+         request: nil,
+         maintenance_token: nil,
+         deadline: nil
+     }}
+  end
 
   defp start_deployment(state) do
     token = state.maintenance_token

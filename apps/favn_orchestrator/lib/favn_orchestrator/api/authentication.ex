@@ -108,11 +108,11 @@ defmodule FavnOrchestrator.API.Authentication do
   defp persisted_actor_context(conn, context) do
     case header(conn, "x-favn-session-token") do
       token when is_binary(token) and token != "" ->
-        case Auth.actor_from_forwarded_context(
+        case apply(Auth, :actor_from_forwarded_context, [
                context,
                header(conn, "x-favn-actor-id"),
                token
-             ) do
+             ]) do
           {:ok, session, actor} -> {:ok, session, actor}
           {:error, _reason} -> {:error, :unauthenticated}
         end

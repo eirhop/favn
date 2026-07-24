@@ -135,7 +135,16 @@ jobs:
         run: mix favn.postgres.migrate
 
       - name: Build Phoenix assets
-        run: mix do --app favn_view cmd mix assets.build
+        run: |
+          for attempt in 1 2 3; do
+            if mix do --app favn_view cmd mix assets.build; then
+              exit 0
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Test
         run: mix test --no-compile --timeout 1200000

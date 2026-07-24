@@ -261,7 +261,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
            FavnOrchestrator.register_manifest_with_runner(context, manifest_version_id) do
       Response.data(conn, 200, %{registration: registration})
     else
-      {:error, :manifest_version_not_found} ->
+      {:error, %Error{kind: :not_found}} ->
         Response.error(conn, 404, "not_found", "Manifest version was not found")
 
       {:error, :runner_manifest_conflict} ->

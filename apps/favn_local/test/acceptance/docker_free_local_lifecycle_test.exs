@@ -1,10 +1,11 @@
-defmodule Favn.DockerFreeLocalLifecycleAcceptanceTest do
+defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
   use ExUnit.Case, async: false
 
   alias Favn.Manifest.Publication
-  alias FavnLocal.Lifecycle
+  alias FavnLocal.Lifecycle, as: LocalLifecycle
   alias FavnLocal.Locator
   alias FavnLocal.Publication, as: LocalPublication
+  alias FavnOrchestrator.Lifecycle, as: OrchestratorLifecycle
   alias FavnStoragePostgres.Release
 
   @moduletag :acceptance
@@ -36,7 +37,33 @@ defmodule Favn.DockerFreeLocalLifecycleAcceptanceTest do
     assert started.status == :ready
     assert Process.alive?(started.supervisor)
 
-    assert {:ok, reloaded} = FavnLocal.reload(root_dir: root_dir, reload_timeout_ms: 60_000)
+    test_process = self()
+
+    admission_holder =
+      Task.async(fn ->
+        {:ok, permit} = OrchestratorLifecycle.acquire_admission()
+        send(test_process, :admission_held)
+
+        receive do
+          :release_admission -> :ok
+        end
+
+        :ok = OrchestratorLifecycle.release_admission(permit)
+      end)
+
+    assert_receive :admission_held
+
+    reload =
+      Task.async(fn ->
+        FavnLocal.reload(root_dir: root_dir, reload_timeout_ms: 60_000)
+      end)
+
+    assert_eventually(fn -> LocalLifecycle.status().status == :reloading end)
+    assert nil == Task.yield(reload, 100)
+
+    send(admission_holder.pid, :release_admission)
+    assert :ok = Task.await(admission_holder)
+    assert {:ok, reloaded} = Task.await(reload, 60_000)
     assert reloaded.runner_release_id != started.runner_release_id
 
     failed_release_id = FavnTestSupport.runner_release_id(:alternate)
@@ -44,7 +71,7 @@ defmodule Favn.DockerFreeLocalLifecycleAcceptanceTest do
     invalid_publication = %{publication | execution_packages: [%{}]}
 
     assert {:error, _reason} =
-             Lifecycle.reload(invalid_publication, failed_release_id, 60_000)
+             LocalLifecycle.reload(invalid_publication, failed_release_id, 60_000)
 
     ref = Process.monitor(started.supervisor)
     assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 10_000
@@ -57,4 +84,17 @@ defmodule Favn.DockerFreeLocalLifecycleAcceptanceTest do
     :ok = :gen_tcp.close(socket)
     port
   end
+
+  defp assert_eventually(fun, attempts \\ 300)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(100)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
+  defp assert_eventually(_fun, 0), do: flunk("condition did not become true")
 end

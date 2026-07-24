@@ -4,7 +4,7 @@ defmodule FavnLocal.Distribution do
   @spec start(node(), String.t()) :: :ok | {:error, term()}
   def start(name, cookie) when is_atom(name) and is_binary(cookie) do
     with :ok <- ensure_epmd(),
-         {:ok, _pid} <- Node.start(name, :longnames) do
+         {:ok, _pid} <- Node.start(name, name_domain: :longnames) do
       Node.set_cookie(String.to_atom(cookie))
       :ok
     end

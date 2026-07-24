@@ -243,9 +243,6 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
   defp authentication_error(conn, :unauthenticated),
     do: Response.error(conn, 401, "unauthenticated", "Missing or invalid actor context")
 
-  defp authentication_error(conn, _reason),
-    do: Response.error(conn, 400, "bad_request", "Request failed")
-
   defp validation_error(conn, message),
     do: Response.error(conn, 422, "validation_failed", message)
 
