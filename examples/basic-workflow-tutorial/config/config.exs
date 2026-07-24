@@ -1,5 +1,15 @@
 import Config
 
+case System.get_env("DUCKDB_ADBC_DRIVER") do
+  driver when is_binary(driver) and driver != "" ->
+    config :favn, :duckdb_adbc,
+      driver: driver,
+      entrypoint: "duckdb_adbc_init"
+
+  _missing ->
+    :ok
+end
+
 config :favn,
   discovery: [
     apps: [:basic_workflow_tutorial],
@@ -9,7 +19,10 @@ config :favn,
     connections: :all
   ],
   connections: [
-    warehouse: [database: ".data/reference_workload.duckdb", write_concurrency: 1]
+    warehouse: [open: [database: "generic_crm.duckdb"]]
+  ],
+  execution_pools: [
+    local_landing_write: [max_concurrency: 1]
   ],
   local: [workspace_id: "local-dev"],
   runner_plugins: [

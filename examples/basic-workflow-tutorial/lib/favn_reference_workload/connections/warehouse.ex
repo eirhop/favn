@@ -1,6 +1,6 @@
 defmodule FavnReferenceWorkload.Connections.Warehouse do
   @moduledoc """
-  DuckDB warehouse connection used by the reference workload.
+  DuckDB warehouse connection used by the temporary CRM example.
 
   This module teaches the basic connection contract in Favn:
 
@@ -24,11 +24,9 @@ defmodule FavnReferenceWorkload.Connections.Warehouse do
     %Favn.Connection.Definition{
       name: :warehouse,
       adapter: Favn.SQL.Adapter.DuckDB.ADBC,
-      doc: "Reference workload DuckDB warehouse",
-      metadata: %{scope: :reference_workload},
-      config_schema: [
-        %{key: :database, required: true, type: :path}
-      ]
+      doc: "Generic CRM DuckDB warehouse",
+      metadata: %{scope: :generic_crm_demo},
+      config_schema: Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields()
     }
   end
 end

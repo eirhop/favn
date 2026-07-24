@@ -999,7 +999,8 @@ defmodule FavnRunner.Server do
   end
 
   defp adapter_connection_diagnostics(%Resolved{} = resolved, base, timeout_ms) do
-    if is_atom(resolved.adapter) and function_exported?(resolved.adapter, :diagnostics, 2) do
+    if is_atom(resolved.adapter) and Code.ensure_loaded?(resolved.adapter) and
+         function_exported?(resolved.adapter, :diagnostics, 2) do
       case resolved.adapter.diagnostics(resolved, timeout: timeout_ms) do
         {:ok, details} -> Map.merge(base, %{status: :ok, details: safe_adapter_details(details)})
         {:error, _reason} -> Map.merge(base, %{status: :error, reason: :adapter_not_ready})
