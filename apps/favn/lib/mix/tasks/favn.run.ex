@@ -33,7 +33,7 @@ defmodule Mix.Tasks.Favn.Run do
   the pipeline/asset DSL or API `retry_policy` map for exponential backoff.
   """
 
-  alias Favn.Dev
+  alias Favn.CLI
 
   @switches [
     root_dir: :string,
@@ -71,7 +71,7 @@ defmodule Mix.Tasks.Favn.Run do
   end
 
   defp run_pipeline(target, opts) do
-    case Dev.run(target, opts) do
+    case CLI.run(target, opts) do
       {:ok, run} ->
         print_run(run, target)
 
@@ -95,7 +95,7 @@ defmodule Mix.Tasks.Favn.Run do
 
   def error_message({:run_wait_timeout, run_id, timeout_ms}) do
     "local wait timed out after #{timeout_ms}ms while run #{run_id} is still in flight; " <>
-      "check status with mix favn.status or rerun with a larger --wait-timeout-ms"
+      "inspect it with mix favn.runs show #{run_id} or rerun with a larger --wait-timeout-ms"
   end
 
   def error_message({:invalid_option, :timeout_ms}), do: "--timeout-ms must be greater than 0"

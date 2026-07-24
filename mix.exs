@@ -41,7 +41,6 @@ defmodule FavnUmbrella.MixProject do
       preferred_envs: [
         test: :test,
         "test.acceptance": :test,
-        "test.container": :test,
         "test.slow": :test
       ]
     ]
@@ -67,11 +66,8 @@ defmodule FavnUmbrella.MixProject do
     [
       test: &test/1,
       "test.acceptance": [
-        "do --app favn_local cmd mix test --no-compile --only acceptance --exclude container --timeout 1200000",
+        "do --app favn cmd mix test --no-compile --only acceptance --timeout 1200000",
         "do --app favn_view cmd mix test --no-compile --only browser --timeout 1200000"
-      ],
-      "test.container": [
-        "do --app favn_local cmd mix test --no-compile --only container --timeout 1200000"
       ],
       "test.slow": [
         "do --app favn cmd mix test --no-compile --only slow --timeout 1200000",

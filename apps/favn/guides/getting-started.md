@@ -1,194 +1,115 @@
-# Getting Started With Favn
+# Getting Started
 
-This tutorial scaffolds and starts Favn locally.
-
-You do not need to call manifest functions by hand for normal local use. Favn's
-local commands build and load what they need from your DSL modules.
-
-The complete first-start path is:
-
-```bash
-mix favn.init
-mix favn.install
-mix favn.dev
-```
-
-## Prerequisites
-
-- An Elixir Mix project.
-- Linux amd64, or amd64 WSL2 with Linux containers.
-- Docker Engine and Docker Compose v2.
-- Elixir 1.20.2 on Erlang/OTP 29.
-- Pull access to Favn's private GHCR control-plane package.
-- The Favn monorepo or private package source available to your project.
+Favn source development uses normal Mix processes and a PostgreSQL database
+that you provide. Docker is only needed when you choose to build or test
+deployment images.
 
 ## 1. Add Favn
 
-Before Hex publication, check out Favn at the approved Git tag or commit, detach
-the checkout, keep it clean, and use path dependencies from that checkout:
-
 ```elixir
 def deps do
   [
-    {:favn, path: "../favn/apps/favn"}
+    {:favn, "~> 0.5.0"}
   ]
 end
 ```
 
-Your customer-owned Docker build resolves this dependency like any other
-application dependency. Use your approved package version when Favn is
-published to your package source.
-
-If you also want the generated DuckDB sample, add the DuckDB plugin dependency
-when prompted by `mix favn.init` or add it manually from the same checkout.
-
-```elixir
-def deps do
-  [
-    {:favn, path: "../favn/apps/favn"},
-    {:favn_duckdb, path: "../favn/apps/favn_duckdb"}
-  ]
-end
-```
-
-Favn maintainers who need to switch a real consumer project between this
-approved checkout and an active local checkout should use the
-[`FAVN_CHECKOUT` dependency switch and `mix favn.maintainer.dev`](local-development.md#testing-a-local-favn-checkout).
-The normal checkout remains the default.
-
-## 2. Scaffold Local Favn
-
-Run this from your project root:
+During pre-release source testing, use the approved path, Git reference, or
+private package version instead.
 
 ```bash
-mix favn.init
+mix deps.get
+mix favn.init --duckdb --sample
 ```
 
-This writes the documented customer-owned local Compose file under
-`deploy/local/` and the customer runner Dockerfile under `deploy/runner/`.
-Commit and customize both like ordinary project configuration. Favn never
-overwrites a modified scaffold.
+## 2. Provide PostgreSQL and environment variables
 
-When the project declares the optional `favn_duckdb_adbc` runner plugin, request
-the tested native DuckDB driver explicitly:
+Start PostgreSQL using your team's preferred tooling, then export:
 
 ```bash
-mix favn.init --include duckdb-adbc
+export FAVN_DATABASE_URL='ecto://postgres:postgres@127.0.0.1/favn_dev'
+export FAVN_RUNTIME_INPUT_PIN_KEY="$(openssl rand -base64 32)"
 ```
 
-Use `--include duckdb-adbc@VERSION` to select another version supported by the
-installed Favn release.
+Favn does not install PostgreSQL and does not load `.env`. The variables must
+already exist in the environment of the `mix` process.
 
-## 3. Install The Control Plane Image
+Initialize the control-plane schema and workspace once:
 
 ```bash
-mix favn.install
+mix favn.postgres.migrate
+mix favn.postgres.provision_workspace \
+  --id local-dev \
+  --slug local-dev \
+  --name "Local Development"
 ```
 
-This verifies Docker Engine, resolves the version-matched prebuilt control-plane
-image to an immutable digest, and writes image-only install state under
-`.favn/`. It does not compile the control plane or own the Compose file.
-
-## 4. Optionally Check The Installed Setup
+## 3. Start Favn
 
 ```bash
 mix favn.doctor
-```
-
-Fix any reported config, dependency, image, or Compose issue before continuing.
-
-## 5. Start Favn Locally
-
-```bash
 mix favn.dev
 ```
 
-Favn generates a local runner release ID, invokes the customer-owned
-`deploy/runner/Dockerfile` with Docker build cache and refreshed base images,
-validates the result, builds the aligned manifest, and starts the three-service
-local topology. Pass `--runner-image IMAGE` only to use an image built or pulled
-outside this workflow.
+Open the printed View URL, normally `http://127.0.0.1:4173`.
 
-The command prints local URLs. Open the UI URL, usually:
+## 4. Run and inspect work
 
-```text
-http://127.0.0.1:4173
-```
-
-Keep `mix favn.dev` running.
-
-## 6. Run A Pipeline
-
-In another terminal:
+In another terminal with the same environment:
 
 ```bash
 mix favn.run MyApp.Pipelines.LocalSmoke
-```
-
-Replace the example with a pipeline declared by your project. To generate the
-separate legacy DuckDB authoring sample, run
-`mix favn.init --duckdb --sample`.
-
-## 7. Inspect The Result
-
-List recent runs:
-
-```bash
 mix favn.runs list
+mix favn.inspect MyApp.Mart:example
 ```
 
-Read logs for a run:
+After changing runner code or authored definitions:
 
 ```bash
-mix favn.logs RUN_ID
+mix favn.reload
 ```
 
-Inspect a relation:
+Reload compiles and replaces the runner BEAM. It does not rebuild an image.
 
-```bash
-mix favn.inspect relation raw.sales.orders --connection important_lakehouse
-```
-
-Run a local read-only SQL query:
-
-```bash
-mix favn.query "select * from mart.sales.order_summary" --connection important_lakehouse
-```
-
-## 8. Stop Favn
+After changing dependencies, plugins, environment, or runtime configuration:
 
 ```bash
 mix favn.stop
+mix favn.dev
 ```
 
-## What Happened
+## 5. Prepare a deployment
 
-You used Favn's public local commands to create a project layout, check config,
-start a local runtime, run a pipeline, inspect run state, and stop the stack.
+Deployment is a separate workflow. Copy the bounded example:
 
-The generated files show the main authoring pieces you will use in real projects:
+```bash
+mix favn.init --target deployment
+```
 
-- `Favn.Connection` for named SQL connections
-- `Favn.Namespace` for relation defaults
-- `Favn.Asset` for Elixir assets
-- `Favn.SQLAsset` for SQL assets
-- `Favn.Pipeline` for named runs
+Favn writes `deploy/favn/` once and never overwrites it. Your team owns and
+adapts those Docker and Compose files for its platform. PostgreSQL remains an
+external service.
 
-## Common Problems
+Build a customer runner with an explicit immutable release ID, then build the
+manifest with the same ID:
 
-| Problem | Fix |
-| --- | --- |
-| `mix favn.doctor` reports missing config | Check `config/config.exs` and the generated connection modules. |
-| `mix favn.install` fails | Fix the reported dependency, tool, or filesystem issue and run it again. |
-| `mix favn.dev` reports a missing scaffold file | Run `mix favn.init`, review the generated files, and retry. |
-| The runner needs DuckDB ADBC | Declare `favn_duckdb_adbc`, then initialize with `mix favn.init --include duckdb-adbc`. |
-| `mix favn.dev` reports a Compose contract error | Keep one labeled service for each required Favn role; extra unlabeled services are allowed. |
-| `mix favn.dev` starts but UI does not load | Check the printed web URL, then run `mix favn.status` and `mix favn.diagnostics`. |
-| `mix favn.run` cannot find the pipeline | Use the generated pipeline module name printed by `mix favn.init`. |
-| Query or inspect cannot choose a connection | Pass `--connection important_lakehouse` or your configured connection name. |
+```bash
+export RUNNER_RELEASE_ID="rr_<64-lowercase-hex-characters>"
 
-## Next Step
+docker build \
+  -f deploy/favn/runner.Dockerfile \
+  --build-arg FAVN_CUSTOMER_APP=my_app \
+  --build-arg FAVN_RUNNER_RELEASE_ID="$RUNNER_RELEASE_ID" \
+  -t registry.example/customer-runner:"$RUNNER_RELEASE_ID" \
+  .
 
-Read [Authoring Assets](authoring-assets.md) to understand and edit the generated
-DSL modules. Read [Configuration](configuration.md) when you need to change local
-ports, storage, connections, DuckDB, or discovery.
+MIX_ENV=prod mix favn.build.manifest \
+  --runner-release-id "$RUNNER_RELEASE_ID"
+```
+
+The control plane is the reusable Favn image. The runner is customer-owned and
+contains the consumer's code and plugins. Deploy immutable image digests and
+the manifest created for that exact runner release.
+
+Read [Local Development](local-development.md) for the full developer loop and
+[Configuration](configuration.md) for environment and runtime configuration.

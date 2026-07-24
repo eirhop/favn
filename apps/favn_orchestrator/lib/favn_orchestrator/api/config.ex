@@ -59,36 +59,16 @@ defmodule FavnOrchestrator.API.Config do
     normalize_bind_ip(bind_ip)
   end
 
-  @doc false
-  @spec local_dev_trusted_context_allowed?() :: boolean()
-  def local_dev_trusted_context_allowed? do
-    api_opts = Application.get_env(:favn_orchestrator, :api_server, [])
-
-    Application.get_env(:favn_orchestrator, :local_dev_mode, false) == true and
-      loopback_bind?(api_opts)
-  end
-
   defp validate_access_config do
-    if local_dev_trusted_context_allowed?() do
-      :ok
-    else
-      case ServiceTokens.validate_runtime_config() do
-        :ok ->
-          :ok
+    case ServiceTokens.validate_runtime_config() do
+      :ok ->
+        :ok
 
-        {:error, {:missing_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"}} ->
-          {:error, {:invalid_api_config, :missing_service_tokens}}
+      {:error, {:missing_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"}} ->
+        {:error, {:invalid_api_config, :missing_service_tokens}}
 
-        {:error, reason} ->
-          {:error, reason}
-      end
-    end
-  end
-
-  defp loopback_bind?(api_opts) do
-    case bind_ip(api_opts) do
-      {:ok, {127, _b, _c, _d}} -> true
-      _other -> false
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

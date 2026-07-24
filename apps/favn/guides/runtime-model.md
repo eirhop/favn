@@ -47,7 +47,7 @@ Typical run states are:
 | `:cancelled` | Cancellation was recorded. |
 | `:timed_out` | The run exceeded its timeout. |
 
-Inspect runs through public commands such as `mix favn.runs`, `mix favn.logs`,
+Inspect runs through public commands such as `mix favn.runs`,
 and `mix favn.diagnostics`.
 
 ## Asset Runtime Context

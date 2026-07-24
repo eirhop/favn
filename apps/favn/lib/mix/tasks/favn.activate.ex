@@ -10,14 +10,14 @@ defmodule Mix.Tasks.Favn.Activate do
   `FAVN_ORCHESTRATOR_SERVICE_TOKEN`.
   """
 
-  alias Favn.Dev
+  alias Favn.CLI
   alias Mix.Tasks.Favn.CLIArgs
 
   @impl Mix.Task
   def run(args) do
     opts = parse_args(args)
 
-    case Dev.activate(opts) do
+    case CLI.activate(opts) do
       {:ok, summary} ->
         IO.puts("Favn manifest activation complete")
         IO.puts("manifest version: #{summary.manifest_version_id}")

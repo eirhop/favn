@@ -10,7 +10,6 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.ControlPlaneRuntimeConfig
   alias FavnOrchestrator.ExecutionAdmission.Coordinator, as: AdmissionCoordinator
-  alias FavnOrchestrator.LocalDevBootstrap
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.OperationalEvents
@@ -72,7 +71,6 @@ defmodule FavnOrchestrator.Application do
           [{PersistenceRuntime, persistence_runtime}] ++
           persistence_children ++
           [{ManifestIndexCache, []}] ++
-          local_dev_bootstrap_children() ++
           [
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},
@@ -130,14 +128,6 @@ defmodule FavnOrchestrator.Application do
       [{PersistenceSchedulerRuntime, scheduler_opts}]
     else
       OperationalEvents.emit(:scheduler_disabled, %{}, %{})
-      []
-    end
-  end
-
-  defp local_dev_bootstrap_children do
-    if Application.get_env(:favn_orchestrator, :local_dev_mode, false) do
-      [{LocalDevBootstrap, []}]
-    else
       []
     end
   end

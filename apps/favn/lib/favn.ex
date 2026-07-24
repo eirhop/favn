@@ -157,7 +157,7 @@ defmodule Favn do
   - `Favn.Runner.SupervisedChildren`
   - `Favn.Freshness`
   - task-specific DSL modules such as `Favn.Asset`, `Favn.SQLAsset`,
-    `Favn.Pipeline`, and `Favn.Dev`
+    `Favn.Pipeline`, and `FavnLocal`
   """
 
   alias Favn.SQLAsset.Input, as: SQLAssetInput

@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Favn.Runs do
   wait timeout expires.
   """
 
-  alias Favn.Dev
+  alias Favn.CLI
 
   @list_switches [root_dir: :string, status: :string, limit: :integer]
   @show_switches [root_dir: :string]
@@ -78,21 +78,21 @@ defmodule Mix.Tasks.Favn.Runs do
     do: {:error, "unknown subcommand #{inspect(unknown)}; usage: #{usage()}"}
 
   defp list_runs(opts) do
-    case Dev.list_runs(opts) do
+    case CLI.list_runs(opts) do
       {:ok, runs} -> print_runs(runs)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp show_run(run_id, opts) do
-    case Dev.get_run(run_id, opts) do
+    case CLI.get_run(run_id, opts) do
       {:ok, run} -> IO.puts(JSON.encode!(run))
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp cancel_run(run_id, opts) do
-    case Dev.cancel_run(run_id, opts) do
+    case CLI.cancel_run(run_id, opts) do
       {:ok, run_or_result} ->
         print_cancel_result(run_id, run_or_result, Keyword.get(opts, :wait, false))
 

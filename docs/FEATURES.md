@@ -105,37 +105,23 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 
 ## Local development and packaging
 
-- `mix favn.init`, `doctor`, `install`, `dev`, `run`, `backfill`, `rebuild`, `runs`, `logs`,
-  `inspect`, `query`, `diagnostics`, `reload`, `status`, `stop`, and `reset` provide
-  the private local developer loop against PostgreSQL.
-- `mix favn.init` creates the non-overwriting documented local Compose and
-  editable customer Dockerfile/release templates. Optional versioned native
-  dependencies are explicit includes such as `duckdb-adbc@1.5.4`.
-- Repository maintainers use `build.control_plane` for the deterministic,
-  integrity-checked official image context and optional unpublished local
-  candidate. Consumer projects can use `FAVN_CHECKOUT` with
-  `mix favn.maintainer.dev` to exercise one coherent local framework checkout by
-  exact local image ID. Pull-request CI qualifies unpublished candidates; an
-  explicit workflow dispatch publishes only the exact current green `main`
-  revision to GHCR, records immutable digest aliases, scans the image, and
-  attaches provenance and SPDX SBOM attestations. Ordinary merges publish no
-  image.
+- `mix favn.dev`, `reload`, `stop`, and `doctor` provide a Docker-free source
+  loop. View and Orchestrator run in the current BEAM and one child runner BEAM
+  uses the consumer's compiled code.
+- Developers supply PostgreSQL and load environment variables themselves.
+  Startup verifies the schema and workspace but never starts, migrates,
+  provisions, resets, or deletes PostgreSQL.
+- `mix favn.init --target deployment` copies one non-overwriting,
+  customer-owned Compose and runner-image example. PostgreSQL is external.
+- Repository maintainers build `rel/control_plane/Dockerfile` directly from the
+  repository root. CI validates and scans that image and publishes immutable
+  commit digests with provenance and SBOM data.
 - `build.manifest --runner-release-id ID` binds content-addressed manifests to
   an explicit operator-owned runner identity. `publish` stages artifacts and
   `activate` selects one exact version for one workspace using a service token
   read only from the environment.
-- `mix favn.install` resolves the version-matched prebuilt control plane to an
-  immutable digest and keeps install state independent of deployment topology.
-  The target-specific init forms remain available for comparison copies and
-  single-host consumer templates. `mix favn.dev` applies explicit
-  command/config/default Compose selection, automatically invokes the local
-  customer Dockerfile unless an image is selected, validates versioned role
-  labels, pins the inspected runner by local image ID, and runs PostgreSQL, the
-  control plane, and runner with Compose `--no-build`.
-- Local sample DuckDB paths are runtime references with host defaults below
-  `.data` and container paths below `/var/lib/favn/data`. Stop and reset
-  preserve the consumer Compose file, containers, networks, volumes, services,
-  and data.
+- Images remain deployment artifacts: the reusable control plane is Favn-owned,
+  while each runner image and its native dependencies are customer-owned.
 
 ## Operator web UI
 

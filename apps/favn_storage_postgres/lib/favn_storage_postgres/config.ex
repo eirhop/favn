@@ -53,8 +53,8 @@ defmodule FavnStoragePostgres.Config do
   @spec repo_options_from_env(map()) :: {:ok, keyword()} | {:error, term()}
   def repo_options_from_env(env \\ System.get_env()) when is_map(env) do
     with {:ok, url} <- required_env(env, "FAVN_DATABASE_URL"),
-         {:ok, deployment_mode} <- DeploymentMode.from_env(env),
-         {:ok, ssl_options} <- env_ssl_options(env, deployment_mode),
+         {:ok, _deployment_mode} <- DeploymentMode.from_env(env),
+         {:ok, ssl_options} <- env_ssl_options(env),
          {:ok, pool_size} <-
            env_bounded_integer(env, "FAVN_DATABASE_POOL_SIZE", 15, @max_production_pool_size),
          {:ok, queue_target} <-
@@ -162,16 +162,7 @@ defmodule FavnStoragePostgres.Config do
 
   defp valid_postgres_url?(_uri), do: false
 
-  defp validate_deployment_url(url, options) do
-    if Keyword.get(options, :deployment_mode) == :local_development do
-      case URI.parse(url) do
-        %URI{host: "postgres.favn.internal", port: port} when port in [nil, 5432] -> :ok
-        _invalid -> {:error, :invalid_local_development_database_url}
-      end
-    else
-      :ok
-    end
-  end
+  defp validate_deployment_url(_url, _options), do: :ok
 
   defp positive_integer(options, key, default) do
     case Keyword.get(options, key, default) do
@@ -187,7 +178,7 @@ defmodule FavnStoragePostgres.Config do
     end
   end
 
-  defp env_ssl_options(env, deployment_mode) do
+  defp env_ssl_options(env) do
     default = if production?(), do: nil, else: "disable"
 
     case Map.get(env, "FAVN_DATABASE_SSL_MODE", default) do
@@ -197,8 +188,8 @@ defmodule FavnStoragePostgres.Config do
          |> maybe_put(:ssl_ca_file, Map.get(env, "FAVN_DATABASE_SSL_CA_FILE"))}
 
       "disable" ->
-        if deployment_mode == :local_development or not production?(),
-          do: {:ok, [ssl_mode: :disable, deployment_mode: deployment_mode]},
+        if not production?(),
+          do: {:ok, [ssl_mode: :disable]},
           else: {:error, :production_tls_required}
 
       nil ->
@@ -233,7 +224,7 @@ defmodule FavnStoragePostgres.Config do
 
     case mode do
       :disable ->
-        if production?() and Keyword.get(options, :deployment_mode) != :local_development,
+        if production?(),
           do: {:error, :production_tls_required},
           else: {:ok, false}
 

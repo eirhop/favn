@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Favn.Rebuild do
   its exact id and hash to `start` to approve it explicitly.
   """
 
-  alias Favn.Dev
+  alias Favn.CLI
 
   @plan_switches [root_dir: :string, reason: :string]
   @start_switches [root_dir: :string, plan_hash: :string]
@@ -115,42 +115,42 @@ defmodule Mix.Tasks.Favn.Rebuild do
   defp plan(asset, opts) do
     reason = Keyword.fetch!(opts, :reason)
 
-    case Dev.plan_rebuild(asset, reason, opts) do
+    case CLI.plan_rebuild(asset, reason, opts) do
       {:ok, rebuild_plan} -> print_plan(rebuild_plan)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp start(plan_id, opts) do
-    case Dev.start_rebuild(plan_id, Keyword.fetch!(opts, :plan_hash), opts) do
+    case CLI.start_rebuild(plan_id, Keyword.fetch!(opts, :plan_hash), opts) do
       {:ok, operation} -> print_operation(operation)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp status(operation_id, opts) do
-    case Dev.get_rebuild(operation_id, opts) do
+    case CLI.get_rebuild(operation_id, opts) do
       {:ok, operation} -> print_operation(operation)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp cancel(operation_id, opts) do
-    case Dev.cancel_rebuild(operation_id, Keyword.fetch!(opts, :reason), opts) do
+    case CLI.cancel_rebuild(operation_id, Keyword.fetch!(opts, :reason), opts) do
       {:ok, operation} -> print_operation(operation)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp retry(operation_id, opts) do
-    case Dev.retry_rebuild(operation_id, opts) do
+    case CLI.retry_rebuild(operation_id, opts) do
       {:ok, operation} -> print_operation(operation)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp reconcile(operation_id, opts) do
-    case Dev.reconcile_rebuild(operation_id, opts) do
+    case CLI.reconcile_rebuild(operation_id, opts) do
       {:ok, operation} -> print_operation(operation)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
@@ -306,8 +306,6 @@ defmodule Mix.Tasks.Favn.Rebuild do
   defp present?(value), do: not is_nil(value) and value != ""
 
   defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
-  defp error_message(:install_required), do: "local install is missing; use mix favn.install"
-  defp error_message(:install_stale), do: "local install is stale; use mix favn.install"
   defp error_message(:invalid_local_secrets), do: "local service credentials are unavailable"
   defp error_message(:rebuild_requires_asset), do: "rebuild target must be an asset"
   defp error_message(_reason), do: "rebuild request failed; inspect orchestrator logs for details"

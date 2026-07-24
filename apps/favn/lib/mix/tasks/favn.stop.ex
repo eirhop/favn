@@ -1,23 +1,24 @@
 defmodule Mix.Tasks.Favn.Stop do
   use Mix.Task
 
-  @shortdoc "Stops local Favn dev stack"
+  @shortdoc "Stops Docker-free local Favn development"
 
   @moduledoc """
-  Stops only the recorded Favn control-plane, runner, and local PostgreSQL
-  roles. Consumer services and all Compose resources remain untouched.
+  Stops the local runner, Orchestrator, and View. The command is idempotent and
+  never changes PostgreSQL or customer data.
   """
 
-  alias Favn.Dev
   alias Mix.Tasks.Favn.CLIArgs
+
+  @requirements ["loadpaths"]
 
   @impl Mix.Task
   def run(args) do
     opts = CLIArgs.parse_no_args!("favn.stop", args, root_dir: :string)
 
-    case Dev.stop(opts) do
-      :ok -> IO.puts("Favn local stack stopped")
-      {:error, reason} -> Mix.raise("failed to stop local stack: #{inspect(reason)}")
+    case FavnLocal.stop(opts) do
+      :ok -> IO.puts("Favn development stopped")
+      {:error, reason} -> Mix.raise("failed to stop Favn development: #{inspect(reason)}")
     end
   end
 end

@@ -1,34 +1,23 @@
 defmodule FavnOrchestrator.API.Authentication do
   @moduledoc """
   Authenticates private API service credentials and forwarded actor sessions.
-
-  The trusted local-development context is deliberately narrow: it requires an
-  explicit header, local-dev runtime configuration, a loopback API bind, and a
-  loopback peer. Only after those checks does it obtain the runtime's synthetic
-  local administrator context.
   """
 
   import Plug.Conn, only: [get_req_header: 2]
 
-  alias FavnOrchestrator.API.Config
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.ServiceTokens
-  alias FavnOrchestrator.Auth.Store
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.PlatformContext
 
   @type role :: :viewer | :operator | :admin
 
-  @doc "Validates the request's service bearer token or trusted local context."
+  @doc "Validates the request's service bearer token."
   @spec ensure_service(Plug.Conn.t()) :: :ok | {:error, :service_unauthorized}
   def ensure_service(conn) do
-    if local_dev_allowed?(conn) do
-      :ok
-    else
-      case authenticate_service(conn) do
-        {:ok, _identity} -> :ok
-        {:error, :service_unauthorized} = error -> error
-      end
+    case authenticate_service(conn) do
+      {:ok, _identity} -> :ok
+      {:error, :service_unauthorized} = error -> error
     end
   end
 
@@ -129,27 +118,7 @@ defmodule FavnOrchestrator.API.Authentication do
         end
 
       _missing ->
-        cond do
-          local_dev_allowed?(conn) -> persisted_local_actor_context(context)
-          local_dev_requested?(conn) -> {:error, :forbidden}
-          true -> {:error, :unauthenticated}
-        end
-    end
-  end
-
-  defp persisted_local_actor_context(context) do
-    with {:ok, local_context} <-
-           WorkspaceContext.new(
-             context.workspace_id,
-             "favn:local-dev-context",
-             [:workspace_admin]
-           ) do
-      Store.trusted_local_dev_context(
-        local_context,
-        "local-dev-cli",
-        "Local Dev CLI",
-        [:admin]
-      )
+        {:error, :unauthenticated}
     end
   end
 
@@ -179,13 +148,9 @@ defmodule FavnOrchestrator.API.Authentication do
   @doc "Returns the authenticated service identity without exposing token material."
   @spec service_identity(Plug.Conn.t()) :: String.t() | nil
   def service_identity(conn) do
-    if local_dev_allowed?(conn) do
-      "local-dev-cli"
-    else
-      case authenticate_service(conn) do
-        {:ok, principal} -> principal.service_identity
-        {:error, :service_unauthorized} -> nil
-      end
+    case authenticate_service(conn) do
+      {:ok, principal} -> principal.service_identity
+      {:error, :service_unauthorized} -> nil
     end
   end
 
@@ -220,14 +185,7 @@ defmodule FavnOrchestrator.API.Authentication do
   end
 
   defp authenticate_platform_service(conn) do
-    if local_dev_allowed?(conn),
-      do:
-        {:ok,
-         %{
-           service_identity: "local-dev-cli",
-           platform_roles: [:platform_reader, :platform_operator]
-         }},
-      else: authenticate_service(conn)
+    authenticate_service(conn)
   end
 
   defp bearer_token(conn) do
@@ -238,17 +196,6 @@ defmodule FavnOrchestrator.API.Authentication do
   end
 
   defp configured_tokens, do: ServiceTokens.configured_tokens()
-
-  defp local_dev_requested?(conn), do: header(conn, "x-favn-local-dev-context") == "trusted"
-
-  defp local_dev_allowed?(conn) do
-    local_dev_requested?(conn) and Config.local_dev_trusted_context_allowed?() and
-      loopback_peer?(conn.remote_ip)
-  end
-
-  defp loopback_peer?({127, _b, _c, _d}), do: true
-  defp loopback_peer?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
-  defp loopback_peer?(_remote_ip), do: false
 
   defp header(conn, key) do
     case get_req_header(conn, key) do

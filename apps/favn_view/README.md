@@ -6,7 +6,7 @@ facade.
 
 ## Local Tooling
 
-- Use `mix favn.dev` for the supported customer Docker Compose runtime.
+- Use `mix favn.dev` for the Docker-free source-development runtime.
 - Maintainers may run
   `FAVN_DATABASE_URL=<local-postgres-url> FAVN_RUNTIME_INPUT_PIN_KEY=<32-byte-key> mix phx.server`
   from the umbrella root for source-level Phoenix and Tidewave inspection. This
