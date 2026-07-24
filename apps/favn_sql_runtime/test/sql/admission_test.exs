@@ -735,7 +735,7 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
 
     start_registry(registry_name, PooledCatalogConnectAdapter, tracker, %{
       admission_timeout_ms: 20,
-      pool: %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 1_000}
+      pool: %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
     })
 
     assert {:ok, session} =
