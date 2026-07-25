@@ -39,6 +39,24 @@ defmodule FavnOrchestrator.API.AuthenticationServiceContextTest do
     assert context.roles == [:workspace_admin]
   end
 
+  test "service-only local clients use one workspace contract for every operator level" do
+    conn =
+      :post
+      |> conn("/command")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+
+    for role <- [:viewer, :operator, :admin] do
+      assert {:ok, session, actor, context} =
+               Authentication.workspace_or_service_context(conn, role)
+
+      assert session.id == "api-service:deployment_cli"
+      assert actor.id == "service:deployment_cli"
+      assert context.workspace_id == "workspace-a"
+      assert context.roles == [:workspace_admin]
+    end
+  end
+
   test "rejects a service without platform operator authority" do
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
       [

@@ -133,6 +133,62 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "forbidden"
   end
 
+  test "invalid actor session does not fall back to service authority" do
+    response =
+      submit_request(%{
+        id: "missing-actor",
+        token: "invalid-forwarded-session-token"
+      })
+
+    assert response.status == 401
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "unauthenticated"
+  end
+
+  test "partial actor headers do not fall back to service authority" do
+    actor_only =
+      submit_request_with_headers([{"x-favn-actor-id", "actor-without-session"}])
+
+    session_only =
+      submit_request_with_headers([{"x-favn-session-token", "session-without-actor"}])
+
+    assert actor_only.status == 401
+    assert session_only.status == 401
+    assert get_in(Jason.decode!(actor_only.resp_body), ["error", "code"]) == "unauthenticated"
+    assert get_in(Jason.decode!(session_only.resp_body), ["error", "code"]) == "unauthenticated"
+  end
+
+  test "mismatched actor session does not fall back to service authority" do
+    actor = put_actor("workspace-a", "expected", [:customer_operator])
+
+    response =
+      submit_request(%{actor | id: "different-actor"})
+
+    assert response.status == 401
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "unauthenticated"
+  end
+
+  test "expired actor session does not fall back to service authority" do
+    actor = put_actor("workspace-a", "expired", [:customer_operator], expires_in: -1)
+    response = submit_request(actor)
+
+    assert response.status == 401
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "unauthenticated"
+  end
+
+  test "in-flight reads treat explicit invalid actor headers as authoritative" do
+    response =
+      :get
+      |> conn("/in-flight")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> put_req_header("x-favn-actor-id", "missing-actor")
+      |> put_req_header("x-favn-session-token", "invalid-forwarded-session-token")
+      |> RunsRouter.call(RunsRouter.init([]))
+
+    assert response.status == 401
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "unauthenticated"
+  end
+
   defp list_request do
     :get
     |> conn("/")
@@ -142,17 +198,21 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
   end
 
   defp submit_request(actor \\ nil) do
+    submit_request_with_headers(actor_headers(actor))
+  end
+
+  defp submit_request_with_headers(headers) do
     :post
     |> conn("/", "")
     |> put_req_header("authorization", "Bearer #{@token}")
     |> put_req_header("x-favn-workspace-id", "workspace-a")
     |> put_req_header("idempotency-key", "runs-router-service-submit")
-    |> maybe_put_actor(actor)
+    |> put_headers(headers)
     |> Map.put(:body_params, %{})
     |> RunsRouter.call(RunsRouter.init([]))
   end
 
-  defp put_actor(workspace_id, name, roles) do
+  defp put_actor(workspace_id, name, roles, opts \\ []) do
     actor_id = "actor-#{name}"
     token = Session.raw_token()
     now = DateTime.utc_now()
@@ -174,8 +234,8 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       actor_id: actor_id,
       provider: "password_local",
       issued_at: now,
-      status: :active,
-      expires_at: DateTime.add(now, 3_600, :second)
+      status: if(Keyword.get(opts, :expires_in, 3_600) > 0, do: :active, else: :expired),
+      expires_at: DateTime.add(now, Keyword.get(opts, :expires_in, 3_600), :second)
     }
 
     Process.put(
@@ -195,13 +255,13 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     %{id: actor_id, workspace_id: workspace_id, token: token}
   end
 
-  defp maybe_put_actor(conn, nil), do: conn
+  defp actor_headers(nil), do: []
 
-  defp maybe_put_actor(conn, actor) do
-    conn
-    |> put_req_header("x-favn-actor-id", actor.id)
-    |> put_req_header("x-favn-session-token", actor.token)
-  end
+  defp actor_headers(actor),
+    do: [{"x-favn-actor-id", actor.id}, {"x-favn-session-token", actor.token}]
+
+  defp put_headers(conn, headers),
+    do: Enum.reduce(headers, conn, fn {key, value}, conn -> put_req_header(conn, key, value) end)
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
   defp restore_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)

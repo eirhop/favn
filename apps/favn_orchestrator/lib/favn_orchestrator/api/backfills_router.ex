@@ -141,7 +141,8 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
     )
   end
 
-  defp actor_context(conn, role), do: Authentication.workspace_context(conn, role)
+  defp actor_context(conn, role),
+    do: Authentication.workspace_or_service_context(conn, role)
 
   defp plan_backfill(params, context),
     do: OperatorCommands.plan_backfill(params, context)
