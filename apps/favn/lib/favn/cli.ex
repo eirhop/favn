@@ -16,7 +16,6 @@ defmodule Favn.CLI do
   def publish(opts), do: Publish.run(opts)
   def inspect_relation(relation, opts), do: DataInspection.inspect_relation(relation, opts)
   def inspect_partitions(relation, opts), do: DataInspection.inspect_partitions(relation, opts)
-  def query(sql, opts), do: DataInspection.query(sql, opts)
   def run(target, opts), do: Run.submit(target, opts)
   def list_runs(opts), do: Runs.list(opts)
   def get_run(run_id, opts), do: Runs.get(run_id, opts)

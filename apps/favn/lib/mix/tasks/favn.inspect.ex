@@ -82,10 +82,29 @@ defmodule Mix.Tasks.Favn.Inspect do
 
   defp print_query_result({:error, reason}), do: IO.puts("  unavailable: #{format_error(reason)}")
 
-  defp print_query_result(%Favn.SQL.Result{} = result),
-    do: Mix.Tasks.Favn.Query.print_result(result, result.rows || [], length(result.rows || []))
+  defp print_query_result(%Favn.SQL.Result{} = result) do
+    columns = result.columns || []
+    rows = result.rows || []
+
+    if columns == [] do
+      IO.puts("  #{inspect(result)}")
+    else
+      IO.puts("  " <> Enum.join(columns, "\t"))
+
+      Enum.each(rows, fn row ->
+        values = Enum.map(columns, &format_cell(Map.get(row, &1)))
+        IO.puts("  " <> Enum.join(values, "\t"))
+      end)
+
+      IO.puts("  #{length(rows)} row(s)")
+    end
+  end
 
   defp print_query_result(other), do: IO.puts("  #{inspect(other)}")
+
+  defp format_cell(nil), do: "NULL"
+  defp format_cell(value) when is_binary(value), do: value
+  defp format_cell(value), do: inspect(value)
 
   defp format_relation(ref) do
     [ref.connection, ref.catalog, ref.schema, ref.name]

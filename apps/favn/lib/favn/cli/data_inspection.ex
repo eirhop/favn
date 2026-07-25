@@ -1,39 +1,25 @@
 defmodule Favn.CLI.DataInspection do
   @moduledoc """
-  Lightweight local SQL data inspection helpers.
+  Structured SQL data inspection helpers for local Favn projects.
 
-  The helpers back `mix favn.inspect relation`, `mix favn.inspect partitions`,
-  and `mix favn.query`. They resolve configured local Favn connections, parse
+  The helpers back `mix favn.inspect relation` and `mix favn.inspect partitions`.
+  They resolve configured local Favn connections, parse
   simple relation strings into `Favn.RelationRef`, and execute inspection through
   `Favn.SQL.Client`.
 
   The public Mix tasks load `.env` before evaluating consumer runtime config,
   without starting the consumer application. This module starts
   `:favn_sql_runtime` before opening SQL client sessions so `mix favn.inspect`
-  and `mix favn.query` both have a supervised `Favn.SQL.SessionPool`.
-
-  Query validation is a best-effort local guardrail for avoiding accidental
-  mutation. It is not a SQL sandbox or security boundary.
+  has a supervised `Favn.SQL.SessionPool`.
   """
 
   alias Favn.Connection.Loader
   alias Favn.RelationRef
   alias Favn.SQL.Client
-  alias Favn.SQL.Result
 
   @default_limit 50
-  @read_only_keywords ~w(select with show describe explain pragma values)
-  @mutating_keywords ~w(
-    alter analyze attach begin call checkpoint comment commit copy create delete detach drop execute
-    grant import insert install load merge replace reset revoke rollback set truncate update use vacuum
-  )
 
   @type relation_opts :: [connection: atom() | String.t()]
-  @type query_opts :: [
-          connection: atom() | String.t(),
-          allow_write: boolean(),
-          limit: pos_integer()
-        ]
 
   @doc """
   Inspects a relation and returns relation metadata, columns, row count, and a
@@ -96,46 +82,6 @@ defmodule Favn.CLI.DataInspection do
   end
 
   @doc """
-  Runs a SQL query against a local connection.
-
-  Queries are read-only by default. Pass `allow_write: true` only for deliberate
-  local mutation.
-  """
-  @spec query(String.t(), query_opts()) :: {:ok, map()} | {:error, term()}
-  def query(sql, opts \\ []) when is_binary(sql) and is_list(opts) do
-    client = Keyword.get(opts, :client, Client)
-    limit = Keyword.get(opts, :limit, @default_limit)
-
-    with :ok <- validate_limit(limit),
-         :ok <- validate_read_only(sql, opts),
-         {:ok, connection} <- resolve_connection(Keyword.get(opts, :connection)),
-         :ok <- ensure_sql_runtime_started(),
-         {:ok, session} <- client.connect(connection) do
-      result =
-        case client.query(session, sql, read_only?: not Keyword.get(opts, :allow_write, false)) do
-          {:ok, %Result{} = sql_result} ->
-            {:ok,
-             %{
-               connection: connection,
-               result: sql_result,
-               displayed_rows: Enum.take(sql_result.rows || [], limit),
-               display_limit: limit
-             }}
-
-          {:ok, other} ->
-            {:ok,
-             %{connection: connection, result: other, displayed_rows: [], display_limit: limit}}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      client.disconnect(session)
-      result
-    end
-  end
-
-  @doc """
   Parses a relation string into a `Favn.RelationRef` and resolves its connection.
 
   Accepted relation forms are `name`, `schema.name`, and
@@ -149,18 +95,6 @@ defmodule Favn.CLI.DataInspection do
     end
   rescue
     error in ArgumentError -> {:error, Exception.message(error)}
-  end
-
-  @doc """
-  Validates that SQL is read-only unless `allow_write: true` is set.
-  """
-  @spec validate_read_only(String.t(), query_opts()) :: :ok | {:error, term()}
-  def validate_read_only(sql, opts \\ []) when is_binary(sql) and is_list(opts) do
-    if Keyword.get(opts, :allow_write, false) do
-      :ok
-    else
-      validate_read_only_statement(sql)
-    end
   end
 
   defp relation_attrs(relation) do
@@ -256,61 +190,9 @@ defmodule Favn.CLI.DataInspection do
     Map.get(metadata, :partitions) || Map.get(metadata, "partitions") || []
   end
 
-  defp validate_limit(limit) when is_integer(limit) and limit > 0, do: :ok
-
-  defp validate_limit(limit),
-    do: {:error, "limit must be a positive integer, got: #{inspect(limit)}"}
-
   defp connect_opts(%RelationRef{catalog: catalog}) when is_binary(catalog) and catalog != "" do
     [required_catalogs: [catalog]]
   end
 
   defp connect_opts(%RelationRef{}), do: []
-
-  defp validate_read_only_statement(sql) do
-    sanitized = sanitize_sql(sql)
-
-    statements =
-      sanitized |> String.split(";") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
-
-    cond do
-      statements == [] ->
-        {:error, "query must not be empty"}
-
-      length(statements) > 1 ->
-        {:error, "query must contain a single statement unless --allow-write is passed"}
-
-      mutating_keyword = find_mutating_keyword(hd(statements)) ->
-        {:error,
-         "query appears to mutate data with #{String.upcase(mutating_keyword)}; pass --allow-write to run it locally"}
-
-      first_keyword(hd(statements)) in @read_only_keywords ->
-        :ok
-
-      true ->
-        {:error,
-         "query must start with a read-only statement (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, PRAGMA, VALUES) unless --allow-write is passed"}
-    end
-  end
-
-  defp find_mutating_keyword(statement) do
-    Enum.find(@mutating_keywords, fn keyword ->
-      Regex.match?(~r/(^|\W)#{keyword}(\W|$)/i, statement)
-    end)
-  end
-
-  defp first_keyword(statement) do
-    case Regex.run(~r/^\s*([a-z_]+)/i, statement) do
-      [_, keyword] -> String.downcase(keyword)
-      _other -> nil
-    end
-  end
-
-  defp sanitize_sql(sql) do
-    sql
-    |> String.replace(~r/'(?:''|[^'])*'/, "''")
-    |> String.replace(~r/"(?:""|[^"])*"/, ~s(""))
-    |> String.replace(~r/--[^\n\r]*/, " ")
-    |> String.replace(~r{/\*.*?\*/}s, " ")
-  end
 end

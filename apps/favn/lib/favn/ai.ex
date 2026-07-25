@@ -235,15 +235,14 @@ defmodule Favn.AI do
   - To plan execution order, read `Favn plan_asset_run`, then
     `Favn.Assets.Planner` if needed.
   - To inspect or cancel local runs, inspect run events, inspect relation
-    metadata, inspect relation partitions, or run ad hoc read-only SQL, read
+    metadata, or inspect relation partitions, read
     `Favn.CLI.Runs`, `Favn.CLI.DataInspection`, `Mix.Tasks.Favn.Runs`,
-    `Mix.Tasks.Favn.Inspect`, and `Mix.Tasks.Favn.Query`.
+    and `Mix.Tasks.Favn.Inspect`.
     `mix favn.runs cancel RUN_ID` requests cancellation through the local
     orchestrator HTTP boundary; add `--wait` to poll the run until it is
-    terminal. `mix favn.inspect ...` and `mix favn.query "select ..."` are direct
-    local operator entrypoints. Environment variables must already be present
-    in the process; `Favn.CLI.DataInspection` starts `:favn_sql_runtime` before
-    connecting.
+    terminal. `mix favn.inspect ...` is the structured local data-inspection
+    entrypoint. Favn does not expose an arbitrary SQL query command; stop Favn
+    before opening a file-backed DuckDB database in the DuckDB CLI.
   - To run local tooling, read `FavnLocal`, then `apps/favn_local/README.md`.
     Source development is Docker-free: the developer supplies PostgreSQL, loads
     environment variables, and runs the Orchestrator and View in the current
@@ -252,7 +251,7 @@ defmodule Favn.AI do
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
     `mix favn.rebuild`,
     `mix favn.runs`, `mix favn.inspect`,
-    `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
+    `mix favn.diagnostics`, `mix favn.reload`,
     `mix favn.stop`, `mix favn.init --target deployment`,
     `mix favn.build.manifest`, `mix favn.publish`, `mix favn.activate`, and
     `mix favn.read_doc`. Favn does not parse `.env` files or manage PostgreSQL.
@@ -500,12 +499,12 @@ defmodule Favn.AI do
     Read `FavnOrchestrator.Backfill.*` only for internal control-plane
     persistence, projection, and parent/child orchestration work.
   - Read the local-development guide when the task is about source lifecycle,
-    local pipeline submission, run investigation or cancellation, SQL
-    inspection/querying, or deployment examples rather than asset authoring.
+    local pipeline submission, run investigation or cancellation, structured
+    relation inspection, or deployment examples rather than asset authoring.
     Use `mix help favn.init`, `mix help favn.backfill`,
     `mix help favn.rebuild`, `mix help favn.run`, `mix help favn.runs`,
-    `mix help favn.inspect`, or `mix help favn.query` for exact command
-    contracts. The caller loads environment variables before invoking Mix.
+    or `mix help favn.inspect` for exact command contracts. The caller loads
+    environment variables before invoking Mix.
 
   ## Related docs outside BEAM docs
 

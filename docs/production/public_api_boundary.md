@@ -70,12 +70,12 @@ The stable `v1` API should focus on the parts users build authored projects on:
 - supported local commands: `mix favn.init`, `mix favn.doctor`,
   `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
   `mix favn.runs`, `mix favn.reload`,
-  `mix favn.inspect`, `mix favn.query`, `mix favn.diagnostics`, `mix favn.stop`,
+  `mix favn.inspect`, `mix favn.diagnostics`, `mix favn.stop`,
   and `mix favn.read_doc`
 
-`mix favn.inspect` and `mix favn.query` are direct local command boundaries: they
-use the caller's environment and start only the SQL runtime before connecting.
-They do not start the consumer app or configured plugins.
+`mix favn.inspect` is a structured local command boundary. Favn intentionally
+does not expose arbitrary operator SQL; use the DuckDB CLI after stopping Favn
+when direct SQL access is required.
 
 The public deployment command surface is `mix favn.init`,
 `mix favn.build.manifest`, `mix favn.publish`, and `mix favn.activate`. Favn

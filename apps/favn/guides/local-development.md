@@ -159,12 +159,14 @@ mix favn.runs list
 mix favn.runs show RUN_ID
 mix favn.runs cancel RUN_ID
 mix favn.inspect MyApp.Mart:orders
-mix favn.query "select * from mart.orders limit 10"
 mix favn.diagnostics
 ```
 
 `mix favn.backfill` and `mix favn.rebuild` use the same connection boundary.
 Run `mix help TASK` for their exact options.
+
+Favn intentionally does not expose an arbitrary SQL query command. Stop the
+local Favn stack before opening a file-backed database with the DuckDB CLI.
 
 ## What is not part of development
 

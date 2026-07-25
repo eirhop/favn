@@ -231,7 +231,6 @@ Run and inspect work:
 | `mix favn.backfill` | Submit or inspect backfill work. |
 | `mix favn.runs` | List, inspect, cancel, or retry runs. |
 | `mix favn.inspect` | Inspect relation metadata and samples. |
-| `mix favn.query` | Run local read-only SQL inspection. |
 | `mix favn.diagnostics` | Show runtime diagnostics. |
 
 Manage local runtime:

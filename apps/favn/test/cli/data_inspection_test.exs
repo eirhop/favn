@@ -57,29 +57,6 @@ defmodule Favn.CLI.DataInspectionTest do
     assert message =~ "relation must be"
   end
 
-  test "accepts read-only SQL" do
-    assert :ok = DataInspection.validate_read_only("-- comment\nselect * from raw.orders")
-
-    assert :ok =
-             DataInspection.validate_read_only(
-               "WITH recent AS (select * from orders) select * from recent"
-             )
-  end
-
-  test "rejects obvious mutating SQL by default" do
-    assert {:error, message} = DataInspection.validate_read_only("delete from raw.orders")
-    assert message =~ "DELETE"
-
-    assert {:error, message} =
-             DataInspection.validate_read_only("select * from orders; drop table orders")
-
-    assert message =~ "single statement"
-  end
-
-  test "allows mutating SQL with explicit opt in" do
-    assert :ok = DataInspection.validate_read_only("drop table raw.orders", allow_write: true)
-  end
-
   test "inspect_relation delegates through the SQL client API" do
     assert {:ok, result} =
              DataInspection.inspect_relation("raw.sales.orders", client: __MODULE__.Client)
@@ -94,14 +71,6 @@ defmodule Favn.CLI.DataInspectionTest do
     assert_received {:row_count, %RelationRef{name: "orders"}}
     assert_received {:sample, %RelationRef{name: "orders"}, [limit: 50]}
     assert_received {:disconnect, :session}
-  end
-
-  test "query rejects mutating SQL before connecting" do
-    assert {:error, message} =
-             DataInspection.query("drop table raw.orders", client: __MODULE__.Client)
-
-    assert message =~ "DROP"
-    refute_received {:connect, _connection}
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)

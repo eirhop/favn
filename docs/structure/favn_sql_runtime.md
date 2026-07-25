@@ -139,8 +139,7 @@ adapter operations. Adapters may ignore it when native cancellation is
 unsupported, but runner/orchestrator outcomes must then preserve native
 uncertainty instead of claiming data-plane cancellation certainty.
 
-Local `mix favn.query` read-only validation is a best-effort operator guardrail,
-not a SQL sandbox or security boundary. `mix favn.inspect` and `mix favn.query`
-load `.env` before consumer runtime config and start only `:favn_sql_runtime`
-before connecting, so `Favn.SQL.SessionPool` is available without starting the
-consumer application or plugins.
+`mix favn.inspect` provides bounded, structured relation inspection. Favn does
+not expose arbitrary operator SQL because a shared read-write DuckDB session
+cannot also provide a database-enforced read-only boundary. Stop Favn before
+opening a file-backed database with the DuckDB CLI.

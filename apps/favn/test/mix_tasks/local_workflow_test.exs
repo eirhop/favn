@@ -12,6 +12,7 @@ defmodule Mix.Tasks.Favn.LocalWorkflowTest do
     favn.logs.ex
     favn.maintainer.dev.configured.ex
     favn.maintainer.dev.ex
+    favn.query.ex
     favn.query.configured.ex
     favn.reload.configured.ex
     favn.reset.ex
