@@ -24,6 +24,7 @@ favn-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+/.tmp/
 /apps/*/tmp/
 /.playwright-mcp/
 /.codex/
