@@ -19,6 +19,13 @@ defmodule Favn.SQL.Adapter do
   `classify_error/2` may return `details.classification: :capacity` through
   normalized errors so shared retry logic uses capacity backoff. Unknown outcome
   or commit-state errors must remain non-retryable.
+
+  An adapter may declare operation atoms in
+  `extensions.pool_safe_after_success` for always-controlled operations, or in
+  `extensions.pool_safe_when_requested` for operations that are safe only when
+  a trusted internal caller passes `pool_safe?: true`. These are strong adapter
+  guarantees: `reset_session/3` must restore the state those operations can
+  mutate. Errors and unknown outcomes are still discarded.
   """
 
   alias Favn.Connection.Resolved

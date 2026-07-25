@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   alias Favn.Retry.Policy
   alias Favn.Window.Selection
   alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
@@ -53,6 +54,86 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored.id == run.id
     assert restored.asset_ref == {__MODULE__.Asset, :asset}
     assert restored.status == :pending
+  end
+
+  test "round-trips canonical refresh policy refs in run metadata" do
+    version = manifest_version("mv_refresh_policy_metadata", __MODULE__.Asset)
+    asset_ref = {__MODULE__.Asset, :asset}
+
+    run =
+      "run_refresh_policy_metadata"
+      |> run_state(version, __MODULE__.Asset)
+      |> Map.put(:metadata, %{
+        refresh_policy: %{
+          mode: :force_assets,
+          refs: [asset_ref],
+          include_upstream?: true
+        }
+      })
+      |> RunState.with_snapshot_hash()
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert restored.metadata.refresh_policy == %{
+             mode: :force_assets,
+             refs: [asset_ref],
+             include_upstream?: true
+           }
+
+    assert {:ok, %RefreshPolicy{refs: [^asset_ref], include_upstream?: true}} =
+             RefreshPolicy.from_value(restored.metadata.refresh_policy)
+  end
+
+  test "rejects malformed persisted refresh policy metadata" do
+    version = manifest_version("mv_invalid_refresh_policy", __MODULE__.Asset)
+    run = run_state("run_invalid_refresh_policy", version, __MODULE__.Asset)
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    payload =
+      payload
+      |> Jason.decode!()
+      |> put_in(["metadata", "refresh_policy"], %{"mode" => "later"})
+      |> Jason.encode!()
+
+    assert {:error, {:invalid_refresh_policy_metadata, {:invalid_refresh_policy, "later"}}} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+  end
+
+  test "rejects malformed persisted refresh policy refs" do
+    version = manifest_version("mv_invalid_refresh_ref", __MODULE__.Asset)
+    run = run_state("run_invalid_refresh_ref", version, __MODULE__.Asset)
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    malformed_ref = %{"module" => "Unknown.Refresh.Asset", "name" => "asset"}
+
+    payload =
+      payload
+      |> Jason.decode!()
+      |> put_in(
+        ["metadata", "refresh_policy"],
+        %{"mode" => "force_assets", "refs" => [malformed_ref]}
+      )
+      |> Jason.encode!()
+
+    assert {:error, {:invalid_refresh_policy_metadata, {:invalid_refresh_ref, ^malformed_ref}}} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
   end
 
   test "round-trips exact selections beyond the generic metadata entry limit" do

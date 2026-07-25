@@ -583,8 +583,18 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
   end
 
   defp active_details(conn) do
-    with {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :viewer) do
-      Manifests.active(context)
+    case Authentication.workspace_context(conn, :viewer) do
+      {:ok, _session, _actor, context} ->
+        Manifests.active(context)
+
+      {:error, :unauthenticated} ->
+        with {:ok, _session, _actor, context} <-
+               Authentication.service_workspace_context(conn) do
+          Manifests.active(context)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

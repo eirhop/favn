@@ -583,7 +583,9 @@ defmodule Favn.SQLAsset.Runtime do
           SQLClient.transaction(
             session,
             fn tx_session -> checked_transaction(tx_session, definition, rendered, opts) end,
-            Keyword.put(sql_operation_opts(opts), :preserve_body_result_on_commit_error?, true)
+            sql_operation_opts(opts)
+            |> Keyword.put(:preserve_body_result_on_commit_error?, true)
+            |> Keyword.put(:pool_safe?, true)
           )
         end
       end

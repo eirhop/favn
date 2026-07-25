@@ -417,8 +417,31 @@ defmodule Favn.CLI.Run do
   end
 
   defp asset_target_match?(asset, requested) when is_map(asset) do
-    requested in [asset["asset_ref"], asset["target_id"], asset["label"]]
+    asset_labels = [asset["asset_ref"], asset["target_id"], asset["label"]]
+    Enum.any?(asset_target_candidates(requested), &(&1 in asset_labels))
   end
 
   defp asset_target_match?(_asset, _requested), do: false
+
+  defp asset_target_candidates(requested) do
+    requested = String.trim(requested)
+
+    module_ref =
+      requested
+      |> String.trim_leading("asset:")
+      |> then(fn
+        "Elixir." <> _rest = ref -> ref
+        ref -> "Elixir." <> ref
+      end)
+
+    refs =
+      if String.contains?(module_ref, ":") do
+        [module_ref]
+      else
+        [module_ref, module_ref <> ":asset"]
+      end
+
+    [requested | refs ++ Enum.map(refs, &("asset:" <> &1))]
+    |> Enum.uniq()
+  end
 end

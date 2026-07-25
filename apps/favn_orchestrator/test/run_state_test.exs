@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.RunStateTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Plan
   alias FavnOrchestrator.RunState
 
   test "step snapshots remain non-terminal until a terminal event finalizes the run" do
@@ -42,6 +43,20 @@ defmodule FavnOrchestrator.RunStateTest do
         required_runner_release_id: FavnTestSupport.runner_release_id(:alternate)
       )
     end
+  end
+
+  test "manual asset runs execute the planned dependency graph" do
+    assert :pipeline ==
+             RunState.execution_mode(%RunState{
+               submit_kind: :manual,
+               plan: %Plan{dependencies: :all}
+             })
+
+    assert :sequential ==
+             RunState.execution_mode(%RunState{
+               submit_kind: :manual,
+               plan: %Plan{dependencies: :none}
+             })
   end
 
   defp run_state do

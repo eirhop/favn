@@ -17,7 +17,7 @@
    "The pattern pattern {'error', _reason@1} can never match the type, because it is covered by previous clauses."},
   {"lib/favn/sql/client.ex", "The guard clause can never succeed."},
   {"lib/favn/sql/client.ex",
-   "The pattern pattern <_operation@1, __opts@1> can never match the type, because it is covered by previous clauses."},
+   "The pattern pattern <__session@1, _operation@1, __opts@1> can never match the type, because it is covered by previous clauses."},
   {"lib/favn/sql/contract.ex", "Type mismatch in call without opaque term in member?."},
   {"lib/favn/sql/retry.ex", "The guard clause can never succeed."},
   {"lib/favn/sql_asset.ex", "Function contract_compile_error!/3 has no local return."},

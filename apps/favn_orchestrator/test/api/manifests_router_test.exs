@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     alias FavnOrchestrator.Persistence.Error
 
     def get_manifest(_query), do: {:error, Error.new(:not_found, "manifest not found")}
+    def get_runtime_state(_query), do: {:error, :active_manifest_not_set}
     def record_audit(_command), do: :ok
   end
 
@@ -73,28 +74,7 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
   end
 
   test "service-token activation reaches the persisted manifest boundary without actor headers" do
-    stores = %Stores{
-      registry: MissingManifestStore,
-      runs: MissingManifestStore,
-      run_ownership: MissingManifestStore,
-      scheduler: MissingManifestStore,
-      admission: MissingManifestStore,
-      resource_circuits: MissingManifestStore,
-      target_generations: MissingManifestStore,
-      rebuilds: MissingManifestStore,
-      target_operation_locks: MissingManifestStore,
-      materialization: MissingManifestStore,
-      backfills: MissingManifestStore,
-      operator_reads: MissingManifestStore,
-      logs: MissingManifestStore,
-      identity: MissingManifestStore,
-      maintenance: MissingManifestStore
-    }
-
-    assert {:ok, runtime} =
-             Runtime.start_link(%Runtime{backend: __MODULE__, options: [], stores: stores})
-
-    on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
+    start_missing_manifest_runtime()
 
     response =
       :post
@@ -115,6 +95,41 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
 
     assert response.status == 404
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "not_found"
+  end
+
+  test "platform operator service token can read the active manifest without actor headers" do
+    start_missing_manifest_runtime()
+
+    response =
+      :get
+      |> conn("/active")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> ManifestsRouter.call(ManifestsRouter.init([]))
+
+    assert response.status == 404
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "not_found"
+  end
+
+  test "platform admin service token does not imply platform operator access" do
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      [
+        service_identity: "manifest_router_admin",
+        token_hash: ServiceTokens.hash_token(@token),
+        enabled: true,
+        platform_roles: [:platform_admin]
+      ]
+    ])
+
+    response =
+      :get
+      |> conn("/active")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> ManifestsRouter.call(ManifestsRouter.init([]))
+
+    assert response.status == 403
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "forbidden"
   end
 
   defp valid_envelope do
@@ -148,6 +163,31 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     |> put_req_header("authorization", "Bearer #{@token}")
     |> Map.put(:body_params, params)
     |> ManifestsRouter.call(ManifestsRouter.init([]))
+  end
+
+  defp start_missing_manifest_runtime do
+    stores = %Stores{
+      registry: MissingManifestStore,
+      runs: MissingManifestStore,
+      run_ownership: MissingManifestStore,
+      scheduler: MissingManifestStore,
+      admission: MissingManifestStore,
+      resource_circuits: MissingManifestStore,
+      target_generations: MissingManifestStore,
+      rebuilds: MissingManifestStore,
+      target_operation_locks: MissingManifestStore,
+      materialization: MissingManifestStore,
+      backfills: MissingManifestStore,
+      operator_reads: MissingManifestStore,
+      logs: MissingManifestStore,
+      identity: MissingManifestStore,
+      maintenance: MissingManifestStore
+    }
+
+    assert {:ok, runtime} =
+             Runtime.start_link(%Runtime{backend: __MODULE__, options: [], stores: stores})
+
+    on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)

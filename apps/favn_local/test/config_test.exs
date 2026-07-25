@@ -7,6 +7,7 @@ defmodule FavnLocal.ConfigTest do
 
   alias FavnLocal.Config
   alias FavnLocal.Locator
+  alias FavnOrchestrator.Auth.ServiceTokens
 
   @pin_key Base.encode64(String.duplicate("k", 32))
 
@@ -168,8 +169,16 @@ defmodule FavnLocal.ConfigTest do
     assert Application.fetch_env!(:favn_orchestrator, :trusted_local_development_auth) == %{
              workspace_id: config.workspace_id,
              username: "admin",
-             capability_hash: FavnOrchestrator.Auth.ServiceTokens.hash_token(config.service_token)
+             capability_hash: ServiceTokens.hash_token(config.service_token)
            }
+
+    assert [
+             %{
+               service_identity: "favn-local",
+               enabled: true,
+               platform_roles: [:platform_operator]
+             }
+           ] = ServiceTokens.configured_tokens()
 
     assert :ok = Config.clear_source_development_auth()
     assert Application.get_env(:favn_view, :source_development_passwordless_login) == nil

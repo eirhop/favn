@@ -11,8 +11,24 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
   alias Favn.SQL.Error
   alias Favn.SQL.PartitionSpec
   alias Favn.SQL.Relation
+  alias Favn.SQL.SessionPool
   alias Favn.SQL.WritePlan
   alias FavnDuckdbADBC.TestSupport
+
+  test "declares successful write operations safe for pooled session reuse" do
+    assert {:ok, %Capabilities{extensions: extensions}} = ADBC.capabilities(resolved(), [])
+
+    assert extensions.pool_safe_after_success == [
+             :materialize,
+             :initialize_generation_marker,
+             :activate_generation,
+             :discard_generation
+           ]
+
+    assert extensions.pool_safe_when_requested == [:transaction]
+    refute :execute in extensions.pool_safe_after_success
+    refute :transaction in extensions.pool_safe_after_success
+  end
 
   defmodule FakeClient do
     use FavnDuckdbADBC.TestSupport.FakeClient
@@ -97,9 +113,21 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
       TestSupport.record({:rollback, conn_ref})
 
       case TestSupport.mode(:rollback_mode, :ok) do
-        :ok -> :ok
-        :no_active_transaction -> {:error, "TransactionContext Error: no active transaction"}
-        :error -> {:error, :rollback_failed}
+        :ok ->
+          :ok
+
+        :no_active_transaction ->
+          {:error, "TransactionContext Error: no active transaction"}
+
+        :no_active_transaction_error ->
+          {:error,
+           %Adbc.Error{
+             message: "TransactionContext Error: cannot rollback - no transaction is active",
+             vendor_code: 0
+           }}
+
+        :error ->
+          {:error, :rollback_failed}
       end
     end
 
@@ -351,6 +379,26 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
             }} = ADBC.diagnostics(resolved(), duckdb_adbc_client: FakeClient)
   end
 
+  test "diagnostics reuses the runner connection pool when a registry is supplied" do
+    registry = :"duckdb_diagnostics_registry_#{System.unique_integer([:positive])}"
+    resolved = resolved()
+
+    start_supervised!(
+      {Favn.Connection.Registry, name: registry, connections: %{warehouse: resolved}}
+    )
+
+    :ok = SessionPool.reset()
+    on_exit(fn -> SessionPool.reset() end)
+
+    opts = [registry_name: registry, timeout: 250, duckdb_adbc_client: FakeClient]
+
+    assert {:ok, %{status: :ok}} = ADBC.diagnostics(resolved, opts)
+    assert {:ok, %{status: :ok}} = ADBC.diagnostics(resolved, opts)
+
+    assert 1 == Enum.count(events(), &match?({:open, ":memory:", _opts}, &1))
+    assert %{idle: 1} = SessionPool.diagnostics()
+  end
+
   test "pool lifecycle hooks validate and reset with rollback only" do
     resolved = resolved()
 
@@ -387,6 +435,15 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     assert :ok = ADBC.reset_session(conn, resolved, required_catalogs: [:main])
 
     refute Enum.any?(events(), &match?({:execute, "USE " <> _, []}, &1))
+  end
+
+  test "pool reset tolerates the ADBC no-active-transaction error" do
+    TestSupport.put_mode(:rollback_mode, :no_active_transaction_error)
+    resolved = resolved()
+
+    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
+
+    assert :ok = ADBC.reset_session(conn, resolved, [])
   end
 
   test "metadata capacity errors classify as retryable capacity" do

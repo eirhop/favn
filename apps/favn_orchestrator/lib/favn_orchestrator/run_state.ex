@@ -129,6 +129,12 @@ defmodule FavnOrchestrator.RunState do
   @spec execution_mode(t()) :: :sequential | :pipeline
   def execution_mode(%__MODULE__{submit_kind: :pipeline}), do: :pipeline
 
+  def execution_mode(%__MODULE__{
+        submit_kind: :manual,
+        plan: %Favn.Plan{dependencies: :all}
+      }),
+      do: :pipeline
+
   def execution_mode(%__MODULE__{submit_kind: :rerun, metadata: metadata})
       when is_map(metadata) do
     case Map.get(metadata, :replay_submit_kind, Map.get(metadata, "replay_submit_kind")) do

@@ -10,14 +10,30 @@ defmodule FavnReferenceWorkload.Warehouse.Mart.AccountHealth do
   meta(category: :account_health, tags: [:mart, :full_refresh])
 
   contract do
-    grain(by: [:customer_id], description: "one health row per customer")
-    column(:customer_id, :string, null: false)
-    column(:customer_name, :string, null: false)
-    column(:segment, :string, null: false)
-    column(:contact_count, :integer, null: false)
-    column(:health_status, :string, null: false)
+    column(:customer_id, :string)
+    column(:customer_name, :string)
+    column(:segment, :string)
+    column(:contact_count, :integer)
+    column(:health_status, :string)
     unique([:customer_id])
     row_count(min: 1, on_violation: :fail)
+  end
+
+  check :required_values_are_present,
+    at: :before_materialize,
+    on_violation: :fail,
+    message: "Account health rows must contain every required value" do
+    ~SQL"""
+    select
+      count(*) filter (
+        where customer_id is null
+          or customer_name is null
+          or segment is null
+          or contact_count is null
+          or health_status is null
+      ) = 0 as passed
+    from query()
+    """
   end
 
   check :has_accounts,

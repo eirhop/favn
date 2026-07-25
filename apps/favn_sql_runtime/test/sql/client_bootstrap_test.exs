@@ -621,7 +621,11 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
       admission_timeout_ms: 10
     })
 
-    connect_opts = [registry_name: registry_name, required_catalogs: ["raw"]]
+    connect_opts = [
+      registry_name: registry_name,
+      required_catalogs: ["raw"],
+      checkout_timeout_ms: 10
+    ]
 
     assert {:ok, session} = Client.connect(:warehouse, connect_opts)
     conn = session.conn
@@ -632,7 +636,7 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
              Task.await(non_owner_disconnect)
 
     blocked = Task.async(fn -> Client.connect(:warehouse, connect_opts) end)
-    assert {:ok, {:error, %Error{type: :admission_timeout}}} = Task.yield(blocked, 1_000)
+    assert {:ok, {:error, %Error{type: :pool_timeout}}} = Task.yield(blocked, 1_000)
     refute Enum.any?(events(), &match?({:validate, ^conn}, &1))
 
     assert :ok = Client.disconnect(session)

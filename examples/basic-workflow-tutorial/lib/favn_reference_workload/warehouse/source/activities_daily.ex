@@ -13,6 +13,14 @@ defmodule FavnReferenceWorkload.Warehouse.Source.ActivitiesDaily do
   materialized({:incremental, strategy: :delete_insert, window_column: :occurred_at})
   meta(category: :activities, tags: [:source, :daily, :incremental])
 
+  check :required_keys_are_present, at: :before_materialize, on_violation: :fail do
+    ~SQL"""
+    select
+      count(*) filter (where activity_id is null or occurred_at is null) = 0 as passed
+    from query()
+    """
+  end
+
   query do
     ~SQL"""
     select
