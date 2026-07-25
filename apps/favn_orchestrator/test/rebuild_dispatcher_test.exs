@@ -26,7 +26,10 @@ defmodule FavnOrchestrator.RebuildDispatcherTest do
     end
 
     test "treats a malformed active item as busy" do
-      assert RebuildDispatcher.candidate_item_busy?([%{claim_expires_at: nil}], DateTime.utc_now())
+      assert RebuildDispatcher.candidate_item_busy?(
+               [%{claim_expires_at: nil}],
+               DateTime.utc_now()
+             )
     end
   end
 
@@ -59,7 +62,9 @@ defmodule FavnOrchestrator.RebuildDispatcherTest do
       }
 
       assert RebuildDispatcher.candidate_relation_matches?(candidate, observed)
+
       refute RebuildDispatcher.candidate_relation_matches?(candidate, %{observed | schema: "core"})
+
       refute RebuildDispatcher.candidate_relation_matches?(candidate, %{observed | kind: :view})
     end
 

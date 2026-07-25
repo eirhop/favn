@@ -29,11 +29,13 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease
   alias FavnOrchestrator.Persistence.Commands.RunTarget
+  alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Commands.StartBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.TransitionBackfillWindow
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash
+  alias FavnOrchestrator.Persistence.Queries.PageSchedules
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Logs
@@ -276,6 +278,8 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     on_exit(fn ->
       Enum.each(peers, &stop_peer/1)
     end)
+
+    activate_due_schedules!(fixture)
 
     admission_runs = Enum.map(1..3, fn _index -> create_run!(fixture) end)
 
@@ -928,6 +932,8 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   end
 
   test "three scheduler owners partition due work without duplicate claims", fixture do
+    activate_due_schedules!(fixture)
+
     claims =
       @node_ids
       |> Task.async_stream(
@@ -1371,6 +1377,35 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     }
   end
 
+  defp activate_due_schedules!(fixture) do
+    assert {:ok, page} =
+             SchedulerStore.page_schedules(%PageSchedules{
+               workspace_context: fixture.workspace_context,
+               limit: 100
+             })
+
+    occurred_at = DateTime.utc_now()
+
+    Enum.each(page.items, fn schedule ->
+      command_id = "activate:#{fixture.workspace_id}:#{schedule.schedule_id}"
+
+      assert {:ok, _activation} =
+               SchedulerStore.set_activation(%SetScheduleActivation{
+                 workspace_context: fixture.workspace_context,
+                 pipeline_target_id: schedule.pipeline_target_id,
+                 schedule_id: schedule.schedule_id,
+                 schedule_fingerprint: schedule.schedule_fingerprint,
+                 enabled: true,
+                 actor_id: "concurrency-test",
+                 reason: "exercise concurrent due claims",
+                 command_id: command_id,
+                 request_hash: :crypto.hash(:sha256, command_id),
+                 occurred_at: occurred_at,
+                 next_due_at: DateTime.add(occurred_at, -1, :second)
+               })
+    end)
+  end
+
   defp create_run!(fixture, opts \\ []) do
     run_id = "concurrent-run-#{random_id()}"
 
@@ -1535,7 +1570,9 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     Enum.map(1..count, fn index ->
       {:ok, control, node} =
         :peer.start_link(%{
-          name: "favn_storage_#{index}_#{unique}",
+          name: String.to_charlist("favn_storage_#{index}_#{unique}"),
+          host: ~c"127.0.0.1",
+          longnames: true,
           connection: :standard_io,
           wait_boot: 30_000
         })
