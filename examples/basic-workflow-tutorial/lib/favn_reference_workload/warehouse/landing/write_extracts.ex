@@ -43,7 +43,7 @@ defmodule FavnReferenceWorkload.Warehouse.Landing.WriteExtracts do
   end
 
   def asset(ctx) do
-    entity = ctx.asset.settings.entity
+    entity = normalize_entity(ctx.asset.settings.entity)
     mode = ctx.asset.settings.mode
     rows = rows_for(entity, mode, ctx.window)
     :ok = LandingFiles.write_entity!(entity, rows)
@@ -56,6 +56,12 @@ defmodule FavnReferenceWorkload.Warehouse.Landing.WriteExtracts do
        landing_path: ".data/generic_crm/landing/#{entity}.json"
      }}
   end
+
+  defp normalize_entity("accounts"), do: :accounts
+  defp normalize_entity("contacts"), do: :contacts
+  defp normalize_entity("deals"), do: :deals
+  defp normalize_entity("activities"), do: :activities
+  defp normalize_entity(entity) when is_atom(entity), do: entity
 
   defp rows_for(entity, "full_refresh", _window), do: Map.fetch!(CRMData.seed(), entity)
 

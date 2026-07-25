@@ -1,6 +1,12 @@
 defmodule Favn.SQL.Capabilities do
   @moduledoc """
   Normalized SQL backend capability model used by `Favn.SQL`.
+
+  Adapter-specific `extensions.pool_safe_after_success` may list controlled
+  operations whose successful completion leaves a pooled session safe to reset
+  and reuse. `extensions.pool_safe_when_requested` may list operations that
+  additionally require a trusted internal `pool_safe?: true` request. Both
+  default to absent, preserving conservative post-write discard behavior.
   """
 
   @type support :: :supported | :unsupported | :emulated

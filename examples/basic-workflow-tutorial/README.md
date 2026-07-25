@@ -28,10 +28,13 @@ For the local UI loop, provide PostgreSQL through the normal Favn environment,
 then run:
 
 ```powershell
-$env:FAVN_DATABASE_URL = 'ecto://postgres:postgres@127.0.0.1/favn_dev'
 $env:FAVN_RUNTIME_INPUT_PIN_KEY = '01234567890123456789012345678901'
+$env:FAVN_DATABASE_URL = 'ecto://favn_migrator:favn_migrator_local@127.0.0.1:5432/favn_dev'
 mix favn.postgres.migrate
+mix favn.postgres.grant_runtime --role favn_runtime
 mix favn.postgres.provision_workspace --id local-dev --slug local-dev --name 'Local Development'
+
+$env:FAVN_DATABASE_URL = 'ecto://favn_runtime:favn_runtime_local@127.0.0.1:5432/favn_dev'
 mix favn.dev
 mix favn.run FavnReferenceWorkload.Pipelines.BootstrapCrmDemo
 ```

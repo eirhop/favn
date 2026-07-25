@@ -287,7 +287,17 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
        column_comments: :unsupported,
        metadata_timestamps: :unsupported,
        query_tracking: :unsupported,
-       extensions: %{bundled_in_amalgamation: [:csv, :parquet], duckdb_adbc: :supported}
+       extensions: %{
+         bundled_in_amalgamation: [:csv, :parquet],
+         duckdb_adbc: :supported,
+         pool_safe_after_success: [
+           :materialize,
+           :initialize_generation_marker,
+           :activate_generation,
+           :discard_generation
+         ],
+         pool_safe_when_requested: [:transaction]
+       }
      }}
   end
 
@@ -358,12 +368,12 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   end
 
   defp diagnostics_preflight(%Resolved{} = resolved, opts) do
-    case connect(resolved, opts) do
-      {:ok, %Conn{} = conn} ->
+    case diagnostics_connection(resolved, opts) do
+      {:ok, %Conn{} = conn, disconnect, bootstrap?} ->
         try do
-          run_diagnostics_preflight(conn, resolved, opts)
+          run_diagnostics_preflight(conn, resolved, opts, bootstrap?)
         after
-          _ = disconnect(conn, [])
+          _ = disconnect.(conn)
         end
 
       {:error, %Error{} = error} ->
@@ -371,8 +381,38 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     end
   end
 
-  defp run_diagnostics_preflight(%Conn{} = conn, %Resolved{} = resolved, opts) do
-    with :ok <- bootstrap(conn, resolved, opts),
+  defp diagnostics_connection(%Resolved{} = resolved, opts) do
+    case Keyword.get(opts, :registry_name) do
+      registry_name when is_atom(registry_name) and not is_nil(registry_name) ->
+        connect_opts = Keyword.delete(opts, :timeout)
+
+        case Favn.SQL.Client.connect(resolved.name, connect_opts) do
+          {:ok, %Favn.SQL.Session{adapter: __MODULE__, conn: %Conn{} = conn} = session} ->
+            {:ok, conn, fn _conn -> Favn.SQL.Client.disconnect(session) end, false}
+
+          {:ok, %Favn.SQL.Session{} = session} ->
+            _ = Favn.SQL.Client.disconnect(session)
+            {:error, invalid_diagnostics_session(resolved)}
+
+          {:error, %Error{} = error} ->
+            {:error, error}
+
+          {:error, reason} ->
+            {:error, normalize_error(:connect, resolved.name, reason)}
+        end
+
+      _direct ->
+        case connect(resolved, opts) do
+          {:ok, %Conn{} = conn} -> {:ok, conn, &disconnect/1, true}
+          {:error, %Error{} = error} -> {:error, error}
+        end
+    end
+  end
+
+  defp disconnect(%Conn{} = conn), do: disconnect(conn, [])
+
+  defp run_diagnostics_preflight(%Conn{} = conn, %Resolved{} = resolved, opts, bootstrap?) do
+    with :ok <- maybe_bootstrap_diagnostics(conn, resolved, opts, bootstrap?),
          :ok <- ping(conn, []),
          {:ok, version} <- duckdb_version(conn) do
       {:ok,
@@ -387,6 +427,22 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
       {:error, %Error{} = error} ->
         {:error, diagnostics_error(error, diagnostics_storage(resolved.config))}
     end
+  end
+
+  defp maybe_bootstrap_diagnostics(%Conn{} = conn, %Resolved{} = resolved, opts, true),
+    do: bootstrap(conn, resolved, opts)
+
+  defp maybe_bootstrap_diagnostics(%Conn{}, %Resolved{}, _opts, false), do: :ok
+
+  defp invalid_diagnostics_session(%Resolved{} = resolved) do
+    %Error{
+      type: :connection_error,
+      message: "DuckDB diagnostics received an incompatible pooled session",
+      adapter: __MODULE__,
+      connection: resolved.name,
+      operation: :connect,
+      retryable?: false
+    }
   end
 
   defp duckdb_version(%Conn{} = conn) do
@@ -1106,6 +1162,10 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   end
 
   defp no_active_transaction?({:error, reason}), do: no_active_transaction?(reason)
+
+  defp no_active_transaction?(%{message: message}) when is_binary(message),
+    do: no_active_transaction?(message)
+
   defp no_active_transaction?(_reason), do: false
 
   defp run_transaction(%Conn{} = conn, fun, opts) do

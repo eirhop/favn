@@ -317,6 +317,43 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
     assert :ok = SessionPool.creation_finished(key, name: context.pool_name)
   end
 
+  test "an active session counts against same-key creation capacity", context do
+    key = pool_key(:active_capacity)
+    config = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+    session = checked_out_session(context.tracker, key, config)
+    parent = self()
+
+    assert :ok = SessionPool.track_checkout(session, name: context.pool_name)
+
+    waiter =
+      spawn(fn ->
+        result =
+          SessionPool.checkout_or_create(key,
+            name: context.pool_name,
+            max_creating_per_key: 1,
+            checkout_timeout_ms: 500
+          )
+
+        send(parent, {:waiter_result, result})
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    assert eventually(fn -> SessionPool.diagnostics(name: context.pool_name).waiters == 1 end)
+    refute_receive {:waiter_result, _result}, 20
+
+    assert :ok = SessionPool.checkin(session, :ok, name: context.pool_name)
+    assert_receive {:waiter_result, {:ok, checked_out}}, 500
+    assert %SessionPool.Checkout{owner: ^waiter} = checked_out.pool_checkout
+
+    assert %{active: 1, creating: 0, idle: 0, waiters: 0} =
+             SessionPool.diagnostics(name: context.pool_name)
+
+    send(waiter, :stop)
+  end
+
   test "pool keys hash stable inputs and sort required catalogs and resources" do
     resolved = resolved(:stable, %{database: "secret.duckdb"})
 
@@ -325,6 +362,24 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
 
     refute PoolKey.build(resolved, [mode: :write], [:mart, "raw"], :v1) ==
              PoolKey.build(resolved, [mode: :read], ["raw", :mart], :v1)
+
+    assert PoolKey.build(
+             resolved,
+             [timeout_ms: 1_000, checkout_timeout_ms: 500, deadline: :first, cancel_token: :a],
+             [],
+             :v1
+           ) ==
+             PoolKey.build(
+               resolved,
+               [
+                 timeout_ms: 30_000,
+                 checkout_timeout_ms: 5_000,
+                 deadline: :second,
+                 cancel_token: :b
+               ],
+               [],
+               :v1
+             )
 
     assert PoolKey.build(resolved, [], [:raw], [:landing_storage, "azure_extension"], :v1) ==
              PoolKey.build(resolved, [], ["raw"], ["azure_extension", :landing_storage], :v1)

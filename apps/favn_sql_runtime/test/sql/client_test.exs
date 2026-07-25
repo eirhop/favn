@@ -20,6 +20,16 @@ defmodule FavnSQLRuntime.SQLClientTest do
     def query(_conn, _statement, _opts), do: {:error, :adapter_down}
   end
 
+  defmodule SuccessfulWriteAdapter do
+    def execute(_conn, _statement, _opts), do: {:ok, %Favn.SQL.Result{}}
+    def reset_session(_conn, _resolved, _opts), do: :ok
+
+    def disconnect(%{tracker: tracker}, _opts) do
+      Agent.update(tracker, &Map.update!(&1, :disconnects, fn count -> count + 1 end))
+      :ok
+    end
+  end
+
   defmodule TransactionBlockingAdapter do
     def transaction(%{tracker: tracker} = conn, fun, _opts) do
       caller = self()
@@ -90,6 +100,67 @@ defmodule FavnSQLRuntime.SQLClientTest do
               operation: :query,
               cause: :adapter_down
             }} = Client.query(session, "select 1", timeout_ms: 1_000, read_only?: true)
+  end
+
+  test "adapter capability retains a pooled session after a successful declared write", %{
+    tracker: tracker
+  } do
+    key = pool_key(:adapter_safe_write)
+    config = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+
+    session =
+      tracker
+      |> write_session([:execute])
+      |> SessionPool.attach_checkout(key, config)
+
+    assert :ok = SessionPool.track_checkout(session)
+
+    assert {:ok, %Favn.SQL.Result{}} =
+             Client.execute(session, "create table safe_write(id int)", [])
+
+    assert :ok = Client.disconnect(session)
+    assert Agent.get(tracker, & &1.disconnects) == 0
+    assert %{active: 0, idle: 1} = SessionPool.diagnostics()
+  end
+
+  test "an ungranted pool-safe request retains the conservative discard default", %{
+    tracker: tracker
+  } do
+    key = pool_key(:default_discard_write)
+    config = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+
+    session =
+      tracker
+      |> write_session([])
+      |> SessionPool.attach_checkout(key, config)
+
+    assert :ok = SessionPool.track_checkout(session)
+
+    assert {:ok, %Favn.SQL.Result{}} =
+             Client.execute(session, "create table discarded(id int)", pool_safe?: true)
+
+    assert :ok = Client.disconnect(session)
+    assert eventually(fn -> Agent.get(tracker, & &1.disconnects) == 1 end)
+    assert %{active: 0, idle: 0} = SessionPool.diagnostics()
+  end
+
+  test "a granted pool-safe request retains a pooled session", %{tracker: tracker} do
+    key = pool_key(:granted_safe_write)
+    config = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+
+    session =
+      tracker
+      |> write_session([], [:execute])
+      |> SessionPool.attach_checkout(key, config)
+
+    assert :ok = SessionPool.track_checkout(session)
+
+    assert {:ok, %Favn.SQL.Result{}} =
+             Client.execute(session, "create table controlled(id int)", pool_safe?: true)
+
+    assert :ok = Client.disconnect(session)
+    assert Agent.get(tracker, & &1.disconnects) == 0
+    assert %{active: 0, idle: 1} = SessionPool.diagnostics()
   end
 
   test "transaction timeout kills the process running a nested operation and discards pooling", %{
@@ -189,6 +260,25 @@ defmodule FavnSQLRuntime.SQLClientTest do
           config: %{tracker: tracker}
         },
         capabilities: %Capabilities{transactions: :supported}
+    }
+  end
+
+  defp write_session(tracker, pool_safe_operations, requested_operations \\ []) do
+    %Session{
+      adapter: SuccessfulWriteAdapter,
+      resolved: %Resolved{
+        name: :warehouse,
+        adapter: SuccessfulWriteAdapter,
+        module: __MODULE__,
+        config: %{tracker: tracker}
+      },
+      conn: %{tracker: tracker},
+      capabilities: %Capabilities{
+        extensions: %{
+          pool_safe_after_success: pool_safe_operations,
+          pool_safe_when_requested: requested_operations
+        }
+      }
     }
   end
 

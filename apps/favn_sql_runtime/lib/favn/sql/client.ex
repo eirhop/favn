@@ -45,6 +45,7 @@ defmodule Favn.SQL.Client do
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Admission
+  alias Favn.SQL.Capabilities
   alias Favn.SQL.ConcurrencyPolicies
   alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Deadline
@@ -1490,11 +1491,11 @@ defmodule Favn.SQL.Client do
   defp put_checkout_owner(%Session{} = session, _owner), do: session
 
   defp maybe_mark_pooled_session_success(
-         %Session{pool_checkout: %Checkout{} = checkout},
+         %Session{pool_checkout: %Checkout{} = checkout} = session,
          operation,
          opts
        ) do
-    if discard_pooled_session_after_success?(operation, opts) do
+    if discard_pooled_session_after_success?(session, operation, opts) do
       SessionPool.mark_discard(checkout.token, %{operation: operation, status: :success})
     end
 
@@ -1503,9 +1504,14 @@ defmodule Favn.SQL.Client do
 
   defp maybe_mark_pooled_session_success(_session, _operation, _opts), do: :ok
 
-  defp discard_pooled_session_after_success?(operation, opts) when is_list(opts) do
+  defp discard_pooled_session_after_success?(%Session{} = session, operation, opts)
+       when is_list(opts) do
     cond do
-      Keyword.get(opts, :pool_safe?) == true ->
+      Keyword.get(opts, :pool_safe?) == true and
+          adapter_pool_safe_when_requested?(session, operation) ->
+        false
+
+      adapter_pool_safe_after_success?(session, operation) ->
         false
 
       operation == :query ->
@@ -1523,7 +1529,7 @@ defmodule Favn.SQL.Client do
     end
   end
 
-  defp discard_pooled_session_after_success?(operation, _opts),
+  defp discard_pooled_session_after_success?(_session, operation, _opts),
     do:
       operation in [
         :execute,
@@ -1533,6 +1539,32 @@ defmodule Favn.SQL.Client do
         :activate_generation,
         :discard_generation
       ]
+
+  defp adapter_pool_safe_after_success?(
+         %Session{capabilities: %Capabilities{extensions: extensions}},
+         operation
+       )
+       when is_map(extensions) do
+    case Map.get(extensions, :pool_safe_after_success, []) do
+      operations when is_list(operations) -> operation in operations
+      _other -> false
+    end
+  end
+
+  defp adapter_pool_safe_after_success?(_session, _operation), do: false
+
+  defp adapter_pool_safe_when_requested?(
+         %Session{capabilities: %Capabilities{extensions: extensions}},
+         operation
+       )
+       when is_map(extensions) do
+    case Map.get(extensions, :pool_safe_when_requested, []) do
+      operations when is_list(operations) -> operation in operations
+      _other -> false
+    end
+  end
+
+  defp adapter_pool_safe_when_requested?(_session, _operation), do: false
 
   defp run_with_optional_retry(:query, opts, fun) when is_function(fun, 0) do
     if Keyword.get(opts, :read_only?) == true do

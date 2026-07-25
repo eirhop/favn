@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Runtime, as: WindowRuntime
   alias Favn.Window.Selection
+  alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ExactDateTimeCodec
   alias FavnOrchestrator.Storage.JsonSafe
@@ -321,6 +322,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, inserted_at} <- datetime_from_dto(Map.get(dto, "inserted_at")),
          {:ok, updated_at} <- datetime_from_dto(Map.get(dto, "updated_at")),
          {:ok, required_runner_release_id} <- release_id_from_dto(dto, schema_version),
+         {:ok, metadata} <-
+           metadata_from_dto(Map.get(dto, "metadata"), allowed_atom_strings),
          {:ok, result} <- result_from_dto(Map.get(dto, "result"), allowed_atom_strings) do
       {:ok,
        %RunState{
@@ -339,7 +342,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          snapshot_hash: Map.get(dto, "snapshot_hash"),
          params: json_from_dto(Map.get(dto, "params")),
          trigger: json_from_dto(Map.get(dto, "trigger")),
-         metadata: metadata_from_dto(Map.get(dto, "metadata"), allowed_atom_strings),
+         metadata: metadata,
          submit_kind: submit_kind,
          rerun_of_run_id: empty_to_nil(Map.get(dto, "rerun_of_run_id")),
          parent_run_id: empty_to_nil(Map.get(dto, "parent_run_id")),
@@ -1234,10 +1237,22 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp data_from_dto(value, _allowed_atom_strings), do: value
 
   defp metadata_from_dto(value, allowed_atom_strings) do
-    value
-    |> json_from_dto()
-    |> normalize_metadata(allowed_atom_strings)
+    metadata =
+      value
+      |> json_from_dto()
+      |> normalize_metadata(allowed_atom_strings)
+
+    validate_metadata_refresh_policy(metadata)
   end
+
+  defp validate_metadata_refresh_policy(%{refresh_policy: policy} = metadata) do
+    case RefreshPolicy.from_value(policy) do
+      {:ok, _policy} -> {:ok, metadata}
+      {:error, reason} -> {:error, {:invalid_refresh_policy_metadata, reason}}
+    end
+  end
+
+  defp validate_metadata_refresh_policy(metadata), do: {:ok, metadata}
 
   defp normalize_metadata(%{} = metadata, allowed_atom_strings) do
     metadata
@@ -1248,6 +1263,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> promote_key("pipeline_target_refs", :pipeline_target_refs)
     |> promote_key("pipeline_dependencies", :pipeline_dependencies)
     |> promote_key("asset_dependencies", :asset_dependencies)
+    |> promote_key("refresh_policy", :refresh_policy)
     |> promote_key("in_flight_execution_ids", :in_flight_execution_ids)
     |> promote_key("replay_submit_kind", :replay_submit_kind)
     |> promote_key("replay_mode", :replay_mode)
@@ -1257,6 +1273,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> normalize_metadata_refs(:pipeline_target_refs, allowed_atom_strings)
     |> normalize_metadata_refs(:asset_dependencies, allowed_atom_strings)
     |> normalize_metadata_refs(:pipeline_dependencies, allowed_atom_strings)
+    |> normalize_metadata_refresh_policy(allowed_atom_strings)
     |> normalize_metadata_window_selection()
     |> normalize_pipeline_context(allowed_atom_strings)
     |> normalize_metadata_atom(:replay_submit_kind, &submit_kind_value_from_dto/1)
@@ -1362,6 +1379,40 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       :error -> metadata
     end
   end
+
+  defp normalize_metadata_refresh_policy(
+         %{refresh_policy: policy} = metadata,
+         allowed_atom_strings
+       )
+       when is_map(policy) do
+    policy =
+      policy
+      |> promote_key("mode", :mode)
+      |> promote_key("refs", :refs)
+      |> promote_key("include_upstream", :include_upstream)
+      |> promote_key("include_upstream?", :include_upstream?)
+      |> Map.update(:refs, [], fn
+        refs when is_list(refs) ->
+          Enum.map(refs, &ref_from_dto_value(&1, allowed_atom_strings))
+
+        value ->
+          value
+      end)
+
+    case RefreshPolicy.from_value(policy) do
+      {:ok, normalized} ->
+        Map.put(metadata, :refresh_policy, %{
+          mode: normalized.mode,
+          refs: normalized.refs,
+          include_upstream?: normalized.include_upstream?
+        })
+
+      {:error, _reason} ->
+        metadata
+    end
+  end
+
+  defp normalize_metadata_refresh_policy(metadata, _allowed_atom_strings), do: metadata
 
   defp normalize_pipeline_context(%{pipeline_context: context} = metadata, allowed_atom_strings)
        when is_map(context) do

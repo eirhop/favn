@@ -100,8 +100,9 @@ defmodule Favn.SQL.SessionPool do
   Checks out an idle session or reserves the caller as a creator for `key`.
 
   Concurrent misses for the same key may create fresh sessions in parallel up to
-  `:max_creating_per_key`. Waiters block until an idle session is available or
-  capacity opens for another creator.
+  `:max_creating_per_key`, including sessions already checked out for that key.
+  Waiters block until an idle session is available or capacity opens for another
+  creator.
   """
   @spec checkout_or_create(PoolKey.t(), keyword()) ::
           {:ok, Session.t()} | :create | {:error, Favn.SQL.Error.t()}
@@ -697,7 +698,11 @@ defmodule Favn.SQL.SessionPool do
   end
 
   defp can_reserve_creator?(%__MODULE__{} = state, hash, max_creating_per_key) do
-    creating_count(state, hash) < max_creating_per_key
+    active_count(state, hash) + creating_count(state, hash) < max_creating_per_key
+  end
+
+  defp active_count(%__MODULE__{} = state, hash) do
+    Enum.count(state.active, fn {_token, entry} -> entry.key.hash == hash end)
   end
 
   defp creating_count(%__MODULE__{} = state, hash) do

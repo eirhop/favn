@@ -121,7 +121,7 @@ defmodule FavnLocal.Config do
         service_identity: "favn-local",
         token_hash: ServiceTokens.hash_token(config.service_token),
         enabled: true,
-        platform_roles: [:platform_admin]
+        platform_roles: [:platform_operator]
       }
     ]
 

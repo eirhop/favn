@@ -13,12 +13,24 @@ defmodule FavnReferenceWorkload.Warehouse.Mart.PipelineDaily do
   meta(category: :pipeline, tags: [:mart, :daily, :incremental])
 
   contract do
-    grain(by: [:snapshot_date, :stage], description: "one pipeline row per day and stage")
-    column(:snapshot_date, :date, null: false)
-    column(:stage, :string, null: false)
-    column(:deal_count, :integer, null: false)
-    column(:pipeline_amount_cents, :integer, null: false)
+    column(:snapshot_date, :date)
+    column(:stage, :string)
+    column(:deal_count, :integer)
+    column(:pipeline_amount_cents, :integer)
     unique([:snapshot_date, :stage])
+  end
+
+  check :required_values_are_present, at: :before_materialize, on_violation: :fail do
+    ~SQL"""
+    select
+      count(*) filter (
+        where snapshot_date is null
+          or stage is null
+          or deal_count is null
+          or pipeline_amount_cents is null
+      ) = 0 as passed
+    from query()
+    """
   end
 
   query do

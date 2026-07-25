@@ -13,6 +13,8 @@ defmodule Favn.SQL.PoolKey do
   @enforce_keys [:scope_hash, :hash]
   defstruct [:scope_hash, :hash]
 
+  @runtime_only_opts [:cancel_token, :checkout_timeout_ms, :deadline, :timeout_ms]
+
   @type t :: %__MODULE__{scope_hash: binary(), hash: binary()}
 
   @doc """
@@ -44,7 +46,7 @@ defmodule Favn.SQL.PoolKey do
       resolved.adapter,
       resolved.config,
       adapter_opts
-      |> Keyword.drop([:required_catalogs, :required_resources])
+      |> Keyword.drop([:required_catalogs, :required_resources | @runtime_only_opts])
       |> Enum.sort(),
       normalize_names(required_catalogs),
       normalize_names(required_resources)
