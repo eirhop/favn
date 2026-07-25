@@ -288,6 +288,28 @@ defmodule Favn.WindowTest do
              Policy.resolve_manual(Policy.new!(:monthly), nil)
   end
 
+  test "manual defaults select the latest complete window at one delayed instant" do
+    evaluated_at = oslo_datetime!(~N[2026-07-01 00:30:00])
+
+    assert {:ok, selection} =
+             Policy.select_latest_complete(
+               Policy.new!(:daily,
+                 anchor: :current_period,
+                 timezone: "Europe/Oslo"
+               ),
+               evaluated_at,
+               3_600
+             )
+
+    assert selection.intent == :manual
+    assert selection.expansion == :none
+    assert [anchor] = selection.requested_anchors
+    assert anchor.start_at == oslo_datetime!(~N[2026-06-29 00:00:00])
+    assert anchor.end_at == oslo_datetime!(~N[2026-06-30 00:00:00])
+
+    assert {:ok, nil} = Policy.select_latest_complete(nil, evaluated_at)
+  end
+
   test "day windows use local civil midnights across DST transitions" do
     assert {:ok, spring_request} = Request.parse("day:2026-03-29", timezone: "Europe/Oslo")
     assert {:ok, spring_anchor} = Policy.resolve_manual(Policy.new!(:daily), spring_request)

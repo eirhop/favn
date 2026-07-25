@@ -18,8 +18,10 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
   nullability, and up to 16 ordered conditional row-count claims.
 - Planning supports asset and pipeline targets, dependency selection, refresh
   modes, stages, retries, replay, and bounded admission. Scheduled window
-  selections apply pipeline lookback once; manual and backfill selections stay
-  exact, and runs persist requested, expansion, and effective anchors.
+  selections apply pipeline lookback once; a windowed manual run defaults to
+  one latest complete availability-aware window; explicit manual and backfill
+  selections stay exact; and runs persist requested, expansion, and effective
+  anchors.
 - Customer-built runners validate and advertise an operator-supplied immutable
   release ID together with the running Favn version, runner contract, Elixir,
   OTP, and target. Favn validates compatibility and exact manifest alignment but

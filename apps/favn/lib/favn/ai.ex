@@ -147,7 +147,10 @@ defmodule Favn.AI do
     expansion, and effective anchors, and `Favn plan_asset_run` if you need planning
     details. Scheduled anchors are explicit
     `:previous_complete_period | :current_period`; schedule cadence does not
-    change pipeline window granularity.
+    change pipeline window granularity. A manual pipeline run without a window
+    request resolves one latest complete period at a persisted orchestrator
+    evaluation instant after selected-asset availability delays. An explicit
+    request stays exact, and manual selection never applies schedule lookback.
   - To work with operational backfill ranges, dry-run planning, compact
     `--window kind:FROM..TO` input, forced refresh repair, successful-window
     reruns, or immutable missing-coverage plans, read `Favn.Backfill.RangeRequest`,
@@ -259,6 +262,10 @@ defmodule Favn.AI do
     image pipeline; `mix favn.init --target deployment` copies a non-overwriting
     example.
     `mix favn.run` resolves asset and pipeline targets from the active manifest.
+    A windowed pipeline without `--window` pins one latest complete period;
+    `--window` accepts one exact override, while ranges belong to
+    `mix favn.backfill`. Direct asset `--window` input becomes an exact
+    data-coverage selection.
     Direct asset repair can combine `--dependencies all|none` with
     `--refresh auto|missing|force_selected|force_selected_upstream|force_all`;
     pipeline runs have the narrower `auto|missing|force_all` refresh contract and

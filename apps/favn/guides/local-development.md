@@ -155,6 +155,7 @@ Orchestrator, set `FAVN_ORCHESTRATOR_URL`,
 
 ```bash
 mix favn.run MyApp.Pipelines.Daily
+mix favn.run MyApp.Pipelines.Daily --window day:2026-07-23
 mix favn.runs list
 mix favn.runs show RUN_ID
 mix favn.runs cancel RUN_ID
@@ -164,6 +165,12 @@ mix favn.diagnostics
 
 `mix favn.backfill` and `mix favn.rebuild` use the same connection boundary.
 Run `mix help TASK` for their exact options.
+
+A windowed pipeline without `--window` runs one latest complete window. The
+orchestrator evaluates it once using the pipeline timezone and selected assets'
+availability delays, then persists the exact selection for retries and recovery.
+An explicit `--window` runs exactly that one window. Use `mix favn.backfill` for
+a range. Non-windowed pipelines keep their full-load behavior.
 
 Favn intentionally does not expose an arbitrary SQL query command. Stop the
 local Favn stack before opening a file-backed database with the DuckDB CLI.

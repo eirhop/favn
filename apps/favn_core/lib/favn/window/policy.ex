@@ -17,9 +17,11 @@ defmodule Favn.Window.Policy do
     even when that period is incomplete.
 
   Both anchors resolve relative to the schedule occurrence and effective
-  timezone. Manual runs instead resolve explicit `%Favn.Window.Request{}` input
-  such as `month:2026-03`. Pipeline `lookback` expands scheduled selections only;
-  manual and backfill selections remain exact.
+  timezone. An explicit manual `%Favn.Window.Request{}` such as `month:2026-03`
+  remains exact. The orchestrator resolves an omitted manual request to the
+  latest complete period at one persisted evaluation instant. Pipeline
+  `lookback` expands scheduled selections only; manual and backfill selections
+  remain exact.
 
   Windowed pipelines do not allow full-load submissions by default. Set
   `allow_full_load: true` only when a windowed pipeline should explicitly accept
@@ -226,6 +228,49 @@ defmodule Favn.Window.Policy do
       end
     end
   end
+
+  @doc """
+  Selects the latest complete manual window at an explicit evaluation instant.
+
+  The optional availability delay moves the evaluation instant backwards before
+  resolving the previous complete period. This default is independent of the
+  schedule-only `:anchor` setting and never applies pipeline lookback.
+  """
+  @spec select_latest_complete(t() | nil, DateTime.t(), non_neg_integer()) ::
+          {:ok, Selection.t() | nil} | {:error, term()}
+  def select_latest_complete(policy, evaluated_at, availability_delay_seconds \\ 0)
+
+  def select_latest_complete(nil, %DateTime{}, availability_delay_seconds)
+      when is_integer(availability_delay_seconds) and availability_delay_seconds >= 0,
+      do: {:ok, nil}
+
+  def select_latest_complete(
+        %__MODULE__{kind: kind, timezone: timezone},
+        %DateTime{} = evaluated_at,
+        availability_delay_seconds
+      )
+      when is_binary(timezone) and is_integer(availability_delay_seconds) and
+             availability_delay_seconds >= 0 do
+    available_at =
+      DateTime.add(
+        evaluated_at,
+        -availability_delay_seconds,
+        :second,
+        Favn.Timezone.database!()
+      )
+
+    with {:ok, period} <- TimePeriod.previous_complete(kind, available_at, timezone),
+         {:ok, anchor} <-
+           Anchor.new(period.kind, period.start_at, period.end_at, timezone: period.timezone) do
+      Selection.manual(anchor, anchor.timezone)
+    end
+  end
+
+  def select_latest_complete(%__MODULE__{timezone: nil}, %DateTime{}, _delay),
+    do: {:error, :unresolved_pipeline_timezone}
+
+  def select_latest_complete(_policy, _evaluated_at, _availability_delay_seconds),
+    do: {:error, :invalid_latest_complete_selection}
 
   @doc "Resolves one scheduled occurrence and applies pipeline lookback exactly once."
   @spec select_scheduled(t(), DateTime.t(), String.t() | nil) ::

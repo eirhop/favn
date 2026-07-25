@@ -657,14 +657,18 @@ Pipeline window options:
 | `:anchor` | `:previous_complete_period` (default) or `:current_period`. |
 | `:timezone` | IANA timezone. |
 | `:lookback` | Non-negative number of prior anchors added to scheduled runs. |
-| `:allow_full_load` | Whether a full load without a window is allowed. |
+| `:allow_full_load` | Whether an explicit full-load request is allowed. Omission still selects latest-complete. |
 
 Schedule cadence and processing-window granularity are independent. The example
-runs daily while selecting the current monthly anchor. Manual runs and backfills
-must still request monthly windows.
+runs daily while selecting the current monthly anchor. An omitted manual window
+selects the latest complete month at one persisted evaluation instant. An
+explicit manual window and every backfill range must still use monthly windows.
 
 Operational lookback belongs to the pipeline. Scheduled July with `lookback: 1`
-selects June and July. Explicit manual windows and backfill ranges stay exact.
+selects June and July. The automatic latest-complete manual default, explicit
+manual windows, and backfill ranges stay exact. `allow_full_load: true` governs
+only a deliberate explicit full-load request; it does not change the omitted
+manual default.
 The asset describes only how each supplied anchor maps to its canonical data
 window:
 

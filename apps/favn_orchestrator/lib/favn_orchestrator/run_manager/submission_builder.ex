@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias Favn.Window.Selection
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.OperatorCommands.ManualWindowResolution
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RefreshPolicy
@@ -256,43 +257,46 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          {:ok, version} <- get_manifest(opts, manifest_version_id),
          {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, pipeline} <- fetch_pipeline_by_module(index, pipeline_module),
-         {:ok, window_selection} <-
-           resolve_pipeline_window_selection(pipeline, input, request),
-         {:ok, resolution} <-
+         {:ok, target_refs} <- PipelineResolver.target_refs(index, pipeline),
+         {:ok, window_resolution} <-
+           resolve_pipeline_window_selection(pipeline, index, target_refs, input, request, opts),
+         {:ok, pipeline_resolution} <-
            PipelineResolver.resolve(index, pipeline,
              trigger: input.trigger,
              params: input.params,
-             window_selection: window_selection
+             window_selection: window_resolution.selection
            ),
-         {:ok, refresh_policy} <- refresh_policy_metadata(opts, resolution.dependencies),
+         {:ok, refresh_policy} <-
+           refresh_policy_metadata(opts, pipeline_resolution.dependencies),
          metadata <-
            Map.merge(input.metadata, %{
              submit_kind: :pipeline,
-             pipeline_target_refs: resolution.target_refs,
-             pipeline_context: resolution.pipeline_ctx,
-             pipeline_dependencies: resolution.dependencies,
+             pipeline_target_refs: pipeline_resolution.target_refs,
+             pipeline_context: pipeline_resolution.pipeline_ctx,
+             pipeline_dependencies: pipeline_resolution.dependencies,
              pipeline_submit_ref: pipeline.module,
              pipeline_identity_ref: {pipeline.module, pipeline.name},
-             pipeline_execution_policy: pipeline_execution_policy(resolution.pipeline),
+             pipeline_execution_policy: pipeline_execution_policy(pipeline_resolution.pipeline),
              runtime_input_mode: input_mode,
              refresh_policy: refresh_policy
            })
-           |> put_window_selection(window_selection),
+           |> put_window_selection(window_resolution.selection)
+           |> put_manual_window_resolution(window_resolution),
          input <-
            %{
              input
              | metadata: metadata,
-               dependencies: resolution.dependencies,
+               dependencies: pipeline_resolution.dependencies,
                anchor_window: nil,
-               window_selection: window_selection
+               window_selection: window_resolution.selection
            },
          {:ok, run_state} <-
            build_pipeline_run_state(
-             resolution.target_refs,
+             pipeline_resolution.target_refs,
              input,
              version,
              index,
-             resolution.pipeline.retry_policy
+             pipeline_resolution.pipeline.retry_policy
            ) do
       {:ok, run_state, version}
     end
@@ -314,43 +318,46 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          {:ok, version} <- get_manifest(opts, manifest_version_id),
          {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, %Pipeline{} = pipeline} <- Index.fetch_pipeline(index, pipeline_ref),
-         {:ok, window_selection} <-
-           resolve_pipeline_window_selection(pipeline, input, request),
-         {:ok, resolution} <-
+         {:ok, target_refs} <- PipelineResolver.target_refs(index, pipeline),
+         {:ok, window_resolution} <-
+           resolve_pipeline_window_selection(pipeline, index, target_refs, input, request, opts),
+         {:ok, pipeline_resolution} <-
            PipelineResolver.resolve(index, pipeline,
              trigger: input.trigger,
              params: input.params,
-             window_selection: window_selection
+             window_selection: window_resolution.selection
            ),
-         {:ok, refresh_policy} <- refresh_policy_metadata(opts, resolution.dependencies),
+         {:ok, refresh_policy} <-
+           refresh_policy_metadata(opts, pipeline_resolution.dependencies),
          metadata <-
            Map.merge(input.metadata, %{
              submit_kind: :pipeline,
-             pipeline_target_refs: resolution.target_refs,
-             pipeline_context: resolution.pipeline_ctx,
-             pipeline_dependencies: resolution.dependencies,
+             pipeline_target_refs: pipeline_resolution.target_refs,
+             pipeline_context: pipeline_resolution.pipeline_ctx,
+             pipeline_dependencies: pipeline_resolution.dependencies,
              pipeline_submit_ref: pipeline.module,
              pipeline_identity_ref: pipeline_ref,
-             pipeline_execution_policy: pipeline_execution_policy(resolution.pipeline),
+             pipeline_execution_policy: pipeline_execution_policy(pipeline_resolution.pipeline),
              runtime_input_mode: input_mode,
              refresh_policy: refresh_policy
            })
-           |> put_window_selection(window_selection),
+           |> put_window_selection(window_resolution.selection)
+           |> put_manual_window_resolution(window_resolution),
          input <-
            %{
              input
              | metadata: metadata,
-               dependencies: resolution.dependencies,
+               dependencies: pipeline_resolution.dependencies,
                anchor_window: nil,
-               window_selection: window_selection
+               window_selection: window_resolution.selection
            },
          {:ok, run_state} <-
            build_pipeline_run_state(
-             resolution.target_refs,
+             pipeline_resolution.target_refs,
              input,
              version,
              index,
-             resolution.pipeline.retry_policy
+             pipeline_resolution.pipeline.retry_policy
            ) do
       {:ok, run_state, version}
     end
@@ -580,6 +587,19 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   defp put_window_selection(metadata, %Selection{} = selection),
     do: Map.put(metadata, :window_selection, selection)
 
+  defp put_manual_window_resolution(
+         metadata,
+         %ManualWindowResolution{mode: :latest_complete} = resolution
+       ) do
+    Map.put(metadata, :manual_window_resolution, %{
+      mode: resolution.mode,
+      evaluated_at: DateTime.to_iso8601(resolution.evaluated_at),
+      availability_delay_seconds: resolution.availability_delay_seconds
+    })
+  end
+
+  defp put_manual_window_resolution(metadata, %ManualWindowResolution{}), do: metadata
+
   defp preserve_window_selection(opts, nil), do: opts
 
   defp preserve_window_selection(opts, %Selection{} = selection),
@@ -602,34 +622,70 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
 
   defp resolve_pipeline_window_selection(
          %Pipeline{},
+         %Index{},
+         _target_refs,
          %SubmissionOptions{window_selection: %Selection{} = selection},
-         _request
-       ),
-       do: {:ok, selection}
+         _request,
+         opts
+       ) do
+    manual_window_resolution(:explicit, selection, opts)
+  end
 
   defp resolve_pipeline_window_selection(
          %Pipeline{window: %Policy{} = policy},
+         %Index{},
+         _target_refs,
          %SubmissionOptions{anchor_window: %Favn.Window.Anchor{} = anchor, trigger: trigger},
-         _request
+         _request,
+         opts
        ) do
-    case Map.get(trigger, :kind, Map.get(trigger, "kind")) do
-      kind when kind in [:schedule, "schedule"] ->
-        Selection.scheduled(anchor, policy.lookback, anchor.timezone)
+    selection_result =
+      case Map.get(trigger, :kind, Map.get(trigger, "kind")) do
+        kind when kind in [:schedule, "schedule"] ->
+          Selection.scheduled(anchor, policy.lookback, anchor.timezone)
 
-      kind when kind in [:backfill, "backfill"] ->
-        Selection.backfill([anchor], anchor.timezone)
+        kind when kind in [:backfill, "backfill"] ->
+          Selection.backfill([anchor], anchor.timezone)
 
-      _other ->
-        Selection.manual(anchor, anchor.timezone)
+        _other ->
+          Selection.manual(anchor, anchor.timezone)
+      end
+
+    with {:ok, selection} <- selection_result do
+      manual_window_resolution(:explicit, selection, opts)
     end
   end
 
   defp resolve_pipeline_window_selection(
          %Pipeline{} = pipeline,
+         %Index{} = index,
+         target_refs,
          %SubmissionOptions{anchor_window: nil, window_selection: nil},
-         request
+         request,
+         opts
        ),
-       do: Policy.select_manual(pipeline.window, request)
+       do:
+         ManualWindowResolution.resolve(
+           index,
+           pipeline,
+           target_refs,
+           request,
+           window_evaluated_at(opts)
+         )
+
+  defp manual_window_resolution(mode, selection, opts) do
+    {:ok,
+     %ManualWindowResolution{
+       mode: mode,
+       selection: selection,
+       evaluated_at: window_evaluated_at(opts),
+       availability_delay_seconds: 0
+     }}
+  end
+
+  defp window_evaluated_at(opts) do
+    Keyword.get_lazy(opts, :window_evaluated_at, &DateTime.utc_now/0)
+  end
 
   defp pipeline_execution_policy(pipeline) do
     %{

@@ -17,6 +17,11 @@ defmodule Mix.Tasks.Favn.Run do
   `missing`, or `force_all` refresh. The defaults remain dependency scope `all`
   and refresh mode `auto` when the options are omitted.
 
+  A windowed pipeline without `--window` runs exactly its latest complete
+  window, resolved and pinned by the orchestrator at submission time. Use one
+  exact `--window KIND:VALUE` to override it. Use `mix favn.backfill` for ranges.
+  A direct asset `--window` selects that asset's exact data-coverage window.
+
   `--dependencies none` is an operator override for targeted repair and local
   validation. It plans only the selected asset, so use it only after confirming
   that the asset's upstream inputs are suitable. `force_selected_upstream`
@@ -138,8 +143,10 @@ defmodule Mix.Tasks.Favn.Run do
   def error_message({:refresh_include_upstream_requires_dependencies, :all}),
     do: "--refresh force_selected_upstream requires --dependencies all"
 
-  def error_message({:invalid_window_request, reason}),
-    do: "invalid --window value: #{inspect(reason)}"
+  def error_message({:invalid_window_request, reason}) do
+    "invalid --window value: #{inspect(reason)}; use one exact window such as " <>
+      "--window day:2026-07-23, or use mix favn.backfill TARGET --from ... --to ... for a range"
+  end
 
   def error_message({:orchestrator_validation_failed, message}), do: message
 
