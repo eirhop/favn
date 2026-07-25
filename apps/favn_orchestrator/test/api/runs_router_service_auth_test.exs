@@ -25,7 +25,19 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       {:ok, %CursorPage{items: [], limit: query.limit, has_more?: false, next_cursor: nil}}
     end
 
+    def request_cancellation(_command) do
+      {:error,
+       Error.new(:conflict, "run is already terminal", details: %{reason: :run_already_terminal})}
+    end
+
+    def get_run(_query), do: {:ok, Process.get(:runs_router_terminal_run)}
+
     def get_runtime_state(_query), do: {:error, :active_manifest_not_set}
+
+    def record_audit(command) do
+      send(Process.get(:runs_router_test_pid), {:record_audit, command})
+      :ok
+    end
 
     def get_session(%GetSession{
           workspace_context: context,
@@ -63,6 +75,8 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
 
     Process.put(:runs_router_actors, %{})
     Process.put(:runs_router_sessions, %{})
+    Process.put(:runs_router_terminal_run, %{status: :ok})
+    Process.put(:runs_router_test_pid, self())
 
     stores = %Stores{
       registry: EmptyRunsStore,
@@ -89,6 +103,8 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       restore_env(:api_service_tokens, previous_tokens)
       Process.delete(:runs_router_actors)
       Process.delete(:runs_router_sessions)
+      Process.delete(:runs_router_terminal_run)
+      Process.delete(:runs_router_test_pid)
       if Process.alive?(runtime), do: GenServer.stop(runtime)
     end)
 
@@ -189,6 +205,41 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "unauthenticated"
   end
 
+  test "cancelling a successful run preserves and reports its terminal result" do
+    response = cancel_request("successful-run")
+
+    assert response.status == 200
+
+    assert %{
+             "data" => %{
+               "cancelled" => false,
+               "outcome" => "already_terminal",
+               "run_id" => "successful-run",
+               "status" => "ok"
+             }
+           } = Jason.decode!(response.resp_body)
+
+    assert_received {:record_audit, audit}
+    assert audit.detail.outcome == "already_terminal"
+    assert audit.detail.idempotency.outcome == "already_terminal"
+  end
+
+  test "repeating cancellation for a cancelled run reports the persisted outcome" do
+    Process.put(:runs_router_terminal_run, %{status: :cancelled})
+    response = cancel_request("cancelled-run")
+
+    assert response.status == 200
+
+    assert %{
+             "data" => %{
+               "cancelled" => true,
+               "outcome" => "already_terminal",
+               "run_id" => "cancelled-run",
+               "status" => "cancelled"
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
   defp list_request do
     :get
     |> conn("/")
@@ -208,6 +259,16 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     |> put_req_header("x-favn-workspace-id", "workspace-a")
     |> put_req_header("idempotency-key", "runs-router-service-submit")
     |> put_headers(headers)
+    |> Map.put(:body_params, %{})
+    |> RunsRouter.call(RunsRouter.init([]))
+  end
+
+  defp cancel_request(run_id) do
+    :post
+    |> conn("/#{run_id}/cancel", "")
+    |> put_req_header("authorization", "Bearer #{@token}")
+    |> put_req_header("x-favn-workspace-id", "workspace-a")
+    |> put_req_header("idempotency-key", "runs-router-cancel-#{run_id}")
     |> Map.put(:body_params, %{})
     |> RunsRouter.call(RunsRouter.init([]))
   end

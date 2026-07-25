@@ -117,17 +117,27 @@ defmodule Favn.CLI.Runs do
 
   defp maybe_wait_for_cancel(run_id, cancel_result, base_url, credentials, session_context, opts) do
     if Keyword.get(opts, :wait, false) do
-      wait_for_terminal_run(
-        run_id,
-        base_url,
-        credentials.service_token,
-        session_context,
-        wait_deadline(opts),
-        Keyword.get(opts, :poll_interval_ms, @default_poll_interval_ms),
-        opts
-      )
+      with {:ok, run} <-
+             wait_for_terminal_run(
+               run_id,
+               base_url,
+               credentials.service_token,
+               session_context,
+               wait_deadline(opts),
+               Keyword.get(opts, :poll_interval_ms, @default_poll_interval_ms),
+               opts
+             ) do
+        {:ok, put_cancel_outcome(run, cancel_result)}
+      end
     else
       {:ok, cancel_result}
+    end
+  end
+
+  defp put_cancel_outcome(run, cancel_result) do
+    case Map.get(cancel_result, "outcome") || Map.get(cancel_result, :outcome) do
+      nil -> run
+      outcome -> Map.put(run, "cancel_outcome", outcome)
     end
   end
 

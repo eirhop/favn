@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.API.RunsRouter do
   alias FavnOrchestrator.API.OperatorCommands
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
+  alias FavnOrchestrator.Runs, as: RunDomain
   alias Favn.Replay.InputMode
   alias Favn.Retry.Policy
 
@@ -231,8 +232,38 @@ defmodule FavnOrchestrator.API.RunsRouter do
         {:error, 409, "idempotency_conflict",
          "The idempotency key was already used with different request content", %{}}
 
+      {:error, :run_already_terminal} ->
+        audit(
+          conn,
+          context,
+          "run.cancel",
+          run_id,
+          session,
+          actor,
+          idempotency,
+          "already_terminal"
+        )
+
+        terminal_cancel_response(context, run_id)
+
       {:error, _reason} ->
         {:error, 400, "bad_request", "Request failed", %{}}
+    end
+  end
+
+  defp terminal_cancel_response(context, run_id) do
+    case RunDomain.get(context, run_id) do
+      {:ok, run} ->
+        {:ok, 200,
+         %{
+           cancelled: run.status == :cancelled,
+           outcome: :already_terminal,
+           run_id: run_id,
+           status: run.status
+         }, "run", run_id}
+
+      {:error, _reason} ->
+        {:error, 409, "conflict", "Run became terminal before cancellation", %{}}
     end
   end
 
@@ -286,17 +317,17 @@ defmodule FavnOrchestrator.API.RunsRouter do
   defp put_optional(opts, _key, nil), do: opts
   defp put_optional(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp audit(conn, context, action, run_id, session, actor, idempotency) do
+  defp audit(conn, context, action, run_id, session, actor, idempotency, outcome \\ "accepted") do
     %{
       action: action,
       actor_id: actor.id,
       session_id: session.id,
       resource_type: "run",
       resource_id: run_id,
-      outcome: "accepted",
+      outcome: outcome,
       service_identity: Authentication.service_identity(conn)
     }
-    |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "accepted"))
+    |> Map.merge(IdempotentCommand.audit_metadata(idempotency, outcome))
     |> then(&Audit.put_best_effort(context, &1))
   end
 

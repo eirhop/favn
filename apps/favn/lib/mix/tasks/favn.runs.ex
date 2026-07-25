@@ -124,7 +124,7 @@ defmodule Mix.Tasks.Favn.Runs do
   defp print_cancel_result(run_id, result, waited?) do
     status = field(result, "status") || if(field(result, "cancelled"), do: "cancel_requested")
 
-    IO.puts("Cancellation requested")
+    IO.puts(cancel_result_label(result, status))
     IO.puts("run: #{field(result, "run_id") || field(result, "id") || run_id}")
 
     if status do
@@ -135,6 +135,21 @@ defmodule Mix.Tasks.Favn.Runs do
       IO.puts("inspect: mix favn.runs show #{run_id}")
     end
   end
+
+  defp cancel_result_label(result, "cancelled") do
+    if cancel_outcome(result) in ["already_terminal", :already_terminal],
+      do: "Run already cancelled",
+      else: "Cancellation requested"
+  end
+
+  defp cancel_result_label(result, _status) do
+    if cancel_outcome(result) in ["already_terminal", :already_terminal],
+      do: "Run already terminal; cancellation did not replace its result",
+      else: "Cancellation requested"
+  end
+
+  defp cancel_outcome(result),
+    do: field(result, "outcome") || field(result, "cancel_outcome")
 
   defp target(run) do
     case field(run, "target_refs") do
@@ -152,6 +167,8 @@ defmodule Mix.Tasks.Favn.Runs do
   defp atom_key("finished_at"), do: :finished_at
   defp atom_key("run_id"), do: :run_id
   defp atom_key("cancelled"), do: :cancelled
+  defp atom_key("outcome"), do: :outcome
+  defp atom_key("cancel_outcome"), do: :cancel_outcome
 
   defp error_message(:not_running), do: "Favn is not running; use mix favn.dev"
 

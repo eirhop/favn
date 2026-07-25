@@ -118,13 +118,8 @@ defmodule FavnOrchestrator.RunManager do
              run_id,
              safe_reason,
              Keyword.take(opts, [:command_id, :idempotency, :occurred_at])
-           ),
-         :ok <- TransitionWriter.publish_committed(context, committed) do
-      case call_manager({:notify_cancellation, run_key, safe_reason}) do
-        :active -> :ok
-        :inactive -> continue_inactive_cancellation(context, committed.run, safe_reason)
-        {:error, _reason} = error -> error
-      end
+           ) do
+      continue_cancellation(context, run_key, committed, safe_reason)
     else
       {:error, %Error{} = error} -> {:error, normalize_cancellation_error(error)}
       {:error, reason} -> {:error, reason}
@@ -713,6 +708,30 @@ defmodule FavnOrchestrator.RunManager do
 
   defp sanitize_cancel_reason(value) when is_map(value),
     do: {:ok, Redaction.redact_operational_bounded(value)}
+
+  defp continue_cancellation(context, run_key, %{replayed?: true}, reason) do
+    with {:ok, %RunState{} = run} <- Runs.get(context, elem(run_key, 1)) do
+      if RunState.terminal_status?(run.status) do
+        {:error, :run_already_terminal}
+      else
+        notify_cancellation(context, run_key, run, reason)
+      end
+    end
+  end
+
+  defp continue_cancellation(context, run_key, committed, reason) do
+    with :ok <- TransitionWriter.publish_committed(context, committed) do
+      notify_cancellation(context, run_key, committed.run, reason)
+    end
+  end
+
+  defp notify_cancellation(context, run_key, run, reason) do
+    case call_manager({:notify_cancellation, run_key, reason}) do
+      :active -> :ok
+      :inactive -> continue_inactive_cancellation(context, run, reason)
+      {:error, _reason} = error -> error
+    end
+  end
 
   defp continue_inactive_cancellation(context, %RunState{} = run, reason) do
     if RunState.terminal_status?(run.status) do
