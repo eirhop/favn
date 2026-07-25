@@ -330,7 +330,7 @@ defmodule Favn.Contracts.GenerationContractsTest do
         connection_definitions: %{
           warehouse: %{adapter: MyApp.Adapter, module: MyApp.Warehouse}
         },
-        manifest_schema_version: 12,
+        manifest_schema_version: 13,
         runner_contract_version: 12
       )
 

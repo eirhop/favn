@@ -8,7 +8,7 @@ defmodule FavnOrchestrator.Persistence.DeploymentSchedules do
   alias FavnOrchestrator.Scheduler.Cron
   alias FavnOrchestrator.Scheduler.ManifestEntries
 
-  @doc "Returns active schedules whose pipelines are customer-selected deployment targets."
+  @doc "Returns schedules whose pipelines are customer-selected deployment targets."
   @spec plan(Version.t(), [struct()], DateTime.t()) ::
           {:ok, [DeploymentSchedule.t()]} | {:error, term()}
   def plan(%Version{} = version, targets, %DateTime{} = now) when is_list(targets) do
@@ -21,8 +21,7 @@ defmodule FavnOrchestrator.Persistence.DeploymentSchedules do
          {:ok, entries} <- ManifestEntries.discover_all(version, index) do
       entries
       |> Enum.filter(fn entry ->
-        entry.schedule.active == true and
-          MapSet.member?(selected, TargetIdentity.for_pipeline({entry.module, entry.id}))
+        MapSet.member?(selected, TargetIdentity.for_pipeline({entry.module, entry.id}))
       end)
       |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
         case Cron.next_due(entry.schedule.cron, entry.schedule.timezone, now) do

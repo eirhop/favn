@@ -1326,7 +1326,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
       timezone: "Etc/UTC",
       missed: :one,
       overlap: :queue_one,
-      active: true,
       origin: :inline
     }
   end

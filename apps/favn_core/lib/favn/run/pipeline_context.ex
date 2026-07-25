@@ -113,7 +113,6 @@ defmodule Favn.Run.PipelineContext do
       timezone: schedule.timezone,
       missed: schedule.missed,
       overlap: schedule.overlap,
-      active: schedule.active,
       origin: schedule.origin
     }
   end

@@ -19,6 +19,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddRunnerReleaseIdentityV2
   alias FavnStoragePostgres.Migrations.AddResourceCircuitsV2
   alias FavnStoragePostgres.Migrations.AddScheduleOperatorReadsV2
+  alias FavnStoragePostgres.Migrations.AddScheduleActivationsV2
   alias FavnStoragePostgres.Migrations.AddTargetGenerationFoundationV2
   alias FavnStoragePostgres.Migrations.CreateStorageV2
   alias FavnStoragePostgres.Migrations.CompleteRebuildOrchestrationV2
@@ -62,7 +63,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_721_000_000, AddRunnerReleaseIdentityV2},
     {20_260_722_000_000, AddTargetGenerationFoundationV2},
     {20_260_722_010_000, CompleteRebuildOrchestrationV2},
-    {20_260_722_020_000, AddRebuildOperatorReadsV2}
+    {20_260_722_020_000, AddRebuildOperatorReadsV2},
+    {20_260_725_000_000, AddScheduleActivationsV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -84,6 +86,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     run_ownerships
     runner_executions
     schedule_cursors
+    schedule_activations
     schedule_occurrences
     capacity_scopes
     execution_leases
@@ -154,6 +157,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     schedule_cursors_due_idx
     schedule_cursors_workspace_due_idx
     schedule_cursors_claim_command_idx
+    schedule_activations_command_uidx
     schedule_occurrences_dispatch_idx
     schedule_occurrences_workspace_dispatch_idx
     schedule_occurrences_claim_command_idx
@@ -311,6 +315,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
       ~w(workspace_id operation_id target_id ordinal action reason upstream_impact mapping_proof pinned_input_generation_ids candidate_generation_id status child_operation_id child_run_id activation_intent validation_result terminal_error cleanup_state activated_at last_command_id version inserted_at updated_at),
     "rebuild_windows" =>
       ~w(workspace_id operation_id target_id item_id ordinal work_kind window_key window_start window_end status claim_owner fencing_token claim_command_id last_command_id claim_expires_at child_run_id materialization_id attempt_count row_count last_error candidate_generation_id runtime_input_expectation version inserted_at updated_at),
+    "schedule_activations" =>
+      ~w(workspace_id pipeline_target_id schedule_id enabled approved_schedule_fingerprint version actor_id reason last_command_id request_hash decided_at inserted_at updated_at),
     "schedule_cursors" =>
       ~w(workspace_id deployment_id target_kind pipeline_target_id schedule_id schedule_fingerprint definition next_due_at cursor version claim_owner claim_generation claim_command_id last_command_id claim_expires_at updated_at),
     "schedule_occurrences" =>
@@ -360,7 +366,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     outbox_publication_state_singleton runs_status_valid runs_values_valid
     run_events_values_valid run_targets_kind_valid runtime_input_pins_key_version_valid
     runtime_input_key_versions_pkey runtime_input_key_versions_key_version_valid
-    run_ownerships_fence_valid runner_executions_values_valid schedule_cursors_values_valid
+    run_ownerships_fence_valid runner_executions_values_valid schedule_activations_values_valid
+    schedule_cursors_values_valid
     schedule_cursors_definition_bounded schedule_cursors_claim_shape_v2
     schedule_occurrences_claim_shape_v2
     schedule_occurrences_values_valid capacity_scopes_scope_valid capacity_scopes_values_valid
@@ -391,7 +398,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     run_events_outbox_fk run_targets_run_fk run_targets_deployment_target_fk
     runtime_input_pins_run_fk runtime_input_pins_execution_package_hash_fkey
     run_ownerships_run_fk runner_executions_run_fk
-    schedule_cursors_target_fk schedule_occurrences_cursor_fk execution_leases_run_fk
+    schedule_activations_workspace_fk schedule_cursors_target_fk schedule_occurrences_cursor_fk execution_leases_run_fk
     execution_lease_scopes_lease_fk execution_lease_scopes_scope_fk admission_waiters_run_fk
     admission_waiters_scope_fk materialization_claims_run_fk materialization_claims_target_fk
     materialization_claims_run_target_fk materializations_run_fk materializations_outbox_fk
@@ -414,7 +421,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "0e63f434bcb98d623e9f5d0be78231dd26575c6ef92c731d4f6023828838dea6"
+  @expected_definition_fingerprint "26685a277e42bfb74f2a2ea38ead931d42a45e1ac2662dbfed1e96606ae09a00"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

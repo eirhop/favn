@@ -10,6 +10,7 @@ defmodule Favn.CLI do
   alias Favn.CLI.Rebuild
   alias Favn.CLI.Run
   alias Favn.CLI.Runs
+  alias Favn.CLI.Schedules
 
   def activate(opts), do: Activate.run(opts)
   def publish(opts), do: Publish.run(opts)
@@ -20,6 +21,15 @@ defmodule Favn.CLI do
   def list_runs(opts), do: Runs.list(opts)
   def get_run(run_id, opts), do: Runs.get(run_id, opts)
   def cancel_run(run_id, opts), do: Runs.cancel(run_id, opts)
+  def list_schedules(opts), do: Schedules.list(opts)
+  def get_schedule(schedule_id, opts), do: Schedules.get(schedule_id, opts)
+  def preview_schedule(schedule_id, opts), do: Schedules.preview(schedule_id, opts)
+
+  def activate_schedule(schedule_id, reason, opts),
+    do: Schedules.activate(schedule_id, reason, opts)
+
+  def deactivate_schedule(schedule_id, reason, opts),
+    do: Schedules.deactivate(schedule_id, reason, opts)
 
   def submit_backfill(pipeline, opts), do: Backfill.submit_pipeline(pipeline, opts)
   def plan_missing_asset_backfill(asset, opts), do: Backfill.plan_missing_asset(asset, opts)

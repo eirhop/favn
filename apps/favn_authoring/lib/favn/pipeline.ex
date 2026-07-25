@@ -369,7 +369,9 @@ defmodule Favn.Pipeline do
   - `missed` optional, defaults to `:skip`; runtime `:all` catch-up is capped
     per schedule entry per tick
   - `overlap` optional, defaults to `:forbid`
-  - `active` optional, defaults to `true`
+
+  Schedule activation is workspace state, not authored manifest state. New and
+  changed schedules remain disabled until an operator activates them.
 
   ## Examples
 
@@ -378,8 +380,7 @@ defmodule Favn.Pipeline do
       schedule cron: "0 2 * * *",
                timezone: "Europe/Oslo",
                missed: :one,
-               overlap: :queue_one,
-               active: true
+               overlap: :queue_one
   """
   defmacro schedule(value) do
     quote bind_quoted: [value: value] do

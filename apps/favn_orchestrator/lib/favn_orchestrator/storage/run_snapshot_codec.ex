@@ -1529,7 +1529,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
           timezone: field(schedule, :timezone),
           missed: schedule |> field(:missed, "skip") |> schedule_missed_from_dto(),
           overlap: schedule |> field(:overlap, "forbid") |> schedule_overlap_from_dto(),
-          active: field(schedule, :active, true),
           origin: schedule |> field(:origin, "named") |> schedule_origin_from_dto()
         }
 

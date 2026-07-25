@@ -346,7 +346,7 @@ defmodule Favn.Local.CanonicalSampleProject do
         deps :all
         settings requested_by: "issue-262-acceptance"
         meta owner: "acceptance", purpose: :single_node_production_readiness
-        schedule cron: "0 2 * * *", timezone: "Etc/UTC", active: true, missed: :skip
+        schedule cron: "0 2 * * *", timezone: "Etc/UTC", missed: :skip
       end
     end
     """

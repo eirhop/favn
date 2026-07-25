@@ -45,7 +45,7 @@ defmodule Favn.Manifest.VersionTest do
   test "fails when schema version is unsupported" do
     manifest = current_manifest(%{schema_version: 0})
 
-    assert {:error, {:unsupported_schema_version, 0, 12}} =
+    assert {:error, {:unsupported_schema_version, 0, 13}} =
              Version.new(manifest)
   end
 
@@ -217,7 +217,7 @@ defmodule Favn.Manifest.VersionTest do
     assert {:ok, %Version{} = version} = Version.new(build, manifest_version_id: "mv_test_build")
 
     assert %Manifest{} = version.manifest
-    assert version.manifest.schema_version == 12
+    assert version.manifest.schema_version == 13
     assert version.manifest.runner_contract_version == 12
     assert version.manifest.required_runner_release_id == FavnTestSupport.runner_release_id()
     assert version.manifest.assets == []
@@ -295,7 +295,7 @@ defmodule Favn.Manifest.VersionTest do
     manifest = current_manifest()
 
     assert {:error, {:unknown_opt, :schema_version}} =
-             Version.new(manifest, schema_version: 12)
+             Version.new(manifest, schema_version: 13)
   end
 
   test "published envelopes require and match the runner release identity" do
@@ -435,7 +435,7 @@ defmodule Favn.Manifest.VersionTest do
     assert {:ok, package} = ExecutionPackage.new(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 12,
+      schema_version: 13,
       runner_contract_version: 12,
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: [
@@ -484,7 +484,6 @@ defmodule Favn.Manifest.VersionTest do
                timezone: "Etc/UTC",
                missed: :skip,
                overlap: :forbid,
-               active: true,
                origin: :inline
              }},
           window:
@@ -820,7 +819,7 @@ defmodule Favn.Manifest.VersionTest do
         connection_definitions: %{
           warehouse: %{adapter: MyApp.Adapter, module: MyApp.Warehouse}
         },
-        manifest_schema_version: 12,
+        manifest_schema_version: 13,
         runner_contract_version: 12
       )
 
@@ -831,7 +830,7 @@ defmodule Favn.Manifest.VersionTest do
     ref = {MyApp.Assets.Roundtrip, :asset}
 
     manifest = %Manifest{
-      schema_version: 12,
+      schema_version: 13,
       runner_contract_version: 12,
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: [
@@ -862,7 +861,6 @@ defmodule Favn.Manifest.VersionTest do
                timezone: "Etc/UTC",
                missed: :skip,
                overlap: :allow,
-               active: true,
                origin: :inline
              }}
         }
@@ -885,7 +883,7 @@ defmodule Favn.Manifest.VersionTest do
     gold = {MyApp.Assets.LegacyGold, :asset}
 
     manifest = %Manifest{
-      schema_version: 12,
+      schema_version: 13,
       runner_contract_version: 12,
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: [
@@ -905,7 +903,7 @@ defmodule Favn.Manifest.VersionTest do
 
   test "rehydrates known manifest module atoms without loading user modules" do
     manifest = %{
-      "schema_version" => 12,
+      "schema_version" => 13,
       "runner_contract_version" => 12,
       "required_runner_release_id" => FavnTestSupport.runner_release_id(),
       "assets" => [
@@ -948,7 +946,7 @@ defmodule Favn.Manifest.VersionTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom(tag) end
 
     manifest = %{
-      "schema_version" => 12,
+      "schema_version" => 13,
       "runner_contract_version" => 12,
       "required_runner_release_id" => FavnTestSupport.runner_release_id(),
       "assets" => [
@@ -1021,7 +1019,7 @@ defmodule Favn.Manifest.VersionTest do
     assert {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
-      schema_version: 12,
+      schema_version: 13,
       runner_contract_version: 12,
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       assets: assets,
@@ -1057,7 +1055,7 @@ defmodule Favn.Manifest.VersionTest do
 
   test "rejects invalid unloaded module references during rehydration" do
     manifest = %{
-      "schema_version" => 12,
+      "schema_version" => 13,
       "runner_contract_version" => 12,
       "required_runner_release_id" => FavnTestSupport.runner_release_id(),
       "assets" => [
@@ -1082,7 +1080,7 @@ defmodule Favn.Manifest.VersionTest do
     module = "Elixir." <> String.duplicate("A", 249)
 
     manifest = %{
-      "schema_version" => 12,
+      "schema_version" => 13,
       "runner_contract_version" => 12,
       "required_runner_release_id" => FavnTestSupport.runner_release_id(),
       "assets" => [
@@ -1114,7 +1112,7 @@ defmodule Favn.Manifest.VersionTest do
     name = "generated_asset_#{unique}"
 
     manifest = %{
-      "schema_version" => 12,
+      "schema_version" => 13,
       "runner_contract_version" => 12,
       "required_runner_release_id" => FavnTestSupport.runner_release_id(),
       "assets" => [
@@ -1160,7 +1158,7 @@ defmodule Favn.Manifest.VersionTest do
       end)
 
     manifest = %{
-      "schema_version" => 12,
+      "schema_version" => 13,
       "runner_contract_version" => 12,
       "required_runner_release_id" => FavnTestSupport.runner_release_id(),
       "assets" => assets,

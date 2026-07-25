@@ -7,16 +7,19 @@ defmodule FavnStoragePostgres.Scheduler.Store do
 
   alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Commands.ClaimDueSchedules
+  alias FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispatch
   alias FavnOrchestrator.Persistence.Commands.ClaimScheduleOccurrences
   alias FavnOrchestrator.Persistence.Commands.CommitScheduleEvaluation
   alias FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence
   alias FavnOrchestrator.Persistence.Commands.ScheduleOccurrenceIntent
+  alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.PageScheduleOccurrences
   alias FavnOrchestrator.Persistence.Queries.PageSchedules
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.Schedule, as: ScheduleResult
   alias FavnOrchestrator.Persistence.Results.ScheduleClaim
+  alias FavnOrchestrator.Persistence.Results.ScheduleActivation, as: ScheduleActivationResult
   alias FavnOrchestrator.Persistence.Results.ScheduleOccurrence, as: ScheduleOccurrenceResult
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnStoragePostgres.CanonicalJSON
@@ -25,6 +28,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   alias FavnStoragePostgres.Payload
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.ScheduleCursor
+  alias FavnStoragePostgres.Schemas.ScheduleActivation
   alias FavnStoragePostgres.Schemas.ScheduleOccurrence
   alias FavnStoragePostgres.Schemas.WorkspaceRuntimeState
 
@@ -68,10 +72,37 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   end
 
   @impl true
+  def authorize_occurrence_dispatch(%AuthorizeScheduleOccurrenceDispatch{} = command) do
+    with :ok <- validate_dispatch_authorization(command),
+         {:ok, occurrence} <-
+           Repo.transaction(fn -> authorize_occurrence_dispatch!(command) end) do
+      {:ok, occurrence}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
   def complete_occurrence(%CompleteScheduleOccurrence{} = command) do
     with :ok <- validate_completion(command),
          {:ok, occurrence} <- Repo.transaction(fn -> complete_occurrence!(command) end) do
       {:ok, occurrence}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def set_activation(%SetScheduleActivation{} = command) do
+    with :ok <- validate_activation(command),
+         {:ok, activation} <- Repo.transaction(fn -> set_activation!(command) end) do
+      {:ok, activation}
     else
       {:error, %Error{} = error} -> {:error, error}
       {:error, reason} -> {:error, ErrorMapper.map(reason)}
@@ -89,10 +120,15 @@ defmodule FavnStoragePostgres.Scheduler.Store do
           on:
             runtime.workspace_id == cursor.workspace_id and
               runtime.active_deployment_id == cursor.deployment_id,
+          left_join: activation in ScheduleActivation,
+          on:
+            activation.workspace_id == cursor.workspace_id and
+              activation.pipeline_target_id == cursor.pipeline_target_id and
+              activation.schedule_id == cursor.schedule_id,
           where: cursor.workspace_id == ^page.workspace_context.workspace_id,
           order_by: [asc: cursor.pipeline_target_id, asc: cursor.schedule_id],
           limit: ^(page.limit + 1),
-          select: cursor
+          select: {cursor, activation}
         )
         |> schedule_filter(page)
         |> schedule_after(page.after)
@@ -110,8 +146,8 @@ defmodule FavnStoragePostgres.Scheduler.Store do
          next_cursor:
            if(has_more? and last,
              do: %{
-               pipeline_target_id: last.pipeline_target_id,
-               schedule_id: last.schedule_id
+               pipeline_target_id: elem(last, 0).pipeline_target_id,
+               schedule_id: elem(last, 0).schedule_id
              }
            )
        }}
@@ -191,6 +227,12 @@ defmodule FavnStoragePostgres.Scheduler.Store do
             JOIN favn_control.workspace_runtime_state runtime
               ON runtime.workspace_id = cursor.workspace_id
              AND runtime.active_deployment_id = cursor.deployment_id
+            JOIN favn_control.schedule_activations activation
+              ON activation.workspace_id = cursor.workspace_id
+             AND activation.pipeline_target_id = cursor.pipeline_target_id
+             AND activation.schedule_id = cursor.schedule_id
+             AND activation.enabled = TRUE
+             AND activation.approved_schedule_fingerprint = cursor.schedule_fingerprint
             WHERE cursor.workspace_id = $1
               AND cursor.next_due_at <= clock_timestamp()
               AND (cursor.claim_owner IS NULL OR cursor.claim_expires_at IS NULL
@@ -311,8 +353,24 @@ defmodule FavnStoragePostgres.Scheduler.Store do
             JOIN favn_control.workspace_runtime_state runtime
               ON runtime.workspace_id = occurrence.workspace_id
              AND runtime.active_deployment_id = occurrence.deployment_id
+            JOIN favn_control.schedule_cursors cursor
+              ON cursor.workspace_id = occurrence.workspace_id
+             AND cursor.deployment_id = occurrence.deployment_id
+             AND cursor.pipeline_target_id = occurrence.pipeline_target_id
+             AND cursor.schedule_id = occurrence.schedule_id
+            JOIN favn_control.schedule_activations activation
+              ON activation.workspace_id = occurrence.workspace_id
+             AND activation.pipeline_target_id = occurrence.pipeline_target_id
+             AND activation.schedule_id = occurrence.schedule_id
             WHERE occurrence.workspace_id = $1
-              AND occurrence.status IN ('pending', 'claimed')
+              AND occurrence.status IN ('pending', 'claimed', 'dispatching')
+              AND (
+                occurrence.status = 'dispatching'
+                OR (
+                  activation.enabled = TRUE
+                  AND activation.approved_schedule_fingerprint = cursor.schedule_fingerprint
+                )
+              )
               AND occurrence.due_at <= clock_timestamp()
               AND (occurrence.status = 'pending' OR occurrence.claim_expires_at <= clock_timestamp())
             ORDER BY occurrence.due_at, occurrence.occurrence_id
@@ -320,7 +378,10 @@ defmodule FavnStoragePostgres.Scheduler.Store do
             FOR UPDATE OF occurrence SKIP LOCKED
           )
           UPDATE favn_control.schedule_occurrences occurrence
-          SET status = 'claimed',
+          SET status = CASE
+                WHEN occurrence.status = 'dispatching' THEN 'dispatching'
+                ELSE 'claimed'
+              END,
               claim_owner = $3,
               claim_generation = occurrence.claim_generation + 1,
               claim_command_id = $4,
@@ -361,10 +422,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
         Repo.rollback(Error.new(:fenced, "schedule occurrence claim is stale"))
 
       true ->
-        {status, run_id, error} =
-          if is_binary(command.run_id),
-            do: {"completed", command.run_id, nil},
-            else: {"failed", nil, command.error}
+        {status, run_id, error} = occurrence_completion(command)
 
         updated =
           occurrence
@@ -394,6 +452,240 @@ defmodule FavnStoragePostgres.Scheduler.Store do
         })
 
         occurrence_result(updated)
+    end
+  end
+
+  defp occurrence_completion(%{status: :suppressed}), do: {"suppressed", nil, nil}
+
+  defp occurrence_completion(%{run_id: run_id}) when is_binary(run_id),
+    do: {"completed", run_id, nil}
+
+  defp occurrence_completion(command), do: {"failed", nil, command.error}
+
+  defp set_activation!(command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    replayed =
+      from(activation in ScheduleActivation,
+        where:
+          activation.workspace_id == ^workspace_id and
+            activation.last_command_id == ^command.command_id,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    existing =
+      from(activation in ScheduleActivation,
+        where:
+          activation.workspace_id == ^workspace_id and
+            activation.pipeline_target_id == ^command.pipeline_target_id and
+            activation.schedule_id == ^command.schedule_id,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    case replayed do
+      %ScheduleActivation{request_hash: request_hash} = replayed
+      when request_hash == command.request_hash ->
+        activation_result(replayed)
+
+      %ScheduleActivation{} ->
+        Repo.rollback(Error.new(:conflict, "schedule activation idempotency conflict"))
+
+      nil ->
+        version = if(existing, do: existing.version + 1, else: 1)
+        now = database_datetime(command.occurred_at)
+
+        attrs = %{
+          workspace_id: workspace_id,
+          pipeline_target_id: command.pipeline_target_id,
+          schedule_id: command.schedule_id,
+          enabled: command.enabled,
+          approved_schedule_fingerprint:
+            if(command.enabled, do: command.schedule_fingerprint, else: nil),
+          version: version,
+          actor_id: command.actor_id,
+          reason: command.reason,
+          last_command_id: command.command_id,
+          request_hash: command.request_hash,
+          decided_at: now,
+          inserted_at: (existing && existing.inserted_at) || now,
+          updated_at: now
+        }
+
+        activation =
+          if existing do
+            existing |> Ecto.Changeset.change(attrs) |> Repo.update!()
+          else
+            struct!(ScheduleActivation, attrs) |> Repo.insert!()
+          end
+
+        reset_cursor_for_activation!(command)
+
+        OutboxWriter.insert!(%{
+          workspace_id: workspace_id,
+          command_id: command.command_id,
+          event_kind: if(command.enabled, do: "schedule.activated", else: "schedule.deactivated"),
+          aggregate_kind: "schedule_activation",
+          aggregate_id: Enum.join([command.pipeline_target_id, command.schedule_id], ":"),
+          aggregate_version: version,
+          occurred_at: command.occurred_at,
+          payload: %{
+            "pipeline_target_id" => command.pipeline_target_id,
+            "schedule_id" => command.schedule_id,
+            "schedule_fingerprint" => command.schedule_fingerprint,
+            "enabled" => command.enabled,
+            "actor_id" => command.actor_id,
+            "reason" => command.reason
+          }
+        })
+
+        activation_result(activation)
+    end
+  end
+
+  defp authorize_occurrence_dispatch!(command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    activation =
+      from(activation in ScheduleActivation,
+        where:
+          activation.workspace_id == ^workspace_id and
+            activation.pipeline_target_id == ^command.pipeline_target_id and
+            activation.schedule_id == ^command.schedule_id,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    occurrence = lock_occurrence!(workspace_id, command.occurrence_id)
+
+    cond do
+      occurrence.last_command_id == command.command_id and
+          occurrence.status in ["dispatching", "completed"] ->
+        occurrence_result(occurrence)
+
+      not valid_occurrence_claim?(occurrence, command) ->
+        Repo.rollback(Error.new(:fenced, "schedule occurrence claim is stale"))
+
+      occurrence.status == "dispatching" ->
+        occurrence_result(occurrence)
+
+      activation_enabled_for?(activation, command.schedule_fingerprint) ->
+        updated =
+          occurrence
+          |> Ecto.Changeset.change(%{
+            status: "dispatching",
+            last_command_id: command.command_id,
+            updated_at: command.occurred_at
+          })
+          |> Repo.update!()
+
+        OutboxWriter.insert!(%{
+          workspace_id: workspace_id,
+          command_id: command.command_id,
+          event_kind: "schedule.occurrence.dispatch_authorized",
+          aggregate_kind: "schedule_occurrence",
+          aggregate_id: command.occurrence_id,
+          aggregate_version: updated.claim_generation,
+          occurred_at: command.occurred_at,
+          payload: %{
+            "occurrence_id" => command.occurrence_id,
+            "pipeline_target_id" => command.pipeline_target_id,
+            "schedule_id" => command.schedule_id,
+            "schedule_fingerprint" => command.schedule_fingerprint
+          }
+        })
+
+        occurrence_result(updated)
+
+      true ->
+        occurrence
+        |> Ecto.Changeset.change(%{
+          status: "suppressed",
+          claim_owner: nil,
+          claim_command_id: nil,
+          claim_expires_at: nil,
+          last_command_id: command.command_id,
+          updated_at: command.occurred_at
+        })
+        |> Repo.update!()
+        |> occurrence_result()
+    end
+  end
+
+  defp activation_enabled_for?(
+         %ScheduleActivation{
+           enabled: true,
+           approved_schedule_fingerprint: fingerprint
+         },
+         fingerprint
+       ),
+       do: true
+
+  defp activation_enabled_for?(_activation, _fingerprint), do: false
+
+  defp reset_cursor_for_activation!(command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    cursor_query =
+      from(cursor in ScheduleCursor,
+        join: runtime in WorkspaceRuntimeState,
+        on:
+          runtime.workspace_id == cursor.workspace_id and
+            runtime.active_deployment_id == cursor.deployment_id,
+        where:
+          cursor.workspace_id == ^workspace_id and
+            cursor.pipeline_target_id == ^command.pipeline_target_id and
+            cursor.schedule_id == ^command.schedule_id
+      )
+
+    if command.enabled do
+      Repo.update_all(cursor_query,
+        set: [
+          next_due_at: database_datetime(command.next_due_at),
+          cursor: %{
+            "schedule_fingerprint" => command.schedule_fingerprint,
+            "in_flight_run_id" => nil,
+            "queued_due_at" => nil
+          },
+          claim_owner: nil,
+          claim_command_id: nil,
+          claim_expires_at: nil,
+          updated_at: database_datetime(command.occurred_at)
+        ],
+        inc: [version: 1]
+      )
+    else
+      Repo.update_all(cursor_query,
+        set: [
+          claim_owner: nil,
+          claim_command_id: nil,
+          claim_expires_at: nil,
+          updated_at: database_datetime(command.occurred_at)
+        ],
+        inc: [version: 1]
+      )
+
+      from(occurrence in ScheduleOccurrence,
+        join: runtime in WorkspaceRuntimeState,
+        on:
+          runtime.workspace_id == occurrence.workspace_id and
+            runtime.active_deployment_id == occurrence.deployment_id,
+        where:
+          occurrence.workspace_id == ^workspace_id and
+            occurrence.pipeline_target_id == ^command.pipeline_target_id and
+            occurrence.schedule_id == ^command.schedule_id and
+            occurrence.status in ["pending", "claimed"]
+      )
+      |> Repo.update_all(
+        set: [
+          status: "suppressed",
+          claim_owner: nil,
+          claim_command_id: nil,
+          claim_expires_at: nil,
+          updated_at: database_datetime(command.occurred_at)
+        ]
+      )
     end
   end
 
@@ -432,7 +724,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   end
 
   defp valid_occurrence_claim?(occurrence, command) do
-    occurrence.status == "claimed" and occurrence.claim_owner == command.owner_id and
+    occurrence.status in ["claimed", "dispatching"] and occurrence.claim_owner == command.owner_id and
       occurrence.claim_generation == command.claim_generation and
       future?(occurrence.claim_expires_at)
   end
@@ -612,7 +904,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   defp database_datetime(%DateTime{} = datetime),
     do: DateTime.add(datetime, 0, :microsecond)
 
-  defp schedule_result(%ScheduleCursor{} = cursor) do
+  defp schedule_result({%ScheduleCursor{} = cursor, activation}) do
     %ScheduleResult{
       workspace_id: cursor.workspace_id,
       deployment_id: cursor.deployment_id,
@@ -623,9 +915,30 @@ defmodule FavnStoragePostgres.Scheduler.Store do
       next_due_at: cursor.next_due_at,
       cursor: cursor.cursor,
       version: cursor.version,
+      activation_enabled: activation && activation.enabled,
+      approved_schedule_fingerprint: activation && activation.approved_schedule_fingerprint,
+      activation_version: activation && activation.version,
+      activation_actor_id: activation && activation.actor_id,
+      activation_reason: activation && activation.reason,
+      activation_decided_at: activation && activation.decided_at,
       claim_owner: cursor.claim_owner,
       claim_expires_at: cursor.claim_expires_at,
       updated_at: cursor.updated_at
+    }
+  end
+
+  defp activation_result(%ScheduleActivation{} = activation) do
+    %ScheduleActivationResult{
+      workspace_id: activation.workspace_id,
+      pipeline_target_id: activation.pipeline_target_id,
+      schedule_id: activation.schedule_id,
+      enabled: activation.enabled,
+      approved_schedule_fingerprint: activation.approved_schedule_fingerprint,
+      version: activation.version,
+      actor_id: activation.actor_id,
+      reason: activation.reason,
+      command_id: activation.last_command_id,
+      decided_at: activation.decided_at
     }
   end
 
@@ -634,12 +947,17 @@ defmodule FavnStoragePostgres.Scheduler.Store do
     |> then(fn query ->
       if is_binary(page.pipeline_target_id),
         do:
-          where(query, [cursor, _runtime], cursor.pipeline_target_id == ^page.pipeline_target_id),
+          where(
+            query,
+            [cursor, _runtime, _activation],
+            cursor.pipeline_target_id == ^page.pipeline_target_id
+          ),
         else: query
     end)
     |> then(fn query ->
       if is_binary(page.schedule_id),
-        do: where(query, [cursor, _runtime], cursor.schedule_id == ^page.schedule_id),
+        do:
+          where(query, [cursor, _runtime, _activation], cursor.schedule_id == ^page.schedule_id),
         else: query
     end)
   end
@@ -649,7 +967,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   defp schedule_after(query, %{pipeline_target_id: target_id, schedule_id: schedule_id}) do
     where(
       query,
-      [cursor, _runtime],
+      [cursor, _runtime, _activation],
       cursor.pipeline_target_id > ^target_id or
         (cursor.pipeline_target_id == ^target_id and cursor.schedule_id > ^schedule_id)
     )
@@ -681,7 +999,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   end
 
   defp live_occurrence_replay?(occurrence, command, now) do
-    occurrence.status == "claimed" and occurrence.claim_owner == command.owner_id and
+    occurrence.status in ["claimed", "dispatching"] and occurrence.claim_owner == command.owner_id and
       DateTime.compare(occurrence.claim_expires_at, now) == :gt
   end
 
@@ -703,6 +1021,42 @@ defmodule FavnStoragePostgres.Scheduler.Store do
         command.lease_duration_ms,
         command.limit
       )
+
+  defp validate_activation(%SetScheduleActivation{} = command) do
+    valid? =
+      writer?(command.workspace_context) and
+        valid_id?(command.pipeline_target_id) and valid_id?(command.schedule_id) and
+        valid_id?(command.schedule_fingerprint) and is_boolean(command.enabled) and
+        valid_id?(command.actor_id) and is_binary(command.reason) and
+        String.trim(command.reason) != "" and byte_size(command.reason) <= 2_048 and
+        valid_id?(command.command_id) and match?(%DateTime{}, command.occurred_at) and
+        is_binary(command.request_hash) and byte_size(command.request_hash) == 32 and
+        (not command.enabled or match?(%DateTime{}, command.next_due_at))
+
+    if valid?,
+      do: :ok,
+      else: {:error, Error.new(:invalid_command, "invalid schedule activation command")}
+  end
+
+  defp validate_dispatch_authorization(%AuthorizeScheduleOccurrenceDispatch{} = command) do
+    valid? =
+      writer?(command.workspace_context) and
+        Enum.all?(
+          [
+            command.command_id,
+            command.occurrence_id,
+            command.pipeline_target_id,
+            command.schedule_id,
+            command.schedule_fingerprint,
+            command.owner_id
+          ],
+          &valid_id?/1
+        ) and
+        is_integer(command.claim_generation) and command.claim_generation > 0 and
+        match?(%DateTime{}, command.occurred_at)
+
+    if valid?, do: :ok, else: {:error, :invalid}
+  end
 
   defp validate_occurrence_claim(command),
     do:
@@ -762,9 +1116,10 @@ defmodule FavnStoragePostgres.Scheduler.Store do
 
   defp validate_completion(command) do
     outcome? =
-      case {command.run_id, command.error} do
-        {run_id, nil} -> valid_id?(run_id)
-        {nil, error} when is_map(error) -> Payload.validate(error, 64 * 1_024) == :ok
+      case {command.status, command.run_id, command.error} do
+        {:suppressed, nil, nil} -> true
+        {_status, run_id, nil} -> valid_id?(run_id)
+        {_status, nil, error} when is_map(error) -> Payload.validate(error, 64 * 1_024) == :ok
         _invalid -> false
       end
 

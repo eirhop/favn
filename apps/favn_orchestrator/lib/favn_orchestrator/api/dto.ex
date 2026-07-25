@@ -117,6 +117,18 @@ defmodule FavnOrchestrator.API.DTO do
     }
   end
 
+  @spec schedule_occurrence(map()) :: map()
+  def schedule_occurrence(entry) when is_map(entry) do
+    %{
+      schedule_id: entry.schedule_entry_id,
+      due_at: datetime(entry.due_at),
+      timezone: entry.timezone,
+      window: entry.window,
+      status: atom_name(entry.status),
+      notes: entry.notes
+    }
+  end
+
   @spec manifest_targets(map()) :: map()
   def manifest_targets(targets) when is_map(targets) do
     %{

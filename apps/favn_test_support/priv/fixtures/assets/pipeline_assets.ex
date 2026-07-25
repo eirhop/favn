@@ -179,8 +179,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline do
       cron: "* * * * *",
       timezone: "Etc/UTC",
       missed: :all,
-      overlap: :forbid,
-      active: true
+      overlap: :forbid
     )
   end
 end
@@ -199,8 +198,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SchedulerInactivePipeline do
       cron: "* * * * *",
       timezone: "Etc/UTC",
       missed: :all,
-      overlap: :allow,
-      active: false
+      overlap: :allow
     )
   end
 end
@@ -214,7 +212,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedSkipPipeline do
   pipeline :scheduler_missed_skip do
     asset({SalesAssets, :sales_daily})
     deps(:none)
-    schedule(cron: "* * * * *", timezone: "Etc/UTC", missed: :skip, overlap: :allow, active: true)
+    schedule(cron: "* * * * *", timezone: "Etc/UTC", missed: :skip, overlap: :allow)
   end
 end
 
@@ -227,7 +225,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedOnePipeline do
   pipeline :scheduler_missed_one do
     asset({SalesAssets, :sales_daily})
     deps(:none)
-    schedule(cron: "* * * * *", timezone: "Etc/UTC", missed: :one, overlap: :allow, active: true)
+    schedule(cron: "* * * * *", timezone: "Etc/UTC", missed: :one, overlap: :allow)
   end
 end
 
@@ -240,6 +238,6 @@ defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedAllPipeline do
   pipeline :scheduler_missed_all do
     asset({SalesAssets, :sales_daily})
     deps(:none)
-    schedule(cron: "* * * * *", timezone: "Etc/UTC", missed: :all, overlap: :allow, active: true)
+    schedule(cron: "* * * * *", timezone: "Etc/UTC", missed: :all, overlap: :allow)
   end
 end

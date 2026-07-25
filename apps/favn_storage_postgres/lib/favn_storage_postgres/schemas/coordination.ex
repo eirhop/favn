@@ -78,6 +78,28 @@ defmodule FavnStoragePostgres.Schemas.ScheduleOccurrence do
   end
 end
 
+defmodule FavnStoragePostgres.Schemas.ScheduleActivation do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "schedule_activations" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:pipeline_target_id, :string, primary_key: true)
+    field(:schedule_id, :string, primary_key: true)
+    field(:enabled, :boolean)
+    field(:approved_schedule_fingerprint, :string)
+    field(:version, :integer)
+    field(:actor_id, :string)
+    field(:reason, :string)
+    field(:last_command_id, :string)
+    field(:request_hash, :binary)
+    field(:decided_at, :utc_datetime_usec)
+    timestamps(type: :utc_datetime_usec)
+  end
+end
+
 defmodule FavnStoragePostgres.Schemas.CapacityScope do
   @moduledoc false
   use Ecto.Schema

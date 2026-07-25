@@ -1074,7 +1074,6 @@ defmodule Favn.Manifest.Rehydrate do
         value
         |> field_value(:overlap, :forbid)
         |> decode_known_atom([:forbid, :allow, :queue_one]),
-      active: field_value(value, :active, true),
       origin: value |> field_value(:origin, :named) |> decode_known_atom([:inline, :named])
     }
   end

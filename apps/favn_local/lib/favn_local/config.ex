@@ -167,7 +167,7 @@ defmodule FavnLocal.Config do
       :scheduler,
       enabled: config.scheduler_enabled?,
       tick_ms: 1_000,
-      workspaces: [config.workspace_id]
+      workspace_ids: [config.workspace_id]
     )
 
     Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "admin")

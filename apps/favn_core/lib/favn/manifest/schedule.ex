@@ -16,7 +16,6 @@ defmodule Favn.Manifest.Schedule do
           timezone_source: :local | :application_default | :utc_fallback,
           missed: TriggerSchedule.missed_policy(),
           overlap: TriggerSchedule.overlap_policy(),
-          active: boolean(),
           origin: :inline | :named
         }
 
@@ -29,7 +28,6 @@ defmodule Favn.Manifest.Schedule do
             timezone_source: :utc_fallback,
             missed: :skip,
             overlap: :forbid,
-            active: true,
             origin: :named
 
   @spec from_schedule(module(), atom(), map(), Environment.t()) :: t()
@@ -49,7 +47,6 @@ defmodule Favn.Manifest.Schedule do
       timezone_source: Map.get(schedule, :timezone_source),
       missed: Map.get(schedule, :missed, :skip),
       overlap: Map.get(schedule, :overlap, :forbid),
-      active: Map.get(schedule, :active, true),
       origin: Map.get(schedule, :origin, :named)
     }
     |> apply_identity(module, name)

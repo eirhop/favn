@@ -62,9 +62,8 @@ defmodule FavnOrchestrator.SchedulerEntry do
     schedule = Map.get(entry, :schedule)
     state = normalize_state(entry, scheduler_state)
 
-    active = schedule_active(schedule)
     activation_state = Map.get(state, :activation_state, :pending_activation)
-    effective_enabled? = active and activation_state == :enabled
+    effective_enabled? = activation_state == :enabled
 
     %__MODULE__{
       pipeline_module: Map.get(entry, :module),
@@ -73,7 +72,7 @@ defmodule FavnOrchestrator.SchedulerEntry do
       timezone: schedule_field(schedule, :timezone),
       overlap: schedule_field(schedule, :overlap),
       missed: schedule_field(schedule, :missed),
-      active: active,
+      active: effective_enabled?,
       activation_state: activation_state,
       effective_enabled?: effective_enabled?,
       runtime_state: runtime_state(effective_enabled?, state),
@@ -111,10 +110,6 @@ defmodule FavnOrchestrator.SchedulerEntry do
   defp schedule_field(%Schedule{} = schedule, field), do: Map.get(schedule, field)
   defp schedule_field(%{} = schedule, field), do: Map.get(schedule, field)
   defp schedule_field(_schedule, _field), do: nil
-
-  defp schedule_active(%Schedule{active: active}), do: active == true
-  defp schedule_active(%{active: active}), do: active == true
-  defp schedule_active(_schedule), do: false
 
   defp runtime_state(false, _state), do: :inactive
   defp runtime_state(true, %{in_flight_run_id: run_id}) when is_binary(run_id), do: :running

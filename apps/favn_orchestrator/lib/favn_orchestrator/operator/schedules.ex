@@ -10,12 +10,20 @@ defmodule FavnOrchestrator.Operator.Schedules do
   alias Favn.Window.Policy
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Queries.PageSchedules
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.ScheduleListEntry
   alias FavnOrchestrator.ScheduleOccurrencePreview
   alias FavnOrchestrator.Scheduler.Cron
   alias FavnOrchestrator.SchedulerEntry
+
+  @type activation_result :: %{
+          schedule: SchedulerEntry.t(),
+          previous_state: atom(),
+          effective_state: atom(),
+          command_time: DateTime.t()
+        }
 
   @list_filter_keys [
     :search,
@@ -101,6 +109,20 @@ defmodule FavnOrchestrator.Operator.Schedules do
     end
   end
 
+  @doc "Activates one reviewed schedule definition for this workspace."
+  @spec activate(WorkspaceContext.t(), String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, activation_result()} | {:error, term()}
+  def activate(%WorkspaceContext{} = context, schedule_id, actor_id, reason, opts \\ []) do
+    set_activation(context, schedule_id, actor_id, reason, true, opts)
+  end
+
+  @doc "Deactivates one schedule for future occurrence submission."
+  @spec deactivate(WorkspaceContext.t(), String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, activation_result()} | {:error, term()}
+  def deactivate(%WorkspaceContext{} = context, schedule_id, actor_id, reason, opts \\ []) do
+    set_activation(context, schedule_id, actor_id, reason, false, opts)
+  end
+
   @doc "Returns the stable control-plane id for a schedule entry."
   @spec entry_id(SchedulerEntry.t()) :: String.t()
   def entry_id(%SchedulerEntry{} = entry) do
@@ -116,6 +138,9 @@ defmodule FavnOrchestrator.Operator.Schedules do
     in_flight_run_id = value(cursor, :in_flight_run_id)
     queued_due_at = datetime_value(cursor, :queued_due_at)
 
+    activation_state = activation_state(schedule)
+    enabled? = activation_state == :enabled
+
     %SchedulerEntry{
       pipeline_module: existing_module(value(definition, :pipeline_module)),
       schedule_id: existing_atom(value(definition, :schedule_name) || schedule.schedule_id),
@@ -123,10 +148,14 @@ defmodule FavnOrchestrator.Operator.Schedules do
       timezone: value(definition, :timezone),
       overlap: existing_atom(value(definition, :overlap)),
       missed: existing_atom(value(definition, :missed)),
-      active: true,
-      activation_state: :enabled,
-      effective_enabled?: true,
-      runtime_state: persisted_runtime_state(in_flight_run_id, queued_due_at),
+      active: enabled?,
+      activation_state: activation_state,
+      effective_enabled?: enabled?,
+      runtime_state:
+        if(enabled?,
+          do: persisted_runtime_state(in_flight_run_id, queued_due_at),
+          else: :inactive
+        ),
       window: persisted_window(value(definition, :window)),
       schedule_fingerprint: schedule.schedule_fingerprint,
       manifest_version_id: runtime.manifest_version_id,
@@ -140,6 +169,86 @@ defmodule FavnOrchestrator.Operator.Schedules do
       last_scheduler_error: value(cursor, :last_scheduler_error),
       updated_at: schedule.updated_at
     }
+  end
+
+  defp activation_state(%{
+         activation_enabled: true,
+         approved_schedule_fingerprint: approved,
+         schedule_fingerprint: current
+       })
+       when is_binary(approved) and approved == current,
+       do: :enabled
+
+  defp activation_state(%{activation_enabled: true}), do: :needs_review
+  defp activation_state(_schedule), do: :disabled
+
+  defp set_activation(context, schedule_id, actor_id, reason, enabled, opts) do
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+
+    with :ok <- validate_activation_input(actor_id, reason, now),
+         {:ok, command_id} <- activation_command_id(opts),
+         {:ok, pipeline_target_id, persisted_schedule_id} <- parse_entry_id(schedule_id),
+         {:ok, before_entry} <- get_entry(context, schedule_id),
+         next_due_at <- next_due_at(before_entry, enabled, now),
+         request_hash <-
+           activation_request_hash(
+             pipeline_target_id,
+             persisted_schedule_id,
+             before_entry.schedule_fingerprint,
+             enabled,
+             actor_id,
+             reason
+           ),
+         {:ok, _activation} <-
+           Persistence.stores().scheduler.set_activation(%SetScheduleActivation{
+             workspace_context: context,
+             pipeline_target_id: pipeline_target_id,
+             schedule_id: persisted_schedule_id,
+             schedule_fingerprint: before_entry.schedule_fingerprint,
+             enabled: enabled,
+             actor_id: actor_id,
+             reason: String.trim(reason),
+             command_id: command_id,
+             request_hash: request_hash,
+             occurred_at: now,
+             next_due_at: next_due_at
+           }),
+         {:ok, after_entry} <- get_entry(context, schedule_id) do
+      {:ok,
+       %{
+         schedule: after_entry,
+         previous_state: before_entry.activation_state,
+         effective_state: after_entry.activation_state,
+         command_time: now
+       }}
+    end
+  end
+
+  defp validate_activation_input(actor_id, reason, %DateTime{})
+       when is_binary(actor_id) and actor_id != "" and is_binary(reason) do
+    trimmed = String.trim(reason)
+    if trimmed != "" and byte_size(trimmed) <= 2_048, do: :ok, else: {:error, :invalid_reason}
+  end
+
+  defp validate_activation_input(_actor_id, _reason, _now),
+    do: {:error, :invalid_schedule_activation}
+
+  defp next_due_at(_entry, false, _now), do: nil
+
+  defp next_due_at(%SchedulerEntry{} = entry, true, now),
+    do: Cron.next_due(entry.cron, entry.timezone, now)
+
+  defp activation_command_id(opts) do
+    case Keyword.get(opts, :command_id) do
+      command_id when is_binary(command_id) and command_id != "" -> {:ok, command_id}
+      _missing -> {:error, :idempotency_key_required}
+    end
+  end
+
+  defp activation_request_hash(target_id, schedule_id, fingerprint, enabled, actor_id, reason) do
+    {target_id, schedule_id, fingerprint, enabled, actor_id, String.trim(reason)}
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
   end
 
   defp persisted_entry_id(schedule) do

@@ -1,9 +1,11 @@
 defmodule FavnOrchestrator.Persistence.SchedulerStore do
   @moduledoc "Persistence contract for distributed schedule evaluation and occurrence dispatch."
   alias FavnOrchestrator.Persistence.Commands.ClaimDueSchedules
+  alias FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispatch
   alias FavnOrchestrator.Persistence.Commands.ClaimScheduleOccurrences
   alias FavnOrchestrator.Persistence.Commands.CommitScheduleEvaluation
   alias FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence
+  alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.PageScheduleOccurrences
   alias FavnOrchestrator.Persistence.Queries.PageSchedules
@@ -11,6 +13,7 @@ defmodule FavnOrchestrator.Persistence.SchedulerStore do
   alias FavnOrchestrator.Persistence.Results.Schedule
   alias FavnOrchestrator.Persistence.Results.ScheduleClaim
   alias FavnOrchestrator.Persistence.Results.ScheduleOccurrence
+  alias FavnOrchestrator.Persistence.Results.ScheduleActivation
 
   @callback claim_due_schedules(ClaimDueSchedules.t()) ::
               {:ok, [ScheduleClaim.t()]} | {:error, Error.t()}
@@ -18,8 +21,12 @@ defmodule FavnOrchestrator.Persistence.SchedulerStore do
               {:ok, [ScheduleOccurrence.t()]} | {:error, Error.t()}
   @callback claim_occurrences(ClaimScheduleOccurrences.t()) ::
               {:ok, [ScheduleOccurrence.t()]} | {:error, Error.t()}
+  @callback authorize_occurrence_dispatch(AuthorizeScheduleOccurrenceDispatch.t()) ::
+              {:ok, ScheduleOccurrence.t()} | {:error, Error.t()}
   @callback complete_occurrence(CompleteScheduleOccurrence.t()) ::
               {:ok, ScheduleOccurrence.t()} | {:error, Error.t()}
+  @callback set_activation(SetScheduleActivation.t()) ::
+              {:ok, ScheduleActivation.t()} | {:error, Error.t()}
   @callback page_schedules(PageSchedules.t()) ::
               {:ok, CursorPage.t(Schedule.t())} | {:error, Error.t()}
   @callback page_occurrences(PageScheduleOccurrences.t()) ::

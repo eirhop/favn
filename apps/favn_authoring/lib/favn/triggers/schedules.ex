@@ -58,8 +58,7 @@ defmodule Favn.Triggers.Schedules do
         cron: "0 * * * *",
         timezone: "Etc/UTC",
         missed: :skip,
-        overlap: :forbid,
-        active: true
+        overlap: :forbid
 
   Cron expressions may use either the standard 5-field form or a 6-field form
   with a leading seconds field for second-level schedules.

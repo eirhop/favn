@@ -52,7 +52,6 @@ defmodule Favn.Run.ContextTest do
              timezone: "Europe/Oslo",
              missed: :one,
              overlap: :queue_one,
-             active: true,
              origin: :inline
            }
   end
