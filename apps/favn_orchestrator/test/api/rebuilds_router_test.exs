@@ -174,7 +174,7 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
     Process.put(:router_audits, %{})
 
     on_exit(fn ->
-      if Process.alive?(runtime), do: GenServer.stop(runtime)
+      stop_runtime(runtime)
       restore_env(:api_service_tokens, previous_tokens)
     end)
 
@@ -461,6 +461,13 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
   defp maybe_put_params(conn, params), do: Map.put(conn, :body_params, params)
   defp error_code(response), do: get_in(Jason.decode!(response.resp_body), ["error", "code"])
   defp hash, do: String.duplicate("a", 64)
+
+  defp stop_runtime(runtime) do
+    if Process.alive?(runtime), do: GenServer.stop(runtime)
+  catch
+    :exit, _reason -> :ok
+  end
+
   defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
   defp restore_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)
 end

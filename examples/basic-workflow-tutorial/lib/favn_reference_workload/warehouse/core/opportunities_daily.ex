@@ -1,0 +1,31 @@
+defmodule FavnReferenceWorkload.Warehouse.Core.OpportunitiesDaily do
+  @moduledoc "Daily system-agnostic opportunity model."
+
+  use Favn.SQLAsset
+
+  alias FavnReferenceWorkload.Warehouse.Source.{Accounts, DealsDaily}
+
+  relation(true)
+  depends(Accounts)
+  depends(DealsDaily)
+  window(Favn.Window.daily(timezone: "Etc/UTC", required: true))
+  materialized({:incremental, strategy: :delete_insert, window_column: :occurred_at})
+  meta(category: :opportunities, tags: [:core, :daily, :incremental])
+
+  query do
+    ~SQL"""
+    select
+      deals.deal_id,
+      deals.account_id,
+      accounts.segment,
+      deals.stage,
+      deals.amount_cents,
+      deals.occurred_at
+    from source.deals_daily as deals
+    inner join source.accounts as accounts
+      on accounts.account_id = deals.account_id
+    where deals.occurred_at >= @window_start
+      and deals.occurred_at < @window_end
+    """
+  end
+end

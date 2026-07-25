@@ -1,6 +1,6 @@
 defmodule FavnReferenceWorkload.Warehouse do
   @moduledoc """
-  Shared warehouse namespace defaults for all workload assets.
+  Shared DuckDB namespace defaults for all CRM workload assets.
 
   This module groups all warehouse-related assets under a common namespace and
   sets the default connection for descendants.
@@ -13,6 +13,6 @@ defmodule FavnReferenceWorkload.Warehouse do
 
   use Favn.Namespace
 
-  relation connection: :warehouse
-  meta owner: "reference-workload"
+  relation(connection: :warehouse)
+  meta(owner: "reference-workload")
 end

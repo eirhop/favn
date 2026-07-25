@@ -3,51 +3,36 @@ defmodule FavnReferenceWorkload.ManifestGenerationTest do
 
   alias Favn.Manifest
 
-  test "configured reference workload compiles into one canonical manifest" do
-    assert {:ok, %Manifest{} = manifest} = Favn.generate_manifest()
+  @runner_release_id "rr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+  test "CRM workload compiles into one layered manifest" do
+    assert {:ok, %Manifest{} = manifest} =
+             Favn.generate_manifest(runner_release_id: @runner_release_id)
 
     assert length(manifest.assets) == 15
-    assert length(manifest.pipelines) == 1
+    assert length(manifest.pipelines) == 2
 
     assert Enum.any?(manifest.assets, fn asset ->
-             asset.ref == {FavnReferenceWorkload.Warehouse.Ops.ReferenceWorkloadComplete, :asset}
+             asset.ref ==
+               {FavnReferenceWorkload.Warehouse.Landing.GenerateSeed, :asset} and
+               asset.type == :elixir
            end)
 
     assert Enum.any?(manifest.assets, fn asset ->
-             asset.ref == {FavnReferenceWorkload.Warehouse.Gold.ExecutiveOverview, :asset}
+             asset.ref ==
+               {FavnReferenceWorkload.Warehouse.Landing.WriteExtracts, :deals_daily}
            end)
 
-    orders_asset =
-      Enum.find(manifest.assets, fn asset ->
-        asset.ref == {FavnReferenceWorkload.Warehouse.Raw.Orders, :asset}
-      end)
+    assert Enum.any?(manifest.assets, fn asset ->
+             asset.ref == {FavnReferenceWorkload.Warehouse.Mart.ExecutiveOverview, :asset}
+           end)
 
-    assert orders_asset.type == :elixir
-
-    assert {FavnReferenceWorkload.Warehouse.Raw.Customers, :asset} in orders_asset.depends_on
-
-    assert {FavnReferenceWorkload.Warehouse.Sources.ChannelCatalog, :asset} in orders_asset.depends_on
-
-    order_facts_asset =
-      Enum.find(manifest.assets, fn asset ->
-        asset.ref == {FavnReferenceWorkload.Warehouse.Stg.OrderFacts, :asset}
-      end)
-
-    assert {FavnReferenceWorkload.Warehouse.Raw.Orders, :asset} in order_facts_asset.depends_on
-
-    assert {FavnReferenceWorkload.Warehouse.Raw.OrderItems, :asset} in order_facts_asset.depends_on
-
-    assert {FavnReferenceWorkload.Warehouse.Raw.Products, :asset} in order_facts_asset.depends_on
-    assert {FavnReferenceWorkload.Warehouse.Raw.Payments, :asset} in order_facts_asset.depends_on
-    assert {FavnReferenceWorkload.Warehouse.Stg.Customers, :asset} in order_facts_asset.depends_on
-
-    [pipeline] = manifest.pipelines
-    assert pipeline.name == :reference_workload_daily
-    assert pipeline.deps == :all
+    assert Enum.any?(manifest.pipelines, &(&1.name == :bootstrap_crm_demo))
+    assert Enum.any?(manifest.pipelines, &(&1.name == :daily_crm_analytics))
   end
 
   test "manifest content hash is stable across JSON publication boundary" do
-    assert {:ok, build} = FavnAuthoring.build_manifest()
+    assert {:ok, build} = FavnAuthoring.build_manifest(runner_release_id: @runner_release_id)
     assert {:ok, original} = FavnAuthoring.pin_manifest_version(build.manifest)
     assert {:ok, public_hash} = FavnAuthoring.hash_manifest(build.manifest)
     assert public_hash == original.content_hash
@@ -63,6 +48,7 @@ defmodule FavnReferenceWorkload.ManifestGenerationTest do
                content_hash: original.content_hash,
                schema_version: original.schema_version,
                runner_contract_version: original.runner_contract_version,
+               required_runner_release_id: original.required_runner_release_id,
                serialization_format: original.serialization_format
              )
 
