@@ -90,7 +90,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
              :ok <- preflight_execution_identities(run_state),
              :ok <- RunnerClientValidator.validate(runner_client),
              {:ok, manifest_index} <- ManifestIndexCache.fetch(version),
-             execution_index <- execution_index(run_state, manifest_index),
+             execution_index <- compact_execution_index(run_state, manifest_index),
              {:ok, freshness_context} <- FreshnessContext.initialize(run_state, execution_index),
              lease_id <- manifest_lease_id(run_state),
              :ok <-
@@ -145,7 +145,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
           state =
             RunExecutionState.new(run_state, manifest_identity(version),
               mode: :sequential,
-              manifest_index: execution_index(run_state, manifest_index),
+              manifest_index: compact_execution_index(run_state, manifest_index),
               runner_client: runner_client,
               runner_opts: runner_opts,
               manifest_lease_id: lease_id,
@@ -385,11 +385,18 @@ defmodule FavnOrchestrator.RunServer.Execution do
     DateTime.add(DateTime.utc_now(), div(lease_ms + 999, 1_000), :second)
   end
 
-  defp execution_index(%RunState{} = run, manifest_index) do
+  @doc false
+  @spec compact_execution_index(RunState.t(), Favn.Manifest.Index.t()) ::
+          Favn.Manifest.Index.t()
+  def compact_execution_index(%RunState{} = run, manifest_index) do
     refs =
       case run.plan do
         %Favn.Plan{nodes: nodes} ->
-          nodes |> Map.values() |> Enum.map(& &1.ref) |> MapSet.new()
+          Enum.reduce(nodes, MapSet.new(), fn {_node_key, node}, refs ->
+            refs
+            |> MapSet.put(node.ref)
+            |> MapSet.union(input_generation_refs(node, manifest_index.assets_by_ref))
+          end)
 
         nil ->
           MapSet.new([run.asset_ref])
@@ -401,6 +408,22 @@ defmodule FavnOrchestrator.RunServer.Execution do
       pipelines_by_ref: %{},
       schedules_by_ref: %{}
     }
+  end
+
+  defp input_generation_refs(node, assets_by_ref) do
+    target_ids =
+      node
+      |> Map.get(:input_generations, [])
+      |> Enum.map(&Map.get(&1, :target_id, Map.get(&1, "target_id")))
+      |> MapSet.new()
+
+    assets_by_ref
+    |> Enum.reduce(MapSet.new(), fn {ref, asset}, refs ->
+      if asset.target_descriptor &&
+           MapSet.member?(target_ids, asset.target_descriptor.target_id),
+         do: MapSet.put(refs, ref),
+         else: refs
+    end)
   end
 
   defp continue_state(%RunExecutionState{status: :retry_wait} = state), do: {:cont, state}

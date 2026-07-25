@@ -78,6 +78,7 @@ defmodule FavnOrchestrator.RebuildsTest do
         evaluated_at: command.evaluated_at,
         action_count: length(command.actions),
         window_count: length(command.items),
+        actions: command.actions,
         state: :planned,
         phase: :planned,
         cleanup_state: :not_started,
@@ -90,12 +91,29 @@ defmodule FavnOrchestrator.RebuildsTest do
       }
 
       Process.put({:rebuild_operation, command.operation_id}, operation)
+      Process.put({:rebuild_items, command.operation_id}, command.items)
       {:ok, operation}
     end
 
     def acquire_many(command) do
       send(Process.get(:rebuild_test_pid), {:acquire_rebuild_locks, command})
       {:ok, []}
+    end
+
+    def page_items(query) do
+      {:ok,
+       %{
+         items: Process.get({:rebuild_items, query.operation_id}, []),
+         has_more?: false,
+         next_cursor: nil
+       }}
+    end
+
+    def start_operation(command) do
+      operation = Process.get({:rebuild_operation, command.operation_id})
+      started = %{operation | state: :queued, phase: :locking, version: operation.version + 1}
+      Process.put({:rebuild_operation, command.operation_id}, started)
+      {:ok, started}
     end
   end
 
@@ -161,9 +179,14 @@ defmodule FavnOrchestrator.RebuildsTest do
     start_supervised!({PersistenceRuntime, runtime})
 
     Process.put(:rebuild_test_pid, self())
-    {version, root, downstream, packages} = version()
+    {version, root, downstream, inactive_upstream, packages} = version()
     runtime = runtime(version)
-    bindings = [binding(root, version, 1), binding(downstream, version, 1)]
+
+    bindings = [
+      binding(root, version, 1),
+      binding(downstream, version, 1),
+      uninitialized_binding(inactive_upstream, version)
+    ]
 
     Process.put(:rebuild_version, version)
     Process.put(:rebuild_runtime, runtime)
@@ -172,7 +195,9 @@ defmodule FavnOrchestrator.RebuildsTest do
 
     Process.put(
       :rebuild_markers,
-      Map.new(bindings, &{asset_ref(version, &1.target_id), marker(&1)})
+      bindings
+      |> Enum.filter(&is_binary(&1.active_generation_id))
+      |> Map.new(&{asset_ref(version, &1.target_id), marker(&1)})
     )
 
     Process.put(
@@ -271,6 +296,43 @@ defmodule FavnOrchestrator.RebuildsTest do
     refute_received {:create_rebuild_plan, _command}
   end
 
+  test "plans from persisted physical relations whose connection is JSON text", fixture do
+    bindings =
+      Enum.map(fixture.bindings, fn
+        %{active_physical_relation: nil} = binding ->
+          binding
+
+        binding ->
+          relation = Map.put(binding.active_physical_relation, :connection, "warehouse")
+          %{binding | active_physical_relation: relation}
+      end)
+
+    Process.put(:rebuild_bindings, bindings)
+
+    {:ok, context} =
+      WorkspaceContext.new("workspace-rebuild", "operator", [:customer_operator])
+
+    assert {:ok, plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: "rebuild-persisted-relation"
+             )
+
+    assert plan.plan_id == "rebuild-persisted-relation"
+  end
+
+  test "starts when an unaffected upstream binding is still uninitialized", fixture do
+    {:ok, context} =
+      WorkspaceContext.new("workspace-rebuild", "admin", [:workspace_admin])
+
+    assert {:ok, plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: "rebuild-with-uninitialized-upstream"
+             )
+
+    assert {:ok, %{state: :queued}} = Rebuilds.start(context, plan.plan_id, plan.plan_hash)
+    assert_received {:acquire_rebuild_locks, _command}
+  end
+
   test "rejects approval when a pinned target binding changes", fixture do
     {:ok, context} =
       WorkspaceContext.new("workspace-rebuild", "admin", [:workspace_admin])
@@ -343,20 +405,35 @@ defmodule FavnOrchestrator.RebuildsTest do
   defp version do
     root_ref = {__MODULE__.Root, :asset}
     downstream_ref = {__MODULE__.Downstream, :asset}
+    inactive_upstream_ref = {__MODULE__.InactiveUpstream, :asset}
+    observer_ref = {__MODULE__.Observer, :asset}
 
     {root, root_package} = persisted_asset(root_ref, "root", [])
 
     {downstream, downstream_package} =
       persisted_asset(downstream_ref, "downstream", [root_ref])
 
+    {inactive_upstream, inactive_upstream_package} =
+      persisted_asset(inactive_upstream_ref, "inactive_upstream", [])
+
+    observer = %Asset{
+      ref: observer_ref,
+      module: elem(observer_ref, 0),
+      name: elem(observer_ref, 1),
+      type: :source,
+      depends_on: [downstream_ref, inactive_upstream_ref]
+    }
+
     manifest =
-      %Manifest{assets: [root, downstream]}
+      %Manifest{assets: [root, downstream, inactive_upstream, observer]}
       |> FavnTestSupport.with_manifest_graph()
       |> FavnTestSupport.with_manifest_contract()
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "manifest-rebuild-test")
-    [root, downstream] = version.manifest.assets
-    {version, root, downstream, [root_package, downstream_package]}
+    [root, downstream, inactive_upstream, _observer] = version.manifest.assets
+
+    {version, root, downstream, inactive_upstream,
+     [root_package, downstream_package, inactive_upstream_package]}
   end
 
   defp persisted_asset(ref, relation_name, depends_on) do
@@ -418,6 +495,20 @@ defmodule FavnOrchestrator.RebuildsTest do
       compatibility_diff: %{"columns" => "changed"},
       active_physical_fingerprint: physical_fingerprint(asset, version),
       version: binding_version,
+      updated_at: DateTime.utc_now()
+    }
+  end
+
+  defp uninitialized_binding(asset, version) do
+    %TargetBinding{
+      workspace_id: "workspace-rebuild",
+      target_id: asset.target_descriptor.target_id,
+      desired_manifest_id: version.manifest_version_id,
+      desired_descriptor_hash: asset.target_descriptor.descriptor_hash,
+      compatibility_status: :uninitialized,
+      reason_code: "no_active_generation",
+      compatibility_diff: %{},
+      version: 1,
       updated_at: DateTime.utc_now()
     }
   end

@@ -376,7 +376,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
              ctx.runner_client,
              ctx.runner_opts
            ) do
-      do_submit_admitted_entry(%{ctx | work: prepared})
+      do_submit_admitted_entry(%{
+        ctx
+        | work: prepared,
+          materialization_claim:
+            MaterializationClaims.enrich(ctx.materialization_claim, prepared)
+      })
     else
       {:error, reason} -> fail_unsubmitted_entry(ctx, ctx.work.asset_ref, reason)
     end

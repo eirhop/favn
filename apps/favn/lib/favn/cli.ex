@@ -38,13 +38,6 @@ defmodule Favn.CLI do
     do: Backfill.submit_missing_asset(asset, plan, opts)
 
   def list_backfill_windows(run_id, opts), do: Backfill.list_windows(run_id, opts)
-  def list_coverage_baselines(opts), do: Backfill.list_coverage_baselines(opts)
-  def list_asset_window_states(opts), do: Backfill.list_asset_window_states(opts)
-
-  def rerun_backfill_window(run_id, window_key, opts),
-    do: Backfill.rerun_window(run_id, window_key, opts)
-
-  def repair_backfill_projections(opts), do: Backfill.repair_projections(opts)
 
   def plan_rebuild(asset, reason, opts), do: Rebuild.plan(asset, reason, opts)
   def start_rebuild(plan_id, plan_hash, opts), do: Rebuild.start(plan_id, plan_hash, opts)

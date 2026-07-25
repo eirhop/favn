@@ -3,9 +3,9 @@ defmodule Favn.CLI.Backfill do
   Local operational-backfill workflow for a running `mix favn.dev` stack.
 
   This module backs `mix favn.backfill`. It submits operational backfills,
-  dry-runs backfill plans, reads backfill-window projections, reruns failed or
-  explicitly force-refreshed successful windows, and repairs derived backfill
-  read models through the private local orchestrator HTTP boundary.
+  dry-runs backfill plans, reads their authoritative window records, and plans
+  or submits exact missing-window coverage repairs through the private local
+  orchestrator HTTP boundary.
 
   Submit options accept explicit `:from`, `:to`, and `:kind` values or compact
   `:window` ranges such as `"month:2025-05..2026-05"`. Pass `refresh: "force"`
@@ -22,13 +22,6 @@ defmodule Favn.CLI.Backfill do
   @default_timeout_ms 60_000
   @default_poll_interval_ms 1_000
 
-  @type workflow_opts :: [root_dir: Path.t()]
-  @type repair_opts :: [
-          root_dir: Path.t(),
-          apply: boolean(),
-          backfill_run_id: String.t(),
-          pipeline_module: String.t() | module()
-        ]
   @type submit_opts :: [
           root_dir: Path.t(),
           from: String.t(),
@@ -37,7 +30,6 @@ defmodule Favn.CLI.Backfill do
           window: String.t(),
           dry_run: boolean(),
           timezone: String.t(),
-          coverage_baseline_id: String.t(),
           wait: boolean(),
           retry_max_attempts: pos_integer(),
           retry_backoff_ms: non_neg_integer(),
@@ -94,17 +86,17 @@ defmodule Favn.CLI.Backfill do
              ),
            {:ok, target} <- Run.resolve_pipeline_target(active_manifest, pipeline_module),
            {:ok, payload} <- build_submit_payload(target, range, opts),
-           {:ok, run} <-
+           {:ok, submitted} <-
              OrchestratorClient.submit_backfill(
                base_url,
                credentials.service_token,
                session_context,
                payload
              ),
-           {:ok, final_run} <-
-             maybe_wait(run, base_url, credentials.service_token, session_context, opts),
-           :ok <- ensure_success(final_run, Keyword.get(opts, :wait, true)) do
-        {:ok, final_run}
+           {:ok, final_backfill} <-
+             maybe_wait(submitted, base_url, credentials.service_token, session_context, opts),
+           :ok <- ensure_success(final_backfill, Keyword.get(opts, :wait, true)) do
+        {:ok, final_backfill}
       end
     end
   end
@@ -199,68 +191,7 @@ defmodule Favn.CLI.Backfill do
         credentials.service_token,
         session_context,
         backfill_run_id,
-        filters(opts, [:pipeline_module, :window_key, :status, :limit, :offset])
-      )
-    end
-  end
-
-  @spec list_coverage_baselines(keyword()) :: {:ok, map()} | {:error, term()}
-  def list_coverage_baselines(opts \\ []) when is_list(opts) do
-    with {:ok, base_url, credentials, session_context} <- session(opts) do
-      OrchestratorClient.list_coverage_baselines(
-        base_url,
-        credentials.service_token,
-        session_context,
-        filters(opts, [:pipeline_module, :source_key, :segment_key_hash, :status, :limit, :offset])
-      )
-    end
-  end
-
-  @spec list_asset_window_states(keyword()) :: {:ok, map()} | {:error, term()}
-  def list_asset_window_states(opts \\ []) when is_list(opts) do
-    with {:ok, base_url, credentials, session_context} <- session(opts) do
-      OrchestratorClient.list_asset_window_states(
-        base_url,
-        credentials.service_token,
-        session_context,
-        filters(opts, [
-          :asset_ref_module,
-          :asset_ref_name,
-          :pipeline_module,
-          :window_key,
-          :status,
-          :limit,
-          :offset
-        ])
-      )
-    end
-  end
-
-  @spec rerun_window(String.t(), String.t(), workflow_opts() | submit_opts()) ::
-          {:ok, map()} | {:error, term()}
-  def rerun_window(backfill_run_id, window_key, opts \\ [])
-      when is_binary(backfill_run_id) and is_binary(window_key) and is_list(opts) do
-    with {:ok, base_url, credentials, session_context} <- session(opts) do
-      OrchestratorClient.rerun_backfill_window(
-        base_url,
-        credentials.service_token,
-        session_context,
-        backfill_run_id,
-        window_key,
-        rerun_window_payload(opts)
-      )
-    end
-  end
-
-  @spec repair_projections(repair_opts()) :: {:ok, map()} | {:error, term()}
-  def repair_projections(opts \\ []) when is_list(opts) do
-    with {:ok, base_url, credentials, session_context} <- session(opts),
-         {:ok, payload} <- build_repair_payload(opts) do
-      OrchestratorClient.repair_backfill_projections(
-        base_url,
-        credentials.service_token,
-        session_context,
-        payload
+        filters(opts, [:status, :limit, :cursor])
       )
     end
   end
@@ -277,7 +208,6 @@ defmodule Favn.CLI.Backfill do
 
     {:ok,
      payload
-     |> maybe_put(:coverage_baseline_id, Keyword.get(opts, :coverage_baseline_id))
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
      |> maybe_put(:refresh, Keyword.get(opts, :refresh))
      |> maybe_put(:retry_policy, retry_policy(opts))
@@ -300,7 +230,6 @@ defmodule Favn.CLI.Backfill do
 
     {:ok,
      payload
-     |> maybe_put(:coverage_baseline_id, Keyword.get(opts, :coverage_baseline_id))
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
      |> maybe_put(:refresh, Keyword.get(opts, :refresh))
      |> maybe_put(:retry_policy, retry_policy(opts))
@@ -359,21 +288,6 @@ defmodule Favn.CLI.Backfill do
     end
   end
 
-  @doc false
-  @spec build_repair_payload(keyword()) :: {:ok, map()} | {:error, term()}
-  def build_repair_payload(opts) when is_list(opts) do
-    payload = %{apply: Keyword.get(opts, :apply, false)}
-
-    payload = maybe_put(payload, :backfill_run_id, Keyword.get(opts, :backfill_run_id))
-    payload = maybe_put(payload, :pipeline_module, Keyword.get(opts, :pipeline_module))
-
-    if Map.has_key?(payload, :backfill_run_id) and Map.has_key?(payload, :pipeline_module) do
-      {:error, :invalid_repair_scope}
-    else
-      {:ok, payload}
-    end
-  end
-
   defp validate_opts(opts) do
     [
       :timeout_ms,
@@ -392,12 +306,6 @@ defmodule Favn.CLI.Backfill do
       :ok -> validate_non_negative_integer(opts, :retry_backoff_ms)
       error -> error
     end
-  end
-
-  defp rerun_window_payload(opts) do
-    %{}
-    |> maybe_put(:refresh, Keyword.get(opts, :refresh))
-    |> maybe_put(:allow_success, Keyword.get(opts, :allow_success))
   end
 
   defp validate_positive_integer(opts, key) do
@@ -479,6 +387,24 @@ defmodule Favn.CLI.Backfill do
       {false, _run} ->
         {:ok, run}
 
+      {true, %{"backfill_id" => backfill_id}}
+      when is_binary(backfill_id) and backfill_id != "" ->
+        timeout_ms =
+          Keyword.get(opts, :wait_timeout_ms, Keyword.get(opts, :timeout_ms, @default_timeout_ms))
+
+        poll_interval_ms = Keyword.get(opts, :poll_interval_ms, @default_poll_interval_ms)
+        deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+        wait_for_backfill(
+          run,
+          backfill_id,
+          base_url,
+          service_token,
+          session_context,
+          deadline,
+          poll_interval_ms
+        )
+
       {true, %{"id" => run_id}} when is_binary(run_id) and run_id != "" ->
         timeout_ms =
           Keyword.get(opts, :wait_timeout_ms, Keyword.get(opts, :timeout_ms, @default_timeout_ms))
@@ -498,6 +424,46 @@ defmodule Favn.CLI.Backfill do
 
       _other ->
         {:error, :invalid_run_response}
+    end
+  end
+
+  defp wait_for_backfill(
+         backfill,
+         backfill_id,
+         base_url,
+         service_token,
+         session_context,
+         deadline,
+         poll_interval_ms
+       ) do
+    if backfill_terminal_status?(backfill) do
+      {:ok, backfill}
+    else
+      now = System.monotonic_time(:millisecond)
+
+      if now >= deadline do
+        {:error, {:backfill_wait_timeout, backfill_id}}
+      else
+        Process.sleep(min(poll_interval_ms, max(deadline - now, 0)))
+
+        with {:ok, next_backfill} <-
+               OrchestratorClient.get_backfill(
+                 base_url,
+                 service_token,
+                 session_context,
+                 backfill_id
+               ) do
+          wait_for_backfill(
+            next_backfill,
+            backfill_id,
+            base_url,
+            service_token,
+            session_context,
+            deadline,
+            poll_interval_ms
+          )
+        end
+      end
     end
   end
 
@@ -545,11 +511,17 @@ defmodule Favn.CLI.Backfill do
 
   defp ensure_success(run, true) do
     case run_status(run) do
+      "completed" ->
+        :ok
+
       "ok" ->
         :ok
 
       "partial" ->
         {:error, {:run_failed, "backfill parent run finished with status partial", run}}
+
+      "failed" ->
+        {:error, {:backfill_failed, run}}
 
       status when status in ["error", "cancelled", "timed_out"] ->
         {:error, {:run_failed, run}}
@@ -560,6 +532,10 @@ defmodule Favn.CLI.Backfill do
   end
 
   defp terminal_status?(run), do: run_status(run) in @terminal_statuses
+
+  defp backfill_terminal_status?(backfill),
+    do: run_status(backfill) in ["completed", "failed", "cancelled"]
+
   defp run_status(run), do: Map.get(run, "status") || Map.get(run, :status)
 
   defp unwrap_submit_error(%{operation: operation, reason: {:http_error, 422, payload}})

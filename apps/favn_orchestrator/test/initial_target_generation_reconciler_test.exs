@@ -198,6 +198,15 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     refute_receive {:reconcile_initial, _command}
   end
 
+  test "does not activate a rebuild candidate generation", %{entry: entry} do
+    rebuild_entry =
+      put_in(entry, [:materialization_claim, :target_operation], :rebuild_candidate)
+
+    assert :ok = InitialTargetGenerationReconciler.reconcile(rebuild_entry)
+    refute_receive {:get_binding, _query}
+    refute_receive {:reconcile_initial, _command}
+  end
+
   test "reconciles an unknown marker initialization reply before binding", %{
     version: version,
     entry: entry

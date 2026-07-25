@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.OperatorCommands
   alias FavnOrchestrator.API.Response
+  alias FavnOrchestrator.Persistence.Error
 
   plug(:match)
   plug(:dispatch)
@@ -79,6 +80,23 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
       {:error, {:manifest_filter_lookup_failed, reason}} ->
         Logger.error("backfill_window.filter_lookup failed: #{inspect(reason)}")
         Response.error(conn, 400, "bad_request", "Request failed")
+
+      {:error, _reason} ->
+        Response.error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  get "/:backfill_id" do
+    with :ok <- Authentication.ensure_service(conn),
+         {:ok, _session, _actor, context} <- actor_context(conn, :viewer),
+         {:ok, backfill} <- FavnOrchestrator.Backfills.get(context, backfill_id) do
+      Response.data(conn, 200, %{backfill: DTO.backfill(backfill)})
+    else
+      {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
+        authentication_error(conn, reason)
+
+      {:error, %Error{kind: :not_found}} ->
+        Response.error(conn, 404, "not_found", "Backfill was not found")
 
       {:error, _reason} ->
         Response.error(conn, 400, "bad_request", "Request failed")

@@ -73,13 +73,18 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     :window_key,
     :window_start,
     :window_end,
+    :runtime_input_expectation,
     :status,
+    :claim_owner,
+    :fencing_token,
+    :claim_expires_at,
     :child_run_id,
     :materialization_id,
     :attempt_count,
     :row_count,
     :last_error,
     :candidate_generation_id,
+    :version,
     :inserted_at,
     :updated_at
   ]

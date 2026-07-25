@@ -511,6 +511,27 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                limit: 1
              })
 
+    assert {:ok, claimed_page} =
+             RebuildStore.page_items(%PageRebuildItems{
+               workspace_context: fixture.workspace_context,
+               operation_id: operation_id,
+               target_id: fixture.target_id,
+               status: :claimed,
+               limit: 100
+             })
+
+    assert [
+             %{
+               claim_owner: "rebuild-dispatcher",
+               fencing_token: fencing_token,
+               claim_expires_at: %DateTime{},
+               version: version
+             }
+           ] = claimed_page.items
+
+    assert fencing_token == claimed_item.fencing_token
+    assert version == claimed_item.version
+
     assert {:error, %{kind: :fenced}} =
              RebuildStore.transition_item(%TransitionRebuildItem{
                workspace_context: fixture.workspace_context,
@@ -2367,13 +2388,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert window_selection.requested_anchors == window_selection.effective_anchors
     assert length(window_selection.effective_anchors) == 3
 
+    root_run_id = "run-backfill-#{System.unique_integer([:positive])}"
+
     assert {:ok, backfill} =
              Backfills.submit_pipeline(
                fixture.workspace_context,
                fixture.version.manifest_version_id,
                fixture.pipeline_target_id,
                range,
-               root_run_id: "run-backfill-#{System.unique_integer([:positive])}"
+               root_run_id: root_run_id
              )
 
     assert backfill.status == :ready
@@ -2397,6 +2420,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert length(page.items) == 2
     assert page.has_more?
     assert Enum.all?(page.items, &(&1.status == :ready))
+
+    assert {:ok, replayed} =
+             Backfills.submit_pipeline(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.pipeline_target_id,
+               range,
+               root_run_id: root_run_id
+             )
+
+    assert replayed.backfill_id == backfill.backfill_id
+    assert replayed.status == backfill.status
+    assert replayed.version == backfill.version
   end
 
   test "failed pipeline backfill planning marks its committed root as failed", fixture do

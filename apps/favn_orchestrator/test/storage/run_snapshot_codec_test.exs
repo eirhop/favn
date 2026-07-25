@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
   alias Favn.Plan
+  alias Favn.RelationRef
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
   alias Favn.Retry.Policy
@@ -653,28 +654,27 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     upstream_key = {upstream_ref, nil}
     target_key = {target_ref, nil}
 
+    upstream_relation = %{
+      "catalog" => nil,
+      "connection" => "warehouse",
+      "name" => "asset_a",
+      "schema" => "analytics"
+    }
+
     upstream_pin = %{
       target_id: "asset:Elixir.FavnOrchestrator.Storage.RunSnapshotCodecTest.AssetA:asset",
       target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
       evidence_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
-      physical_relation: %{
-        "catalog" => nil,
-        "connection" => "warehouse",
-        "name" => "asset_a",
-        "schema" => "analytics"
-      }
+      physical_relation:
+        RelationRef.new!(connection: :warehouse, schema: "analytics", name: "asset_a")
     }
 
     target_pin = %{
       target_id: "asset:Elixir.FavnOrchestrator.Storage.RunSnapshotCodecTest.AssetB:asset",
       target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987655",
       evidence_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987655",
-      physical_relation: %{
-        "catalog" => nil,
-        "connection" => "warehouse",
-        "name" => "asset_b",
-        "schema" => "analytics"
-      }
+      physical_relation:
+        RelationRef.new!(connection: :warehouse, schema: "analytics", name: "asset_b")
     }
 
     plan = %Plan{
@@ -704,7 +704,24 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
             downstream: [],
             stage: 1,
             execution_pool: :warehouse,
-            input_generations: [upstream_pin],
+            input_generations: [
+              %{upstream_pin | physical_relation: upstream_relation}
+            ],
+            target_operation: :rebuild_candidate,
+            active_relation:
+              RelationRef.new!(connection: :warehouse, schema: "analytics", name: "asset_b"),
+            write_relation:
+              RelationRef.new!(
+                connection: :warehouse,
+                schema: "analytics",
+                name: "asset_b_candidate"
+              ),
+            rebuild_operation_id: "rebuild-operation",
+            rebuild_action_id:
+              "asset:Elixir.FavnOrchestrator.Storage.RunSnapshotCodecTest.AssetB:asset",
+            rebuild_item_id: "rebuild-item",
+            rebuild_empty_generation: false,
+            rebuild_final_item: true,
             action: :run,
             retry_policy: Policy.default(),
             retry_policy_source: :default
