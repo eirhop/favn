@@ -824,6 +824,40 @@ defmodule Favn.CLI.OrchestratorClientTest do
     assert_idempotency_header(headers)
   end
 
+  test "schedule activation accepts a reusable operator idempotency key" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"effective_state":"enabled"}}), 200, parent: parent)
+
+    assert {:ok, %{"effective_state" => "enabled"}} =
+             OrchestratorClient.set_schedule_activation(
+               base_url,
+               "token",
+               %{"workspace_id" => "local-dev"},
+               "schedule-v2:id:name",
+               true,
+               "reviewed",
+               idempotency_key: "schedule-change-42"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/schedules/schedule-v2:id:name/activate"}
+
+    assert_receive {:request_headers, headers}
+    assert headers["idempotency-key"] == "schedule-change-42"
+
+    assert {:error, :invalid_idempotency_key} =
+             OrchestratorClient.set_schedule_activation(
+               base_url,
+               "token",
+               %{"workspace_id" => "local-dev"},
+               "schedule-v2:id:name",
+               true,
+               "reviewed",
+               idempotency_key: ""
+             )
+  end
+
   test "backfill window helper parses the current cursor page" do
     parent = self()
 

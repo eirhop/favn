@@ -4420,7 +4420,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute deactivated.enabled
     assert {:ok, ^activated} = SchedulerStore.set_activation(activation)
 
-    assert {:ok, %{items: [%{activation_enabled: false}]}} =
+    assert {:ok, %{items: [%{activation_enabled: false, next_due_at: nil}]}} =
              SchedulerStore.page_schedules(%PageSchedules{
                workspace_context: fixture.workspace_context,
                limit: 10

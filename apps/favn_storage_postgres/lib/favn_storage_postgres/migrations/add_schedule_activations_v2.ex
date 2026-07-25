@@ -6,6 +6,10 @@ defmodule FavnStoragePostgres.Migrations.AddScheduleActivationsV2 do
   @prefix "favn_control"
 
   def up do
+    alter table(:schedule_cursors, prefix: @prefix) do
+      modify(:next_due_at, :timestamptz, null: true, from: {:timestamptz, null: false})
+    end
+
     create table(:schedule_activations, prefix: @prefix, primary_key: false) do
       add(:workspace_id, :text, null: false, primary_key: true)
       add(:pipeline_target_id, :text, null: false, primary_key: true)
@@ -210,5 +214,15 @@ defmodule FavnStoragePostgres.Migrations.AddScheduleActivationsV2 do
 
     drop(table(:schedule_activation_commands, prefix: @prefix))
     drop(table(:schedule_activations, prefix: @prefix))
+
+    execute("""
+    UPDATE #{@prefix}.schedule_cursors
+    SET next_due_at = updated_at
+    WHERE next_due_at IS NULL
+    """)
+
+    alter table(:schedule_cursors, prefix: @prefix) do
+      modify(:next_due_at, :timestamptz, null: false, from: {:timestamptz, null: true})
+    end
   end
 end

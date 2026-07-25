@@ -713,7 +713,8 @@ defmodule Favn.CLI.OrchestratorClient do
           session_context(),
           String.t(),
           boolean(),
-          String.t()
+          String.t(),
+          keyword()
         ) :: {:ok, map()} | {:error, term()}
   def set_schedule_activation(
         base_url,
@@ -721,26 +722,40 @@ defmodule Favn.CLI.OrchestratorClient do
         session_context,
         schedule_id,
         enabled,
-        reason
+        reason,
+        opts \\ []
       ) do
     action = if(enabled, do: "activate", else: "deactivate")
     operation = if(enabled, do: :activate_schedule, else: :deactivate_schedule)
     url = base_url <> "/api/orchestrator/v1/schedules/#{URI.encode(schedule_id)}/#{action}"
 
-    idempotency_key =
-      "schedule-#{action}-" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    with {:ok, idempotency_key} <- schedule_activation_idempotency_key(action, opts) do
+      case request_post(
+             operation,
+             url,
+             service_token,
+             %{"reason" => reason},
+             session_context,
+             idempotency_key
+           ) do
+        {:ok, %{"data" => activation}} when is_map(activation) -> {:ok, activation}
+        {:error, _reason} = error -> error
+        _other -> {:error, operation_error(operation, :post, url, :invalid_response)}
+      end
+    end
+  end
 
-    case request_post(
-           operation,
-           url,
-           service_token,
-           %{"reason" => reason},
-           session_context,
-           idempotency_key
-         ) do
-      {:ok, %{"data" => activation}} when is_map(activation) -> {:ok, activation}
-      {:error, _reason} = error -> error
-      _other -> {:error, operation_error(operation, :post, url, :invalid_response)}
+  defp schedule_activation_idempotency_key(action, opts) do
+    case Keyword.get(opts, :idempotency_key) do
+      key when is_binary(key) and key != "" and byte_size(key) <= 200 ->
+        {:ok, key}
+
+      nil ->
+        {:ok,
+         "schedule-#{action}-" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)}
+
+      _invalid ->
+        {:error, :invalid_idempotency_key}
     end
   end
 

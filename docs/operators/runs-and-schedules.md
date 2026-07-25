@@ -346,6 +346,7 @@ mix favn.schedules show SCHEDULE_ID
 mix favn.schedules preview SCHEDULE_ID --limit 5
 mix favn.schedules activate SCHEDULE_ID --reason "reviewed"
 mix favn.schedules deactivate SCHEDULE_ID --reason "maintenance"
+mix favn.schedules activate SCHEDULE_ID --reason "reviewed" --idempotency-key CHANGE_ID
 ```
 
 1. List schedules from the active manifest through operator tooling.

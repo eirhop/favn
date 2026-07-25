@@ -485,6 +485,12 @@ defmodule FavnStoragePostgres.Scheduler.Store do
         Repo.rollback(Error.new(:conflict, "schedule activation idempotency conflict"))
 
       nil ->
+        lock_activation_schedule!(
+          workspace_id,
+          command.pipeline_target_id,
+          command.schedule_id
+        )
+
         existing =
           from(activation in ScheduleActivation,
             where:
@@ -568,6 +574,21 @@ defmodule FavnStoragePostgres.Scheduler.Store do
       )
       """,
       [workspace_id, command_id]
+    )
+  end
+
+  defp lock_activation_schedule!(workspace_id, pipeline_target_id, schedule_id) do
+    SQL.query!(
+      Repo,
+      """
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(
+          jsonb_build_array($1::text, $2::text, $3::text)::text,
+          0
+        )
+      )
+      """,
+      [workspace_id, pipeline_target_id, schedule_id]
     )
   end
 
@@ -689,6 +710,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
     else
       Repo.update_all(cursor_query,
         set: [
+          next_due_at: nil,
           claim_owner: nil,
           claim_command_id: nil,
           claim_expires_at: nil,

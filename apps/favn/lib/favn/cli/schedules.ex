@@ -53,7 +53,8 @@ defmodule Favn.CLI.Schedules do
         context,
         schedule_id,
         enabled,
-        reason
+        reason,
+        idempotency_key: Keyword.get(opts, :idempotency_key)
       )
     end
   end

@@ -12,6 +12,9 @@ defmodule Mix.Tasks.Favn.Schedules do
       mix favn.schedules activate SCHEDULE_ID --reason "reviewed"
       mix favn.schedules deactivate SCHEDULE_ID --reason "maintenance"
 
+  Repeat an activation command with the same `--idempotency-key` after an
+  unknown outcome to retrieve its original immutable receipt.
+
   Publishing a schedule never activates it. New schedules, and changed
   definitions whose fingerprint no longer matches the approved fingerprint,
   remain disabled until `activate` is run.
@@ -22,7 +25,7 @@ defmodule Mix.Tasks.Favn.Schedules do
 
   @root_switches [root_dir: :string]
   @preview_switches [root_dir: :string, limit: :integer]
-  @change_switches [root_dir: :string, reason: :string]
+  @change_switches [root_dir: :string, reason: :string, idempotency_key: :string]
   @output_keys %{
     "activation_state" => :activation_state,
     "due_at" => :due_at,
@@ -54,7 +57,8 @@ defmodule Mix.Tasks.Favn.Schedules do
 
     with {:ok, {^action, id, opts}} <- one_argument(action, args, @change_switches),
          reason when is_binary(reason) <- Keyword.get(opts, :reason),
-         true <- String.trim(reason) != "" do
+         true <- String.trim(reason) != "",
+         :ok <- validate_idempotency_key(Keyword.get(opts, :idempotency_key)) do
       {:ok, {action, id, opts}}
     else
       false -> {:error, "--reason must not be blank"}
@@ -67,6 +71,15 @@ defmodule Mix.Tasks.Favn.Schedules do
 
   def parse_args([unknown | _]),
     do: {:error, "unknown subcommand #{inspect(unknown)}; usage: #{usage()}"}
+
+  defp validate_idempotency_key(nil), do: :ok
+
+  defp validate_idempotency_key(key)
+       when is_binary(key) and key != "" and byte_size(key) <= 200,
+       do: :ok
+
+  defp validate_idempotency_key(_key),
+    do: {:error, "--idempotency-key must contain between 1 and 200 bytes"}
 
   defp no_argument(command, args, switches) do
     {opts, rest, invalid} = OptionParser.parse(args, strict: switches)

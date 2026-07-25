@@ -24,6 +24,28 @@ defmodule Mix.Tasks.Favn.SchedulesTest do
                "--reason",
                "maintenance"
              ])
+
+    assert {:ok,
+            {:activate, "schedule-v2:id:name",
+             [reason: "reviewed", idempotency_key: "schedule-change-42"]}} =
+             Schedules.parse_args([
+               "activate",
+               "schedule-v2:id:name",
+               "--reason",
+               "reviewed",
+               "--idempotency-key",
+               "schedule-change-42"
+             ])
+
+    assert {:error, "--idempotency-key must contain between 1 and 200 bytes"} =
+             Schedules.parse_args([
+               "activate",
+               "schedule-v2:id:name",
+               "--reason",
+               "reviewed",
+               "--idempotency-key",
+               ""
+             ])
   end
 
   test "formats preview response keys without dynamic atom conversion" do

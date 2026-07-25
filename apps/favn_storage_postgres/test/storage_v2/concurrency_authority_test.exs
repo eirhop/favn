@@ -152,6 +152,47 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
       )
   end
 
+  test "different first activation commands serialize by schedule identity", fixture do
+    assert {:ok, %{items: [schedule | _rest]}} =
+             SchedulerStore.page_schedules(%PageSchedules{
+               workspace_context: fixture.workspace_context,
+               limit: 10
+             })
+
+    occurred_at = DateTime.utc_now()
+
+    commands =
+      Enum.map(1..2, fn index ->
+        command_id = "schedule-identity-lock:#{index}:#{fixture.workspace_id}"
+
+        %SetScheduleActivation{
+          workspace_context: fixture.workspace_context,
+          pipeline_target_id: schedule.pipeline_target_id,
+          schedule_id: schedule.schedule_id,
+          schedule_fingerprint: schedule.schedule_fingerprint,
+          enabled: true,
+          actor_id: "concurrency-test-#{index}",
+          reason: "independent command #{index}",
+          command_id: command_id,
+          request_hash: :crypto.hash(:sha256, command_id),
+          occurred_at: DateTime.add(occurred_at, index, :microsecond),
+          next_due_at: DateTime.add(occurred_at, 60 + index, :second)
+        }
+      end)
+
+    receipts =
+      commands
+      |> Task.async_stream(&SchedulerStore.set_activation/1,
+        max_concurrency: 2,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn {:ok, {:ok, receipt}} -> receipt end)
+
+    assert Enum.sort(Enum.map(receipts, & &1.version)) == [1, 2]
+    assert Enum.sort(Enum.map(receipts, & &1.previous_state)) == [:disabled, :enabled]
+  end
+
   setup_all do
     url =
       System.get_env("FAVN_DATABASE_URL") ||
