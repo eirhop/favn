@@ -95,7 +95,9 @@ defmodule FavnOrchestrator.Projector do
       finished_at: summary.terminal_at,
       parent_run_id: summary.parent_run_id,
       rerun_of_run_id: summary.rerun_of_run_id,
-      root_run_id: summary.root_run_id
+      root_run_id: summary.root_run_id,
+      target_label: summary.target_label,
+      target_refs: summary.target_refs
     }
   end
 

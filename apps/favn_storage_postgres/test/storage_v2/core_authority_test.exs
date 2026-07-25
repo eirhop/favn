@@ -2999,7 +2999,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       )
 
     try do
-      assert {:ok, %{items: [%{run_id: run_id}]}} =
+      assert {:ok, %{items: [%{run_id: run_id}]} = page} =
                RunStore.page_run_summaries(%PageRuns{
                  scope: fixture.workspace_context,
                  limit: 1
@@ -3007,9 +3007,73 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
       assert run_id == run.id
 
+      assert [%{target_label: "MyApp.Asset:asset", target_refs: ["MyApp.Asset:asset"]}] =
+               page.items
+
       queries = collect_run_page_queries([])
       assert queries != []
       refute Enum.any?(queries, &Regex.match?(~r/\bsnapshot\b/i, &1))
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  test "compact run history prefers the persisted pipeline target label", fixture do
+    {command, run} = pipeline_run_command(fixture)
+
+    pipeline_target = %RunTarget{
+      target_kind: :pipeline,
+      target_id: fixture.pipeline_target_id,
+      target_module: "MyApp.Pipeline",
+      target_name: "daily",
+      is_primary: false
+    }
+
+    assert {:ok, _created} =
+             RunStore.create_run(%{command | targets: command.targets ++ [pipeline_target]})
+
+    assert {:ok, %{items: [summary]}} =
+             RunStore.page_run_summaries(%PageRuns{
+               scope: fixture.workspace_context,
+               limit: 1
+             })
+
+    assert summary.run_id == run.id
+    assert summary.target_label == "MyApp.Pipeline:daily"
+    assert summary.target_refs == []
+  end
+
+  test "compact target lookup is scoped in SQL for duplicate cross-workspace run ids", fixture do
+    other = provision_deploy_fixture(fixture.version)
+    run_id = "shared-run-#{System.unique_integer([:positive])}"
+    {command, _run} = create_run_command(fixture, run_id)
+    {other_command, _other_run} = create_run_command(other, run_id)
+
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, _created} = RunStore.create_run(other_command)
+
+    handler_id = {__MODULE__, self(), make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn_storage_postgres, :repo, :query],
+        fn _event, _measurements, metadata, pid ->
+          if metadata.query =~ ~r/\bFROM\s+"favn_control"\."run_targets"/i do
+            send(pid, {:run_target_row_count, query_row_count(metadata.result)})
+          end
+        end,
+        self()
+      )
+
+    try do
+      assert {:ok, %{items: [%{run_id: ^run_id}]}} =
+               RunStore.page_run_summaries(%PageRuns{
+                 scope: fixture.workspace_context,
+                 limit: 1
+               })
+
+      assert_receive {:run_target_row_count, 1}
     after
       :telemetry.detach(handler_id)
     end
@@ -6293,6 +6357,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       10 -> Enum.reverse(acc)
     end
   end
+
+  defp query_row_count({:ok, %{num_rows: count}}), do: count
+  defp query_row_count(%{num_rows: count}), do: count
+  defp query_row_count(_result), do: :unknown
 
   defp capture_repo_queries(function) do
     handler_id = {__MODULE__, self(), make_ref()}

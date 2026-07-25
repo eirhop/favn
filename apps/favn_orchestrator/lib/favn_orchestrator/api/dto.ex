@@ -91,14 +91,14 @@ defmodule FavnOrchestrator.API.DTO do
   @spec schedule(map()) :: map()
   def schedule(entry) when is_map(entry) do
     %{
-      id: FavnOrchestrator.schedule_entry_id(entry),
+      id: Map.get(entry, :id) || FavnOrchestrator.schedule_entry_id(entry),
       pipeline_module: module_name(entry.pipeline_module),
       schedule_id: atom_name(entry.schedule_id),
       cron: entry.cron,
       timezone: entry.timezone,
       overlap: atom_name(entry.overlap),
       missed: atom_name(entry.missed),
-      active: entry.active,
+      active: Map.get(entry, :active, Map.get(entry, :manifest_active?, false)),
       activation_state: atom_name(Map.get(entry, :activation_state)),
       effective_enabled: Map.get(entry, :effective_enabled?),
       runtime_state: atom_name(Map.get(entry, :runtime_state)),
@@ -545,7 +545,7 @@ defmodule FavnOrchestrator.API.DTO do
       metadata_field(Map.get(run, :metadata), :pipeline_identity_ref) ||
         metadata_field(Map.get(run, :metadata), :pipeline_submit_ref)
 
-    ref_to_string(pipeline_ref) || List.first(target_refs)
+    Map.get(run, :target_label) || ref_to_string(pipeline_ref) || List.first(target_refs)
   end
 
   defp datetime(nil), do: nil

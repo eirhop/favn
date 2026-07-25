@@ -172,7 +172,8 @@ defmodule FavnStoragePostgres.Runs.Store do
          rows <- Repo.all(ecto_query),
          page_rows <- Enum.take(rows, query.limit),
          runner_releases <- runner_releases(page_rows),
-         runs <- Enum.map(page_rows, &run_summary(&1, runner_releases)),
+         summary_targets <- summary_targets(page_rows),
+         runs <- Enum.map(page_rows, &run_summary(&1, runner_releases, summary_targets)),
          has_more? <- length(rows) > query.limit do
       {:ok,
        %CursorPage{
@@ -1554,7 +1555,13 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   defp published_event_scope(query, %PlatformContext{}), do: query
 
-  defp run_summary(row, runner_releases) do
+  defp run_summary(row, runner_releases, summary_targets) do
+    target =
+      Map.get(summary_targets, {row.workspace_id, row.run_id}, %{
+        target_label: nil,
+        target_refs: []
+      })
+
     %RunSummary{
       workspace_id: row.workspace_id,
       run_id: row.run_id,
@@ -1572,8 +1579,59 @@ defmodule FavnStoragePostgres.Runs.Store do
       deployment_id: row.deployment_id,
       trigger_type: String.to_existing_atom(row.trigger_type),
       submitted_event_id: row.submitted_event_id,
-      latest_event_id: row.latest_event_id
+      latest_event_id: row.latest_event_id,
+      target_label: target.target_label,
+      target_refs: target.target_refs
     }
+  end
+
+  defp summary_targets([]), do: %{}
+
+  defp summary_targets(rows) do
+    keys = MapSet.new(rows, &{&1.workspace_id, &1.run_id})
+    target_scope = summary_target_scope(rows)
+
+    from(target in RunTarget,
+      where: ^target_scope,
+      where: target.target_kind == "pipeline" or target.is_primary == true,
+      distinct: [target.workspace_id, target.run_id],
+      order_by: [
+        asc: target.workspace_id,
+        asc: target.run_id,
+        desc: fragment("? = 'pipeline'", target.target_kind),
+        desc: target.is_primary,
+        asc: target.target_module,
+        asc: target.target_name
+      ],
+      select: %{
+        workspace_id: target.workspace_id,
+        run_id: target.run_id,
+        target_kind: target.target_kind,
+        target_module: target.target_module,
+        target_name: target.target_name
+      }
+    )
+    |> Repo.all()
+    |> Enum.filter(&MapSet.member?(keys, {&1.workspace_id, &1.run_id}))
+    |> Map.new(fn target ->
+      label = target.target_module <> ":" <> target.target_name
+      refs = if target.target_kind == "asset", do: [label], else: []
+
+      {{target.workspace_id, target.run_id}, %{target_label: label, target_refs: refs}}
+    end)
+  end
+
+  defp summary_target_scope(rows) do
+    rows
+    |> Enum.group_by(& &1.workspace_id, & &1.run_id)
+    |> Enum.reduce(dynamic(false), fn {workspace_id, run_ids}, scope ->
+      run_ids = Enum.uniq(run_ids)
+
+      dynamic(
+        [target],
+        ^scope or (target.workspace_id == ^workspace_id and target.run_id in ^run_ids)
+      )
+    end)
   end
 
   defp runner_releases(rows) do
