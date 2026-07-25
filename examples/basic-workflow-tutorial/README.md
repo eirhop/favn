@@ -45,12 +45,14 @@ $env:FAVN_DATABASE_URL = 'ecto://favn_runtime:favn_runtime_local@127.0.0.1:5432/
 mix favn.dev
 mix favn.reload
 mix favn.run FavnReferenceWorkload.Pipelines.BootstrapCrmDemo --refresh force_all
-mix favn.run FavnReferenceWorkload.Pipelines.DailyCrmAnalytics --refresh force_all
+mix favn.run FavnReferenceWorkload.Pipelines.DailyCrmAnalytics --window day:2026-07-23 --refresh force_all
 ```
 
 With no `--window`, the daily pipeline selects the latest complete daily
-window. To run an exact historical day, pass for example
-`--window day:2026-07-23`. Use `mix favn.backfill` for a range.
+window. The fixture contains facts only through 2026-07-23, so the quick start
+uses that exact day to produce meaningful mart rows. A default run on a later
+date is valid but produces an empty daily mart. Use `mix favn.backfill` for a
+range.
 
 The data plane defaults to `generic_crm.duckdb`. Set `DUCKDB_ADBC_DRIVER` to a
 compatible DuckDB library before starting Favn; on Windows this is normally the

@@ -29,6 +29,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.ScheduleCursor
   alias FavnStoragePostgres.Schemas.ScheduleActivation
+  alias FavnStoragePostgres.Schemas.ScheduleActivationCommand
   alias FavnStoragePostgres.Schemas.ScheduleOccurrence
   alias FavnStoragePostgres.Schemas.WorkspaceRuntimeState
 
@@ -464,35 +465,37 @@ defmodule FavnStoragePostgres.Scheduler.Store do
 
   defp set_activation!(command) do
     workspace_id = command.workspace_context.workspace_id
+    lock_activation_command!(workspace_id, command.command_id)
 
     replayed =
-      from(activation in ScheduleActivation,
+      from(stored_command in ScheduleActivationCommand,
         where:
-          activation.workspace_id == ^workspace_id and
-            activation.last_command_id == ^command.command_id,
-        lock: "FOR UPDATE"
-      )
-      |> Repo.one()
-
-    existing =
-      from(activation in ScheduleActivation,
-        where:
-          activation.workspace_id == ^workspace_id and
-            activation.pipeline_target_id == ^command.pipeline_target_id and
-            activation.schedule_id == ^command.schedule_id,
+          stored_command.workspace_id == ^workspace_id and
+            stored_command.command_id == ^command.command_id,
         lock: "FOR UPDATE"
       )
       |> Repo.one()
 
     case replayed do
-      %ScheduleActivation{request_hash: request_hash} = replayed
+      %ScheduleActivationCommand{request_hash: request_hash, result: result}
       when request_hash == command.request_hash ->
-        activation_result(replayed)
+        decode_activation_result!(result)
 
-      %ScheduleActivation{} ->
+      %ScheduleActivationCommand{} ->
         Repo.rollback(Error.new(:conflict, "schedule activation idempotency conflict"))
 
       nil ->
+        existing =
+          from(activation in ScheduleActivation,
+            where:
+              activation.workspace_id == ^workspace_id and
+                activation.pipeline_target_id == ^command.pipeline_target_id and
+                activation.schedule_id == ^command.schedule_id,
+            lock: "FOR UPDATE"
+          )
+          |> Repo.one()
+
+        previous_state = activation_state(existing, command.schedule_fingerprint)
         version = if(existing, do: existing.version + 1, else: 1)
         now = database_datetime(command.occurred_at)
 
@@ -540,8 +543,32 @@ defmodule FavnStoragePostgres.Scheduler.Store do
           }
         })
 
-        activation_result(activation)
+        result = activation_result(activation, command, previous_state)
+
+        %ScheduleActivationCommand{
+          workspace_id: workspace_id,
+          command_id: command.command_id,
+          request_hash: command.request_hash,
+          result: encode_activation_result(result),
+          inserted_at: now,
+          updated_at: now
+        }
+        |> Repo.insert!()
+
+        result
     end
+  end
+
+  defp lock_activation_command!(workspace_id, command_id) do
+    SQL.query!(
+      Repo,
+      """
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(jsonb_build_array($1::text, $2::text)::text, 0)
+      )
+      """,
+      [workspace_id, command_id]
+    )
   end
 
   defp authorize_occurrence_dispatch!(command) do
@@ -560,6 +587,10 @@ defmodule FavnStoragePostgres.Scheduler.Store do
     occurrence = lock_occurrence!(workspace_id, command.occurrence_id)
 
     cond do
+      occurrence.pipeline_target_id != command.pipeline_target_id or
+          occurrence.schedule_id != command.schedule_id ->
+        Repo.rollback(Error.new(:fenced, "schedule occurrence identity does not match command"))
+
       occurrence.last_command_id == command.command_id and
           occurrence.status in ["dispatching", "completed"] ->
         occurrence_result(occurrence)
@@ -904,6 +935,8 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   defp database_datetime(%DateTime{} = datetime),
     do: DateTime.add(datetime, 0, :microsecond)
 
+  defp database_datetime(nil), do: nil
+
   defp schedule_result({%ScheduleCursor{} = cursor, activation}) do
     %ScheduleResult{
       workspace_id: cursor.workspace_id,
@@ -927,19 +960,108 @@ defmodule FavnStoragePostgres.Scheduler.Store do
     }
   end
 
-  defp activation_result(%ScheduleActivation{} = activation) do
+  defp activation_result(
+         %ScheduleActivation{} = activation,
+         %SetScheduleActivation{} = command,
+         previous_state
+       ) do
     %ScheduleActivationResult{
       workspace_id: activation.workspace_id,
+      schedule_entry_id:
+        persisted_schedule_entry_id(activation.pipeline_target_id, activation.schedule_id),
       pipeline_target_id: activation.pipeline_target_id,
       schedule_id: activation.schedule_id,
+      schedule_fingerprint: command.schedule_fingerprint,
+      previous_state: previous_state,
+      effective_state: if(activation.enabled, do: :enabled, else: :disabled),
       enabled: activation.enabled,
       approved_schedule_fingerprint: activation.approved_schedule_fingerprint,
       version: activation.version,
       actor_id: activation.actor_id,
       reason: activation.reason,
       command_id: activation.last_command_id,
-      decided_at: activation.decided_at
+      decided_at: activation.decided_at,
+      next_due_at: database_datetime(command.next_due_at)
     }
+  end
+
+  defp activation_state(
+         %ScheduleActivation{enabled: true, approved_schedule_fingerprint: fingerprint},
+         fingerprint
+       ),
+       do: :enabled
+
+  defp activation_state(%ScheduleActivation{enabled: true}, _fingerprint), do: :needs_review
+  defp activation_state(_activation, _fingerprint), do: :disabled
+
+  defp encode_activation_result(%ScheduleActivationResult{} = result) do
+    %{
+      "workspace_id" => result.workspace_id,
+      "schedule_entry_id" => result.schedule_entry_id,
+      "pipeline_target_id" => result.pipeline_target_id,
+      "schedule_id" => result.schedule_id,
+      "schedule_fingerprint" => result.schedule_fingerprint,
+      "previous_state" => Atom.to_string(result.previous_state),
+      "effective_state" => Atom.to_string(result.effective_state),
+      "enabled" => result.enabled,
+      "approved_schedule_fingerprint" => result.approved_schedule_fingerprint,
+      "version" => result.version,
+      "actor_id" => result.actor_id,
+      "reason" => result.reason,
+      "command_id" => result.command_id,
+      "decided_at" => DateTime.to_iso8601(result.decided_at),
+      "next_due_at" => encode_datetime(result.next_due_at)
+    }
+  end
+
+  defp decode_activation_result!(result) when is_map(result) do
+    %ScheduleActivationResult{
+      workspace_id: Map.fetch!(result, "workspace_id"),
+      schedule_entry_id: Map.fetch!(result, "schedule_entry_id"),
+      pipeline_target_id: Map.fetch!(result, "pipeline_target_id"),
+      schedule_id: Map.fetch!(result, "schedule_id"),
+      schedule_fingerprint: Map.fetch!(result, "schedule_fingerprint"),
+      previous_state: decode_activation_state!(Map.fetch!(result, "previous_state")),
+      effective_state: decode_effective_state!(Map.fetch!(result, "effective_state")),
+      enabled: Map.fetch!(result, "enabled"),
+      approved_schedule_fingerprint: Map.get(result, "approved_schedule_fingerprint"),
+      version: Map.fetch!(result, "version"),
+      actor_id: Map.fetch!(result, "actor_id"),
+      reason: Map.fetch!(result, "reason"),
+      command_id: Map.fetch!(result, "command_id"),
+      decided_at: decode_datetime!(Map.fetch!(result, "decided_at")),
+      next_due_at: decode_optional_datetime!(Map.get(result, "next_due_at"))
+    }
+  rescue
+    _error -> Repo.rollback(Error.new(:internal, "schedule activation replay is invalid"))
+  end
+
+  defp decode_activation_state!("disabled"), do: :disabled
+  defp decode_activation_state!("enabled"), do: :enabled
+  defp decode_activation_state!("needs_review"), do: :needs_review
+  defp decode_activation_state!(_state), do: raise(ArgumentError, "invalid activation state")
+
+  defp decode_effective_state!("disabled"), do: :disabled
+  defp decode_effective_state!("enabled"), do: :enabled
+  defp decode_effective_state!(_state), do: raise(ArgumentError, "invalid effective state")
+
+  defp encode_datetime(nil), do: nil
+  defp encode_datetime(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp decode_optional_datetime!(nil), do: nil
+  defp decode_optional_datetime!(value), do: decode_datetime!(value)
+
+  defp decode_datetime!(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, 0} -> datetime
+      _invalid -> raise ArgumentError, "invalid activation datetime"
+    end
+  end
+
+  defp persisted_schedule_entry_id(pipeline_target_id, schedule_id) do
+    target = Base.url_encode64(pipeline_target_id, padding: false)
+    name = Base.url_encode64(schedule_id, padding: false)
+    "schedule-v2:" <> target <> ":" <> name
   end
 
   defp schedule_filter(query, %PageSchedules{} = page) do

@@ -100,6 +100,21 @@ defmodule FavnStoragePostgres.Schemas.ScheduleActivation do
   end
 end
 
+defmodule FavnStoragePostgres.Schemas.ScheduleActivationCommand do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "schedule_activation_commands" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:command_id, :string, primary_key: true)
+    field(:request_hash, :binary)
+    field(:result, :map)
+    timestamps(type: :utc_datetime_usec)
+  end
+end
+
 defmodule FavnStoragePostgres.Schemas.CapacityScope do
   @moduledoc false
   use Ecto.Schema

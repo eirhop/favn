@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.Operator.Schedules do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Queries.PageSchedules
+  alias FavnOrchestrator.Persistence.Results.ScheduleActivation
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.ScheduleListEntry
   alias FavnOrchestrator.ScheduleOccurrencePreview
@@ -19,10 +20,19 @@ defmodule FavnOrchestrator.Operator.Schedules do
   alias FavnOrchestrator.SchedulerEntry
 
   @type activation_result :: %{
-          schedule: SchedulerEntry.t(),
-          previous_state: atom(),
-          effective_state: atom(),
-          command_time: DateTime.t()
+          schedule_entry_id: String.t(),
+          pipeline_target_id: String.t(),
+          schedule_id: String.t(),
+          schedule_fingerprint: String.t(),
+          previous_state: :disabled | :enabled | :needs_review,
+          effective_state: :disabled | :enabled,
+          activation_version: pos_integer(),
+          approved_schedule_fingerprint: String.t() | nil,
+          actor_id: String.t(),
+          reason: String.t(),
+          command_id: String.t(),
+          command_time: DateTime.t(),
+          next_due_at: DateTime.t() | nil
         }
 
   @list_filter_keys [
@@ -199,7 +209,7 @@ defmodule FavnOrchestrator.Operator.Schedules do
              actor_id,
              reason
            ),
-         {:ok, _activation} <-
+         {:ok, activation} <-
            Persistence.stores().scheduler.set_activation(%SetScheduleActivation{
              workspace_context: context,
              pipeline_target_id: pipeline_target_id,
@@ -212,16 +222,27 @@ defmodule FavnOrchestrator.Operator.Schedules do
              request_hash: request_hash,
              occurred_at: now,
              next_due_at: next_due_at
-           }),
-         {:ok, after_entry} <- get_entry(context, schedule_id) do
-      {:ok,
-       %{
-         schedule: after_entry,
-         previous_state: before_entry.activation_state,
-         effective_state: after_entry.activation_state,
-         command_time: now
-       }}
+           }) do
+      {:ok, activation_receipt(activation)}
     end
+  end
+
+  defp activation_receipt(%ScheduleActivation{} = activation) do
+    %{
+      schedule_entry_id: activation.schedule_entry_id,
+      pipeline_target_id: activation.pipeline_target_id,
+      schedule_id: activation.schedule_id,
+      schedule_fingerprint: activation.schedule_fingerprint,
+      previous_state: activation.previous_state,
+      effective_state: activation.effective_state,
+      activation_version: activation.version,
+      approved_schedule_fingerprint: activation.approved_schedule_fingerprint,
+      actor_id: activation.actor_id,
+      reason: activation.reason,
+      command_id: activation.command_id,
+      command_time: activation.decided_at,
+      next_due_at: activation.next_due_at
+    }
   end
 
   defp validate_activation_input(actor_id, reason, %DateTime{})

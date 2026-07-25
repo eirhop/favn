@@ -107,12 +107,7 @@ defmodule FavnOrchestrator.API.SchedulesRouter do
              command_id: command_id
            ),
          {:ok, activation} <- result do
-      Response.data(conn, 200, %{
-        schedule: DTO.schedule(activation.schedule),
-        previous_state: activation.previous_state,
-        effective_state: activation.effective_state,
-        command_time: activation.command_time
-      })
+      Response.data(conn, 200, activation)
     else
       {:error, :schedule_not_found} ->
         Response.error(conn, 404, "not_found", "Schedule was not found")

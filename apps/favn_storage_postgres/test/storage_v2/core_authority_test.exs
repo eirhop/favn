@@ -4095,6 +4095,110 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute keys.d in submitted
   end
 
+  test "schedule activation replays return the immutable original receipt", fixture do
+    assert {:ok, %{items: [schedule]}} =
+             FavnOrchestrator.Operator.Schedules.page_entries(
+               fixture.workspace_context,
+               limit: 10
+             )
+
+    first_time = ~U[2026-07-25 09:00:00.123456Z]
+
+    assert {:ok, activated} =
+             FavnOrchestrator.Operator.Schedules.activate(
+               fixture.workspace_context,
+               schedule.id,
+               "operator-a",
+               "reviewed",
+               command_id: "receipt-activate:" <> fixture.workspace_id,
+               now: first_time
+             )
+
+    assert activated.previous_state == :disabled
+    assert activated.effective_state == :enabled
+    assert activated.command_time == first_time
+
+    assert {:ok, _deactivated} =
+             FavnOrchestrator.Operator.Schedules.deactivate(
+               fixture.workspace_context,
+               schedule.id,
+               "operator-a",
+               "maintenance",
+               command_id: "receipt-deactivate:" <> fixture.workspace_id,
+               now: DateTime.add(first_time, 60, :second)
+             )
+
+    assert {:ok, ^activated} =
+             FavnOrchestrator.Operator.Schedules.activate(
+               fixture.workspace_context,
+               schedule.id,
+               "operator-a",
+               "reviewed",
+               command_id: "receipt-activate:" <> fixture.workspace_id,
+               now: DateTime.add(first_time, 120, :second)
+             )
+
+    assert {:ok, current} =
+             FavnOrchestrator.Operator.Schedules.get_entry(
+               fixture.workspace_context,
+               schedule.id
+             )
+
+    assert current.activation_state == :disabled
+  end
+
+  test "schedule activation HTTP retries return the original receipt", fixture do
+    identity = api_identity(fixture, [:operator])
+
+    assert {:ok, %{items: [schedule]}} =
+             FavnOrchestrator.Operator.Schedules.page_entries(
+               fixture.workspace_context,
+               limit: 10
+             )
+
+    path = "/api/orchestrator/v1/schedules/#{schedule.id}"
+
+    activated =
+      api_request(:post, path <> "/activate", %{"reason" => "reviewed"},
+        fixture: fixture,
+        identity: identity,
+        idempotency_key: "http-activate"
+      )
+
+    assert activated.status == 200
+    activated_data = JSON.decode!(activated.resp_body)["data"]
+    assert activated_data["previous_state"] == "disabled"
+    assert activated_data["effective_state"] == "enabled"
+
+    deactivated =
+      api_request(:post, path <> "/deactivate", %{"reason" => "maintenance"},
+        fixture: fixture,
+        identity: identity,
+        idempotency_key: "http-deactivate"
+      )
+
+    assert deactivated.status == 200
+
+    replayed =
+      api_request(:post, path <> "/activate", %{"reason" => "reviewed"},
+        fixture: fixture,
+        identity: identity,
+        idempotency_key: "http-activate"
+      )
+
+    assert replayed.status == 200
+    assert JSON.decode!(replayed.resp_body)["data"] == activated_data
+
+    current =
+      api_request(:get, path, nil,
+        fixture: fixture,
+        identity: identity
+      )
+
+    assert current.status == 200
+    assert JSON.decode!(current.resp_body)["data"]["schedule"]["activation_state"] == "disabled"
+  end
+
   test "claims schedules and dispatches deterministic occurrence intents", fixture do
     assert {:ok, schedule_page} =
              SchedulerStore.page_schedules(%PageSchedules{
@@ -4292,6 +4396,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       occurred_at: DateTime.utc_now()
     }
 
+    assert {:error, %{kind: :fenced}} =
+             SchedulerStore.authorize_occurrence_dispatch(%{
+               authorization
+               | command_id: "occurrence-dispatch-wrong-identity:" <> fixture.workspace_id,
+                 schedule_id: "other-schedule"
+             })
+
     assert {:ok, authorized} = SchedulerStore.authorize_occurrence_dispatch(authorization)
     assert authorized.status == :dispatching
 
@@ -4307,6 +4418,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:ok, deactivated} = SchedulerStore.set_activation(deactivation)
     refute deactivated.enabled
+    assert {:ok, ^activated} = SchedulerStore.set_activation(activation)
+
+    assert {:ok, %{items: [%{activation_enabled: false}]}} =
+             SchedulerStore.page_schedules(%PageSchedules{
+               workspace_context: fixture.workspace_context,
+               limit: 10
+             })
 
     assert {:ok, occurrence_after_deactivation} =
              SchedulerStore.page_occurrences(%PageScheduleOccurrences{

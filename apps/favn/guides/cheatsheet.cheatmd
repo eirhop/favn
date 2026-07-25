@@ -230,6 +230,7 @@ Run and inspect work:
 | `mix favn.run` | Submit an asset or pipeline run; windowed pipelines default to one latest complete window. |
 | `mix favn.backfill` | Submit or inspect backfill work. |
 | `mix favn.runs` | List, inspect, cancel, or retry runs. |
+| `mix favn.schedules` | List, show, preview, activate, or deactivate schedules. |
 | `mix favn.inspect` | Inspect relation metadata and samples. |
 | `mix favn.diagnostics` | Show runtime diagnostics. |
 

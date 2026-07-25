@@ -104,6 +104,54 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     assert version_after_conflict == committed_version
   end
 
+  test "concurrent schedule activation retries return one durable receipt", fixture do
+    assert {:ok, %{items: [schedule | _rest]}} =
+             SchedulerStore.page_schedules(%PageSchedules{
+               workspace_context: fixture.workspace_context,
+               limit: 10
+             })
+
+    occurred_at = DateTime.utc_now()
+    command_id = "concurrent-schedule-activation:" <> fixture.workspace_id
+
+    command = %SetScheduleActivation{
+      workspace_context: fixture.workspace_context,
+      pipeline_target_id: schedule.pipeline_target_id,
+      schedule_id: schedule.schedule_id,
+      schedule_fingerprint: schedule.schedule_fingerprint,
+      enabled: true,
+      actor_id: "concurrency-test",
+      reason: "concurrent retry",
+      command_id: command_id,
+      request_hash: :crypto.hash(:sha256, command_id),
+      occurred_at: occurred_at,
+      next_due_at: DateTime.add(occurred_at, 60, :second)
+    }
+
+    receipts =
+      1..2
+      |> Task.async_stream(fn _index -> SchedulerStore.set_activation(command) end,
+        max_concurrency: 2,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn {:ok, {:ok, receipt}} -> receipt end)
+
+    assert [first, second] = receipts
+    assert first == second
+
+    %{rows: [[1]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT count(*)
+        FROM favn_control.schedule_activation_commands
+        WHERE workspace_id = $1 AND command_id = $2
+        """,
+        [fixture.workspace_id, command_id]
+      )
+  end
+
   setup_all do
     url =
       System.get_env("FAVN_DATABASE_URL") ||

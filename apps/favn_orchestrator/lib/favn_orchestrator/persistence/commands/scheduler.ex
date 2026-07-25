@@ -349,11 +349,20 @@ defmodule FavnOrchestrator.Persistence.Results.Schedule do
 end
 
 defmodule FavnOrchestrator.Persistence.Results.ScheduleActivation do
-  @moduledoc "Persisted workspace decision for one stable schedule identity."
+  @moduledoc """
+  Immutable receipt for one persisted workspace schedule decision.
+
+  The receipt is stored per command so an exact retry returns the original
+  states and timestamps even after later schedule commands.
+  """
   @enforce_keys [
     :workspace_id,
+    :schedule_entry_id,
     :pipeline_target_id,
     :schedule_id,
+    :schedule_fingerprint,
+    :previous_state,
+    :effective_state,
     :enabled,
     :version,
     :actor_id,
@@ -363,28 +372,38 @@ defmodule FavnOrchestrator.Persistence.Results.ScheduleActivation do
   ]
   defstruct [
     :workspace_id,
+    :schedule_entry_id,
     :pipeline_target_id,
     :schedule_id,
+    :schedule_fingerprint,
+    :previous_state,
+    :effective_state,
     :enabled,
     :approved_schedule_fingerprint,
     :version,
     :actor_id,
     :reason,
     :command_id,
-    :decided_at
+    :decided_at,
+    :next_due_at
   ]
 
   @type t :: %__MODULE__{
           workspace_id: String.t(),
+          schedule_entry_id: String.t(),
           pipeline_target_id: String.t(),
           schedule_id: String.t(),
+          schedule_fingerprint: String.t(),
+          previous_state: :disabled | :enabled | :needs_review,
+          effective_state: :disabled | :enabled,
           enabled: boolean(),
           approved_schedule_fingerprint: String.t() | nil,
           version: pos_integer(),
           actor_id: String.t(),
           reason: String.t(),
           command_id: String.t(),
-          decided_at: DateTime.t()
+          decided_at: DateTime.t(),
+          next_due_at: DateTime.t() | nil
         }
 end
 

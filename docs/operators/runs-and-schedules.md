@@ -356,6 +356,12 @@ mix favn.schedules deactivate SCHEDULE_ID --reason "maintenance"
 5. Disable schedules that should stop future submissions.
 6. After changing a schedule, re-read the schedule entry and diagnostics.
 
+Activation and deactivation return an immutable command receipt: the original
+previous and effective states, activation version, approved fingerprint,
+decision time, and resulting next due time. Repeating the same idempotency key
+and command content returns that exact receipt even after later schedule
+changes. Use `mix favn.schedules show` for current live state.
+
 Schedule overlap is not execution retry. `:allow` admits an independent run
 with independent pins, `:forbid` admits none while the tracked run is active,
 and `:queue_one` remembers one occurrence until it can be admitted. A run

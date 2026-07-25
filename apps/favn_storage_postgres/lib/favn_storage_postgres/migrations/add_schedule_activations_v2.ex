@@ -32,7 +32,10 @@ defmodule FavnStoragePostgres.Migrations.AddScheduleActivationsV2 do
       constraint(:schedule_activations, :schedule_activations_values_valid,
         prefix: @prefix,
         check:
-          "version > 0 AND octet_length(actor_id) BETWEEN 1 AND 255 AND " <>
+          "octet_length(workspace_id) BETWEEN 1 AND 255 AND " <>
+            "octet_length(pipeline_target_id) BETWEEN 1 AND 255 AND " <>
+            "octet_length(schedule_id) BETWEEN 1 AND 255 AND " <>
+            "version > 0 AND octet_length(actor_id) BETWEEN 1 AND 255 AND " <>
             "octet_length(reason) BETWEEN 1 AND 2048 AND " <>
             "octet_length(last_command_id) BETWEEN 1 AND 255 AND " <>
             "octet_length(request_hash) = 32 AND " <>
@@ -41,9 +44,66 @@ defmodule FavnStoragePostgres.Migrations.AddScheduleActivationsV2 do
       )
     )
 
+    create(
+      constraint(:schedule_activations, :schedule_activations_identifier_lengths_v2,
+        prefix: @prefix,
+        check:
+          "octet_length(workspace_id) BETWEEN 1 AND 255 AND " <>
+            "octet_length(pipeline_target_id) BETWEEN 1 AND 255 AND " <>
+            "octet_length(schedule_id) BETWEEN 1 AND 255 AND " <>
+            "octet_length(actor_id) BETWEEN 1 AND 255 AND " <>
+            "octet_length(last_command_id) BETWEEN 1 AND 255"
+      )
+    )
+
     execute("""
     ALTER TABLE #{@prefix}.schedule_activations
     ADD CONSTRAINT schedule_activations_workspace_fk
+    FOREIGN KEY (workspace_id)
+    REFERENCES #{@prefix}.workspaces(workspace_id)
+    ON DELETE RESTRICT
+    """)
+
+    create table(:schedule_activation_commands, prefix: @prefix, primary_key: false) do
+      add(:workspace_id, :text, null: false, primary_key: true)
+      add(:command_id, :text, null: false, primary_key: true)
+      add(:request_hash, :binary, null: false)
+      add(:result, :map, null: false)
+      timestamps(type: :timestamptz)
+    end
+
+    create(
+      constraint(:schedule_activation_commands, :schedule_activation_commands_values_valid,
+        prefix: @prefix,
+        check:
+          "octet_length(workspace_id) BETWEEN 1 AND 255 AND " <>
+            "octet_length(command_id) BETWEEN 1 AND 255 AND " <>
+            "octet_length(request_hash) = 32 AND " <>
+            "octet_length(result::text) BETWEEN 2 AND 65536"
+      )
+    )
+
+    create(
+      constraint(
+        :schedule_activation_commands,
+        :schedule_activation_commands_identifier_lengths_v2,
+        prefix: @prefix,
+        check:
+          "octet_length(workspace_id) BETWEEN 1 AND 255 AND " <>
+            "octet_length(command_id) BETWEEN 1 AND 255"
+      )
+    )
+
+    create(
+      constraint(:schedule_activation_commands, :schedule_activation_commands_payload_bounds_v2,
+        prefix: @prefix,
+        check: "octet_length(result::text) BETWEEN 2 AND 65536"
+      )
+    )
+
+    execute("""
+    ALTER TABLE #{@prefix}.schedule_activation_commands
+    ADD CONSTRAINT schedule_activation_commands_workspace_fk
     FOREIGN KEY (workspace_id)
     REFERENCES #{@prefix}.workspaces(workspace_id)
     ON DELETE RESTRICT
@@ -148,6 +208,7 @@ defmodule FavnStoragePostgres.Migrations.AddScheduleActivationsV2 do
       )
     )
 
+    drop(table(:schedule_activation_commands, prefix: @prefix))
     drop(table(:schedule_activations, prefix: @prefix))
   end
 end

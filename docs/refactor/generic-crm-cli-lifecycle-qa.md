@@ -18,7 +18,7 @@ implementation evidence and is not a public product contract.
 | --- | --- |
 | Full refresh | `Pipelines.BootstrapCrmDemo`, landing extracts, Source.Accounts, Core.Customers, Mart.AccountHealth |
 | Daily windows and lookback | `Pipelines.DailyCrmAnalytics`, daily Source/Core/Mart assets |
-| Data contracts and checks | Explicit Source/Core/Mart contracts and Mart.AccountHealth candidate check |
+| Data contracts and checks | Explicit Source/Mart contracts, Core checks, and Mart.AccountHealth candidate check |
 | Retry | Side-effect-free `Lifecycle.RetryProbe` with an authored three-attempt policy |
 | Cancellation | Side-effect-free 30-second `Lifecycle.CancellationProbe` |
 | Schedules | Ten-second `Pipelines.LifecycleScheduleProbe`, inactive by default |

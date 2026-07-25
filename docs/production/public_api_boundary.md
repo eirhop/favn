@@ -69,7 +69,7 @@ The stable `v1` API should focus on the parts users build authored projects on:
   that explicitly document deferred-value support
 - supported local commands: `mix favn.init`, `mix favn.doctor`,
   `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
-  `mix favn.runs`, `mix favn.reload`,
+  `mix favn.runs`, `mix favn.schedules`, `mix favn.reload`,
   `mix favn.inspect`, `mix favn.diagnostics`, `mix favn.stop`,
   and `mix favn.read_doc`
 
