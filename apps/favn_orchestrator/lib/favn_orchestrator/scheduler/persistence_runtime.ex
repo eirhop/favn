@@ -112,7 +112,13 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
 
           next
 
-        {:error, reason} when reason in [:runtime_starting, :runtime_draining] ->
+        {:error, reason}
+        when reason in [
+               :runtime_starting,
+               :runtime_draining,
+               :runtime_maintenance,
+               :runtime_not_accepting
+             ] ->
           state
       end
 
