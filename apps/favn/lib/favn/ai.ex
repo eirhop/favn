@@ -243,7 +243,12 @@ defmodule Favn.AI do
     and `Mix.Tasks.Favn.Inspect`.
     `mix favn.runs cancel RUN_ID` requests cancellation through the local
     orchestrator HTTP boundary; add `--wait` to poll the run until it is
-    terminal. `mix favn.inspect ...` is the structured local data-inspection
+    terminal. Run summaries use persisted pipeline identity or asset refs for
+    their target label, independent of the currently active manifest. Public
+    lifecycle task failures expose a bounded operation/status/code/message,
+    allowlisted scalar details, and a next step; never derive diagnostics by
+    inspecting arbitrary HTTP payloads or internal failure terms.
+    `mix favn.inspect ...` is the structured local data-inspection
     entrypoint. Favn does not expose an arbitrary SQL query command; stop Favn
     before opening a file-backed DuckDB database in the DuckDB CLI.
   - To run local tooling, read `FavnLocal`, then `apps/favn_local/README.md`.

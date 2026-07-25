@@ -262,7 +262,9 @@ Common failures:
 ## Inspect A Run
 
 1. Start with the run id returned by submission.
-2. Read the run summary to see current state.
+2. Read the run summary to see current state. `mix favn.runs list` prints the
+   persisted pipeline identity when available and otherwise the persisted asset
+   target refs, so completed history does not depend on the current manifest.
 3. Open the run detail to inspect events, attempts, windows, logs, and errors
    exposed by operator tooling.
 4. If the run is still active, check runner availability and in-flight diagnostics
@@ -272,6 +274,12 @@ Common failures:
 
 Use orchestrator-backed views. Do not infer final state from UI loading state,
 raw storage rows, or runner memory.
+
+CLI failures use one bounded operator-safe shape: operation, HTTP status when
+available, stable error code, short message, allowlisted scalar details, and an
+actionable next step. The CLI never prints arbitrary response payloads,
+credentials, runtime-input secrets, or SQL text. Use the stable code for
+automation; use the next step for interactive recovery.
 
 ## Cancel A Run
 

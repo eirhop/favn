@@ -249,7 +249,11 @@ defmodule FavnOrchestrator.API.DTOTest do
       target_refs: [{SampleAsset, :orders}],
       params: %{api_token: "hidden", limit: 5},
       trigger: %{kind: :manual},
-      metadata: %{source: :test, window_selection: window_selection},
+      metadata: %{
+        source: :test,
+        window_selection: window_selection,
+        pipeline_identity_ref: {SamplePipeline, :daily}
+      },
       result: %{rows: 10},
       pipeline: %{module: SamplePipeline},
       pipeline_context: %{attempt: 1},
@@ -265,6 +269,8 @@ defmodule FavnOrchestrator.API.DTOTest do
              id: "run_1",
              status: "error",
              submit_kind: "manual",
+             target_label: "Elixir.SamplePipeline:daily",
+             target_refs: ["Elixir.SampleAsset:orders"],
              manifest_version_id: "manifest_1",
              required_runner_release_id: FavnTestSupport.runner_release_id(),
              event_seq: 3,

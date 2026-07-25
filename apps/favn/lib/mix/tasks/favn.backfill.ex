@@ -27,6 +27,7 @@ defmodule Mix.Tasks.Favn.Backfill do
   """
 
   alias Favn.CLI
+  alias Favn.CLI.Error
 
   @submit_switches [
     root_dir: :string,
@@ -262,11 +263,17 @@ defmodule Mix.Tasks.Favn.Backfill do
   defp error_message(:mixed_window_range_options),
     do: "--window cannot be combined with --from, --to, or --kind"
 
-  defp error_message({:orchestrator_validation_failed, message}), do: message
+  defp error_message({:orchestrator_validation_failed, message}), do: Error.safe_message(message)
   defp error_message({:plan_file_read_failed, reason}), do: "could not read plan file: #{reason}"
   defp error_message(:invalid_coverage_plan_file), do: "plan file does not contain a JSON object"
   defp error_message(:missing_coverage_requires_asset), do: "target must be an asset"
-  defp error_message(reason), do: "backfill failed: #{inspect(reason)}"
+
+  defp error_message(reason),
+    do:
+      Error.format(reason,
+        context: "backfill",
+        next: "inspect the plan or run with mix favn.backfill status ID"
+      )
 
   defp print_run(title, run) do
     IO.puts(title)

@@ -34,7 +34,9 @@ defmodule Mix.Tasks.Favn.RebuildTest do
     assert Rebuild.error_message(%{
              operation: :plan_rebuild,
              reason: {:http_error, 500, %{error_code: "internal_error"}}
-           }) == "rebuild plan failed: HTTP 500 (internal_error)"
+           }) ==
+             "rebuild plan failed: HTTP 500 [internal_error] the Favn service failed. " <>
+               "Next: check rebuild status and retry only after confirming the current state"
   end
 
   test "prints terminal item counts as completed rebuild progress" do

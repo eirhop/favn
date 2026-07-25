@@ -39,6 +39,7 @@ defmodule Mix.Tasks.Favn.Run do
   """
 
   alias Favn.CLI
+  alias Favn.CLI.Error
 
   @switches [
     root_dir: :string,
@@ -148,13 +149,17 @@ defmodule Mix.Tasks.Favn.Run do
       "--window day:2026-07-23, or use mix favn.backfill TARGET --from ... --to ... for a range"
   end
 
-  def error_message({:orchestrator_validation_failed, message}), do: message
+  def error_message({:orchestrator_validation_failed, message}), do: Error.safe_message(message)
 
-  def error_message(%{operation: operation, reason: reason}) do
-    "orchestrator #{operation_label(operation)} failed: #{format_orchestrator_reason(reason)}"
-  end
+  def error_message(%{operation: _operation} = reason),
+    do:
+      Error.format(reason,
+        context: "run",
+        next: "inspect the active manifest and retry the exact command"
+      )
 
-  def error_message(reason), do: "run failed: #{inspect(reason)}"
+  def error_message(reason),
+    do: Error.format(reason, context: "run", next: "run mix favn.diagnostics")
 
   @doc false
   def terminal_run_error_message(run) do
@@ -177,53 +182,23 @@ defmodule Mix.Tasks.Favn.Run do
   @doc false
   def format_run_error(nil), do: nil
   def format_run_error("nil"), do: nil
-  def format_run_error(error) when is_binary(error), do: error
+  def format_run_error(error) when is_binary(error), do: Error.safe_message(error)
 
   def format_run_error(%{"message" => message}) when is_binary(message) and message != "",
-    do: message
+    do: Error.safe_message(message)
 
   def format_run_error(%{message: message}) when is_binary(message) and message != "",
-    do: message
+    do: Error.safe_message(message)
 
   def format_run_error(%{"reason" => reason}) when is_binary(reason) and reason != "",
-    do: reason
+    do: Error.safe_message(reason)
 
   def format_run_error(%{reason: reason}) when is_binary(reason) and reason != "",
-    do: reason
+    do: Error.safe_message(reason)
 
-  def format_run_error(error), do: inspect(error)
+  def format_run_error(_error), do: "run failed without a safe error message"
 
   defp run_error(run), do: run["error"] || run[:error]
-
-  defp operation_label(operation) when is_atom(operation),
-    do: operation |> Atom.to_string() |> String.replace("_", " ")
-
-  @doc false
-  def format_orchestrator_reason({:http_error, status, payload}) do
-    message = get_in(payload, ["error", "message"])
-    details = get_in(payload, ["error", "details"])
-
-    case message do
-      message when is_binary(message) and message != "" ->
-        "HTTP #{status}: #{message}" <> format_orchestrator_details(details)
-
-      _other ->
-        "HTTP #{status}: #{inspect(payload)}"
-    end
-  end
-
-  def format_orchestrator_reason(reason), do: inspect(reason)
-
-  defp format_orchestrator_details(%{"reason" => reason}) when is_binary(reason) and reason != "",
-    do: " (reason: " <> reason <> ")"
-
-  defp format_orchestrator_details(%{reason: reason}) when is_binary(reason) and reason != "",
-    do: " (reason: " <> reason <> ")"
-
-  defp format_orchestrator_details(details) when is_map(details) and map_size(details) > 0,
-    do: " (details: " <> inspect(details) <> ")"
-
-  defp format_orchestrator_details(_details), do: ""
 
   defp print_run(run, target) do
     IO.puts("Submitted run")

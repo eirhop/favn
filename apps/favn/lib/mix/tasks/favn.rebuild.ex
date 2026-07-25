@@ -18,6 +18,7 @@ defmodule Mix.Tasks.Favn.Rebuild do
   """
 
   alias Favn.CLI
+  alias Favn.CLI.Error
 
   @plan_switches [root_dir: :string, reason: :string]
   @start_switches [root_dir: :string, plan_hash: :string]
@@ -337,37 +338,21 @@ defmodule Mix.Tasks.Favn.Rebuild do
       }),
       do: "rebuild plan or operation was not found in this workspace"
 
-  def error_message(%{
-        operation: operation,
-        reason: {:http_error, status, %{error_code: code}}
-      })
-      when is_integer(status) and is_binary(code),
-      do: "#{operation_label(operation)} failed: HTTP #{status} (#{code})"
-
-  def error_message(%{operation: operation, reason: {:connect_failed, _reason}}),
-    do: "#{operation_label(operation)} failed: could not reach the local Favn stack"
-
-  def error_message(%{operation: operation, reason: {:timeout, :request}}),
-    do: "#{operation_label(operation)} failed: the local request timed out"
-
-  def error_message(%{operation: operation}),
-    do: "#{operation_label(operation)} failed: invalid response from the local Favn stack"
+  def error_message(%{operation: _operation} = reason),
+    do:
+      Error.format(reason,
+        context: "rebuild",
+        next: "check rebuild status and retry only after confirming the current state"
+      )
 
   def error_message(:invalid_asset_target), do: "rebuild target is not valid"
-  def error_message(_reason), do: "rebuild request failed"
 
-  defp operation_label(:plan_rebuild), do: "rebuild plan"
-  defp operation_label(:start_rebuild), do: "rebuild start"
-  defp operation_label(:get_rebuild), do: "rebuild status"
-  defp operation_label(:cancel_rebuild), do: "rebuild cancel"
-  defp operation_label(:retry_rebuild), do: "rebuild retry"
-  defp operation_label(:reconcile_rebuild), do: "rebuild reconcile"
-
-  defp operation_label(operation) when is_atom(operation) do
-    operation
-    |> Atom.to_string()
-    |> String.replace("_", " ")
-  end
+  def error_message(reason),
+    do:
+      Error.format(reason,
+        context: "rebuild",
+        next: "create a new plan or inspect the existing operation"
+      )
 
   defp usage do
     "mix favn.rebuild plan ASSET --reason REASON | start PLAN_ID --plan-hash HASH | status OPERATION_ID | cancel OPERATION_ID --reason REASON | retry OPERATION_ID | reconcile OPERATION_ID"

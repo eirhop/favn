@@ -18,6 +18,7 @@ defmodule Mix.Tasks.Favn.Schedules do
   """
 
   alias Favn.CLI
+  alias Favn.CLI.Error
 
   @root_switches [root_dir: :string]
   @preview_switches [root_dir: :string, limit: :integer]
@@ -116,6 +117,13 @@ defmodule Mix.Tasks.Favn.Schedules do
   defp print_json({:error, reason}), do: Mix.raise(error_message(reason))
   defp value(map, key), do: Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
   defp error_message(:not_running), do: "Favn is not running; start it with mix favn.dev"
-  defp error_message(reason), do: "schedule command failed: #{inspect(reason)}"
+
+  defp error_message(reason),
+    do:
+      Error.format(reason,
+        context: "schedule command",
+        next: "list schedules and retry with the exact schedule id"
+      )
+
   defp usage, do: "mix favn.schedules list|show|preview|activate|deactivate"
 end

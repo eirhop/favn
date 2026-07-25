@@ -56,6 +56,9 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   use a separate authority boundary.
 - Mutating HTTP commands atomically commit idempotency state, domain mutation,
   audit, outbox, and replay result.
+- Lifecycle CLI commands show persisted run target identities and bounded,
+  redacted errors with stable codes and recovery guidance instead of dumping
+  internal response payloads.
 - Password auth uses Argon2id. Actors, memberships, credential hashes, session-token
   hashes, revocation, access versions, and audit records are durable PostgreSQL data.
 - SSE and cross-node notifications use durable cursors; PubSub and PostgreSQL
