@@ -772,6 +772,9 @@ defmodule Favn.SQL.Client do
 
       :create ->
         :create
+
+      {:error, %Error{}} = error ->
+        error
     end
   end
 
