@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias FavnOrchestrator.RuntimeInputPins
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
+  alias FavnOrchestrator.RunServer.Execution.PreSubmitFailure
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
   alias FavnOrchestrator.RunServer.Execution.StageEntry
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
@@ -379,8 +380,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       do_submit_admitted_entry(%{
         ctx
         | work: prepared,
-          materialization_claim:
-            MaterializationClaims.enrich(ctx.materialization_claim, prepared)
+          materialization_claim: MaterializationClaims.enrich(ctx.materialization_claim, prepared)
       })
     else
       {:error, reason} -> fail_unsubmitted_entry(ctx, ctx.work.asset_ref, reason)
@@ -886,6 +886,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp stop_after_stage_build_failure(ctx, node_key, reason) do
+    reason = PreSubmitFailure.normalize(reason)
+
     failure =
       (ctx.terminal_failure || %{status: :error, error: reason})
       |> Map.update(:node_statuses, %{node_key => :error}, fn statuses ->

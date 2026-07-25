@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
 
   alias Favn.Manifest.Version
   alias Favn.Plan
+  alias Favn.Contracts.RunnerError
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
@@ -109,6 +110,10 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
 
     assert data.window == window
     assert data.node_key == node_key
+
+    assert %RunnerError{phase: :pre_submit, outcome: :safe_failure, retryable?: false} =
+             data.error
+
     assert_receive {:commit_transition, command}
     assert command.event.event_type == :step_failed
     assert command.event.data.window == window
