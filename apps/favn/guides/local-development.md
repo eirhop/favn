@@ -91,6 +91,9 @@ local browser in as the generated administrator automatically; the credential
 file remains available for recovery and non-browser clients. Changing the
 configured workspace, signing out, or reaching the normal session expiry
 creates a fresh local browser session without presenting a password form.
+Before starting the View, `mix favn.dev` builds its CSS and JavaScript from the
+selected Favn dependency checkout so ignored files from an older checkout
+cannot be served accidentally.
 
 Source development logs at `info` by default in both the local control plane and
 runner. Use `FAVN_LOG_LEVEL=debug mix favn.dev` for verbose troubleshooting or

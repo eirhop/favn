@@ -11,6 +11,7 @@ Purpose: Docker-free source-development lifecycle behind the public
 - Orchestrator and View startup in the current BEAM;
 - one child runner BEAM using the consumer's compiled code;
 - reload sequencing, runner replacement admission, and manifest deployment;
+- building the current dependency-owned View assets before source startup;
 - a small `.favn/local/` locator and owner-only local credentials, including
   the stable local View key needed to preserve browser sessions across restart.
 
@@ -40,6 +41,8 @@ artifact construction is owned by `FavnAuthoring.Deployment`.
 - normal stop/start preserves the local View password and browser-session key;
   changing the configured workspace rotates the browser-session key;
 - source development explicitly enables passwordless loopback View login;
+- source startup serves CSS and JavaScript built from the selected Favn checkout,
+  never stale ignored files left in `favn_view/priv/static`;
   other View boot paths retain normal authentication;
 - stop is idempotent and never deletes durable data;
 - obsolete Docker-era `.favn/` state is rejected instead of silently reused.

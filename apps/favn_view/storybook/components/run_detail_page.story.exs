@@ -65,6 +65,14 @@ defmodule FavnView.Storybook.Components.RunDetailPage do
           run_id: "run_unreadable",
           nav_items: RunDetailPage.sample_nav_items()
         }
+      },
+      %Variation{
+        id: :committed_run_loading,
+        attributes: %{
+          run: Map.put(RunDetailPage.not_found_run(), :initializing?, true),
+          run_id: "run_committed",
+          nav_items: RunDetailPage.sample_nav_items()
+        }
       }
     ]
   end

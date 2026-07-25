@@ -27,6 +27,7 @@ defmodule Mix.Tasks.Favn.Dev do
       )
 
     Mix.Task.run("compile")
+    build_view_assets!()
     print_start()
 
     case FavnLocal.dev(Keyword.put(opts, :progress_fun, &print_progress/1)) do
@@ -55,6 +56,16 @@ defmodule Mix.Tasks.Favn.Dev do
     do: "obsolete Docker-era local state exists at #{path}; remove that generated directory once"
 
   defp error_message(reason), do: "failed to start Favn development: #{inspect(reason)}"
+
+  defp build_view_assets! do
+    case Mix.Project.deps_paths() do
+      %{favn_view: view_root} ->
+        FavnLocal.Assets.build!(view_root)
+
+      _missing ->
+        Mix.raise("failed to locate favn_view source assets")
+    end
+  end
 
   @doc false
   @spec print_start() :: :ok

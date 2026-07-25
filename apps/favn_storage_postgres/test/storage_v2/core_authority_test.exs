@@ -112,6 +112,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.PageRebuildOperations
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.CommandIdempotency
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.Persistence.Selectors.ActorByUsername
   alias FavnOrchestrator.Persistence.Selectors.SessionByTokenHash
@@ -2347,7 +2348,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       "kind" => "day",
       "from" => "2026-07-01",
       "to" => "2026-07-03",
-      "timezone" => "Etc/UTC"
+      "timezone" => "Europe/Oslo"
     }
 
     assert {:ok, %{window_count: 3, target_id: target_id, window_selection: window_selection}} =
@@ -2376,6 +2377,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert backfill.status == :ready
     assert backfill.expected_window_count == 3
     assert backfill.appended_window_count == 3
+    assert backfill.range_start == ~U[2026-06-30 22:00:00.000000Z]
+    assert backfill.range_end == ~U[2026-07-03 22:00:00.000000Z]
 
     assert {:ok, pipeline_root} =
              RunStore.get_run(%GetRun{
@@ -2392,6 +2395,40 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert length(page.items) == 2
     assert page.has_more?
     assert Enum.all?(page.items, &(&1.status == :ready))
+  end
+
+  test "failed pipeline backfill planning marks its committed root as failed", fixture do
+    root_run_id = "run-backfill-failed-#{System.unique_integer([:positive])}"
+
+    range = %{
+      "kind" => "day",
+      "from" => "2026-07-01",
+      "to" => "2026-07-01",
+      "timezone" => "Etc/UTC"
+    }
+
+    assert {:error, %Error{kind: :invalid, message: "backfill plan metadata is invalid"}} =
+             Backfills.submit_pipeline(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.pipeline_target_id,
+               range,
+               root_run_id: root_run_id,
+               metadata: %{"large" => String.duplicate("x", 70_000)}
+             )
+
+    assert {:ok, root} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: root_run_id
+             })
+
+    assert root.status == :error
+    assert root.event_seq == 2
+    assert root.result[:status] == "failed"
+    assert root.result["type"] == "backfill_submission_failed"
+    assert root.error["kind"] == "invalid"
+    assert root.error["message"] == "backfill plan metadata is invalid"
   end
 
   test "asset backfills use the same resumable V2 ledger", fixture do

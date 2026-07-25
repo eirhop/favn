@@ -13,6 +13,7 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.RunEventRefresh
 
   @refresh_interval_ms 1_500
+  @initial_load_retry_count 10
   @coalesce_refresh_ms 100
   @active_statuses [:pending, :running]
   @valid_modes ~w(overview timeline failures windows events)
@@ -20,7 +21,10 @@ defmodule FavnView.RunDetailLive do
 
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
-    run = load_run(operator_context(socket), run_id, nil, :overview)
+    run =
+      operator_context(socket)
+      |> load_run(run_id, nil, :overview)
+      |> mark_initializing()
 
     socket =
       assign(socket,
@@ -30,6 +34,7 @@ defmodule FavnView.RunDetailLive do
         timeline_state: default_timeline_state(run),
         selected_child_run_id: nil,
         selected_attempt_id: nil,
+        detail_load_attempts_remaining: initial_load_attempts(run),
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
       |> RunEventRefresh.init([:refresh_timer_ref, :fallback_poll_ref])
@@ -85,8 +90,12 @@ defmodule FavnView.RunDetailLive do
         socket.assigns.active_mode
       )
 
+    attempts_remaining = next_load_attempts(socket.assigns.detail_load_attempts_remaining, run)
+    run = Map.put(run, :initializing?, !run.found? and attempts_remaining > 0)
+
     socket
     |> assign(:run, run)
+    |> assign(:detail_load_attempts_remaining, attempts_remaining)
     |> RunEventRefresh.mark_refreshed(run_event_sequences(run))
     |> sync_run_event_refresh()
     |> maybe_schedule_fallback_poll()
@@ -418,6 +427,22 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp maybe_schedule_fallback_poll(
+         %{
+           assigns: %{
+             run: %{found?: false},
+             detail_load_attempts_remaining: attempts_remaining
+           }
+         } = socket
+       )
+       when attempts_remaining > 0 do
+    if connected?(socket) do
+      LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_run, @refresh_interval_ms)
+    else
+      socket
+    end
+  end
+
+  defp maybe_schedule_fallback_poll(
          %{assigns: %{run_events_live?: false, run: %{active?: true}}} = socket
        ) do
     if connected?(socket) do
@@ -436,6 +461,16 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp maybe_schedule_fallback_poll(socket), do: socket
+
+  defp mark_initializing(%{found?: false} = run), do: Map.put(run, :initializing?, true)
+  defp mark_initializing(run), do: Map.put(run, :initializing?, false)
+
+  defp initial_load_attempts(%{found?: false}), do: @initial_load_retry_count
+  defp initial_load_attempts(_run), do: 0
+
+  defp next_load_attempts(_remaining, %{found?: true}), do: 0
+  defp next_load_attempts(remaining, _run) when remaining > 0, do: remaining - 1
+  defp next_load_attempts(_remaining, _run), do: 0
 
   defp sync_run_event_refresh(%{assigns: %{run: run}} = socket) do
     RunEventRefresh.sync_subscriptions(

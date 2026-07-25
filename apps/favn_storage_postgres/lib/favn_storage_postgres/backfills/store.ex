@@ -646,7 +646,11 @@ defmodule FavnStoragePostgres.Backfills.Store do
 
   defp decode_datetime(_value), do: {:error, :invalid_datetime}
 
-  defp database_datetime(%DateTime{} = datetime), do: DateTime.add(datetime, 0, :microsecond)
+  defp database_datetime(%DateTime{} = datetime) do
+    datetime
+    |> DateTime.shift_zone!("Etc/UTC")
+    |> DateTime.add(0, :microsecond)
+  end
 
   defp database_now! do
     %{rows: [[now]]} = SQL.query!(Repo, "SELECT clock_timestamp()", [])
@@ -808,27 +812,48 @@ defmodule FavnStoragePostgres.Backfills.Store do
   end
 
   defp validate_start(command) do
-    if workspace_context?(command.workspace_context) and
-         Enum.all?(
-           [
-             command.command_id,
-             command.backfill_id,
-             command.root_run_id,
-             command.deployment_id,
-             command.manifest_version_id,
-             command.target_id
-           ],
-           &valid_id?/1
-         ) and command.target_kind in [:asset, :pipeline] and
-         match?(%DateTime{}, command.range_start) and match?(%DateTime{}, command.range_end) and
-         DateTime.compare(command.range_start, command.range_end) == :lt and
-         valid_plan_size?(command.expected_window_count, command.expected_batch_count) and
-         valid_hash?(command.plan_hash) and is_map(command.metadata) and
-         Payload.validate(command.metadata, 64 * 1_024) == :ok and
-         match?(%DateTime{}, command.occurred_at),
-       do: :ok,
-       else: {:error, ErrorMapper.map(:invalid)}
+    identities = [
+      command.command_id,
+      command.backfill_id,
+      command.root_run_id,
+      command.deployment_id,
+      command.manifest_version_id,
+      command.target_id
+    ]
+
+    cond do
+      not workspace_context?(command.workspace_context) ->
+        invalid_start("backfill workspace context is invalid")
+
+      not Enum.all?(identities, &valid_id?/1) ->
+        invalid_start("backfill plan identity is invalid")
+
+      command.target_kind not in [:asset, :pipeline] ->
+        invalid_start("backfill target kind is invalid")
+
+      not match?(%DateTime{}, command.range_start) or
+        not match?(%DateTime{}, command.range_end) or
+          DateTime.compare(command.range_start, command.range_end) != :lt ->
+        invalid_start("backfill range bounds are invalid")
+
+      not valid_plan_size?(command.expected_window_count, command.expected_batch_count) ->
+        invalid_start("backfill plan size is invalid")
+
+      not valid_hash?(command.plan_hash) ->
+        invalid_start("backfill plan hash is invalid")
+
+      not is_map(command.metadata) or Payload.validate(command.metadata, 64 * 1_024) != :ok ->
+        invalid_start("backfill plan metadata is invalid")
+
+      not match?(%DateTime{}, command.occurred_at) ->
+        invalid_start("backfill occurrence time is invalid")
+
+      true ->
+        :ok
+    end
   end
+
+  defp invalid_start(message), do: {:error, Error.new(:invalid, message)}
 
   defp validate_append(command) do
     windows = command.windows
