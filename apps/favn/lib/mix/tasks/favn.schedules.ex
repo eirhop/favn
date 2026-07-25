@@ -23,6 +23,14 @@ defmodule Mix.Tasks.Favn.Schedules do
   @root_switches [root_dir: :string]
   @preview_switches [root_dir: :string, limit: :integer]
   @change_switches [root_dir: :string, reason: :string]
+  @output_keys %{
+    "activation_state" => :activation_state,
+    "due_at" => :due_at,
+    "id" => :id,
+    "next_due_at" => :next_due_at,
+    "status" => :status,
+    "window" => :window
+  }
 
   @impl Mix.Task
   def run(args) do
@@ -104,18 +112,31 @@ defmodule Mix.Tasks.Favn.Schedules do
   defp print_list({:error, reason}), do: Mix.raise(error_message(reason))
 
   defp print_preview({:ok, occurrences}) do
-    Enum.each(occurrences, fn occurrence ->
-      IO.puts(
-        "due_at=#{value(occurrence, "due_at")} status=#{value(occurrence, "status")} " <>
-          "window=#{inspect(value(occurrence, "window"))}"
-      )
-    end)
+    occurrences
+    |> preview_lines()
+    |> Enum.each(&IO.puts/1)
   end
 
   defp print_preview({:error, reason}), do: Mix.raise(error_message(reason))
+
+  @doc false
+  def preview_lines(occurrences) do
+    Enum.map(occurrences, fn occurrence ->
+      "due_at=#{value(occurrence, "due_at")} status=#{value(occurrence, "status")} " <>
+        "window=#{inspect(value(occurrence, "window"))}"
+    end)
+  end
+
   defp print_json({:ok, payload}), do: IO.puts(JSON.encode!(payload))
   defp print_json({:error, reason}), do: Mix.raise(error_message(reason))
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
+
+  defp value(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Map.fetch!(@output_keys, key))
+    end
+  end
+
   defp error_message(:not_running), do: "Favn is not running; start it with mix favn.dev"
 
   defp error_message(reason),

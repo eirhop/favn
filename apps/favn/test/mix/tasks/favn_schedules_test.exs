@@ -25,4 +25,26 @@ defmodule Mix.Tasks.Favn.SchedulesTest do
                "maintenance"
              ])
   end
+
+  test "formats preview response keys without dynamic atom conversion" do
+    assert [
+             ~s(due_at=2026-07-25T12:00:00Z status=due window=%{"key" => "day:2026-07-24"})
+           ] =
+             Schedules.preview_lines([
+               %{
+                 "due_at" => "2026-07-25T12:00:00Z",
+                 "status" => "due",
+                 "window" => %{"key" => "day:2026-07-24"}
+               }
+             ])
+
+    assert ["due_at=2026-07-25T12:00:00Z status=due window=%{key: \"day:2026-07-24\"}"] =
+             Schedules.preview_lines([
+               %{
+                 due_at: "2026-07-25T12:00:00Z",
+                 status: "due",
+                 window: %{key: "day:2026-07-24"}
+               }
+             ])
+  end
 end
