@@ -333,7 +333,7 @@ defmodule FavnOrchestrator.Persistence.Results.Schedule do
           schedule_id: String.t(),
           schedule_fingerprint: String.t(),
           definition: map(),
-          next_due_at: DateTime.t(),
+          next_due_at: DateTime.t() | nil,
           cursor: map(),
           version: pos_integer(),
           activation_enabled: boolean() | nil,
