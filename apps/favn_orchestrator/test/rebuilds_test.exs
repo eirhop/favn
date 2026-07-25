@@ -276,6 +276,15 @@ defmodule FavnOrchestrator.RebuildsTest do
     assert Ecto.UUID.cast(root_action.candidate_generation.target_generation_id) != :error
     assert Ecto.UUID.cast(downstream_action.candidate_generation.target_generation_id) != :error
 
+    assert [
+             %{
+               target_generation_id: nil,
+               evidence_generation_id: "ag_" <> _digest,
+               data_plane_marker: nil,
+               binding_version: nil
+             }
+           ] = root_action.pinned_input_generation_ids
+
     assert [%{target_id: pinned_target, data_plane_marker: marker}] =
              downstream_action.pinned_input_generation_ids
 
@@ -403,12 +412,22 @@ defmodule FavnOrchestrator.RebuildsTest do
   end
 
   defp version do
+    landing_ref = {__MODULE__.Landing, :asset}
     root_ref = {__MODULE__.Root, :asset}
     downstream_ref = {__MODULE__.Downstream, :asset}
     inactive_upstream_ref = {__MODULE__.InactiveUpstream, :asset}
     observer_ref = {__MODULE__.Observer, :asset}
 
-    {root, root_package} = persisted_asset(root_ref, "root", [])
+    landing = %Asset{
+      ref: landing_ref,
+      module: elem(landing_ref, 0),
+      name: elem(landing_ref, 1),
+      type: :elixir,
+      depends_on: [],
+      semantic_generation_id: "ag_" <> String.duplicate("a", 64)
+    }
+
+    {root, root_package} = persisted_asset(root_ref, "root", [landing_ref])
 
     {downstream, downstream_package} =
       persisted_asset(downstream_ref, "downstream", [root_ref])
@@ -425,12 +444,12 @@ defmodule FavnOrchestrator.RebuildsTest do
     }
 
     manifest =
-      %Manifest{assets: [root, downstream, inactive_upstream, observer]}
+      %Manifest{assets: [landing, root, downstream, inactive_upstream, observer]}
       |> FavnTestSupport.with_manifest_graph()
       |> FavnTestSupport.with_manifest_contract()
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "manifest-rebuild-test")
-    [root, downstream, inactive_upstream, _observer] = version.manifest.assets
+    [_landing, root, downstream, inactive_upstream, _observer] = version.manifest.assets
 
     {version, root, downstream, inactive_upstream,
      [root_package, downstream_package, inactive_upstream_package]}
@@ -550,7 +569,7 @@ defmodule FavnOrchestrator.RebuildsTest do
 
   defp asset_ref(version, target_id) do
     version.manifest.assets
-    |> Enum.find(&(&1.target_descriptor.target_id == target_id))
+    |> Enum.find(&match?(%Asset{target_descriptor: %{target_id: ^target_id}}, &1))
     |> Map.fetch!(:ref)
   end
 

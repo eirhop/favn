@@ -1279,14 +1279,25 @@ defmodule FavnOrchestrator.Rebuilds do
     action
     |> field(:pinned_input_generation_ids)
     |> Enum.map(fn pin ->
-      binding = Map.fetch!(bindings, field(pin, :target_id))
+      target_id = field(pin, :target_id)
 
-      %{
-        target_id: binding.target_id,
-        target_generation_id: binding.active_generation_id,
-        evidence_generation_id: binding.active_generation_id,
-        physical_relation: binding.active_physical_relation
-      }
+      case Map.get(bindings, target_id) do
+        nil ->
+          %{
+            target_id: target_id,
+            target_generation_id: field(pin, :target_generation_id),
+            evidence_generation_id: field(pin, :evidence_generation_id),
+            physical_relation: field(pin, :physical_relation)
+          }
+
+        binding ->
+          %{
+            target_id: binding.target_id,
+            target_generation_id: binding.active_generation_id,
+            evidence_generation_id: binding.active_generation_id,
+            physical_relation: binding.active_physical_relation
+          }
+      end
     end)
   end
 
