@@ -6,9 +6,11 @@ defmodule FavnReferenceWorkload.Warehouse.Core.OpportunitiesDaily do
   alias FavnReferenceWorkload.Warehouse.Source.{Accounts, DealsDaily}
 
   relation(true)
+  execution_pool(:local_duckdb)
   depends(Accounts)
   depends(DealsDaily)
   window(Favn.Window.daily(timezone: "Etc/UTC", required: true))
+  coverage(from: ~D[2026-07-22], through: :latest_closed, availability_delay: {:hours, 1})
   materialized({:incremental, strategy: :delete_insert, window_column: :occurred_at})
   meta(category: :opportunities, tags: [:core, :daily, :incremental])
 

@@ -6,6 +6,7 @@ defmodule FavnReferenceWorkload.Warehouse.Core.Customers do
   alias FavnReferenceWorkload.Warehouse.Source.{Accounts, Contacts}
 
   relation(true)
+  execution_pool(:local_duckdb)
   depends(Accounts)
   depends(Contacts)
   meta(category: :customers, tags: [:core, :full_refresh])

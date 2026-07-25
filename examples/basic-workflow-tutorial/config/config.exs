@@ -1,5 +1,13 @@
 import Config
 
+workspace_id = System.get_env("CRM_EXAMPLE_WORKSPACE_ID", "local-dev")
+
+duckdb_path =
+  case config_env() do
+    :test -> System.get_env("CRM_EXAMPLE_TEST_DUCKDB_PATH", "generic_crm_test.duckdb")
+    _other -> System.get_env("CRM_EXAMPLE_DUCKDB_PATH", "generic_crm.duckdb")
+  end
+
 case System.get_env("DUCKDB_ADBC_DRIVER") do
   driver when is_binary(driver) and driver != "" ->
     config :favn, :duckdb_adbc,
@@ -20,14 +28,14 @@ config :favn,
   ],
   connections: [
     warehouse: [
-      open: [database: "generic_crm.duckdb"],
+      open: [database: duckdb_path],
       pool: [enabled: true, max_idle_per_key: 1]
     ]
   ],
   execution_pools: [
-    local_landing_write: [max_concurrency: 1]
+    local_duckdb: [max_concurrency: 1]
   ],
-  local: [workspace_id: "local-dev"],
+  dev: [workspace_id: workspace_id],
   runner_plugins: [
     {FavnDuckdbADBC, execution_mode: :in_process}
   ]

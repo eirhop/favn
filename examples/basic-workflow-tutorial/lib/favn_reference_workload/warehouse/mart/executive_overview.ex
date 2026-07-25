@@ -6,9 +6,11 @@ defmodule FavnReferenceWorkload.Warehouse.Mart.ExecutiveOverview do
   alias FavnReferenceWorkload.Warehouse.Mart.{AccountHealth, PipelineDaily}
 
   relation(true)
+  execution_pool(:local_duckdb)
   depends(AccountHealth)
   depends(PipelineDaily)
   window(Favn.Window.daily(timezone: "Etc/UTC", required: true))
+  coverage(from: ~D[2026-07-22], through: :latest_closed, availability_delay: {:hours, 1})
   materialized(:view)
   meta(category: :executive, tags: [:mart, :daily, :ui])
 

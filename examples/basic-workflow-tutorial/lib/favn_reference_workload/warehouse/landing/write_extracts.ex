@@ -7,7 +7,7 @@ defmodule FavnReferenceWorkload.Warehouse.Landing.WriteExtracts do
 
   meta(category: :crm_extracts, tags: [:landing, :multiasset])
   settings(format: "compact_json")
-  execution_pool(:local_landing_write)
+  execution_pool(:local_duckdb)
   depends({FavnReferenceWorkload.Warehouse.Landing.GenerateSeed, :asset})
 
   asset :accounts_snapshot do

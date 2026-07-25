@@ -6,6 +6,7 @@ defmodule FavnReferenceWorkload.Warehouse.Mart.AccountHealth do
   alias FavnReferenceWorkload.Warehouse.Core.Customers
 
   relation(true)
+  execution_pool(:local_duckdb)
   depends(Customers)
   meta(category: :account_health, tags: [:mart, :full_refresh])
 
