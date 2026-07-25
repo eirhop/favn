@@ -101,9 +101,13 @@ defmodule FavnOrchestrator.RebuildsTest do
     end
 
     def page_items(query) do
+      items =
+        Process.get({:rebuild_items, query.operation_id}, [])
+        |> Enum.sort_by(&{&1.ordinal, &1.target_id, &1.item_id})
+
       {:ok,
        %{
-         items: Process.get({:rebuild_items, query.operation_id}, []),
+         items: items,
          has_more?: false,
          next_cursor: nil
        }}

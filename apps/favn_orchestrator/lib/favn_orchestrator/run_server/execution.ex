@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias Favn.Manifest.Version
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
+  alias Favn.TargetIdentity
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.ExecutionAdmission
@@ -419,8 +420,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     assets_by_ref
     |> Enum.reduce(MapSet.new(), fn {ref, asset}, refs ->
-      if asset.target_descriptor &&
-           MapSet.member?(target_ids, asset.target_descriptor.target_id),
+      persisted_target_id = asset.target_descriptor && asset.target_descriptor.target_id
+
+      if MapSet.member?(target_ids, TargetIdentity.for_asset(ref)) or
+           MapSet.member?(target_ids, persisted_target_id),
          do: MapSet.put(refs, ref),
          else: refs
     end)

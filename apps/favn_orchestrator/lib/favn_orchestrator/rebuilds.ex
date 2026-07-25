@@ -1,4 +1,6 @@
 defmodule FavnOrchestrator.Rebuilds do
+  require Logger
+
   @moduledoc "Manual, generation-safe rebuild planning and lifecycle commands."
 
   alias Favn.Coverage.Expected
@@ -37,6 +39,7 @@ defmodule FavnOrchestrator.Rebuilds do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Rebuild.Plan
   alias FavnOrchestrator.Rebuild.RuntimeInputs, as: RebuildRuntimeInputs
+  alias FavnOrchestrator.Rebuilds.ItemDigest
   alias FavnOrchestrator.Rebuild.Telemetry
   alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.RuntimeConfig
@@ -377,7 +380,7 @@ defmodule FavnOrchestrator.Rebuilds do
           end),
         actions: Enum.map(actions, &action_payload/1),
         item_count: length(items),
-        items_digest: item_digest(items)
+        items_digest: ItemDigest.hash(items)
       }
 
       plan = Plan.new(operation_id, expires_at, payload)
@@ -623,13 +626,29 @@ defmodule FavnOrchestrator.Rebuilds do
     payload = operation.plan_payload
 
     with {:ok, runtime} <- ManifestStore.get_runtime_state(context),
-         true <- runtime.manifest_version_id == field(payload, :manifest_version_id),
+         :ok <-
+           ensure_current(
+             runtime.manifest_version_id == field(payload, :manifest_version_id),
+             :active_manifest
+           ),
          {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         true <- version.content_hash == field(payload, :manifest_content_hash),
+         :ok <-
+           ensure_current(
+             version.content_hash == field(payload, :manifest_content_hash),
+             :manifest_content
+           ),
          {:ok, current_bindings} <- target_bindings_by_ids(context, snapshot_target_ids(payload)),
-         true <- binding_snapshot_matches?(current_bindings, payload, operation),
+         :ok <-
+           ensure_current(
+             binding_snapshot_matches?(current_bindings, payload, operation),
+             :target_bindings
+           ),
          {:ok, current_capabilities} <- capabilities_for_payload(version, payload),
-         true <- canonical(current_capabilities) == field(payload, :capabilities),
+         :ok <-
+           ensure_current(
+             canonical(current_capabilities) == field(payload, :capabilities),
+             :runner_capabilities
+           ),
          {:ok, index} <- PlanningIndex.build(version.manifest),
          :ok <-
            validate_live_bindings(
@@ -654,14 +673,31 @@ defmodule FavnOrchestrator.Rebuilds do
              operation.evaluated_at,
              operation.operation_id
            ),
-         true <- item_digest(current_items) == field(payload, :items_digest) do
+         :ok <-
+           ensure_current(
+             ItemDigest.hash(current_items) == field(payload, :items_digest),
+             :runtime_inputs
+           ) do
       :ok
     else
-      false -> {:error, stale_plan_error()}
-      {:error, %Error{} = error} -> {:error, error}
-      {:error, _reason} -> {:error, stale_plan_error()}
+      {:error, {:stale_rebuild_plan, reason}} ->
+        Logger.warning("rebuild plan revalidation failed: #{reason}",
+          operation_id: operation.operation_id,
+          reason: reason
+        )
+
+        {:error, stale_plan_error()}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, _reason} ->
+        {:error, stale_plan_error()}
     end
   end
+
+  defp ensure_current(true, _reason), do: :ok
+  defp ensure_current(false, reason), do: {:error, {:stale_rebuild_plan, reason}}
 
   defp acquire_plan_locks(context, operation, opts) do
     target_ids = write_target_ids(operation.plan_payload)
@@ -1154,22 +1190,6 @@ defmodule FavnOrchestrator.Rebuilds do
       end_at: root_items |> List.last() |> item_boundary(:window_end)
     }
   end
-
-  defp item_payload(item) do
-    Map.take(item, [
-      :target_id,
-      :item_id,
-      :ordinal,
-      :work_kind,
-      :window_key,
-      :window_start,
-      :window_end,
-      :runtime_input_expectation,
-      :candidate_generation_id
-    ])
-  end
-
-  defp item_digest(items), do: Plan.hash(%{items: Enum.map(items, &item_payload/1)})
 
   defp freeze_runtime_inputs(
          context,
