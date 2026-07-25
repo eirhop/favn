@@ -159,12 +159,23 @@ mix favn.run MyApp.Pipelines.Daily --window day:2026-07-23
 mix favn.runs list
 mix favn.runs show RUN_ID
 mix favn.runs cancel RUN_ID
+mix favn.schedules list
+mix favn.schedules show SCHEDULE_ID
+mix favn.schedules preview SCHEDULE_ID --limit 5
+mix favn.schedules activate SCHEDULE_ID --reason "reviewed"
+mix favn.schedules deactivate SCHEDULE_ID --reason "maintenance"
 mix favn.inspect MyApp.Mart:orders
 mix favn.diagnostics
 ```
 
 `mix favn.backfill` and `mix favn.rebuild` use the same connection boundary.
 Run `mix help TASK` for their exact options.
+
+Newly published schedules are inactive in every workspace. Preview and
+explicitly activate each schedule that should submit future work.
+Activation begins with the next due occurrence; it does not replay older missed
+occurrences. Deactivation stops future submissions without cancelling runs that
+were already accepted.
 
 A windowed pipeline without `--window` runs one latest complete window. The
 orchestrator evaluates it once using the pipeline timezone and selected assets'

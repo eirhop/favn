@@ -86,9 +86,11 @@ Read [Runner Plugins And Runner-Local Services](runner-plugins.md).
 
 Schedules are declared in the manifest and acted on by the runtime.
 
-Enabling a schedule affects future submissions. It does not automatically submit
-missed work from the past. Disabling a schedule stops future submissions but does
-not cancel runs already in progress.
+New schedules are inactive in every workspace, including local development.
+An operator must preview and explicitly activate each schedule that should
+submit work. Activation affects future submissions and does not automatically
+submit missed work from the past. Deactivation stops future submissions but
+does not cancel runs that were already accepted.
 
 ## Backfills
 

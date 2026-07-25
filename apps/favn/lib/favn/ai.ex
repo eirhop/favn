@@ -169,6 +169,11 @@ defmodule Favn.AI do
     [Local Development Commands](local-development.html). Planning is read-only
     and start requires the exact reviewed plan id and hash. An unknown activation
     outcome must be reconciled; it is never permission for a blind retry.
+  - To operate authored schedules, read `Mix.Tasks.Favn.Schedules`,
+    `Favn.CLI.Schedules`, and the schedules section of
+    [Runtime Model](runtime-model.html). Newly published schedules are inactive
+    in every workspace. Preview and explicitly activate the schedules that
+    should submit future work; deactivation never cancels an accepted run.
   - To define connection contracts, read `Favn.Connection`; if connection
     modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
     If connection values come from environment variables or secrets, also read
@@ -257,7 +262,7 @@ defmodule Favn.AI do
     BEAM plus one child runner BEAM.
     The public local command surface is `mix favn.init`,
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
-    `mix favn.rebuild`,
+    `mix favn.rebuild`, `mix favn.schedules`,
     `mix favn.runs`, `mix favn.inspect`,
     `mix favn.diagnostics`, `mix favn.reload`,
     `mix favn.stop`, `mix favn.init --target deployment`,
@@ -515,6 +520,7 @@ defmodule Favn.AI do
     relation inspection, or deployment examples rather than asset authoring.
     Use `mix help favn.init`, `mix help favn.backfill`,
     `mix help favn.rebuild`, `mix help favn.run`, `mix help favn.runs`,
+    `mix help favn.schedules`,
     or `mix help favn.inspect` for exact command contracts. The caller loads
     environment variables before invoking Mix.
 

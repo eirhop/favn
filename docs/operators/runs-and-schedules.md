@@ -337,12 +337,24 @@ schedule timeline, restart recovery, and safe ingestion recipes.
 
 ## Operate Schedules
 
+Newly published schedules are inactive in every workspace. Use the supported
+operator boundary rather than changing persisted state directly:
+
+```text
+mix favn.schedules list
+mix favn.schedules show SCHEDULE_ID
+mix favn.schedules preview SCHEDULE_ID --limit 5
+mix favn.schedules activate SCHEDULE_ID --reason "reviewed"
+mix favn.schedules deactivate SCHEDULE_ID --reason "maintenance"
+```
+
 1. List schedules from the active manifest through operator tooling.
 2. Check activation state, runtime state, next due time, last submitted due time,
    and scheduler errors.
 3. Preview upcoming occurrences before enabling a schedule.
 4. Enable schedules that should submit future work.
 5. Disable schedules that should stop future submissions.
+6. After changing a schedule, re-read the schedule entry and diagnostics.
 
 Schedule overlap is not execution retry. `:allow` admits an independent run
 with independent pins, `:forbid` admits none while the tracked run is active,
@@ -350,7 +362,6 @@ and `:queue_one` remembers one occurrence until it can be admitted. A run
 waiting in node backoff is still active for these rules. `missed: :skip | :one |
 :all` controls catch-up occurrences after delayed evaluation, not attempts in
 the existing run.
-6. After changing a schedule, re-read the schedule entry and diagnostics.
 
 Expected result: enabled schedules submit due work through the same orchestrator
 run path as manual runs. Disabled schedules do not submit future work.
@@ -359,7 +370,7 @@ Important rules:
 
 - Enabling starts from the next due occurrence observed at command time. It does
   not automatically submit missed catch-up work.
-- Disabling does not cancel existing in-flight runs.
+- Disabling does not cancel already accepted runs.
 - Schedule state is persisted by the orchestrator storage boundary.
 - Multiple orchestrator nodes may run scheduler workers; durable PostgreSQL
   claims and fencing decide ownership. Process registration is not authority.
