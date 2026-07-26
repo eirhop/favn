@@ -19,6 +19,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Favn.RelationRef
   alias FavnOrchestrator.Persistence.BackfillPlan
   alias FavnOrchestrator.Persistence.Commands.ActivateBackfillPlan
+  alias FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispatch
   alias FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.BackfillMissingProjection
   alias FavnOrchestrator.Persistence.Commands.AppendBackfillPlanBatch
@@ -63,6 +64,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.CommitScheduleEvaluation
   alias FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence
   alias FavnOrchestrator.Persistence.Commands.ScheduleOccurrenceIntent
+  alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Commands.StartBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.StartRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanAction
@@ -508,6 +510,27 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                lease_duration_ms: 30_000,
                limit: 1
              })
+
+    assert {:ok, claimed_page} =
+             RebuildStore.page_items(%PageRebuildItems{
+               workspace_context: fixture.workspace_context,
+               operation_id: operation_id,
+               target_id: fixture.target_id,
+               status: :claimed,
+               limit: 100
+             })
+
+    assert [
+             %{
+               claim_owner: "rebuild-dispatcher",
+               fencing_token: fencing_token,
+               claim_expires_at: %DateTime{},
+               version: version
+             }
+           ] = claimed_page.items
+
+    assert fencing_token == claimed_item.fencing_token
+    assert version == claimed_item.version
 
     assert {:error, %{kind: :fenced}} =
              RebuildStore.transition_item(%TransitionRebuildItem{
@@ -1587,7 +1610,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
               details: %{
                 reason: :historical_manifest_not_activatable,
                 schema_version: 9,
-                current_schema_version: 12
+                current_schema_version: 13
               }
             }} =
              RegistryStore.deploy_manifest(%{
@@ -2365,13 +2388,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert window_selection.requested_anchors == window_selection.effective_anchors
     assert length(window_selection.effective_anchors) == 3
 
+    root_run_id = "run-backfill-#{System.unique_integer([:positive])}"
+
     assert {:ok, backfill} =
              Backfills.submit_pipeline(
                fixture.workspace_context,
                fixture.version.manifest_version_id,
                fixture.pipeline_target_id,
                range,
-               root_run_id: "run-backfill-#{System.unique_integer([:positive])}"
+               root_run_id: root_run_id
              )
 
     assert backfill.status == :ready
@@ -2395,6 +2420,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert length(page.items) == 2
     assert page.has_more?
     assert Enum.all?(page.items, &(&1.status == :ready))
+
+    assert {:ok, replayed} =
+             Backfills.submit_pipeline(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.pipeline_target_id,
+               range,
+               root_run_id: root_run_id
+             )
+
+    assert replayed.backfill_id == backfill.backfill_id
+    assert replayed.status == backfill.status
+    assert replayed.version == backfill.version
   end
 
   test "failed pipeline backfill planning marks its committed root as failed", fixture do
@@ -2961,7 +2999,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       )
 
     try do
-      assert {:ok, %{items: [%{run_id: run_id}]}} =
+      assert {:ok, %{items: [%{run_id: run_id}]} = page} =
                RunStore.page_run_summaries(%PageRuns{
                  scope: fixture.workspace_context,
                  limit: 1
@@ -2969,9 +3007,73 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
       assert run_id == run.id
 
+      assert [%{target_label: "MyApp.Asset:asset", target_refs: ["MyApp.Asset:asset"]}] =
+               page.items
+
       queries = collect_run_page_queries([])
       assert queries != []
       refute Enum.any?(queries, &Regex.match?(~r/\bsnapshot\b/i, &1))
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  test "compact run history prefers the persisted pipeline target label", fixture do
+    {command, run} = pipeline_run_command(fixture)
+
+    pipeline_target = %RunTarget{
+      target_kind: :pipeline,
+      target_id: fixture.pipeline_target_id,
+      target_module: "MyApp.Pipeline",
+      target_name: "daily",
+      is_primary: false
+    }
+
+    assert {:ok, _created} =
+             RunStore.create_run(%{command | targets: command.targets ++ [pipeline_target]})
+
+    assert {:ok, %{items: [summary]}} =
+             RunStore.page_run_summaries(%PageRuns{
+               scope: fixture.workspace_context,
+               limit: 1
+             })
+
+    assert summary.run_id == run.id
+    assert summary.target_label == "MyApp.Pipeline:daily"
+    assert summary.target_refs == []
+  end
+
+  test "compact target lookup is scoped in SQL for duplicate cross-workspace run ids", fixture do
+    other = provision_deploy_fixture(fixture.version)
+    run_id = "shared-run-#{System.unique_integer([:positive])}"
+    {command, _run} = create_run_command(fixture, run_id)
+    {other_command, _other_run} = create_run_command(other, run_id)
+
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, _created} = RunStore.create_run(other_command)
+
+    handler_id = {__MODULE__, self(), make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn_storage_postgres, :repo, :query],
+        fn _event, _measurements, metadata, pid ->
+          if metadata.query =~ ~r/\bFROM\s+"favn_control"\."run_targets"/i do
+            send(pid, {:run_target_row_count, query_row_count(metadata.result)})
+          end
+        end,
+        self()
+      )
+
+    try do
+      assert {:ok, %{items: [%{run_id: ^run_id}]}} =
+               RunStore.page_run_summaries(%PageRuns{
+                 scope: fixture.workspace_context,
+                 limit: 1
+               })
+
+      assert_receive {:run_target_row_count, 1}
     after
       :telemetry.detach(handler_id)
     end
@@ -3993,6 +4095,110 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute keys.d in submitted
   end
 
+  test "schedule activation replays return the immutable original receipt", fixture do
+    assert {:ok, %{items: [schedule]}} =
+             FavnOrchestrator.Operator.Schedules.page_entries(
+               fixture.workspace_context,
+               limit: 10
+             )
+
+    first_time = ~U[2026-07-25 09:00:00.123456Z]
+
+    assert {:ok, activated} =
+             FavnOrchestrator.Operator.Schedules.activate(
+               fixture.workspace_context,
+               schedule.id,
+               "operator-a",
+               "reviewed",
+               command_id: "receipt-activate:" <> fixture.workspace_id,
+               now: first_time
+             )
+
+    assert activated.previous_state == :disabled
+    assert activated.effective_state == :enabled
+    assert activated.command_time == first_time
+
+    assert {:ok, _deactivated} =
+             FavnOrchestrator.Operator.Schedules.deactivate(
+               fixture.workspace_context,
+               schedule.id,
+               "operator-a",
+               "maintenance",
+               command_id: "receipt-deactivate:" <> fixture.workspace_id,
+               now: DateTime.add(first_time, 60, :second)
+             )
+
+    assert {:ok, ^activated} =
+             FavnOrchestrator.Operator.Schedules.activate(
+               fixture.workspace_context,
+               schedule.id,
+               "operator-a",
+               "reviewed",
+               command_id: "receipt-activate:" <> fixture.workspace_id,
+               now: DateTime.add(first_time, 120, :second)
+             )
+
+    assert {:ok, current} =
+             FavnOrchestrator.Operator.Schedules.get_entry(
+               fixture.workspace_context,
+               schedule.id
+             )
+
+    assert current.activation_state == :disabled
+  end
+
+  test "schedule activation HTTP retries return the original receipt", fixture do
+    identity = api_identity(fixture, [:operator])
+
+    assert {:ok, %{items: [schedule]}} =
+             FavnOrchestrator.Operator.Schedules.page_entries(
+               fixture.workspace_context,
+               limit: 10
+             )
+
+    path = "/api/orchestrator/v1/schedules/#{schedule.id}"
+
+    activated =
+      api_request(:post, path <> "/activate", %{"reason" => "reviewed"},
+        fixture: fixture,
+        identity: identity,
+        idempotency_key: "http-activate"
+      )
+
+    assert activated.status == 200
+    activated_data = JSON.decode!(activated.resp_body)["data"]
+    assert activated_data["previous_state"] == "disabled"
+    assert activated_data["effective_state"] == "enabled"
+
+    deactivated =
+      api_request(:post, path <> "/deactivate", %{"reason" => "maintenance"},
+        fixture: fixture,
+        identity: identity,
+        idempotency_key: "http-deactivate"
+      )
+
+    assert deactivated.status == 200
+
+    replayed =
+      api_request(:post, path <> "/activate", %{"reason" => "reviewed"},
+        fixture: fixture,
+        identity: identity,
+        idempotency_key: "http-activate"
+      )
+
+    assert replayed.status == 200
+    assert JSON.decode!(replayed.resp_body)["data"] == activated_data
+
+    current =
+      api_request(:get, path, nil,
+        fixture: fixture,
+        identity: identity
+      )
+
+    assert current.status == 200
+    assert JSON.decode!(current.resp_body)["data"]["schedule"]["activation_state"] == "disabled"
+  end
+
   test "claims schedules and dispatches deterministic occurrence intents", fixture do
     assert {:ok, schedule_page} =
              SchedulerStore.page_schedules(%PageSchedules{
@@ -4013,7 +4219,106 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert [operator_schedule] = operator_page.items
     assert operator_schedule.pipeline_module == MyApp.Pipeline
-    assert operator_schedule.activation_state == :enabled
+    assert operator_schedule.activation_state == :disabled
+
+    assert {:ok, []} =
+             SchedulerStore.claim_due_schedules(%ClaimDueSchedules{
+               workspace_context: fixture.workspace_context,
+               batch_id: "disabled-schedule-claim:" <> fixture.workspace_id,
+               owner_id: "scheduler-a",
+               lease_duration_ms: 30_000,
+               limit: 10
+             })
+
+    activated_at = DateTime.utc_now()
+
+    activation = %SetScheduleActivation{
+      workspace_context: fixture.workspace_context,
+      pipeline_target_id: fixture.pipeline_target_id,
+      schedule_id: "daily",
+      schedule_fingerprint: schedule.schedule_fingerprint,
+      enabled: true,
+      actor_id: "operator-a",
+      reason: "reviewed in storage test",
+      command_id: "schedule-activate:" <> fixture.workspace_id,
+      request_hash: :crypto.hash(:sha256, "activate:" <> fixture.workspace_id),
+      occurred_at: activated_at,
+      next_due_at: DateTime.add(activated_at, -1, :second)
+    }
+
+    assert {:ok, reader_context} =
+             WorkspaceContext.new(
+               fixture.workspace_id,
+               "schedule-reader",
+               [:customer_reader]
+             )
+
+    assert {:error, %{kind: :invalid}} =
+             SchedulerStore.set_activation(%{activation | workspace_context: reader_context})
+
+    assert {:ok, activated} = SchedulerStore.set_activation(activation)
+    assert activated.enabled
+    assert {:ok, ^activated} = SchedulerStore.set_activation(activation)
+
+    assert {:error, %{kind: :conflict}} =
+             SchedulerStore.set_activation(%{
+               activation
+               | enabled: false,
+                 request_hash: :crypto.hash(:sha256, "deactivate:" <> fixture.workspace_id)
+             })
+
+    assert {:ok, enabled_page} =
+             FavnOrchestrator.Operator.Schedules.page_entries(
+               fixture.workspace_context,
+               limit: 10
+             )
+
+    assert [%{activation_state: :enabled, effective_enabled?: true}] = enabled_page.items
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.schedule_cursors
+      SET schedule_fingerprint = 'changed-schedule-fingerprint'
+      WHERE workspace_id = $1 AND deployment_id = $2
+        AND pipeline_target_id = $3 AND schedule_id = 'daily'
+      """,
+      [fixture.workspace_id, fixture.deployment_id, fixture.pipeline_target_id]
+    )
+
+    assert {:ok, changed_page} =
+             FavnOrchestrator.Operator.Schedules.page_entries(
+               fixture.workspace_context,
+               limit: 10
+             )
+
+    assert [%{activation_state: :needs_review, effective_enabled?: false}] =
+             changed_page.items
+
+    assert {:ok, []} =
+             SchedulerStore.claim_due_schedules(%ClaimDueSchedules{
+               workspace_context: fixture.workspace_context,
+               batch_id: "changed-schedule-claim:" <> fixture.workspace_id,
+               owner_id: "scheduler-a",
+               lease_duration_ms: 30_000,
+               limit: 10
+             })
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.schedule_cursors
+      SET schedule_fingerprint = $4
+      WHERE workspace_id = $1 AND deployment_id = $2
+        AND pipeline_target_id = $3 AND schedule_id = 'daily'
+      """,
+      [
+        fixture.workspace_id,
+        fixture.deployment_id,
+        fixture.pipeline_target_id,
+        schedule.schedule_fingerprint
+      ]
+    )
 
     claim_command = %ClaimDueSchedules{
       workspace_context: fixture.workspace_context,
@@ -4079,6 +4384,91 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert claimed.claim_generation == 1
     assert {:ok, [^claimed]} = SchedulerStore.claim_occurrences(occurrence_claim)
 
+    authorization = %AuthorizeScheduleOccurrenceDispatch{
+      workspace_context: fixture.workspace_context,
+      command_id: "occurrence-dispatch:" <> fixture.workspace_id,
+      occurrence_id: claimed.occurrence_id,
+      pipeline_target_id: fixture.pipeline_target_id,
+      schedule_id: "daily",
+      schedule_fingerprint: schedule.schedule_fingerprint,
+      owner_id: claimed.claim_owner,
+      claim_generation: claimed.claim_generation,
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:error, %{kind: :fenced}} =
+             SchedulerStore.authorize_occurrence_dispatch(%{
+               authorization
+               | command_id: "occurrence-dispatch-wrong-identity:" <> fixture.workspace_id,
+                 schedule_id: "other-schedule"
+             })
+
+    assert {:ok, authorized} = SchedulerStore.authorize_occurrence_dispatch(authorization)
+    assert authorized.status == :dispatching
+
+    deactivation = %SetScheduleActivation{
+      activation
+      | enabled: false,
+        reason: "maintenance",
+        command_id: "schedule-deactivate:" <> fixture.workspace_id,
+        request_hash: :crypto.hash(:sha256, "maintenance:" <> fixture.workspace_id),
+        occurred_at: DateTime.utc_now(),
+        next_due_at: nil
+    }
+
+    assert {:ok, deactivated} = SchedulerStore.set_activation(deactivation)
+    refute deactivated.enabled
+    assert {:ok, ^activated} = SchedulerStore.set_activation(activation)
+
+    assert {:ok, %{items: [%{activation_enabled: false, next_due_at: nil}]}} =
+             SchedulerStore.page_schedules(%PageSchedules{
+               workspace_context: fixture.workspace_context,
+               limit: 10
+             })
+
+    assert {:ok, occurrence_after_deactivation} =
+             SchedulerStore.page_occurrences(%PageScheduleOccurrences{
+               workspace_context: fixture.workspace_context,
+               pipeline_target_id: fixture.pipeline_target_id,
+               schedule_id: "daily",
+               limit: 10
+             })
+
+    assert [%{status: :dispatching}] = occurrence_after_deactivation.items
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.schedule_occurrences
+      SET claim_expires_at = clock_timestamp() - interval '1 second'
+      WHERE workspace_id = $1 AND occurrence_id = $2
+      """,
+      [fixture.workspace_id, occurrence_id]
+    )
+
+    assert {:ok, [recovered]} =
+             SchedulerStore.claim_occurrences(%ClaimScheduleOccurrences{
+               workspace_context: fixture.workspace_context,
+               batch_id: "occurrence-recovery-claim:" <> fixture.workspace_id,
+               owner_id: "scheduler-recovered",
+               lease_duration_ms: 30_000,
+               limit: 10
+             })
+
+    assert recovered.status == :dispatching
+    assert recovered.claim_generation == claimed.claim_generation + 1
+
+    assert {:ok, recovered_authorization} =
+             SchedulerStore.authorize_occurrence_dispatch(%{
+               authorization
+               | command_id: "occurrence-recovered-dispatch:" <> fixture.workspace_id,
+                 owner_id: recovered.claim_owner,
+                 claim_generation: recovered.claim_generation,
+                 occurred_at: DateTime.utc_now()
+             })
+
+    assert recovered_authorization.status == :dispatching
+
     {run_command, run} = create_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(run_command)
 
@@ -4086,8 +4476,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       workspace_context: fixture.workspace_context,
       command_id: "occurrence-complete:" <> fixture.workspace_id,
       occurrence_id: occurrence_id,
-      owner_id: "scheduler-a",
-      claim_generation: claimed.claim_generation,
+      owner_id: recovered.claim_owner,
+      claim_generation: recovered.claim_generation,
       run_id: run.id,
       occurred_at: DateTime.utc_now()
     }
@@ -4104,10 +4494,115 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         [fixture.workspace_id, occurrence_id]
       )
 
-    assert replay_rows == [["completed", "scheduler-a", occurrence_claim.batch_id]]
+    assert replay_rows == [
+             [
+               "completed",
+               recovered.claim_owner,
+               "occurrence-recovery-claim:" <> fixture.workspace_id
+             ]
+           ]
+
+    assert {:ok, []} = SchedulerStore.claim_occurrences(occurrence_claim)
+  end
+
+  test "deactivation suppresses claimed work before dispatch authorization", fixture do
+    assert {:ok, %{items: [schedule]}} =
+             SchedulerStore.page_schedules(%PageSchedules{
+               workspace_context: fixture.workspace_context,
+               limit: 10
+             })
+
+    now = DateTime.utc_now()
+
+    activation = %SetScheduleActivation{
+      workspace_context: fixture.workspace_context,
+      pipeline_target_id: fixture.pipeline_target_id,
+      schedule_id: "daily",
+      schedule_fingerprint: schedule.schedule_fingerprint,
+      enabled: true,
+      actor_id: "operator-a",
+      reason: "race test",
+      command_id: "schedule-race-activate:" <> fixture.workspace_id,
+      request_hash: :crypto.hash(:sha256, "race-activate:" <> fixture.workspace_id),
+      occurred_at: now,
+      next_due_at: DateTime.add(now, -1, :second)
+    }
+
+    assert {:ok, _activation} = SchedulerStore.set_activation(activation)
+
+    assert {:ok, [claim]} =
+             SchedulerStore.claim_due_schedules(%ClaimDueSchedules{
+               workspace_context: fixture.workspace_context,
+               batch_id: "schedule-race-claim:" <> fixture.workspace_id,
+               owner_id: "scheduler-race",
+               lease_duration_ms: 30_000,
+               limit: 10
+             })
+
+    occurrence_id = "occurrence-race:" <> fixture.workspace_id
+
+    assert {:ok, [_occurrence]} =
+             SchedulerStore.commit_evaluation(%CommitScheduleEvaluation{
+               workspace_context: fixture.workspace_context,
+               command_id: "schedule-race-evaluation:" <> fixture.workspace_id,
+               deployment_id: fixture.deployment_id,
+               pipeline_target_id: fixture.pipeline_target_id,
+               schedule_id: "daily",
+               owner_id: claim.owner_id,
+               claim_generation: claim.claim_generation,
+               expected_version: claim.version,
+               next_due_at: DateTime.add(now, 86_400, :second),
+               cursor: %{},
+               occurrences: [
+                 %ScheduleOccurrenceIntent{
+                   occurrence_id: occurrence_id,
+                   due_at: now,
+                   payload: %{"trigger" => "race"}
+                 }
+               ],
+               occurred_at: now
+             })
+
+    assert {:ok, [claimed]} =
+             SchedulerStore.claim_occurrences(%ClaimScheduleOccurrences{
+               workspace_context: fixture.workspace_context,
+               batch_id: "occurrence-race-claim:" <> fixture.workspace_id,
+               owner_id: "scheduler-race",
+               lease_duration_ms: 30_000,
+               limit: 10
+             })
+
+    assert {:ok, _deactivated} =
+             SchedulerStore.set_activation(%{
+               activation
+               | enabled: false,
+                 reason: "stop before dispatch",
+                 command_id: "schedule-race-deactivate:" <> fixture.workspace_id,
+                 request_hash: :crypto.hash(:sha256, "race-deactivate:" <> fixture.workspace_id),
+                 occurred_at: DateTime.utc_now(),
+                 next_due_at: nil
+             })
+
+    assert {:ok, %{items: [%{status: :suppressed}]}} =
+             SchedulerStore.page_occurrences(%PageScheduleOccurrences{
+               workspace_context: fixture.workspace_context,
+               pipeline_target_id: fixture.pipeline_target_id,
+               schedule_id: "daily",
+               limit: 10
+             })
 
     assert {:error, %{kind: :fenced}} =
-             SchedulerStore.claim_occurrences(occurrence_claim)
+             SchedulerStore.authorize_occurrence_dispatch(%AuthorizeScheduleOccurrenceDispatch{
+               workspace_context: fixture.workspace_context,
+               command_id: "occurrence-race-dispatch:" <> fixture.workspace_id,
+               occurrence_id: claimed.occurrence_id,
+               pipeline_target_id: fixture.pipeline_target_id,
+               schedule_id: "daily",
+               schedule_fingerprint: schedule.schedule_fingerprint,
+               owner_id: claimed.claim_owner,
+               claim_generation: claimed.claim_generation,
+               occurred_at: DateTime.utc_now()
+             })
   end
 
   test "serializes capacity admission and releases counters exactly once", fixture do
@@ -5980,6 +6475,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       10 -> Enum.reverse(acc)
     end
   end
+
+  defp query_row_count({:ok, %{num_rows: count}}), do: count
+  defp query_row_count(%{num_rows: count}), do: count
+  defp query_row_count(_result), do: :unknown
 
   defp capture_repo_queries(function) do
     handler_id = {__MODULE__, self(), make_ref()}

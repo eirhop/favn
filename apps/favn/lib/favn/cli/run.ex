@@ -221,16 +221,7 @@ defmodule Favn.CLI.Run do
     case target do
       %{"target_id" => target_id, "target_type" => target_type}
       when target_type in ["asset", "pipeline"] and is_binary(target_id) and target_id != "" ->
-        payload =
-          %{
-            target: %{type: target_type, id: target_id},
-            manifest_selection: %{mode: "active"}
-          }
-          |> maybe_put_window(window_request)
-          |> maybe_put(:dependencies, Keyword.get(opts, :dependencies))
-          |> maybe_put(:refresh, Keyword.get(opts, :refresh))
-          |> maybe_put(:timeout_ms, run_timeout_ms(opts))
-          |> maybe_put(:retry_policy, retry_policy(opts))
+        payload = submission_payload(target, window_request, opts)
 
         case OrchestratorClient.submit_run(base_url, service_token, session_context, payload,
                idempotency_key: run_idempotency_key(opts)
@@ -244,14 +235,45 @@ defmodule Favn.CLI.Run do
     end
   end
 
-  defp maybe_put_window(payload, nil), do: payload
+  @doc false
+  @spec submission_payload(map(), WindowRequest.t() | nil, run_opts()) :: map()
+  def submission_payload(
+        %{"target_id" => target_id, "target_type" => target_type},
+        window_request,
+        opts
+      )
+      when target_type in ["asset", "pipeline"] and is_binary(target_id) and is_list(opts) do
+    %{
+      target: %{type: target_type, id: target_id},
+      manifest_selection: %{mode: "active"}
+    }
+    |> maybe_put_window(target_type, window_request)
+    |> maybe_put(:dependencies, Keyword.get(opts, :dependencies))
+    |> maybe_put(:refresh, Keyword.get(opts, :refresh))
+    |> maybe_put(:timeout_ms, run_timeout_ms(opts))
+    |> maybe_put(:retry_policy, retry_policy(opts))
+  end
 
-  defp maybe_put_window(payload, %WindowRequest{} = request) do
+  defp maybe_put_window(payload, _target_type, nil), do: payload
+
+  defp maybe_put_window(payload, "pipeline", %WindowRequest{} = request) do
     Map.put(payload, :window, %{
       mode: Atom.to_string(request.mode),
       kind: Atom.to_string(request.kind),
       value: request.value,
       timezone: request.timezone
+    })
+  end
+
+  defp maybe_put_window(payload, "asset", %WindowRequest{} = request) do
+    kind = Atom.to_string(request.kind)
+
+    Map.put(payload, :selection, %{
+      source: "data_coverage_timeline",
+      id: "window:#{kind}:#{request.value}",
+      kind: kind,
+      value: request.value,
+      timezone: request.timezone || "Etc/UTC"
     })
   end
 

@@ -19,7 +19,6 @@ defmodule Favn.CLI.BackfillTest do
              Backfill.build_submit_payload(
                %{"target_id" => "pipeline:Elixir.MyApp.Pipeline"},
                %{from: "2026-01-01", to: "2026-01-03", kind: "day", timezone: "Etc/UTC"},
-               coverage_baseline_id: "baseline_1",
                retry_max_attempts: 2
              )
 
@@ -27,7 +26,6 @@ defmodule Favn.CLI.BackfillTest do
              target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipeline"},
              manifest_selection: %{mode: "active"},
              range: %{from: "2026-01-01", to: "2026-01-03", kind: "day", timezone: "Etc/UTC"},
-             coverage_baseline_id: "baseline_1",
              retry_policy: %{max_attempts: 2, backoff: 0}
            }
   end
@@ -82,6 +80,40 @@ defmodule Favn.CLI.BackfillTest do
              )
   end
 
+  test "submit_pipeline/2 waits on authoritative backfill status", %{root_dir: root_dir} do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(
+        [
+          {200,
+           ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})},
+          {202,
+           ~s({"data":{"backfill":{"backfill_id":"backfill_1","root_run_id":"root_1","manifest_version_id":"mv_1","status":"ready"}}})},
+          {200,
+           ~s({"data":{"backfill":{"backfill_id":"backfill_1","root_run_id":"root_1","manifest_version_id":"mv_1","status":"running"}}})},
+          {200,
+           ~s({"data":{"backfill":{"backfill_id":"backfill_1","root_run_id":"root_1","manifest_version_id":"mv_1","status":"completed"}}})}
+        ],
+        parent: parent
+      )
+
+    write_running_state(root_dir, base_url)
+
+    assert {:ok, %{"backfill_id" => "backfill_1", "status" => "completed"}} =
+             Backfill.submit_pipeline(MyApp.Pipeline,
+               root_dir: root_dir,
+               from: "2026-01-01",
+               to: "2026-01-02",
+               kind: "day",
+               poll_interval_ms: 1
+             )
+
+    assert_receive {:request, %{path: "/api/orchestrator/v1/backfills/backfill_1"}}
+    assert_receive {:request, %{path: "/api/orchestrator/v1/backfills/backfill_1"}}
+    refute_receive {:request, %{path: "/api/orchestrator/v1/runs/root_1"}}, 50
+  end
+
   test "build_range/1 validates explicit range options" do
     assert {:ok, %{from: "2026-01-01", to: "2026-01-02", kind: "day", timezone: "Etc/UTC"}} =
              Backfill.build_range(from: "2026-01-01", to: "2026-01-02", kind: :day)
@@ -113,14 +145,13 @@ defmodule Favn.CLI.BackfillTest do
              Backfill.build_plan_payload(
                MyApp.Pipeline,
                %{from: "2026-01-01", to: "2026-01-02", kind: "day", timezone: "Etc/UTC"},
-               coverage_baseline_id: "baseline_1"
+               []
              )
 
     assert payload == %{
              target: %{type: "pipeline", module: "Elixir.MyApp.Pipeline"},
              manifest_selection: %{mode: "active"},
-             range: %{from: "2026-01-01", to: "2026-01-02", kind: "day", timezone: "Etc/UTC"},
-             coverage_baseline_id: "baseline_1"
+             range: %{from: "2026-01-01", to: "2026-01-02", kind: "day", timezone: "Etc/UTC"}
            }
   end
 
@@ -205,15 +236,14 @@ defmodule Favn.CLI.BackfillTest do
     refute_receive {:request, %{path: "/api/orchestrator/v1/backfills"}}, 50
   end
 
-  test "list and rerun workflows parse orchestrator responses", %{root_dir: root_dir} do
+  test "list windows uses the current status and cursor contract", %{root_dir: root_dir} do
     parent = self()
 
     {:ok, base_url, _server} =
       start_server(
         [
           {200,
-           ~s({"data":{"items":[{"window_key":"day:2026-01-01:Etc/UTC"}],"pagination":{"limit":100,"offset":0,"has_more":false,"next_offset":null}}})},
-          {201, ~s({"data":{"run":{"id":"rerun_1","status":"running"}}})}
+           ~s({"data":{"items":[{"window_key":"day:2026-01-01:Etc/UTC"}],"pagination":{"limit":100,"has_more":false,"next_cursor":null}}})}
         ],
         parent: parent
       )
@@ -221,53 +251,17 @@ defmodule Favn.CLI.BackfillTest do
     write_running_state(root_dir, base_url)
 
     assert {:ok, %{"items" => [%{"window_key" => "day:2026-01-01:Etc/UTC"}]}} =
-             Backfill.list_windows("backfill_1", root_dir: root_dir, status: "error")
-
-    assert {:ok, %{"id" => "rerun_1"}} =
-             Backfill.rerun_window("backfill_1", "day:2026-01-01:Etc/UTC",
+             Backfill.list_windows("backfill_1",
                root_dir: root_dir,
-               refresh: "force",
-               allow_success: true
+               status: "error",
+               cursor: "next-page"
              )
 
     assert_receive {:request,
-                    %{path: "/api/orchestrator/v1/backfills/backfill_1/windows?status=error"}}
-
-    assert_receive {:request,
-                    %{path: "/api/orchestrator/v1/backfills/backfill_1/windows/rerun", body: body}}
-
-    assert JSON.decode!(body) == %{
-             "window_key" => "day:2026-01-01:Etc/UTC",
-             "refresh" => "force",
-             "allow_success" => true
-           }
-  end
-
-  test "repair_projections posts repair payload", %{root_dir: root_dir} do
-    parent = self()
-
-    {:ok, base_url, _server} =
-      start_server(
-        [
-          {200,
-           ~s({"data":{"repair":{"apply":true,"counts":{"coverage_baselines":0,"backfill_windows":1,"asset_window_states":1,"skips":0},"skips":[]}}})}
-        ],
-        parent: parent
-      )
-
-    write_running_state(root_dir, base_url)
-
-    assert {:ok, %{"apply" => true, "counts" => %{"backfill_windows" => 1}}} =
-             Backfill.repair_projections(
-               root_dir: root_dir,
-               pipeline_module: "MyApp.Pipeline",
-               apply: true
-             )
-
-    assert_receive {:request,
-                    %{path: "/api/orchestrator/v1/backfills/projections/repair", body: body}}
-
-    assert JSON.decode!(body) == %{"apply" => true, "pipeline_module" => "MyApp.Pipeline"}
+                    %{
+                      path:
+                        "/api/orchestrator/v1/backfills/backfill_1/windows?status=error&cursor=next-page"
+                    }}
   end
 
   defp write_running_state(root_dir, base_url) do

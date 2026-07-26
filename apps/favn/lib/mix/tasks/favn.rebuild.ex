@@ -18,6 +18,7 @@ defmodule Mix.Tasks.Favn.Rebuild do
   """
 
   alias Favn.CLI
+  alias Favn.CLI.Error
 
   @plan_switches [root_dir: :string, reason: :string]
   @start_switches [root_dir: :string, plan_hash: :string]
@@ -260,7 +261,12 @@ defmodule Mix.Tasks.Favn.Rebuild do
     do: Mix.shell().info("     #{label}: #{json_text(value)}")
 
   defp progress_text(progress) when is_map(progress) do
-    completed = value(progress, "completed", 0)
+    completed =
+      value(progress, "completed") ||
+        Enum.sum(
+          Enum.map(~w(succeeded failed cancelled outcome_unknown), &value(progress, &1, 0))
+        )
+
     total = value(progress, "total", 0)
     "#{completed}/#{total}"
   end
@@ -297,17 +303,56 @@ defmodule Mix.Tasks.Favn.Rebuild do
   defp json_text(value) when is_binary(value), do: value
   defp json_text(value), do: JSON.encode!(value)
 
-  defp value(map, key, default \\ nil) do
+  defp value(map, key, default \\ nil)
+
+  defp value(map, key, default) when is_map(map) do
     Map.get(map, key, Map.get(map, String.to_atom(key), default))
   end
+
+  defp value(_value, _key, default), do: default
 
   defp count(items) when is_list(items), do: length(items)
   defp count(_items), do: 0
   defp present?(value), do: not is_nil(value) and value != ""
 
-  defp error_message(:not_running), do: "Favn is not running; use mix favn.dev"
-  defp error_message(:rebuild_requires_asset), do: "rebuild target must be an asset"
-  defp error_message(_reason), do: "rebuild request failed; inspect orchestrator logs for details"
+  @doc false
+  def error_message(:not_running), do: "Favn is not running; use mix favn.dev"
+
+  def error_message(:rebuild_requires_asset), do: "rebuild target must be an asset"
+
+  def error_message(%{
+        operation: _operation,
+        reason: {:http_error, 409, %{error_code: "rebuild_plan_stale"}}
+      }),
+      do: "rebuild plan is stale; create and review a new plan"
+
+  def error_message(%{
+        operation: _operation,
+        reason: {:http_error, 422, %{error_code: "invalid_rebuild_plan_hash"}}
+      }),
+      do: "rebuild plan hash is invalid; pass the exact hash printed by mix favn.rebuild plan"
+
+  def error_message(%{
+        operation: _operation,
+        reason: {:http_error, 404, %{error_code: "not_found"}}
+      }),
+      do: "rebuild plan or operation was not found in this workspace"
+
+  def error_message(%{operation: _operation} = reason),
+    do:
+      Error.format(reason,
+        context: "rebuild",
+        next: "check rebuild status and retry only after confirming the current state"
+      )
+
+  def error_message(:invalid_asset_target), do: "rebuild target is not valid"
+
+  def error_message(reason),
+    do:
+      Error.format(reason,
+        context: "rebuild",
+        next: "create a new plan or inspect the existing operation"
+      )
 
   defp usage do
     "mix favn.rebuild plan ASSET --reason REASON | start PLAN_ID --plan-hash HASH | status OPERATION_ID | cancel OPERATION_ID --reason REASON | retry OPERATION_ID | reconcile OPERATION_ID"

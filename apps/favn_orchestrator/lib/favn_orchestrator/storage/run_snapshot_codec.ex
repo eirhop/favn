@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias Favn.Plan
   alias Favn.Contracts.RunnerReleaseBinding
   alias Favn.Retry.Policy, as: RetryPolicy
+  alias Favn.RelationRef
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
   alias Favn.Window.Key, as: WindowKey
@@ -399,6 +400,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "target_generation_id" => Map.get(node, :target_generation_id),
       "evidence_generation_id" => Map.get(node, :evidence_generation_id),
       "physical_relation" => JsonSafe.data(Map.get(node, :physical_relation)),
+      "physical_relation_struct" => match?(%RelationRef{}, Map.get(node, :physical_relation)),
       "input_generations" =>
         Enum.map(List.wrap(Map.get(node, :input_generations)), &generation_pin_to_dto/1),
       "action" => Map.get(node, :action) |> atom_to_string(),
@@ -409,10 +411,16 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     [
       {"target_operation", Map.get(node, :target_operation) |> atom_to_string()},
       {"active_relation", JsonSafe.data(Map.get(node, :active_relation))},
+      {"active_relation_struct",
+       if(match?(%RelationRef{}, Map.get(node, :active_relation)), do: true)},
       {"write_relation", JsonSafe.data(Map.get(node, :write_relation))},
+      {"write_relation_struct",
+       if(match?(%RelationRef{}, Map.get(node, :write_relation)), do: true)},
       {"rebuild_operation_id", Map.get(node, :rebuild_operation_id)},
       {"rebuild_action_id", Map.get(node, :rebuild_action_id)},
-      {"rebuild_item_id", Map.get(node, :rebuild_item_id)}
+      {"rebuild_item_id", Map.get(node, :rebuild_item_id)},
+      {"rebuild_empty_generation", Map.get(node, :rebuild_empty_generation)},
+      {"rebuild_final_item", Map.get(node, :rebuild_final_item)}
     ]
     |> Enum.reduce(dto, fn
       {_key, nil}, acc -> acc
@@ -549,7 +557,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, retry_policy_source} <-
            retry_policy_source_from_dto(Map.get(node, "retry_policy_source")),
          {:ok, window} <- plan_window_from_dto(Map.get(node, "window")),
-         {:ok, generation_pin} <- generation_pin_from_dto(node) do
+         {:ok, generation_pin} <- generation_pin_from_dto(node, allowed_atom_strings) do
       {:ok,
        Map.merge(
          %{
@@ -580,7 +588,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     }
   end
 
-  defp generation_pin_from_dto(node) do
+  defp generation_pin_from_dto(node, allowed_atom_strings) do
     target_id = Map.get(node, "target_id")
     target_generation_id = Map.get(node, "target_generation_id")
     evidence_generation_id = Map.get(node, "evidence_generation_id")
@@ -592,6 +600,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     rebuild_operation_id = Map.get(node, "rebuild_operation_id")
     rebuild_action_id = Map.get(node, "rebuild_action_id")
     rebuild_item_id = Map.get(node, "rebuild_item_id")
+    rebuild_empty_generation = Map.get(node, "rebuild_empty_generation")
+    rebuild_final_item = Map.get(node, "rebuild_final_item")
+    legacy_rebuild? = target_operation == "rebuild_candidate"
 
     cond do
       Enum.all?(
@@ -600,7 +611,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       ) and
         input_generations == [] and is_nil(target_operation) and is_nil(active_relation) and
         is_nil(write_relation) and is_nil(rebuild_operation_id) and is_nil(rebuild_action_id) and
-          is_nil(rebuild_item_id) ->
+        is_nil(rebuild_item_id) and is_nil(rebuild_empty_generation) and
+          is_nil(rebuild_final_item) ->
         {:ok, %{}}
 
       not valid_optional_plan_id?(target_id) or not valid_optional_plan_id?(target_generation_id) or
@@ -611,29 +623,53 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
         not is_list(input_generations) or
         target_operation not in [nil, "normal_materialization", "rebuild_candidate"] or
         not Enum.all?([active_relation, write_relation], &(is_nil(&1) or is_map(&1))) or
+        not Enum.all?(
+          [rebuild_operation_id, rebuild_action_id, rebuild_item_id],
+          &valid_optional_plan_id?/1
+        ) or
           not Enum.all?(
-            [rebuild_operation_id, rebuild_action_id, rebuild_item_id],
-            &valid_optional_plan_id?/1
+            [rebuild_empty_generation, rebuild_final_item],
+            &(is_nil(&1) or is_boolean(&1))
           ) ->
         {:error, {:invalid_plan_generation_pin, node}}
 
       true ->
-        with {:ok, decoded_inputs} <- input_generation_pins_from_dto(input_generations) do
+        with {:ok, decoded_inputs} <- input_generation_pins_from_dto(input_generations),
+             {:ok, decoded_physical_relation} <-
+               relation_from_dto(
+                 physical_relation,
+                 allowed_atom_strings,
+                 Map.get(node, "physical_relation_struct", legacy_rebuild?)
+               ),
+             {:ok, decoded_active_relation} <-
+               relation_from_dto(
+                 active_relation,
+                 allowed_atom_strings,
+                 Map.get(node, "active_relation_struct", legacy_rebuild?)
+               ),
+             {:ok, decoded_write_relation} <-
+               relation_from_dto(
+                 write_relation,
+                 allowed_atom_strings,
+                 Map.get(node, "write_relation_struct", legacy_rebuild?)
+               ) do
           generation_pin = %{
             target_id: target_id,
             target_generation_id: target_generation_id,
             evidence_generation_id: evidence_generation_id,
-            physical_relation: physical_relation,
+            physical_relation: decoded_physical_relation,
             input_generations: decoded_inputs
           }
 
           decoded_optional = [
             {:target_operation, decode_target_operation(target_operation)},
-            {:active_relation, active_relation},
-            {:write_relation, write_relation},
+            {:active_relation, decoded_active_relation},
+            {:write_relation, decoded_write_relation},
             {:rebuild_operation_id, rebuild_operation_id},
             {:rebuild_action_id, rebuild_action_id},
-            {:rebuild_item_id, rebuild_item_id}
+            {:rebuild_item_id, rebuild_item_id},
+            {:rebuild_empty_generation, rebuild_empty_generation},
+            {:rebuild_final_item, rebuild_final_item}
           ]
 
           {:ok,
@@ -689,6 +725,32 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp decode_target_operation(nil), do: nil
   defp decode_target_operation("normal_materialization"), do: :normal_materialization
   defp decode_target_operation("rebuild_candidate"), do: :rebuild_candidate
+
+  defp relation_from_dto(nil, _allowed_atom_strings, _struct?), do: {:ok, nil}
+
+  defp relation_from_dto(relation, _allowed_atom_strings, false) when is_map(relation),
+    do: {:ok, relation}
+
+  defp relation_from_dto(relation, _allowed_atom_strings, true) when is_map(relation) do
+    with {:ok, connection} <- optional_existing_atom(field(relation, :connection)) do
+      {:ok,
+       RelationRef.new!(
+         connection: connection,
+         catalog: field(relation, :catalog),
+         schema: field(relation, :schema),
+         name: field(relation, :name)
+       )}
+    end
+  rescue
+    ArgumentError -> {:error, {:invalid_plan_relation, relation}}
+  end
+
+  defp relation_from_dto(relation, _allowed_atom_strings, _struct?),
+    do: {:error, {:invalid_plan_relation, relation}}
+
+  defp optional_existing_atom(nil), do: {:ok, nil}
+  defp optional_existing_atom(value) when is_binary(value), do: existing_atom(value)
+  defp optional_existing_atom(value), do: {:error, {:invalid_atom_dto, value}}
 
   defp retry_policy_to_dto(nil), do: nil
 
@@ -1529,7 +1591,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
           timezone: field(schedule, :timezone),
           missed: schedule |> field(:missed, "skip") |> schedule_missed_from_dto(),
           overlap: schedule |> field(:overlap, "forbid") |> schedule_overlap_from_dto(),
-          active: field(schedule, :active, true),
           origin: schedule |> field(:origin, "named") |> schedule_origin_from_dto()
         }
 

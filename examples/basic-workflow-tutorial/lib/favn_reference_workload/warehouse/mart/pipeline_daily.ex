@@ -6,8 +6,10 @@ defmodule FavnReferenceWorkload.Warehouse.Mart.PipelineDaily do
   alias FavnReferenceWorkload.Warehouse.Core.OpportunitiesDaily
 
   relation(true)
+  execution_pool(:local_duckdb)
   depends(OpportunitiesDaily)
   window(Favn.Window.daily(timezone: "Etc/UTC", required: true))
+  coverage(from: ~D[2026-07-22], through: :latest_closed, availability_delay: {:hours, 1})
   materialized({:incremental, strategy: :delete_insert, window_column: :snapshot_date})
   freshness(window_success: true)
   meta(category: :pipeline, tags: [:mart, :daily, :incremental])

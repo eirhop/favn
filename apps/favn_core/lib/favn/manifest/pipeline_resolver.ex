@@ -28,6 +28,19 @@ defmodule Favn.Manifest.PipelineResolver do
           window_selection: Selection.t() | nil
         ]
 
+  @doc "Resolves only the deterministic asset references selected by a pipeline."
+  @spec target_refs(Index.t(), Pipeline.t()) :: {:ok, [Favn.Ref.t()]} | {:error, term()}
+  def target_refs(%Index{} = index, %Pipeline{} = pipeline) do
+    with {:ok, selectors} <-
+           SelectorNormalizer.normalize(
+             pipeline.selectors,
+             resolve_asset_module: &resolve_asset_module_from_index(index, &1)
+           ),
+         :ok <- validate_selectors(selectors) do
+      resolve_selectors(index, selectors)
+    end
+  end
+
   @spec resolve(Index.t(), Pipeline.t() | {module(), atom()}, resolve_opts()) ::
           {:ok, resolution()} | {:error, term()}
   def resolve(%Index{} = index, %Pipeline{} = pipeline, opts) when is_list(opts) do

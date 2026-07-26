@@ -12,6 +12,10 @@ defmodule Favn.Manifest.PipelineResolverTest do
 
   test "resolves persisted pipeline selectors through manifest index" do
     assert {:ok, index} = sample_manifest() |> Index.build()
+    assert {:ok, pipeline} = Index.fetch_pipeline(index, {MyApp.Pipelines.Daily, :daily})
+
+    assert {:ok, [{MyApp.Gold, :asset}, {MyApp.Raw, :asset}]} =
+             PipelineResolver.target_refs(index, pipeline)
 
     assert {:ok, resolution} =
              PipelineResolver.resolve(index, {MyApp.Pipelines.Daily, :daily},

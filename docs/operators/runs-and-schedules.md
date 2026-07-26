@@ -262,7 +262,9 @@ Common failures:
 ## Inspect A Run
 
 1. Start with the run id returned by submission.
-2. Read the run summary to see current state.
+2. Read the run summary to see current state. `mix favn.runs list` prints the
+   persisted pipeline identity when available and otherwise the persisted asset
+   target refs, so completed history does not depend on the current manifest.
 3. Open the run detail to inspect events, attempts, windows, logs, and errors
    exposed by operator tooling.
 4. If the run is still active, check runner availability and in-flight diagnostics
@@ -272,6 +274,12 @@ Common failures:
 
 Use orchestrator-backed views. Do not infer final state from UI loading state,
 raw storage rows, or runner memory.
+
+CLI failures use one bounded operator-safe shape: operation, HTTP status when
+available, stable error code, short message, allowlisted scalar details, and an
+actionable next step. The CLI never prints arbitrary response payloads,
+credentials, runtime-input secrets, or SQL text. Use the stable code for
+automation; use the next step for interactive recovery.
 
 ## Cancel A Run
 
@@ -329,12 +337,31 @@ schedule timeline, restart recovery, and safe ingestion recipes.
 
 ## Operate Schedules
 
+Newly published schedules are inactive in every workspace. Use the supported
+operator boundary rather than changing persisted state directly:
+
+```text
+mix favn.schedules list
+mix favn.schedules show SCHEDULE_ID
+mix favn.schedules preview SCHEDULE_ID --limit 5
+mix favn.schedules activate SCHEDULE_ID --reason "reviewed"
+mix favn.schedules deactivate SCHEDULE_ID --reason "maintenance"
+mix favn.schedules activate SCHEDULE_ID --reason "reviewed" --idempotency-key CHANGE_ID
+```
+
 1. List schedules from the active manifest through operator tooling.
 2. Check activation state, runtime state, next due time, last submitted due time,
    and scheduler errors.
 3. Preview upcoming occurrences before enabling a schedule.
 4. Enable schedules that should submit future work.
 5. Disable schedules that should stop future submissions.
+6. After changing a schedule, re-read the schedule entry and diagnostics.
+
+Activation and deactivation return an immutable command receipt: the original
+previous and effective states, activation version, approved fingerprint,
+decision time, and resulting next due time. Repeating the same idempotency key
+and command content returns that exact receipt even after later schedule
+changes. Use `mix favn.schedules show` for current live state.
 
 Schedule overlap is not execution retry. `:allow` admits an independent run
 with independent pins, `:forbid` admits none while the tracked run is active,
@@ -342,7 +369,6 @@ and `:queue_one` remembers one occurrence until it can be admitted. A run
 waiting in node backoff is still active for these rules. `missed: :skip | :one |
 :all` controls catch-up occurrences after delayed evaluation, not attempts in
 the existing run.
-6. After changing a schedule, re-read the schedule entry and diagnostics.
 
 Expected result: enabled schedules submit due work through the same orchestrator
 run path as manual runs. Disabled schedules do not submit future work.
@@ -351,7 +377,7 @@ Important rules:
 
 - Enabling starts from the next due occurrence observed at command time. It does
   not automatically submit missed catch-up work.
-- Disabling does not cancel existing in-flight runs.
+- Disabling does not cancel already accepted runs.
 - Schedule state is persisted by the orchestrator storage boundary.
 - Multiple orchestrator nodes may run scheduler workers; durable PostgreSQL
   claims and fencing decide ownership. Process registration is not authority.

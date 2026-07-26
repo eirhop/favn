@@ -114,15 +114,17 @@ defmodule Favn.Pipeline do
   `window` supports `:hourly`, `:daily`, `:monthly`, and `:yearly` aliases plus
   canonical `:hour`, `:day`, `:month`, and `:year` values.
 
-  A windowed pipeline expects manual runs to provide a concrete window request,
-  for example `mix favn.run MyApp.Pipelines.Monthly --window month:2026-03`.
+  A manual run without `--window` selects the latest complete period at one
+  orchestrator-persisted evaluation instant. Selected assets' availability
+  delays are applied before that period is resolved. An explicit request such
+  as `mix favn.run MyApp.Pipelines.Monthly --window month:2026-03` remains exact.
   Scheduled windowed runs use the explicit anchor policy in the effective
   timezone. `:previous_complete_period` is the default and selects the period
   immediately before the occurrence. `:current_period` selects the possibly
-  incomplete period containing the occurrence. Schedule cadence remains
-  independent: a daily schedule may use monthly anchor windows. Pipelines
-  without a `window` clause submit no anchor window and are the normal full-load
-  path.
+  incomplete period containing the occurrence. The schedule anchor does not
+  change the manual default. Schedule cadence remains independent: a daily
+  schedule may use monthly anchor windows. Pipelines without a `window` clause
+  submit no anchor window and are the normal full-load path.
 
       schedule cron: "0 2 * * *", timezone: "Europe/Oslo"
       window :monthly, anchor: :current_period
@@ -369,7 +371,9 @@ defmodule Favn.Pipeline do
   - `missed` optional, defaults to `:skip`; runtime `:all` catch-up is capped
     per schedule entry per tick
   - `overlap` optional, defaults to `:forbid`
-  - `active` optional, defaults to `true`
+
+  Schedule activation is workspace state, not authored manifest state. New and
+  changed schedules remain disabled until an operator activates them.
 
   ## Examples
 
@@ -378,8 +382,7 @@ defmodule Favn.Pipeline do
       schedule cron: "0 2 * * *",
                timezone: "Europe/Oslo",
                missed: :one,
-               overlap: :queue_one,
-               active: true
+               overlap: :queue_one
   """
   defmacro schedule(value) do
     quote bind_quoted: [value: value] do

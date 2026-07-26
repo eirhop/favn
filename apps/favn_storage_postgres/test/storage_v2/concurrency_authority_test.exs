@@ -29,11 +29,13 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease
   alias FavnOrchestrator.Persistence.Commands.RunTarget
+  alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Commands.StartBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.TransitionBackfillWindow
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash
+  alias FavnOrchestrator.Persistence.Queries.PageSchedules
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Logs
@@ -100,6 +102,95 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
       ])
 
     assert version_after_conflict == committed_version
+  end
+
+  test "concurrent schedule activation retries return one durable receipt", fixture do
+    assert {:ok, %{items: [schedule | _rest]}} =
+             SchedulerStore.page_schedules(%PageSchedules{
+               workspace_context: fixture.workspace_context,
+               limit: 10
+             })
+
+    occurred_at = DateTime.utc_now()
+    command_id = "concurrent-schedule-activation:" <> fixture.workspace_id
+
+    command = %SetScheduleActivation{
+      workspace_context: fixture.workspace_context,
+      pipeline_target_id: schedule.pipeline_target_id,
+      schedule_id: schedule.schedule_id,
+      schedule_fingerprint: schedule.schedule_fingerprint,
+      enabled: true,
+      actor_id: "concurrency-test",
+      reason: "concurrent retry",
+      command_id: command_id,
+      request_hash: :crypto.hash(:sha256, command_id),
+      occurred_at: occurred_at,
+      next_due_at: DateTime.add(occurred_at, 60, :second)
+    }
+
+    receipts =
+      1..2
+      |> Task.async_stream(fn _index -> SchedulerStore.set_activation(command) end,
+        max_concurrency: 2,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn {:ok, {:ok, receipt}} -> receipt end)
+
+    assert [first, second] = receipts
+    assert first == second
+
+    %{rows: [[1]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT count(*)
+        FROM favn_control.schedule_activation_commands
+        WHERE workspace_id = $1 AND command_id = $2
+        """,
+        [fixture.workspace_id, command_id]
+      )
+  end
+
+  test "different first activation commands serialize by schedule identity", fixture do
+    assert {:ok, %{items: [schedule | _rest]}} =
+             SchedulerStore.page_schedules(%PageSchedules{
+               workspace_context: fixture.workspace_context,
+               limit: 10
+             })
+
+    occurred_at = DateTime.utc_now()
+
+    commands =
+      Enum.map(1..2, fn index ->
+        command_id = "schedule-identity-lock:#{index}:#{fixture.workspace_id}"
+
+        %SetScheduleActivation{
+          workspace_context: fixture.workspace_context,
+          pipeline_target_id: schedule.pipeline_target_id,
+          schedule_id: schedule.schedule_id,
+          schedule_fingerprint: schedule.schedule_fingerprint,
+          enabled: true,
+          actor_id: "concurrency-test-#{index}",
+          reason: "independent command #{index}",
+          command_id: command_id,
+          request_hash: :crypto.hash(:sha256, command_id),
+          occurred_at: DateTime.add(occurred_at, index, :microsecond),
+          next_due_at: DateTime.add(occurred_at, 60 + index, :second)
+        }
+      end)
+
+    receipts =
+      commands
+      |> Task.async_stream(&SchedulerStore.set_activation/1,
+        max_concurrency: 2,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn {:ok, {:ok, receipt}} -> receipt end)
+
+    assert Enum.sort(Enum.map(receipts, & &1.version)) == [1, 2]
+    assert Enum.sort(Enum.map(receipts, & &1.previous_state)) == [:disabled, :enabled]
   end
 
   setup_all do
@@ -276,6 +367,8 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     on_exit(fn ->
       Enum.each(peers, &stop_peer/1)
     end)
+
+    activate_due_schedules!(fixture)
 
     admission_runs = Enum.map(1..3, fn _index -> create_run!(fixture) end)
 
@@ -928,6 +1021,8 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   end
 
   test "three scheduler owners partition due work without duplicate claims", fixture do
+    activate_due_schedules!(fixture)
+
     claims =
       @node_ids
       |> Task.async_stream(
@@ -1371,6 +1466,35 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     }
   end
 
+  defp activate_due_schedules!(fixture) do
+    assert {:ok, page} =
+             SchedulerStore.page_schedules(%PageSchedules{
+               workspace_context: fixture.workspace_context,
+               limit: 100
+             })
+
+    occurred_at = DateTime.utc_now()
+
+    Enum.each(page.items, fn schedule ->
+      command_id = "activate:#{fixture.workspace_id}:#{schedule.schedule_id}"
+
+      assert {:ok, _activation} =
+               SchedulerStore.set_activation(%SetScheduleActivation{
+                 workspace_context: fixture.workspace_context,
+                 pipeline_target_id: schedule.pipeline_target_id,
+                 schedule_id: schedule.schedule_id,
+                 schedule_fingerprint: schedule.schedule_fingerprint,
+                 enabled: true,
+                 actor_id: "concurrency-test",
+                 reason: "exercise concurrent due claims",
+                 command_id: command_id,
+                 request_hash: :crypto.hash(:sha256, command_id),
+                 occurred_at: occurred_at,
+                 next_due_at: DateTime.add(occurred_at, -1, :second)
+               })
+    end)
+  end
+
   defp create_run!(fixture, opts \\ []) do
     run_id = "concurrent-run-#{random_id()}"
 
@@ -1535,7 +1659,9 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     Enum.map(1..count, fn index ->
       {:ok, control, node} =
         :peer.start_link(%{
-          name: "favn_storage_#{index}_#{unique}",
+          name: String.to_charlist("favn_storage_#{index}_#{unique}"),
+          host: ~c"127.0.0.1",
+          longnames: true,
           connection: :standard_io,
           wait_boot: 30_000
         })

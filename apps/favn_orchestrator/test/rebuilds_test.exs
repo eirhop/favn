@@ -78,6 +78,7 @@ defmodule FavnOrchestrator.RebuildsTest do
         evaluated_at: command.evaluated_at,
         action_count: length(command.actions),
         window_count: length(command.items),
+        actions: command.actions,
         state: :planned,
         phase: :planned,
         cleanup_state: :not_started,
@@ -90,12 +91,33 @@ defmodule FavnOrchestrator.RebuildsTest do
       }
 
       Process.put({:rebuild_operation, command.operation_id}, operation)
+      Process.put({:rebuild_items, command.operation_id}, command.items)
       {:ok, operation}
     end
 
     def acquire_many(command) do
       send(Process.get(:rebuild_test_pid), {:acquire_rebuild_locks, command})
       {:ok, []}
+    end
+
+    def page_items(query) do
+      items =
+        Process.get({:rebuild_items, query.operation_id}, [])
+        |> Enum.sort_by(&{&1.ordinal, &1.target_id, &1.item_id})
+
+      {:ok,
+       %{
+         items: items,
+         has_more?: false,
+         next_cursor: nil
+       }}
+    end
+
+    def start_operation(command) do
+      operation = Process.get({:rebuild_operation, command.operation_id})
+      started = %{operation | state: :queued, phase: :locking, version: operation.version + 1}
+      Process.put({:rebuild_operation, command.operation_id}, started)
+      {:ok, started}
     end
   end
 
@@ -161,9 +183,14 @@ defmodule FavnOrchestrator.RebuildsTest do
     start_supervised!({PersistenceRuntime, runtime})
 
     Process.put(:rebuild_test_pid, self())
-    {version, root, downstream, packages} = version()
+    {version, root, downstream, inactive_upstream, packages} = version()
     runtime = runtime(version)
-    bindings = [binding(root, version, 1), binding(downstream, version, 1)]
+
+    bindings = [
+      binding(root, version, 1),
+      binding(downstream, version, 1),
+      uninitialized_binding(inactive_upstream, version)
+    ]
 
     Process.put(:rebuild_version, version)
     Process.put(:rebuild_runtime, runtime)
@@ -172,7 +199,9 @@ defmodule FavnOrchestrator.RebuildsTest do
 
     Process.put(
       :rebuild_markers,
-      Map.new(bindings, &{asset_ref(version, &1.target_id), marker(&1)})
+      bindings
+      |> Enum.filter(&is_binary(&1.active_generation_id))
+      |> Map.new(&{asset_ref(version, &1.target_id), marker(&1)})
     )
 
     Process.put(
@@ -251,6 +280,15 @@ defmodule FavnOrchestrator.RebuildsTest do
     assert Ecto.UUID.cast(root_action.candidate_generation.target_generation_id) != :error
     assert Ecto.UUID.cast(downstream_action.candidate_generation.target_generation_id) != :error
 
+    assert [
+             %{
+               target_generation_id: nil,
+               evidence_generation_id: "ag_" <> _digest,
+               data_plane_marker: nil,
+               binding_version: nil
+             }
+           ] = root_action.pinned_input_generation_ids
+
     assert [%{target_id: pinned_target, data_plane_marker: marker}] =
              downstream_action.pinned_input_generation_ids
 
@@ -269,6 +307,43 @@ defmodule FavnOrchestrator.RebuildsTest do
     assert replayed.idempotency_replay?
     assert %{replayed | idempotency_replay?: false} == first
     refute_received {:create_rebuild_plan, _command}
+  end
+
+  test "plans from persisted physical relations whose connection is JSON text", fixture do
+    bindings =
+      Enum.map(fixture.bindings, fn
+        %{active_physical_relation: nil} = binding ->
+          binding
+
+        binding ->
+          relation = Map.put(binding.active_physical_relation, :connection, "warehouse")
+          %{binding | active_physical_relation: relation}
+      end)
+
+    Process.put(:rebuild_bindings, bindings)
+
+    {:ok, context} =
+      WorkspaceContext.new("workspace-rebuild", "operator", [:customer_operator])
+
+    assert {:ok, plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: "rebuild-persisted-relation"
+             )
+
+    assert plan.plan_id == "rebuild-persisted-relation"
+  end
+
+  test "starts when an unaffected upstream binding is still uninitialized", fixture do
+    {:ok, context} =
+      WorkspaceContext.new("workspace-rebuild", "admin", [:workspace_admin])
+
+    assert {:ok, plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: "rebuild-with-uninitialized-upstream"
+             )
+
+    assert {:ok, %{state: :queued}} = Rebuilds.start(context, plan.plan_id, plan.plan_hash)
+    assert_received {:acquire_rebuild_locks, _command}
   end
 
   test "rejects approval when a pinned target binding changes", fixture do
@@ -341,22 +416,47 @@ defmodule FavnOrchestrator.RebuildsTest do
   end
 
   defp version do
+    landing_ref = {__MODULE__.Landing, :asset}
     root_ref = {__MODULE__.Root, :asset}
     downstream_ref = {__MODULE__.Downstream, :asset}
+    inactive_upstream_ref = {__MODULE__.InactiveUpstream, :asset}
+    observer_ref = {__MODULE__.Observer, :asset}
 
-    {root, root_package} = persisted_asset(root_ref, "root", [])
+    landing = %Asset{
+      ref: landing_ref,
+      module: elem(landing_ref, 0),
+      name: elem(landing_ref, 1),
+      type: :elixir,
+      depends_on: [],
+      semantic_generation_id: "ag_" <> String.duplicate("a", 64)
+    }
+
+    {root, root_package} = persisted_asset(root_ref, "root", [landing_ref])
 
     {downstream, downstream_package} =
       persisted_asset(downstream_ref, "downstream", [root_ref])
 
+    {inactive_upstream, inactive_upstream_package} =
+      persisted_asset(inactive_upstream_ref, "inactive_upstream", [])
+
+    observer = %Asset{
+      ref: observer_ref,
+      module: elem(observer_ref, 0),
+      name: elem(observer_ref, 1),
+      type: :source,
+      depends_on: [downstream_ref, inactive_upstream_ref]
+    }
+
     manifest =
-      %Manifest{assets: [root, downstream]}
+      %Manifest{assets: [landing, root, downstream, inactive_upstream, observer]}
       |> FavnTestSupport.with_manifest_graph()
       |> FavnTestSupport.with_manifest_contract()
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "manifest-rebuild-test")
-    [root, downstream] = version.manifest.assets
-    {version, root, downstream, [root_package, downstream_package]}
+    [_landing, root, downstream, inactive_upstream, _observer] = version.manifest.assets
+
+    {version, root, downstream, inactive_upstream,
+     [root_package, downstream_package, inactive_upstream_package]}
   end
 
   defp persisted_asset(ref, relation_name, depends_on) do
@@ -422,6 +522,20 @@ defmodule FavnOrchestrator.RebuildsTest do
     }
   end
 
+  defp uninitialized_binding(asset, version) do
+    %TargetBinding{
+      workspace_id: "workspace-rebuild",
+      target_id: asset.target_descriptor.target_id,
+      desired_manifest_id: version.manifest_version_id,
+      desired_descriptor_hash: asset.target_descriptor.descriptor_hash,
+      compatibility_status: :uninitialized,
+      reason_code: "no_active_generation",
+      compatibility_diff: %{},
+      version: 1,
+      updated_at: DateTime.utc_now()
+    }
+  end
+
   defp inspection(asset, version) do
     %RelationInspectionResult{
       asset_ref: asset.ref,
@@ -459,7 +573,7 @@ defmodule FavnOrchestrator.RebuildsTest do
 
   defp asset_ref(version, target_id) do
     version.manifest.assets
-    |> Enum.find(&(&1.target_descriptor.target_id == target_id))
+    |> Enum.find(&match?(%Asset{target_descriptor: %{target_id: ^target_id}}, &1))
     |> Map.fetch!(:ref)
   end
 

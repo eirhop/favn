@@ -160,7 +160,7 @@ defmodule Favn.CoverageDSLTest do
     assert %Effective{scope_source: :environment_floor} = asset.coverage
     assert asset.coverage.declared_from.start_at.year == 2020
     assert asset.coverage.effective_from.start_at.year == 2026
-    assert manifest.schema_version == 12
+    assert manifest.schema_version == 13
     assert manifest.runner_contract_version == 12
 
     assert manifest.metadata.environment == %{

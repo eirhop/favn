@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.OperatorCommands
   alias FavnOrchestrator.API.Response
+  alias FavnOrchestrator.Persistence.Error
 
   plug(:match)
   plug(:dispatch)
@@ -85,6 +86,23 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
     end
   end
 
+  get "/:backfill_id" do
+    with :ok <- Authentication.ensure_service(conn),
+         {:ok, _session, _actor, context} <- actor_context(conn, :viewer),
+         {:ok, backfill} <- FavnOrchestrator.Backfills.get(context, backfill_id) do
+      Response.data(conn, 200, %{backfill: DTO.backfill(backfill)})
+    else
+      {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
+        authentication_error(conn, reason)
+
+      {:error, %Error{kind: :not_found}} ->
+        Response.error(conn, 404, "not_found", "Backfill was not found")
+
+      {:error, _reason} ->
+        Response.error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
   match _ do
     Response.error(conn, 404, "not_found", "Route was not found")
   end
@@ -141,7 +159,8 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
     )
   end
 
-  defp actor_context(conn, role), do: Authentication.workspace_context(conn, role)
+  defp actor_context(conn, role),
+    do: Authentication.workspace_or_service_context(conn, role)
 
   defp plan_backfill(params, context),
     do: OperatorCommands.plan_backfill(params, context)

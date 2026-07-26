@@ -91,14 +91,14 @@ defmodule FavnOrchestrator.API.DTO do
   @spec schedule(map()) :: map()
   def schedule(entry) when is_map(entry) do
     %{
-      id: FavnOrchestrator.schedule_entry_id(entry),
+      id: Map.get(entry, :id) || FavnOrchestrator.schedule_entry_id(entry),
       pipeline_module: module_name(entry.pipeline_module),
       schedule_id: atom_name(entry.schedule_id),
       cron: entry.cron,
       timezone: entry.timezone,
       overlap: atom_name(entry.overlap),
       missed: atom_name(entry.missed),
-      active: entry.active,
+      active: Map.get(entry, :active, Map.get(entry, :manifest_active?, false)),
       activation_state: atom_name(Map.get(entry, :activation_state)),
       effective_enabled: Map.get(entry, :effective_enabled?),
       runtime_state: atom_name(Map.get(entry, :runtime_state)),
@@ -114,6 +114,18 @@ defmodule FavnOrchestrator.API.DTO do
       queued_due_at: datetime(entry.queued_due_at),
       last_scheduler_error: scheduler_error(Map.get(entry, :last_scheduler_error)),
       updated_at: datetime(entry.updated_at)
+    }
+  end
+
+  @spec schedule_occurrence(map()) :: map()
+  def schedule_occurrence(entry) when is_map(entry) do
+    %{
+      schedule_id: entry.schedule_entry_id,
+      due_at: datetime(entry.due_at),
+      timezone: entry.timezone,
+      window: entry.window,
+      status: atom_name(entry.status),
+      notes: entry.notes
     }
   end
 
@@ -162,10 +174,14 @@ defmodule FavnOrchestrator.API.DTO do
 
   @spec run_summary(map()) :: map()
   def run_summary(run) when is_map(run) do
+    target_refs = run_target_refs(run)
+
     %{
       id: run.id,
       status: atom_name(run.status),
       submit_kind: atom_name(run.submit_kind),
+      target_label: run_target_label(run, target_refs),
+      target_refs: target_refs,
       manifest_version_id: run.manifest_version_id,
       required_runner_release_id: Map.get(run, :required_runner_release_id),
       event_seq: run.event_seq,
@@ -516,6 +532,21 @@ defmodule FavnOrchestrator.API.DTO do
 
   defp ref_to_string(value) when is_binary(value), do: value
   defp ref_to_string(_value), do: nil
+
+  defp run_target_refs(run) do
+    [Map.get(run, :asset_ref) | List.wrap(Map.get(run, :target_refs))]
+    |> Enum.map(&ref_to_string/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp run_target_label(run, target_refs) do
+    pipeline_ref =
+      metadata_field(Map.get(run, :metadata), :pipeline_identity_ref) ||
+        metadata_field(Map.get(run, :metadata), :pipeline_submit_ref)
+
+    Map.get(run, :target_label) || ref_to_string(pipeline_ref) || List.first(target_refs)
+  end
 
   defp datetime(nil), do: nil
   defp datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)

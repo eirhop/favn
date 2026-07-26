@@ -1,4 +1,6 @@
 defmodule FavnOrchestrator.Rebuilds do
+  require Logger
+
   @moduledoc "Manual, generation-safe rebuild planning and lifecycle commands."
 
   alias Favn.Coverage.Expected
@@ -37,6 +39,7 @@ defmodule FavnOrchestrator.Rebuilds do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Rebuild.Plan
   alias FavnOrchestrator.Rebuild.RuntimeInputs, as: RebuildRuntimeInputs
+  alias FavnOrchestrator.Rebuilds.ItemDigest
   alias FavnOrchestrator.Rebuild.Telemetry
   alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.RuntimeConfig
@@ -366,18 +369,18 @@ defmodule FavnOrchestrator.Rebuilds do
         binding_snapshot: binding_snapshot(bindings),
         capabilities: capabilities,
         execution_packages:
-          Map.new(refs, fn ref ->
+          Map.new(actionable_refs(index, refs), fn ref ->
             asset = Map.fetch!(index.assets_by_ref, ref)
             {target_id(asset), asset.execution_package_hash}
           end),
         assurance_expectations:
-          Map.new(refs, fn ref ->
+          Map.new(actionable_refs(index, refs), fn ref ->
             asset = Map.fetch!(index.assets_by_ref, ref)
             {target_id(asset), assurance_expectation(asset)}
           end),
         actions: Enum.map(actions, &action_payload/1),
         item_count: length(items),
-        items_digest: item_digest(items)
+        items_digest: ItemDigest.hash(items)
       }
 
       plan = Plan.new(operation_id, expires_at, payload)
@@ -417,42 +420,41 @@ defmodule FavnOrchestrator.Rebuilds do
          operation_id,
          evaluated_at
        ) do
-    Enum.reduce_while(Enum.with_index(refs), {:ok, [], [], identities}, fn {ref, ordinal},
-                                                                           {:ok, actions, items,
-                                                                            planned_identities} ->
-      asset = Map.fetch!(index.assets_by_ref, ref)
-      action_kind = action_kind(index, root, asset)
+    Enum.reduce_while(Enum.with_index(actionable_refs(index, refs)), {:ok, [], [], identities}, fn
+      {ref, ordinal}, {:ok, actions, items, planned_identities} ->
+        asset = Map.fetch!(index.assets_by_ref, ref)
+        action_kind = action_kind(index, root, asset)
 
-      with {:ok, candidate} <- candidate(action_kind, asset, capabilities, operation_id),
-           {:ok, action_items} <-
-             action_items(action_kind, root, asset, candidate, evaluated_at),
-           {:ok, input_pins} <- input_pins(asset, planned_identities, bindings),
-           true <- length(action_items) <= Expected.max_windows() do
-        action = %RebuildPlanAction{
-          target_id: target_id(asset),
-          ordinal: ordinal,
-          action: action_kind,
-          reason: action_reason(action_kind, root, asset, Map.get(bindings, target_id(asset))),
-          upstream_impact: upstream_impact(index, ref),
-          mapping_proof: mapping_proof(action_kind, root, asset),
-          pinned_input_generation_ids: input_pins,
-          candidate_generation: candidate,
-          status: :planned
-        }
+        with {:ok, candidate} <- candidate(action_kind, asset, capabilities, operation_id),
+             {:ok, action_items} <-
+               action_items(action_kind, root, asset, candidate, evaluated_at),
+             {:ok, input_pins} <- input_pins(asset, planned_identities, bindings),
+             true <- length(action_items) <= Expected.max_windows() do
+          action = %RebuildPlanAction{
+            target_id: target_id(asset),
+            ordinal: ordinal,
+            action: action_kind,
+            reason: action_reason(action_kind, root, asset, Map.get(bindings, target_id(asset))),
+            upstream_impact: upstream_impact(index, ref),
+            mapping_proof: mapping_proof(action_kind, root, asset),
+            pinned_input_generation_ids: input_pins,
+            candidate_generation: candidate,
+            status: :planned
+          }
 
-        {:cont,
-         {:ok, [action | actions], items ++ action_items,
-          put_planned_output(
-            planned_identities,
-            asset,
-            action_kind,
-            candidate,
-            operation_id
-          )}}
-      else
-        false -> {:halt, {:error, :coverage_window_limit_exceeded}}
-        {:error, _reason} = error -> {:halt, error}
-      end
+          {:cont,
+           {:ok, [action | actions], items ++ action_items,
+            put_planned_output(
+              planned_identities,
+              asset,
+              action_kind,
+              candidate,
+              operation_id
+            )}}
+        else
+          false -> {:halt, {:error, :coverage_window_limit_exceeded}}
+          {:error, _reason} = error -> {:halt, error}
+        end
     end)
     |> then(fn
       {:ok, actions, items, _planned_identities} -> {:ok, Enum.reverse(actions), items}
@@ -624,13 +626,29 @@ defmodule FavnOrchestrator.Rebuilds do
     payload = operation.plan_payload
 
     with {:ok, runtime} <- ManifestStore.get_runtime_state(context),
-         true <- runtime.manifest_version_id == field(payload, :manifest_version_id),
+         :ok <-
+           ensure_current(
+             runtime.manifest_version_id == field(payload, :manifest_version_id),
+             :active_manifest
+           ),
          {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         true <- version.content_hash == field(payload, :manifest_content_hash),
+         :ok <-
+           ensure_current(
+             version.content_hash == field(payload, :manifest_content_hash),
+             :manifest_content
+           ),
          {:ok, current_bindings} <- target_bindings_by_ids(context, snapshot_target_ids(payload)),
-         true <- binding_snapshot_matches?(current_bindings, payload, operation),
+         :ok <-
+           ensure_current(
+             binding_snapshot_matches?(current_bindings, payload, operation),
+             :target_bindings
+           ),
          {:ok, current_capabilities} <- capabilities_for_payload(version, payload),
-         true <- canonical(current_capabilities) == field(payload, :capabilities),
+         :ok <-
+           ensure_current(
+             canonical(current_capabilities) == field(payload, :capabilities),
+             :runner_capabilities
+           ),
          {:ok, index} <- PlanningIndex.build(version.manifest),
          :ok <-
            validate_live_bindings(
@@ -655,14 +673,31 @@ defmodule FavnOrchestrator.Rebuilds do
              operation.evaluated_at,
              operation.operation_id
            ),
-         true <- item_digest(current_items) == field(payload, :items_digest) do
+         :ok <-
+           ensure_current(
+             ItemDigest.hash(current_items) == field(payload, :items_digest),
+             :runtime_inputs
+           ) do
       :ok
     else
-      false -> {:error, stale_plan_error()}
-      {:error, %Error{} = error} -> {:error, error}
-      {:error, _reason} -> {:error, stale_plan_error()}
+      {:error, {:stale_rebuild_plan, reason}} ->
+        Logger.warning("rebuild plan revalidation failed: #{reason}",
+          operation_id: operation.operation_id,
+          reason: reason
+        )
+
+        {:error, stale_plan_error()}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, _reason} ->
+        {:error, stale_plan_error()}
     end
   end
+
+  defp ensure_current(true, _reason), do: :ok
+  defp ensure_current(false, reason), do: {:error, {:stale_rebuild_plan, reason}}
 
   defp acquire_plan_locks(context, operation, opts) do
     target_ids = write_target_ids(operation.plan_payload)
@@ -1005,19 +1040,23 @@ defmodule FavnOrchestrator.Rebuilds do
     |> Enum.reduce_while(:ok, fn asset, :ok ->
       binding = Map.fetch!(bindings, target_id(asset))
 
-      with {:ok, marker} <-
-             RunnerDispatch.generation_marker(
-               runtime.runner_client,
-               version,
-               asset.ref,
-               runtime.runner_client_opts
-             ),
-           :ok <- validate_live_marker(marker, binding),
-           {:ok, fingerprint} <- inspect_active_fingerprint(runtime, version, asset, binding),
-           true <- fingerprint.fingerprint == binding.active_physical_fingerprint do
-        {:cont, :ok}
+      if is_binary(binding.active_generation_id) do
+        with {:ok, marker} <-
+               RunnerDispatch.generation_marker(
+                 runtime.runner_client,
+                 version,
+                 asset.ref,
+                 runtime.runner_client_opts
+               ),
+             :ok <- validate_live_marker(marker, binding),
+             {:ok, fingerprint} <- inspect_active_fingerprint(runtime, version, asset, binding),
+             true <- fingerprint.fingerprint == binding.active_physical_fingerprint do
+          {:cont, :ok}
+        else
+          _stale -> {:halt, {:error, stale_plan_error()}}
+        end
       else
-        _stale -> {:halt, {:error, stale_plan_error()}}
+        {:cont, :ok}
       end
     end)
   end
@@ -1039,17 +1078,17 @@ defmodule FavnOrchestrator.Rebuilds do
   defp validate_live_marker(_marker, _binding), do: {:error, :active_generation_marker_missing}
 
   defp inspect_active_fingerprint(runtime, version, asset, binding) do
-    request = %RelationInspectionRequest{
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
-      asset_ref: asset.ref,
-      relation: RelationRef.new!(binding.active_physical_relation),
-      include: [:relation, :columns, :table_metadata],
-      sample_limit: 0
-    }
-
-    with {:ok, inspection} <-
+    with {:ok, relation} <- persisted_physical_relation(asset, binding),
+         request <- %RelationInspectionRequest{
+           manifest_version_id: version.manifest_version_id,
+           manifest_content_hash: version.content_hash,
+           required_runner_release_id: version.required_runner_release_id,
+           asset_ref: asset.ref,
+           relation: relation,
+           include: [:relation, :columns, :table_metadata],
+           sample_limit: 0
+         },
+         {:ok, inspection} <-
            RunnerDispatch.inspect_relation(
              runtime.runner_client,
              request,
@@ -1058,6 +1097,31 @@ defmodule FavnOrchestrator.Rebuilds do
       PhysicalFingerprint.from_inspection(inspection)
     end
   end
+
+  defp persisted_physical_relation(asset, binding) do
+    logical_relation = RelationRef.new!(asset.relation)
+    physical_relation = binding.active_physical_relation
+    persisted_connection = field(physical_relation, :connection)
+
+    if persisted_connection in persisted_connection_values(logical_relation.connection) do
+      {:ok,
+       RelationRef.new!(
+         connection: logical_relation.connection,
+         catalog: field(physical_relation, :catalog),
+         schema: field(physical_relation, :schema),
+         name: field(physical_relation, :name)
+       )}
+    else
+      {:error, :active_physical_relation_connection_changed}
+    end
+  rescue
+    ArgumentError -> {:error, :invalid_active_physical_relation}
+  end
+
+  defp persisted_connection_values(nil), do: [nil]
+
+  defp persisted_connection_values(connection) when is_atom(connection),
+    do: [connection, Atom.to_string(connection)]
 
   defp binding_snapshot(bindings), do: bindings |> canonical_binding_snapshot() |> canonical()
 
@@ -1127,22 +1191,6 @@ defmodule FavnOrchestrator.Rebuilds do
     }
   end
 
-  defp item_payload(item) do
-    Map.take(item, [
-      :target_id,
-      :item_id,
-      :ordinal,
-      :work_kind,
-      :window_key,
-      :window_start,
-      :window_end,
-      :runtime_input_expectation,
-      :candidate_generation_id
-    ])
-  end
-
-  defp item_digest(items), do: Plan.hash(%{items: Enum.map(items, &item_payload/1)})
-
   defp freeze_runtime_inputs(
          context,
          runtime,
@@ -1159,7 +1207,9 @@ defmodule FavnOrchestrator.Rebuilds do
     actions_by_target = Map.new(actions, &{field(&1, :target_id), &1})
 
     assets_by_target =
-      Map.new(planning_index.assets_by_ref, fn {_ref, asset} -> {target_id(asset), asset} end)
+      planning_index.assets_by_ref
+      |> Enum.filter(fn {_ref, asset} -> asset.target_descriptor != nil end)
+      |> Map.new(fn {_ref, asset} -> {target_id(asset), asset} end)
 
     totals = Enum.frequencies_by(items, &field(&1, :target_id))
 
@@ -1249,14 +1299,25 @@ defmodule FavnOrchestrator.Rebuilds do
     action
     |> field(:pinned_input_generation_ids)
     |> Enum.map(fn pin ->
-      binding = Map.fetch!(bindings, field(pin, :target_id))
+      target_id = field(pin, :target_id)
 
-      %{
-        target_id: binding.target_id,
-        target_generation_id: binding.active_generation_id,
-        evidence_generation_id: binding.active_generation_id,
-        physical_relation: binding.active_physical_relation
-      }
+      case Map.get(bindings, target_id) do
+        nil ->
+          %{
+            target_id: target_id,
+            target_generation_id: field(pin, :target_generation_id),
+            evidence_generation_id: field(pin, :evidence_generation_id),
+            physical_relation: field(pin, :physical_relation)
+          }
+
+        binding ->
+          %{
+            target_id: binding.target_id,
+            target_generation_id: binding.active_generation_id,
+            evidence_generation_id: binding.active_generation_id,
+            physical_relation: binding.active_physical_relation
+          }
+      end
     end)
   end
 
@@ -1401,6 +1462,11 @@ defmodule FavnOrchestrator.Rebuilds do
 
   defp item_boundary(nil, _field), do: nil
   defp item_boundary(item, field), do: Map.fetch!(item, field)
+
+  defp actionable_refs(index, refs) do
+    Enum.filter(refs, &(Map.fetch!(index.assets_by_ref, &1).target_descriptor != nil))
+  end
+
   defp target_id(asset), do: asset.target_descriptor.target_id
 
   defp ref_value({module, name}),

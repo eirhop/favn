@@ -7,12 +7,14 @@ defmodule FavnReferenceWorkload.CRMExampleTest do
   alias FavnReferenceWorkload.{CRMData, LandingFiles}
 
   setup do
+    database_path = database_path()
+
     File.rm_rf!(Path.expand(".data/generic_crm"))
-    File.rm(Path.expand("generic_crm.duckdb"))
+    File.rm(database_path)
 
     on_exit(fn ->
       File.rm_rf!(Path.expand(".data/generic_crm"))
-      File.rm(Path.expand("generic_crm.duckdb"))
+      File.rm(database_path)
     end)
 
     :ok
@@ -125,6 +127,19 @@ defmodule FavnReferenceWorkload.CRMExampleTest do
     assert error.message =~ "required_keys_are_present"
   end
 
+  test "daily sources accept an empty compact JSON window" do
+    window = daily_window(~U[2026-07-24 00:00:00Z])
+
+    assert :ok = LandingFiles.write_entity!(:deals, [])
+    assert :ok = LandingFiles.write_entity!(:activities, [])
+
+    assert {:ok, _result} =
+             materialize(FavnReferenceWorkload.Warehouse.Source.DealsDaily, window)
+
+    assert {:ok, _result} =
+             materialize(FavnReferenceWorkload.Warehouse.Source.ActivitiesDaily, window)
+  end
+
   defp assert_materialized(module, window) do
     assert {:ok, _result} = materialize(module, window)
   end
@@ -154,5 +169,14 @@ defmodule FavnReferenceWorkload.CRMExampleTest do
       DateTime.add(start_at, 1, :day),
       Key.new!(:day, start_at, "Etc/UTC")
     )
+  end
+
+  defp database_path do
+    :favn
+    |> Application.fetch_env!(:connections)
+    |> Keyword.fetch!(:warehouse)
+    |> Keyword.fetch!(:open)
+    |> Keyword.fetch!(:database)
+    |> Path.expand()
   end
 end

@@ -16,7 +16,7 @@ defmodule Favn.Manifest.TargetDescriptorTest do
     descriptor =
       TargetDescriptor.from_asset(asset,
         connection_definitions: connection_definitions(),
-        manifest_schema_version: 12,
+        manifest_schema_version: 13,
         runner_contract_version: 12
       )
 
@@ -177,7 +177,7 @@ defmodule Favn.Manifest.TargetDescriptorTest do
   defp versions do
     [
       connection_definitions: connection_definitions(),
-      manifest_schema_version: 12,
+      manifest_schema_version: 13,
       runner_contract_version: 12
     ]
   end

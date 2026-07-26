@@ -472,6 +472,22 @@ defmodule FavnOrchestrator.Backfills do
   end
 
   defp persist_submission(%Submission{} = submission) do
+    case get(submission.context, submission.backfill_id) do
+      {:ok, %Backfill{status: :planning}} ->
+        continue_submission(submission)
+
+      {:ok, %Backfill{} = existing} ->
+        {:ok, existing}
+
+      {:error, %{kind: :not_found}} ->
+        continue_submission(submission)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp continue_submission(%Submission{} = submission) do
     with {:ok, planning} <- start_plan(submission),
          {:ok, appended} <-
            append_batches(

@@ -19,6 +19,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.ResultSanitizer
+  alias FavnOrchestrator.RunServer.Execution.PreSubmitFailure
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
@@ -318,7 +319,14 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       dispatch_attempt(state, lifecycle, work, ownership)
     else
       {:error, reason} ->
-        persist_pre_submit_failure(state, asset_ref, node_key, stage, attempt, reason)
+        persist_pre_submit_failure(
+          state,
+          asset_ref,
+          node_key,
+          stage,
+          attempt,
+          PreSubmitFailure.normalize(reason)
+        )
     end
   end
 

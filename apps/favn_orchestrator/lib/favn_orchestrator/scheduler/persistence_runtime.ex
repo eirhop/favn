@@ -18,6 +18,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.ClaimDueSchedules
+  alias FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispatch
   alias FavnOrchestrator.Persistence.Commands.ClaimScheduleOccurrences
   alias FavnOrchestrator.Persistence.Commands.CommitScheduleEvaluation
   alias FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence
@@ -111,7 +112,13 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
 
           next
 
-        {:error, reason} when reason in [:runtime_starting, :runtime_draining] ->
+        {:error, reason}
+        when reason in [
+               :runtime_starting,
+               :runtime_draining,
+               :runtime_maintenance,
+               :runtime_not_accepting
+             ] ->
           state
       end
 
@@ -358,6 +365,8 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
   defp dispatch_occurrence(context, entries, %ScheduleOccurrence{} = occurrence) do
     with {:ok, entry} <-
            Map.fetch(entries, {occurrence.pipeline_target_id, occurrence.schedule_id}),
+         {:ok, %{status: :dispatching}} <-
+           authorize_occurrence_dispatch(context, entry, occurrence),
          {:ok, run_id} <- submit_occurrence(context, entry, occurrence) do
       complete_occurrence(context, occurrence, run_id, nil)
     else
@@ -369,9 +378,29 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
           JsonSafe.error(:deployed_schedule_not_in_manifest)
         )
 
+      {:ok, %{status: :suppressed}} ->
+        :ok
+
       {:error, reason} ->
         complete_occurrence(context, occurrence, nil, JsonSafe.error(reason))
     end
+  end
+
+  defp authorize_occurrence_dispatch(context, entry, occurrence) do
+    Persistence.stores().scheduler.authorize_occurrence_dispatch(
+      %AuthorizeScheduleOccurrenceDispatch{
+        workspace_context: context,
+        command_id:
+          command_id("occurrence-dispatch", occurrence.occurrence_id, occurrence.claim_generation),
+        occurrence_id: occurrence.occurrence_id,
+        pipeline_target_id: occurrence.pipeline_target_id,
+        schedule_id: occurrence.schedule_id,
+        schedule_fingerprint: entry.schedule_fingerprint,
+        owner_id: occurrence.claim_owner,
+        claim_generation: occurrence.claim_generation,
+        occurred_at: DateTime.utc_now()
+      }
+    )
   end
 
   defp submit_occurrence(context, entry, occurrence) do
@@ -402,7 +431,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
     end
   end
 
-  defp complete_occurrence(context, occurrence, run_id, error) do
+  defp complete_occurrence(context, occurrence, run_id, error, status \\ nil) do
     result =
       Persistence.stores().scheduler.complete_occurrence(%CompleteScheduleOccurrence{
         workspace_context: context,
@@ -411,6 +440,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
         occurrence_id: occurrence.occurrence_id,
         owner_id: occurrence.claim_owner,
         claim_generation: occurrence.claim_generation,
+        status: status,
         run_id: run_id,
         error: error,
         occurred_at: DateTime.utc_now()
@@ -432,8 +462,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
         cron: entry.schedule.cron,
         timezone: entry.schedule.timezone,
         overlap: entry.schedule.overlap,
-        missed: entry.schedule.missed,
-        active: entry.schedule.active
+        missed: entry.schedule.missed
       },
       occurrence: %{
         due_at: occurrence.due_at,

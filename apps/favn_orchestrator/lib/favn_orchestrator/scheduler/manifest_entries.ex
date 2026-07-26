@@ -88,7 +88,6 @@ defmodule FavnOrchestrator.Scheduler.ManifestEntries do
       timezone: schedule.timezone,
       overlap: schedule.overlap,
       missed: schedule.missed,
-      active: schedule.active,
       window: window
     }
     |> :erlang.term_to_binary()

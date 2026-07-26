@@ -7,7 +7,7 @@ defmodule FavnReferenceWorkload.Pipelines.BootstrapCrmDemo do
     asset(FavnReferenceWorkload.Warehouse.Mart.AccountHealth)
     deps(:all)
     max_concurrency(2)
-    execution_pool(:local_landing_write)
+    execution_pool(:local_duckdb)
     outputs([:account_health])
     meta(%{purpose: "full_refresh_demo", layer: "mart"})
   end

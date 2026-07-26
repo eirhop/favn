@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.API.DTOTest do
   alias Favn.Run.NodeResult
   alias Favn.Window.{Anchor, Policy, Selection}
   alias FavnOrchestrator.API.DTO
+  alias FavnOrchestrator.ScheduleListEntry
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -176,6 +177,25 @@ defmodule FavnOrchestrator.API.DTOTest do
            }
   end
 
+  test "schedule DTO accepts the bounded list read model" do
+    entry = %ScheduleListEntry{
+      id: "schedule-v2:daily",
+      pipeline_module: SamplePipeline,
+      schedule_id: :daily,
+      activation_state: :disabled,
+      effective_enabled?: false,
+      runtime_state: :inactive,
+      manifest_active?: true
+    }
+
+    schedule = DTO.schedule(entry)
+
+    assert schedule.id == "schedule-v2:daily"
+    assert schedule.active
+    assert schedule.activation_state == "disabled"
+    refute schedule.effective_enabled
+  end
+
   test "run DTOs normalize runtime payloads and errors through JsonSafe" do
     anchor =
       Anchor.new!(
@@ -249,7 +269,11 @@ defmodule FavnOrchestrator.API.DTOTest do
       target_refs: [{SampleAsset, :orders}],
       params: %{api_token: "hidden", limit: 5},
       trigger: %{kind: :manual},
-      metadata: %{source: :test, window_selection: window_selection},
+      metadata: %{
+        source: :test,
+        window_selection: window_selection,
+        pipeline_identity_ref: {SamplePipeline, :daily}
+      },
       result: %{rows: 10},
       pipeline: %{module: SamplePipeline},
       pipeline_context: %{attempt: 1},
@@ -265,6 +289,8 @@ defmodule FavnOrchestrator.API.DTOTest do
              id: "run_1",
              status: "error",
              submit_kind: "manual",
+             target_label: "Elixir.SamplePipeline:daily",
+             target_refs: ["Elixir.SampleAsset:orders"],
              manifest_version_id: "manifest_1",
              required_runner_release_id: FavnTestSupport.runner_release_id(),
              event_seq: 3,

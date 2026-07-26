@@ -24,7 +24,7 @@ basic_workflow_tutorial-*.tar
 
 /.favn/
 
-# Local CRM landing files and DuckDB data.
+# Local CRM landing files and DuckDB data, including isolated test paths.
 /.data/
-/generic_crm.duckdb*
+/*.duckdb*
 

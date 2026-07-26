@@ -85,6 +85,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
            manifest_content_hash: version.content_hash,
            execution_package_hash: work.execution_package && work.execution_package.content_hash,
            runtime_input_lineage: Map.get(work.metadata, :runtime_input_lineage),
+           target_operation: work.target_operation,
            target_generation_id: generation.target_generation_id,
            evidence_generation_id: generation.evidence_generation_id,
            owner_id: run_state.storage_owner_id,
@@ -122,6 +123,19 @@ defmodule FavnOrchestrator.MaterializationClaims do
   def complete(claim, %RunnerResult{} = result, %AssetFreshnessState{} = freshness_state)
       when is_map(claim) do
     complete_v2(claim, result, freshness_state)
+  end
+
+  @doc false
+  @spec enrich(claim() | nil, RunnerWork.t()) :: claim() | nil
+  def enrich(nil, %RunnerWork{}), do: nil
+
+  def enrich(claim, %RunnerWork{} = work) when is_map(claim) do
+    claim
+    |> Map.put(
+      :execution_package_hash,
+      work.execution_package && work.execution_package.content_hash
+    )
+    |> Map.put(:runtime_input_lineage, Map.get(work.metadata, :runtime_input_lineage))
   end
 
   defp complete_v2(claim, result, freshness_state) do

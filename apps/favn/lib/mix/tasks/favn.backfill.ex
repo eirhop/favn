@@ -11,11 +11,6 @@ defmodule Mix.Tasks.Favn.Backfill do
       mix favn.backfill missing-plan MyApp.Assets.Orders --plan-file coverage-plan.json
       mix favn.backfill missing-submit MyApp.Assets.Orders --plan-file coverage-plan.json
       mix favn.backfill windows RUN_ID
-      mix favn.backfill coverage-baselines
-      mix favn.backfill asset-window-states
-      mix favn.backfill rerun-window RUN_ID --window-key day:2026-04-01 --allow-success --refresh force
-      mix favn.backfill repair --pipeline-module MyApp.Pipelines.Daily --apply
-      mix favn.backfill repair --all --apply
 
   The local CLI submit path accepts explicit `--from`/`--to`/`--kind` ranges or
   compact `--window kind:FROM..TO` syntax for `hour`, `day`, `month`, and `year`
@@ -28,12 +23,11 @@ defmodule Mix.Tasks.Favn.Backfill do
   because operator policy has highest precedence.
 
   `submit --refresh force` intentionally recomputes selected windows even when
-  stored freshness says they are already successful. `rerun-window` accepts
-  `--refresh force --allow-success` for targeted repair of one successful
-  backfill window.
+  stored freshness says they are already successful.
   """
 
   alias Favn.CLI
+  alias Favn.CLI.Error
 
   @submit_switches [
     root_dir: :string,
@@ -44,7 +38,6 @@ defmodule Mix.Tasks.Favn.Backfill do
     dry_run: :boolean,
     timezone: :string,
     refresh: :string,
-    coverage_baseline_id: :string,
     wait: :boolean,
     wait_timeout_ms: :integer,
     run_timeout_ms: :integer,
@@ -56,46 +49,9 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   @windows_switches [
     root_dir: :string,
-    pipeline_module: :string,
-    window_key: :string,
     status: :string,
     limit: :integer,
-    offset: :integer
-  ]
-
-  @coverage_switches [
-    root_dir: :string,
-    pipeline_module: :string,
-    source_key: :string,
-    segment_key_hash: :string,
-    status: :string,
-    limit: :integer,
-    offset: :integer
-  ]
-
-  @asset_state_switches [
-    root_dir: :string,
-    pipeline_module: :string,
-    window_key: :string,
-    status: :string,
-    asset_ref_module: :string,
-    asset_ref_name: :string,
-    limit: :integer,
-    offset: :integer
-  ]
-
-  @rerun_switches [
-    root_dir: :string,
-    window_key: :string,
-    refresh: :string,
-    allow_success: :boolean
-  ]
-  @repair_switches [
-    root_dir: :string,
-    apply: :boolean,
-    all: :boolean,
-    backfill_run_id: :string,
-    pipeline_module: :string
+    cursor: :string
   ]
   @missing_plan_switches [
     root_dir: :string,
@@ -119,18 +75,6 @@ defmodule Mix.Tasks.Favn.Backfill do
 
       {:ok, {:windows, run_id, opts}} ->
         list_windows(run_id, opts)
-
-      {:ok, {:coverage_baselines, opts}} ->
-        list_coverage_baselines(opts)
-
-      {:ok, {:asset_window_states, opts}} ->
-        list_asset_window_states(opts)
-
-      {:ok, {:rerun_window, run_id, opts}} ->
-        rerun_window(run_id, opts)
-
-      {:ok, {:repair, opts}} ->
-        repair(opts)
 
       {:error, message} ->
         Mix.raise(message)
@@ -181,55 +125,6 @@ defmodule Mix.Tasks.Favn.Backfill do
       nil -> {:error, "missing required option: --plan-file"}
       "" -> {:error, "missing required option: --plan-file"}
       {:error, _message} = error -> error
-    end
-  end
-
-  def parse_args(["coverage-baselines" | args]) do
-    parse_no_id_command(args, @coverage_switches, :coverage_baselines)
-  end
-
-  def parse_args(["asset-window-states" | args]) do
-    parse_no_id_command(args, @asset_state_switches, :asset_window_states)
-  end
-
-  def parse_args(["rerun-window" | args]) do
-    {opts, rest, invalid} = OptionParser.parse(args, strict: @rerun_switches)
-
-    case {invalid, rest, Keyword.get(opts, :window_key)} do
-      {[], [run_id], window_key} when is_binary(window_key) and window_key != "" ->
-        {:ok, {:rerun_window, run_id, opts}}
-
-      {[], [_run_id], _missing} ->
-        {:error, "missing required option: --window-key"}
-
-      {[], [], _missing} ->
-        {:error, "missing RUN_ID; usage: mix favn.backfill rerun-window RUN_ID --window-key KEY"}
-
-      {[], _many, _window_key} ->
-        {:error,
-         "expected one RUN_ID; usage: mix favn.backfill rerun-window RUN_ID --window-key KEY"}
-
-      {_invalid, _rest, _window_key} ->
-        {:error, "invalid option for mix favn.backfill rerun-window"}
-    end
-  end
-
-  def parse_args(["repair" | args]) do
-    {opts, rest, invalid} = OptionParser.parse(args, strict: @repair_switches)
-
-    case {invalid, rest, repair_scope_count(opts)} do
-      {[], [], count} when count <= 1 ->
-        {:ok, {:repair, opts}}
-
-      {[], [], _count} ->
-        {:error,
-         "expected at most one repair scope: --all, --backfill-run-id, or --pipeline-module"}
-
-      {[], _many, _count} ->
-        {:error, "unexpected argument for mix favn.backfill repair"}
-
-      {_invalid, _rest, _count} ->
-        {:error, "invalid option for mix favn.backfill repair"}
     end
   end
 
@@ -294,34 +189,6 @@ defmodule Mix.Tasks.Favn.Backfill do
     end
   end
 
-  defp list_coverage_baselines(opts) do
-    case CLI.list_coverage_baselines(opts) do
-      {:ok, page} -> print_page("Coverage baselines", page)
-      {:error, reason} -> Mix.raise(error_message(reason))
-    end
-  end
-
-  defp list_asset_window_states(opts) do
-    case CLI.list_asset_window_states(opts) do
-      {:ok, page} -> print_page("Asset window states", page)
-      {:error, reason} -> Mix.raise(error_message(reason))
-    end
-  end
-
-  defp rerun_window(run_id, opts) do
-    case CLI.rerun_backfill_window(run_id, Keyword.fetch!(opts, :window_key), opts) do
-      {:ok, run} -> print_run("Submitted backfill window rerun", run)
-      {:error, reason} -> Mix.raise(error_message(reason))
-    end
-  end
-
-  defp repair(opts) do
-    case CLI.repair_backfill_projections(opts) do
-      {:ok, report} -> print_repair_report(report)
-      {:error, reason} -> Mix.raise(error_message(reason))
-    end
-  end
-
   defp parse_one_id_command(args, switches, command, id_label) do
     {opts, rest, invalid} = OptionParser.parse(args, strict: switches)
 
@@ -340,28 +207,6 @@ defmodule Mix.Tasks.Favn.Backfill do
       {_invalid, _rest} ->
         {:error, "invalid option for mix favn.backfill #{command_name(command)}"}
     end
-  end
-
-  defp parse_no_id_command(args, switches, command) do
-    {opts, rest, invalid} = OptionParser.parse(args, strict: switches)
-
-    case {invalid, rest} do
-      {[], []} ->
-        {:ok, {command, opts}}
-
-      {[], _rest} ->
-        {:error, "unexpected argument for mix favn.backfill #{command_name(command)}"}
-
-      {_invalid, _rest} ->
-        {:error, "invalid option for mix favn.backfill #{command_name(command)}"}
-    end
-  end
-
-  defp repair_scope_count(opts) do
-    Enum.count([:all, :backfill_run_id, :pipeline_module], fn key ->
-      value = Keyword.get(opts, key)
-      not (is_nil(value) or value == false or value == "")
-    end)
   end
 
   defp missing_submit_opts(opts) do
@@ -383,15 +228,17 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
 
-  defp error_message(:replacement_scope_required),
-    do:
-      "--apply requires an explicit repair scope: --all, --backfill-run-id, or --pipeline-module"
-
   defp error_message({:pipeline_not_found, requested, available}),
     do: pipeline_not_found_message(requested, available)
 
   defp error_message({:run_wait_timeout, run_id}),
     do: "timed out waiting for backfill parent run #{run_id}"
+
+  defp error_message({:backfill_wait_timeout, backfill_id}),
+    do: "timed out waiting for backfill #{backfill_id}"
+
+  defp error_message({:backfill_failed, backfill}),
+    do: "backfill #{backfill["backfill_id"] || "unknown"} finished with status failed"
 
   defp error_message({:invalid_option, :timeout_ms}), do: "--timeout-ms must be greater than 0"
 
@@ -416,16 +263,23 @@ defmodule Mix.Tasks.Favn.Backfill do
   defp error_message(:mixed_window_range_options),
     do: "--window cannot be combined with --from, --to, or --kind"
 
-  defp error_message({:orchestrator_validation_failed, message}), do: message
+  defp error_message({:orchestrator_validation_failed, message}), do: Error.safe_message(message)
   defp error_message({:plan_file_read_failed, reason}), do: "could not read plan file: #{reason}"
   defp error_message(:invalid_coverage_plan_file), do: "plan file does not contain a JSON object"
   defp error_message(:missing_coverage_requires_asset), do: "target must be an asset"
-  defp error_message(reason), do: "backfill failed: #{inspect(reason)}"
+
+  defp error_message(reason),
+    do:
+      Error.format(reason,
+        context: "backfill",
+        next: "inspect the plan or run with mix favn.backfill status ID"
+      )
 
   defp print_run(title, run) do
     IO.puts(title)
     IO.puts("manifest: #{run["manifest_version_id"] || "unknown"}")
-    IO.puts("run: #{run["id"] || "unknown"}")
+    if run["backfill_id"], do: IO.puts("backfill: #{run["backfill_id"]}")
+    IO.puts("run: #{run["id"] || run["root_run_id"] || "unknown"}")
     IO.puts("status: #{run["status"] || "unknown"}")
   end
 
@@ -442,7 +296,7 @@ defmodule Mix.Tasks.Favn.Backfill do
     print_items(title, items)
 
     if Map.get(pagination, "has_more") do
-      IO.puts("next page: pass --offset #{Map.fetch!(pagination, "next_offset")}")
+      IO.puts("next page: pass --cursor #{Map.fetch!(pagination, "next_cursor")}")
     end
   end
 
@@ -499,20 +353,6 @@ defmodule Mix.Tasks.Favn.Backfill do
     end
   end
 
-  defp print_repair_report(report) when is_map(report) do
-    counts = Map.get(report, "counts", %{})
-    IO.puts("Backfill projection repair")
-    IO.puts("mode: #{if Map.get(report, "apply"), do: "apply", else: "dry-run"}")
-    IO.puts("coverage baselines: #{Map.get(counts, "coverage_baselines", 0)}")
-    IO.puts("backfill windows: #{Map.get(counts, "backfill_windows", 0)}")
-    IO.puts("asset window states: #{Map.get(counts, "asset_window_states", 0)}")
-    IO.puts("skips: #{Map.get(counts, "skips", 0)}")
-
-    report
-    |> Map.get("skips", [])
-    |> Enum.each(&IO.puts(JSON.encode!(&1)))
-  end
-
   defp pipeline_not_found_message(requested, available) do
     lines = [
       "pipeline is not present in the active manifest: #{requested}",
@@ -525,8 +365,6 @@ defmodule Mix.Tasks.Favn.Backfill do
     end
   end
 
-  defp command_name(:coverage_baselines), do: "coverage-baselines"
-  defp command_name(:asset_window_states), do: "asset-window-states"
   defp command_name(:missing_plan), do: "missing-plan"
   defp command_name(:missing_submit), do: "missing-submit"
   defp command_name(command), do: Atom.to_string(command)
@@ -535,7 +373,7 @@ defmodule Mix.Tasks.Favn.Backfill do
   defp option_name(key), do: "--" <> (key |> Atom.to_string() |> String.replace("_", "-"))
 
   defp usage do
-    "mix favn.backfill submit|missing-plan|missing-submit|windows|coverage-baselines|asset-window-states|rerun-window|repair"
+    "mix favn.backfill submit|missing-plan|missing-submit|windows"
   end
 
   defp submit_usage do

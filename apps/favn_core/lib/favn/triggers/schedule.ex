@@ -14,7 +14,7 @@ defmodule Favn.Triggers.Schedule do
   @type overlap_policy :: :forbid | :allow | :queue_one
   @type ref :: {module(), atom()}
 
-  @enforce_keys [:kind, :cron, :timezone, :missed, :overlap, :active, :origin]
+  @enforce_keys [:kind, :cron, :timezone, :missed, :overlap, :origin]
   defstruct id: nil,
             ref: nil,
             kind: :cron,
@@ -23,7 +23,6 @@ defmodule Favn.Triggers.Schedule do
             timezone_source: :utc_fallback,
             missed: :skip,
             overlap: :forbid,
-            active: true,
             origin: :inline
 
   @type unresolved_t :: %__MODULE__{
@@ -35,7 +34,6 @@ defmodule Favn.Triggers.Schedule do
           timezone_source: :local | :application_default | :utc_fallback,
           missed: missed_policy(),
           overlap: overlap_policy(),
-          active: boolean(),
           origin: :inline | :named
         }
 
@@ -48,7 +46,6 @@ defmodule Favn.Triggers.Schedule do
           timezone_source: :local | :application_default | :utc_fallback,
           missed: missed_policy(),
           overlap: overlap_policy(),
-          active: boolean(),
           origin: :inline | :named
         }
 
@@ -60,8 +57,7 @@ defmodule Favn.Triggers.Schedule do
          {:ok, cron} <- fetch_cron(opts),
          {:ok, timezone} <- validate_timezone(Keyword.get(opts, :timezone)),
          {:ok, missed} <- validate_missed(Keyword.get(opts, :missed, :skip)),
-         {:ok, overlap} <- validate_overlap(Keyword.get(opts, :overlap, :forbid)),
-         {:ok, active} <- validate_active(Keyword.get(opts, :active, true)) do
+         {:ok, overlap} <- validate_overlap(Keyword.get(opts, :overlap, :forbid)) do
       {:ok,
        %__MODULE__{
          kind: :cron,
@@ -69,7 +65,6 @@ defmodule Favn.Triggers.Schedule do
          timezone: timezone,
          missed: missed,
          overlap: overlap,
-         active: active,
          origin: :inline,
          timezone_source: if(timezone == nil, do: :utc_fallback, else: :local)
        }}
@@ -147,7 +142,7 @@ defmodule Favn.Triggers.Schedule do
 
   @spec validate_supported_opts(keyword()) :: :ok | {:error, term()}
   def validate_supported_opts(opts) when is_list(opts) do
-    supported = [:cron, :timezone, :missed, :overlap, :active]
+    supported = [:cron, :timezone, :missed, :overlap]
 
     case Keyword.keys(opts) -- supported do
       [] -> :ok
@@ -283,8 +278,6 @@ defmodule Favn.Triggers.Schedule do
   defp validate_missed(value) when value in [:skip, :one, :all], do: {:ok, value}
   defp validate_missed(other), do: {:error, {:invalid_schedule_missed, other}}
 
-  defp validate_active(value) when is_boolean(value), do: {:ok, value}
-  defp validate_active(other), do: {:error, {:invalid_schedule_active, other}}
   defp validate_overlap(value) when value in [:forbid, :allow, :queue_one], do: {:ok, value}
   defp validate_overlap(other), do: {:error, {:invalid_schedule_overlap, other}}
 end

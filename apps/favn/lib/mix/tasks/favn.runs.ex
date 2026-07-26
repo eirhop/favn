@@ -14,10 +14,14 @@ defmodule Mix.Tasks.Favn.Runs do
 
   `cancel` requests cancellation through the local orchestrator HTTP boundary.
   With `--wait`, the task polls only that run until it is terminal or the local
-  wait timeout expires.
+  wait timeout expires. Run list targets come from persisted pipeline identity
+  or asset refs. Failures expose bounded codes and recovery guidance without
+  dumping internal response payloads.
   """
 
   alias Favn.CLI
+  alias Favn.CLI.Error
+  alias Favn.CLI.RunPresentation
 
   @list_switches [root_dir: :string, status: :string, limit: :integer]
   @show_switches [root_dir: :string]
@@ -111,7 +115,7 @@ defmodule Mix.Tasks.Favn.Runs do
           [
             "run=#{field(run, "id") || "unknown"}",
             "status=#{field(run, "status") || "unknown"}",
-            "target=#{target(run)}",
+            "target=#{RunPresentation.target_label(run)}",
             "started_at=#{field(run, "started_at") || "n/a"}",
             "finished_at=#{field(run, "finished_at") || "n/a"}"
           ],
@@ -124,7 +128,7 @@ defmodule Mix.Tasks.Favn.Runs do
   defp print_cancel_result(run_id, result, waited?) do
     status = field(result, "status") || if(field(result, "cancelled"), do: "cancel_requested")
 
-    IO.puts("Cancellation requested")
+    IO.puts(cancel_result_label(result, status))
     IO.puts("run: #{field(result, "run_id") || field(result, "id") || run_id}")
 
     if status do
@@ -136,26 +140,36 @@ defmodule Mix.Tasks.Favn.Runs do
     end
   end
 
-  defp target(run) do
-    case field(run, "target_refs") do
-      [first | rest] -> Enum.join([first | rest], ",")
-      _other -> "n/a"
-    end
+  defp cancel_result_label(result, "cancelled") do
+    if cancel_outcome(result) in ["already_terminal", :already_terminal],
+      do: "Run already cancelled",
+      else: "Cancellation requested"
   end
+
+  defp cancel_result_label(result, _status) do
+    if cancel_outcome(result) in ["already_terminal", :already_terminal],
+      do: "Run already terminal; cancellation did not replace its result",
+      else: "Cancellation requested"
+  end
+
+  defp cancel_outcome(result),
+    do: field(result, "outcome") || field(result, "cancel_outcome")
 
   defp field(map, key), do: Map.get(map, key) || Map.get(map, atom_key(key))
 
   defp atom_key("id"), do: :id
   defp atom_key("status"), do: :status
-  defp atom_key("target_refs"), do: :target_refs
   defp atom_key("started_at"), do: :started_at
   defp atom_key("finished_at"), do: :finished_at
   defp atom_key("run_id"), do: :run_id
   defp atom_key("cancelled"), do: :cancelled
+  defp atom_key("outcome"), do: :outcome
+  defp atom_key("cancel_outcome"), do: :cancel_outcome
 
   defp error_message(:not_running), do: "Favn is not running; use mix favn.dev"
 
-  defp error_message(reason), do: "run inspection failed: #{inspect(reason)}"
+  defp error_message(reason),
+    do: Error.format(reason, context: "run inspection", next: "run mix favn.diagnostics")
 
   defp cancel_error_message({:invalid_option, :timeout_ms}),
     do: "--timeout-ms must be greater than 0"
@@ -171,21 +185,21 @@ defmodule Mix.Tasks.Favn.Runs do
       "check status with mix favn.runs show #{run_id} or rerun with a larger --wait-timeout-ms"
   end
 
-  defp cancel_error_message(%{operation: operation, reason: {:http_error, status, payload}}) do
-    "orchestrator #{operation_label(operation)} failed: HTTP #{status}: #{http_error_message(payload)}"
-  end
+  defp cancel_error_message(%{operation: _operation} = reason),
+    do:
+      Error.format(reason,
+        context: "run cancellation",
+        next: "check status with mix favn.runs show RUN_ID before retrying"
+      )
 
   defp cancel_error_message(:not_running), do: error_message(:not_running)
-  defp cancel_error_message(reason), do: "run cancellation failed: #{inspect(reason)}"
 
-  defp operation_label(operation) when is_atom(operation),
-    do: operation |> Atom.to_string() |> String.replace("_", " ")
-
-  defp http_error_message(%{"error" => %{"message" => message}})
-       when is_binary(message) and message != "",
-       do: message
-
-  defp http_error_message(payload), do: inspect(payload)
+  defp cancel_error_message(reason),
+    do:
+      Error.format(reason,
+        context: "run cancellation",
+        next: "check status with mix favn.runs show RUN_ID"
+      )
 
   defp usage, do: "mix favn.runs list|show|cancel"
 end

@@ -312,7 +312,7 @@ defmodule FavnRunner.GenerationOperationsTest do
         connection_definitions: %{
           generation_warehouse: %{adapter: Adapter, module: __MODULE__}
         },
-        manifest_schema_version: 12,
+        manifest_schema_version: 13,
         runner_contract_version: 12
       )
 
@@ -320,7 +320,7 @@ defmodule FavnRunner.GenerationOperationsTest do
 
     manifest =
       %Manifest{
-        schema_version: 12,
+        schema_version: 13,
         runner_contract_version: 12,
         required_runner_release_id: FavnTestSupport.runner_release_id(),
         assets: [asset],

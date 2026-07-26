@@ -6,6 +6,7 @@ defmodule FavnReferenceWorkload.Warehouse.Source.DealsDaily do
   alias FavnReferenceWorkload.Warehouse.Landing.WriteExtracts
 
   relation(true)
+  execution_pool(:local_duckdb)
   depends({WriteExtracts, :deals_daily})
   window(Favn.Window.daily(timezone: "Etc/UTC", required: true))
   coverage(from: ~D[2026-07-22], through: :latest_closed, availability_delay: {:hours, 1})
@@ -29,7 +30,16 @@ defmodule FavnReferenceWorkload.Warehouse.Source.DealsDaily do
       stage,
       cast(amount_cents as bigint) as amount_cents,
       cast(occurred_at as timestamp) as occurred_at
-    from read_json('.data/generic_crm/landing/deals.json', auto_detect = true)
+    from read_json(
+      '.data/generic_crm/landing/deals.json',
+      columns = {
+        deal_id: 'VARCHAR',
+        account_id: 'VARCHAR',
+        stage: 'VARCHAR',
+        amount_cents: 'BIGINT',
+        occurred_at: 'VARCHAR'
+      }
+    )
     where cast(occurred_at as timestamp) >= @window_start
       and cast(occurred_at as timestamp) < @window_end
     """

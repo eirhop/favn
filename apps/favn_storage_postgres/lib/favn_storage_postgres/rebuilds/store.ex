@@ -30,6 +30,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   alias FavnOrchestrator.Persistence.Results.RebuildLease
   alias FavnOrchestrator.Persistence.Results.RebuildOperation, as: OperationResult
   alias FavnOrchestrator.Persistence.Results.RebuildTimestamps
+  alias FavnOrchestrator.Rebuilds.ItemDigest
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
@@ -73,13 +74,18 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     :window_key,
     :window_start,
     :window_end,
+    :runtime_input_expectation,
     :status,
+    :claim_owner,
+    :fencing_token,
+    :claim_expires_at,
     :child_run_id,
     :materialization_id,
     :attempt_count,
     :row_count,
     :last_error,
     :candidate_generation_id,
+    :version,
     :inserted_at,
     :updated_at
   ]
@@ -1556,14 +1562,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     payload = canonical_map(payload)
 
     payload["item_count"] == length(items) and
-      payload["items_digest"] ==
-        plan_hash(%{items: Enum.map(items, &canonical_plan_item/1)})
-  end
-
-  defp canonical_plan_item(item) do
-    item
-    |> Map.from_struct()
-    |> canonical_map()
+      payload["items_digest"] == ItemDigest.hash(items)
   end
 
   defp valid_item?(item, action_targets) do

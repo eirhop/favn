@@ -49,6 +49,28 @@ defmodule FavnOrchestrator.API.Authentication do
     end
   end
 
+  @doc """
+  Returns actor workspace authority when actor headers are present, otherwise
+  falls back to an authenticated platform-operator service identity.
+
+  A forbidden or invalid actor session never falls back to service authority.
+  This keeps explicit actor authorization authoritative while allowing trusted
+  service-only clients such as the local CLI to use one consistent workspace
+  contract.
+  """
+  @spec workspace_or_service_context(Plug.Conn.t(), role()) ::
+          {:ok, Auth.session() | %{id: String.t()}, Auth.actor() | %{id: String.t()},
+           WorkspaceContext.t()}
+          | {:error, :forbidden | :service_unauthorized | :unauthenticated | term()}
+  def workspace_or_service_context(conn, required_role)
+      when required_role in [:viewer, :operator, :admin] do
+    if forwarded_actor_headers_present?(conn) do
+      workspace_context(conn, required_role)
+    else
+      service_workspace_context(conn)
+    end
+  end
+
   @doc "Builds workspace authority for a platform-operator service request."
   @spec service_workspace_context(Plug.Conn.t()) ::
           {:ok, %{id: String.t()}, %{id: String.t()}, WorkspaceContext.t()}
@@ -202,5 +224,10 @@ defmodule FavnOrchestrator.API.Authentication do
       [value] -> value
       _other -> nil
     end
+  end
+
+  defp forwarded_actor_headers_present?(conn) do
+    get_req_header(conn, "x-favn-actor-id") != [] or
+      get_req_header(conn, "x-favn-session-token") != []
   end
 end

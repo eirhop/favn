@@ -23,7 +23,7 @@ product contract.
 | Repeat the same forced daily pipeline | Passed; the one-session DuckDB pool serialized concurrent assets and reused the session. |
 | Run `Core.ActivitiesDaily` with all forced upstream dependencies | Passed as `run_api_9bb1de3d7fdee29af0e76066cfb8f5c8`. |
 | Use documented plain module shorthand for an asset target | Passed. |
-| Query final marts with `mix favn.query` | Passed after stopping the long-running stack so the standalone command could acquire DuckDB's file lock. |
+| Query final marts with the DuckDB CLI | Passed after stopping the long-running stack so DuckDB could acquire the file lock. |
 | Run the example's ExUnit suite directly | Passed: 6 tests. Test config uses a deterministic source-runner release identity; the suite includes disposable DuckDB output and negative quality-check coverage. |
 | Positive contracts and checks | Passed for incremental Source/Core assets and Mart contracts/checks. |
 | Negative quality check | Passed: a temporary null `activity_id` made `run_api_d5299d59a49180158872d04a7afd3579` fail with `check_failed` before materialization. The file was restored and `run_api_553f5b5b05ea69d1ba511a6cb570d1ec` passed. |
@@ -48,8 +48,7 @@ For the `2026-07-23` daily window:
 | Documented asset module shorthand was rejected. | CLI matching required internal `Elixir.`-prefixed manifest labels. | Match plain default and named module shorthand against canonical asset targets. |
 | Executive overview multiplied pipeline totals by account count. | The view cross-joined row-level account health before aggregation. | Aggregate account count in a scalar subquery before joining pipeline metrics. |
 
-## Known CLI constraint
+## Direct SQL constraint
 
-`mix favn.query` is a standalone SQL process. With a file-backed DuckDB database,
-it cannot open the file while `mix favn.dev` owns the single physical
-connection. Stop the stack before using the standalone query command.
+Favn does not expose arbitrary SQL. With a file-backed DuckDB database, stop
+the stack before opening the database with the DuckDB CLI.

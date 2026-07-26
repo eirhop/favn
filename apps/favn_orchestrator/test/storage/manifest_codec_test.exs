@@ -121,7 +121,6 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
                timezone: "Etc/UTC",
                missed: :skip,
                overlap: :forbid,
-               active: true,
                origin: :inline
              }},
           window: Favn.Window.Policy.new!(:day, timezone: "Etc/UTC"),

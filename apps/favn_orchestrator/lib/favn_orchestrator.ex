@@ -1377,21 +1377,35 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Rejects ad-hoc activation; schedule activation is manifest/deployment controlled."
-  @spec enable_schedule(OperatorContext.t(), String.t()) :: {:error, term()}
-  def enable_schedule(%OperatorContext{} = operator_context, schedule_id)
-      when is_binary(schedule_id) do
-    with {:ok, _context, _actor} <- authorize_operator_context(operator_context, :operator) do
-      {:error, :schedule_activation_manifest_controlled}
+  @doc "Activates one reviewed schedule definition for the operator workspace."
+  @spec enable_schedule(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def enable_schedule(%OperatorContext{} = operator_context, schedule_id, opts \\ [])
+      when is_binary(schedule_id) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
+      Schedules.activate(
+        context,
+        schedule_id,
+        actor.id,
+        Keyword.get(opts, :reason, "operator request"),
+        opts
+      )
     end
   end
 
-  @doc "Rejects ad-hoc deactivation; schedule activation is manifest/deployment controlled."
-  @spec disable_schedule(OperatorContext.t(), String.t()) :: {:error, term()}
-  def disable_schedule(%OperatorContext{} = operator_context, schedule_id)
-      when is_binary(schedule_id) do
-    with {:ok, _context, _actor} <- authorize_operator_context(operator_context, :operator) do
-      {:error, :schedule_activation_manifest_controlled}
+  @doc "Deactivates one schedule for future occurrence submission."
+  @spec disable_schedule(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def disable_schedule(%OperatorContext{} = operator_context, schedule_id, opts \\ [])
+      when is_binary(schedule_id) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
+      Schedules.deactivate(
+        context,
+        schedule_id,
+        actor.id,
+        Keyword.get(opts, :reason, "operator request"),
+        opts
+      )
     end
   end
 

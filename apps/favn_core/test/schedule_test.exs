@@ -25,4 +25,9 @@ defmodule Favn.ScheduleTest do
     assert {:error, {:invalid_schedule_cron, "0 0 0 * * * *"}} =
              Schedule.new_inline(cron: "0 0 0 * * * *")
   end
+
+  test "schedule activation is not authored in the manifest" do
+    assert {:error, {:unsupported_schedule_opts, [:active]}} =
+             Schedule.new_inline(cron: "0 3 * * *", active: true)
+  end
 end

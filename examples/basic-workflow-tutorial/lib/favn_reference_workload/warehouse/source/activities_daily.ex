@@ -6,6 +6,7 @@ defmodule FavnReferenceWorkload.Warehouse.Source.ActivitiesDaily do
   alias FavnReferenceWorkload.Warehouse.Landing.WriteExtracts
 
   relation(true)
+  execution_pool(:local_duckdb)
   depends({WriteExtracts, :activities_daily})
   window(Favn.Window.daily(timezone: "Etc/UTC", required: true))
   coverage(from: ~D[2026-07-22], through: :latest_closed, availability_delay: {:hours, 1})
@@ -28,7 +29,15 @@ defmodule FavnReferenceWorkload.Warehouse.Source.ActivitiesDaily do
       account_id,
       activity_type,
       cast(occurred_at as timestamp) as occurred_at
-    from read_json('.data/generic_crm/landing/activities.json', auto_detect = true)
+    from read_json(
+      '.data/generic_crm/landing/activities.json',
+      columns = {
+        activity_id: 'VARCHAR',
+        account_id: 'VARCHAR',
+        activity_type: 'VARCHAR',
+        occurred_at: 'VARCHAR'
+      }
+    )
     where cast(occurred_at as timestamp) >= @window_start
       and cast(occurred_at as timestamp) < @window_end
     """

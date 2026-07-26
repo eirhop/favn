@@ -6,6 +6,7 @@ defmodule FavnReferenceWorkload.Warehouse.Source.Contacts do
   alias FavnReferenceWorkload.Warehouse.Landing.WriteExtracts
 
   relation(true)
+  execution_pool(:local_duckdb)
   depends({WriteExtracts, :contacts_snapshot})
   meta(category: :contacts, tags: [:source, :full_refresh])
 

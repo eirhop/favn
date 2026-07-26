@@ -461,16 +461,46 @@ defmodule Favn.CLI.OrchestratorClientTest do
         range: %{from: "2026-01-01", to: "2026-01-02", kind: "day"}
       })
     end)
+  end
 
-    assert_mutating_header(fn base_url, token ->
-      OrchestratorClient.rerun_backfill_window(
-        base_url,
-        token,
-        session_context,
-        "backfill_1",
-        "day:2026-01-01:Etc/UTC"
-      )
-    end)
+  test "submit backfill accepts the backfill resource returned by the API" do
+    backfill = %{
+      "backfill_id" => "backfill-1",
+      "root_run_id" => "run-backfill-1",
+      "status" => "running"
+    }
+
+    {:ok, base_url, _server} =
+      start_server(JSON.encode!(%{data: %{backfill: backfill}}), 202)
+
+    assert {:ok, ^backfill} =
+             OrchestratorClient.submit_backfill(
+               base_url,
+               "token",
+               session_context(),
+               %{
+                 target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipeline"},
+                 range: %{from: "2026-01-01", to: "2026-01-02", kind: "day"}
+               }
+             )
+  end
+
+  test "get backfill parses authoritative status and encodes id" do
+    backfill = %{"backfill_id" => "backfill 1", "status" => "completed"}
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(JSON.encode!(%{data: %{backfill: backfill}}), 200, parent: parent)
+
+    assert {:ok, ^backfill} =
+             OrchestratorClient.get_backfill(
+               base_url,
+               "token",
+               session_context(),
+               "backfill 1"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/backfills/backfill%201"}
   end
 
   test "missing coverage helpers preserve the reviewed plan and command identity" do
@@ -794,18 +824,56 @@ defmodule Favn.CLI.OrchestratorClientTest do
     assert_idempotency_header(headers)
   end
 
-  test "backfill list helpers parse item responses and encode filters" do
+  test "schedule activation accepts a reusable operator idempotency key" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"effective_state":"enabled"}}), 200, parent: parent)
+
+    assert {:ok, %{"effective_state" => "enabled"}} =
+             OrchestratorClient.set_schedule_activation(
+               base_url,
+               "token",
+               %{"workspace_id" => "local-dev"},
+               "schedule-v2:id:name",
+               true,
+               "reviewed",
+               idempotency_key: "schedule-change-42"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/schedules/schedule-v2:id:name/activate"}
+
+    assert_receive {:request_headers, headers}
+    assert headers["idempotency-key"] == "schedule-change-42"
+
+    assert {:error, :invalid_idempotency_key} =
+             OrchestratorClient.set_schedule_activation(
+               base_url,
+               "token",
+               %{"workspace_id" => "local-dev"},
+               "schedule-v2:id:name",
+               true,
+               "reviewed",
+               idempotency_key: ""
+             )
+  end
+
+  test "backfill window helper parses the current cursor page" do
     parent = self()
 
     {:ok, base_url, _server} =
       start_server(
-        ~s({"data":{"items":[{"baseline_id":"base_1"}],"pagination":{"limit":100,"offset":0,"has_more":false,"next_offset":null}}}),
+        ~s({"data":{"items":[{"window_id":"window_1"}],"pagination":{"limit":100,"has_more":true,"next_cursor":"cursor-2"}}}),
         200,
         parent: parent
       )
 
-    assert {:ok, %{"items" => [%{"baseline_id" => "base_1"}]}} =
-             OrchestratorClient.list_coverage_baselines(
+    assert {:ok,
+            %{
+              "items" => [%{"window_id" => "window_1"}],
+              "pagination" => %{"next_cursor" => "cursor-2"}
+            }} =
+             OrchestratorClient.list_backfill_windows(
                base_url,
                "token",
                %{
@@ -813,39 +881,13 @@ defmodule Favn.CLI.OrchestratorClientTest do
                  "session_id" => "sess_1",
                  "session_token" => "raw_session_token_1"
                },
-               pipeline_module: "MyApp.Pipeline",
+               "backfill 1",
+               cursor: "cursor-1",
                status: "ok"
              )
 
     assert_receive {:request_path,
-                    "/api/orchestrator/v1/backfills/coverage-baselines?pipeline_module=MyApp.Pipeline&status=ok"}
-  end
-
-  test "asset window states helper parses item responses" do
-    parent = self()
-
-    {:ok, base_url, _server} =
-      start_server(
-        ~s({"data":{"items":[{"window_key":"day:2026-01-01:Etc/UTC"}],"pagination":{"limit":100,"offset":0,"has_more":false,"next_offset":null}}}),
-        200,
-        parent: parent
-      )
-
-    assert {:ok, %{"items" => [%{"window_key" => "day:2026-01-01:Etc/UTC"}]}} =
-             OrchestratorClient.list_asset_window_states(
-               base_url,
-               "token",
-               %{
-                 "actor_id" => "act_1",
-                 "session_id" => "sess_1",
-                 "session_token" => "raw_session_token_1"
-               },
-               asset_ref_module: "MyApp.Asset",
-               asset_ref_name: "asset"
-             )
-
-    assert_receive {:request_path,
-                    "/api/orchestrator/v1/assets/window-states?asset_ref_module=MyApp.Asset&asset_ref_name=asset"}
+                    "/api/orchestrator/v1/backfills/backfill%201/windows?cursor=cursor-1&status=ok"}
   end
 
   test "list_runs/4 parses runs and encodes filters" do

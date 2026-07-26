@@ -484,6 +484,9 @@ defmodule Favn.CLI.OrchestratorClient do
            session_context,
            idempotency_key(:submit_backfill, session_context, payload)
          ) do
+      {:ok, %{"data" => %{"backfill" => backfill}}} when is_map(backfill) ->
+        {:ok, backfill}
+
       {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
         {:ok, run}
 
@@ -492,6 +495,25 @@ defmodule Favn.CLI.OrchestratorClient do
 
       _other ->
         {:error, operation_error(:submit_backfill, :post, url, :invalid_response)}
+    end
+  end
+
+  @spec get_backfill(String.t(), String.t(), session_context(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def get_backfill(base_url, service_token, session_context, backfill_id)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(backfill_id) do
+    url = base_url <> "/api/orchestrator/v1/backfills/#{URI.encode(backfill_id)}"
+
+    case request_get(:get_backfill, url, service_token, session_context) do
+      {:ok, %{"data" => %{"backfill" => backfill}}} when is_map(backfill) ->
+        {:ok, backfill}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:get_backfill, :get, url, :invalid_response)}
     end
   end
 
@@ -617,90 +639,6 @@ defmodule Favn.CLI.OrchestratorClient do
     request_page(:list_backfill_windows, url, service_token, session_context)
   end
 
-  @spec rerun_backfill_window(
-          String.t(),
-          String.t(),
-          session_context(),
-          String.t(),
-          String.t(),
-          map()
-        ) :: {:ok, map()} | {:error, term()}
-  def rerun_backfill_window(
-        base_url,
-        service_token,
-        session_context,
-        backfill_run_id,
-        window_key,
-        payload \\ %{}
-      )
-      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
-             is_binary(backfill_run_id) and is_binary(window_key) and is_map(payload) do
-    url =
-      base_url <>
-        "/api/orchestrator/v1/backfills/#{URI.encode(backfill_run_id)}/windows/rerun"
-
-    case request_post(
-           :rerun_backfill_window,
-           url,
-           service_token,
-           Map.put(payload, :window_key, window_key),
-           session_context,
-           idempotency_key(
-             :rerun_backfill_window,
-             session_context,
-             Map.merge(payload, %{backfill_run_id: backfill_run_id, window_key: window_key})
-           )
-         ) do
-      {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
-        {:ok, run}
-
-      {:error, _reason} = error ->
-        error
-
-      _other ->
-        {:error, operation_error(:rerun_backfill_window, :post, url, :invalid_response)}
-    end
-  end
-
-  @spec list_coverage_baselines(String.t(), String.t(), session_context(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def list_coverage_baselines(base_url, service_token, session_context, filters \\ [])
-      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
-             is_list(filters) do
-    url = base_url <> "/api/orchestrator/v1/backfills/coverage-baselines" <> query_string(filters)
-
-    request_page(:list_coverage_baselines, url, service_token, session_context)
-  end
-
-  @spec list_asset_window_states(String.t(), String.t(), session_context(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def list_asset_window_states(base_url, service_token, session_context, filters \\ [])
-      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
-             is_list(filters) do
-    url = base_url <> "/api/orchestrator/v1/assets/window-states" <> query_string(filters)
-
-    request_page(:list_asset_window_states, url, service_token, session_context)
-  end
-
-  @spec repair_backfill_projections(String.t(), String.t(), session_context(), map()) ::
-          {:ok, map()} | {:error, term()}
-  def repair_backfill_projections(base_url, service_token, session_context, payload)
-      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
-             is_map(payload) do
-    url = base_url <> "/api/orchestrator/v1/backfills/projections/repair"
-
-    case request_post(:repair_backfill_projections, url, service_token, payload, session_context) do
-      {:ok, %{"data" => %{"repair" => repair}}} when is_map(repair) ->
-        {:ok, repair}
-
-      {:error, _reason} = error ->
-        error
-
-      _other ->
-        {:error, operation_error(:repair_backfill_projections, :post, url, :invalid_response)}
-    end
-  end
-
   @spec list_runs(String.t(), String.t(), session_context(), keyword()) ::
           {:ok, [map()]} | {:error, term()}
   def list_runs(base_url, service_token, session_context, filters \\ [])
@@ -717,6 +655,107 @@ defmodule Favn.CLI.OrchestratorClient do
 
       _other ->
         {:error, operation_error(:list_runs, :get, url, :invalid_response)}
+    end
+  end
+
+  @spec list_schedules(String.t(), String.t(), session_context()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_schedules(base_url, service_token, session_context) do
+    url = base_url <> "/api/orchestrator/v1/schedules"
+
+    case request_get(:list_schedules, url, service_token, session_context) do
+      {:ok, %{"data" => %{"items" => schedules}}} when is_list(schedules) ->
+        {:ok, schedules}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:list_schedules, :get, url, :invalid_response)}
+    end
+  end
+
+  @spec get_schedule(String.t(), String.t(), session_context(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def get_schedule(base_url, service_token, session_context, schedule_id) do
+    url = base_url <> "/api/orchestrator/v1/schedules/#{URI.encode(schedule_id)}"
+
+    case request_get(:get_schedule, url, service_token, session_context) do
+      {:ok, %{"data" => %{"schedule" => schedule}}} when is_map(schedule) -> {:ok, schedule}
+      {:error, _reason} = error -> error
+      _other -> {:error, operation_error(:get_schedule, :get, url, :invalid_response)}
+    end
+  end
+
+  @spec preview_schedule(String.t(), String.t(), session_context(), String.t(), pos_integer()) ::
+          {:ok, [map()]} | {:error, term()}
+  def preview_schedule(base_url, service_token, session_context, schedule_id, limit) do
+    url =
+      base_url <>
+        "/api/orchestrator/v1/schedules/#{URI.encode(schedule_id)}/occurrences/preview?" <>
+        URI.encode_query(%{"limit" => limit})
+
+    case request_get(:preview_schedule, url, service_token, session_context) do
+      {:ok, %{"data" => %{"items" => occurrences}}} when is_list(occurrences) ->
+        {:ok, occurrences}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:preview_schedule, :get, url, :invalid_response)}
+    end
+  end
+
+  @spec set_schedule_activation(
+          String.t(),
+          String.t(),
+          session_context(),
+          String.t(),
+          boolean(),
+          String.t(),
+          keyword()
+        ) :: {:ok, map()} | {:error, term()}
+  def set_schedule_activation(
+        base_url,
+        service_token,
+        session_context,
+        schedule_id,
+        enabled,
+        reason,
+        opts \\ []
+      ) do
+    action = if(enabled, do: "activate", else: "deactivate")
+    operation = if(enabled, do: :activate_schedule, else: :deactivate_schedule)
+    url = base_url <> "/api/orchestrator/v1/schedules/#{URI.encode(schedule_id)}/#{action}"
+
+    with {:ok, idempotency_key} <- schedule_activation_idempotency_key(action, opts) do
+      case request_post(
+             operation,
+             url,
+             service_token,
+             %{"reason" => reason},
+             session_context,
+             idempotency_key
+           ) do
+        {:ok, %{"data" => activation}} when is_map(activation) -> {:ok, activation}
+        {:error, _reason} = error -> error
+        _other -> {:error, operation_error(operation, :post, url, :invalid_response)}
+      end
+    end
+  end
+
+  defp schedule_activation_idempotency_key(action, opts) do
+    case Keyword.get(opts, :idempotency_key) do
+      key when is_binary(key) and key != "" and byte_size(key) <= 200 ->
+        {:ok, key}
+
+      nil ->
+        {:ok,
+         "schedule-#{action}-" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)}
+
+      _invalid ->
+        {:error, :invalid_idempotency_key}
     end
   end
 

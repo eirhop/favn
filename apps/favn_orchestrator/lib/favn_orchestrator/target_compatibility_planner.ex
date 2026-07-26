@@ -40,11 +40,18 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     with {:ok, deployment_targets} <- DeploymentPlanner.plan(version, selection),
          {:ok, persisted} <- persisted_targets(version, deployment_targets),
          {:ok, bindings} <- fetch_bindings(workspace_context, persisted),
-         {:ok, active_versions} <- active_versions(platform_context, bindings),
+         {:ok, {active_versions, historical_manifest_ids}} <-
+           active_versions(platform_context, bindings),
          :ok <- ensure_inspection_versions(active_versions, version) do
       decisions =
         Enum.map(persisted, fn target ->
-          classify_target(target, bindings, active_versions, version)
+          classify_target(
+            target,
+            bindings,
+            active_versions,
+            historical_manifest_ids,
+            version
+          )
         end)
 
       {:ok, decisions}
@@ -98,11 +105,18 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     |> Enum.map(& &1.active_manifest_id)
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
-    |> Enum.reduce_while({:ok, %{}}, fn manifest_id, {:ok, acc} ->
-      case ManifestStore.get_manifest(platform_context, manifest_id) do
-        {:ok, version} -> {:cont, {:ok, Map.put(acc, manifest_id, version)}}
-        {:error, _reason} = error -> {:halt, error}
-      end
+    |> Enum.reduce_while({:ok, {%{}, MapSet.new()}}, fn
+      manifest_id, {:ok, {versions, historical_manifest_ids}} ->
+        case ManifestStore.get_manifest(platform_context, manifest_id) do
+          {:ok, version} ->
+            {:cont, {:ok, {Map.put(versions, manifest_id, version), historical_manifest_ids}}}
+
+          {:error, %{details: %{reason: :historical_manifest_not_activatable}}} ->
+            {:cont, {:ok, {versions, MapSet.put(historical_manifest_ids, manifest_id)}}}
+
+          {:error, _reason} = error ->
+            {:halt, error}
+        end
     end)
   end
 
@@ -128,9 +142,24 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     end)
   end
 
-  defp classify_target(target, bindings, active_versions, desired_version) do
+  defp classify_target(
+         target,
+         bindings,
+         active_versions,
+         historical_manifest_ids,
+         desired_version
+       ) do
     binding = Map.get(bindings, target.target_id)
-    active_target = active_target(binding, target.target_id, active_versions)
+
+    active_target =
+      active_target(
+        binding,
+        target,
+        active_versions,
+        historical_manifest_ids,
+        desired_version
+      )
+
     active_descriptor = active_target && active_target.descriptor
 
     case inspection_target(active_target, binding, target.asset, desired_version) do
@@ -208,21 +237,54 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   defp active_physical_relation(_binding, _active_target),
     do: {:error, :active_physical_relation_missing}
 
-  defp active_target(nil, _target_id, _versions), do: nil
+  defp active_target(nil, _target, _versions, _historical_manifest_ids, _desired_version), do: nil
 
-  defp active_target(%{active_generation_id: nil}, _target_id, _versions), do: nil
+  defp active_target(
+         %{active_generation_id: nil},
+         _target,
+         _versions,
+         _historical_manifest_ids,
+         _desired_version
+       ),
+       do: nil
 
-  defp active_target(binding, target_id, versions) do
+  defp active_target(binding, target, versions, historical_manifest_ids, desired_version) do
     with manifest_id when is_binary(manifest_id) <- binding.active_manifest_id,
          %Version{} = version <- Map.get(versions, manifest_id),
          {:ok, %Asset{target_descriptor: %TargetDescriptor{} = descriptor} = asset} <-
-           ManifestTarget.resolve_asset(version, target_id),
+           ManifestTarget.resolve_asset(version, target.target_id),
          true <- descriptor.descriptor_hash == binding.active_descriptor_hash do
       %{descriptor: descriptor, asset: asset, version: version}
     else
-      _missing_or_mismatched -> nil
+      _missing_or_mismatched ->
+        unchanged_historical_target(
+          binding,
+          target,
+          historical_manifest_ids,
+          desired_version
+        )
     end
   end
+
+  defp unchanged_historical_target(
+         %{active_manifest_id: manifest_id, active_descriptor_hash: descriptor_hash},
+         %{asset: %Asset{target_descriptor: %TargetDescriptor{} = descriptor} = asset},
+         historical_manifest_ids,
+         %Version{} = desired_version
+       )
+       when descriptor_hash == descriptor.descriptor_hash do
+    if MapSet.member?(historical_manifest_ids, manifest_id) do
+      %{descriptor: descriptor, asset: asset, version: desired_version}
+    end
+  end
+
+  defp unchanged_historical_target(
+         _binding,
+         _target,
+         _historical_manifest_ids,
+         _desired_version
+       ),
+       do: nil
 
   defp inspect_physical(target, version) do
     runtime = RuntimeConfig.current()

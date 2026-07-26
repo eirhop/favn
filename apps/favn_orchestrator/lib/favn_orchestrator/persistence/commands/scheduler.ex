@@ -13,6 +13,98 @@ defmodule FavnOrchestrator.Persistence.Commands.ClaimDueSchedules do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.SetScheduleActivation do
+  @moduledoc "Durably enables or disables one workspace schedule definition."
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :pipeline_target_id,
+    :schedule_id,
+    :schedule_fingerprint,
+    :enabled,
+    :actor_id,
+    :reason,
+    :command_id,
+    :request_hash,
+    :occurred_at
+  ]
+  defstruct [
+    :workspace_context,
+    :pipeline_target_id,
+    :schedule_id,
+    :schedule_fingerprint,
+    :enabled,
+    :actor_id,
+    :reason,
+    :command_id,
+    :request_hash,
+    :occurred_at,
+    :next_due_at
+  ]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          pipeline_target_id: String.t(),
+          schedule_id: String.t(),
+          schedule_fingerprint: String.t(),
+          enabled: boolean(),
+          actor_id: String.t(),
+          reason: String.t(),
+          command_id: String.t(),
+          request_hash: binary(),
+          occurred_at: DateTime.t(),
+          next_due_at: DateTime.t() | nil
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispatch do
+  @moduledoc """
+  Atomically fences one claimed occurrence against workspace deactivation.
+
+  A successful authorization is a durable submission intent. Deactivation may
+  suppress pending or claimed occurrences, but it does not revoke an authorized
+  dispatch whose runner submission has not completed yet.
+  """
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :command_id,
+    :occurrence_id,
+    :pipeline_target_id,
+    :schedule_id,
+    :schedule_fingerprint,
+    :owner_id,
+    :claim_generation,
+    :occurred_at
+  ]
+  defstruct [
+    :workspace_context,
+    :command_id,
+    :occurrence_id,
+    :pipeline_target_id,
+    :schedule_id,
+    :schedule_fingerprint,
+    :owner_id,
+    :claim_generation,
+    :occurred_at
+  ]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          command_id: String.t(),
+          occurrence_id: String.t(),
+          pipeline_target_id: String.t(),
+          schedule_id: String.t(),
+          schedule_fingerprint: String.t(),
+          owner_id: String.t(),
+          claim_generation: pos_integer(),
+          occurred_at: DateTime.t()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Queries.PageSchedules do
   @moduledoc "Keyset-pages active-deployment schedule definitions and cursors."
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -133,6 +225,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence do
     :occurrence_id,
     :owner_id,
     :claim_generation,
+    :status,
     :run_id,
     :error,
     :occurred_at
@@ -144,6 +237,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence do
           occurrence_id: String.t(),
           owner_id: String.t(),
           claim_generation: pos_integer(),
+          status: :completed | :failed | :suppressed | nil,
           run_id: String.t() | nil,
           error: map() | nil,
           occurred_at: DateTime.t()
@@ -203,6 +297,12 @@ defmodule FavnOrchestrator.Persistence.Results.Schedule do
     :next_due_at,
     :cursor,
     :version,
+    :activation_enabled,
+    :approved_schedule_fingerprint,
+    :activation_version,
+    :activation_actor_id,
+    :activation_reason,
+    :activation_decided_at,
     :updated_at
   ]
   defstruct [
@@ -215,6 +315,12 @@ defmodule FavnOrchestrator.Persistence.Results.Schedule do
     :next_due_at,
     :cursor,
     :version,
+    :activation_enabled,
+    :approved_schedule_fingerprint,
+    :activation_version,
+    :activation_actor_id,
+    :activation_reason,
+    :activation_decided_at,
     :claim_owner,
     :claim_expires_at,
     :updated_at
@@ -227,12 +333,77 @@ defmodule FavnOrchestrator.Persistence.Results.Schedule do
           schedule_id: String.t(),
           schedule_fingerprint: String.t(),
           definition: map(),
-          next_due_at: DateTime.t(),
+          next_due_at: DateTime.t() | nil,
           cursor: map(),
           version: pos_integer(),
+          activation_enabled: boolean() | nil,
+          approved_schedule_fingerprint: String.t() | nil,
+          activation_version: pos_integer() | nil,
+          activation_actor_id: String.t() | nil,
+          activation_reason: String.t() | nil,
+          activation_decided_at: DateTime.t() | nil,
           claim_owner: String.t() | nil,
           claim_expires_at: DateTime.t() | nil,
           updated_at: DateTime.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Results.ScheduleActivation do
+  @moduledoc """
+  Immutable receipt for one persisted workspace schedule decision.
+
+  The receipt is stored per command so an exact retry returns the original
+  states and timestamps even after later schedule commands.
+  """
+  @enforce_keys [
+    :workspace_id,
+    :schedule_entry_id,
+    :pipeline_target_id,
+    :schedule_id,
+    :schedule_fingerprint,
+    :previous_state,
+    :effective_state,
+    :enabled,
+    :version,
+    :actor_id,
+    :reason,
+    :command_id,
+    :decided_at
+  ]
+  defstruct [
+    :workspace_id,
+    :schedule_entry_id,
+    :pipeline_target_id,
+    :schedule_id,
+    :schedule_fingerprint,
+    :previous_state,
+    :effective_state,
+    :enabled,
+    :approved_schedule_fingerprint,
+    :version,
+    :actor_id,
+    :reason,
+    :command_id,
+    :decided_at,
+    :next_due_at
+  ]
+
+  @type t :: %__MODULE__{
+          workspace_id: String.t(),
+          schedule_entry_id: String.t(),
+          pipeline_target_id: String.t(),
+          schedule_id: String.t(),
+          schedule_fingerprint: String.t(),
+          previous_state: :disabled | :enabled | :needs_review,
+          effective_state: :disabled | :enabled,
+          enabled: boolean(),
+          approved_schedule_fingerprint: String.t() | nil,
+          version: pos_integer(),
+          actor_id: String.t(),
+          reason: String.t(),
+          command_id: String.t(),
+          decided_at: DateTime.t(),
+          next_due_at: DateTime.t() | nil
         }
 end
 
@@ -274,7 +445,7 @@ defmodule FavnOrchestrator.Persistence.Results.ScheduleOccurrence do
           schedule_id: String.t(),
           due_at: DateTime.t(),
           payload: map(),
-          status: atom(),
+          status: :pending | :claimed | :dispatching | :completed | :failed | :suppressed,
           claim_owner: String.t() | nil,
           claim_generation: non_neg_integer(),
           claim_expires_at: DateTime.t() | nil,

@@ -744,14 +744,25 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp ensure_candidate_item_serial(context, operation, action) do
     with {:ok, claimed} <- page_items(context, operation.operation_id, action.target_id, :claimed),
          {:ok, running} <- page_items(context, operation.operation_id, action.target_id, :running) do
-      if claimed == [] and running == [], do: :ok, else: :busy
+      if candidate_item_busy?(claimed ++ running, DateTime.utc_now()),
+        do: :busy,
+        else: :ok
     end
+  end
+
+  @doc false
+  def candidate_item_busy?(items, now) when is_list(items) do
+    Enum.any?(items, fn
+      %{claim_expires_at: %DateTime{} = expires_at} -> DateTime.after?(expires_at, now)
+      _item -> true
+    end)
   end
 
   defp process_items(context, operation, action, items, state) do
     Enum.reduce_while(items, :ok, fn item, :ok ->
       case process_item(context, operation, action, item, state) do
         :ok -> {:cont, :ok}
+        :pending -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
@@ -817,6 +828,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
       |> Enum.reduce_while(:ok, fn item, :ok ->
         case reconcile_run(context, operation, item, state) do
           :ok -> {:cont, :ok}
+          :pending -> {:cont, :ok}
           {:ok, _item} -> {:cont, :ok}
           {:error, reason} -> {:halt, {:error, reason}}
         end
@@ -977,7 +989,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
         (valid_check_results?(field(payload, :check_results), field(assurance, :checks)) and
            valid_contract_validation?(
              field(payload, :contract_validation),
-             field(assurance, :contract_required)
+             contract_required?(field(assurance, :contract_required))
            ))
 
     if valid_identity? and checks_valid?,
@@ -1024,6 +1036,9 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp valid_contract_validation?(validation, true),
     do: field(validation, :status) in [:passed, "passed"]
 
+  @doc false
+  def contract_required?(value), do: value in [true, "true"]
+
   defp final_candidate_item?(%RebuildAction{action: :rebuild} = action, item),
     do: item.ordinal == action.progress.total - 1
 
@@ -1042,7 +1057,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp submit_item(context, operation, action, item, run_id) do
     with {:ok, version, asset} <- version_asset(context, operation, action),
          {:ok, options} <- submission_options(operation, action, item, version, asset, run_id) do
-      RunManager.submit_asset_run(context, asset.ref, options)
+      RunManager.submit_pipeline_run(context, [asset.ref], options)
     end
   end
 
@@ -1162,14 +1177,21 @@ defmodule FavnOrchestrator.RebuildDispatcher do
     non_relation_diffs = Enum.reject(diffs, &(Map.get(&1, :field) == :relation))
     observed = fingerprint.relation
 
-    relation_matches? =
-      observed.catalog == candidate_relation.catalog and
-        observed.schema == candidate_relation.schema and
-        observed.name == candidate_relation.name and observed.kind == "table"
+    relation_matches? = candidate_relation_matches?(candidate_relation, observed)
 
     if relation_matches? and non_relation_diffs == [],
       do: :ok,
       else: {:error, {:candidate_validation_failed, non_relation_diffs}}
+  end
+
+  @doc false
+  def table_relation_kind?(kind), do: kind in [:table, "table"]
+
+  @doc false
+  def candidate_relation_matches?(candidate, observed) do
+    (is_nil(candidate.catalog) or observed.catalog == candidate.catalog) and
+      observed.schema == candidate.schema and
+      observed.name == candidate.name and table_relation_kind?(observed.kind)
   end
 
   defp validate_candidate_materializations(context, operation, action) do
@@ -1688,7 +1710,8 @@ defmodule FavnOrchestrator.RebuildDispatcher do
     result =
       lock_store().release_many(%ReleaseTargetOperationLocks{
         workspace_context: context,
-        command_id: command_id("release-locks", operation.operation_id <> ":" <> operation.state),
+        command_id:
+          command_id("release-locks", operation.operation_id <> ":" <> to_string(operation.state)),
         operation_id: operation.operation_id,
         lease_owner: operation.operation_id,
         locks: Enum.map(locks, &%{target_id: &1.target_id, fencing_token: &1.fencing_token}),

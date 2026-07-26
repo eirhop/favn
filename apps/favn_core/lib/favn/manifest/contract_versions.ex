@@ -3,7 +3,7 @@ defmodule Favn.Manifest.ContractVersions do
   Compile-time compatibility versions shared by manifests and release artifacts.
   """
 
-  @manifest_schema_version 12
+  @manifest_schema_version 13
   @runner_contract_version 12
 
   @doc "Returns the only manifest schema version accepted by this release."

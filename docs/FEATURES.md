@@ -18,8 +18,10 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
   nullability, and up to 16 ordered conditional row-count claims.
 - Planning supports asset and pipeline targets, dependency selection, refresh
   modes, stages, retries, replay, and bounded admission. Scheduled window
-  selections apply pipeline lookback once; manual and backfill selections stay
-  exact, and runs persist requested, expansion, and effective anchors.
+  selections apply pipeline lookback once; a windowed manual run defaults to
+  one latest complete availability-aware window; explicit manual and backfill
+  selections stay exact; and runs persist requested, expansion, and effective
+  anchors.
 - Customer-built runners validate and advertise an operator-supplied immutable
   release ID together with the running Favn version, runner contract, Elixir,
   OTP, and target. Favn validates compatibility and exact manifest alignment but
@@ -54,12 +56,18 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   use a separate authority boundary.
 - Mutating HTTP commands atomically commit idempotency state, domain mutation,
   audit, outbox, and replay result.
+- Lifecycle CLI commands show persisted run target identities and bounded,
+  redacted errors with stable codes and recovery guidance instead of dumping
+  internal response payloads.
 - Password auth uses Argon2id. Actors, memberships, credential hashes, session-token
   hashes, revocation, access versions, and audit records are durable PostgreSQL data.
 - SSE and cross-node notifications use durable cursors; PubSub and PostgreSQL
   `NOTIFY` are wake-ups, never correctness authorities.
 - Resource circuits, recovery candidates, schedule occurrences, execution
   ownership, claims, leases, and fencing are durable coordination state.
+- Authored schedules are inactive when first published in every workspace.
+  Operators can list, preview, activate, and deactivate them explicitly; enabling
+  starts at the next due occurrence and disabling does not cancel accepted runs.
 - Asset coverage is evaluated against bounded canonical expected windows and
   successful evidence from only the active semantic or physical generation.
   Catalogue/API reads distinguish complete, incomplete, and explicit unknown

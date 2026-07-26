@@ -147,7 +147,10 @@ defmodule Favn.AI do
     expansion, and effective anchors, and `Favn plan_asset_run` if you need planning
     details. Scheduled anchors are explicit
     `:previous_complete_period | :current_period`; schedule cadence does not
-    change pipeline window granularity.
+    change pipeline window granularity. A manual pipeline run without a window
+    request resolves one latest complete period at a persisted orchestrator
+    evaluation instant after selected-asset availability delays. An explicit
+    request stays exact, and manual selection never applies schedule lookback.
   - To work with operational backfill ranges, dry-run planning, compact
     `--window kind:FROM..TO` input, forced refresh repair, successful-window
     reruns, or immutable missing-coverage plans, read `Favn.Backfill.RangeRequest`,
@@ -166,6 +169,11 @@ defmodule Favn.AI do
     [Local Development Commands](local-development.html). Planning is read-only
     and start requires the exact reviewed plan id and hash. An unknown activation
     outcome must be reconciled; it is never permission for a blind retry.
+  - To operate authored schedules, read `Mix.Tasks.Favn.Schedules`,
+    `Favn.CLI.Schedules`, and the schedules section of
+    [Runtime Model](runtime-model.html). Newly published schedules are inactive
+    in every workspace. Preview and explicitly activate the schedules that
+    should submit future work; deactivation never cancels an accepted run.
   - To define connection contracts, read `Favn.Connection`; if connection
     modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
     If connection values come from environment variables or secrets, also read
@@ -235,24 +243,28 @@ defmodule Favn.AI do
   - To plan execution order, read `Favn plan_asset_run`, then
     `Favn.Assets.Planner` if needed.
   - To inspect or cancel local runs, inspect run events, inspect relation
-    metadata, inspect relation partitions, or run ad hoc read-only SQL, read
+    metadata, or inspect relation partitions, read
     `Favn.CLI.Runs`, `Favn.CLI.DataInspection`, `Mix.Tasks.Favn.Runs`,
-    `Mix.Tasks.Favn.Inspect`, and `Mix.Tasks.Favn.Query`.
+    and `Mix.Tasks.Favn.Inspect`.
     `mix favn.runs cancel RUN_ID` requests cancellation through the local
     orchestrator HTTP boundary; add `--wait` to poll the run until it is
-    terminal. `mix favn.inspect ...` and `mix favn.query "select ..."` are direct
-    local operator entrypoints. Environment variables must already be present
-    in the process; `Favn.CLI.DataInspection` starts `:favn_sql_runtime` before
-    connecting.
+    terminal. Run summaries use persisted pipeline identity or asset refs for
+    their target label, independent of the currently active manifest. Public
+    lifecycle task failures expose a bounded operation/status/code/message,
+    allowlisted scalar details, and a next step; never derive diagnostics by
+    inspecting arbitrary HTTP payloads or internal failure terms.
+    `mix favn.inspect ...` is the structured local data-inspection
+    entrypoint. Favn does not expose an arbitrary SQL query command; stop Favn
+    before opening a file-backed DuckDB database in the DuckDB CLI.
   - To run local tooling, read `FavnLocal`, then `apps/favn_local/README.md`.
     Source development is Docker-free: the developer supplies PostgreSQL, loads
     environment variables, and runs the Orchestrator and View in the current
     BEAM plus one child runner BEAM.
     The public local command surface is `mix favn.init`,
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
-    `mix favn.rebuild`,
+    `mix favn.rebuild`, `mix favn.schedules`,
     `mix favn.runs`, `mix favn.inspect`,
-    `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
+    `mix favn.diagnostics`, `mix favn.reload`,
     `mix favn.stop`, `mix favn.init --target deployment`,
     `mix favn.build.manifest`, `mix favn.publish`, `mix favn.activate`, and
     `mix favn.read_doc`. Favn does not parse `.env` files or manage PostgreSQL.
@@ -260,6 +272,10 @@ defmodule Favn.AI do
     image pipeline; `mix favn.init --target deployment` copies a non-overwriting
     example.
     `mix favn.run` resolves asset and pipeline targets from the active manifest.
+    A windowed pipeline without `--window` pins one latest complete period;
+    `--window` accepts one exact override, while ranges belong to
+    `mix favn.backfill`. Direct asset `--window` input becomes an exact
+    data-coverage selection.
     Direct asset repair can combine `--dependencies all|none` with
     `--refresh auto|missing|force_selected|force_selected_upstream|force_all`;
     pipeline runs have the narrower `auto|missing|force_all` refresh contract and
@@ -500,12 +516,13 @@ defmodule Favn.AI do
     Read `FavnOrchestrator.Backfill.*` only for internal control-plane
     persistence, projection, and parent/child orchestration work.
   - Read the local-development guide when the task is about source lifecycle,
-    local pipeline submission, run investigation or cancellation, SQL
-    inspection/querying, or deployment examples rather than asset authoring.
+    local pipeline submission, run investigation or cancellation, structured
+    relation inspection, or deployment examples rather than asset authoring.
     Use `mix help favn.init`, `mix help favn.backfill`,
     `mix help favn.rebuild`, `mix help favn.run`, `mix help favn.runs`,
-    `mix help favn.inspect`, or `mix help favn.query` for exact command
-    contracts. The caller loads environment variables before invoking Mix.
+    `mix help favn.schedules`,
+    or `mix help favn.inspect` for exact command contracts. The caller loads
+    environment variables before invoking Mix.
 
   ## Related docs outside BEAM docs
 

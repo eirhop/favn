@@ -31,11 +31,14 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
 
   def reconcile(%{materialization_claim: claim} = entry)
       when is_map(claim) do
-    case field(claim, :target_generation_id) do
-      generation_id when is_binary(generation_id) ->
+    case {field(claim, :target_operation), field(claim, :target_generation_id)} do
+      {operation, _generation_id} when operation in [:rebuild_candidate, "rebuild_candidate"] ->
+        :ok
+
+      {_operation, generation_id} when is_binary(generation_id) ->
         reconcile_persisted(entry, claim, generation_id)
 
-      nil ->
+      {_operation, nil} ->
         :ok
     end
   end

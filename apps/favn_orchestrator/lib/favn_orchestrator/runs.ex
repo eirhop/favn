@@ -329,8 +329,14 @@ defmodule FavnOrchestrator.Runs do
     run_id <> ":" <> Base.encode16(:crypto.hash(:sha256, pin_identity), case: :lower)
   end
 
-  defp bounded_command_id(operation, identity) do
+  defp bounded_command_id(operation, identity) when is_binary(identity) do
     digest = :crypto.hash(:sha256, identity) |> Base.encode16(case: :lower)
     operation <> ":" <> digest
+  end
+
+  defp bounded_command_id(operation, identity) do
+    identity
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&bounded_command_id(operation, &1))
   end
 end

@@ -287,7 +287,9 @@ defmodule FavnOrchestrator.Persistence.Results.RunSummary do
     :inserted_at,
     :updated_at,
     :terminal_at,
-    :rerun_of_run_id
+    :rerun_of_run_id,
+    :target_label,
+    target_refs: []
   ]
 
   @type t :: %__MODULE__{
@@ -307,7 +309,9 @@ defmodule FavnOrchestrator.Persistence.Results.RunSummary do
           inserted_at: DateTime.t(),
           updated_at: DateTime.t(),
           terminal_at: DateTime.t() | nil,
-          rerun_of_run_id: String.t() | nil
+          rerun_of_run_id: String.t() | nil,
+          target_label: String.t() | nil,
+          target_refs: [String.t()]
         }
 end
 
