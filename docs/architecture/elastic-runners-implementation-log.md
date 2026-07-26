@@ -5,6 +5,16 @@ This append-only checkpoint log accompanies
 evidence for the single `codex/elastic-runners` implementation branch. It must
 not contain credentials, secret values, or private infrastructure details.
 
+The implementation plan originally required an independent review and GitHub
+checkpoint for every detailed step. That was intentionally simplified after
+Step 1: Steps 0-25 remain ordered engineering tasks with focused verification,
+but they are grouped into seven phase-level review and checkpoint gates.
+Existing Step 0 and Step 1 records together satisfy Phase 1 and remain unchanged
+as immutable historical evidence. Phase 2 onward is logged and reviewed once
+per phase.
+
+## Phase 1: Foundation
+
 ## Step 0: Isolate the branch and accept the baseline
 
 Status: approved and checkpointed

@@ -60,9 +60,10 @@ Do not overload or rename `execution_pool`.
 
 ## Implementation sequence
 
-This is the architectural sequence. Section 21 translates it into the smaller
-buildable checkpoints that govern implementation, review, commit, and push
-order.
+This is the architectural sequence. Section 21 translates it into detailed
+implementation tasks grouped under seven review phases. The tasks govern build
+order and focused verification; the phase boundaries govern independent
+review, commit, and push order.
 
 1. Freeze the new terminology, ownership boundaries, and non-goals.
 2. Complete issue #525's durable run-submission queue and asynchronous
@@ -1639,10 +1640,10 @@ the network connection but still grants connected BEAM nodes broad trust.
 Issue #530 therefore remains the later least-privilege/untrusted-runner and
 credential-rotation design, not a reason to postpone encrypted distribution.
 
-### 21. Deliver in gated implementation slices
+### 21. Deliver in gated implementation phases
 
 Deliver the complete program as one pull request from one long-lived feature
-branch. Push approved step commits to that branch as recoverable GitHub
+branch. Push approved phase commits to that branch as recoverable GitHub
 checkpoints, but do not open the pull request until the final gate passes. Do
 not use stacked branches or separate implementation pull requests.
 
@@ -1659,65 +1660,98 @@ Before implementation:
    it is not already on the branch.
 
 Create `docs/architecture/elastic-runners-implementation-log.md` on that branch.
-For each checkpoint it records scope, focused verification commands/results,
+For each phase checkpoint it records scope, focused verification
+commands/results,
 reviewer verdict and findings resolved, tree SHA, commit SHA, pushed branch CI,
 and any explicit external-test limitation. It must never contain credentials,
 secret values, or private infrastructure details.
 
-For every implementation step:
+The 26 numbered steps below are detailed implementation tasks, not 26
+independent review gates. Execute them in order inside these seven phases:
+
+| Phase | Detailed steps | Review boundary |
+| --- | --- | --- |
+| 1. Foundation | 0-1 | Isolated baseline and durable submission persistence |
+| 2. Durable run submission | 2-3 | All producers use bounded asynchronous submissions |
+| 3. Pool, release, protocol, and demand contracts | 4-7 | Frozen routing/protocol contracts and durable task demand |
+| 4. Durable DAG and distributed runner core | 8-13 | Asset work executes safely through dynamic runners |
+| 5. Remaining execution-path migration | 14-16 | Inspection, target generation, and rebuilds use runner tasks |
+| 6. Operations and infrastructure deployment | 17-22 | Lifecycle, coexistence, security, and deployment references |
+| 7. Legacy removal and final qualification | 23-25 | Final architecture, qualification, umbrella suite, and PR |
+
+Phase 1 was completed through separately reviewed Step 0 and Step 1
+checkpoints before this phase workflow was adopted. Those existing immutable
+commits and their evidence satisfy the Phase 1 gate; do not rewrite or squash
+them. Six phase review gates remain. In Phase 7, the final review and
+commit/push sequence required by Step 25 is the phase review gate, not an
+additional second review.
+
+For every detailed implementation step within a phase:
 
 1. implement only that step's stated scope;
 2. update affected tests and current documentation in the same diff;
 3. run focused tests plus clean compilation for every affected application;
-4. ask a read-only sub-agent to review before committing; the reviewer must not
+4. keep the diff within the current phase and record material design decisions
+   or temporary seams for the phase review;
+5. do not require a separate independent review, content commit, push, CI wait,
+   or evidence commit merely because one detailed step is complete.
+
+At the end of every phase:
+
+1. run the combined focused verification for every affected application and
+   all exit gates in that phase;
+2. ask a read-only sub-agent to review before committing; the reviewer must not
    edit files or implement its own findings;
-5. require the sub-agent to read this complete implementation plan, inspect the
-   exact diff from the previous approved checkpoint including every untracked
-   file, read the affected code and tests, and compare the result with the
-   step's entry and exit criteria;
-6. have the reviewer report correctness, concurrency, durability, security,
+3. require the sub-agent to read this complete implementation plan, inspect the
+   exact diff from the previous approved phase checkpoint including every
+   untracked file, read the affected code and tests, and compare the result with
+   every detailed step and exit gate in the phase;
+4. have the reviewer report correctness, concurrency, durability, security,
    BEAM/OTP design, test coverage, legacy-path, and documentation findings by
    severity;
-7. resolve every actionable finding, rerun focused verification, and repeat
-   review until the sub-agent explicitly approves the step;
-8. record the reviewed tree hash, commit the approved step with a coherent
+5. resolve every actionable finding, rerun focused verification, and repeat
+   review until the sub-agent explicitly approves the phase;
+6. record the reviewed tree hash, commit the approved phase with a coherent
    message, verify the commit tree exactly equals the reviewed tree and the
    worktree is clean, then push the feature branch to GitHub as a checkpoint;
-9. wait for any branch CI triggered by the push; resolve failures through the
-   same review loop;
-10. after CI passes, update the implementation log with the approved content
-    commit SHA, verification, and reviewer verdict; have a sub-agent review that
-    evidence-only diff, commit/push it as the checkpoint evidence commit, and
-    then begin the next step.
+7. wait for any branch CI triggered by the push; resolve failures through the
+   same phase review loop;
+8. after CI passes, update the implementation log with the approved content
+   commit SHA, verification, and reviewer verdict; have a sub-agent review that
+   evidence-only diff, commit/push it as the phase evidence commit, and then
+   begin the next phase.
 
 The evidence commit does not attempt to record its own SHA, which would be
-self-referential. The next step compares its implementation diff from the
+self-referential. The next phase compares its implementation diff from the
 previous evidence commit. The content commit is the immutable reviewed tree;
 the following evidence commit contains only the review/CI record for it.
 
 Do not commit a known review failure. Do not rewrite or force-push approved
-checkpoint commits. If a later step exposes an earlier defect, fix it in a new
+checkpoint commits. If a later phase exposes an earlier defect, fix it in a new
 reviewed commit so checkpoint history remains useful. The implementing agent
 retains responsibility for the result; sub-agent approval is an additional
 quality gate, not a substitute for tests or judgment.
 
 After the first approved checkpoint, incorporate upstream changes by merging
 `origin/main`, never by rebasing or rewriting checkpoint commits. The merge diff
-must receive the same focused verification and read-only review before work
-continues.
+must remain part of the current uncommitted phase diff, receive focused
+verification, and be included in that phase's single read-only review. It does
+not create a separate review gate.
 
 If implementation reveals a missing contract, changes an accepted architecture
-decision, expands a checkpoint materially, or invalidates a later exit gate,
+decision, expands a phase materially, or invalidates a later exit gate,
 stop code work. Update this plan, have a sub-agent re-read and approve the full
 amendment, commit/push that plan-only checkpoint, and only then resume
 implementation.
 
-Temporary internal adapters are allowed only when the step records exactly
-which later step removes them. No public compatibility layer, dual-write path,
-or legacy fallback may be introduced. Because there are no users, each
-replacement should converge directly on the final contract.
+Temporary internal adapters are allowed only when the detailed step records
+exactly which later step removes them. No public compatibility layer,
+dual-write path, or legacy fallback may be introduced. Because there are no
+users, each replacement should converge directly on the final contract.
 
 #### Stepwise implementation
+
+#### Phase 1: Foundation
 
 ##### Step 0: Isolate the branch and accept the baseline
 
@@ -1745,6 +1779,8 @@ legacy path has a named removal step.
 Exit gate: durable submissions can be enqueued, claimed, transitioned,
 recovered, cancelled, and inspected without invoking planning or a runner.
 
+#### Phase 2: Durable run submission
+
 ##### Step 2: Add bounded run-submission workers
 
 - Add supervised workers with bounded global and per-workspace concurrency,
@@ -1769,6 +1805,8 @@ workers, restart safely at every state, and never create a duplicate run.
 
 Exit gate: accepted requests survive process/control-plane restart and
 repository search proves no producer bypasses `run_submissions`.
+
+#### Phase 3: Pool, release, protocol, and demand contracts
 
 ##### Step 4: Add arbitrary pool and pool-to-release manifest contracts
 
@@ -1822,6 +1860,8 @@ while the still-unmigrated old path remains buildable and tested.
 
 Exit gate: demand is O(1), transactionally consistent, and never reports a
 known-false zero.
+
+#### Phase 4: Durable DAG and distributed runner core
 
 ##### Step 8: Refactor DAG admission to durable asset tasks
 
@@ -1889,6 +1929,8 @@ logs or results, and neither side grows without a configured bound.
 Exit gate: only proven-safe work retries and stale runners cannot affect newer
 assignments.
 
+#### Phase 5: Remaining execution-path migration
+
 ##### Step 14: Move relation inspection onto runner tasks
 
 - Route relation/target inspection through tasks pinned to the target-owning
@@ -1918,6 +1960,8 @@ retry versus explicit uncertainty.
 
 Exit gate: rebuilds use no legacy RPC and each phase resumes safely after
 process/control-plane loss.
+
+#### Phase 6: Operations and infrastructure deployment
 
 ##### Step 17: Add lifecycle modes, demand API, readiness, and observability
 
@@ -1989,6 +2033,8 @@ is recorded, and Favn is not described as Azure-qualified without that result.
 Exit gate: artifacts/conformance tests share the same provider-neutral contract
 and external limitations are explicit.
 
+#### Phase 7: Legacy removal and final qualification
+
 ##### Step 23: Remove legacy architecture and finish canonical docs
 
 - Delete the old server/submit API now that every caller has moved, then remove
@@ -2003,8 +2049,8 @@ focused affected suites pass.
 
 ##### Step 24: Integrate main and run qualification on the final tree
 
-- Fetch and merge current `origin/main` without rebasing; review and verify the
-  merge before qualification.
+- Fetch and merge current `origin/main` without rebasing; keep the merge
+  uncommitted and include it in the final Phase 7 verification and review.
 - Run section 19's focused PostgreSQL, distributed-BEAM, recovery, security,
   artifact-conformance, and performance matrix.
 - Run 0/1/10/100 runner scale in simulation. Live-cloud scale is bounded by
@@ -2016,23 +2062,32 @@ unresolved code, security, durability, performance, or documentation finding.
 
 ##### Step 25: Final umbrella gate and single pull request
 
-Only after steps 0-24 are approved and pushed:
+Only after Phases 1-6 are approved and pushed and Steps 23-24 have satisfied
+their exit gates:
 
 1. confirm `origin/main` has not moved since Step 24; if it has, merge and repeat
    affected qualification before continuing;
 2. run formatting, static checks, clean compilation, and the full umbrella test
    suite against that same qualified tree;
-3. fix failures through reviewed checkpoint commits and rerun the complete
-   final gate until it passes;
+3. fix local failures without creating intermediate checkpoint commits and
+   rerun the complete final gate until it passes;
 4. inspect the full branch diff/history for unrelated changes, secrets,
    temporary seams, generated artifacts, skipped tests, and legacy symbols;
-5. obtain one final read-only sub-agent plan-to-implementation approval;
-6. push the passing SHA and create the single pull request with checkpoint,
-   verification, and external-qualification evidence.
+5. obtain the one final read-only sub-agent plan-to-implementation approval;
+   this is the single Phase 7 review gate;
+6. commit and push the exact approved content tree, then wait for branch CI;
+7. if branch CI fails, fix the failure, repeat the affected local qualification
+   and the Phase 7 review, commit and push a new approved content tree, and wait
+   again;
+8. after branch CI passes, append the Phase 7 implementation-log evidence,
+   obtain read-only review of that evidence-only diff, and commit/push the
+   evidence checkpoint;
+9. create the single pull request with checkpoint, verification, CI, and
+   external-qualification evidence.
 
 Do not create the pull request while a required local suite or review finding
-is unresolved. CI after PR creation is an additional gate and any CI-only fix
-uses a new reviewed commit.
+is unresolved or before the Phase 7 evidence checkpoint is pushed. CI after PR
+creation is an additional gate and any CI-only fix uses a new reviewed commit.
 
 Issue #525 is the first slice of the same production program, not an optional
 parallel project. Its `run_submissions` lifecycle and the later `runner_tasks`
