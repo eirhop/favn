@@ -4253,7 +4253,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                [:customer_reader]
              )
 
-    assert {:error, %{kind: :invalid_command}} =
+    assert {:error, %{kind: :invalid}} =
              SchedulerStore.set_activation(%{activation | workspace_context: reader_context})
 
     assert {:ok, activated} = SchedulerStore.set_activation(activation)

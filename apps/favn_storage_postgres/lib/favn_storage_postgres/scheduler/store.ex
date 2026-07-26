@@ -1179,7 +1179,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
 
     if valid?,
       do: :ok,
-      else: {:error, Error.new(:invalid_command, "invalid schedule activation command")}
+      else: {:error, Error.new(:invalid, "invalid schedule activation command")}
   end
 
   defp validate_dispatch_authorization(%AuthorizeScheduleOccurrenceDispatch{} = command) do

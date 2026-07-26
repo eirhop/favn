@@ -62,6 +62,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
           | {:stage_admission_timeout, reference()}
           | {:execution_admission_wakeup, String.t(), non_neg_integer()}
 
+  @typep compact_index :: %Favn.Manifest.Index{
+           planning_index: nil,
+           assets_by_ref: map(),
+           pipelines_by_ref: %{},
+           schedules_by_ref: %{}
+         }
+
   @spec start_state(RunState.t(), Version.t()) ::
           {:ok, RunExecutionState.t()} | {:terminal, RunState.t()}
   def start_state(%RunState{submit_kind: submit_kind} = run_state, %Version{} = _version)
@@ -388,7 +395,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   @doc false
   @spec compact_execution_index(RunState.t(), Favn.Manifest.Index.t()) ::
-          Favn.Manifest.Index.t()
+          compact_index()
   def compact_execution_index(%RunState{} = run, manifest_index) do
     refs =
       case run.plan do
