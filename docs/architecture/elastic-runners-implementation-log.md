@@ -371,3 +371,127 @@ no runs).
 
 Evidence commit: this field is intentionally not self-recorded; see the
 checkpoint workflow in the implementation plan.
+
+## Phase 3: Pool, release, protocol, and demand contracts
+
+Status: approved and checkpointed
+
+Date: 2026-07-27
+
+### Implemented contracts
+
+- Added arbitrary user-named runner pools without creating runtime atoms, plus
+  provider-neutral resident/elastic pool configuration.
+- Replaced the singleton runner release with an exact pool-to-release manifest
+  map and propagated the selected pool and release through plans, run
+  snapshots, runner work, inspection, and generation contracts.
+- Added the frozen protocol-13 registration, claim, assignment, lifecycle,
+  runtime-input, log, result, cancellation, wake, and shutdown messages with
+  positive session/assignment fencing, bounded safe decoding, capability
+  matching, and exact command identities.
+- Added PostgreSQL runner tasks, atomic `SKIP LOCKED` compatible claims,
+  immutable enqueue identities, leases, fenced transitions, bounded logs,
+  runtime-input acknowledgements, terminal results, recovery claims, and exact
+  O(1) demand projections with explicit audit/repair health.
+- Kept protocol 13 non-activatable until the Phase 4 coordinator replaces the
+  old singleton execution path.
+- Removed the legacy generator release fallback, silent legacy option deletion,
+  and stale public schema/protocol examples.
+- Separated pre-start retry evidence from running outcome uncertainty. Assigned
+  or preparing tasks can requeue before execution; running writes cannot.
+  Terminal asset retries require a validated `RunnerError` with
+  `outcome: :safe_failure`.
+
+### Review history
+
+The first valid phase review rejected nine issues: premature protocol
+activation, incomplete command/fence/runtime-input acknowledgements, zero live
+session generations, capability-blind claims, compressed external-term
+expansion, incomplete immutable enqueue comparison, demand health without an
+operational audit, a remaining singleton release fallback, and stale public
+documentation. All nine were fixed.
+
+The second review found two remaining boundary issues. Retry safety did not
+distinguish durable pre-start state from ambiguous running outcomes, and
+`RuntimeInputsResolved` allowed untyped or contradictory shapes. Retry
+classification is now validated against task kind, durable state, terminal
+outcome, and validated error evidence. Runtime input success and failure now
+have mutually exclusive, typed, round-trippable contracts.
+
+Final reviewer verdict: approved; Phase 3 is ready to checkpoint.
+
+### Phase 3 verification
+
+```text
+mix format --check-formatted <all 130 modified/new Elixir files>
+  # passed
+
+mix compile --warnings-as-errors
+  # passed
+
+cd apps/favn
+mix test
+  # 155 passed
+
+cd apps/favn_authoring
+mix test
+  # 137 passed
+
+cd apps/favn_runner
+mix test
+  # 218 passed in the first phase run
+  # after the final contract fix, 217/218 passed; the unchanged one-millisecond
+  # manifest-lease timing assertion failed under the Windows clock granularity
+
+cd apps/favn_orchestrator
+mix test
+  # 595 passed in the first phase run
+  # after the final contract fix, 594/595 passed because an unchanged 100 ms
+  # monitor assertion observed :noproc instead of :killed; targeted rerun passed
+
+cd apps/favn_core
+mix test
+  # 374/375 passed
+  # the unchanged Windows micro-timing assertion reports duration_us == 0
+
+cd apps/favn_test_support
+mix test
+  # 7 passed
+
+cd apps/favn_core
+mix test test/contracts/runner_task_test.exs \
+  test/sql_asset_runtime_inputs_test.exs
+  # 11 passed
+
+cd apps/favn_runner
+mix test test/runtime_input_resolver_test.exs
+  # 9 passed
+
+cd apps/favn_storage_postgres
+mix test test/storage_v2/runner_tasks_test.exs --seed 15
+  # 17 passed against the disposable database
+
+mix test <related Storage V2 runner release and authority tests>
+  # 26 passed
+
+cd apps/favn
+mix docs
+  # passed
+```
+
+The runner-task migration was also applied successfully to the fresh
+`favn_elastic_phase3` disposable PostgreSQL database. Two unrelated full
+Storage V2 tests remain unavailable because the native Windows host does not
+provide `createdb` and `pg_dump`. No full umbrella suite was run because the
+accepted plan reserves that gate for Phase 7.
+
+Reviewed tree SHA: `72bf9435a8c1a3d6a65d0e68c245dcfc978cb1b9`
+
+Reviewed content commit SHA:
+`febd5df63f612a1bed0a8ef2c84df59e94c696c9`
+
+Pushed branch CI: no GitHub Actions workflow run was triggered by the branch
+push (`gh run list --branch codex/elastic-runners` returned no runs).
+
+Evidence commit: this field is intentionally not self-recorded; see the
+checkpoint workflow in the implementation plan.
