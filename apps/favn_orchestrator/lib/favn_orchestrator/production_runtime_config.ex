@@ -18,6 +18,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @max_postgres_timeout_ms 120_000
   @max_scheduler_tick_ms 24 * 60 * 60 * 1_000
   @max_missed_occurrences 100_000
+  @max_run_submission_concurrency 256
   @default_active_run_plan_max_bytes 512 * 1_024 * 1_024
   @min_active_run_plan_max_bytes 64 * 1_024 * 1_024
   @max_active_run_plan_max_bytes 8 * 1_024 * 1_024 * 1_024
@@ -53,6 +54,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           auth_session_ttl_seconds: pos_integer(),
           active_run_plan_max_bytes: pos_integer(),
           scheduler: keyword(),
+          run_submissions: keyword(),
           shutdown_drain_timeout_ms: pos_integer(),
           runner: map(),
           runner_client: module(),
@@ -164,6 +166,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     )
 
     Application.put_env(:favn_orchestrator, :scheduler, config.scheduler)
+    Application.put_env(:favn_orchestrator, :run_submissions, config.run_submissions)
     Application.put_env(:favn_orchestrator, :runner_client, config.runner_client)
 
     Application.put_env(
@@ -199,6 +202,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
          {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
          {:ok, scheduler} <- scheduler(env, workspace_ids),
+         {:ok, run_submissions} <- run_submissions(env),
          {:ok, shutdown_drain_timeout_ms} <- shutdown_drain_timeout_ms(env) do
       {:ok,
        %{
@@ -215,6 +219,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          auth_session_ttl_seconds: auth_session_ttl_seconds,
          active_run_plan_max_bytes: active_run_plan_max_bytes,
          scheduler: scheduler,
+         run_submissions: run_submissions,
          shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
          runner: runner,
          runner_client: FavnOrchestrator.RunnerClient.BeamNode,
@@ -262,6 +267,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         retained_versions: config.runtime_input_pin.keys |> Map.keys() |> Enum.sort()
       },
       scheduler: Map.new(config.scheduler),
+      run_submissions: Map.new(config.run_submissions),
       shutdown: %{drain_timeout_ms: config.shutdown_drain_timeout_ms},
       runner: config.runner
     }
@@ -420,6 +426,40 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          tick_ms: tick_ms,
          max_missed_all_occurrences: max_missed
        ]}
+    end
+  end
+
+  defp run_submissions(env) do
+    with {:ok, global_concurrency} <-
+           int(
+             env,
+             "FAVN_RUN_SUBMISSION_CONCURRENCY",
+             "8",
+             1,
+             @max_run_submission_concurrency
+           ),
+         {:ok, per_workspace_concurrency} <-
+           int(
+             env,
+             "FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY",
+             "2",
+             1,
+             @max_run_submission_concurrency
+           ),
+         true <- per_workspace_concurrency <= global_concurrency do
+      {:ok,
+       [
+         global_concurrency: global_concurrency,
+         per_workspace_concurrency: per_workspace_concurrency
+       ]}
+    else
+      false ->
+        {:error,
+         {:invalid_env, "FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY",
+          "not greater than FAVN_RUN_SUBMISSION_CONCURRENCY"}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

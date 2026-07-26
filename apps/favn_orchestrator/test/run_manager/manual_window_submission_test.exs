@@ -81,8 +81,13 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
 
   test "builder persists one default selection and rerun preserves it", %{context: context} do
     assert {:ok, submission} =
-             SubmissionBuilder.pipeline_ref(context, @pipeline_ref,
-               run_id: "manual-window-run",
+             SubmissionBuilder.persisted_target(
+               context,
+               :pipeline,
+               @pipeline_ref,
+               "deployment",
+               "manual-window-manifest",
+               "manual-window-run",
                window_evaluated_at: @evaluated_at
              )
 
@@ -101,8 +106,12 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
     Process.put(:manual_window_source_run, %{source | status: :ok})
 
     assert {:ok, rerun} =
-             SubmissionBuilder.rerun(context, source.id,
-               run_id: "manual-window-rerun",
+             SubmissionBuilder.persisted_rerun(
+               context,
+               source.id,
+               "deployment",
+               "manual-window-manifest",
+               "manual-window-rerun",
                window_evaluated_at: ~U[2030-01-01 00:00:00Z]
              )
 

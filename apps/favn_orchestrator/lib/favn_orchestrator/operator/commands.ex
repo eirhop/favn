@@ -19,8 +19,8 @@ defmodule FavnOrchestrator.Operator.Commands do
   alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunSubmission.AssetOptions
+  alias FavnOrchestrator.RunSubmissions
 
   @type run_id :: String.t()
   @type run_target ::
@@ -217,23 +217,25 @@ defmodule FavnOrchestrator.Operator.Commands do
   end
 
   defp submit_asset_run(%WorkspaceContext{} = context, asset_ref, opts),
-    do: RunManager.submit_asset_run(context, asset_ref, opts)
+    do: RunSubmissions.enqueue_asset(context, asset_ref, opts)
 
   defp submit_pipeline_run(%WorkspaceContext{} = context, {module, name} = pipeline_ref, opts)
        when is_atom(module) and is_atom(name),
-       do: RunManager.submit_pipeline_ref_run(context, pipeline_ref, opts)
+       do: RunSubmissions.enqueue_pipeline(context, pipeline_ref, opts)
 
   defp command_run_opts(opts, version, command_opts) do
     opts
     |> Keyword.put(:manifest_version_id, version.manifest_version_id)
+    |> Keyword.put(:submission_source, Keyword.get(command_opts, :submission_source, :operator))
     |> maybe_put(:run_id, Keyword.get(command_opts, :run_id))
     |> maybe_put(:_idempotency, Keyword.get(command_opts, :idempotency))
   end
 
   defp validate_command_opts(opts) do
-    allowed = [:run_id, :idempotency]
+    allowed = [:run_id, :idempotency, :submission_source]
     run_id = Keyword.get(opts, :run_id)
     idempotency = Keyword.get(opts, :idempotency)
+    submission_source = Keyword.get(opts, :submission_source, :operator)
 
     cond do
       not Keyword.keyword?(opts) ->
@@ -247,6 +249,9 @@ defmodule FavnOrchestrator.Operator.Commands do
 
       not is_nil(idempotency) and not match?(%CommandIdempotency{}, idempotency) ->
         {:error, :invalid_idempotency_context}
+
+      submission_source not in [:api, :operator] ->
+        {:error, :invalid_submission_source}
 
       true ->
         :ok

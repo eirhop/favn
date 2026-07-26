@@ -60,6 +60,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              max_missed_all_occurrences: 1_000
            ]
 
+    assert config.run_submissions == [
+             global_concurrency: 8,
+             per_workspace_concurrency: 2
+           ]
+
     assert config.runner == %{
              topology: :beam_node,
              control_plane_node: "control@control-plane.internal",
@@ -99,6 +104,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
         "FAVN_SCHEDULER_ENABLED" => "false",
         "FAVN_SCHEDULER_TICK_MS" => "250",
         "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES" => "2",
+        "FAVN_RUN_SUBMISSION_CONCURRENCY" => "12",
+        "FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY" => "3",
         "FAVN_RUNNER_RPC_TIMEOUT_MS" => "30000",
         "FAVN_RUNNER_DIAGNOSTICS_TIMEOUT_MS" => "3000",
         "FAVN_RUNNER_AWAIT_TIMEOUT_BUFFER_MS" => "500",
@@ -121,6 +128,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              workspace_ids: [],
              tick_ms: 250,
              max_missed_all_occurrences: 2
+           ]
+
+    assert config.run_submissions == [
+             global_concurrency: 12,
+             per_workspace_concurrency: 3
            ]
 
     assert config.runner.epmd_port == 44_369
@@ -276,6 +288,17 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert {:error, %{error: {:invalid_env, "FAVN_SCHEDULER_TICK_MS", "100..86400000"}}} =
              base
              |> Map.put("FAVN_SCHEDULER_TICK_MS", "99")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY",
+                 "not greater than FAVN_RUN_SUBMISSION_CONCURRENCY"}
+            }} =
+             base
+             |> Map.put("FAVN_RUN_SUBMISSION_CONCURRENCY", "2")
+             |> Map.put("FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY", "3")
              |> ProductionRuntimeConfig.validate()
 
     assert {:error,

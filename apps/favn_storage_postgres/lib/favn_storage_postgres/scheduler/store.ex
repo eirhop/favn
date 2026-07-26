@@ -11,6 +11,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   alias FavnOrchestrator.Persistence.Commands.ClaimScheduleOccurrences
   alias FavnOrchestrator.Persistence.Commands.CommitScheduleEvaluation
   alias FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence
+  alias FavnOrchestrator.Persistence.Commands.EnqueueRunSubmission
   alias FavnOrchestrator.Persistence.Commands.ScheduleOccurrenceIntent
   alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Error
@@ -21,12 +22,15 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   alias FavnOrchestrator.Persistence.Results.ScheduleClaim
   alias FavnOrchestrator.Persistence.Results.ScheduleActivation, as: ScheduleActivationResult
   alias FavnOrchestrator.Persistence.Results.ScheduleOccurrence, as: ScheduleOccurrenceResult
+  alias FavnOrchestrator.Persistence.Results.RunSubmission, as: RunSubmissionResult
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Outbox.Writer, as: OutboxWriter
   alias FavnStoragePostgres.Payload
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.RunSubmissions.Store, as: RunSubmissionStore
+  alias FavnStoragePostgres.RunSubmissions.Validation, as: RunSubmissionValidation
   alias FavnStoragePostgres.Schemas.ScheduleCursor
   alias FavnStoragePostgres.Schemas.ScheduleActivation
   alias FavnStoragePostgres.Schemas.ScheduleActivationCommand
@@ -619,15 +623,16 @@ defmodule FavnStoragePostgres.Scheduler.Store do
       not valid_occurrence_claim?(occurrence, command) ->
         Repo.rollback(Error.new(:fenced, "schedule occurrence claim is stale"))
 
-      occurrence.status == "dispatching" ->
-        occurrence_result(occurrence)
-
       activation_enabled_for?(activation, command.schedule_fingerprint) ->
+        submission = enqueue_occurrence_submission!(command, occurrence)
+
         updated =
           occurrence
           |> Ecto.Changeset.change(%{
-            status: "dispatching",
+            status: "completed",
+            run_id: submission.run_id,
             last_command_id: command.command_id,
+            claim_expires_at: command.occurred_at,
             updated_at: command.occurred_at
           })
           |> Repo.update!()
@@ -635,7 +640,7 @@ defmodule FavnStoragePostgres.Scheduler.Store do
         OutboxWriter.insert!(%{
           workspace_id: workspace_id,
           command_id: command.command_id,
-          event_kind: "schedule.occurrence.dispatch_authorized",
+          event_kind: "schedule.occurrence.submission_queued",
           aggregate_kind: "schedule_occurrence",
           aggregate_id: command.occurrence_id,
           aggregate_version: updated.claim_generation,
@@ -644,7 +649,9 @@ defmodule FavnStoragePostgres.Scheduler.Store do
             "occurrence_id" => command.occurrence_id,
             "pipeline_target_id" => command.pipeline_target_id,
             "schedule_id" => command.schedule_id,
-            "schedule_fingerprint" => command.schedule_fingerprint
+            "schedule_fingerprint" => command.schedule_fingerprint,
+            "run_id" => submission.run_id,
+            "submission_id" => submission.submission_id
           }
         })
 
@@ -1183,8 +1190,15 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   end
 
   defp validate_dispatch_authorization(%AuthorizeScheduleOccurrenceDispatch{} = command) do
+    submission = command.submission
+
     valid? =
       writer?(command.workspace_context) and
+        match?(%EnqueueRunSubmission{}, submission) and
+        RunSubmissionValidation.command(submission) == :ok and
+        submission.workspace_context == command.workspace_context and
+        submission.source == :scheduler and submission.target_kind == "pipeline" and
+        submission.target_id == command.pipeline_target_id and
         Enum.all?(
           [
             command.command_id,
@@ -1200,6 +1214,21 @@ defmodule FavnStoragePostgres.Scheduler.Store do
         match?(%DateTime{}, command.occurred_at)
 
     if valid?, do: :ok, else: {:error, :invalid}
+  end
+
+  defp enqueue_occurrence_submission!(command, occurrence) do
+    submission = command.submission
+
+    if submission.deployment_id != occurrence.deployment_id or
+         submission.target_id != occurrence.pipeline_target_id do
+      Repo.rollback(Error.new(:fenced, "schedule submission identity does not match occurrence"))
+    end
+
+    case RunSubmissionStore.enqueue(submission) do
+      {:ok, %RunSubmissionResult{} = result} -> result
+      {:error, %Error{} = error} -> Repo.rollback(error)
+      {:error, reason} -> Repo.rollback(ErrorMapper.map(reason))
+    end
   end
 
   defp validate_occurrence_claim(command),

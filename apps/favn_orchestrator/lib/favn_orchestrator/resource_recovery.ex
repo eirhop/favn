@@ -12,8 +12,9 @@ defmodule FavnOrchestrator.ResourceRecovery do
   alias FavnOrchestrator.Persistence.Results.ResourceRecoveryBatch
   alias FavnOrchestrator.Persistence.Results.ResourceRecoveryCandidate
   alias FavnOrchestrator.Persistence.Results.ResourceRecoveryWakeup
+  alias FavnOrchestrator.Persistence.Results.RunSubmission
   alias FavnOrchestrator.Persistence.SystemContext
-  alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.RunSubmissions
   alias FavnOrchestrator.Runs
 
   @claim_limit 100
@@ -99,6 +100,7 @@ defmodule FavnOrchestrator.ResourceRecovery do
 
     opts = [
       run_id: recovery_run_id,
+      submission_source: :recovery,
       replay_node_keys: node_keys,
       replay_mode: :resume_from_failure,
       metadata: %{
@@ -115,7 +117,7 @@ defmodule FavnOrchestrator.ResourceRecovery do
       }
     ]
 
-    case RunManager.rerun(context, source_run_id, opts) do
+    case RunSubmissions.enqueue_rerun(context, source_run_id, opts) do
       {:ok, ^recovery_run_id} ->
         case complete(context, owner_id, candidates, :submitted, recovery_run_id) do
           :ok -> :ok
@@ -123,7 +125,13 @@ defmodule FavnOrchestrator.ResourceRecovery do
         end
 
       {:error, _reason} ->
-        if existing_recovery_run?(context, recovery_run_id, source_run_id, candidate_ids) do
+        if existing_recovery_run?(context, recovery_run_id, source_run_id, candidate_ids) or
+             existing_recovery_submission?(
+               context,
+               recovery_run_id,
+               source_run_id,
+               candidate_ids
+             ) do
           case complete(context, owner_id, candidates, :submitted, recovery_run_id) do
             :ok -> :ok
             {:error, _reason} -> :retry
@@ -161,6 +169,23 @@ defmodule FavnOrchestrator.ResourceRecovery do
 
       {:error, _reason} ->
         false
+    end
+  end
+
+  defp existing_recovery_submission?(
+         context,
+         recovery_run_id,
+         source_run_id,
+         candidate_ids
+       ) do
+    with {:ok, %RunSubmission{source: :recovery, intent: intent}} <-
+           RunSubmissions.get(context, recovery_run_id),
+         {:ok, {:rerun, ^source_run_id, opts}} <-
+           FavnOrchestrator.RunSubmission.Intent.decode(intent),
+         metadata when is_map(metadata) <- Keyword.get(opts, :metadata, %{}) do
+      Enum.sort(field(metadata, :resource_recovery_candidate_ids, [])) == candidate_ids
+    else
+      _missing_or_mismatched -> false
     end
   end
 

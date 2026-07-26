@@ -20,8 +20,13 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   alias FavnOrchestrator.Persistence.Commands.SupersedeRunSubmission
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetRunSubmission
+  alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionByRunId
+  alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionStats
+  alias FavnOrchestrator.Persistence.Queries.PageClaimableRunSubmissionWorkspaces
   alias FavnOrchestrator.Persistence.Queries.PageRunSubmissions
   alias FavnOrchestrator.Persistence.Results.RunSubmissionPage
+  alias FavnOrchestrator.Persistence.Results.RunSubmissionStats
+  alias FavnOrchestrator.Persistence.Results.RunSubmissionWorkspacePage
   alias FavnOrchestrator.Persistence.RunSubmissionAuthority
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
@@ -191,6 +196,63 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   end
 
   @impl true
+  def get_by_run_id(%GetRunSubmissionByRunId{} = query) do
+    with :ok <- Validation.query(query),
+         %RunSubmission{} = submission <-
+           Repo.get_by(RunSubmission,
+             workspace_id: query.workspace_context.workspace_id,
+             run_id: query.run_id
+           ) do
+      {:ok, Codec.result(submission)}
+    else
+      nil -> {:error, Error.new(:not_found, "run submission not found")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def stats(%GetRunSubmissionStats{} = query) do
+    with :ok <- Validation.query(query) do
+      observed_at = database_now!()
+
+      rows =
+        RunSubmission
+        |> where([submission], submission.workspace_id == ^query.workspace_context.workspace_id)
+        |> group_by([submission], [submission.status, submission.failure_kind])
+        |> select([submission], %{
+          status: submission.status,
+          failure_kind: submission.failure_kind,
+          count: count(submission.submission_id),
+          retrying:
+            fragment(
+              "count(*) FILTER (WHERE ? = 'queued' AND ? > 0)",
+              submission.status,
+              submission.attempt
+            ),
+          cancellation_requested:
+            fragment(
+              "count(*) FILTER (WHERE ? IS NOT NULL AND ? IN ('queued', 'preparing', 'admitting'))",
+              submission.cancellation_requested_at,
+              submission.status
+            ),
+          oldest_queued_at:
+            fragment(
+              "min(?) FILTER (WHERE ? = 'queued')",
+              submission.enqueued_at,
+              submission.status
+            )
+        })
+        |> Repo.all()
+
+      {:ok, stats_result(rows, observed_at)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
   def page(%PageRunSubmissions{} = query) do
     with :ok <- Validation.query(query) do
       status = query.status && Atom.to_string(query.status)
@@ -213,6 +275,123 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   rescue
     error -> {:error, ErrorMapper.map(error)}
   end
+
+  @impl true
+  def page_claimable_workspaces(%PageClaimableRunSubmissionWorkspaces{} = query) do
+    with :ok <- Validation.query(query) do
+      now = database_now!()
+
+      queued =
+        RunSubmission
+        |> where(
+          [submission],
+          submission.status == "queued" and submission.available_at <= ^now
+        )
+        |> after_workspace_cursor(query.after)
+        |> select([submission], %{workspace_id: submission.workspace_id})
+
+      stale =
+        RunSubmission
+        |> where(
+          [submission],
+          submission.status in @active_statuses and submission.claim_expires_at <= ^now
+        )
+        |> after_workspace_cursor(query.after)
+        |> select([submission], %{workspace_id: submission.workspace_id})
+
+      candidates = union_all(queued, ^stale)
+
+      rows =
+        candidates
+        |> subquery()
+        |> group_by([candidate], candidate.workspace_id)
+        |> order_by([candidate], asc: candidate.workspace_id)
+        |> select([candidate], candidate.workspace_id)
+        |> limit(^(query.limit + 1))
+        |> Repo.all()
+
+      workspace_ids = Enum.take(rows, query.limit)
+      has_more? = length(rows) > query.limit
+      next = if has_more?, do: List.last(workspace_ids)
+
+      {:ok,
+       %RunSubmissionWorkspacePage{
+         workspace_ids: workspace_ids,
+         has_more?: has_more?,
+         next: next
+       }}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  defp stats_result(rows, observed_at) do
+    empty = %RunSubmissionStats{
+      total: 0,
+      counts: %{},
+      failure_counts: %{},
+      queued_depth: 0,
+      active_depth: 0,
+      retrying_depth: 0,
+      cancellation_requested_depth: 0,
+      observed_at: observed_at
+    }
+
+    rows
+    |> Enum.reduce(empty, fn row, stats ->
+      status = status_atom(row.status)
+      failure_kind = failure_kind_atom(row.failure_kind)
+
+      %{
+        stats
+        | total: stats.total + row.count,
+          counts: Map.update(stats.counts, status, row.count, &(&1 + row.count)),
+          failure_counts: put_failure_count(stats.failure_counts, failure_kind, row.count),
+          queued_depth: stats.queued_depth + if(status == :queued, do: row.count, else: 0),
+          active_depth:
+            stats.active_depth +
+              if(status in [:preparing, :admitting], do: row.count, else: 0),
+          retrying_depth: stats.retrying_depth + row.retrying,
+          cancellation_requested_depth:
+            stats.cancellation_requested_depth + row.cancellation_requested,
+          oldest_queued_at: earliest(stats.oldest_queued_at, row.oldest_queued_at)
+      }
+    end)
+    |> then(fn stats ->
+      %{
+        stats
+        | oldest_queued_age_ms: queued_age_ms(stats.observed_at, stats.oldest_queued_at)
+      }
+    end)
+  end
+
+  defp queued_age_ms(_observed_at, nil), do: nil
+
+  defp queued_age_ms(observed_at, oldest_queued_at),
+    do: max(DateTime.diff(observed_at, oldest_queued_at, :millisecond), 0)
+
+  defp put_failure_count(counts, nil, _count), do: counts
+  defp put_failure_count(counts, kind, count), do: Map.update(counts, kind, count, &(&1 + count))
+
+  defp earliest(nil, timestamp), do: timestamp
+  defp earliest(timestamp, nil), do: timestamp
+
+  defp earliest(left, right) do
+    if DateTime.compare(left, right) == :gt, do: right, else: left
+  end
+
+  defp status_atom("queued"), do: :queued
+  defp status_atom("preparing"), do: :preparing
+  defp status_atom("admitting"), do: :admitting
+  defp status_atom("submitted"), do: :submitted
+  defp status_atom("failed"), do: :failed
+  defp status_atom("cancelled"), do: :cancelled
+  defp status_atom("superseded"), do: :superseded
+
+  defp failure_kind_atom(nil), do: nil
+  defp failure_kind_atom("safe"), do: :safe
+  defp failure_kind_atom("permanent"), do: :permanent
+  defp failure_kind_atom("unknown"), do: :unknown
 
   defp enqueue!(command) do
     workspace_id = command.workspace_context.workspace_id
@@ -877,6 +1056,11 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
            submission.submission_id < ^submission_id)
     )
   end
+
+  defp after_workspace_cursor(query, nil), do: query
+
+  defp after_workspace_cursor(query, workspace_id),
+    do: where(query, [submission], submission.workspace_id > ^workspace_id)
 
   defp enqueue_request(command) do
     authority =

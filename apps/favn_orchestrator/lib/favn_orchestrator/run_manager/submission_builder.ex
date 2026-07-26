@@ -23,45 +23,82 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.TargetGenerations
 
-  @spec asset(WorkspaceContext.t(), Favn.Ref.t(), keyword()) ::
-          {:ok, Submission.t()} | {:error, term()}
-  def asset(%WorkspaceContext{} = context, asset_ref, opts) when is_list(opts) do
-    with {:ok, scoped_opts} <- workspace_opts(context, opts) do
-      do_asset(asset_ref, scoped_opts)
+  @doc false
+  @spec persisted_target(
+          WorkspaceContext.t(),
+          :asset | :pipeline,
+          Favn.Ref.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) :: {:ok, Submission.t()} | {:error, term()}
+  def persisted_target(
+        %WorkspaceContext{} = context,
+        target_kind,
+        {module, name} = target_ref,
+        deployment_id,
+        manifest_version_id,
+        run_id,
+        opts \\ []
+      )
+      when target_kind in [:asset, :pipeline] and is_atom(module) and is_atom(name) and
+             is_binary(deployment_id) and is_binary(manifest_version_id) and is_binary(run_id) and
+             is_list(opts) do
+    frozen_opts = persisted_opts(context, deployment_id, manifest_version_id, run_id, opts)
+
+    case target_kind do
+      :asset -> do_asset(target_ref, frozen_opts)
+      :pipeline -> do_pipeline_ref(target_ref, frozen_opts)
     end
   end
 
-  @spec pipeline(WorkspaceContext.t(), [Favn.Ref.t()], keyword()) ::
-          {:ok, Submission.t()} | {:error, term()}
-  def pipeline(%WorkspaceContext{} = context, target_refs, opts) when is_list(opts) do
-    with {:ok, scoped_opts} <- workspace_opts(context, opts) do
-      do_pipeline(target_refs, scoped_opts)
-    end
+  @doc false
+  @spec persisted_pipeline_targets(
+          WorkspaceContext.t(),
+          [Favn.Ref.t()],
+          String.t(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) :: {:ok, Submission.t()} | {:error, term()}
+  def persisted_pipeline_targets(
+        %WorkspaceContext{} = context,
+        target_refs,
+        deployment_id,
+        manifest_version_id,
+        run_id,
+        opts
+      )
+      when is_list(target_refs) and is_binary(deployment_id) and
+             is_binary(manifest_version_id) and is_binary(run_id) and is_list(opts) do
+    context
+    |> persisted_opts(deployment_id, manifest_version_id, run_id, opts)
+    |> then(&do_pipeline(target_refs, &1))
   end
 
-  @spec pipeline_module(WorkspaceContext.t(), module(), keyword()) ::
-          {:ok, Submission.t()} | {:error, term()}
-  def pipeline_module(%WorkspaceContext{} = context, pipeline_module, opts)
-      when is_atom(pipeline_module) and is_list(opts) do
-    with {:ok, scoped_opts} <- workspace_opts(context, opts) do
-      do_pipeline_module(pipeline_module, scoped_opts)
-    end
-  end
-
-  @spec pipeline_ref(WorkspaceContext.t(), {module(), atom()}, keyword()) ::
-          {:ok, Submission.t()} | {:error, term()}
-  def pipeline_ref(%WorkspaceContext{} = context, {module, name} = pipeline_ref, opts)
-      when is_atom(module) and is_atom(name) and is_list(opts) do
-    with {:ok, scoped_opts} <- workspace_opts(context, opts) do
-      do_pipeline_ref(pipeline_ref, scoped_opts)
-    end
-  end
-
-  @spec rerun(WorkspaceContext.t(), String.t(), keyword()) ::
-          {:ok, Submission.t()} | {:error, term()}
-  def rerun(%WorkspaceContext{} = context, source_run_id, opts)
-      when is_binary(source_run_id) and is_list(opts) do
-    do_rerun(source_run_id, Keyword.put(opts, :_workspace_context, context))
+  @doc false
+  @spec persisted_rerun(
+          WorkspaceContext.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) :: {:ok, Submission.t()} | {:error, term()}
+  def persisted_rerun(
+        %WorkspaceContext{} = context,
+        source_run_id,
+        deployment_id,
+        manifest_version_id,
+        run_id,
+        opts
+      )
+      when is_binary(source_run_id) and is_binary(deployment_id) and
+             is_binary(manifest_version_id) and is_binary(run_id) and is_list(opts) do
+    context
+    |> persisted_opts(deployment_id, manifest_version_id, run_id, opts)
+    |> then(&do_rerun(source_run_id, &1))
   end
 
   defp do_asset(asset_ref, opts) when is_list(opts) do
@@ -101,32 +138,6 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              status: run_state.status,
              submit_kind: :pipeline,
              pipeline_target_refs: target_refs
-           }),
-         event_metadata:
-           release_metadata(run_state, %{run_id: run_state.id, submit_kind: :pipeline})
-       }}
-    end
-  end
-
-  defp do_pipeline_module(pipeline_module, opts)
-       when is_atom(pipeline_module) and is_list(opts) do
-    with :ok <- validate_opts(opts),
-         {:ok, run_state, version} <- build_pipeline_module_submission(pipeline_module, opts) do
-      {:ok,
-       %Submission{
-         run_state: run_state,
-         workspace_context: Keyword.get(opts, :_workspace_context),
-         deployment_id: Keyword.get(opts, :_deployment_id),
-         idempotency: Keyword.get(opts, :_idempotency),
-         manifest_version: version,
-         submit_kind: :pipeline,
-         pipeline_refs: pipeline_refs_from_run(run_state),
-         transition_metadata:
-           release_metadata(run_state, %{
-             status: run_state.status,
-             submit_kind: :pipeline,
-             pipeline_target_refs: run_state.target_refs,
-             pipeline_module: pipeline_module
            }),
          event_metadata:
            release_metadata(run_state, %{run_id: run_state.id, submit_kind: :pipeline})
@@ -237,67 +248,6 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          input <- %{input | metadata: metadata},
          {:ok, run_state} <-
            build_pipeline_run_state(target_refs, input, version, index, nil) do
-      {:ok, run_state, version}
-    end
-  end
-
-  defp build_pipeline_module_submission(pipeline_module, opts)
-       when is_atom(pipeline_module) and is_list(opts) do
-    window_request = Keyword.get(opts, :window_request)
-
-    with {:ok, input} <- SubmissionOptions.new(opts, trigger: %{kind: :pipeline}),
-         {:ok, input_mode} <- runtime_input_mode(opts, :manual),
-         {:ok, request} <-
-           normalize_pipeline_window_request(
-             input.window_selection,
-             input.anchor_window,
-             window_request
-           ),
-         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
-         {:ok, version} <- get_manifest(opts, manifest_version_id),
-         {:ok, index} <- ManifestIndexCache.fetch(version),
-         {:ok, pipeline} <- fetch_pipeline_by_module(index, pipeline_module),
-         {:ok, target_refs} <- PipelineResolver.target_refs(index, pipeline),
-         {:ok, window_resolution} <-
-           resolve_pipeline_window_selection(pipeline, index, target_refs, input, request, opts),
-         {:ok, pipeline_resolution} <-
-           PipelineResolver.resolve(index, pipeline,
-             trigger: input.trigger,
-             params: input.params,
-             window_selection: window_resolution.selection
-           ),
-         {:ok, refresh_policy} <-
-           refresh_policy_metadata(opts, pipeline_resolution.dependencies),
-         metadata <-
-           Map.merge(input.metadata, %{
-             submit_kind: :pipeline,
-             pipeline_target_refs: pipeline_resolution.target_refs,
-             pipeline_context: pipeline_resolution.pipeline_ctx,
-             pipeline_dependencies: pipeline_resolution.dependencies,
-             pipeline_submit_ref: pipeline.module,
-             pipeline_identity_ref: {pipeline.module, pipeline.name},
-             pipeline_execution_policy: pipeline_execution_policy(pipeline_resolution.pipeline),
-             runtime_input_mode: input_mode,
-             refresh_policy: refresh_policy
-           })
-           |> put_window_selection(window_resolution.selection)
-           |> put_manual_window_resolution(window_resolution),
-         input <-
-           %{
-             input
-             | metadata: metadata,
-               dependencies: pipeline_resolution.dependencies,
-               anchor_window: nil,
-               window_selection: window_resolution.selection
-           },
-         {:ok, run_state} <-
-           build_pipeline_run_state(
-             pipeline_resolution.target_refs,
-             input,
-             version,
-             index,
-             pipeline_resolution.pipeline.retry_policy
-           ) do
       {:ok, run_state, version}
     end
   end
@@ -1014,15 +964,14 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     if RunState.terminal_status?(status), do: :ok, else: {:error, {:run_not_terminal, status}}
   end
 
-  defp workspace_opts(%WorkspaceContext{} = context, opts) do
-    with {:ok, runtime} <- ManifestStore.get_runtime_state(context) do
-      {:ok,
-       opts
-       |> Keyword.put(:_workspace_context, context)
-       |> Keyword.put(:_workspace_id, context.workspace_id)
-       |> Keyword.put(:_deployment_id, runtime.deployment_id)
-       |> Keyword.put(:_active_manifest_version_id, runtime.manifest_version_id)}
-    end
+  defp persisted_opts(context, deployment_id, manifest_version_id, run_id, opts) do
+    opts
+    |> Keyword.put(:run_id, run_id)
+    |> Keyword.put(:manifest_version_id, manifest_version_id)
+    |> Keyword.put(:_workspace_context, context)
+    |> Keyword.put(:_workspace_id, context.workspace_id)
+    |> Keyword.put(:_deployment_id, deployment_id)
+    |> Keyword.put(:_active_manifest_version_id, manifest_version_id)
   end
 
   defp get_manifest(opts, manifest_version_id, deployment_id \\ nil) do

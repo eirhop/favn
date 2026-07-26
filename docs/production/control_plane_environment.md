@@ -51,6 +51,8 @@ variables.
 | `FAVN_SCHEDULER_ENABLED` | Strict `true` or `false`, default `true`. |
 | `FAVN_SCHEDULER_TICK_MS` | `100..86400000`, default `15000`. |
 | `FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES` | `0..100000`, default `1000`. |
+| `FAVN_RUN_SUBMISSION_CONCURRENCY` | Global bounded preparation/admission workers, `1..256`, default `8`. |
+| `FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY` | Per-workspace worker cap, `1..256`, default `2`; it cannot exceed the global cap. |
 | `FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS` | `1000..3600000`, default `120000`. |
 | `FAVN_CONTROL_PLANE_NODE` | Required long distributed-BEAM node name on private DNS. |
 | `FAVN_RUNNER_NODE` | Required distinct runner long node name on private DNS. |

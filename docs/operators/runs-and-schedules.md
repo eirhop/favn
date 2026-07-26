@@ -11,9 +11,9 @@ runtime state.
 A manifest is the saved description of authored Favn work. It contains assets,
 pipelines, schedules, dependencies, and runtime metadata.
 
-A run is one accepted attempt to execute an asset, pipeline, scheduled occurrence,
-or backfill child. The orchestrator records the run before the runner starts
-execution.
+A run is one admitted attempt to execute an asset, pipeline, scheduled occurrence,
+or backfill child. Before admission, the orchestrator durably records the
+accepted submission intent and reserves its run id.
 
 For production database startup, backup, and restore, use
 `docs/production/postgresql_operator_runbook.md`. Image deployment, upgrade,
@@ -60,11 +60,23 @@ Common failures:
 3. Submit the run through the UI, API, CLI, or `mix favn.run` when available for
    your environment.
 4. Record the returned run id.
-5. Inspect the run through orchestrator-backed tooling such as run history, run
-   detail, logs, status, or diagnostics.
+5. Inspect the submission or run through orchestrator-backed tooling such as
+   submission diagnostics, run history, run detail, logs, or status.
 
-Expected result: the orchestrator records the run first, dispatches pinned work,
-and later records the final run state.
+Expected result: the private HTTP API returns `202 Accepted` after the durable
+submission is committed. A bounded worker plans and admits it asynchronously,
+then the orchestrator dispatches pinned work and records the final run state.
+During that interval, `GET /api/orchestrator/v1/runs/<run-id>` returns the
+accepted run identity together with its submission state instead of reporting
+the run as missing. Cancellation by that id is valid before admission begins.
+
+Submission diagnostics expose total and per-state counts, queued and active
+depth, oldest queued time, retries, pending cancellations, and safe, permanent,
+or unknown failures. Authenticated viewers can inspect
+`GET /api/orchestrator/v1/runs/submissions`,
+`GET /api/orchestrator/v1/runs/submissions/<run-id>`, and
+`GET /api/orchestrator/v1/runs/submissions/stats`. A failed submission is not
+silently converted into a missing run.
 
 ### Choose Asset Dependency Scope And Refresh
 
@@ -303,6 +315,8 @@ Common failures:
 | Runner unavailable | Check diagnostics and runner readiness. Do not bypass the orchestrator. |
 | Missing runtime config | Add the environment variable or secret named by diagnostics, then retry. |
 | Duplicate command key | Re-read the existing command result instead of submitting the same side effect again. |
+| Submission remains queued | Check oldest queued age, worker concurrency, PostgreSQL health, and retry state. |
+| Submission failed | Inspect its failure kind. Retry only safe failures; investigate unknown admission outcomes before resubmitting. |
 | Invalid dependency/refresh combination | Use `dependencies=all` with `force_selected_upstream`, or choose a target-only refresh mode. |
 | Resource circuit open | Inspect the blocking execution pool or SQL connection, consecutive count, threshold, and next probe time. Unrelated branches continue. |
 | Rebuild required | Inspect the compatibility diff. Do not retry the ordinary write against the incompatible active generation. |
@@ -416,9 +430,9 @@ changes. Use `mix favn.schedules show` for current live state.
 Schedule overlap is not execution retry. `:allow` admits an independent run
 with independent pins, `:forbid` admits none while the tracked run is active,
 and `:queue_one` remembers one occurrence until it can be admitted. A run
-waiting in node backoff is still active for these rules. `missed: :skip | :one |
-:all` controls catch-up occurrences after delayed evaluation, not attempts in
-the existing run.
+waiting in the durable submission queue, admission, or node backoff is still
+active for these rules. `missed: :skip | :one | :all` controls catch-up
+occurrences after delayed evaluation, not attempts in the existing run.
 
 Expected result: enabled schedules submit due work through the same orchestrator
 run path as manual runs. Disabled schedules do not submit future work.

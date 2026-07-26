@@ -1,6 +1,9 @@
 defmodule FavnOrchestrator.RunManager do
   @moduledoc """
-  Orchestrator run admission, rerun, cancellation, and per-run server startup.
+  Final durable run admission, cancellation, and per-run server startup.
+
+  Run producers enqueue through `FavnOrchestrator.RunSubmissions`; only its
+  fenced preparation workers call the internal admission entrypoint here.
   """
 
   use GenServer
@@ -17,7 +20,6 @@ defmodule FavnOrchestrator.RunManager do
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunCancellation
   alias FavnOrchestrator.RunManager.Submission
-  alias FavnOrchestrator.RunManager.SubmissionBuilder
   alias FavnOrchestrator.RunManager.PlanCapacity
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunnerClientValidator
@@ -46,56 +48,10 @@ defmodule FavnOrchestrator.RunManager do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @spec admit_prepared_submission(Submission.t()) :: {:ok, String.t()} | {:error, term()}
-  def admit_prepared_submission(%Submission{} = submission) do
-    Lifecycle.with_admission(fn -> persist_and_admit(submission) end)
-  end
-
-  @spec submit_asset_run(WorkspaceContext.t(), Favn.Ref.t(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def submit_asset_run(%WorkspaceContext{} = context, {module, name} = asset_ref, opts)
-      when is_atom(module) and is_atom(name) and is_list(opts) do
-    prepare_and_admit(:manual, fn -> SubmissionBuilder.asset(context, asset_ref, opts) end)
-  end
-
-  @spec submit_pipeline_run(WorkspaceContext.t(), [Favn.Ref.t()], keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def submit_pipeline_run(%WorkspaceContext{} = context, target_refs, opts)
-      when is_list(target_refs) and is_list(opts) do
-    prepare_and_admit(:pipeline, fn -> SubmissionBuilder.pipeline(context, target_refs, opts) end)
-  end
-
-  @spec submit_pipeline_module_run(WorkspaceContext.t(), module(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def submit_pipeline_module_run(%WorkspaceContext{} = context, pipeline_module, opts)
-      when is_atom(pipeline_module) and is_list(opts) do
-    prepare_and_admit(:pipeline, fn ->
-      SubmissionBuilder.pipeline_module(context, pipeline_module, opts)
-    end)
-  end
-
-  @doc "Submits one exact named manifest pipeline in an authorized workspace."
-  @spec submit_pipeline_ref_run(WorkspaceContext.t(), {module(), atom()}, keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def submit_pipeline_ref_run(%WorkspaceContext{} = context, {module, name} = pipeline_ref, opts)
-      when is_atom(module) and is_atom(name) and is_list(opts) do
-    prepare_and_admit(:pipeline, fn ->
-      SubmissionBuilder.pipeline_ref(context, pipeline_ref, opts)
-    end)
-  end
-
-  @spec rerun(WorkspaceContext.t(), String.t(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def rerun(%WorkspaceContext{} = context, source_run_id, opts)
-      when is_binary(source_run_id) and is_list(opts) do
-    prepare_and_admit(:rerun, fn -> SubmissionBuilder.rerun(context, source_run_id, opts) end)
-  end
-
-  @spec prepare_rerun(WorkspaceContext.t(), String.t(), keyword()) ::
-          {:ok, Submission.t()} | {:error, term()}
-  def prepare_rerun(%WorkspaceContext{} = context, source_run_id, opts)
-      when is_binary(source_run_id) and is_list(opts) do
-    SubmissionBuilder.rerun(context, source_run_id, opts)
+  @doc false
+  @spec admit_claimed_submission(Submission.t()) :: {:ok, String.t()} | {:error, term()}
+  def admit_claimed_submission(%Submission{} = submission) do
+    persist_and_admit(submission)
   end
 
   @spec cancel_run(WorkspaceContext.t(), String.t(), map()) :: :ok | {:error, term()}
@@ -313,25 +269,6 @@ defmodule FavnOrchestrator.RunManager do
 
     :exit, {:timeout, _call} ->
       run_manager_timeout_error()
-  end
-
-  defp prepare_and_admit(submit_kind, prepare) when is_function(prepare, 0) do
-    Lifecycle.with_admission(fn ->
-      case prepare.() do
-        {:ok, %Submission{} = submission} ->
-          persist_and_admit(submission)
-
-        {:error, reason} = error ->
-          OperationalEvents.emit(
-            :run_submission_failed,
-            %{},
-            %{submit_kind: submit_kind, reason: reason},
-            level: :warning
-          )
-
-          error
-      end
-    end)
   end
 
   defp run_manager_timeout_error do

@@ -15,9 +15,14 @@ defmodule FavnOrchestrator.Persistence.RunSubmissionStore do
   alias FavnOrchestrator.Persistence.Commands.SupersedeRunSubmission
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetRunSubmission
+  alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionByRunId
+  alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionStats
+  alias FavnOrchestrator.Persistence.Queries.PageClaimableRunSubmissionWorkspaces
   alias FavnOrchestrator.Persistence.Queries.PageRunSubmissions
   alias FavnOrchestrator.Persistence.Results.RunSubmission
   alias FavnOrchestrator.Persistence.Results.RunSubmissionPage
+  alias FavnOrchestrator.Persistence.Results.RunSubmissionStats
+  alias FavnOrchestrator.Persistence.Results.RunSubmissionWorkspacePage
 
   @callback enqueue(EnqueueRunSubmission.t()) ::
               {:ok, RunSubmission.t()} | {:error, Error.t()}
@@ -45,6 +50,12 @@ defmodule FavnOrchestrator.Persistence.RunSubmissionStore do
               {:ok, RunSubmission.t()} | {:error, Error.t()}
   @callback get(GetRunSubmission.t()) ::
               {:ok, RunSubmission.t()} | {:error, Error.t()}
+  @callback get_by_run_id(GetRunSubmissionByRunId.t()) ::
+              {:ok, RunSubmission.t()} | {:error, Error.t()}
+  @callback stats(GetRunSubmissionStats.t()) ::
+              {:ok, RunSubmissionStats.t()} | {:error, Error.t()}
   @callback page(PageRunSubmissions.t()) ::
               {:ok, RunSubmissionPage.t()} | {:error, Error.t()}
+  @callback page_claimable_workspaces(PageClaimableRunSubmissionWorkspaces.t()) ::
+              {:ok, RunSubmissionWorkspacePage.t()} | {:error, Error.t()}
 end

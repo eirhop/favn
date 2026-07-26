@@ -39,8 +39,9 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   alias FavnOrchestrator.Persistence.Results.RebuildAction
   alias FavnOrchestrator.Persistence.Results.RebuildItem
   alias FavnOrchestrator.Persistence.Results.RebuildOperation
+  alias FavnOrchestrator.Persistence.Results.RunSubmission
   alias FavnOrchestrator.Persistence.SystemContext
-  alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.RunSubmissions
   alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RunState
@@ -631,7 +632,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp cancel_item(context, operation, item, state) do
     case item.child_run_id do
       run_id when is_binary(run_id) ->
-        _ = RunManager.cancel_run(context, run_id, %{reason: "rebuild_cancelled"})
+        _ = FavnOrchestrator.cancel_run(context, run_id, %{reason: "rebuild_cancelled"})
         reconcile_run(context, operation, item, state)
 
       _missing ->
@@ -877,21 +878,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
         :ok
 
       {:error, %Error{kind: :not_found}} ->
-        case reconcile_materialization(context, operation, item, state, :run_not_found) do
-          :pending ->
-            transition_item(
-              context,
-              operation,
-              item,
-              state,
-              :outcome_unknown,
-              run_id,
-              unknown_failure(:run_not_found)
-            )
-
-          result ->
-            result
-        end
+        reconcile_missing_run(context, operation, item, state, run_id)
 
       {:error, reason} ->
         {:error, reason}
@@ -899,6 +886,66 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   end
 
   defp reconcile_run(_context, _operation, _item, _state), do: :ok
+
+  defp reconcile_missing_run(context, operation, item, state, run_id) do
+    case RunSubmissions.get(context, run_id) do
+      {:ok, %RunSubmission{status: status}}
+      when status in [:queued, :preparing, :admitting] ->
+        :ok
+
+      {:ok, %RunSubmission{status: :cancelled}} ->
+        transition_item(context, operation, item, state, :cancelled, run_id, nil)
+
+      {:ok, %RunSubmission{status: :failed, failure_kind: :unknown, error: error}} ->
+        transition_item(
+          context,
+          operation,
+          item,
+          state,
+          :outcome_unknown,
+          run_id,
+          error || unknown_failure(:submission_failed_unknown)
+        )
+
+      {:ok, %RunSubmission{status: :failed, error: error}} ->
+        transition_item(
+          context,
+          operation,
+          item,
+          state,
+          :failed,
+          run_id,
+          error || safe_failure(:submission_failed)
+        )
+
+      {:ok, %RunSubmission{}} ->
+        reconcile_missing_submission_result(context, operation, item, state, run_id)
+
+      {:error, %Error{kind: :not_found}} ->
+        reconcile_missing_submission_result(context, operation, item, state, run_id)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp reconcile_missing_submission_result(context, operation, item, state, run_id) do
+    case reconcile_materialization(context, operation, item, state, :run_not_found) do
+      :pending ->
+        transition_item(
+          context,
+          operation,
+          item,
+          state,
+          :outcome_unknown,
+          run_id,
+          unknown_failure(:run_not_found)
+        )
+
+      result ->
+        result
+    end
+  end
 
   defp reconcile_materialization(context, operation, item, state, _run_status) do
     generation_id =
@@ -1058,7 +1105,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp submit_item(context, operation, action, item, run_id) do
     with {:ok, version, asset} <- version_asset(context, operation, action),
          {:ok, options} <- submission_options(operation, action, item, version, asset, run_id) do
-      RunManager.submit_pipeline_run(context, [asset.ref], options)
+      RunSubmissions.enqueue_pipeline_assets(context, [asset.ref], options)
     end
   end
 
@@ -1067,6 +1114,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          {:ok, rebuild} <- rebuild_submission(operation, action, item, asset) do
       options = [
         run_id: run_id,
+        submission_source: :rebuild,
         manifest_version_id: version.manifest_version_id,
         dependencies: :none,
         rebuild: rebuild,

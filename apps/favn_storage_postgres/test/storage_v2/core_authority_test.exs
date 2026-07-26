@@ -55,6 +55,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.FinishMaterialization
   alias FavnOrchestrator.Persistence.Commands.EnsureWritableTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.BeginTargetRecovery
+  alias FavnOrchestrator.Persistence.Commands.EnqueueRunSubmission
   alias FavnOrchestrator.Persistence.Commands.ReconcileInitialTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.AppendLogBatch
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
@@ -66,7 +67,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.ClaimDueSchedules
   alias FavnOrchestrator.Persistence.Commands.ClaimScheduleOccurrences
   alias FavnOrchestrator.Persistence.Commands.CommitScheduleEvaluation
-  alias FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence
   alias FavnOrchestrator.Persistence.Commands.ScheduleOccurrenceIntent
   alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Commands.StartBackfillPlan
@@ -163,6 +163,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RuntimeInputKeyInventory
   alias FavnStoragePostgres.RunOwnership.Store, as: RunOwnershipStore
+  alias FavnStoragePostgres.RunSubmissions.Store, as: RunSubmissionStore
   alias FavnStoragePostgres.Runs.Store, as: RunStore
   alias FavnStoragePostgres.Schemas.ManifestVersion, as: ManifestVersionRow
   alias FavnStoragePostgres.Schemas.RuntimeInputPin, as: RuntimeInputPinRow
@@ -3254,7 +3255,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     caller_value = FavnTestSupport.runner_release_id(:alternate)
 
     assert {:ok, submission} =
-             SubmissionBuilder.asset(fixture.workspace_context, {MyApp.Asset, :asset},
+             SubmissionBuilder.persisted_target(
+               fixture.workspace_context,
+               :asset,
+               {MyApp.Asset, :asset},
+               fixture.deployment_id,
+               fixture.version.manifest_version_id,
+               "runner-release-submission-#{fixture.workspace_id}",
                required_runner_release_id: caller_value
              )
 
@@ -4737,6 +4744,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     authorization = %AuthorizeScheduleOccurrenceDispatch{
       workspace_context: fixture.workspace_context,
       command_id: "occurrence-dispatch:" <> fixture.workspace_id,
+      submission: schedule_submission(fixture, "primary"),
       occurrence_id: claimed.occurrence_id,
       pipeline_target_id: fixture.pipeline_target_id,
       schedule_id: "daily",
@@ -4754,7 +4762,18 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     assert {:ok, authorized} = SchedulerStore.authorize_occurrence_dispatch(authorization)
-    assert authorized.status == :dispatching
+    assert authorized.status == :completed
+    assert authorized.run_id == authorization.submission.run_id
+    assert {:ok, ^authorized} = SchedulerStore.authorize_occurrence_dispatch(authorization)
+
+    assert {:ok, queued_submission} =
+             RunSubmissionStore.get(%FavnOrchestrator.Persistence.Queries.GetRunSubmission{
+               workspace_context: fixture.workspace_context,
+               submission_id: authorization.submission.submission_id
+             })
+
+    assert queued_submission.status == :queued
+    assert queued_submission.run_id == authorization.submission.run_id
 
     deactivation = %SetScheduleActivation{
       activation
@@ -4784,58 +4803,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                limit: 10
              })
 
-    assert [%{status: :dispatching}] = occurrence_after_deactivation.items
-
-    SQL.query!(
-      Repo,
-      """
-      UPDATE favn_control.schedule_occurrences
-      SET claim_expires_at = clock_timestamp() - interval '1 second'
-      WHERE workspace_id = $1 AND occurrence_id = $2
-      """,
-      [fixture.workspace_id, occurrence_id]
-    )
-
-    assert {:ok, [recovered]} =
-             SchedulerStore.claim_occurrences(%ClaimScheduleOccurrences{
-               workspace_context: fixture.workspace_context,
-               batch_id: "occurrence-recovery-claim:" <> fixture.workspace_id,
-               owner_id: "scheduler-recovered",
-               lease_duration_ms: 30_000,
-               limit: 10
-             })
-
-    assert recovered.status == :dispatching
-    assert recovered.claim_generation == claimed.claim_generation + 1
-
-    assert {:ok, recovered_authorization} =
-             SchedulerStore.authorize_occurrence_dispatch(%{
-               authorization
-               | command_id: "occurrence-recovered-dispatch:" <> fixture.workspace_id,
-                 owner_id: recovered.claim_owner,
-                 claim_generation: recovered.claim_generation,
-                 occurred_at: DateTime.utc_now()
-             })
-
-    assert recovered_authorization.status == :dispatching
-
-    {run_command, run} = create_run_command(fixture)
-    assert {:ok, _created} = RunStore.create_run(run_command)
-
-    completion = %CompleteScheduleOccurrence{
-      workspace_context: fixture.workspace_context,
-      command_id: "occurrence-complete:" <> fixture.workspace_id,
-      occurrence_id: occurrence_id,
-      owner_id: recovered.claim_owner,
-      claim_generation: recovered.claim_generation,
-      run_id: run.id,
-      occurred_at: DateTime.utc_now()
-    }
-
-    assert {:ok, completed} = SchedulerStore.complete_occurrence(completion)
-    assert completed.status == :completed
-    assert completed.run_id == run.id
-    assert {:ok, ^completed} = SchedulerStore.complete_occurrence(completion)
+    assert [%{status: :completed, run_id: run_id}] = occurrence_after_deactivation.items
+    assert run_id == authorization.submission.run_id
 
     %{rows: replay_rows} =
       SQL.query!(
@@ -4847,12 +4816,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert replay_rows == [
              [
                "completed",
-               recovered.claim_owner,
-               "occurrence-recovery-claim:" <> fixture.workspace_id
+               claimed.claim_owner,
+               "occurrence-claim:" <> fixture.workspace_id
              ]
            ]
 
-    assert {:ok, []} = SchedulerStore.claim_occurrences(occurrence_claim)
+    assert {:ok, []} =
+             SchedulerStore.claim_occurrences(%{
+               occurrence_claim
+               | batch_id: "occurrence-empty-claim:" <> fixture.workspace_id
+             })
   end
 
   test "deactivation suppresses claimed work before dispatch authorization", fixture do
@@ -4945,6 +4918,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              SchedulerStore.authorize_occurrence_dispatch(%AuthorizeScheduleOccurrenceDispatch{
                workspace_context: fixture.workspace_context,
                command_id: "occurrence-race-dispatch:" <> fixture.workspace_id,
+               submission: schedule_submission(fixture, "suppressed"),
                occurrence_id: claimed.occurrence_id,
                pipeline_target_id: fixture.pipeline_target_id,
                schedule_id: "daily",
@@ -6613,6 +6587,26 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
 
     {command, run}
+  end
+
+  defp schedule_submission(fixture, suffix) do
+    run_id = "run-schedule-#{suffix}-#{fixture.workspace_id}"
+
+    %EnqueueRunSubmission{
+      workspace_context: fixture.workspace_context,
+      command_id: "enqueue-schedule-#{suffix}-#{fixture.workspace_id}",
+      submission_id: "submission-schedule-#{suffix}-#{fixture.workspace_id}",
+      source: :scheduler,
+      idempotency_key: "schedule-#{suffix}-#{fixture.workspace_id}",
+      request_hash: :crypto.hash(:sha256, "schedule-#{suffix}-#{fixture.workspace_id}"),
+      deployment_id: fixture.deployment_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      target_kind: "pipeline",
+      target_id: fixture.pipeline_target_id,
+      run_id: run_id,
+      intent: %{"format" => "test", "payload" => "schedule"},
+      occurred_at: DateTime.utc_now()
+    }
   end
 
   defp pipeline_run_command(fixture) do

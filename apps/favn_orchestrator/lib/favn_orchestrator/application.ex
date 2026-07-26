@@ -18,6 +18,7 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.RebuildDispatcher
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunRecovery
+  alias FavnOrchestrator.RunSubmission.Supervisor, as: RunSubmissionSupervisor
   alias FavnOrchestrator.RunnerHealth
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RuntimeStarter
@@ -78,6 +79,7 @@ defmodule FavnOrchestrator.Application do
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
             {Task.Supervisor, name: FavnOrchestrator.RunManagerTaskSupervisor},
             {RunManager, []},
+            {RunSubmissionSupervisor, config: runtime_config.run_submissions},
             {FavnOrchestrator.ResourceRecovery, []}
           ] ++
           [{BackfillDispatcher, []}, {RebuildDispatcher, []}] ++

@@ -36,13 +36,16 @@ freshness, and execution coordination.
   the required/actual release ids on mismatch. Rejected activation audit entries
   contain only actor/service identity, stable reason codes, idempotency metadata,
   and relevant release ids; selection and configuration are not copied into them.
-- `Runs`, `RunManager`, `RunServer`, and `TransitionWriter` own submission,
+- `RunSubmissions` and its bounded supervised workers own durable pre-run intent,
+  fair workspace selection, planning, retry, cancellation, failure visibility,
+  and the fenced handoff into `RunManager`. API/operator, scheduler, backfill,
+  rebuild, recovery, and child-run producers all enqueue through this lifecycle.
+  `Persistence.RunSubmissionStore` defines command replay, FIFO claims,
+  leases/fencing, cancellation, terminal failure, linked retry, supersession,
+  queue diagnostics, and bounded read contracts. Scheduler occurrence completion
+  and submission enqueue commit atomically.
+- `Runs`, `RunManager`, `RunServer`, and `TransitionWriter` own admitted
   execution, retry, cancellation, snapshots, events, and durable publication.
-  `Persistence.RunSubmissionStore` defines the durable pre-run intent,
-  command-replay, FIFO claim, lease/fencing, cancellation, terminal failure,
-  linked retry, supersession, and bounded read contracts. At this checkpoint the
-  persistence capability exists, but no public producer or preparation worker
-  uses it yet; those migrations are owned by the following implementation steps.
   Submission derives the runner release only from the selected immutable manifest;
   caller options cannot override it. The run's workspace, deployment, manifest id,
   manifest content hash, and runner release id are one immutable identity. Dispatch,

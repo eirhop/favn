@@ -53,7 +53,15 @@ defmodule FavnOrchestrator.Rebuild.RuntimeInputs do
       |> maybe_put_selection(spec.window_selection)
 
     with {:ok, %Submission{} = submission} <-
-           SubmissionBuilder.asset(context, spec.asset.ref, opts),
+           SubmissionBuilder.persisted_target(
+             context,
+             :asset,
+             spec.asset.ref,
+             deployment_id,
+             version.manifest_version_id,
+             spec.run_id,
+             opts
+           ),
          run <- %{submission.run_state | inserted_at: spec.evaluated_at},
          node_key when not is_nil(node_key) <- List.first(run.plan.target_node_keys),
          node <- Map.fetch!(run.plan.nodes, node_key),

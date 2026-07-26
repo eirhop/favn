@@ -567,6 +567,16 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
     create(
       index(
         :run_submissions,
+        [:workspace_id],
+        prefix: @prefix,
+        name: :run_submissions_queued_workspace_idx,
+        where: "status = 'queued'"
+      )
+    )
+
+    create(
+      index(
+        :run_submissions,
         [:workspace_id, :status, {:desc, :inserted_at}, {:desc, :submission_id}],
         prefix: @prefix,
         name: :run_submissions_status_page_idx

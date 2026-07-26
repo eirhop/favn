@@ -20,8 +20,9 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.Backfill
   alias FavnOrchestrator.Persistence.Results.BackfillWindow
+  alias FavnOrchestrator.Persistence.Results.RunSubmission
   alias FavnOrchestrator.Persistence.SystemContext
-  alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.RunSubmissions
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.RuntimeConfig
@@ -136,13 +137,13 @@ defmodule FavnOrchestrator.BackfillDispatcher do
 
   defp submit_target(context, %Backfill{target_kind: :pipeline} = backfill, opts) do
     with {:ok, pipeline_ref} <- pipeline_ref(backfill.metadata) do
-      RunManager.submit_pipeline_ref_run(context, pipeline_ref, opts)
+      RunSubmissions.enqueue_pipeline(context, pipeline_ref, opts)
     end
   end
 
   defp submit_target(context, %Backfill{target_kind: :asset} = backfill, opts) do
     with {:ok, asset_ref} <- asset_ref(backfill.metadata) do
-      RunManager.submit_asset_run(context, asset_ref, opts)
+      RunSubmissions.enqueue_asset(context, asset_ref, opts)
     end
   end
 
@@ -164,6 +165,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
       {:ok,
        [
          run_id: run_id,
+         submission_source: :backfill,
          manifest_version_id: backfill.manifest_version_id,
          window_selection: selection,
          parent_run_id: backfill.root_run_id,
@@ -196,7 +198,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
         :ok
 
       {:error, %Error{kind: :not_found}} ->
-        transition(context, window, owner_id, :failed, run_id, %{"reason" => "run_not_found"})
+        reconcile_submission(context, window, owner_id, run_id)
 
       {:error, reason} ->
         emit_error(context.workspace_id, :reconcile, reason)
@@ -204,6 +206,36 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   end
 
   defp reconcile_run(_context, _window, _owner_id), do: :ok
+
+  defp reconcile_submission(context, window, owner_id, run_id) do
+    case RunSubmissions.get(context, run_id) do
+      {:ok, %RunSubmission{status: status}}
+      when status in [:queued, :preparing, :admitting] ->
+        :ok
+
+      {:ok, %RunSubmission{status: :failed, error: error, failure_kind: failure_kind}} ->
+        transition(
+          context,
+          window,
+          owner_id,
+          :failed,
+          run_id,
+          error || %{"failure_kind" => to_string(failure_kind)}
+        )
+
+      {:ok, %RunSubmission{status: :cancelled}} ->
+        transition(context, window, owner_id, :cancelled, run_id, nil)
+
+      {:ok, %RunSubmission{}} ->
+        transition(context, window, owner_id, :failed, run_id, %{"reason" => "run_not_found"})
+
+      {:error, %Error{kind: :not_found}} ->
+        transition(context, window, owner_id, :failed, run_id, %{"reason" => "run_not_found"})
+
+      {:error, reason} ->
+        emit_error(context.workspace_id, :reconcile_submission, reason)
+    end
+  end
 
   defp transition(context, window, owner_id, status, run_id, error) do
     store().transition_window(%TransitionBackfillWindow{

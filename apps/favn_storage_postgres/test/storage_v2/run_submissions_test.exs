@@ -24,10 +24,15 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
   alias FavnOrchestrator.Persistence.Commands.SupersedeRunSubmission
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetRunSubmission
+  alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionByRunId
+  alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionStats
+  alias FavnOrchestrator.Persistence.Queries.GetRun
+  alias FavnOrchestrator.Persistence.Queries.PageClaimableRunSubmissionWorkspaces
   alias FavnOrchestrator.Persistence.Queries.PageRunSubmissions
   alias FavnOrchestrator.Persistence.RunSubmissionAuthority
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunSubmission.Worker
   alias FavnOrchestrator.TargetStatus
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.Config
@@ -36,6 +41,50 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
   alias FavnStoragePostgres.Runs.Store, as: RunStore
   alias FavnStoragePostgres.RunSubmissions.Store
   alias FavnStoragePostgres.StorageV2.Migrations
+
+  defmodule IntegrationPreparation do
+    def prepare(_context, _submission),
+      do: {:ok, :prepared_submission, %{"preparation" => "bounded"}}
+  end
+
+  defmodule CrashDuringPreparation do
+    def prepare(_context, submission) do
+      send(:persistent_term.get({__MODULE__, :test}), {:preparation_started, submission})
+
+      receive do
+        :continue -> {:ok, :prepared_submission, %{"preparation" => "bounded"}}
+      end
+    end
+  end
+
+  defmodule CrashDuringAdmission do
+    def admit_claimed_submission(_prepared) do
+      send(:persistent_term.get({__MODULE__, :test}), :admission_started)
+
+      receive do
+        :continue -> {:error, :unexpected_continue}
+      end
+    end
+  end
+
+  defmodule LostAcknowledgementRunManager do
+    alias FavnStoragePostgres.Runs.Store, as: RunStore
+
+    def admit_claimed_submission(:prepared_submission) do
+      case RunStore.create_run(:persistent_term.get({__MODULE__, :command})) do
+        {:ok, committed} -> {:error, {:admission_acknowledgement_lost, committed.run.id}}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defmodule IntegrationRuns do
+    alias FavnOrchestrator.Persistence.Queries.GetRun
+    alias FavnStoragePostgres.Runs.Store, as: RunStore
+
+    def get(context, run_id),
+      do: RunStore.get_run(%GetRun{workspace_context: context, run_id: run_id})
+  end
 
   setup_all do
     url =
@@ -108,9 +157,24 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
                occurred_at: now
              })
 
+    on_exit(fn ->
+      SQL.query!(
+        Repo,
+        "DELETE FROM favn_control.run_submission_commands WHERE workspace_id = $1",
+        [workspace_id]
+      )
+
+      SQL.query!(
+        Repo,
+        "DELETE FROM favn_control.run_submissions WHERE workspace_id = $1",
+        [workspace_id]
+      )
+    end)
+
     {:ok,
      workspace_id: workspace_id,
      workspace_context: operator_context,
+     platform_context: platform_context,
      reader_context: reader_context,
      deployment_id: deployment_id,
      target_id: target_id,
@@ -271,6 +335,50 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
     assert {:ok, replayed} = Store.claim(command)
     assert is_list(replayed)
     assert Enum.map(replayed, & &1.submission_id) == Enum.map(submissions, & &1.submission_id)
+  end
+
+  test "claimable workspace discovery is bounded, keyset-paged, and includes stale leases",
+       fixture do
+    future = DateTime.add(DateTime.utc_now(), 1, :hour)
+
+    assert {:ok, _future} =
+             Store.enqueue(
+               enqueue_command(fixture, "future-workspace-discovery", available_at: future)
+             )
+
+    query = %PageClaimableRunSubmissionWorkspaces{
+      platform_context: fixture.platform_context,
+      limit: 1
+    }
+
+    assert {:ok, %{workspace_ids: []}} = Store.page_claimable_workspaces(query)
+
+    assert {:ok, _available} =
+             Store.enqueue(enqueue_command(fixture, "available-workspace-discovery"))
+
+    assert {:ok, %{workspace_ids: [workspace_id], has_more?: false, next: nil}} =
+             Store.page_claimable_workspaces(query)
+
+    assert workspace_id == fixture.workspace_id
+
+    assert {:ok, %{workspace_ids: []}} =
+             Store.page_claimable_workspaces(%{query | after: fixture.workspace_id})
+
+    assert {:ok, [claimed]} =
+             Store.claim(
+               claim_command(fixture, "claim-workspace-discovery", "workspace-discovery-worker")
+             )
+
+    assert {:ok, %{workspace_ids: []}} = Store.page_claimable_workspaces(query)
+    expire_claim!(fixture, claimed)
+
+    assert {:ok, %{workspace_ids: [workspace_id]}} =
+             Store.page_claimable_workspaces(query)
+
+    assert workspace_id == fixture.workspace_id
+
+    assert {:error, %{kind: :invalid}} =
+             Store.page_claimable_workspaces(%{query | limit: 201})
   end
 
   test "concurrent claims never assign one submission twice", fixture do
@@ -874,6 +982,181 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
              })
   end
 
+  test "operator diagnostics expose queue age, retry, cancellation, and failure state", fixture do
+    {:ok, _retrying} = Store.enqueue(enqueue_command(fixture, "stats-retrying"))
+
+    {:ok, [retrying]} =
+      Store.claim(claim_command(fixture, "claim-stats-retrying", "retry-worker"))
+
+    now = DateTime.utc_now()
+    retry_at = DateTime.add(now, 1, :hour)
+
+    assert {:ok, %{status: :queued}} =
+             Store.requeue(%RequeueRunSubmission{
+               workspace_context: fixture.workspace_context,
+               command_id: "requeue-stats-#{random_id()}",
+               submission_id: retrying.submission_id,
+               owner_id: retrying.claim_owner,
+               claim_generation: retrying.claim_generation,
+               reason: %{"reason" => "retry"},
+               available_at: retry_at,
+               occurred_at: now
+             })
+
+    {:ok, _cancelling} = Store.enqueue(enqueue_command(fixture, "stats-cancelling"))
+
+    {:ok, [cancelling]} =
+      Store.claim(claim_command(fixture, "claim-stats-cancelling", "cancel-worker"))
+
+    assert {:ok, %{status: :preparing}} =
+             Store.request_cancellation(
+               cancellation_command(fixture, cancelling, "operator requested cancellation")
+             )
+
+    failed = fail_submission(fixture, "stats-failed", :unknown)
+    {:ok, _queued} = Store.enqueue(enqueue_command(fixture, "stats-queued"))
+
+    assert {:ok, stats} =
+             Store.stats(%GetRunSubmissionStats{workspace_context: fixture.reader_context})
+
+    assert stats.total == 4
+    assert stats.counts == %{failed: 1, preparing: 1, queued: 2}
+    assert stats.failure_counts == %{unknown: 1}
+    assert stats.queued_depth == 2
+    assert stats.active_depth == 1
+    assert stats.retrying_depth == 1
+    assert stats.cancellation_requested_depth == 1
+    assert DateTime.compare(stats.oldest_queued_at, retrying.enqueued_at) in [:eq, :gt]
+    assert stats.oldest_queued_age_ms >= 0
+    assert %DateTime{} = stats.observed_at
+
+    assert {:ok, fetched} =
+             Store.get_by_run_id(%GetRunSubmissionByRunId{
+               workspace_context: fixture.reader_context,
+               run_id: failed.run_id
+             })
+
+    assert fetched.submission_id == failed.submission_id
+    assert fetched.failure_kind == :unknown
+  end
+
+  test "a claimed intent reaches one durable run after a lost admission acknowledgement",
+       fixture do
+    command = enqueue_command(fixture, "worker-admission")
+    assert {:ok, queued} = Store.enqueue(command)
+
+    :persistent_term.put(
+      {LostAcknowledgementRunManager, :command},
+      create_run_command(fixture, queued.run_id)
+    )
+
+    lifecycle =
+      start_supervised!(
+        {FavnOrchestrator.Lifecycle,
+         name: :"run_submission_lifecycle_#{random_id()}", shutdown_drain_timeout_ms: 1_000}
+      )
+
+    :ok = FavnOrchestrator.Lifecycle.mark_accepting(lifecycle)
+
+    on_exit(fn ->
+      :persistent_term.erase({LostAcknowledgementRunManager, :command})
+    end)
+
+    assert {:ok, %{status: :submitted, run_id: run_id}} =
+             Worker.run(fixture.workspace_id,
+               store: Store,
+               lifecycle: lifecycle,
+               owner_id: "integration-worker",
+               lease_duration_ms: 60_000,
+               renewal_interval_ms: 10_000,
+               preparation: IntegrationPreparation,
+               run_manager: LostAcknowledgementRunManager,
+               runs: IntegrationRuns
+             )
+
+    assert run_id == queued.run_id
+
+    assert {:ok, %RunState{id: ^run_id}} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.reader_context,
+               run_id: run_id
+             })
+
+    assert :empty =
+             Worker.run(fixture.workspace_id,
+               store: Store,
+               lifecycle: lifecycle,
+               owner_id: "integration-worker-replay",
+               lease_duration_ms: 60_000,
+               renewal_interval_ms: 10_000,
+               preparation: IntegrationPreparation,
+               run_manager: LostAcknowledgementRunManager,
+               runs: IntegrationRuns
+             )
+  end
+
+  test "new workers recover queued, preparing, and admitting submissions after owner loss",
+       fixture do
+    lifecycle =
+      start_supervised!(
+        {FavnOrchestrator.Lifecycle,
+         name: :"run_submission_restart_lifecycle_#{random_id()}",
+         shutdown_drain_timeout_ms: 1_000}
+      )
+
+    :ok = FavnOrchestrator.Lifecycle.mark_accepting(lifecycle)
+    :persistent_term.put({CrashDuringPreparation, :test}, self())
+    :persistent_term.put({CrashDuringAdmission, :test}, self())
+
+    on_exit(fn ->
+      :persistent_term.erase({CrashDuringPreparation, :test})
+      :persistent_term.erase({CrashDuringAdmission, :test})
+      :persistent_term.erase({LostAcknowledgementRunManager, :command})
+    end)
+
+    Enum.each([:queued, :preparing, :admitting], fn interrupted_state ->
+      command = enqueue_command(fixture, "restart-#{interrupted_state}")
+      assert {:ok, queued} = Store.enqueue(command)
+
+      interrupted =
+        interrupt_submission_at!(
+          fixture,
+          queued,
+          interrupted_state,
+          lifecycle
+        )
+
+      if interrupted.status in [:preparing, :admitting], do: expire_claim!(fixture, interrupted)
+
+      :persistent_term.put(
+        {LostAcknowledgementRunManager, :command},
+        create_run_command(fixture, queued.run_id)
+      )
+
+      assert {:ok, %{status: :submitted, run_id: run_id}} =
+               recover_with_new_worker(fixture, lifecycle, interrupted_state)
+
+      assert run_id == queued.run_id
+
+      assert {:ok, %RunState{id: ^run_id}} =
+               RunStore.get_run(%GetRun{
+                 workspace_context: fixture.reader_context,
+                 run_id: run_id
+               })
+
+      %{rows: [[1]]} =
+        SQL.query!(
+          Repo,
+          """
+          SELECT count(*)
+          FROM favn_control.runs
+          WHERE workspace_id = $1 AND run_id = $2
+          """,
+          [fixture.workspace_id, run_id]
+        )
+    end)
+  end
+
   test "supersession locks both rows and cannot form a concurrent cycle", fixture do
     {:ok, original} = Store.enqueue(enqueue_command(fixture, "superseded-original"))
     {:ok, replacement} = Store.enqueue(enqueue_command(fixture, "superseded-replacement"))
@@ -988,10 +1271,11 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
     assert still_queued.status == :queued
   end
 
-  test "claim, stale-recovery, retention, and keyset reads use dedicated indexes", fixture do
+  test "claim, stale-recovery, discovery, retention, and keyset reads use dedicated indexes",
+       fixture do
     seed_page_plan_rows!(fixture)
 
-    {:ok, {_claim, _stale, _page, _status_page, _retention}} =
+    {:ok, {_claim, _stale, _discovery, _page, _status_page, _retention}} =
       Repo.transaction(fn ->
         SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
         SQL.query!(Repo, "SET LOCAL enable_sort = off", [])
@@ -1024,6 +1308,30 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
             FOR UPDATE SKIP LOCKED
             """,
             [fixture.workspace_id]
+          )
+
+        discovery =
+          explain(
+            """
+            SELECT workspace_id
+            FROM (
+              SELECT workspace_id
+              FROM favn_control.run_submissions
+              WHERE status = 'queued'
+                AND available_at <= clock_timestamp()
+                AND workspace_id > $1
+              UNION ALL
+              SELECT workspace_id
+              FROM favn_control.run_submissions
+              WHERE status IN ('preparing', 'admitting')
+                AND claim_expires_at <= clock_timestamp()
+                AND workspace_id > $1
+            ) AS candidates
+            GROUP BY workspace_id
+            ORDER BY workspace_id
+            LIMIT 201
+            """,
+            [""]
           )
 
         page =
@@ -1066,10 +1374,12 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
 
         assert "run_submissions_claim_idx" in index_names(claim)
         assert "run_submissions_stale_claim_idx" in index_names(stale)
+        assert "run_submissions_queued_workspace_idx" in index_names(discovery)
+        assert "run_submissions_stale_claim_idx" in index_names(discovery)
         assert "run_submissions_page_idx" in index_names(page)
         assert "run_submissions_status_page_idx" in index_names(status_page)
         assert "run_submission_commands_retention_idx" in index_names(retention)
-        {claim, stale, page, status_page, retention}
+        {claim, stale, discovery, page, status_page, retention}
       end)
   end
 
@@ -1131,6 +1441,64 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
       outcome: %{"run_id" => submission.run_id},
       occurred_at: DateTime.utc_now()
     }
+  end
+
+  defp interrupt_submission_at!(_fixture, queued, :queued, _lifecycle), do: queued
+
+  defp interrupt_submission_at!(fixture, queued, state, lifecycle)
+       when state in [:preparing, :admitting] do
+    preparation =
+      if state == :preparing, do: CrashDuringPreparation, else: IntegrationPreparation
+
+    run_manager =
+      if state == :admitting, do: CrashDuringAdmission, else: LostAcknowledgementRunManager
+
+    {worker, monitor} =
+      spawn_monitor(fn ->
+        Worker.run(fixture.workspace_id,
+          store: Store,
+          lifecycle: lifecycle,
+          owner_id: "interrupted-#{state}-#{random_id()}",
+          lease_duration_ms: 60_000,
+          renewal_interval_ms: 10_000,
+          preparation: preparation,
+          run_manager: run_manager,
+          runs: IntegrationRuns
+        )
+      end)
+
+    case state do
+      :preparing ->
+        assert_receive {:preparation_started, %{run_id: run_id}} when run_id == queued.run_id
+
+      :admitting ->
+        assert_receive :admission_started
+    end
+
+    Process.exit(worker, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :killed}
+
+    assert {:ok, interrupted} =
+             Store.get(%GetRunSubmission{
+               workspace_context: fixture.reader_context,
+               submission_id: queued.submission_id
+             })
+
+    assert interrupted.status == state
+    interrupted
+  end
+
+  defp recover_with_new_worker(fixture, lifecycle, state) do
+    Worker.run(fixture.workspace_id,
+      store: Store,
+      lifecycle: lifecycle,
+      owner_id: "recovery-#{state}-#{random_id()}",
+      lease_duration_ms: 60_000,
+      renewal_interval_ms: 10_000,
+      preparation: IntegrationPreparation,
+      run_manager: LostAcknowledgementRunManager,
+      runs: IntegrationRuns
+    )
   end
 
   defp cancellation_command(fixture, submission, reason) do

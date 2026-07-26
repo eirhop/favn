@@ -31,6 +31,8 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     "Elixir.Favn.Pipeline.Definition" => :"Elixir.Favn.Pipeline.Definition",
     "Elixir.Favn.Pipeline.Resolution" => :"Elixir.Favn.Pipeline.Resolution",
     "Elixir.Favn.RelationRef" => :"Elixir.Favn.RelationRef",
+    "Elixir.Favn.Retry.Backoff" => :"Elixir.Favn.Retry.Backoff",
+    "Elixir.Favn.Retry.Policy" => :"Elixir.Favn.Retry.Policy",
     "Elixir.Favn.Resource.Ref" => :"Elixir.Favn.Resource.Ref",
     "Elixir.Favn.ResourceRecovery.Policy" => :"Elixir.Favn.ResourceRecovery.Policy",
     "Elixir.Favn.Run" => :"Elixir.Favn.Run",
@@ -60,6 +62,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     "Elixir.Favn.Window.Policy" => :"Elixir.Favn.Window.Policy",
     "Elixir.Favn.Window.Request" => :"Elixir.Favn.Window.Request",
     "Elixir.Favn.Window.Runtime" => :"Elixir.Favn.Window.Runtime",
+    "Elixir.Favn.Window.Selection" => :"Elixir.Favn.Window.Selection",
     "Elixir.Favn.Window.Spec" => :"Elixir.Favn.Window.Spec",
     "Elixir.FavnOrchestrator.Backfill.AssetWindowState" =>
       :"Elixir.FavnOrchestrator.Backfill.AssetWindowState",

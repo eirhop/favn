@@ -86,12 +86,14 @@ outcomes affect persisted run state.
 1. A caller sends run intent through an operator, API, CLI, or scheduler boundary.
 2. The orchestrator authenticates and authorizes the command when needed.
 3. The orchestrator resolves the target in the selected manifest version.
-4. The orchestrator persists the run before dispatching execution.
-5. The orchestrator records runner ownership details before dispatch.
-6. The runner executes pinned work.
-7. The runner returns a result, timeout, cancellation outcome, or crash report.
-8. The orchestrator persists the terminal state and events.
-9. Operator surfaces read bounded summaries and details from the orchestrator.
+4. The orchestrator durably queues bounded intent and reserves the run id.
+5. A supervised submission worker plans outside the producer process.
+6. The orchestrator durably creates and admits the run idempotently.
+7. The orchestrator records runner ownership details before dispatch.
+8. The runner executes pinned work.
+9. The runner returns a result, timeout, cancellation outcome, or crash report.
+10. The orchestrator persists the terminal state and events.
+11. Operator surfaces read bounded summaries and details from the orchestrator.
 
 Non-terminal run states are `:pending` and `:running`. Terminal run states are
 `:ok`, `:partial`, `:error`, `:cancelled`, and `:timed_out`.

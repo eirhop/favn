@@ -14,7 +14,11 @@ defmodule FavnStoragePostgres.RunSubmissions.Validation do
   alias FavnOrchestrator.Persistence.Commands.RetryFailedRunSubmission
   alias FavnOrchestrator.Persistence.Commands.SupersedeRunSubmission
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetRunSubmission
+  alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionByRunId
+  alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionStats
+  alias FavnOrchestrator.Persistence.Queries.PageClaimableRunSubmissionWorkspaces
   alias FavnOrchestrator.Persistence.Queries.PageRunSubmissions
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnStoragePostgres.ErrorMapper
@@ -145,6 +149,14 @@ defmodule FavnStoragePostgres.RunSubmissions.Validation do
          do: valid(valid_id?(query.submission_id))
   end
 
+  def query(%GetRunSubmissionByRunId{} = query) do
+    with :ok <- authorize_reader(query.workspace_context) do
+      valid(valid_id?(query.run_id))
+    end
+  end
+
+  def query(%GetRunSubmissionStats{} = query), do: authorize_reader(query.workspace_context)
+
   def query(%PageRunSubmissions{} = query) do
     status? = is_nil(query.status) or query.status in @statuses
 
@@ -158,6 +170,19 @@ defmodule FavnStoragePostgres.RunSubmissions.Validation do
     with :ok <- authorize_reader(query.workspace_context) do
       valid(status? and cursor? and is_integer(query.limit) and query.limit in 1..200)
     end
+  end
+
+  def query(%PageClaimableRunSubmissionWorkspaces{} = query) do
+    cursor? = is_nil(query.after) or valid_id?(query.after)
+
+    valid? =
+      PlatformContext.valid?(query.platform_context) and
+        Enum.any?(
+          query.platform_context.roles,
+          &(&1 in [:platform_reader, :platform_operator, :platform_admin])
+        )
+
+    valid(valid? and cursor? and is_integer(query.limit) and query.limit in 1..200)
   end
 
   def query(_query), do: invalid()

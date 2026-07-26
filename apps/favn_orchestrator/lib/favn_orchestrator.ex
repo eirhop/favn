@@ -55,6 +55,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.TargetRecovery
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
+  alias FavnOrchestrator.RunSubmissions
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Shutdown
@@ -1150,7 +1151,7 @@ defmodule FavnOrchestrator do
   @spec cancel_run(WorkspaceContext.t(), run_id(), map()) :: :ok | {:error, term()}
   def cancel_run(%WorkspaceContext{} = context, run_id, reason)
       when is_binary(run_id) and is_map(reason) do
-    RunManager.cancel_run(context, run_id, reason)
+    cancel_run(context, run_id, reason, [])
   end
 
   @doc false
@@ -1158,7 +1159,19 @@ defmodule FavnOrchestrator do
           :ok | {:error, term()}
   def cancel_run(%WorkspaceContext{} = context, run_id, reason, opts)
       when is_binary(run_id) and is_map(reason) and is_list(opts) do
-    RunManager.cancel_run(context, run_id, reason, opts)
+    case RunSubmissions.cancel_pending(context, run_id, reason, opts) do
+      :ok ->
+        :ok
+
+      {:error, %PersistenceError{kind: :not_found}} ->
+        RunManager.cancel_run(context, run_id, reason, opts)
+
+      {:error, :run_already_submitted} ->
+        RunManager.cancel_run(context, run_id, reason, opts)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc """
@@ -1221,41 +1234,41 @@ defmodule FavnOrchestrator do
           {:ok, run_id()} | {:error, term()}
   def rerun(%WorkspaceContext{} = context, source_run_id, opts)
       when is_binary(source_run_id) and is_list(opts) do
-    RunManager.rerun(context, source_run_id, opts)
+    RunSubmissions.enqueue_rerun(context, source_run_id, opts)
   end
+
+  @doc "Loads the durable submission lifecycle for one reserved run identity."
+  @spec get_run_submission(WorkspaceContext.t(), run_id()) :: {:ok, map()} | {:error, term()}
+  def get_run_submission(%WorkspaceContext{} = context, run_id) when is_binary(run_id),
+    do: RunSubmissions.get(context, run_id)
+
+  @doc "Returns one bounded page of durable run submissions."
+  @spec page_run_submissions(WorkspaceContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def page_run_submissions(%WorkspaceContext{} = context, opts) when is_list(opts),
+    do: RunSubmissions.page(context, opts)
+
+  @doc "Returns aggregate durable run-submission queue diagnostics."
+  @spec run_submission_stats(WorkspaceContext.t()) :: {:ok, map()} | {:error, term()}
+  def run_submission_stats(%WorkspaceContext{} = context),
+    do: RunSubmissions.stats(context)
 
   defp submit_remaining_retry_plan(
          %WorkspaceContext{} = context,
          %{children: children, asset_count: asset_count} = plan,
          opts
        ) do
-    with {:ok, submissions} <-
-           prepare_remaining_retry_submissions(context, plan, children, opts) do
-      admit_remaining_retry_submissions(plan, submissions, asset_count)
-    end
-  end
-
-  defp prepare_remaining_retry_submissions(context, plan, children, opts) do
     children
     |> Enum.reduce_while({:ok, []}, fn child, {:ok, acc} ->
-      submit_opts = remaining_retry_opts(plan, child, opts)
+      run_id = new_run_id()
 
-      case RunManager.prepare_rerun(context, child.source_run_id, submit_opts) do
-        {:ok, submission} -> {:cont, {:ok, [submission | acc]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, submissions} -> {:ok, Enum.reverse(submissions)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
+      submit_opts =
+        plan
+        |> remaining_retry_opts(child, opts)
+        |> Keyword.put(:run_id, run_id)
+        |> Keyword.put(:submission_source, :child_run)
 
-  defp admit_remaining_retry_submissions(plan, submissions, asset_count) do
-    submissions
-    |> Enum.reduce_while({:ok, []}, fn submission, {:ok, acc} ->
-      case RunManager.admit_prepared_submission(submission) do
-        {:ok, run_id} ->
+      case RunSubmissions.enqueue_rerun(context, child.source_run_id, submit_opts) do
+        {:ok, ^run_id} ->
           {:cont, {:ok, [run_id | acc]}}
 
         {:error, reason} when acc == [] ->
@@ -1267,7 +1280,7 @@ defmodule FavnOrchestrator do
             %{
               source_run_id: plan.source_run_id,
               run_ids: Enum.reverse(acc),
-              failed_run_id: submission.run_state.id,
+              failed_run_id: run_id,
               reason: reason,
               asset_count: asset_count
             }}}
@@ -1288,6 +1301,11 @@ defmodule FavnOrchestrator do
       {:partial, result} ->
         {:partial, result}
     end
+  end
+
+  defp new_run_id do
+    suffix = 16 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
+    "run_#{suffix}"
   end
 
   defp remaining_retry_opts(plan, child, opts) do

@@ -99,7 +99,7 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   release-operation entrypoints.
 
 These capabilities are implemented and tested, but several operator workflows and
-high-volume asynchronous submission paths remain unfinished.
+the distributed runner-task path remain unfinished.
 
 ## PostgreSQL Storage V2
 
@@ -169,9 +169,13 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   dashboards, and alert wiring remain release gates.
 - PostgreSQL backup does not recover DuckDB files, DuckLake metadata, object
   storage, warehouses, source systems, or external secret stores.
-- Scheduler occurrences are durable, but submission still runs synchronously in
-  the scheduler tick. The general durable asynchronous submission queue is not
-  implemented.
+- API, operator, scheduler, backfill, rebuild, recovery, and child-run requests
+  use one durable asynchronous submission queue. Planning is bounded outside
+  producer and scheduler processes; accepted intent survives a control-plane
+  restart and scheduler occurrence completion is atomic with enqueue.
+- Distributed runner-task queues and elastic multi-runner execution remain
+  unfinished. Run admission still hands work to the current singleton runner
+  path after asynchronous preparation.
 - SQL adapter-native cancellation and broader DuckDB/DuckLake failure-injection
   coverage remain incomplete.
 

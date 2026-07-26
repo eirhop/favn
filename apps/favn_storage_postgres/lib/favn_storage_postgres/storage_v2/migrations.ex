@@ -157,6 +157,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     run_submissions_idempotency_uidx
     run_submissions_retry_child_uidx
     run_submissions_claim_idx
+    run_submissions_queued_workspace_idx
     run_submissions_stale_claim_idx
     run_submissions_page_idx
     run_submissions_status_page_idx
@@ -465,7 +466,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "ea221d2eee01ec012ac9fd26fd5ff26ee28c7af45206eaab336d5310b0394bad"
+  @expected_definition_fingerprint "14e39f94a62b8e0a86232e52e444b585a235a6d30015cdfbe1d8838f3d199e6e"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok
