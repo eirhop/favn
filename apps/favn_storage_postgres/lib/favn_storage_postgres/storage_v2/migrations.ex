@@ -82,6 +82,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     outbox_events
     outbox_publication_state
     runs
+    run_submissions
+    run_submission_commands
     run_plans
     run_events
     run_targets
@@ -152,6 +154,14 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     runs_plan_manifest_uidx
     runs_workspace_status_recent_idx
     runs_platform_status_recent_idx
+    run_submissions_idempotency_uidx
+    run_submissions_retry_child_uidx
+    run_submissions_claim_idx
+    run_submissions_stale_claim_idx
+    run_submissions_page_idx
+    run_submissions_status_page_idx
+    run_submissions_run_idx
+    run_submission_commands_retention_idx
     run_targets_history_idx
     run_targets_claim_lineage_uidx
     runtime_input_pins_execution_package_hash_index
@@ -301,6 +311,10 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
       ~w(failure_id projector_name shard_id publication_id workspace_id event_kind error_kind error_detail attempt_count inserted_at updated_at),
     "run_events" =>
       ~w(event_id workspace_id run_id sequence event_type entity_type asset_step_id status stage occurred_at payload_version event event_hash outbox_event_id inserted_at),
+    "run_submission_commands" =>
+      ~w(workspace_id command_id submission_id command_kind request_hash result inserted_at),
+    "run_submissions" =>
+      ~w(workspace_id submission_id source idempotency_key request_hash authority deployment_id manifest_version_id target_kind target_id run_id intent status attempt claim_owner claim_generation claim_expires_at preparation outcome error failure_kind cancellation_requested_at cancellation_reason retry_root_id retry_of_submission_id retry_command_id superseded_by_submission_id enqueued_at available_at preparing_at admitting_at terminal_at inserted_at updated_at),
     "run_ownerships" =>
       ~w(workspace_id run_id owner_id fencing_token claim_command_id last_renewal_id expires_at released_at updated_at),
     "run_plans" =>
@@ -351,7 +365,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   @identifier_constraint_tables ~w(
     workspaces manifest_versions execution_packages manifest_execution_packages
     workspace_deployments workspace_deployment_targets
-    workspace_runtime_state outbox_events runs run_plans run_events run_targets runtime_input_pins
+    workspace_runtime_state outbox_events runs run_submissions run_submission_commands run_plans run_events run_targets runtime_input_pins
     run_ownerships runner_executions schedule_cursors schedule_activations
     schedule_activation_commands schedule_occurrences capacity_scopes
     execution_leases execution_lease_scopes admission_waiters materialization_claims
@@ -363,7 +377,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     auth_audit_entries auth_platform_audit_entries idempotency_records maintenance_jobs
   )
   @payload_constraint_tables ~w(
-    manifest_versions execution_packages workspace_deployments outbox_events runs run_events runtime_input_pins
+    manifest_versions execution_packages workspace_deployments outbox_events runs run_submissions
+    run_submission_commands run_events runtime_input_pins
     runner_executions schedule_cursors schedule_activation_commands schedule_occurrences admission_waiters
     materialization_claims materializations coverage_baselines backfills backfill_windows
     asset_target_generations asset_target_bindings rebuild_operations rebuild_plan_actions rebuild_windows
@@ -380,6 +395,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     workspace_deployment_targets_source_valid workspace_runtime_state_revision_valid
     outbox_events_versions_valid outbox_events_aggregate_id_length_v2
     outbox_publication_state_singleton runs_status_valid runs_values_valid
+    run_submissions_values_valid run_submissions_state_shape_valid
+    run_submission_commands_values_valid
     run_events_values_valid run_targets_kind_valid runtime_input_pins_key_version_valid
     runtime_input_key_versions_pkey runtime_input_key_versions_key_version_valid
     run_ownerships_fence_valid runner_executions_values_valid schedule_activations_values_valid
@@ -416,7 +433,10 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     idempotency_records_values_valid idempotency_records_payload_bounded maintenance_jobs_values_valid
     manifest_execution_packages_manifest_version_id_fkey
     manifest_execution_packages_package_hash_fkey workspace_runtime_state_deployment_fk
-    runs_deployment_manifest_fk run_plans_run_manifest_fk run_plans_manifest_fk run_events_run_fk
+    runs_deployment_manifest_fk run_submissions_retry_root_fk run_submissions_retry_of_fk
+    run_submissions_superseded_by_fk run_submission_commands_workspace_fk
+    run_submission_commands_submission_fk
+    run_plans_run_manifest_fk run_plans_manifest_fk run_events_run_fk
     run_events_outbox_fk run_targets_run_fk run_targets_deployment_target_fk
     runtime_input_pins_run_fk runtime_input_pins_execution_package_hash_fkey
     run_ownerships_run_fk runner_executions_run_fk
@@ -445,7 +465,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "0b649a8da69b81dc5b5851614c78dc220a7acd65757051c05e8e5ff2cd1897c9"
+  @expected_definition_fingerprint "ea221d2eee01ec012ac9fd26fd5ff26ee28c7af45206eaab336d5310b0394bad"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

@@ -116,6 +116,26 @@ erDiagram
         bigint latest_event_id FK
         jsonb snapshot
     }
+    RUN_SUBMISSIONS {
+        text workspace_id PK, FK
+        text submission_id PK
+        text idempotency_key UK
+        text status
+        bigint claim_generation
+        timestamptz claim_expires_at
+        text retry_root_id FK
+        text retry_of_submission_id FK
+        text superseded_by_submission_id FK
+        jsonb intent
+    }
+    RUN_SUBMISSION_COMMANDS {
+        text workspace_id PK, FK
+        text command_id PK
+        text submission_id FK
+        text command_kind
+        bytea request_hash
+        jsonb result
+    }
     RUN_EVENTS {
         bigint event_id PK
         text workspace_id FK
@@ -197,6 +217,10 @@ erDiagram
     }
 
     WORKSPACES ||--o{ RUNS : owns
+    WORKSPACES ||--o{ RUN_SUBMISSIONS : owns
+    RUN_SUBMISSIONS ||--o{ RUN_SUBMISSION_COMMANDS : receives
+    RUN_SUBMISSIONS ||..o| RUNS : admits
+    RUN_SUBMISSIONS ||--o{ RUN_SUBMISSIONS : retries_or_supersedes
     WORKSPACE_DEPLOYMENTS ||--o{ RUNS : pins
     RUNS ||--|{ RUN_EVENTS : records
     OUTBOX_EVENTS ||--o| RUN_EVENTS : publishes
@@ -229,6 +253,25 @@ Snapshot storage format v3 requires a canonical `rr_<64 lowercase hex>` binding.
 Format v2 is legacy: terminal rows may decode with a nil binding for audit display,
 but reading a non-terminal v2 row returns `legacy_runner_release_unbound`, preventing
 recovery or dispatch under an unproven runtime.
+
+`RUN_SUBMISSIONS` is authoritative before `RUNS` exists, so its intended
+deployment, manifest, target, run identity, redacted authority, and normalized
+intent are stored without a run foreign key. `submitted` is nevertheless
+accepted only after the exact run, deployment, manifest, and requested target
+rows exist. Asset requests require the requested primary target row; pipeline
+requests use their exact non-primary pipeline row. Submission and run creation
+share one workspace/run advisory lock so their separate tables cannot race.
+Authority is an allowlisted audit snapshot derived from the
+validated workspace context; it is not an authorization credential. Queued work has no claim;
+preparing/admitting work has an expiring owner plus fencing generation; terminal
+rows have no live claim. Safe retries and supersession use workspace-scoped
+self-references, and every linked retry carries a new workspace-unique run
+identity. `RUN_SUBMISSION_COMMANDS` stores bounded submission-id
+references rather than copied intent, and has a direct workspace foreign key so
+an empty claim receipt cannot create an unowned tenant identity. Nonterminal
+receipts also store a small status/owner/generation result fence. A seven-day
+command window plus indexed incremental pruning bounds polling and renewal
+receipt growth without allowing an expired command to act again.
 
 ## Scheduling, admission, materialization, and backfills
 
@@ -637,7 +680,7 @@ repaired from authoritative publications.
 | Domain | Tables | Authority |
 | --- | --- | --- |
 | Workspace and registry | `workspaces`, `manifest_versions`, `execution_packages`, `manifest_execution_packages`, `workspace_deployments`, `workspace_deployment_targets`, `workspace_runtime_state` | Authoritative |
-| Runs and execution | `runs`, `run_events`, `run_plans`, `run_targets`, `run_ownerships`, `runner_executions`, `runtime_input_pins`, `runtime_input_key_versions` | Authoritative |
+| Runs and execution | `run_submissions`, `run_submission_commands`, `runs`, `run_events`, `run_plans`, `run_targets`, `run_ownerships`, `runner_executions`, `runtime_input_pins`, `runtime_input_key_versions` | Authoritative |
 | Publication | `outbox_events`, `outbox_publication_state` | Authoritative delivery ledger |
 | Scheduling | `schedule_cursors`, `schedule_occurrences` | Authoritative |
 | Admission | `capacity_scopes`, `execution_leases`, `execution_lease_scopes`, `admission_waiters` | Authoritative coordination |
@@ -652,7 +695,7 @@ repaired from authoritative publications.
 | Read projections | `execution_group_overviews`, `backfill_overviews`, `target_statuses`, `asset_window_states`, `asset_freshness_states`, `asset_attempt_overviews` | Derived and repairable |
 | Ecto | `schema_migrations` | Migration bookkeeping |
 
-There are 60 application/schema tables including `schema_migrations`. Tables
+There are 62 application/schema tables including `schema_migrations`. Tables
 without direct foreign keys still require workspace-scoped application contracts;
 their lack of an FK is not permission to perform unscoped reads.
 

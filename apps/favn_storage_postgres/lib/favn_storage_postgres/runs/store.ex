@@ -35,8 +35,9 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnStoragePostgres.Outbox.Writer, as: OutboxWriter
   alias FavnStoragePostgres.Payload
   alias FavnStoragePostgres.Repo
-  alias FavnStoragePostgres.Runs.RuntimeInputPinCodec
+  alias FavnStoragePostgres.RunIdentity
   alias FavnStoragePostgres.Runs.Decoder
+  alias FavnStoragePostgres.Runs.RuntimeInputPinCodec
   alias FavnStoragePostgres.RuntimeInputKeys
   alias FavnStoragePostgres.Schemas.CapacityScope
   alias FavnStoragePostgres.Schemas.ManifestVersion
@@ -45,6 +46,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnStoragePostgres.Schemas.RunEvent
   alias FavnStoragePostgres.Schemas.RunOwnership
   alias FavnStoragePostgres.Schemas.RunPlan
+  alias FavnStoragePostgres.Schemas.RunSubmission
   alias FavnStoragePostgres.Schemas.RunTarget
   alias FavnStoragePostgres.Schemas.RuntimeInputPin
   alias FavnStoragePostgres.Schemas.WorkspaceDeployment
@@ -65,6 +67,11 @@ defmodule FavnStoragePostgres.Runs.Store do
          {:ok, encoded} <- encode_write(command.run, command.event, persist_plan?: true),
          {:ok, result} <-
            Repo.transaction(fn ->
+             RunIdentity.lock!(
+               command.workspace_context.workspace_id,
+               command.run.id
+             )
+
              IdempotencyTransaction.execute!(
                command.workspace_context.workspace_id,
                command.idempotency,
@@ -883,13 +890,14 @@ defmodule FavnStoragePostgres.Runs.Store do
 
   defp create_or_replay!(command, encoded) do
     workspace_id = command.workspace_context.workspace_id
-    lock_run_identity!(workspace_id, command.run.id)
 
     case lock_run(workspace_id, command.run.id) do
       %Run{} = existing ->
         replay_create!(existing, command, encoded)
 
       nil ->
+        authorize_submission_run_creation!(command)
+
         deployment =
           Repo.get_by(WorkspaceDeployment,
             workspace_id: workspace_id,
@@ -949,6 +957,45 @@ defmodule FavnStoragePostgres.Runs.Store do
     end
   end
 
+  defp authorize_submission_run_creation!(command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    submission =
+      from(submission in RunSubmission,
+        where:
+          submission.workspace_id == ^workspace_id and
+            submission.run_id == ^command.run.id,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    case submission do
+      nil ->
+        :ok
+
+      %RunSubmission{} = submission ->
+        matching_identity? =
+          submission.status == "admitting" and
+            submission.deployment_id == command.deployment_id and
+            submission.manifest_version_id == command.run.manifest_version_id and
+            requested_submission_target?(submission, command.targets)
+
+        if not matching_identity? do
+          Repo.rollback(
+            Error.new(:conflict, "run identity belongs to a different run submission")
+          )
+        end
+    end
+  end
+
+  defp requested_submission_target?(submission, targets) do
+    Enum.any?(targets, fn target ->
+      Atom.to_string(target.target_kind) == submission.target_kind and
+        target.target_id == submission.target_id and
+        (target.target_kind == :pipeline or target.is_primary)
+    end)
+  end
+
   defp maybe_insert_run_capacity_scope!(command, occurred_at) do
     case pipeline_max_concurrency(command.run) do
       limit when is_integer(limit) and limit > 0 ->
@@ -981,16 +1028,6 @@ defmodule FavnStoragePostgres.Runs.Store do
 
     if is_map(policy),
       do: Map.get(policy, :max_concurrency) || Map.get(policy, "max_concurrency")
-  end
-
-  defp lock_run_identity!(workspace_id, run_id) do
-    SQL.query!(
-      Repo,
-      "SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text, $2::text)::text, 0))",
-      [workspace_id, run_id]
-    )
-
-    :ok
   end
 
   defp commit_or_replay!(command, encoded) do

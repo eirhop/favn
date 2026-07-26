@@ -169,6 +169,7 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     stores = %Stores{
       registry: MissingManifestStore,
       runs: MissingManifestStore,
+      run_submissions: MissingManifestStore,
       run_ownership: MissingManifestStore,
       scheduler: MissingManifestStore,
       admission: MissingManifestStore,

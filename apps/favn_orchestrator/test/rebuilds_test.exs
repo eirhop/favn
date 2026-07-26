@@ -180,6 +180,7 @@ defmodule FavnOrchestrator.RebuildsTest do
     stores = %Stores{
       registry: Store,
       runs: Store,
+      run_submissions: Store,
       run_ownership: Store,
       scheduler: Store,
       admission: Store,

@@ -9,7 +9,7 @@ design rationale and scale budgets remain in the
 
 PostgreSQL stores orchestration metadata: workspaces, immutable manifests and
 execution packages, deployments, runs, events, schedules, leases,
-materializations, asset target generations and bindings, rebuild operations,
+durable run submissions, materializations, asset target generations and bindings, rebuild operations,
 resource circuits and recovery candidates, backfills,
 authentication, audit, logs, and repairable
 projections.
@@ -38,7 +38,7 @@ The dependency direction is deliberate:
   composition root selects `FavnStoragePostgres.Backend` at boot.
 - `favn_view` calls orchestrator facades only.
 
-`FavnOrchestrator.Persistence.Backend` composes thirteen focused store
+`FavnOrchestrator.Persistence.Backend` composes sixteen focused store
 capabilities. No 97-callback database adapter remains, and no generic
 `execute/query` escape hatch is part of the contract.
 
@@ -92,6 +92,16 @@ Important properties:
 
 - A state transition and its outbox event commit together.
 - Command identities make retries deterministic; conflicting reuse is rejected.
+- Accepted run intent is committed to `run_submissions` before asynchronous
+  preparation. Claimers take bounded FIFO batches with `SKIP LOCKED`; exact
+  command receipts reference current authoritative rows without duplicating
+  submission payloads. Nonterminal receipts preserve their result fence and
+  reject replay after ownership or state moves. Commands have a seven-day
+  idempotency window, and an indexed bounded cleanup removes expired receipts.
+- Submission insertion/retry and every run creator share a transaction advisory
+  lock keyed by workspace and run ID. An admitting submission may create only
+  its exact deployment, manifest, and requested target; unrelated legacy run
+  creation cannot race it.
 - Ownership and claim writes require current fencing tokens.
 - Persisted asset writes resolve and pin one target generation before claiming;
   projection evidence is keyed by that generation rather than deployment identity.
@@ -204,6 +214,10 @@ Redis is not required for correctness or initial multi-node scale.
 - Startup fails closed for invalid configuration, missing migrations, wrong schema
   shape, unavailable backend modules, or invalid runtime privileges.
 - Lost owners cannot renew or commit with an old fencing token.
+- Expired preparing/admitting run submissions are re-fenced without silently
+  changing phase. Recovery reconciles an admitting submission before deciding
+  whether requeue is safe. Failed rows remain terminal; a safe retry is a new
+  linked submission, and an unknown outcome is never retried blindly.
 - Recovery claims abandoned runs in bounded batches and reconstructs work from
   pinned manifests, immutable run plans, and persisted checkpoints. A newly
   persisted, never-claimed run has one ownership-lease interval to complete its

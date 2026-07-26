@@ -32,6 +32,7 @@ defmodule FavnOrchestrator.TargetAdmissionTest do
     stores = %Stores{
       registry: FakeStore,
       runs: FakeStore,
+      run_submissions: FakeStore,
       run_ownership: FakeStore,
       scheduler: FakeStore,
       admission: FakeStore,

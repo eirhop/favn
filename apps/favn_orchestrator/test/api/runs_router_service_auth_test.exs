@@ -99,6 +99,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     stores = %Stores{
       registry: EmptyRunsStore,
       runs: EmptyRunsStore,
+      run_submissions: EmptyRunsStore,
       run_ownership: EmptyRunsStore,
       scheduler: EmptyRunsStore,
       admission: EmptyRunsStore,

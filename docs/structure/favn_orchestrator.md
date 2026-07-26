@@ -38,6 +38,11 @@ freshness, and execution coordination.
   and relevant release ids; selection and configuration are not copied into them.
 - `Runs`, `RunManager`, `RunServer`, and `TransitionWriter` own submission,
   execution, retry, cancellation, snapshots, events, and durable publication.
+  `Persistence.RunSubmissionStore` defines the durable pre-run intent,
+  command-replay, FIFO claim, lease/fencing, cancellation, terminal failure,
+  linked retry, supersession, and bounded read contracts. At this checkpoint the
+  persistence capability exists, but no public producer or preparation worker
+  uses it yet; those migrations are owned by the following implementation steps.
   Submission derives the runner release only from the selected immutable manifest;
   caller options cannot override it. The run's workspace, deployment, manifest id,
   manifest content hash, and runner release id are one immutable identity. Dispatch,

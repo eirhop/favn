@@ -36,6 +36,7 @@ defmodule FavnStoragePostgres.Backend do
     %Stores{
       registry: FavnStoragePostgres.Instrumented.Registry,
       runs: FavnStoragePostgres.Instrumented.Runs,
+      run_submissions: FavnStoragePostgres.Instrumented.RunSubmissions,
       run_ownership: FavnStoragePostgres.Instrumented.RunOwnership,
       scheduler: FavnStoragePostgres.Instrumented.Scheduler,
       admission: FavnStoragePostgres.Instrumented.Admission,
