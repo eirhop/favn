@@ -272,3 +272,102 @@ push (`gh run list --branch codex/elastic-runners` returned no runs).
 
 Evidence commit: this field is intentionally not self-recorded; see the
 checkpoint workflow in the implementation plan.
+
+## Phase 2: Durable run submission
+
+Status: approved and checkpointed
+
+Date: 2026-07-26
+
+### Implemented contracts
+
+- Added a supervised asynchronous submission subtree with bounded global and
+  per-workspace concurrency, round-robin workspace discovery, claim renewal,
+  stale recovery, retry backoff, cancellation handoff, and owner-loss
+  containment.
+- Moved target preparation and DAG planning out of API, scheduler, backfill,
+  rebuild, recovery, and child-run producer processes.
+- Kept `RunManager` as the final local admission owner and reconciled every
+  ambiguous acknowledgement against the exact durable run identity before
+  retry or failure.
+- Made schedule occurrence completion and submission enqueue one PostgreSQL
+  transaction. Scheduler overlap cursors remain active while the reserved run
+  is queued, preparing, or admitting.
+- Added authenticated, workspace-scoped submission detail, keyset page, and
+  aggregate queue-statistics API reads. Queued run detail returns accepted
+  submission state instead of a transient 404.
+- Reworked global workspace discovery into indexed queued and stale branches,
+  excluding terminal history from the polling path.
+- Removed the synchronous producer entry points and their migrated builder
+  bypasses.
+
+Exact Storage V2 definition fingerprint:
+`14e39f94a62b8e0a86232e52e444b585a235a6d30015cdfbe1d8838f3d199e6e`
+
+### Review history
+
+The first phase review rejected the implementation for four issues:
+
+- scheduler `:forbid` and `:queue_one` overlap protection could be cleared
+  during the intentional submission queue delay;
+- queue depth, age, retry, cancellation, and failure diagnostics had no
+  authenticated operator HTTP boundary;
+- global workspace discovery had neither an indexed design nor query-plan
+  proof;
+- durable recovery from every queued, preparing, and admitting state was not
+  demonstrated.
+
+All four were fixed. The recovery test also exposed temporary `trap_exit` state
+and stale normal-exit messages when a worker caller survived more than one
+claim. Worker link cleanup now restores the caller flag and ignores unrelated
+normal exits while retaining abnormal-exit containment.
+
+Final reviewer verdict: approved with no remaining high, medium, or low
+findings. The reviewer inspected the exact diff from the previous approved
+checkpoint, including all 13 untracked files.
+
+### Phase 2 verification
+
+```text
+mix format --check-formatted <all modified Elixir files>
+  # passed
+
+mix do --app favn_orchestrator --app favn_storage_postgres \
+  compile --warnings-as-errors
+  # passed
+
+cd apps/favn_orchestrator
+mix test
+  # 586 passed
+
+cd apps/favn_storage_postgres
+mix test test/storage_v2/run_submissions_test.exs \
+  test/storage_v2/core_authority_test.exs
+  # 107 passed against a fresh disposable database
+
+mix test
+  # 155/157 passed
+  # the two remaining tests require the external PostgreSQL `createdb`
+  # executable, which was not installed in the native Windows shell
+
+git diff --check
+  # passed apart from informational Windows line-ending warnings
+
+rg synchronous producer bypass signatures
+  # no production matches
+```
+
+No full umbrella suite was run because the accepted plan reserves that gate for
+Phase 7.
+
+Reviewed tree SHA: `b218009f65c52d0182cd210302b61a3b082e2239`
+
+Reviewed content commit SHA:
+`5699d83acddbb61420057eb6d4919448512dc690`
+
+Pushed branch CI: no GitHub Actions workflow run was triggered by the branch
+push (`gh run list --branch codex/elastic-runners --commit 5699d83a` returned
+no runs).
+
+Evidence commit: this field is intentionally not self-recorded; see the
+checkpoint workflow in the implementation plan.
