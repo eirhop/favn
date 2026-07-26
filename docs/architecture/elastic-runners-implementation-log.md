@@ -7,7 +7,7 @@ not contain credentials, secret values, or private infrastructure details.
 
 ## Step 0: Isolate the branch and accept the baseline
 
-Status: awaiting independent review
+Status: approved and checkpointed
 
 Date: 2026-07-26
 
@@ -130,13 +130,17 @@ newline-at-EOF check on all changed docs   # passed
 recorded-vs-generated legacy path compare  # 124 == 124, exact set
 ```
 
-Reviewer verdict: pending
+Reviewer verdict: approved with no remaining findings after two review rounds.
+The first round required a reproducible complete legacy inventory and
+untracked-file-aware checks; both were added and independently reproduced.
 
-Reviewed tree SHA: pending
+Reviewed tree SHA: `dddd5a48026e5e2076173575538cd8b99dd26a2b`
 
-Reviewed content commit SHA: pending
+Reviewed content commit SHA:
+`6c140a62854ec5c4e04f2caa9ae5a65574f757cf`
 
-Pushed branch CI: pending
+Pushed branch CI: no GitHub Actions workflow run was triggered by the branch
+push (`gh run list --branch codex/elastic-runners` returned no runs).
 
 Evidence commit: this field is intentionally not self-recorded; see the
 checkpoint workflow in the implementation plan.
