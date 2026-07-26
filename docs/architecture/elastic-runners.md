@@ -451,7 +451,10 @@ lifecycle shared by every producer:
 Persist normalized and redacted submission intent, authority and workspace,
 idempotency key, deployment/manifest identity, requested run or target
 identity, status, attempt, claim owner/generation/lease, timestamps, outcome,
-and safe error details. Use the issue's lifecycle:
+and safe error details. The authority snapshot is derived only from the
+validated `WorkspaceContext`, contains an allowlisted principal/workspace/role/
+request identity, and is audit evidence rather than a reusable credential. Use
+the issue's lifecycle:
 
 ```text
 queued -> preparing -> admitting -> submitted
@@ -477,6 +480,22 @@ updates:
 | `admitting` | permanent or ambiguous admission outcome | `failed` | mark explicit unknown outcome; never blind retry |
 
 `submitted`, `failed`, `cancelled`, and `superseded` are terminal and immutable.
+Once a submission is `admitting`, reject submission cancellation: reconcile
+the exact run identity and use the run-cancellation lifecycle if admission
+committed. The matching-run proof includes workspace, run, deployment,
+manifest, and requested target identity. For an asset request, the exact
+`run_targets` row must have `is_primary = true`; for a pipeline request, its
+exact pipeline target row is the proof because pipeline target rows are not
+marked primary. A secondary asset can therefore never satisfy reconciliation.
+A run identity has one logical owner within a workspace across submission
+intent and durable runs. Enqueue, retry, and every `RunStore.create_run` path
+acquire the same transaction-scoped PostgreSQL advisory lock keyed by
+workspace and run ID before checking or writing either table. Enqueue and retry
+reject an already-durable run or another submission. Run creation may coexist
+only with the exact matching `admitting` submission that is creating that run;
+otherwise it rejects the collision. All legacy direct run producers must use
+this shared lock during Step 1, and Step 3 removes their ability to bypass the
+submission lifecycle.
 Cancelling a submitted run uses the run-cancellation lifecycle and does not
 rewrite submission history. A safe operator retry atomically creates a new
 `queued` submission linked by `retry_of_submission_id` and `retry_root_id`; it
@@ -484,11 +503,25 @@ never changes `failed` back to `queued`. The retry command carries its own
 bounded idempotency key, and repeating that command returns the same linked
 submission. Uniquely constrain retry identity by workspace, failed-submission
 ID, and retry-command idempotency key so concurrent retries cannot create
-duplicates. An ambiguous admission must first reconcile by the original
+duplicates. A distinct deliberate retry command and idempotency key may create
+another linked child from the same proven-safe failure; it must also carry a
+new workspace-unique run identity and a fresh authority snapshot for the
+retrying operator. This is an explicit operator action rather than automatic
+retry. An ambiguous admission must first reconcile by the original
 idempotency key/run identity and is not retryable until proven safe. Claims
 apply only to `queued`; lease fields are valid only in `preparing` or
 `admitting`. Every transition checks workspace, submission ID, claim
 generation, and expected status atomically.
+
+Command receipts retain the original status/owner/generation result fence for
+every nonterminal fenced command, so replay can never return a newer fence.
+Version one accepts command replay for seven days from `occurred_at`, permits
+at most five minutes of future clock skew, rejects commands outside that
+window, and incrementally prunes older receipts through an indexed bounded
+delete. This keeps empty polls and lease renewals from growing receipt history
+without bound while ensuring a pruned old command cannot mutate later work.
+Unfiltered and status-filtered operator pages each have an index matching their
+workspace, order, and cursor predicates.
 
 Add a supervised `RunSubmissionSupervisor` with bounded global and
 per-workspace concurrency. Workers claim with leases and fencing, perform
