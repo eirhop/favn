@@ -115,7 +115,7 @@ docker build \
   .
 
 MIX_ENV=prod mix favn.build.manifest \
-  --runner-release-id "$RUNNER_RELEASE_ID"
+  --runner-release "default=$RUNNER_RELEASE_ID"
 ```
 
 The control plane is the reusable Favn image. The runner is customer-owned and

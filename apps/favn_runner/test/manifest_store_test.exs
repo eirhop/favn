@@ -209,18 +209,28 @@ defmodule FavnRunner.ManifestStoreTest do
              ManifestStore.diagnostics(server: store)
   end
 
-  defp build_manifest(metadata \\ %{}, assets \\ []) do
+  defp build_manifest(metadata \\ %{}, assets \\ default_assets()) do
     {:ok, graph} = Graph.build(assets)
 
     %Manifest{
-      schema_version: 13,
-      runner_contract_version: 12,
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      schema_version: 14,
+      runner_contract_version: 13,
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,
       pipelines: [],
       schedules: [],
       graph: graph,
       metadata: metadata
     }
+  end
+
+  defp default_assets do
+    [
+      %Asset{
+        ref: {FavnRunner.ManifestStoreTest.CacheAsset, :asset},
+        module: FavnRunner.ManifestStoreTest.CacheAsset,
+        name: :asset
+      }
+    ]
   end
 end

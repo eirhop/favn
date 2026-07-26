@@ -55,6 +55,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           active_run_plan_max_bytes: pos_integer(),
           scheduler: keyword(),
           run_submissions: keyword(),
+          runner_pools: FavnOrchestrator.RunnerPools.t(),
           shutdown_drain_timeout_ms: pos_integer(),
           runner: map(),
           runner_client: module(),
@@ -167,6 +168,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
     Application.put_env(:favn_orchestrator, :scheduler, config.scheduler)
     Application.put_env(:favn_orchestrator, :run_submissions, config.run_submissions)
+    Application.put_env(:favn_orchestrator, :runner_pools, config.runner_pools)
     Application.put_env(:favn_orchestrator, :runner_client, config.runner_client)
 
     Application.put_env(
@@ -203,6 +205,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
          {:ok, scheduler} <- scheduler(env, workspace_ids),
          {:ok, run_submissions} <- run_submissions(env),
+         {:ok, runner_pools} <- runner_pools(env),
          {:ok, shutdown_drain_timeout_ms} <- shutdown_drain_timeout_ms(env) do
       {:ok,
        %{
@@ -220,6 +223,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          active_run_plan_max_bytes: active_run_plan_max_bytes,
          scheduler: scheduler,
          run_submissions: run_submissions,
+         runner_pools: runner_pools,
          shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
          runner: runner,
          runner_client: FavnOrchestrator.RunnerClient.BeamNode,
@@ -268,6 +272,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       },
       scheduler: Map.new(config.scheduler),
       run_submissions: Map.new(config.run_submissions),
+      runner_pools: config.runner_pools,
       shutdown: %{drain_timeout_ms: config.shutdown_drain_timeout_ms},
       runner: config.runner
     }
@@ -460,6 +465,22 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp runner_pools(env) do
+    default = ~s({"default":{"mode":"elastic","idle_grace_ms":15000}})
+
+    with {:ok, raw} <- required_or_default(env, "FAVN_RUNNER_POOLS", default),
+         true <- byte_size(raw) <= 65_536,
+         {:ok, decoded} <- Jason.decode(raw),
+         {:ok, pools} <- FavnOrchestrator.RunnerPools.normalize(decoded) do
+      {:ok, pools}
+    else
+      _other ->
+        {:error,
+         {:invalid_env, "FAVN_RUNNER_POOLS",
+          "JSON object of pool names to elastic/resident lifecycle policy"}}
     end
   end
 

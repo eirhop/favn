@@ -40,19 +40,31 @@ defmodule FavnTestSupport do
   end
 
   @doc """
-  Adds the current schema, runner contract, and required runner release ID to a
+  Adds the current schema, runner contract, and pool-to-release map to a
   manifest fixture.
 
   Version functions are invoked dynamically so this dependency-light support
   app does not create a compile-time dependency cycle with `favn_core`.
   """
-  @spec with_manifest_contract(map(), String.t()) :: map()
-  def with_manifest_contract(manifest, runner_release_id \\ runner_release_id())
+  @spec with_manifest_contract(map(), String.t() | %{String.t() => String.t()}) :: map()
+  def with_manifest_contract(manifest, releases \\ runner_release_id())
+
+  def with_manifest_contract(manifest, runner_release_id)
       when is_map(manifest) and is_binary(runner_release_id) do
+    releases =
+      manifest
+      |> effective_test_pools()
+      |> Map.new(&{&1, runner_release_id})
+
+    with_manifest_contract(manifest, releases)
+  end
+
+  def with_manifest_contract(manifest, runner_releases)
+      when is_map(manifest) and is_map(runner_releases) do
     manifest =
       if Map.has_key?(manifest, :assets) do
         Map.update!(manifest, :assets, fn assets ->
-          Enum.map(assets, &with_semantic_generation(&1, runner_release_id))
+          Enum.map(assets, &with_semantic_generation(&1, runner_releases))
         end)
       else
         manifest
@@ -63,17 +75,20 @@ defmodule FavnTestSupport do
       schema_version: apply(Favn.Manifest.Compatibility, :current_schema_version, []),
       runner_contract_version:
         apply(Favn.Manifest.Compatibility, :current_runner_contract_version, []),
-      required_runner_release_id: runner_release_id
+      runner_releases: runner_releases
     })
   end
 
-  defp with_semantic_generation(%{target_descriptor: descriptor} = asset, _runner_release_id)
+  defp with_semantic_generation(%{target_descriptor: descriptor} = asset, _runner_releases)
        when not is_nil(descriptor),
        do: asset
 
-  defp with_semantic_generation(%{ref: {module, name}} = asset, runner_release_id)
+  defp with_semantic_generation(%{ref: {module, name}} = asset, runner_releases)
        when is_atom(module) and is_atom(name) do
     asset_value = if is_struct(asset), do: Map.from_struct(asset), else: asset
+    pool = Map.get(asset_value, :runner_pool) || :default
+    pool_name = if is_atom(pool), do: Atom.to_string(pool), else: pool
+    runner_release_id = Map.fetch!(runner_releases, pool_name)
 
     generation_id =
       apply(Favn.Manifest.TargetDescriptor, :semantic_generation_id, [
@@ -84,7 +99,27 @@ defmodule FavnTestSupport do
     Map.put(asset, :semantic_generation_id, generation_id)
   end
 
-  defp with_semantic_generation(asset, _runner_release_id), do: asset
+  defp with_semantic_generation(asset, _runner_releases), do: asset
+
+  defp effective_test_pools(manifest) do
+    asset_pools =
+      manifest
+      |> Map.get(:assets, [])
+      |> Enum.map(&(Map.get(&1, :runner_pool) || :default))
+
+    pipeline_pools =
+      manifest
+      |> Map.get(:pipelines, [])
+      |> Enum.map(&Map.get(&1, :runner_pool))
+      |> Enum.reject(&is_nil/1)
+
+    (asset_pools ++ pipeline_pools)
+    |> Enum.uniq()
+    |> Enum.map(fn
+      pool when is_atom(pool) -> Atom.to_string(pool)
+      pool when is_binary(pool) -> pool
+    end)
+  end
 
   @doc """
   Adds a canonical target descriptor to a persisted SQL manifest asset fixture.

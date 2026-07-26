@@ -31,12 +31,10 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibility do
   @spec verify_runner(module(), Version.t() | String.t(), keyword()) :: :ok | {:error, error()}
   def verify_runner(
         client,
-        %Version{
-          manifest_version_id: manifest_version_id,
-          required_runner_release_id: required
-        },
+        %Version{manifest_version_id: manifest_version_id} = version,
         opts
       ) do
+    required = Version.transitional_default_release!(version)
     verify_runner_and_emit(client, required, opts, %{manifest_version_id: manifest_version_id})
   end
 
@@ -108,10 +106,8 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibility do
       run.manifest_content_hash != version.content_hash ->
         {:error, {:run_manifest_identity_mismatch, :manifest_content_hash}}
 
-      run.required_runner_release_id != version.required_runner_release_id ->
-        {:error,
-         {:runner_release_mismatch, run.required_runner_release_id,
-          version.required_runner_release_id}}
+      run.runner_releases != version.runner_releases ->
+        {:error, {:runner_release_mismatch, run.runner_releases, version.runner_releases}}
 
       true ->
         :ok

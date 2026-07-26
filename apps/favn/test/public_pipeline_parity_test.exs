@@ -474,7 +474,9 @@ defmodule Favn.PublicPipelineParityTest do
                  asset_modules: [SalesAssets, ReportingAssets],
                  pipeline_modules: [pipeline_module],
                  schedule_modules: [schedule_module],
-                 runner_release_id: FavnTestSupport.runner_release_id()
+                 runner_releases: %{
+                   "default" => FavnTestSupport.runner_release_id()
+                 }
                )
 
       assert Enum.any?(

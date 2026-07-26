@@ -178,7 +178,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     |> Map.values()
     |> Enum.sort_by(& &1.manifest_version_id)
     |> Enum.reduce_while(:ok, fn version, :ok ->
-      if version.required_runner_release_id == desired_version.required_runner_release_id do
+      if version.runner_releases == desired_version.runner_releases do
         case RunnerManifestRegistration.ensure(
                runtime.runner_client,
                version,
@@ -281,7 +281,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          _desired_asset,
          desired_version
        ) do
-    if active_version.required_runner_release_id == desired_version.required_runner_release_id do
+    if active_version.runner_releases == desired_version.runner_releases do
       {:ok, {:asset, active_target.asset}, active_version}
     else
       with {:ok, relation} <- active_physical_relation(binding, active_target.connection) do
@@ -421,7 +421,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   defp normalize_inspection_result({:ok, %RelationInspectionResult{} = result}, version) do
     with :ok <-
            RunnerReleaseCompatibility.verify_inspection_result(
-             version.required_runner_release_id,
+             Version.transitional_default_release!(version),
              result
            ),
          {:ok, physical} <- PhysicalFingerprint.from_inspection(result) do
@@ -438,7 +438,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     %RelationInspectionRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Version.transitional_default_release!(version),
       asset_ref: asset.ref,
       include: [:relation, :columns, :table_metadata],
       sample_limit: 0
@@ -449,7 +449,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     %RelationInspectionRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Version.transitional_default_release!(version),
       relation: relation,
       include: [:relation, :columns, :table_metadata],
       sample_limit: 0

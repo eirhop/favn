@@ -41,7 +41,8 @@ defmodule FavnRunner.ManifestStore do
 
   @spec register(Version.t(), keyword()) :: :ok | {:error, term()}
   def register(%Version{} = version, opts \\ []) do
-    with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+    with :ok <-
+           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)) do
       cache = server(opts)
 
       case ensure(version.manifest_version_id, version.content_hash, server: cache) do
@@ -83,7 +84,8 @@ defmodule FavnRunner.ManifestStore do
 
   def acquire(%Version{} = version, lease_id, %DateTime{} = expires_at, opts)
       when is_binary(lease_id) and byte_size(lease_id) in 1..512 and is_list(opts) do
-    with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+    with :ok <-
+           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)) do
       cache = server(opts)
       expires_at_ms = DateTime.to_unix(expires_at, :millisecond)
       timeout = Keyword.get(opts, :timeout, 30_000)
@@ -778,7 +780,7 @@ defmodule FavnRunner.ManifestStore do
     %ManifestHandle{
       manifest_version_id: version.manifest_version_id,
       content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id
+      required_runner_release_id: Version.transitional_default_release!(version)
     }
   end
 

@@ -7,7 +7,7 @@ defmodule Favn.CLI.Activate do
           manifest_version_id: String.t(),
           workspace_id: String.t(),
           activated?: boolean(),
-          required_runner_release_id: String.t() | nil
+          runner_releases: Favn.RunnerPool.releases()
         }
 
   @spec run(keyword()) :: {:ok, summary()} | {:error, term()}
@@ -34,7 +34,7 @@ defmodule Favn.CLI.Activate do
          manifest_version_id: manifest_version_id,
          workspace_id: workspace_id,
          activated?: true,
-         required_runner_release_id: Map.get(data, "required_runner_release_id")
+         runner_releases: Map.get(data, "runner_releases")
        }}
     end
   end
@@ -50,12 +50,12 @@ defmodule Favn.CLI.Activate do
            "activated" => true,
            "manifest_version_id" => manifest_version_id,
            "deployment_id" => deployment_id,
-           "required_runner_release_id" => runner_release_id
+           "runner_releases" => runner_releases
          } = data,
          manifest_version_id
        )
        when is_binary(deployment_id) and deployment_id != "" do
-    case Favn.Manifest.Compatibility.validate_required_runner_release_id(runner_release_id) do
+    case Favn.Manifest.Compatibility.validate_runner_releases(runner_releases) do
       :ok -> {:ok, data}
       {:error, _reason} -> {:error, :invalid_activation_response}
     end

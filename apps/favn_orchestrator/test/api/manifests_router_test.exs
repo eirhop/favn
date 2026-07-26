@@ -20,6 +20,24 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     def record_audit(_command), do: :ok
   end
 
+  defmodule Protocol13ManifestStore do
+    def get_manifest(_query) do
+      manifest =
+        FavnTestSupport.with_manifest_contract(%{
+          assets: [],
+          pipelines: [],
+          schedules: [],
+          graph: %{},
+          metadata: %{}
+        })
+
+      Favn.Manifest.Version.new(manifest, manifest_version_id: "mv_protocol_13")
+    end
+
+    def get_runtime_state(_query), do: {:error, :active_manifest_not_set}
+    def record_audit(_command), do: :ok
+  end
+
   setup do
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
 
@@ -37,25 +55,23 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     :ok
   end
 
-  test "accepts a publication envelope whose runner release matches its manifest" do
+  test "accepts a publication envelope whose runner release map matches its manifest" do
     params = valid_envelope()
 
     assert {:ok, version} = ManifestsRouter.build_version(params)
-    assert version.required_runner_release_id == FavnTestSupport.runner_release_id()
+    assert version.runner_releases == %{}
   end
 
-  test "returns stable validation errors for missing, malformed, and mismatched release ids" do
+  test "returns stable validation errors for missing, malformed, and mismatched release maps" do
     valid = valid_envelope()
 
     cases = [
-      {Map.delete(valid, "required_runner_release_id"), "Invalid required runner release id"},
-      {Map.put(valid, "required_runner_release_id", "rr_INVALID"),
-       "Invalid required runner release id"},
-      {Map.put(
-         valid,
-         "required_runner_release_id",
-         FavnTestSupport.runner_release_id(:alternate)
-       ), "Manifest runner release id does not match payload"}
+      {Map.delete(valid, "runner_releases"), "Invalid runner release map"},
+      {Map.put(valid, "runner_releases", %{"default" => "rr_INVALID"}),
+       "Invalid runner release map"},
+      {Map.put(valid, "runner_releases", %{
+         "default" => FavnTestSupport.runner_release_id(:alternate)
+       }), "Manifest runner release map does not match payload"}
     ]
 
     for {params, expected_message} <- cases do
@@ -95,6 +111,32 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
 
     assert response.status == 404
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "not_found"
+  end
+
+  test "protocol 13 activation is rejected before the singleton runner path" do
+    start_manifest_runtime(Protocol13ManifestStore)
+
+    response =
+      :post
+      |> conn("/mv_protocol_13/activate", "")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> put_req_header("idempotency-key", "protocol-13-not-activatable")
+      |> Map.put(:body_params, %{
+        "selection" => %{
+          "common_assets" => "all",
+          "common_pipelines" => "all",
+          "workspace_assets" => [],
+          "workspace_pipelines" => []
+        },
+        "configuration" => %{}
+      })
+      |> ManifestsRouter.call(ManifestsRouter.init([]))
+
+    assert response.status == 503
+
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) ==
+             "runner_protocol_not_activatable"
   end
 
   test "platform operator service token can read the active manifest without actor headers" do
@@ -151,7 +193,7 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
       "content_hash" => version.content_hash,
       "schema_version" => version.schema_version,
       "runner_contract_version" => version.runner_contract_version,
-      "required_runner_release_id" => version.required_runner_release_id,
+      "runner_releases" => version.runner_releases,
       "serialization_format" => version.serialization_format,
       "manifest" => decoded_manifest
     }
@@ -166,10 +208,15 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
   end
 
   defp start_missing_manifest_runtime do
+    start_manifest_runtime(MissingManifestStore)
+  end
+
+  defp start_manifest_runtime(registry_store) do
     stores = %Stores{
-      registry: MissingManifestStore,
+      registry: registry_store,
       runs: MissingManifestStore,
       run_submissions: MissingManifestStore,
+      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
       run_ownership: MissingManifestStore,
       scheduler: MissingManifestStore,
       admission: MissingManifestStore,

@@ -17,13 +17,13 @@ defmodule Mix.Tasks.Favn.DeploymentTasksTest do
     :ok
   end
 
-  test "build.manifest requires an explicit runner release ID" do
-    assert_raise Mix.Error, ~r/--runner-release-id/, fn -> Manifest.parse_args([]) end
+  test "build.manifest requires explicit pool-to-release mappings" do
+    assert_raise Mix.Error, ~r/--runner-release pool=rr_/, fn -> Manifest.parse_args([]) end
 
     release_id = FavnTestSupport.runner_release_id()
 
-    assert Manifest.parse_args(["--runner-release-id", release_id]) ==
-             [runner_release_id: release_id]
+    assert Manifest.parse_args(["--runner-release", "duckdb=#{release_id}"]) ==
+             [runner_releases: %{"duckdb" => release_id}]
   end
 
   test "publish and activate use the canonical orchestrator URL environment" do

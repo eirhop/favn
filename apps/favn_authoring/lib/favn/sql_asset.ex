@@ -535,6 +535,7 @@ defmodule Favn.SQLAsset do
           freshness: 1,
           retry: 1,
           execution_pool: 1,
+          runner_pool: 1,
           relation: 1,
           runtime_config: 1,
           runtime_config: 2,
@@ -906,6 +907,7 @@ defmodule Favn.SQLAsset do
           :freshness,
           :retry,
           :execution_pool,
+          :runner_pool,
           :relation,
           :runtime_config,
           :materialized,
@@ -982,6 +984,7 @@ defmodule Favn.SQLAsset do
       freshness: AssetDeclarations.take(env.module, :freshness),
       retry: AssetDeclarations.take(env.module, :retry),
       execution_pool: AssetDeclarations.take(env.module, :execution_pool),
+      runner_pool: AssetDeclarations.take(env.module, :runner_pool),
       relation: AssetDeclarations.take(env.module, :relation),
       runtime_config: AssetDeclarations.take(env.module, :runtime_config),
       materialized: AssetDeclarations.take(env.module, :materialized),
@@ -1091,6 +1094,7 @@ defmodule Favn.SQLAsset do
       normalize_runtime_config!(raw_definition, namespace.runtime_config, runtime_inputs)
 
     execution_pool = normalize_execution_pool!(raw_definition.execution_pool, raw_definition)
+    runner_pool = normalize_runner_pool!(raw_definition.runner_pool, raw_definition)
 
     session_requirements = normalize_session_requirements!(raw_definition, namespace.resources)
     contract = normalize_contract!(Map.get(raw_definition, :contracts, []), raw_definition)
@@ -1153,6 +1157,7 @@ defmodule Favn.SQLAsset do
       freshness: freshness,
       retry_policy: retry_policy,
       execution_pool: execution_pool,
+      runner_pool: runner_pool,
       relation: relation,
       materialization: materialization,
       partition_spec: partition_spec,
@@ -1405,6 +1410,31 @@ defmodule Favn.SQLAsset do
       raw_definition.file,
       raw_definition.line,
       "invalid execution_pool value #{inspect(value)}; expected a non-nil atom"
+    )
+  end
+
+  defp normalize_runner_pool!([], _raw_definition), do: nil
+
+  defp normalize_runner_pool!([value], _raw_definition) do
+    case Favn.RunnerPool.validate_source(value) do
+      :ok -> value
+      {:error, _reason} -> raise ArgumentError, "runner_pool must be a valid non-nil atom"
+    end
+  end
+
+  defp normalize_runner_pool!([_first, _second | _rest], raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "multiple runner_pool declarations are not allowed"
+    )
+  end
+
+  defp normalize_runner_pool!(value, raw_definition) do
+    DSLCompiler.compile_error!(
+      raw_definition.file,
+      raw_definition.line,
+      "invalid runner_pool value #{inspect(value)}; expected a non-nil atom"
     )
   end
 
@@ -1792,6 +1822,7 @@ defmodule Favn.SQLAsset do
           :freshness,
           :retry,
           :execution_pool,
+          :runner_pool,
           :relation,
           :runtime_config,
           :materialized,

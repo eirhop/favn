@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunnerPoolSelection
 
   @max_retained_results 128
 
@@ -68,6 +69,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
       window: node.window,
       stage: stage,
       execution_pool: Map.get(node, :execution_pool) || execution_pool,
+      runner_pool: RunnerPoolSelection.for_node(run_state, node_key),
       status: status,
       started_at: asset_result_field(asset_result, :started_at) || now,
       finished_at: asset_result_field(asset_result, :finished_at) || now,

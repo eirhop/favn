@@ -339,6 +339,8 @@ defmodule FavnOrchestrator.Projector do
       ref: ref,
       window: Map.get(result, :window),
       stage: Map.get(result, :stage, 0),
+      execution_pool: Map.get(result, :execution_pool),
+      runner_pool: Map.get(result, :runner_pool, :default),
       status: Map.get(result, :status, :running),
       started_at: Map.get(result, :started_at),
       finished_at: Map.get(result, :finished_at),

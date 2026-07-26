@@ -35,7 +35,7 @@ defmodule Favn.Manifest.VersionTest do
     assert version.manifest_version_id == "mv_test_001"
     assert version.schema_version == Compatibility.current_schema_version()
     assert version.runner_contract_version == Compatibility.current_runner_contract_version()
-    assert version.required_runner_release_id == FavnTestSupport.runner_release_id()
+    assert version.runner_releases == %{}
     assert version.serialization_format == "json-v1"
     assert version.inserted_at == ~U[2026-01-01 00:00:00Z]
     assert is_binary(version.content_hash)
@@ -45,7 +45,7 @@ defmodule Favn.Manifest.VersionTest do
   test "fails when schema version is unsupported" do
     manifest = current_manifest(%{schema_version: 0})
 
-    assert {:error, {:unsupported_schema_version, 0, 13}} =
+    assert {:error, {:unsupported_schema_version, 0, 14}} =
              Version.new(manifest)
   end
 
@@ -217,9 +217,9 @@ defmodule Favn.Manifest.VersionTest do
     assert {:ok, %Version{} = version} = Version.new(build, manifest_version_id: "mv_test_build")
 
     assert %Manifest{} = version.manifest
-    assert version.manifest.schema_version == 13
-    assert version.manifest.runner_contract_version == 12
-    assert version.manifest.required_runner_release_id == FavnTestSupport.runner_release_id()
+    assert version.manifest.schema_version == 14
+    assert version.manifest.runner_contract_version == 13
+    assert version.manifest.runner_releases == %{}
     assert version.manifest.assets == []
     refute Map.has_key?(version.manifest, :manifest)
   end
@@ -250,7 +250,7 @@ defmodule Favn.Manifest.VersionTest do
                content_hash: original.content_hash,
                schema_version: original.schema_version,
                runner_contract_version: original.runner_contract_version,
-               required_runner_release_id: original.required_runner_release_id,
+               runner_releases: original.runner_releases,
                serialization_format: original.serialization_format,
                inserted_at: original.inserted_at
              )
@@ -259,7 +259,7 @@ defmodule Favn.Manifest.VersionTest do
     assert verified.content_hash == original.content_hash
     assert verified.schema_version == original.schema_version
     assert verified.runner_contract_version == original.runner_contract_version
-    assert verified.required_runner_release_id == original.required_runner_release_id
+    assert verified.runner_releases == original.runner_releases
     assert verified.serialization_format == original.serialization_format
     assert verified.inserted_at == original.inserted_at
   end
@@ -271,7 +271,7 @@ defmodule Favn.Manifest.VersionTest do
              Version.from_published(manifest,
                manifest_version_id: "mv_bad_hash",
                content_hash: String.duplicate("0", 64),
-               required_runner_release_id: manifest.required_runner_release_id
+               runner_releases: manifest.runner_releases
              )
 
     assert expected == String.duplicate("0", 64)
@@ -288,7 +288,7 @@ defmodule Favn.Manifest.VersionTest do
 
     assert version.schema_version == manifest.schema_version
     assert version.runner_contract_version == manifest.runner_contract_version
-    assert version.required_runner_release_id == manifest.required_runner_release_id
+    assert version.runner_releases == manifest.runner_releases
   end
 
   test "rejects version override options" do
@@ -302,21 +302,21 @@ defmodule Favn.Manifest.VersionTest do
     manifest = current_manifest()
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_release_binding")
 
-    assert {:error, {:invalid_required_runner_release_id, nil}} =
+    assert {:error, {:invalid_runner_releases, nil}} =
              Version.from_published(manifest,
                manifest_version_id: version.manifest_version_id,
                content_hash: version.content_hash
              )
 
-    assert {:error, {:manifest_required_runner_release_id_mismatch, alternate_id, required_id}} =
+    alternate = %{"default" => FavnTestSupport.runner_release_id(:alternate)}
+    required = manifest.runner_releases
+
+    assert {:error, {:manifest_runner_releases_mismatch, ^alternate, ^required}} =
              Version.from_published(manifest,
                manifest_version_id: version.manifest_version_id,
                content_hash: version.content_hash,
-               required_runner_release_id: FavnTestSupport.runner_release_id(:alternate)
+               runner_releases: alternate
              )
-
-    assert alternate_id == FavnTestSupport.runner_release_id(:alternate)
-    assert required_id == FavnTestSupport.runner_release_id()
   end
 
   test "verification rejects an envelope whose runner release identity was changed" do
@@ -324,14 +324,14 @@ defmodule Favn.Manifest.VersionTest do
 
     changed = %{
       version
-      | required_runner_release_id: FavnTestSupport.runner_release_id(:alternate)
+      | runner_releases: %{"default" => FavnTestSupport.runner_release_id(:alternate)}
     }
 
-    assert {:error, {:manifest_required_runner_release_id_mismatch, alternate_id, required_id}} =
+    assert {:error, {:manifest_runner_releases_mismatch, alternate, required}} =
              Version.verify(changed)
 
-    assert alternate_id == FavnTestSupport.runner_release_id(:alternate)
-    assert required_id == FavnTestSupport.runner_release_id()
+    assert alternate == %{"default" => FavnTestSupport.runner_release_id(:alternate)}
+    assert required == %{}
   end
 
   test "preserves incremental materialization options through canonicalization" do
@@ -435,9 +435,9 @@ defmodule Favn.Manifest.VersionTest do
     assert {:ok, package} = ExecutionPackage.new(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 13,
-      runner_contract_version: 12,
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      schema_version: 14,
+      runner_contract_version: 13,
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         persisted_manifest_asset(%Asset{
           ref: ref,
@@ -807,7 +807,7 @@ defmodule Favn.Manifest.VersionTest do
       })
 
     %Manifest{
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [asset],
       graph: %Graph{nodes: [ref], topo_order: [ref]}
     }
@@ -819,8 +819,8 @@ defmodule Favn.Manifest.VersionTest do
         connection_definitions: %{
           warehouse: %{adapter: MyApp.Adapter, module: MyApp.Warehouse}
         },
-        manifest_schema_version: 13,
-        runner_contract_version: 12
+        manifest_schema_version: 14,
+        runner_contract_version: 13
       )
 
     %{asset | target_descriptor: descriptor, semantic_generation_id: nil}
@@ -830,9 +830,9 @@ defmodule Favn.Manifest.VersionTest do
     ref = {MyApp.Assets.Roundtrip, :asset}
 
     manifest = %Manifest{
-      schema_version: 13,
-      runner_contract_version: 12,
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      schema_version: 14,
+      runner_contract_version: 13,
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{
           ref: ref,
@@ -883,9 +883,9 @@ defmodule Favn.Manifest.VersionTest do
     gold = {MyApp.Assets.LegacyGold, :asset}
 
     manifest = %Manifest{
-      schema_version: 13,
-      runner_contract_version: 12,
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      schema_version: 14,
+      runner_contract_version: 13,
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{ref: raw, module: elem(raw, 0), name: :asset, depends_on: []},
         %Asset{ref: gold, module: elem(gold, 0), name: :asset, depends_on: [raw]}
@@ -903,9 +903,9 @@ defmodule Favn.Manifest.VersionTest do
 
   test "rehydrates known manifest module atoms without loading user modules" do
     manifest = %{
-      "schema_version" => 13,
-      "runner_contract_version" => 12,
-      "required_runner_release_id" => FavnTestSupport.runner_release_id(),
+      "schema_version" => 14,
+      "runner_contract_version" => 13,
+      "runner_releases" => %{"default" => FavnTestSupport.runner_release_id()},
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"},
@@ -946,9 +946,9 @@ defmodule Favn.Manifest.VersionTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom(tag) end
 
     manifest = %{
-      "schema_version" => 13,
-      "runner_contract_version" => 12,
-      "required_runner_release_id" => FavnTestSupport.runner_release_id(),
+      "schema_version" => 14,
+      "runner_contract_version" => 13,
+      "runner_releases" => %{"default" => FavnTestSupport.runner_release_id()},
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"},
@@ -1019,9 +1019,9 @@ defmodule Favn.Manifest.VersionTest do
     assert {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
-      schema_version: 13,
-      runner_contract_version: 12,
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      schema_version: 14,
+      runner_contract_version: 13,
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,
       pipelines: [
         %Pipeline{
@@ -1055,9 +1055,9 @@ defmodule Favn.Manifest.VersionTest do
 
   test "rejects invalid unloaded module references during rehydration" do
     manifest = %{
-      "schema_version" => 13,
-      "runner_contract_version" => 12,
-      "required_runner_release_id" => FavnTestSupport.runner_release_id(),
+      "schema_version" => 14,
+      "runner_contract_version" => 13,
+      "runner_releases" => %{"default" => FavnTestSupport.runner_release_id()},
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.not-a-module", "name" => "asset"},
@@ -1080,9 +1080,9 @@ defmodule Favn.Manifest.VersionTest do
     module = "Elixir." <> String.duplicate("A", 249)
 
     manifest = %{
-      "schema_version" => 13,
-      "runner_contract_version" => 12,
-      "required_runner_release_id" => FavnTestSupport.runner_release_id(),
+      "schema_version" => 14,
+      "runner_contract_version" => 13,
+      "runner_releases" => %{"default" => FavnTestSupport.runner_release_id()},
       "assets" => [
         %{
           "ref" => %{"module" => module, "name" => "asset"},
@@ -1112,9 +1112,9 @@ defmodule Favn.Manifest.VersionTest do
     name = "generated_asset_#{unique}"
 
     manifest = %{
-      "schema_version" => 13,
-      "runner_contract_version" => 12,
-      "required_runner_release_id" => FavnTestSupport.runner_release_id(),
+      "schema_version" => 14,
+      "runner_contract_version" => 13,
+      "runner_releases" => %{"default" => FavnTestSupport.runner_release_id()},
       "assets" => [
         %{
           "ref" => %{"module" => module, "name" => name},
@@ -1158,9 +1158,9 @@ defmodule Favn.Manifest.VersionTest do
       end)
 
     manifest = %{
-      "schema_version" => 13,
-      "runner_contract_version" => 12,
-      "required_runner_release_id" => FavnTestSupport.runner_release_id(),
+      "schema_version" => 14,
+      "runner_contract_version" => 13,
+      "runner_releases" => %{"default" => FavnTestSupport.runner_release_id()},
       "assets" => assets,
       "pipelines" => [],
       "schedules" => [],
@@ -1175,9 +1175,32 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   defp current_manifest(overrides \\ %{}) do
-    %{assets: []}
-    |> FavnTestSupport.with_manifest_contract()
-    |> Map.merge(overrides)
+    manifest =
+      %{assets: []}
+      |> FavnTestSupport.with_manifest_contract()
+      |> Map.merge(overrides)
+
+    if Map.has_key?(overrides, :runner_releases) do
+      manifest
+    else
+      pools =
+        manifest.assets
+        |> Enum.map(&(Map.get(&1, :runner_pool) || :default))
+        |> Kernel.++(
+          manifest
+          |> Map.get(:pipelines, [])
+          |> Enum.map(&Map.get(&1, :runner_pool))
+          |> Enum.reject(&is_nil/1)
+        )
+        |> Enum.uniq()
+
+      releases =
+        Map.new(pools, fn pool ->
+          {Atom.to_string(pool), FavnTestSupport.runner_release_id()}
+        end)
+
+      Map.put(manifest, :runner_releases, releases)
+    end
   end
 
   defp current_manifest_struct(overrides \\ %{}) do

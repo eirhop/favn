@@ -52,26 +52,13 @@ defmodule FavnStoragePostgres.Runs.Decoder do
           manifest_version_id: manifest.manifest_version_id,
           content_hash: manifest.content_hash,
           required_runner_release_id: manifest.required_runner_release_id,
-          atom_strings: manifest.atom_strings
+          atom_strings: manifest.atom_strings,
+          manifest: manifest.manifest
         }
       )
       |> Repo.all()
 
-    legacy_ids =
-      manifests
-      |> Enum.filter(&is_nil(&1.atom_strings))
-      |> Enum.map(& &1.manifest_version_id)
-
-    legacy_manifests =
-      from(manifest in ManifestVersion,
-        where: manifest.manifest_version_id in ^legacy_ids,
-        select: {manifest.manifest_version_id, manifest.manifest}
-      )
-      |> Repo.all()
-      |> Map.new()
-
     Map.new(manifests, fn manifest ->
-      manifest = %{manifest | manifest: Map.get(legacy_manifests, manifest.manifest_version_id)}
       {manifest.manifest_version_id, manifest}
     end)
   end
@@ -84,18 +71,13 @@ defmodule FavnStoragePostgres.Runs.Decoder do
           manifest_version_id: manifest.manifest_version_id,
           content_hash: manifest.content_hash,
           required_runner_release_id: manifest.required_runner_release_id,
-          atom_strings: manifest.atom_strings
+          atom_strings: manifest.atom_strings,
+          manifest: manifest.manifest
         }
       )
       |> Repo.one()
 
-    case manifest do
-      %ManifestVersion{atom_strings: nil} = legacy ->
-        %{legacy | manifest: Repo.get!(ManifestVersion, manifest_version_id).manifest}
-
-      other ->
-        other
-    end
+    manifest
   end
 
   defp load_plans(rows) do
@@ -134,7 +116,8 @@ defmodule FavnStoragePostgres.Runs.Decoder do
       manifest_version_id: manifest.manifest_version_id,
       content_hash: Base.encode16(manifest.content_hash, case: :lower),
       required_runner_release_id: manifest.required_runner_release_id,
-      atom_strings: manifest.atom_strings || legacy_atom_strings(manifest)
+      atom_strings: manifest.atom_strings || legacy_atom_strings(manifest),
+      manifest_index_json: Jason.encode!(manifest.manifest)
     }
 
     case RunSnapshotCodec.decode_run(run_record, manifest_record) do

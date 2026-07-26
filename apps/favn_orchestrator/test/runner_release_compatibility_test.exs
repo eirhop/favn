@@ -188,8 +188,12 @@ defmodule FavnOrchestrator.RunnerReleaseCompatibilityTest do
   end
 
   defp version(release_id) do
-    manifest = FavnTestSupport.with_manifest_contract(%Manifest{}, release_id)
-    {:ok, version} = Version.new(manifest, manifest_version_id: "release-bound-manifest")
-    version
+    %Version{
+      manifest_version_id: "release-bound-manifest",
+      content_hash: String.duplicate("a", 64),
+      runner_releases: %{"default" => release_id},
+      required_runner_release_id: release_id,
+      manifest: %Manifest{runner_releases: %{"default" => release_id}}
+    }
   end
 end

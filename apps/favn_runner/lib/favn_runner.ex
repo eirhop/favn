@@ -92,7 +92,10 @@ defmodule FavnRunner do
 
   def register_manifest(%Version{} = version, opts) when is_list(opts) do
     with_admission(opts, fn ->
-      with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+      with :ok <-
+             ReleaseVerifier.verify_required_release(
+               Version.transitional_default_release!(version)
+             ) do
         Server.register_manifest(version, opts)
       end
     end)
@@ -104,7 +107,8 @@ defmodule FavnRunner do
   def ensure_manifest(version, opts \\ [])
 
   def ensure_manifest(%Version{} = version, opts) when is_list(opts) do
-    with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+    with :ok <-
+           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)) do
       ManifestStore.ensure(version.manifest_version_id, version.content_hash,
         server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
       )
@@ -126,7 +130,10 @@ defmodule FavnRunner do
     with_admission(opts, fn ->
       manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
 
-      with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id),
+      with :ok <-
+             ReleaseVerifier.verify_required_release(
+               Version.transitional_default_release!(version)
+             ),
            :ok <-
              ManifestStore.acquire(version, lease_id, expires_at,
                server: manifest_store,
@@ -564,7 +571,8 @@ defmodule FavnRunner do
   end
 
   defp generation_asset(%Version{manifest: %Manifest{}} = version, asset_ref, _opts) do
-    with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+    with :ok <-
+           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)) do
       ManifestResolver.resolve_asset(version, asset_ref)
     end
   end
@@ -572,7 +580,8 @@ defmodule FavnRunner do
   defp generation_asset(%Version{manifest: nil} = version, asset_ref, opts) do
     manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
 
-    with :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id),
+    with :ok <-
+           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)),
          {:ok, handle} <-
            ManifestStore.fetch_handle(version.manifest_version_id, version.content_hash,
              server: manifest_store
@@ -587,9 +596,10 @@ defmodule FavnRunner do
            ManifestStore.fetch(request.manifest_version_id, request.manifest_content_hash,
              server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
            ),
-         :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id),
+         :ok <-
+           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)),
          true <-
-           version.required_runner_release_id == request.required_runner_release_id or
+           Version.transitional_default_release!(version) == request.required_runner_release_id or
              {:error, :runner_release_mismatch} do
       {:ok, version}
     end

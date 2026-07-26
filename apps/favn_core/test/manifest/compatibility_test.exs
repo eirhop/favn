@@ -11,23 +11,23 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects the previous schema version" do
-    manifest = current_manifest(%{schema_version: 12})
+    manifest = current_manifest(%{schema_version: 13})
 
-    assert {:error, {:unsupported_schema_version, 12, 13}} =
+    assert {:error, {:unsupported_schema_version, 13, 14}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported schema version" do
-    manifest = current_manifest(%{schema_version: 14})
+    manifest = current_manifest(%{schema_version: 15})
 
-    assert {:error, {:unsupported_schema_version, 14, 13}} =
+    assert {:error, {:unsupported_schema_version, 15, 14}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported runner contract version" do
-    manifest = current_manifest(%{runner_contract_version: 13})
+    manifest = current_manifest(%{runner_contract_version: 14})
 
-    assert {:error, {:unsupported_runner_contract_version, 13, 12}} =
+    assert {:error, {:unsupported_runner_contract_version, 14, 13}} =
              Compatibility.validate_manifest(manifest)
   end
 
@@ -61,9 +61,9 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects the previous runner contract version" do
-    manifest = current_manifest(%{runner_contract_version: 11})
+    manifest = current_manifest(%{runner_contract_version: 12})
 
-    assert {:error, {:unsupported_runner_contract_version, 11, 12}} =
+    assert {:error, {:unsupported_runner_contract_version, 12, 13}} =
              Compatibility.validate_manifest(manifest)
   end
 
@@ -81,17 +81,17 @@ defmodule Favn.Manifest.CompatibilityTest do
              Compatibility.validate_manifest(manifest)
   end
 
-  test "rejects missing runner release identity" do
-    manifest = Map.delete(current_manifest(), :required_runner_release_id)
+  test "rejects missing runner release map" do
+    manifest = Map.delete(current_manifest(), :runner_releases)
 
-    assert {:error, {:missing_manifest_field, :required_runner_release_id}} =
+    assert {:error, {:missing_manifest_field, :runner_releases}} =
              Compatibility.validate_manifest(manifest)
   end
 
-  test "rejects a non-canonical runner release identity" do
-    manifest = current_manifest(%{required_runner_release_id: "rr_NOT_CANONICAL"})
+  test "rejects a non-canonical runner release identity in the map" do
+    manifest = current_manifest(%{runner_releases: %{"default" => "rr_NOT_CANONICAL"}})
 
-    assert {:error, {:invalid_required_runner_release_id, "rr_NOT_CANONICAL"}} =
+    assert {:error, {:invalid_runner_release_field, :runner_release_id, :invalid_id}} =
              Compatibility.validate_manifest(manifest)
   end
 

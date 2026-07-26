@@ -375,7 +375,10 @@ defmodule FavnRunner.Server do
              ManifestStore.fetch(request.manifest_version_id, request.manifest_content_hash,
                server: state.manifest_store
              ),
-           :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+           :ok <-
+             ReleaseVerifier.verify_required_release(
+               Version.transitional_default_release!(version)
+             ) do
         Inspection.inspect_relation(request, version)
       end
 

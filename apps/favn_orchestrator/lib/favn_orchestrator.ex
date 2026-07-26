@@ -1060,7 +1060,7 @@ defmodule FavnOrchestrator do
       request = %RelationInspectionRequest{
         manifest_version_id: manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        required_runner_release_id: Version.transitional_default_release!(version),
         asset_ref: asset_ref,
         sample_limit: Keyword.get(opts, :sample_limit, 20)
       }
@@ -1073,7 +1073,7 @@ defmodule FavnOrchestrator do
         {:ok, %RelationInspectionResult{} = result} ->
           with :ok <-
                  RunnerReleaseCompatibility.verify_inspection_result(
-                   version.required_runner_release_id,
+                   Version.transitional_default_release!(version),
                    result
                  ) do
             {:ok, result}

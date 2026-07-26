@@ -20,7 +20,7 @@ defmodule Mix.Tasks.Favn.Publish do
       {:ok, summary} ->
         IO.puts("Favn manifest publication complete")
         IO.puts("manifest version: #{summary.manifest_version_id}")
-        IO.puts("runner release: #{summary.required_runner_release_id}")
+        IO.puts("runner releases: #{inspect(summary.runner_releases)}")
         IO.puts("status: #{summary.status}")
 
       {:error, {:missing_required_env, name}} ->

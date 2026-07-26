@@ -92,6 +92,7 @@ defmodule FavnOrchestrator.CoverageTest do
       registry: FakeStore,
       runs: FakeStore,
       run_submissions: FakeStore,
+      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
       run_ownership: FakeStore,
       scheduler: FakeStore,
       admission: FakeStore,
@@ -318,11 +319,12 @@ defmodule FavnOrchestrator.CoverageTest do
     %Version{
       manifest_version_id: "coverage-manifest",
       content_hash: "sha256:coverage-manifest",
-      schema_version: 13,
-      runner_contract_version: 12,
+      schema_version: 14,
+      runner_contract_version: 13,
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       manifest: %Manifest{
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [asset]
       }
     }

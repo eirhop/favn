@@ -49,6 +49,7 @@ defmodule Favn.Contracts.ContractLockTest do
         :required_runner_release_id,
         :run_id,
         :run_started_at,
+        :runner_pool,
         :runtime_input_pin,
         :stage,
         :logical_target_id,

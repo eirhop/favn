@@ -381,7 +381,8 @@ defmodule FavnOrchestrator.Backfills do
         deployment_id: submission.deployment_id,
         manifest_version_id: submission.version.manifest_version_id,
         manifest_content_hash: submission.version.content_hash,
-        required_runner_release_id: submission.version.required_runner_release_id,
+        required_runner_release_id:
+          Favn.Manifest.Version.transitional_default_release!(submission.version),
         asset_ref: asset_ref,
         target_refs: target_refs,
         plan: nil,

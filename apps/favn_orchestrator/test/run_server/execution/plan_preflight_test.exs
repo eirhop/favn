@@ -83,6 +83,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
       registry: FakeStore,
       runs: FakeStore,
       run_submissions: FakeStore,
+      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
       run_ownership: FakeStore,
       scheduler: FakeStore,
       admission: FakeStore,
@@ -360,10 +361,11 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
     assert {:terminal,
             %RunState{
               status: :error,
-              error: {:runner_release_mismatch, ^alternate, required}
+              error: {:runner_release_mismatch, actual, required}
             }} = Execution.start_state(run, version)
 
-    assert required == version.required_runner_release_id
+    assert actual == %{"default" => alternate}
+    assert required == version.runner_releases
     refute_receive {:manifest_acquired, _lease_id, _refs, _opts}
   end
 

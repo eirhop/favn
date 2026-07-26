@@ -126,6 +126,14 @@ defmodule FavnStoragePostgres.Instrumented.RunSubmissions do
     store: :run_submissions
 end
 
+defmodule FavnStoragePostgres.Instrumented.RunnerTasks do
+  @moduledoc false
+  use FavnStoragePostgres.InstrumentedStore,
+    behaviour: FavnOrchestrator.Persistence.RunnerTaskStore,
+    implementation: FavnStoragePostgres.RunnerTasks.Store,
+    store: :runner_tasks
+end
+
 defmodule FavnStoragePostgres.Instrumented.RunOwnership do
   @moduledoc false
   use FavnStoragePostgres.InstrumentedStore,

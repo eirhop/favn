@@ -252,7 +252,8 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
                 %{
                   workspace_id: workspace_id,
                   manifest_version_id: version.manifest_version_id,
-                  required_runner_release_id: version.required_runner_release_id,
+                  required_runner_release_id:
+                    Favn.Manifest.Version.transitional_default_release!(version),
                   runner_cache: :registered
                 }
                 | manifests

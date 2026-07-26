@@ -119,6 +119,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       registry: EmptyRunsStore,
       runs: EmptyRunsStore,
       run_submissions: EmptyRunsStore,
+      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
       run_ownership: EmptyRunsStore,
       scheduler: EmptyRunsStore,
       admission: EmptyRunsStore,

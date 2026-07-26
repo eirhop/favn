@@ -4,6 +4,7 @@ defmodule FavnRunner.Inspection do
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.SQL.Client
   alias Favn.SQL.Error

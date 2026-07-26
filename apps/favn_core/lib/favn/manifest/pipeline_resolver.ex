@@ -86,6 +86,7 @@ defmodule Favn.Manifest.PipelineResolver do
            retry_policy: normalized_pipeline.retry_policy,
            max_concurrency: normalized_pipeline.max_concurrency,
            execution_pool: normalized_pipeline.execution_pool,
+           runner_pool: normalized_pipeline.runner_pool,
            resource_recovery: normalized_pipeline.resource_recovery,
            schedule: schedule,
            source: normalized_pipeline.source,
@@ -120,6 +121,7 @@ defmodule Favn.Manifest.PipelineResolver do
          :ok <- validate_retry_policy(pipeline.retry_policy),
          :ok <- validate_max_concurrency(pipeline.max_concurrency),
          :ok <- validate_execution_pool(pipeline.execution_pool),
+         :ok <- validate_runner_pool(pipeline.runner_pool),
          :ok <- validate_resource_recovery(pipeline.resource_recovery) do
       validate_outputs(pipeline)
     end
@@ -164,6 +166,9 @@ defmodule Favn.Manifest.PipelineResolver do
   defp validate_execution_pool(nil), do: :ok
   defp validate_execution_pool(value) when is_atom(value), do: :ok
   defp validate_execution_pool(value), do: {:error, {:invalid_execution_pool, value}}
+
+  defp validate_runner_pool(nil), do: :ok
+  defp validate_runner_pool(value), do: Favn.RunnerPool.validate_source(value)
 
   defp validate_resource_recovery(nil), do: :ok
 

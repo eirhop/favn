@@ -58,6 +58,7 @@ defmodule Favn.Manifest.Asset do
           target_descriptor: TargetDescriptor.t() | nil,
           semantic_generation_id: String.t() | nil,
           execution_pool: atom() | nil,
+          runner_pool: atom() | nil,
           metadata: map()
         }
 
@@ -85,6 +86,7 @@ defmodule Favn.Manifest.Asset do
     target_descriptor: nil,
     semantic_generation_id: nil,
     execution_pool: nil,
+    runner_pool: nil,
     metadata: %{}
   ]
 
@@ -118,6 +120,7 @@ defmodule Favn.Manifest.Asset do
       execution_package_hash: package_hash(package),
       assurance: package_assurance(package),
       execution_pool: normalize_execution_pool(Map.get(asset, :execution_pool)),
+      runner_pool: normalize_runner_pool(Map.get(asset, :runner_pool)),
       metadata: normalize_map(Map.get(asset, :meta, %{}))
     }
 
@@ -152,6 +155,9 @@ defmodule Favn.Manifest.Asset do
 
   defp normalize_execution_pool(value) when is_atom(value), do: value
   defp normalize_execution_pool(_other), do: nil
+
+  defp normalize_runner_pool(value) when is_atom(value) and not is_nil(value), do: value
+  defp normalize_runner_pool(_other), do: nil
 
   defp normalize_partition_spec(nil), do: nil
   defp normalize_partition_spec(value), do: PartitionSpec.normalize!(value)

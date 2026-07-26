@@ -37,6 +37,7 @@ defmodule Favn.Contracts.RunnerWork do
           run_started_at: DateTime.t() | nil,
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
+          runner_pool: atom(),
           required_runner_release_id: String.t(),
           manifest_lease_id: String.t() | nil,
           node_identity: NodeIdentity.t() | nil,
@@ -73,6 +74,7 @@ defmodule Favn.Contracts.RunnerWork do
             run_started_at: nil,
             manifest_version_id: nil,
             manifest_content_hash: nil,
+            runner_pool: :default,
             required_runner_release_id: nil,
             manifest_lease_id: nil,
             node_identity: nil,
@@ -159,6 +161,10 @@ defmodule Favn.Contracts.RunnerWork do
   def execution_pool(%__MODULE__{metadata: %{execution_pool: pool}}), do: pool
   def execution_pool(%__MODULE__{}), do: nil
 
+  @doc "Returns the exact logical runner pool frozen for this work request."
+  @spec runner_pool(t()) :: atom()
+  def runner_pool(%__MODULE__{runner_pool: pool}), do: pool
+
   @doc """
   Derives orchestrator lifecycle metadata from explicit work fields.
   """
@@ -172,6 +178,7 @@ defmodule Favn.Contracts.RunnerWork do
     |> Map.put(:node_key, node_key(work))
     |> Map.put(:window, window(work))
     |> Map.put(:execution_pool, execution_pool(work))
+    |> Map.put(:runner_pool, runner_pool(work))
     |> Map.put(:deadline_at, work.deadline_at)
     |> Map.put(:required_runner_release_id, work.required_runner_release_id)
     |> Map.put(:target_operation, work.target_operation)

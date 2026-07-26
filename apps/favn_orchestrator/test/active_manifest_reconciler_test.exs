@@ -40,7 +40,13 @@ defmodule FavnOrchestrator.ActiveManifestReconcilerTest do
     start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 1_000})
     :ok = Lifecycle.mark_accepting(lifecycle)
 
-    version = %Version{manifest_version_id: "mv_reconciled"}
+    release_id = FavnTestSupport.runner_release_id()
+
+    version = %Version{
+      manifest_version_id: "mv_reconciled",
+      runner_releases: %{"default" => release_id},
+      required_runner_release_id: release_id
+    }
 
     load_manifest = fn
       "active" -> {:ok, version}

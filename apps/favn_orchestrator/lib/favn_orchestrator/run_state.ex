@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.RunState do
           deployment_id: String.t() | nil,
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
+          runner_releases: Favn.RunnerPool.releases(),
           required_runner_release_id: String.t() | nil,
           asset_ref: Favn.Ref.t(),
           target_refs: [Favn.Ref.t()],
@@ -55,6 +56,7 @@ defmodule FavnOrchestrator.RunState do
     :deployment_id,
     :manifest_version_id,
     :manifest_content_hash,
+    :runner_releases,
     :required_runner_release_id,
     :asset_ref,
     :plan,
@@ -88,6 +90,7 @@ defmodule FavnOrchestrator.RunState do
   def new(opts) when is_list(opts) do
     now = DateTime.utc_now()
     plan = Keyword.get(opts, :plan)
+    runner_releases = runner_releases_from_opts!(opts)
 
     %__MODULE__{
       id: Keyword.fetch!(opts, :id),
@@ -95,7 +98,11 @@ defmodule FavnOrchestrator.RunState do
       deployment_id: Keyword.get(opts, :deployment_id),
       manifest_version_id: Keyword.fetch!(opts, :manifest_version_id),
       manifest_content_hash: Keyword.fetch!(opts, :manifest_content_hash),
-      required_runner_release_id: Keyword.fetch!(opts, :required_runner_release_id),
+      runner_releases: runner_releases,
+      required_runner_release_id:
+        Keyword.get_lazy(opts, :required_runner_release_id, fn ->
+          Map.get(runner_releases, "default")
+        end),
       asset_ref: Keyword.fetch!(opts, :asset_ref),
       target_refs: normalize_refs(Keyword.get(opts, :target_refs, [])),
       plan: plan,
@@ -119,6 +126,16 @@ defmodule FavnOrchestrator.RunState do
       updated_at: now
     }
     |> with_snapshot_hash()
+  end
+
+  defp runner_releases_from_opts!(opts) do
+    case Keyword.fetch(opts, :runner_releases) do
+      {:ok, releases} ->
+        releases
+
+      :error ->
+        %{"default" => Keyword.fetch!(opts, :required_runner_release_id)}
+    end
   end
 
   @doc false
@@ -260,10 +277,22 @@ defmodule FavnOrchestrator.RunState do
   @spec plan_hash(Favn.Plan.t() | nil) :: String.t()
   def plan_hash(plan) do
     plan
+    |> normalize_plan_for_hash()
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end
+
+  defp normalize_plan_for_hash(%Favn.Plan{nodes: nodes} = plan) do
+    nodes =
+      Map.new(nodes, fn {node_key, node} ->
+        {node_key, Map.put_new(node, :runner_pool, nil)}
+      end)
+
+    %{plan | nodes: nodes}
+  end
+
+  defp normalize_plan_for_hash(plan), do: plan
 
   defp ensure_plan_hash(%__MODULE__{plan_hash: hash} = run)
        when is_binary(hash) and byte_size(hash) == 64,
@@ -286,6 +315,7 @@ defmodule FavnOrchestrator.RunState do
       :deployment_id,
       :manifest_version_id,
       :manifest_content_hash,
+      :runner_releases,
       :required_runner_release_id
     ]
 

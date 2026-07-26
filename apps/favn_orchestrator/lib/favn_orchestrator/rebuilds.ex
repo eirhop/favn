@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Rebuilds do
   alias Favn.Manifest.Index, as: ManifestIndex
   alias Favn.Manifest.PlanningIndex
   alias Favn.Manifest.TargetDescriptor
+  alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.TargetGenerationRelation
   alias Favn.TargetCompatibility.PhysicalFingerprint
@@ -358,7 +359,7 @@ defmodule FavnOrchestrator.Rebuilds do
         root_target_id: root.target_descriptor.target_id,
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        required_runner_release_id: Version.transitional_default_release!(version),
         deployment_id: runtime.deployment_id,
         evaluated_at: evaluated_at,
         reason: reason,
@@ -1086,7 +1087,7 @@ defmodule FavnOrchestrator.Rebuilds do
          request <- %RelationInspectionRequest{
            manifest_version_id: version.manifest_version_id,
            manifest_content_hash: version.content_hash,
-           required_runner_release_id: version.required_runner_release_id,
+           required_runner_release_id: Version.transitional_default_release!(version),
            asset_ref: asset.ref,
            relation: relation,
            include: [:relation, :columns, :table_metadata],

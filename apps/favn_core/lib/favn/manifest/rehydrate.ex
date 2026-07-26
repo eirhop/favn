@@ -77,7 +77,7 @@ defmodule Favn.Manifest.Rehydrate do
     %Manifest{
       schema_version: field_value(value, :schema_version),
       runner_contract_version: field_value(value, :runner_contract_version),
-      required_runner_release_id: field_value(value, :required_runner_release_id),
+      runner_releases: value |> field_value(:runner_releases, %{}) |> plain_map(),
       assets: assets,
       pipelines: value |> field_value(:pipelines, []) |> build_pipelines(),
       schedules: value |> field_value(:schedules, []) |> build_schedules(),
@@ -117,6 +117,7 @@ defmodule Favn.Manifest.Rehydrate do
       target_descriptor: value |> field_value(:target_descriptor) |> build_target_descriptor(),
       semantic_generation_id: field_value(value, :semantic_generation_id),
       execution_pool: value |> field_value(:execution_pool) |> decode_atom_optional(),
+      runner_pool: value |> field_value(:runner_pool, "default") |> decode_atom_optional(),
       metadata: value |> field_value(:metadata, %{}) |> build_metadata()
     }
   end
@@ -955,6 +956,7 @@ defmodule Favn.Manifest.Rehydrate do
       retry_policy: value |> field_value(:retry_policy) |> build_retry_policy(),
       max_concurrency: value |> field_value(:max_concurrency) |> decode_max_concurrency(),
       execution_pool: value |> field_value(:execution_pool) |> decode_atom_optional(),
+      runner_pool: value |> field_value(:runner_pool) |> decode_atom_optional(),
       resource_recovery:
         value |> field_value(:resource_recovery) |> Favn.ResourceRecovery.Policy.from_value!(),
       source: value |> field_value(:source) |> decode_atom_optional(),

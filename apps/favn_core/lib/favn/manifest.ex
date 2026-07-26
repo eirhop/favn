@@ -5,8 +5,8 @@ defmodule Favn.Manifest do
   `%Favn.Manifest{}` is the stable payload that gets serialized, hashed, and
   pinned into `%Favn.Manifest.Version{}`. Build-only fields such as timestamps
   and diagnostics do not belong here. Every valid current manifest is bound to
-  the operator-selected runner build through `required_runner_release_id`;
-  that required field participates in canonical serialization and identity.
+  the operator-selected runner builds through `runner_releases`; that required
+  pool-to-release map participates in canonical serialization and identity.
   """
 
   alias Favn.Manifest.ContractVersions
@@ -18,7 +18,7 @@ defmodule Favn.Manifest do
   @type t :: %__MODULE__{
           schema_version: pos_integer(),
           runner_contract_version: pos_integer(),
-          required_runner_release_id: String.t(),
+          runner_releases: Favn.RunnerPool.releases(),
           assets: [Favn.Manifest.Asset.t()],
           pipelines: [Favn.Manifest.Pipeline.t()],
           schedules: [Favn.Manifest.Schedule.t()],
@@ -28,7 +28,7 @@ defmodule Favn.Manifest do
 
   defstruct schema_version: @schema_version,
             runner_contract_version: @runner_contract_version,
-            required_runner_release_id: nil,
+            runner_releases: %{},
             assets: [],
             pipelines: [],
             schedules: [],

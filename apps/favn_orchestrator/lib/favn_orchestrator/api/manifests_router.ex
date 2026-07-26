@@ -78,11 +78,11 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, {:manifest_runner_contract_version_mismatch, _expected, _actual}} ->
         validation_error(conn, "Manifest runner contract version does not match payload")
 
-      {:error, {:invalid_required_runner_release_id, _value}} ->
-        validation_error(conn, "Invalid required runner release id")
+      {:error, {:invalid_runner_releases, _value}} ->
+        validation_error(conn, "Invalid runner release map")
 
-      {:error, {:manifest_required_runner_release_id_mismatch, _expected, _actual}} ->
-        validation_error(conn, "Manifest runner release id does not match payload")
+      {:error, {:manifest_runner_releases_mismatch, _expected, _actual}} ->
+        validation_error(conn, "Manifest runner release map does not match payload")
 
       {:error, :manifest_version_conflict} ->
         Response.error(
@@ -338,6 +338,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
            activated: true,
            manifest_version_id: manifest_version_id,
            deployment_id: runtime.deployment_id,
+           runner_releases: runtime.runner_releases,
            required_runner_release_id: runtime.required_runner_release_id,
            revision: runtime.revision
          }, "manifest", manifest_version_id}
@@ -383,6 +384,20 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           "Historical manifests cannot be activated",
           %{},
           "historical_manifest_not_activatable"
+        )
+
+      {:error, {:runner_protocol_not_activatable, protocol_version}} ->
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          503,
+          "runner_protocol_not_activatable",
+          "Runner protocol is not yet available for activation",
+          %{runner_protocol_version: protocol_version}
         )
 
       {:error, {:runner_release_mismatch, required, actual}} ->
@@ -552,7 +567,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     |> put_option(:content_hash, Map.get(params, "content_hash"))
     |> put_option(:schema_version, Map.get(params, "schema_version"))
     |> put_option(:runner_contract_version, Map.get(params, "runner_contract_version"))
-    |> put_option(:required_runner_release_id, Map.get(params, "required_runner_release_id"))
+    |> put_option(:runner_releases, Map.get(params, "runner_releases"))
     |> put_option(:serialization_format, Map.get(params, "serialization_format"))
   end
 
@@ -560,6 +575,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   defp put_option(opts, key, value) when is_binary(value) and value != "",
     do: Keyword.put(opts, key, value)
+
+  defp put_option(opts, :runner_releases, value) when is_map(value),
+    do: Keyword.put(opts, :runner_releases, value)
 
   defp put_option(opts, _key, _value), do: opts
 

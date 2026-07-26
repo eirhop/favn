@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Favn.Build.Manifest do
 
   @moduledoc """
   Builds `.favn/dist/manifest/<manifest_version_id>` for the immutable
-  `--runner-release-id` selected by the user or CI system.
+  repeated `--runner-release pool=rr_...` mappings selected by the user or CI.
   """
 
   alias FavnAuthoring.Deployment.ManifestBuilder
@@ -29,7 +29,7 @@ defmodule Mix.Tasks.Favn.Build.Manifest do
       {:ok, result} ->
         IO.puts("Favn manifest build complete")
         IO.puts("manifest version: #{result.manifest_version_id}")
-        IO.puts("runner release: #{result.required_runner_release_id}")
+        IO.puts("runner releases: #{inspect(result.runner_releases)}")
         IO.puts("dist: #{result.dist_dir}")
 
       {:error, reason} ->
@@ -41,17 +41,29 @@ defmodule Mix.Tasks.Favn.Build.Manifest do
   def parse_args(args) do
     opts =
       CLIArgs.parse_no_args!("favn.build.manifest", args,
-        runner_release_id: :string,
+        runner_release: :keep,
         root_dir: :string
       )
 
-    if present?(opts[:runner_release_id]) do
-      opts
-    else
-      Mix.raise("missing required option(s): --runner-release-id")
+    releases = Keyword.get_values(opts, :runner_release)
+
+    if releases == [] do
+      Mix.raise("missing required option(s): --runner-release pool=rr_...")
     end
+
+    opts
+    |> Keyword.delete(:runner_release)
+    |> Keyword.put(:runner_releases, parse_runner_releases!(releases))
   end
 
-  defp present?(value), do: is_binary(value) and value != ""
+  defp parse_runner_releases!(entries) do
+    Map.new(entries, fn entry ->
+      case String.split(entry, "=", parts: 2) do
+        [pool, release_id] when pool != "" and release_id != "" -> {pool, release_id}
+        _other -> Mix.raise("invalid --runner-release #{inspect(entry)}; expected pool=rr_...")
+      end
+    end)
+  end
+
   defp format_reason(reason), do: inspect(reason)
 end

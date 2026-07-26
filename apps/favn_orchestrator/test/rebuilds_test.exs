@@ -181,6 +181,7 @@ defmodule FavnOrchestrator.RebuildsTest do
       registry: Store,
       runs: Store,
       run_submissions: Store,
+      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
       run_ownership: Store,
       scheduler: Store,
       admission: Store,

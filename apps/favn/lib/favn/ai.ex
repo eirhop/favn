@@ -240,12 +240,12 @@ defmodule Favn.AI do
     `config :favn, discovery: [apps: [...], assets: :all, pipelines: :all,
     schedules: :all, connections: :all]`, also read `Favn.ModuleDiscovery`. Read
     `Favn.Manifest.Generator` if you need internal compilation details. For
-    deployment, call `Favn.build_manifest/1` with the operator-supplied
-    `runner_release_id`,
-    followed by `Favn.prepare_manifest_publication/2`: schema 12 has one compact
-    manifest index bound to its exact `required_runner_release_id` and immutable
-    content-addressed SQL execution packages, with no inline SQL manifest form
-    or compatibility fallback.
+    deployment, call `Favn.build_manifest/1` with the exact operator-supplied
+    `runner_releases` pool map, followed by
+    `Favn.prepare_manifest_publication/2`: schema 14 has one compact manifest
+    index bound to exact releases per pool and immutable content-addressed SQL
+    execution packages, with no inline SQL manifest form or compatibility
+    fallback.
   - To resolve pipeline targets, read `Favn resolve_pipeline`, then
     `Favn.Pipeline.Resolver` if needed.
   - To plan execution order, read `Favn plan_asset_run`, then

@@ -178,7 +178,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
     request = %GenerationMarkerInitializationRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Version.transitional_default_release!(version),
       target_id: target_id,
       target_generation_id: generation_id,
       active_relation: target_relation(manifest_index, asset_ref),
@@ -247,7 +247,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
     request = %RelationInspectionRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Version.transitional_default_release!(version),
       asset_ref: asset_ref,
       include: [:relation, :columns, :table_metadata],
       sample_limit: 0
@@ -258,7 +258,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
            RunnerDispatch.inspect_relation(runner, request, runtime.runner_client_opts),
          :ok <-
            RunnerReleaseCompatibility.verify_inspection_result(
-             version.required_runner_release_id,
+             Version.transitional_default_release!(version),
              result
            ),
          {:ok, %PhysicalFingerprint{} = fingerprint} <-

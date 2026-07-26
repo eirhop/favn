@@ -9,7 +9,8 @@ versions, or preparing deployment artifacts.
 Favn still uses manifests internally. Schema 12 publishes one compact manifest
 index plus immutable, content-addressed execution packages. The index describes
 assets, pipelines, schedules, dependencies, and compact runtime metadata. Each
-manifest is bound to the exact operator-supplied runner release ID it requires, and each
+manifest binds every effective runner pool to its exact operator-supplied
+release ID, and each
 SQL asset points to exactly one package containing its complete executable SQL payload.
 
 Runtime systems then use a pinned manifest version instead of rediscovering your
@@ -68,8 +69,8 @@ image:
 Generate from configured discovery:
 
 ```elixir
-runner_release_id = "rr_" <> String.duplicate("a", 64)
-{:ok, manifest} = Favn.generate_manifest(runner_release_id: runner_release_id)
+runner_releases = %{"default" => "rr_" <> String.duplicate("a", 64)}
+{:ok, manifest} = Favn.generate_manifest(runner_releases: runner_releases)
 ```
 
 Generate from explicit modules:
@@ -80,7 +81,7 @@ Generate from explicit modules:
     asset_modules: [MyApp.Lakehouse.Raw.Sales.Orders],
     pipeline_modules: [MyApp.Pipelines.DailySales],
     connection_modules: [MyApp.Connections.Warehouse],
-    runner_release_id: runner_release_id
+    runner_releases: runner_releases
   )
 ```
 
@@ -100,7 +101,7 @@ Pin, serialize, hash, and validate:
 Prepare the complete deployment publication:
 
 ```elixir
-{:ok, build} = Favn.build_manifest(runner_release_id: runner_release_id)
+{:ok, build} = Favn.build_manifest(runner_releases: runner_releases)
 {:ok, publication} = Favn.prepare_manifest_publication(build)
 
 publication.version             # compact pinned index
@@ -135,8 +136,8 @@ A manifest can include:
 - effective freshness, window, coverage, timezone provenance, and target descriptors
 - JSON-safe asset and pipeline settings
 - runtime config requirements
-- schema and runner contract version 11 data used by the runtime
-- the exact operator-supplied `required_runner_release_id`
+- schema 14 and runner protocol 13 data used by the runtime
+- the exact operator-supplied `runner_releases` pool-to-release map
 
 Execution packages contain the full SQL templates, runtime-input resolver refs,
 typed output contracts, and executable generated/custom checks. They are not a
@@ -155,7 +156,7 @@ by hand.
 {:ok, manifest} =
   Favn.generate_manifest(
     asset_modules: [MyApp.Assets.Orders],
-    runner_release_id: runner_release_id
+    runner_releases: runner_releases
   )
 {:ok, version} = Favn.pin_manifest_version(manifest)
 ```
@@ -176,7 +177,7 @@ provided by the runtime environment.
 
 | Step | What can fail |
 | --- | --- |
-| Generate | The runner release ID is missing or invalid, a module cannot load, an asset is invalid, dependencies are invalid, or the graph has a cycle. |
+| Generate | A pool-to-release mapping is missing or invalid, a module cannot load, an asset is invalid, dependencies are invalid, or the graph has a cycle. |
 | Validate | The manifest is missing required data or uses an unsupported version. |
 | Serialize or hash | The manifest cannot be encoded into the canonical payload. |
 | Pin | Version metadata is invalid or the manifest cannot be validated. |

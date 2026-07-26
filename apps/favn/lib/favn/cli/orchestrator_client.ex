@@ -1265,7 +1265,7 @@ defmodule Favn.CLI.OrchestratorClient do
         content_hash: version.content_hash,
         schema_version: version.schema_version,
         runner_contract_version: version.runner_contract_version,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         serialization_format: version.serialization_format,
         manifest: canonical_json_value(version.manifest)
       },

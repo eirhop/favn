@@ -24,6 +24,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunServer.Execution.ExecutionPool
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunnerPoolSelection
 
   @type node_key :: Favn.Plan.node_key()
   @type retry :: %{
@@ -100,7 +101,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
           run_started_at: work_started_at(lifecycle.run),
           manifest_version_id: node_identity.manifest_version_id,
           manifest_content_hash: lifecycle.version.content_hash,
-          required_runner_release_id: lifecycle.run.required_runner_release_id,
+          runner_pool: node_identity.runner_pool,
+          required_runner_release_id:
+            RunnerPoolSelection.release_for_node!(lifecycle.run, lifecycle.node_key),
           node_identity: node_identity,
           asset_ref: lifecycle.asset_ref,
           asset_refs: [lifecycle.asset_ref],
@@ -288,12 +291,17 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
 
   defp retry_policy_source(%RunState{}, _node_key), do: :operator
 
-  defp node_identity(%__MODULE__{
-         run: %{plan: %Favn.Plan{} = plan},
-         version: version,
-         node_key: node_key
-       }) do
-    NodeIdentity.from_plan(version.manifest_version_id, plan, node_key)
+  defp node_identity(
+         %__MODULE__{
+           run: %{plan: %Favn.Plan{} = plan},
+           version: version,
+           node_key: node_key
+         } = lifecycle
+       ) do
+    with {:ok, identity} <- NodeIdentity.from_plan(version.manifest_version_id, plan, node_key) do
+      {:ok,
+       %{identity | runner_pool: RunnerPoolSelection.for_node(lifecycle.run, lifecycle.node_key)}}
+    end
   end
 
   defp node_identity(%__MODULE__{} = lifecycle) do
@@ -304,7 +312,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
        target_refs: lifecycle.run.target_refs || [],
        planned_asset_refs: planned_asset_refs(lifecycle.run),
        window: nil,
-       execution_pool: nil
+       execution_pool: nil,
+       runner_pool: RunnerPoolSelection.for_node(lifecycle.run, lifecycle.node_key)
      })}
   end
 

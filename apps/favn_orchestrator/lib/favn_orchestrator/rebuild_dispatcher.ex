@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   alias Favn.Contracts.GenerationReconciliationResult
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.SQL.Contract
   alias Favn.TargetCompatibility.PhysicalFingerprint
@@ -665,7 +666,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          request <- %GenerationDiscardRequest{
            manifest_version_id: version.manifest_version_id,
            manifest_content_hash: version.content_hash,
-           required_runner_release_id: version.required_runner_release_id,
+           required_runner_release_id: Version.transitional_default_release!(version),
            rebuild_operation_id: operation.operation_id,
            rebuild_action_id: action.target_id,
            target_id: action.target_id,
@@ -1201,7 +1202,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
     request = %RelationInspectionRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Version.transitional_default_release!(version),
       relation: candidate_relation,
       include: [:relation, :columns, :table_metadata],
       sample_limit: 0
@@ -1283,7 +1284,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
        %GenerationActivationRequest{
          manifest_version_id: version.manifest_version_id,
          manifest_content_hash: version.content_hash,
-         required_runner_release_id: version.required_runner_release_id,
+         required_runner_release_id: Version.transitional_default_release!(version),
          rebuild_operation_id: operation.operation_id,
          rebuild_action_id: action.target_id,
          target_id: action.target_id,
@@ -1572,7 +1573,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          request <- %GenerationDiscardRequest{
            manifest_version_id: version.manifest_version_id,
            manifest_content_hash: version.content_hash,
-           required_runner_release_id: version.required_runner_release_id,
+           required_runner_release_id: Version.transitional_default_release!(version),
            rebuild_operation_id: operation.operation_id,
            rebuild_action_id: action.target_id,
            target_id: action.target_id,

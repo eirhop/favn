@@ -348,7 +348,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       deployment_id: input.deployment_id,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      runner_releases: version.runner_releases,
+      required_runner_release_id: Map.get(version.runner_releases, "default"),
       asset_ref: asset_ref,
       target_refs: plan.target_refs,
       plan: plan,
@@ -641,6 +642,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     %{
       max_concurrency: Map.get(pipeline, :max_concurrency),
       execution_pool: Map.get(pipeline, :execution_pool),
+      runner_pool: Map.get(pipeline, :runner_pool),
       resource_recovery: Map.get(pipeline, :resource_recovery)
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)

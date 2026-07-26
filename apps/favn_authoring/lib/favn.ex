@@ -45,7 +45,7 @@ defmodule FavnAuthoring do
           pipeline_modules: [module()] | :all,
           schedule_modules: [module()] | :all,
           connection_modules: [module()] | :all,
-          runner_release_id: String.t()
+          runner_releases: Favn.RunnerPool.releases()
         ]
 
   @doc """
@@ -150,12 +150,13 @@ defmodule FavnAuthoring do
   def get_pipeline(_invalid), do: {:error, :not_pipeline_module}
 
   @doc """
-  Generates a manifest from explicit modules or app config and an
-  operator-owned runner release ID.
+  Generates a manifest from explicit modules or app config and an exact
+  operator-owned pool-to-release map.
   """
   @spec generate_manifest(manifest_opts()) :: {:ok, Manifest.t()} | {:error, term()}
   def generate_manifest(opts \\ []) when is_list(opts) do
-    with {:ok, opts} <- with_default_manifest_modules(opts),
+    with :ok <- reject_legacy_runner_release_option(opts),
+         {:ok, opts} <- with_default_manifest_modules(opts),
          {:ok, opts} <- with_manifest_environment(opts) do
       Generator.generate(opts)
     end
@@ -163,15 +164,22 @@ defmodule FavnAuthoring do
 
   @doc """
   Generates a manifest build output with build-only metadata separated from
-  canonical runtime payload data. The required runner release ID is supplied
-  explicitly by the user or their CI system.
+  canonical runtime payload data. The exact runner pool-to-release map is
+  supplied explicitly by the user or their CI system.
   """
   @spec build_manifest(manifest_opts()) :: {:ok, Build.t()} | {:error, term()}
   def build_manifest(opts \\ []) when is_list(opts) do
-    with {:ok, opts} <- with_default_manifest_modules(opts),
+    with :ok <- reject_legacy_runner_release_option(opts),
+         {:ok, opts} <- with_default_manifest_modules(opts),
          {:ok, opts} <- with_manifest_environment(opts) do
       Generator.build(opts)
     end
+  end
+
+  defp reject_legacy_runner_release_option(opts) do
+    if Keyword.has_key?(opts, :runner_release_id),
+      do: {:error, {:unknown_opt, :runner_release_id}},
+      else: :ok
   end
 
   @doc """
@@ -325,7 +333,6 @@ defmodule FavnAuthoring do
       opts =
         opts
         |> Keyword.delete(:asset_modules)
-        |> Keyword.delete(:runner_release_id)
         |> Keyword.put(:planning_index, planning_index)
 
       Planner.plan(target_refs, opts)

@@ -153,7 +153,7 @@ Generate a manifest from explicit modules:
   Favn.generate_manifest(
     asset_modules: [MyApp.Assets.Orders, MyApp.Assets.OrderSummary],
     pipeline_modules: [MyApp.Pipelines.DailySales],
-    runner_release_id: "rr_" <> String.duplicate("a", 64)
+    runner_releases: %{"default" => "rr_" <> String.duplicate("a", 64)}
   )
 ```
 
@@ -164,7 +164,9 @@ config :favn,
   discovery: [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all]
 
 {:ok, manifest} =
-  Favn.generate_manifest(runner_release_id: "rr_" <> String.duplicate("a", 64))
+  Favn.generate_manifest(
+    runner_releases: %{"default" => "rr_" <> String.duplicate("a", 64)}
+  )
 ```
 
 Pin, serialize, hash, and validate:
@@ -249,7 +251,7 @@ Packaging commands:
 | Command | Use it for |
 | --- | --- |
 | `mix favn.init --target deployment` | Copy the Compose, runner Dockerfile, and environment example. |
-| `mix favn.build.manifest --runner-release-id ID` | Build a manifest bound to an explicit runner release ID. |
+| `mix favn.build.manifest --runner-release POOL=ID` | Bind each effective runner pool to an exact release ID; repeat per pool. |
 | `mix favn.publish --manifest PATH` | Publish missing packages and stage one immutable manifest. |
 | `mix favn.activate --manifest-version ID --workspace-id ID` | Activate an exact staged manifest after runner verification. |
 

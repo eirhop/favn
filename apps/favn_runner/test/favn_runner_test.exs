@@ -131,7 +131,7 @@ defmodule FavnRunnerTest do
     assert diagnostics.status == :ready
     assert diagnostics.runner_release_id == FavnTestSupport.runner_release_id()
     assert diagnostics.favn_version == Favn.RunnerRelease.current_favn_version()
-    assert diagnostics.runner_contract_version == 12
+    assert diagnostics.runner_contract_version == 13
     assert is_binary(diagnostics.node_name)
     assert diagnostics.data_plane.connection_count == 1
 
@@ -191,7 +191,12 @@ defmodule FavnRunnerTest do
 
   test "rejects a different release before manifest or work lookup", %{version: version} do
     alternate = FavnTestSupport.runner_release_id(:alternate)
-    incompatible_version = %{version | required_runner_release_id: alternate}
+
+    incompatible_version = %{
+      version
+      | required_runner_release_id: alternate,
+        runner_releases: %{"default" => alternate}
+    }
 
     assert {:error, %RunnerError{type: :runner_release_mismatch, retryable?: false}} =
              FavnRunner.register_manifest(incompatible_version)
@@ -473,9 +478,9 @@ defmodule FavnRunnerTest do
     refs = Enum.map(assets, & &1.ref)
 
     %Manifest{
-      schema_version: 13,
-      runner_contract_version: 12,
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      schema_version: 14,
+      runner_contract_version: 13,
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,
       pipelines: [],
       schedules: [],

@@ -60,6 +60,32 @@ defmodule Favn.Contracts.RunnerError do
             resource_outcomes: [],
             redacted?: true
 
+  @doc "Validates an error that is about to cross a runner protocol boundary."
+  @spec validate(t()) :: :ok | {:error, term()}
+  def validate(%__MODULE__{} = error) do
+    with true <- error.kind in [:error, :exit, :throw, :cancelled, :preflight, :boundary],
+         :ok <- validate_label(error.type, :type, false),
+         :ok <- validate_label(error.phase, :phase, true),
+         :ok <- validate_text(error.message, :message, false),
+         :ok <- validate_text(error.reason, :reason, true),
+         true <- is_map(error.details),
+         true <- is_boolean(error.retryable?),
+         true <-
+           is_nil(error.retry_after_ms) or
+             (is_integer(error.retry_after_ms) and error.retry_after_ms in 0..86_400_000),
+         true <- error.outcome in [:safe_failure, :unknown, :cancelled],
+         {:ok, resource_outcomes} <-
+           Favn.Contracts.ResourceOutcome.normalize_many(error.resource_outcomes),
+         true <- resource_outcomes == error.resource_outcomes,
+         true <- error.redacted? == true do
+      :ok
+    else
+      _reason -> {:error, {:invalid_runner_error, error}}
+    end
+  end
+
+  def validate(value), do: {:error, {:invalid_runner_error, value}}
+
   @doc """
   Builds a runner error envelope from explicit fields.
   """
@@ -218,6 +244,26 @@ defmodule Favn.Contracts.RunnerError do
     end
   end
 
+  defp validate_label(nil, _field, true), do: :ok
+
+  defp validate_label(value, _field, _optional?)
+       when is_atom(value) and not is_nil(value),
+       do: :ok
+
+  defp validate_label(value, _field, _optional?)
+       when is_binary(value) and byte_size(value) in 1..255,
+       do: :ok
+
+  defp validate_label(_value, field, _optional?), do: {:error, {:invalid_runner_error, field}}
+
+  defp validate_text(nil, _field, true), do: :ok
+
+  defp validate_text(value, _field, _optional?)
+       when is_binary(value) and byte_size(value) <= 4_096,
+       do: :ok
+
+  defp validate_text(_value, field, _optional?), do: {:error, {:invalid_runner_error, field}}
+
   defp error_message(%{__exception__: true} = exception) do
     Exception.message(exception)
   rescue
@@ -231,6 +277,7 @@ defmodule Favn.Contracts.RunnerError do
   defp type_from_reason(%{__exception__: true, __struct__: module}), do: module
   defp type_from_reason(%{type: type}), do: type
   defp type_from_reason(%{"type" => type}), do: type
+  defp type_from_reason(nil), do: :runner_error
   defp type_from_reason(reason) when is_atom(reason), do: reason
   defp type_from_reason(reason), do: term_type(reason)
 
@@ -250,6 +297,8 @@ defmodule Favn.Contracts.RunnerError do
 
   defp safe_reason(%{} = reason),
     do: reason |> reason_only() |> sanitize_value() |> inspect_value()
+
+  defp safe_reason(reason) when is_binary(reason), do: sanitize_text(reason)
 
   defp safe_reason(reason), do: reason |> sanitize_value() |> inspect_value()
 

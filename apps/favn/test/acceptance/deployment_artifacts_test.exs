@@ -6,7 +6,7 @@ defmodule Favn.DeploymentArtifactsAcceptanceTest do
 
   @moduletag :acceptance
 
-  test "deployment copy and manifest share an explicit customer runner identity" do
+  test "deployment copy and empty manifest use the current release-map contract" do
     root_dir =
       Path.join(
         Path.expand("../../../../_build/test-artifacts", __DIR__),
@@ -34,17 +34,15 @@ defmodule Favn.DeploymentArtifactsAcceptanceTest do
     assert release_project =~ "@customer_app Application.compile_env"
     assert release_project =~ "{@customer_app, path: \"../..\"}"
 
-    release_id = FavnTestSupport.runner_release_id(:alternate)
-
     assert {:ok, manifest} =
              ManifestBuilder.run(
                root_dir: root_dir,
-               runner_release_id: release_id,
+               runner_releases: %{},
                allow_non_prod_build: true,
                skip_compile: true
              )
 
-    assert manifest.required_runner_release_id == release_id
+    assert manifest.runner_releases == %{}
     assert File.regular?(manifest.manifest_path)
     refute File.exists?(Path.join([root_dir, ".favn", "dist", "manifest", "latest.json"]))
   end

@@ -131,6 +131,11 @@ submission can produce many tasks, and only runner tasks create runner demand.
 - Every task is pinned to one logical runner pool and one exact immutable runner
   release ID.
 - Pool names are arbitrary bounded identifiers with no predefined vocabulary.
+- Source pool names are atoms, while manifest/runtime pool names are opaque
+  strings. Runtime names are 1-63 bytes, begin with an ASCII letter or digit,
+  and then contain only ASCII letters, digits, `.`, `_`, or `-`. This is a
+  provider-neutral URL/config/metric-safe identity rule, not a fixed pool
+  vocabulary, and runtime input is never converted into a new atom.
 - Each logical pool has exactly one configured lifecycle mode and idle-grace
   policy in version one. Every old/new release of that pool inherits it;
   resident and elastic runners are not mixed within a pool.
@@ -141,6 +146,9 @@ submission can produce many tasks, and only runner tasks create runner demand.
   effective runner-pool name to one exact immutable runner release ID. A run
   snapshot freezes that map, and every task copies its exact pool/release pair
   from the snapshot when the task is created.
+- A manifest with no executable assets or pipelines has no effective runner
+  pools and therefore carries an empty `runner_releases` map. Every manifest
+  with executable work must contain every effective pool exactly once.
 - Runner images and infrastructure remain customer-owned.
 - Breaking schema, configuration, API, DSL, and operational changes are allowed.
 - Azure Container Apps Jobs and Kubernetes/KEDA are reference deployments, not
@@ -620,9 +628,11 @@ Increment the current manifest schema from 13 to 14 here. Freeze and increment
 the runner protocol from 12 to 13 only when the complete typed protocol is
 added in section 4. Do not accept old versions in the final code. During the
 reviewable migration, the old protocol remains an explicitly named internal
-transition seam and protocol 13 is not activatable until its contracts are
-frozen. Update the manifest scalability fixture, deterministic hashes, golden
-manifests, and runner release metadata.
+transition seam and protocol 13 is not activatable until both its contracts and
+the coordinator/agent path are implemented. Phase 3 must reject deployment of
+protocol-13 manifests before invoking the singleton runner path. Update the
+manifest scalability fixture, deterministic hashes, golden manifests, and
+runner release metadata.
 
 Replace the manifest-wide singular `required_runner_release_id` with a bounded,
 canonically sorted map:
@@ -641,9 +651,10 @@ map. Multiple pools may intentionally name the same release ID when they use
 the same executable image. Different executable images must use different
 release IDs.
 
-Manifest activation validates the complete map against boot-frozen configured
-pools and published runner-release metadata. The active manifest version and
-each immutable run snapshot persist the map. Task creation resolves:
+Once the protocol-13 coordinator is enabled in Phase 4, manifest activation
+validates the complete map against boot-frozen configured pools and published
+runner-release metadata. The active manifest version and each immutable run
+snapshot persist the map. Task creation resolves:
 
 ```text
 effective asset runner_pool
@@ -691,9 +702,11 @@ Replace `Favn.Contracts.RunnerClient` with explicit protocol structs under
 - `ClaimRequest`;
 - `Assignment`;
 - `NoWork`;
+- `Wake`;
 - `Started`;
 - `LeaseRenewal`;
 - `RuntimeInputsResolved`;
+- `RuntimeInputsAck`;
 - `LogBatch`;
 - `LogAck`;
 - `Result`;
@@ -710,6 +723,15 @@ Every struct gets:
 - a payload-size limit;
 - an explicit codec for PostgreSQL or API boundaries;
 - exact accepted enums with no dynamic atom creation.
+
+Every live-session message after registration requires a positive session
+generation. Every task-scoped message additionally requires a positive
+assignment generation. `ClaimRequest` has an idempotent command ID and carries
+the runner's non-empty supported task kinds plus bounded string capabilities;
+`Assignment` and `NoWork` echo that command ID. `RuntimeInputsAck` carries the
+exact persisted resolution fingerprint. Protocol codecs reject compressed
+external terms before decoding so an encoded-size bound cannot hide
+decompression expansion.
 
 Supported task kinds in the first version:
 
@@ -854,10 +876,12 @@ tasks, and terminal tasks. Keeping assigned work in the value is intentional:
 KEDA job scaling subtracts jobs that are already running.
 
 Update the counter in the same transaction as every task transition. Add a
-bounded reconciler that compares/rebuilds counters from the task table and
-makes readiness fail if the metric is known stale. The capacity endpoint must
-return `503`, never a false zero, when its persistence projection is
-unavailable.
+bounded reconciler with explicit `:audit` and `:repair` commands. Audit compares
+counters with authoritative task rows and transactionally marks a mismatch
+unhealthy without silently repairing it. While unhealthy, normal queue
+mutations and demand reads fail closed. An explicit repair rebuilds the row and
+returns it to healthy. The capacity endpoint must return `503`, never a false
+zero, when its persistence projection is unavailable.
 
 #### Migration cleanup
 
@@ -1748,6 +1772,23 @@ Temporary internal adapters are allowed only when the detailed step records
 exactly which later step removes them. No public compatibility layer,
 dual-write path, or legacy fallback may be introduced. Because there are no
 users, each replacement should converge directly on the final contract.
+
+Phase 3 has two compile-only seams for the still-unmigrated execution path:
+
+- `Favn.Manifest.Version.required_runner_release_id` mirrors only the
+  `"default"` entry of canonical `runner_releases`, and
+  `transitional_default_release/1` lets the old singleton transport remain
+  buildable. It does not decode an old manifest schema or accept a missing
+  canonical release map. Steps 14-16 remove the remaining operation callers;
+  Step 23 deletes the field and helper.
+- `FavnOrchestrator.RunState.required_runner_release_id` mirrors the default
+  release while the old immediate asset-dispatch path still exists. Step 8
+  moves DAG execution to per-node pool/release runner tasks and removes this
+  singular run field and its construction fallback.
+
+Neither seam is serialized as the canonical manifest contract, exposed as a
+new compatibility API, or dual-written to the new runner-task queue. The Phase
+7 legacy search gate must prove both are gone.
 
 #### Stepwise implementation
 

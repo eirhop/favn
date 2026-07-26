@@ -8,7 +8,7 @@ defmodule Favn.Manifest.Compatibility do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.TargetDescriptor
-  alias Favn.RunnerRelease
+  alias Favn.RunnerPool
   alias Favn.SQL.PartitionSpec
   alias Favn.Window.Policy
   alias Favn.Window.Spec
@@ -19,8 +19,9 @@ defmodule Favn.Manifest.Compatibility do
   @type error ::
           {:invalid_manifest_input, term()}
           | {:missing_manifest_field,
-             :schema_version | :runner_contract_version | :required_runner_release_id}
-          | {:invalid_required_runner_release_id, term()}
+             :schema_version | :runner_contract_version | :runner_releases}
+          | {:invalid_runner_releases, term()}
+          | {:runner_release_pool_mismatch, [String.t()], [String.t()]}
           | {:invalid_execution_package_hash, Favn.Ref.t(), term()}
           | {:duplicate_execution_package_hash, String.t(), [Favn.Ref.t()]}
           | {:missing_execution_package_hash, Favn.Ref.t()}
@@ -39,17 +40,16 @@ defmodule Favn.Manifest.Compatibility do
     with {:ok, schema_version} <- read_required_field(manifest, :schema_version),
          {:ok, runner_contract_version} <-
            read_required_field(manifest, :runner_contract_version),
-         {:ok, required_runner_release_id} <-
-           read_required_field(manifest, :required_runner_release_id),
+         {:ok, runner_releases} <- read_required_field(manifest, :runner_releases),
          :ok <- validate_schema_version(schema_version),
          :ok <- validate_runner_contract_version(runner_contract_version),
-         :ok <- validate_required_runner_release_id(required_runner_release_id),
+         :ok <- validate_runner_releases(manifest, runner_releases),
          :ok <- validate_execution_package_refs(manifest) do
       validate_resolved_contracts(
         manifest,
         schema_version,
         runner_contract_version,
-        required_runner_release_id
+        runner_releases
       )
     end
   end
@@ -68,13 +68,18 @@ defmodule Favn.Manifest.Compatibility do
   def validate_runner_contract_version(other),
     do: {:error, {:unsupported_runner_contract_version, other, @current_runner_contract_version}}
 
-  @doc "Validates the exact runner release identity required by a current manifest."
-  @spec validate_required_runner_release_id(term()) ::
-          :ok | {:error, {:invalid_required_runner_release_id, term()}}
-  def validate_required_runner_release_id(value) do
-    case RunnerRelease.validate_id(value) do
-      :ok -> :ok
-      {:error, _reason} -> {:error, {:invalid_required_runner_release_id, value}}
+  @doc "Validates the exact pool-to-release identities required by a current manifest."
+  @spec validate_runner_releases(term()) :: :ok | {:error, term()}
+  def validate_runner_releases(value), do: RunnerPool.validate_releases(value)
+
+  defp validate_runner_releases(manifest, releases) do
+    with :ok <- validate_runner_releases(releases) do
+      expected = manifest |> effective_runner_pools() |> Enum.sort()
+      actual = releases |> Map.keys() |> Enum.sort()
+
+      if expected == actual,
+        do: :ok,
+        else: {:error, {:runner_release_pool_mismatch, expected, actual}}
     end
   end
 
@@ -90,21 +95,21 @@ defmodule Favn.Manifest.Compatibility do
          manifest,
          schema_version,
          runner_contract_version,
-         runner_release_id
+         runner_releases
        ) do
     with :ok <-
            validate_assets(
              optional_field(manifest, :assets, []),
              schema_version,
              runner_contract_version,
-             runner_release_id
+             runner_releases
            ),
          :ok <- validate_pipelines(optional_field(manifest, :pipelines, [])) do
       validate_schedules(optional_field(manifest, :schedules, []))
     end
   end
 
-  defp validate_assets(assets, schema_version, runner_contract_version, runner_release_id)
+  defp validate_assets(assets, schema_version, runner_contract_version, runner_releases)
        when is_list(assets) do
     Enum.reduce_while(assets, :ok, fn
       %Asset{} = asset, :ok ->
@@ -112,7 +117,7 @@ defmodule Favn.Manifest.Compatibility do
                asset,
                schema_version,
                runner_contract_version,
-               runner_release_id
+               runner_releases
              ) do
           :ok -> {:cont, :ok}
           {:error, reason} -> {:halt, {:error, {:invalid_manifest_asset, asset.ref, reason}}}
@@ -126,16 +131,17 @@ defmodule Favn.Manifest.Compatibility do
   defp validate_assets(_assets, _schema, _runner, _release),
     do: {:error, :invalid_manifest_assets}
 
-  defp validate_asset(asset, schema_version, runner_contract_version, runner_release_id) do
+  defp validate_asset(asset, schema_version, runner_contract_version, runner_releases) do
     with :ok <- validate_asset_window(asset.window),
          :ok <- validate_asset_coverage(asset.coverage, asset.window),
          :ok <- validate_asset_freshness(asset.freshness),
+         :ok <- validate_optional_runner_pool(asset.runner_pool),
          :ok <- validate_asset_partition_spec(asset) do
       validate_asset_generation(
         asset,
         schema_version,
         runner_contract_version,
-        runner_release_id
+        runner_releases
       )
     end
   end
@@ -225,7 +231,7 @@ defmodule Favn.Manifest.Compatibility do
          %Asset{type: :sql, materialization: materialization} = asset,
          schema_version,
          runner_contract_version,
-         _runner_release_id
+         _runner_releases
        )
        when materialization == :table or
               (is_tuple(materialization) and elem(materialization, 0) == :incremental) do
@@ -246,20 +252,47 @@ defmodule Favn.Manifest.Compatibility do
          %Asset{window: %Spec{}, target_descriptor: nil} = asset,
          _schema_version,
          _runner_contract_version,
-         runner_release_id
+         runner_releases
        ) do
-    expected =
-      TargetDescriptor.semantic_generation_id(Map.from_struct(asset), runner_release_id)
+    pool = asset.runner_pool || RunnerPool.default()
 
-    if asset.semantic_generation_id == expected do
-      :ok
-    else
-      {:error, {:semantic_generation_id_mismatch, asset.semantic_generation_id, expected}}
+    with {:ok, pool_name} <- RunnerPool.encode(pool),
+         {:ok, runner_release_id} <- RunnerPool.fetch_release(runner_releases, pool_name) do
+      expected =
+        TargetDescriptor.semantic_generation_id(Map.from_struct(asset), runner_release_id)
+
+      if asset.semantic_generation_id == expected do
+        :ok
+      else
+        {:error, {:semantic_generation_id_mismatch, asset.semantic_generation_id, expected}}
+      end
     end
   end
 
-  defp validate_asset_generation(asset, _schema, _runner, _runner_release_id) do
+  defp validate_asset_generation(asset, _schema, _runner, _runner_releases) do
     if is_nil(asset.target_descriptor), do: :ok, else: {:error, :unexpected_target_descriptor}
+  end
+
+  defp effective_runner_pools(manifest) do
+    assets = optional_field(manifest, :assets, [])
+    pipelines = optional_field(manifest, :pipelines, [])
+
+    asset_pools =
+      Enum.map(assets, fn asset ->
+        Map.get(asset, :runner_pool) || RunnerPool.default()
+      end)
+
+    pipeline_pools =
+      pipelines
+      |> Enum.map(&Map.get(&1, :runner_pool))
+      |> Enum.reject(&is_nil/1)
+
+    (asset_pools ++ pipeline_pools)
+    |> Enum.uniq()
+    |> Enum.map(fn pool ->
+      {:ok, name} = RunnerPool.encode(pool)
+      name
+    end)
   end
 
   defp validate_pipelines(pipelines) when is_list(pipelines) do
@@ -280,12 +313,18 @@ defmodule Favn.Manifest.Compatibility do
 
   defp validate_pipelines(_pipelines), do: {:error, :invalid_manifest_pipelines}
 
-  defp validate_pipeline(%Pipeline{window: nil, schedule: schedule}),
-    do: validate_pipeline_schedule(schedule)
+  defp validate_pipeline(%Pipeline{window: nil, schedule: schedule, runner_pool: pool}) do
+    with :ok <- validate_optional_runner_pool(pool), do: validate_pipeline_schedule(schedule)
+  end
 
-  defp validate_pipeline(%Pipeline{window: %Policy{} = window, schedule: schedule}) do
+  defp validate_pipeline(%Pipeline{
+         window: %Policy{} = window,
+         schedule: schedule,
+         runner_pool: pool
+       }) do
     with {:ok, _window} <- Policy.validate(window),
          true <- is_binary(window.timezone) and not is_nil(window.timezone_source),
+         :ok <- validate_optional_runner_pool(pool),
          :ok <- validate_pipeline_schedule(schedule) do
       :ok
     else
@@ -304,6 +343,9 @@ defmodule Favn.Manifest.Compatibility do
     do: validate_schedule(schedule)
 
   defp validate_pipeline_schedule(value), do: {:error, {:invalid_pipeline_schedule, value}}
+
+  defp validate_optional_runner_pool(nil), do: :ok
+  defp validate_optional_runner_pool(pool), do: RunnerPool.validate_source(pool)
 
   defp validate_schedules(schedules) when is_list(schedules) do
     Enum.reduce_while(schedules, :ok, fn

@@ -30,9 +30,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
     decoded = Jason.decode!(payload)
 
-    assert decoded["format"] == "favn.run_snapshot.storage.v3"
-    assert decoded["schema_version"] == 3
-    assert decoded["required_runner_release_id"] == version.required_runner_release_id
+    assert decoded["format"] == "favn.run_snapshot.storage.v4"
+    assert decoded["schema_version"] == 4
+    assert decoded["runner_releases"] == version.runner_releases
 
     assert decoded["asset_ref"] == %{
              "module" => Atom.to_string(__MODULE__.Asset),
@@ -196,44 +196,23 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert byte_size(payload) <= RunSnapshotCodec.max_persisted_bytes()
   end
 
-  test "legacy snapshots are audit-readable only after terminalization" do
+  test "legacy snapshot formats are rejected after the breaking schema change" do
     version = manifest_version("mv_legacy_runner_release", __MODULE__.Asset)
     pending = run_state("run_legacy_runner_release", version, __MODULE__.Asset)
     assert {:ok, current_payload} = RunSnapshotCodec.encode_run(pending)
     assert {:ok, manifest_record} = ManifestCodec.to_record(version)
 
-    legacy_pending = legacy_snapshot(current_payload)
-
-    assert {:error, :legacy_runner_release_unbound} =
-             RunSnapshotCodec.decode_run(
-               %{run_blob: legacy_pending, manifest_version_id: version.manifest_version_id},
-               manifest_record
-             )
-
-    terminal =
-      pending
-      |> RunState.transition(
-        status: :ok,
-        result: %{status: :ok, asset_results: []},
-        metadata: %{terminal_event_type: :run_finished}
-      )
-
-    assert {:ok, terminal_payload} = RunSnapshotCodec.encode_run(terminal)
-
-    assert {:ok, restored} =
+    assert {:error, {:invalid_run_snapshot_dto, _dto}} =
              RunSnapshotCodec.decode_run(
                %{
-                 run_blob: legacy_snapshot(terminal_payload),
+                 run_blob: legacy_snapshot(current_payload),
                  manifest_version_id: version.manifest_version_id
                },
                manifest_record
              )
-
-    assert restored.required_runner_release_id == nil
-    assert RunState.finalized?(restored)
   end
 
-  test "rejects a current snapshot bound to a different runner release" do
+  test "rejects a current snapshot bound to a different runner release map" do
     version = manifest_version("mv_mismatched_runner_release", __MODULE__.Asset)
     run = run_state("run_mismatched_runner_release", version, __MODULE__.Asset)
     assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
@@ -243,16 +222,17 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     tampered =
       payload
       |> Jason.decode!()
-      |> Map.put("required_runner_release_id", alternate)
+      |> Map.put("runner_releases", %{"default" => alternate})
       |> Jason.encode!()
 
-    assert {:error, {:run_manifest_runner_release_mismatch, expected, ^alternate}} =
+    assert {:error, {:run_manifest_runner_releases_mismatch, expected, actual}} =
              RunSnapshotCodec.decode_run(
                %{run_blob: tampered, manifest_version_id: version.manifest_version_id},
                manifest_record
              )
 
-    assert expected == version.required_runner_release_id
+    assert expected == version.runner_releases
+    assert actual == %{"default" => alternate}
   end
 
   test "does not accept a current snapshot disguised with the legacy schema number" do
@@ -265,7 +245,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
       payload
       |> Jason.decode!()
       |> Map.put("schema_version", 2)
-      |> Map.delete("required_runner_release_id")
+      |> Map.delete("runner_releases")
       |> Jason.encode!()
 
     assert {:error, {:unsupported_run_snapshot_dto, _dto}} =
@@ -1412,7 +1392,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
       id: run_id,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      runner_releases: version.runner_releases,
       asset_ref: {module, :asset},
       target_refs: [{module, :asset}]
     )
@@ -1432,7 +1412,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     |> Jason.decode!()
     |> Map.put("format", "favn.run_snapshot.storage.v2")
     |> Map.put("schema_version", 2)
-    |> Map.delete("required_runner_release_id")
+    |> Map.delete("runner_releases")
     |> Jason.encode!()
   end
 

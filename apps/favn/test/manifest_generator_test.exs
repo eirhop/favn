@@ -121,12 +121,12 @@ defmodule Favn.Manifest.GeneratorTest do
                pipeline_modules: [TestPipeline],
                schedule_modules: [TestSchedules],
                connection_modules: [TestConnection],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
-    assert manifest.schema_version == 13
-    assert manifest.runner_contract_version == 12
-    assert manifest.required_runner_release_id == FavnTestSupport.runner_release_id()
+    assert manifest.schema_version == 14
+    assert manifest.runner_contract_version == 13
+    assert manifest.runner_releases == runner_releases()
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1
     assert length(manifest.schedules) == 1
@@ -144,7 +144,7 @@ defmodule Favn.Manifest.GeneratorTest do
                pipeline_modules: [TestPipeline],
                schedule_modules: [TestSchedules],
                connection_modules: [TestConnection],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
     assert {:ok, publication} = Favn.prepare_manifest_publication(build)
@@ -165,7 +165,7 @@ defmodule Favn.Manifest.GeneratorTest do
              Favn.build_manifest(
                asset_modules: [DelayedAsset],
                pipeline_modules: [EarlyPipeline],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
     assert Enum.any?(build.diagnostics, &(&1.code == :cron_before_coverage_availability))
@@ -187,7 +187,7 @@ defmodule Favn.Manifest.GeneratorTest do
                  RelationRaw.Customers,
                  RelationGold.Customer360
                ],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
     downstream = Enum.find(manifest.assets, &(&1.ref == {RelationGold.Customer360, :asset}))
@@ -268,7 +268,7 @@ defmodule Favn.Manifest.GeneratorTest do
     assert {:ok, %Manifest{} = manifest} =
              Favn.generate_manifest(
                asset_modules: [asset],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
     assert [manifest_asset] = manifest.assets
@@ -300,7 +300,7 @@ defmodule Favn.Manifest.GeneratorTest do
                asset_modules: [TestAsset],
                pipeline_modules: [TestPipeline],
                schedule_modules: [TestSchedules],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
     assert is_map(build.manifest)
@@ -360,13 +360,13 @@ defmodule Favn.Manifest.GeneratorTest do
     assert {:ok, first_descendant} =
              Favn.generate_manifest(
                asset_modules: [descendant],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
     assert {:ok, first_unrelated} =
              Favn.generate_manifest(
                asset_modules: [unrelated],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
     compile_namespace.("platform-v2")
@@ -374,13 +374,13 @@ defmodule Favn.Manifest.GeneratorTest do
     assert {:ok, second_descendant} =
              Favn.generate_manifest(
                asset_modules: [descendant],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
     assert {:ok, second_unrelated} =
              Favn.generate_manifest(
                asset_modules: [unrelated],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
     assert {:ok, first_descendant_hash} = Favn.hash_manifest(first_descendant)
@@ -396,25 +396,26 @@ defmodule Favn.Manifest.GeneratorTest do
     assert second_asset.metadata.owner == "platform-v2"
   end
 
-  test "requires an explicit immutable runner release ID" do
-    assert {:error, :runner_release_id_required} =
+  test "requires explicit immutable pool-to-release mappings" do
+    assert {:error, {:invalid_runner_releases, nil}} =
              Favn.generate_manifest(asset_modules: [TestAsset])
 
-    assert {:error, {:invalid_runner_release_id, "latest"}} =
+    assert {:error, {:invalid_runner_release_field, :runner_release_id, :invalid_id}} =
              Favn.generate_manifest(
                asset_modules: [TestAsset],
-               runner_release_id: "latest"
+               runner_releases: %{"default" => "latest"}
              )
 
-    assert {:error, {:unknown_opt, :runner_release}} =
+    assert {:error, {:unknown_opt, :runner_release_id}} =
              Favn.generate_manifest(
                asset_modules: [TestAsset],
-               runner_release_id: runner_release_id(),
-               runner_release: FavnTestSupport.runner_release()
+               runner_releases: runner_releases(),
+               runner_release_id: runner_release_id()
              )
   end
 
   defp runner_release_id, do: FavnTestSupport.runner_release_id()
+  defp runner_releases, do: %{"default" => runner_release_id()}
 
   defp compile_modules_to_path!(entries) when is_list(entries) do
     dir =

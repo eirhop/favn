@@ -22,6 +22,8 @@ defmodule FavnOrchestrator.Manifests do
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.TargetCompatibilityPlanner
 
+  @blocked_runner_protocol Favn.Contracts.RunnerTask.version()
+
   @type details :: %{required(:manifest) => map(), required(:targets) => map()}
 
   @doc "Publishes one immutable platform-global manifest release."
@@ -50,6 +52,8 @@ defmodule FavnOrchestrator.Manifests do
       result =
         with true <- platform_deployer?(platform_context),
              {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
+             :ok <- ensure_runner_protocol_activatable(version),
+             :ok <- validate_configured_pools(version),
              {:ok, planner} <- deployment_selection(version, selection),
              :ok <- prepare_runner(version),
              {:ok, target_compatibilities} <-
@@ -130,7 +134,8 @@ defmodule FavnOrchestrator.Manifests do
       content_hash: version.content_hash,
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
-      required_runner_release_id: version.required_runner_release_id,
+      runner_releases: version.runner_releases,
+      required_runner_release_id: Version.transitional_default_release!(version),
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
       schedule_count: length(List.wrap(version.manifest.schedules))
@@ -143,6 +148,7 @@ defmodule FavnOrchestrator.Manifests do
       content_hash: runtime.manifest_content_hash,
       schema_version: runtime.schema_version,
       runner_contract_version: runtime.runner_contract_version,
+      runner_releases: runtime.runner_releases,
       required_runner_release_id: runtime.required_runner_release_id,
       asset_count: runtime.asset_count,
       pipeline_count: runtime.pipeline_count,
@@ -268,12 +274,30 @@ defmodule FavnOrchestrator.Manifests do
     end
   end
 
+  defp validate_configured_pools(%Version{runner_releases: releases}) do
+    configured = RuntimeConfig.runner_pools()
+
+    case Enum.find(Map.keys(releases), fn pool_name ->
+           not Map.has_key?(configured, pool_name)
+         end) do
+      nil -> :ok
+      pool_name -> {:error, {:runner_pool_not_configured, pool_name}}
+    end
+  end
+
+  defp ensure_runner_protocol_activatable(%Version{
+         runner_contract_version: @blocked_runner_protocol
+       }),
+       do: {:error, {:runner_protocol_not_activatable, @blocked_runner_protocol}}
+
+  defp ensure_runner_protocol_activatable(%Version{}), do: :ok
+
   defp emit_publication_result(version, {:ok, status, canonical}) do
     OperationalEvents.emit(:manifest_publication_succeeded, %{count: 1}, %{
       status: status,
       manifest_version_id: canonical.manifest_version_id,
       manifest_content_hash: canonical.content_hash,
-      required_runner_release_id: canonical.required_runner_release_id
+      runner_releases: canonical.runner_releases
     })
 
     version
@@ -286,7 +310,8 @@ defmodule FavnOrchestrator.Manifests do
       %{
         status: :rejected,
         manifest_version_id: version.manifest_version_id,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
+        required_runner_release_id: Version.transitional_default_release!(version),
         reason: bounded_reason(reason)
       },
       level: :warning

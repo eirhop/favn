@@ -147,7 +147,8 @@ defmodule FavnOrchestrator.Diagnostics do
             workspace_id: workspace_id,
             manifest_version_id: version.manifest_version_id,
             content_hash: version.content_hash,
-            required_runner_release_id: version.required_runner_release_id,
+            required_runner_release_id:
+              Favn.Manifest.Version.transitional_default_release!(version),
             asset_count: length(version.manifest.assets),
             pipeline_count: length(version.manifest.pipelines),
             schedule_count: length(version.manifest.schedules)

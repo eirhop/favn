@@ -67,6 +67,7 @@ defmodule Favn.MultiAsset do
     :freshness,
     :retry,
     :execution_pool,
+    :runner_pool,
     :relation,
     :runtime_config
   ]
@@ -98,6 +99,7 @@ defmodule Favn.MultiAsset do
           freshness: 1,
           retry: 1,
           execution_pool: 1,
+          runner_pool: 1,
           relation: 1,
           runtime_config: 1,
           runtime_config: 2,
@@ -121,6 +123,7 @@ defmodule Favn.MultiAsset do
         :freshness,
         :retry,
         :execution_pool,
+        :runner_pool,
         :relation
       ] do
     @doc false
@@ -390,6 +393,7 @@ defmodule Favn.MultiAsset do
                :freshness,
                :retry,
                :execution_pool,
+               :runner_pool,
                :relation
              ] ->
           Map.update!(child, declaration, &(&1 ++ [eval_quoted!(value, env)]))
@@ -441,6 +445,7 @@ defmodule Favn.MultiAsset do
       freshness: [],
       retry: [],
       execution_pool: [],
+      runner_pool: [],
       relation: [],
       runtime_config: []
     }
@@ -489,6 +494,8 @@ defmodule Favn.MultiAsset do
     execution_pool =
       scalar_value!(:execution_pool, shared.execution_pool, child.execution_pool, env, nil)
 
+    runner_pool = scalar_value!(:runner_pool, shared.runner_pool, child.runner_pool, env, nil)
+
     relation = scalar_value!(:relation, shared.relation, child.relation, env, nil)
     description = scalar_value!(:description, [], child.description, env, nil)
 
@@ -502,6 +509,7 @@ defmodule Favn.MultiAsset do
 
     validate_description!(description)
     validate_execution_pool!(execution_pool)
+    validate_runner_pool!(runner_pool)
     validate_relation!(relation)
 
     Map.merge(declaration, %{
@@ -514,6 +522,7 @@ defmodule Favn.MultiAsset do
       freshness: freshness,
       retry_policy: normalize_retry!(retry),
       execution_pool: execution_pool,
+      runner_pool: runner_pool,
       relation: relation,
       runtime_config: runtime_config
     })
@@ -619,6 +628,15 @@ defmodule Favn.MultiAsset do
   defp validate_execution_pool!(value),
     do: raise(ArgumentError, "execution_pool must be an atom or nil, got: #{inspect(value)}")
 
+  defp validate_runner_pool!(nil), do: :ok
+
+  defp validate_runner_pool!(value) do
+    case Favn.RunnerPool.validate_source(value) do
+      :ok -> :ok
+      {:error, _reason} -> raise ArgumentError, "runner_pool must be a valid non-nil atom"
+    end
+  end
+
   defp validate_relation!(nil), do: :ok
 
   defp validate_relation!(value) do
@@ -649,6 +667,7 @@ defmodule Favn.MultiAsset do
       freshness: raw_asset.freshness,
       retry_policy: raw_asset.retry_policy,
       execution_pool: raw_asset.execution_pool,
+      runner_pool: raw_asset.runner_pool,
       relation: relation
     }
 

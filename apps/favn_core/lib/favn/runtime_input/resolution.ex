@@ -48,9 +48,9 @@ defmodule Favn.RuntimeInput.Resolution do
          :ok <- validate_identity(identity),
          :ok <- validate_map(Map.get(attrs, :metadata, %{}), :metadata),
          :ok <- validate_sensitive_params(Map.get(attrs, :sensitive_params, [])),
-         :ok <- validate_duration(Map.get(attrs, :duration_ms, 0)) do
-      fingerprint = Map.get(attrs, :payload_fingerprint) || fingerprint(params)
-
+         :ok <- validate_duration(Map.get(attrs, :duration_ms, 0)),
+         {:ok, fingerprint} <-
+           validate_fingerprint(Map.get(attrs, :payload_fingerprint), params) do
       {:ok,
        %__MODULE__{
          resolver: Map.fetch!(attrs, :resolver),
@@ -63,6 +63,18 @@ defmodule Favn.RuntimeInput.Resolution do
        }}
     end
   end
+
+  @doc "Validates a resolution received across a process or node boundary."
+  @spec validate(t()) :: :ok | {:error, term()}
+  def validate(%__MODULE__{} = resolution) do
+    case new(Map.from_struct(resolution)) do
+      {:ok, ^resolution} -> :ok
+      {:ok, _normalized} -> {:error, :invalid_runtime_input_resolution}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def validate(value), do: {:error, {:invalid_runtime_input_resolution, value}}
 
   @doc "Returns a stable SHA-256 fingerprint without exposing parameter values."
   @spec fingerprint(map()) :: String.t()
@@ -92,4 +104,13 @@ defmodule Favn.RuntimeInput.Resolution do
 
   defp validate_duration(value) when is_integer(value) and value >= 0, do: :ok
   defp validate_duration(_value), do: {:error, :invalid_runtime_input_duration}
+
+  defp validate_fingerprint(nil, params), do: {:ok, fingerprint(params)}
+
+  defp validate_fingerprint(value, params) when is_binary(value) do
+    expected = fingerprint(params)
+    if value == expected, do: {:ok, value}, else: {:error, :invalid_runtime_input_fingerprint}
+  end
+
+  defp validate_fingerprint(_value, _params), do: {:error, :invalid_runtime_input_fingerprint}
 end

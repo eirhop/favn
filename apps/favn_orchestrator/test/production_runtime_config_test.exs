@@ -65,6 +65,10 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              per_workspace_concurrency: 2
            ]
 
+    assert config.runner_pools == %{
+             "default" => %{mode: :elastic, idle_grace_ms: 15_000}
+           }
+
     assert config.runner == %{
              topology: :beam_node,
              control_plane_node: "control@control-plane.internal",
@@ -106,6 +110,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
         "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES" => "2",
         "FAVN_RUN_SUBMISSION_CONCURRENCY" => "12",
         "FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY" => "3",
+        "FAVN_RUNNER_POOLS" =>
+          Jason.encode!(%{
+            "duckdb" => %{"mode" => "elastic", "idle_grace_ms" => 30_000},
+            "pure_elixir" => %{"mode" => "resident"}
+          }),
         "FAVN_RUNNER_RPC_TIMEOUT_MS" => "30000",
         "FAVN_RUNNER_DIAGNOSTICS_TIMEOUT_MS" => "3000",
         "FAVN_RUNNER_AWAIT_TIMEOUT_BUFFER_MS" => "500",
@@ -135,10 +144,39 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              per_workspace_concurrency: 3
            ]
 
+    assert config.runner_pools == %{
+             "duckdb" => %{mode: :elastic, idle_grace_ms: 30_000},
+             "pure_elixir" => %{mode: :resident, idle_grace_ms: :infinity}
+           }
+
     assert config.runner.epmd_port == 44_369
     assert config.runner_client_opts[:runner_rpc_timeout_ms] == 30_000
     assert config.runner_client_opts[:runner_diagnostics_timeout_ms] == 3_000
     assert config.runner_client_opts[:runner_await_timeout_buffer_ms] == 500
+  end
+
+  test "runner pool env rejects infrastructure fields and does not create atoms", %{
+    ca_file: ca_file
+  } do
+    pool_name = "customer_pool_" <> Integer.to_string(System.unique_integer([:positive]))
+
+    env =
+      ca_file
+      |> base_env()
+      |> Map.put(
+        "FAVN_RUNNER_POOLS",
+        Jason.encode!(%{pool_name => %{"mode" => "elastic", "cpu" => 4}})
+      )
+
+    assert {:error,
+            %{
+              status: :invalid,
+              error:
+                {:invalid_env, "FAVN_RUNNER_POOLS",
+                 "JSON object of pool names to elastic/resident lifecycle policy"}
+            }} = ProductionRuntimeConfig.validate(env)
+
+    assert_raise ArgumentError, fn -> String.to_existing_atom(pool_name) end
   end
 
   test "production composition is always PostgreSQL and requires no storage selector", %{
@@ -360,6 +398,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :auth_session_ttl_seconds,
       :active_run_plan_max_bytes,
       :scheduler,
+      :runner_pools,
       :runner_client,
       :runner_client_opts,
       :production_runtime_diagnostics,
@@ -418,6 +457,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
            ) == 2
 
     assert Application.get_env(:favn_orchestrator, :scheduler)[:enabled] == false
+
+    assert Application.get_env(:favn_orchestrator, :runner_pools) == %{
+             "default" => %{mode: :elastic, idle_grace_ms: 15_000}
+           }
+
     assert Application.get_env(:favn_orchestrator, :workspace_ids) == ["salmon-one", "salmon-two"]
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_username) == "admin"
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == [:admin]
