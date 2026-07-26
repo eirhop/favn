@@ -144,3 +144,121 @@ push (`gh run list --branch codex/elastic-runners` returned no runs).
 
 Evidence commit: this field is intentionally not self-recorded; see the
 checkpoint workflow in the implementation plan.
+
+## Step 1: Add the durable run-submission queue
+
+Status: approved and checkpointed
+
+Date: 2026-07-26
+
+### Implemented contracts
+
+- Added workspace-scoped durable run submissions and idempotent command
+  receipts, including bounded retention and status-filtered keyset paging.
+- Added atomic FIFO claims, leases, fencing generations, stale recovery,
+  cancellation, supersession, safe retry, and exact replay semantics.
+- Persisted only an allowlisted authority snapshot derived from a validated
+  `WorkspaceContext`.
+- Added exact deployment, manifest, target, and primary-asset reconciliation
+  before a submission can become submitted.
+- Added one shared PostgreSQL transaction advisory lock for logical run
+  identity. Submission enqueue/retry and every durable run creation now use the
+  same lock, so a legacy producer and the new submission path cannot create the
+  same `(workspace_id, run_id)` concurrently.
+- Added the persistence facade and PostgreSQL schema, constraints, indexes,
+  diagnostics, codecs, validation, and focused integration coverage.
+
+The implementation exposed contracts that were not precise enough in the
+original plan. They were documented, independently reviewed, and checkpointed
+before implementation resumed:
+
+- Plan amendment commit:
+  `efa4b3d9f97f2dd03cf8b47cc428bfd29c7ecd4d`
+- Submission authority is derived from current workspace authority.
+- Admitting cancellation is rejected and delegated to run reconciliation.
+- Each safe retry is a deliberate new command with a new run identity and
+  current operator authority.
+- Command receipts accept a seven-day window plus five minutes of future clock
+  skew and are pruned in bounded batches.
+- Exact run/target reconciliation distinguishes a primary asset target from an
+  exact pipeline target.
+
+### Review history
+
+The reviewer rejected the first implementation round for stale receipt fences,
+supersession races, incomplete run matching, arbitrary authority input,
+admitting cancellation, unbounded filtered paging and receipt retention,
+incomplete lease/FIFO coverage, and an underspecified retry model. Those
+findings were fixed.
+
+The plan amendment was then rejected until it specified one cross-table
+serialization mechanism and exact pipeline-target semantics. The plan was
+corrected and approved before code review resumed.
+
+The final implementation review found one remaining boundary error: a legal
+100-item claim using maximum-length identifiers could exceed the 65,536-byte
+durable receipt bound. The maximum claim and stale-claim batch was reduced to
+50, and an integration test now uses 50 distinct 255-byte submission IDs and a
+255-byte owner, verifies exact replay, and asserts both stored and encoded
+receipt sizes remain within the durable bound.
+
+Reviewer verdict: approved with no remaining findings.
+
+### Step 1 verification
+
+Disposable PostgreSQL database:
+`favn_elastic_step1h_20260726`
+
+Exact Storage V2 definition fingerprint:
+`ea221d2eee01ec012ac9fd26fd5ff26ee28c7af45206eaab336d5310b0394bad`
+
+```text
+mix do --app favn_storage_postgres cmd mix test \
+  test/storage_v2/run_submissions_test.exs
+  # 22 passed
+
+mix do --app favn_storage_postgres --app favn_orchestrator \
+  compile --warnings-as-errors
+  # passed
+
+cd apps/favn_orchestrator
+mix test test/api/manifests_router_test.exs \
+  test/api/runs_router_service_auth_test.exs \
+  test/coverage_test.exs \
+  test/freshness/state_loader_test.exs \
+  test/initial_target_generation_reconciler_test.exs \
+  test/rebuilds_test.exs \
+  test/run_server/execution/plan_preflight_test.exs \
+  test/run_server/execution/sequential_test.exs \
+  test/target_admission_test.exs
+  # 51 passed
+
+cd apps/favn_storage_postgres
+mix test test/storage_v2/core_authority_test.exs \
+  test/storage_v2/privileges_test.exs
+  # 82 passed
+
+mix credo --strict --ignore \
+  Readability.TrailingWhiteSpace,Readability.EndOfLine,Consistency.LineEndings,\
+  Design.AliasUsage,Refactor.RedundantWithClauseResult <11 focused files>
+  # 297 modules/functions, no issues
+
+git diff --cached --check
+  # passed
+```
+
+The ignored focused Credo checks cover pre-existing `Runs.Store` alias,
+redundant-`with`, whitespace, and Windows line-ending findings; no new issue was
+hidden. No full umbrella suite was run because the approved plan reserves it
+for Step 25.
+
+Reviewed tree SHA: `5eccd5a5dc66d3d67395a8cb4e067d2c21c56140`
+
+Reviewed content commit SHA:
+`a6a76610c353e2134bb2ac9493dd367ddbf5fce5`
+
+Pushed branch CI: no GitHub Actions workflow run was triggered by the branch
+push (`gh run list --branch codex/elastic-runners` returned no runs).
+
+Evidence commit: this field is intentionally not self-recorded; see the
+checkpoint workflow in the implementation plan.
