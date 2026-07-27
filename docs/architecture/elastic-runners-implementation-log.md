@@ -495,3 +495,88 @@ push (`gh run list --branch codex/elastic-runners` returned no runs).
 
 Evidence commit: this field is intentionally not self-recorded; see the
 checkpoint workflow in the implementation plan.
+
+## Phase 4: Distributed runner execution and recovery
+
+Status: approved and checkpointed
+
+Date: 2026-07-27
+
+### Implemented runtime
+
+- Replaced the singleton runner execution path with durable, per-asset runner
+  tasks claimed by dynamically registered distributed-BEAM runner processes.
+- Added exact pool/release/capability matching, positive runner-session and
+  assignment fencing, lease renewal, bounded log delivery, durable terminal
+  results, cancellation acknowledgements, and safe task recovery.
+- Kept the live runner registry process-local while retaining all work,
+  assignments, leases, runtime-input pins, logs, and outcomes durably in
+  PostgreSQL. Runners reconnect and re-register after control-plane loss.
+- Added atomic runtime-input pinning before execution. An unresolved payload is
+  retained byte-for-byte across reconnects and cannot be resolved twice with
+  different values.
+- Reworked run execution state around active durable task IDs, including
+  restart-safe result waits and cancellation when the original run process is
+  no longer alive.
+- Added real dynamic-name BEAM peer churn coverage and bounded runner-result
+  routing across store read failures and router restarts.
+- Removed the old singleton manifest runner route and `RunWorkSet`.
+
+### Review history
+
+The first review rejected six correctness issues: lease renewal replay could
+collapse distinct renewals, cancellation depended on a live run process,
+cancellation could acknowledge work that had already finished, unresolved
+runtime inputs were not retained exactly across reconnect, node churn coverage
+did not boot real dynamic BEAM peers, and result subscriptions were not durable
+across store/router failure. All six were fixed.
+
+The second review confirmed those functional fixes and found one process
+violation: the already frozen `LeaseRenewal` wire schema had acquired an
+`occurred_at` field. The field was removed. Stable renewal identity and time are
+now derived from the existing absolute lease expiry, preserving the frozen wire
+contract while keeping exact replay idempotent and later renewals distinct.
+
+Final reviewer verdict: approved; Phase 4 is ready to checkpoint.
+
+### Phase 4 verification
+
+```text
+mix compile --warnings-as-errors
+  # passed
+
+cd apps/favn_core
+mix test
+  # 377 passed
+
+cd apps/favn_runner
+mix test
+  # 232 passed
+
+cd apps/favn_orchestrator
+mix test
+  # 605 passed, including the dynamic distributed-BEAM peer churn coverage
+
+cd apps/favn_storage_postgres
+mix test test/storage_v2/runner_tasks_test.exs
+  # 21 passed against a fresh disposable database
+
+cd apps/favn_storage_postgres
+mix test --exclude slow
+  # 166 passed, 13 excluded against a fresh disposable database
+
+```
+
+No full umbrella suite was run because the accepted plan reserves that gate for
+Phase 7.
+
+Reviewed tree SHA: `b3d47624e0541ea3cf14fcf972de7b7dbb40dd17`
+
+Reviewed content commit SHA:
+`cec5e07a483b4bbdda6ce5d7325712801039ccca`
+
+Pushed branch CI: no GitHub Actions workflow run was triggered by the branch
+push (`gh run list --branch codex/elastic-runners` returned no runs).
+
+Evidence commit: this field is intentionally not self-recorded; see the
+checkpoint workflow in the implementation plan.
