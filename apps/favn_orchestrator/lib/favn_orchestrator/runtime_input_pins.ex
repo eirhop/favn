@@ -7,9 +7,31 @@ defmodule FavnOrchestrator.RuntimeInputPins do
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInput.Resolution
   alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Queries, as: Q
   alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RunState
+
+  @doc false
+  @spec pin_for_resolution(String.t(), String.t(), Resolution.t()) ::
+          {:ok, Pin.t()} | {:error, term()}
+  def pin_for_resolution(workspace_id, task_id, %Resolution{} = resolution) do
+    context = SystemContext.workspace(workspace_id, :runner_task_runtime_input_pin)
+
+    with {:ok, %{task_kind: :asset_attempt, payload: %RunnerWork{} = work}} <-
+           Persistence.stores().runner_tasks.get(%Q.GetRunnerTask{
+             workspace_context: context,
+             task_id: task_id
+           }),
+         pin <- Pin.new(work.run_id, RunnerWork.node_key(work), resolution),
+         :ok <- validate_expectation(work, pin) do
+      {:ok, pin}
+    else
+      {:ok, _other_task} -> {:error, :runtime_inputs_not_supported_for_task}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @spec prepare(RunState.t(), RunnerWork.t(), module(), keyword()) ::
           {:ok, RunnerWork.t()} | {:error, term()}

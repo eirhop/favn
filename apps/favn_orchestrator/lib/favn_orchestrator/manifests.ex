@@ -17,12 +17,8 @@ defmodule FavnOrchestrator.Manifests do
   alias FavnOrchestrator.Persistence.Results.RuntimeState
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  alias FavnOrchestrator.RunnerManifestRegistration
-  alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.TargetCompatibilityPlanner
-
-  @blocked_runner_protocol Favn.Contracts.RunnerTask.version()
 
   @type details :: %{required(:manifest) => map(), required(:targets) => map()}
 
@@ -52,10 +48,8 @@ defmodule FavnOrchestrator.Manifests do
       result =
         with true <- platform_deployer?(platform_context),
              {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
-             :ok <- ensure_runner_protocol_activatable(version),
              :ok <- validate_configured_pools(version),
              {:ok, planner} <- deployment_selection(version, selection),
-             :ok <- prepare_runner(version),
              {:ok, target_compatibilities} <-
                TargetCompatibilityPlanner.plan(platform_context, context, version, planner) do
           ManifestStore.deploy_manifest(
@@ -238,42 +232,6 @@ defmodule FavnOrchestrator.Manifests do
       Enum.any?(context.roles, &(&1 in [:platform_operator, :platform_admin]))
   end
 
-  defp prepare_runner(%Version{} = version) do
-    runtime = RuntimeConfig.current()
-
-    with :ok <-
-           RunnerReleaseCompatibility.verify_runner(
-             runtime.runner_client,
-             version,
-             runtime.runner_client_opts
-           ),
-         :ok <-
-           RunnerManifestRegistration.ensure(
-             runtime.runner_client,
-             version,
-             runtime.runner_client_opts
-           ) do
-      :ok
-    else
-      {:error, {:manifest_version_conflict, _id, _existing, _incoming}} ->
-        {:error, :runner_manifest_conflict}
-
-      {:error, {:runner_release_mismatch, _required, _actual}} = error ->
-        error
-
-      {:error, reason} = error
-      when reason in [
-             :runner_client_not_available,
-             :runner_release_info_unavailable,
-             :runner_not_ready
-           ] ->
-        error
-
-      {:error, _reason} ->
-        {:error, :runner_unavailable}
-    end
-  end
-
   defp validate_configured_pools(%Version{runner_releases: releases}) do
     configured = RuntimeConfig.runner_pools()
 
@@ -284,13 +242,6 @@ defmodule FavnOrchestrator.Manifests do
       pool_name -> {:error, {:runner_pool_not_configured, pool_name}}
     end
   end
-
-  defp ensure_runner_protocol_activatable(%Version{
-         runner_contract_version: @blocked_runner_protocol
-       }),
-       do: {:error, {:runner_protocol_not_activatable, @blocked_runner_protocol}}
-
-  defp ensure_runner_protocol_activatable(%Version{}), do: :ok
 
   defp emit_publication_result(version, {:ok, status, canonical}) do
     OperationalEvents.emit(:manifest_publication_succeeded, %{count: 1}, %{

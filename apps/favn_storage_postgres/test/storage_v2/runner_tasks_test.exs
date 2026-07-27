@@ -4,10 +4,17 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias Ecto.Adapters.SQL
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.RunnerTask.LeaseRenewal
+  alias Favn.Contracts.RunnerTask.Registration
   alias FavnOrchestrator.Persistence.Commands, as: C
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries, as: Q
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.RunnerTasks
+  alias FavnOrchestrator.RunnerRegistry
+  alias FavnOrchestrator.RunnerQueueSupervisor
+  alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
+  alias FavnOrchestrator.RunState
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
   alias FavnStoragePostgres.Repo
@@ -32,6 +39,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   setup do
     unique = random_id()
     workspace_id = "runner-task-ws-#{unique}"
+    runner_pool = "duckdb_#{unique}"
     now = DateTime.utc_now()
 
     {:ok, platform_context} =
@@ -51,7 +59,12 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
         request_id: "request-#{unique}"
       )
 
-    {:ok, workspace_id: workspace_id, workspace_context: workspace_context, now: now}
+    {:ok,
+     workspace_id: workspace_id,
+     runner_pool: runner_pool,
+     workspace_context: workspace_context,
+     platform_context: platform_context,
+     now: now}
   end
 
   test "payload codec is typed, bounded, deterministic, and rejects mismatched kinds" do
@@ -156,6 +169,54 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:ok, nil} = Store.claim(empty_command)
     assert {:ok, claimed_new} = Store.claim(claim_command(fixture, "new-poll", "new-runner"))
     assert claimed_new.task_id == newly_queued.task_id
+  end
+
+  test "claims and demand are global across workspace-scoped task ownership", fixture do
+    second_workspace_id = "runner-task-ws-#{random_id()}"
+
+    :ok =
+      RegistryStore.provision_workspace(%C.ProvisionWorkspace{
+        platform_context: fixture.platform_context,
+        workspace_id: second_workspace_id,
+        slug: "runner-task-#{random_id()}",
+        display_name: "Second runner task workspace",
+        occurred_at: fixture.now
+      })
+
+    {:ok, second_context} =
+      WorkspaceContext.new(second_workspace_id, "runner-task-worker", [:workspace_admin],
+        request_id: "request-#{random_id()}"
+      )
+
+    first_command = enqueue_command(fixture, "global-first")
+
+    second_command =
+      fixture
+      |> enqueue_command("global-second",
+        occurred_at: DateTime.add(fixture.now, 1, :microsecond)
+      )
+      |> Map.put(:workspace_context, second_context)
+
+    assert {:ok, first_task} = Store.enqueue(first_command)
+    assert {:ok, second_task} = Store.enqueue(second_command)
+
+    assert {:ok, %{outstanding_count: 2, queued_count: 2, active_count: 0}} =
+             demand(fixture)
+
+    assert {:ok, first_claim} =
+             Store.claim(claim_command(fixture, "global-first", "global-runner-one"))
+
+    assert {:ok, second_claim} =
+             Store.claim(claim_command(fixture, "global-second", "global-runner-two"))
+
+    assert {first_claim.workspace_id, first_claim.task_id} ==
+             {fixture.workspace_id, first_task.task_id}
+
+    assert {second_claim.workspace_id, second_claim.task_id} ==
+             {second_workspace_id, second_task.task_id}
+
+    assert {:ok, %{outstanding_count: 2, queued_count: 0, active_count: 2}} =
+             demand(fixture)
   end
 
   test "pool and release matching is exact", fixture do
@@ -266,7 +327,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "logs"))
     assert {:ok, claimed} = Store.claim(claim_command(fixture, "claim-logs", "runner-logs"))
     entries = [%{"level" => "info", "message" => "bounded"}]
-    {:ok, payload_hash} = FavnStoragePostgres.CanonicalJSON.hash(entries)
+    {:ok, payload_hash} = Favn.Contracts.RunnerTask.PersistenceCodec.hash_term(entries)
 
     command = %C.AppendRunnerTaskLogBatch{
       workspace_context: fixture.workspace_context,
@@ -312,7 +373,12 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:ok, assigned} =
              Store.claim(claim_command(fixture, "claim-runtime-inputs", "runner-runtime-inputs"))
 
-    fingerprint = :crypto.hash(:sha256, "resolved runtime input metadata")
+    error =
+      Favn.Contracts.RunnerError.new(
+        type: :runtime_input_resolution_failed,
+        outcome: :safe_failure,
+        retryable?: true
+      )
 
     command = %C.PersistRunnerTaskRuntimeInputs{
       workspace_context: fixture.workspace_context,
@@ -322,17 +388,18 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       runner_session_generation: assigned.assigned_runner_session_generation,
       assignment_generation: assigned.assignment_generation,
       resolution_id: "resolution-one",
-      status: :resolved,
-      payload_fingerprint: fingerprint,
-      error: nil,
+      status: :failed,
+      payload_fingerprint: nil,
+      runtime_input_pin: nil,
+      error: error,
       occurred_at: DateTime.add(fixture.now, 2, :second)
     }
 
     assert {:ok, resolved} = Store.persist_runtime_inputs(command)
     assert resolved.runtime_input_resolution_id == "resolution-one"
-    assert resolved.runtime_input_resolution_status == :resolved
-    assert resolved.runtime_input_payload_fingerprint == fingerprint
-    assert resolved.runtime_input_error == nil
+    assert resolved.runtime_input_resolution_status == :failed
+    assert resolved.runtime_input_payload_fingerprint == nil
+    assert resolved.runtime_input_error
     assert {:ok, ^resolved} = Store.persist_runtime_inputs(command)
 
     assert {:ok, exact_retry} =
@@ -348,7 +415,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                command
                | command_id: "runtime-inputs-conflict",
                  resolution_id: "resolution-two",
-                 payload_fingerprint: :crypto.strong_rand_bytes(32)
+                 error: Favn.Contracts.RunnerError.new(type: :different_failure)
              })
 
     %{rows: [[resolution_id, status, persisted_fingerprint, persisted_error]]} =
@@ -366,9 +433,9 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       )
 
     assert resolution_id == "resolution-one"
-    assert status == "resolved"
-    assert persisted_fingerprint == fingerprint
-    assert persisted_error == nil
+    assert status == "failed"
+    assert persisted_fingerprint == nil
+    assert persisted_error
   end
 
   test "terminal results are typed and persisted once with exact demand removal", fixture do
@@ -392,7 +459,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     command = complete_command(fixture, running, "complete-success", encoded_result)
     assert {:ok, completed} = Store.complete(command)
     assert completed.status == :succeeded
-    assert completed.result == encoded_result
+    assert completed.result == result
     assert {:ok, ^completed} = Store.complete(command)
 
     assert {:ok, %{outstanding_count: 0, queued_count: 0, active_count: 0}} =
@@ -510,6 +577,180 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:ok, %{outstanding_count: 0}} = demand(fixture)
   end
 
+  test "whole-run cancellation waits for a dynamically registered runner and retains timeouts",
+       fixture do
+    start_runner_registry()
+
+    previous_wait =
+      Application.get_env(:favn_orchestrator, :runner_task_cancellation_ack_wait_ms)
+
+    Application.put_env(:favn_orchestrator, :runner_task_cancellation_ack_wait_ms, 40)
+
+    on_exit(fn ->
+      if is_nil(previous_wait) do
+        Application.delete_env(:favn_orchestrator, :runner_task_cancellation_ack_wait_ms)
+      else
+        Application.put_env(
+          :favn_orchestrator,
+          :runner_task_cancellation_ack_wait_ms,
+          previous_wait
+        )
+      end
+    end)
+
+    assert {:ok, queued} = Store.enqueue(enqueue_command(fixture, "dynamic-cancel"))
+    task_id = queued.task_id
+    owner = self()
+    agent = spawn_link(fn -> cancellation_agent(owner, :acknowledge) end)
+    runner_id = "#{fixture.workspace_id}:dynamic-cancel-runner"
+
+    registration = %Registration{
+      runner_instance_id: runner_id,
+      boot_id: "boot-dynamic-cancel",
+      beam_node: Atom.to_string(node()),
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: @release,
+      lifecycle_mode: :elastic,
+      supported_task_kinds: [:relation_inspection],
+      capabilities: ["relation_inspection"]
+    }
+
+    assert {:ok, registration_ack} = RunnerRegistry.register(registration, agent)
+
+    claim = %Favn.Contracts.RunnerTask.ClaimRequest{
+      command_id: fixture.workspace_id <> ":claim-dynamic-cancel",
+      runner_instance_id: runner_id,
+      runner_session_generation: registration_ack.runner_session_generation,
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: @release,
+      supported_task_kinds: [:relation_inspection],
+      capabilities: ["relation_inspection"]
+    }
+
+    assert {:ok, assignment} = RunnerTasks.claim(claim)
+    send(agent, {:assignment, assignment})
+
+    run = cancellation_run(fixture, queued.task_id)
+
+    work_set =
+      run
+      |> ActiveTaskSet.new()
+      |> ActiveTaskSet.add_entry(%{task_id: queued.task_id})
+
+    {cancelled, remaining} = ActiveTaskSet.cancel_all(run, work_set, :operator_request)
+
+    assert_receive {:runner_observed_cancellation, ^task_id}
+    assert ActiveTaskSet.task_ids(remaining) == []
+    assert [%{status: status}] = cancelled.metadata.cancel_outcomes
+    assert status in [:acknowledged, :already_completed]
+
+    assert {:ok, %{status: :cancelled}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: queued.task_id
+             })
+
+    assert {:ok, queued_timeout} = Store.enqueue(enqueue_command(fixture, "dynamic-timeout"))
+    timeout_task_id = queued_timeout.task_id
+    timeout_agent = spawn_link(fn -> cancellation_agent(owner, :ignore) end)
+    timeout_runner_id = "#{fixture.workspace_id}:dynamic-timeout-runner"
+
+    assert {:ok, timeout_ack} =
+             RunnerRegistry.register(
+               %{
+                 registration
+                 | runner_instance_id: timeout_runner_id,
+                   boot_id: "boot-dynamic-timeout"
+               },
+               timeout_agent
+             )
+
+    timeout_claim = %{
+      claim
+      | command_id: fixture.workspace_id <> ":claim-dynamic-timeout",
+        runner_instance_id: timeout_runner_id,
+        runner_session_generation: timeout_ack.runner_session_generation
+    }
+
+    assert {:ok, timeout_assignment} = RunnerTasks.claim(timeout_claim)
+    send(timeout_agent, {:assignment, timeout_assignment})
+
+    timeout_run = cancellation_run(fixture, queued_timeout.task_id)
+
+    timeout_work_set =
+      timeout_run
+      |> ActiveTaskSet.new()
+      |> ActiveTaskSet.add_entry(%{task_id: queued_timeout.task_id})
+
+    {timed_out, retained} =
+      ActiveTaskSet.cancel_all(timeout_run, timeout_work_set, :operator_request)
+
+    assert_receive {:runner_ignored_cancellation, ^timeout_task_id}
+    assert ActiveTaskSet.task_ids(retained) == [queued_timeout.task_id]
+    assert [%{status: :requested}] = timed_out.metadata.cancel_outcomes
+
+    complete_cancelled_assignment(timeout_assignment)
+  end
+
+  test "periodic lease renewals use distinct replay-stable command identities", fixture do
+    start_runner_registry()
+
+    assert {:ok, queued} = Store.enqueue(enqueue_command(fixture, "renewal-identity"))
+    runner_id = "#{fixture.workspace_id}:renewal-runner"
+    agent = spawn_link(fn -> Process.sleep(:infinity) end)
+
+    registration = %Registration{
+      runner_instance_id: runner_id,
+      boot_id: "boot-renewal",
+      beam_node: Atom.to_string(node()),
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: @release,
+      lifecycle_mode: :elastic,
+      supported_task_kinds: [:relation_inspection],
+      capabilities: ["relation_inspection"]
+    }
+
+    assert {:ok, registration_ack} = RunnerRegistry.register(registration, agent)
+
+    claim = %Favn.Contracts.RunnerTask.ClaimRequest{
+      command_id: fixture.workspace_id <> ":claim-renewal",
+      runner_instance_id: runner_id,
+      runner_session_generation: registration_ack.runner_session_generation,
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: @release,
+      supported_task_kinds: [:relation_inspection],
+      capabilities: ["relation_inspection"]
+    }
+
+    assert {:ok, assignment} = RunnerTasks.claim(claim)
+    first_at = DateTime.utc_now()
+
+    first = %LeaseRenewal{
+      workspace_id: fixture.workspace_id,
+      task_id: queued.task_id,
+      runner_instance_id: runner_id,
+      runner_session_generation: registration_ack.runner_session_generation,
+      assignment_generation: assignment.assignment_generation,
+      lease_expires_at: DateTime.add(first_at, 30_000, :millisecond)
+    }
+
+    assert {:ok, first_renewed} = RunnerTasks.renew(first)
+    assert {:ok, replayed} = RunnerTasks.renew(first)
+    assert replayed.assignment_expires_at == first_renewed.assignment_expires_at
+
+    second = %{
+      first
+      | lease_expires_at: DateTime.add(first.lease_expires_at, 10_000, :millisecond)
+    }
+
+    assert {:ok, second_renewed} = RunnerTasks.renew(second)
+
+    assert DateTime.compare(
+             second_renewed.assignment_expires_at,
+             first_renewed.assignment_expires_at
+           ) == :gt
+  end
+
   test "asset terminal retries require durable safe-failure evidence", fixture do
     assert {:ok, _task} =
              Store.enqueue(
@@ -574,8 +815,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     recovery_time = DateTime.add(fixture.now, 2, :second)
 
     command = %C.RecoverRunnerTasks{
-      workspace_context: fixture.workspace_context,
-      command_id: "recover-expired",
+      platform_context: fixture.platform_context,
+      command_id: platform_command_id(fixture, "recover-expired"),
       owner_id: "recovery-owner",
       occurred_at: recovery_time,
       limit: 10,
@@ -591,8 +832,45 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:ok, []} =
              Store.recover_expired(%{
                command
-               | command_id: "recover-empty",
+               | command_id: platform_command_id(fixture, "recover-empty"),
                  occurred_at: recovery_time
+             })
+  end
+
+  test "runner session resume requires an exact durable active assignment", fixture do
+    assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "resume"))
+
+    assert {:ok, assigned} =
+             Store.claim(claim_command(fixture, "claim-resume", "runner-resume"))
+
+    registration = %Registration{
+      runner_instance_id: assigned.assigned_runner_instance_id,
+      boot_id: "boot-resume",
+      runner_session_generation: assigned.assigned_runner_session_generation,
+      beam_node: Atom.to_string(node()),
+      runner_pool: assigned.runner_pool,
+      required_runner_release_id: assigned.required_runner_release_id,
+      lifecycle_mode: :elastic,
+      supported_task_kinds: [:relation_inspection],
+      capabilities: ["relation_inspection"],
+      active_assignment: %{
+        workspace_id: assigned.workspace_id,
+        task_id: assigned.task_id,
+        assignment_generation: assigned.assignment_generation
+      }
+    }
+
+    assert :ok = RunnerTasks.verify_registration_resume(registration)
+
+    assert {:error, :stale_runner_task_resume} =
+             RunnerTasks.verify_registration_resume(%{
+               registration
+               | active_assignment:
+                   Map.put(
+                     registration.active_assignment,
+                     :assignment_generation,
+                     assigned.assignment_generation + 1
+                   )
              })
   end
 
@@ -604,9 +882,9 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       """
       UPDATE favn_control.runner_capacity_demands
       SET healthy = false
-      WHERE workspace_id = $1 AND runner_pool = $2 AND required_runner_release_id = $3
+      WHERE runner_pool = $1 AND required_runner_release_id = $2
       """,
-      [fixture.workspace_id, "duckdb", @release]
+      [fixture.runner_pool, @release]
     )
 
     assert {:error, %{kind: :unavailable}} = demand(fixture)
@@ -623,9 +901,9 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     assert {:ok, repaired} =
              Store.reconcile_demand(%C.ReconcileRunnerCapacityDemand{
-               workspace_context: fixture.workspace_context,
-               command_id: "reconcile-demand",
-               runner_pool: "duckdb",
+               platform_context: fixture.platform_context,
+               command_id: platform_command_id(fixture, "reconcile-demand"),
+               runner_pool: fixture.runner_pool,
                required_runner_release_id: @release,
                mode: :repair,
                occurred_at: fixture.now
@@ -646,15 +924,15 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       """
       UPDATE favn_control.runner_capacity_demands
       SET queued_count = 0, outstanding_count = 0
-      WHERE workspace_id = $1 AND runner_pool = $2 AND required_runner_release_id = $3
+      WHERE runner_pool = $1 AND required_runner_release_id = $2
       """,
-      [fixture.workspace_id, "duckdb", @release]
+      [fixture.runner_pool, @release]
     )
 
     command = %C.ReconcileRunnerCapacityDemand{
-      workspace_context: fixture.workspace_context,
-      command_id: "audit-demand-drift",
-      runner_pool: "duckdb",
+      platform_context: fixture.platform_context,
+      command_id: platform_command_id(fixture, "audit-demand-drift"),
+      runner_pool: fixture.runner_pool,
       required_runner_release_id: @release,
       mode: :audit,
       occurred_at: fixture.now
@@ -666,7 +944,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:ok, repaired} =
              Store.reconcile_demand(%{
                command
-               | command_id: "repair-demand-drift",
+               | command_id: platform_command_id(fixture, "repair-demand-drift"),
                  mode: :repair
              })
 
@@ -688,9 +966,9 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
         reconcile = fn ->
           Store.reconcile_demand(%C.ReconcileRunnerCapacityDemand{
-            workspace_context: fixture.workspace_context,
-            command_id: "reconcile-race-#{index}",
-            runner_pool: "duckdb",
+            platform_context: fixture.platform_context,
+            command_id: platform_command_id(fixture, "reconcile-race-#{index}"),
+            runner_pool: fixture.runner_pool,
             required_runner_release_id: @release,
             occurred_at: DateTime.add(fixture.now, index, :microsecond)
           })
@@ -717,12 +995,11 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                """
                SELECT count(*)
                FROM favn_control.runner_tasks
-               WHERE workspace_id = $1
-                 AND runner_pool = $2
-                 AND required_runner_release_id = $3
+               WHERE runner_pool = $1
+                 AND required_runner_release_id = $2
                  AND status = 'queued'
                """,
-               [fixture.workspace_id, "duckdb", @release]
+               [fixture.runner_pool, @release]
              )
 
     assert {:ok, projected} = demand(fixture)
@@ -747,19 +1024,17 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
           EXPLAIN (FORMAT TEXT)
           SELECT *
           FROM favn_control.runner_tasks
-          WHERE workspace_id = $1
-            AND status = 'queued'
-            AND runner_pool = $2
-            AND required_runner_release_id = $3
-            AND task_kind = ANY($4::text[])
-            AND (required_capability IS NULL OR required_capability = ANY($5::text[]))
-          ORDER BY enqueued_at, task_id
+          WHERE status = 'queued'
+            AND runner_pool = $1
+            AND required_runner_release_id = $2
+            AND task_kind = ANY($3::text[])
+            AND (required_capability IS NULL OR required_capability = ANY($4::text[]))
+          ORDER BY enqueued_at, workspace_id, task_id
           LIMIT 1
           FOR UPDATE SKIP LOCKED
           """,
           [
-            fixture.workspace_id,
-            "duckdb",
+            fixture.runner_pool,
             @release,
             ["relation_inspection"],
             ["relation_inspection"]
@@ -775,6 +1050,10 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     task_kind = Keyword.get(opts, :task_kind, :relation_inspection)
     payload = Keyword.get(opts, :payload, inspection_payload())
     {:ok, encoded_payload, payload_hash} = Codec.encode_payload(task_kind, payload)
+
+    {:ok, orchestration_context} =
+      Codec.encode_orchestration_context(%{kind: :test})
+
     occurred_at = Keyword.get(opts, :occurred_at, fixture.now)
 
     %C.EnqueueRunnerTask{
@@ -783,12 +1062,13 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       task_id: "rt_#{random_id()}",
       domain_identity: "runner-task-domain-#{suffix}-#{random_id()}",
       task_kind: task_kind,
-      runner_pool: Keyword.get(opts, :runner_pool, "duckdb"),
+      runner_pool: Keyword.get(opts, :runner_pool, fixture.runner_pool),
       required_runner_release_id: Keyword.get(opts, :required_runner_release_id, @release),
       retry_class:
         Keyword.get(opts, :retry_class, Favn.Contracts.RunnerTask.default_retry_class(task_kind)),
       payload: encoded_payload,
       payload_hash: payload_hash,
+      orchestration_context: orchestration_context,
       run_id: Keyword.get(opts, :run_id, "run-#{suffix}"),
       operation_id: nil,
       asset_step_id: nil,
@@ -803,13 +1083,90 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     }
   end
 
+  defp start_runner_registry do
+    case Process.whereis(RunnerRegistry) do
+      nil -> start_supervised!({RunnerRegistry, []})
+      _pid -> :ok
+    end
+
+    case Process.whereis(FavnOrchestrator.RunnerQueueDynamicSupervisor) do
+      nil -> start_supervised!({RunnerQueueSupervisor, []})
+      _pid -> :ok
+    end
+  end
+
+  defp cancellation_run(fixture, task_id) do
+    RunState.new(
+      id: "run-cancel:" <> task_id,
+      workspace_id: fixture.workspace_id,
+      manifest_version_id: "mv_runner_task",
+      manifest_content_hash: String.duplicate("a", 64),
+      required_runner_release_id: @release,
+      asset_ref: {MyApp.RunnerTaskCancellation, :asset},
+      metadata: %{in_flight_task_ids: [task_id]}
+    )
+  end
+
+  defp cancellation_agent(owner, behavior) do
+    receive do
+      {:assignment, assignment} -> cancellation_agent_loop(owner, behavior, assignment)
+    end
+  end
+
+  defp cancellation_agent_loop(owner, behavior, assignment) do
+    receive do
+      {:favn_runner_task, %Favn.Contracts.RunnerTask.Cancellation{} = cancellation} ->
+        case behavior do
+          :acknowledge ->
+            ack = %Favn.Contracts.RunnerTask.CancellationAck{
+              workspace_id: cancellation.workspace_id,
+              task_id: cancellation.task_id,
+              runner_instance_id: cancellation.runner_instance_id,
+              runner_session_generation: cancellation.runner_session_generation,
+              assignment_generation: cancellation.assignment_generation,
+              command_id: cancellation.command_id,
+              status: :observed,
+              acknowledged_at: DateTime.utc_now()
+            }
+
+            assert {:ok, _ack} = RunnerTasks.acknowledge_cancellation(ack)
+            complete_cancelled_assignment(assignment)
+            send(owner, {:runner_observed_cancellation, cancellation.task_id})
+
+          :ignore ->
+            send(owner, {:runner_ignored_cancellation, cancellation.task_id})
+        end
+
+        cancellation_agent_loop(owner, behavior, assignment)
+    end
+  end
+
+  defp complete_cancelled_assignment(assignment) do
+    error = Favn.Contracts.RunnerError.cancelled(:operator_request)
+
+    assert {:ok, _ack} =
+             RunnerTasks.complete(%Favn.Contracts.RunnerTask.Result{
+               workspace_id: assignment.workspace_id,
+               task_id: assignment.task_id,
+               task_kind: assignment.task_kind,
+               runner_instance_id: assignment.runner_instance_id,
+               runner_session_generation: assignment.runner_session_generation,
+               assignment_generation: assignment.assignment_generation,
+               outcome: :cancelled,
+               retry_class: :terminal,
+               result: nil,
+               error: error,
+               finished_at: DateTime.utc_now()
+             })
+  end
+
   defp claim_command(fixture, suffix, runner_id, opts \\ []) do
     %C.ClaimRunnerTask{
-      workspace_context: fixture.workspace_context,
-      command_id: "claim-#{suffix}",
-      runner_instance_id: runner_id,
+      platform_context: fixture.platform_context,
+      command_id: "#{fixture.workspace_id}:claim-#{suffix}",
+      runner_instance_id: "#{fixture.workspace_id}:#{runner_id}",
       runner_session_generation: Keyword.get(opts, :runner_session_generation, 1),
-      runner_pool: Keyword.get(opts, :runner_pool, "duckdb"),
+      runner_pool: Keyword.get(opts, :runner_pool, fixture.runner_pool),
       required_runner_release_id: Keyword.get(opts, :required_runner_release_id, @release),
       supported_task_kinds: Keyword.get(opts, :supported_task_kinds, [:relation_inspection]),
       capabilities: Keyword.get(opts, :capabilities, ["relation_inspection"]),
@@ -865,11 +1222,14 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   defp demand(fixture) do
     Store.demand(%Q.GetRunnerCapacityDemand{
-      workspace_context: fixture.workspace_context,
-      runner_pool: "duckdb",
+      platform_context: fixture.platform_context,
+      runner_pool: fixture.runner_pool,
       required_runner_release_id: @release
     })
   end
+
+  defp platform_command_id(fixture, suffix),
+    do: "#{fixture.workspace_id}:#{suffix}"
 
   defp inspection_payload do
     %RelationInspectionRequest{

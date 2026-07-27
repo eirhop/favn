@@ -9,6 +9,8 @@ defmodule FavnOrchestrator.RunServer.Recovery do
   """
 
   alias FavnOrchestrator.RunExecutionOwnership
+  alias FavnOrchestrator.RunnerTasks
+  alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.RetryCheckpoint
   alias FavnOrchestrator.RunState
 
@@ -17,8 +19,40 @@ defmodule FavnOrchestrator.RunServer.Recovery do
   @doc "Loads bounded durable runner-execution evidence and assesses recovery safety."
   @spec disposition(RunState.t()) :: {:ok, disposition()} | {:error, term()}
   def disposition(%RunState{} = run) do
-    with {:ok, evidence} <- RunExecutionOwnership.recovery_evidence(run) do
-      {:ok, assess(run, evidence)}
+    case ActiveTaskSet.inflight_task_ids(run) do
+      [] ->
+        with {:ok, evidence} <- RunExecutionOwnership.recovery_evidence(run) do
+          {:ok, assess(run, evidence)}
+        end
+
+      task_ids ->
+        validate_durable_tasks(run.workspace_id, task_ids)
+    end
+  end
+
+  defp validate_durable_tasks(workspace_id, task_ids) do
+    Enum.reduce_while(task_ids, {:ok, []}, fn task_id, {:ok, missing_ids} ->
+      case RunnerTasks.fetch(workspace_id, task_id) do
+        {:ok, _task} -> {:cont, {:ok, missing_ids}}
+        {:error, %{kind: :not_found}} -> {:cont, {:ok, [task_id | missing_ids]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, []} ->
+        {:ok, :resume}
+
+      {:ok, missing_ids} ->
+        {:ok,
+         {:uncertain,
+          %{
+            reason: :durable_runner_tasks_missing,
+            missing_task_ids: Enum.sort(missing_ids),
+            truncated?: false
+          }}}
+
+      error ->
+        error
     end
   end
 

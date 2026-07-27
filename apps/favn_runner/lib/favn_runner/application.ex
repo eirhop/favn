@@ -41,9 +41,12 @@ defmodule FavnRunner.Application do
         {FavnRunner.Server,
          name: FavnRunner.Server,
          admission: Application.get_env(:favn_runner, :admission, []),
-         retention: Application.get_env(:favn_runner, :execution_retention, [])},
-        {RuntimeStarter, []}
-      ]
+         retention: Application.get_env(:favn_runner, :execution_retention, [])}
+      ] ++
+        runner_agent_children(environment) ++
+        [
+          {RuntimeStarter, []}
+        ]
 
     opts = [strategy: :one_for_all, name: FavnRunner.Supervisor]
 
@@ -106,6 +109,56 @@ defmodule FavnRunner.Application do
     case result do
       {:ok, children} -> children
       {:error, reason} -> raise ArgumentError, PluginLoader.format_error(reason)
+    end
+  end
+
+  defp runner_agent_children(environment) do
+    case Map.get(environment, "FAVN_CONTROL_PLANE_NODE") do
+      nil ->
+        []
+
+      "" ->
+        []
+
+      control_plane_node ->
+        runner_pool =
+          Map.get(environment, "FAVN_RUNNER_POOL") ||
+            raise ArgumentError,
+                  "FAVN_RUNNER_POOL is required when FAVN_CONTROL_PLANE_NODE is configured"
+
+        lifecycle_mode =
+          case Map.get(environment, "FAVN_RUNNER_LIFECYCLE_MODE", "elastic") do
+            "elastic" -> :elastic
+            "resident" -> :resident
+            value -> raise ArgumentError, "invalid FAVN_RUNNER_LIFECYCLE_MODE: #{inspect(value)}"
+          end
+
+        idle_grace_ms =
+          positive_integer(
+            Map.get(environment, "FAVN_RUNNER_IDLE_GRACE_MS", "15000"),
+            "FAVN_RUNNER_IDLE_GRACE_MS"
+          )
+
+        [
+          {FavnRunner.TaskResultBuffer, []},
+          {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.TaskExecutorSupervisor},
+          {FavnRunner.ControlPlaneConnection, node: control_plane_node},
+          Supervisor.child_spec(
+            {FavnRunner.RunnerAgent,
+             runner_pool: runner_pool,
+             runner_instance_id: Map.get(environment, "FAVN_RUNNER_INSTANCE_ID"),
+             lifecycle_mode: lifecycle_mode,
+             idle_grace_ms: idle_grace_ms},
+            restart: :transient
+          )
+        ]
+    end
+  end
+
+  defp positive_integer(value, name) do
+    case Integer.parse(value) do
+      {integer, ""} when integer > 0 -> integer
+      _other -> raise ArgumentError, "invalid #{name}: #{inspect(value)}"
     end
   end
 end

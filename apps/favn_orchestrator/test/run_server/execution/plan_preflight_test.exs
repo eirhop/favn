@@ -112,7 +112,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
     :ok
   end
 
-  test "acquires one manifest lease with the complete wide-plan preflight scope" do
+  test "does not require a live runner or manifest lease for wide-plan activation" do
     ref = {__MODULE__.Source, :asset}
     wide_refs = List.duplicate(ref, 10_000)
     node_key = {ref, nil}
@@ -168,11 +168,10 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
 
     assert {:ok, _execution_state} = Execution.start_state(run, version)
 
-    assert_receive {:manifest_acquired, lease_id, ^wide_refs, _opts}
-    refute_receive {:manifest_acquired, _other_lease_id, _other_refs, _other_opts}
+    refute_receive {:manifest_acquired, _lease_id, _refs, _opts}
 
     assert :ok = Execution.release_manifest_lease(run)
-    assert_receive {:manifest_released, ^lease_id}
+    refute_receive {:manifest_released, _lease_id}
   end
 
   test "restored manual dependency runs use pipeline stages in upstream order" do
@@ -237,9 +236,9 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
     assert state.mode == :pipeline
     assert state.stage_groups == [{0, [upstream_node]}, {1, [target_node]}]
 
-    assert_receive {:manifest_acquired, lease_id, [^upstream_ref, ^target_ref], _opts}
+    refute_receive {:manifest_acquired, _lease_id, [^upstream_ref, ^target_ref], _opts}
     assert :ok = Execution.release_manifest_lease(restored_run)
-    assert_receive {:manifest_released, ^lease_id}
+    refute_receive {:manifest_released, _lease_id}
   end
 
   test "rejects an oversized planned asset step before acquiring or dispatching" do

@@ -17,7 +17,6 @@ defmodule FavnOrchestrator.RunServer do
   alias FavnOrchestrator.RunExecutionCleanup
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunOwnership
-  alias FavnOrchestrator.RunnerManifestRegistration
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Persistence
@@ -116,21 +115,7 @@ defmodule FavnOrchestrator.RunServer do
     case RunOwnership.renew(context, ownership) do
       {:ok, renewed} ->
         state = Map.put(state, :storage_ownership, renewed)
-
-        case renew_manifest_lease(state) do
-          :ok ->
-            {:noreply, schedule_ownership_renewal(state)}
-
-          {:error, reason} ->
-            OperationalEvents.emit(
-              :runner_manifest_lease_renewal_failed,
-              %{},
-              %{workspace_id: context.workspace_id, run_id: ownership.run_id, reason: reason},
-              level: :error
-            )
-
-            {:stop, {:shutdown, :runner_manifest_lease_renewal_failed}, state}
-        end
+        {:noreply, schedule_ownership_renewal(state)}
 
       {:error, reason} ->
         OperationalEvents.emit(
@@ -167,6 +152,12 @@ defmodule FavnOrchestrator.RunServer do
   def handle_info({:runner_result, _, _} = message, %{execution_persist_pending: _} = state),
     do: {:noreply, defer_execution_event(state, message)}
 
+  def handle_info(
+        {:runner_task_result, _, _, _} = message,
+        %{execution_persist_pending: _} = state
+      ),
+      do: {:noreply, defer_execution_event(state, message)}
+
   def handle_info({:DOWN, _, :process, _, _} = message, %{execution_persist_pending: _} = state),
     do: {:noreply, defer_execution_event(state, message)}
 
@@ -190,6 +181,9 @@ defmodule FavnOrchestrator.RunServer do
 
   def handle_info({:runner_result, execution_id, result}, state),
     do: handle_execution_event(state, {:runner_result, execution_id, result})
+
+  def handle_info({:runner_task_result, _workspace_id, task_id, task}, state),
+    do: handle_execution_event(state, {:runner_task_result, task_id, task})
 
   def handle_info(
         {:DOWN, monitor_ref, :process, _pid, reason},
@@ -611,26 +605,7 @@ defmodule FavnOrchestrator.RunServer do
     {:stop, :normal, state |> Map.put(:run_state, run) |> Map.put(:execution_state, nil)}
   end
 
-  defp release_manifest_lease(%{execution_state: %RunExecutionState{} = execution_state}) do
-    RunnerManifestRegistration.release(
-      execution_state.runner_client,
-      execution_state.manifest_lease_id,
-      execution_state.runner_opts
-    )
-  end
-
   defp release_manifest_lease(_state), do: :ok
-
-  defp renew_manifest_lease(%{execution_state: %RunExecutionState{} = execution_state}) do
-    RunnerManifestRegistration.renew(
-      execution_state.runner_client,
-      execution_state.manifest_lease_id,
-      Execution.manifest_lease_expires_at(execution_state.run),
-      execution_state.runner_opts
-    )
-  end
-
-  defp renew_manifest_lease(_state), do: :ok
 
   defp copy_storage_fence(%RunState{} = run, %RunState{} = authority) do
     case {authority.storage_owner_id, authority.storage_fencing_token} do

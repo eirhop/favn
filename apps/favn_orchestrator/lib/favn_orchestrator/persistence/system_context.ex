@@ -23,9 +23,10 @@ defmodule FavnOrchestrator.Persistence.SystemContext do
   def platform(purpose, opts \\ []) when is_atom(purpose) and is_list(opts) do
     instance_id = RuntimeConfig.instance_id()
     principal = "favn:#{String.slice(instance_id, 0, 96)}:#{purpose}"
+    roles = Keyword.get(opts, :roles, [:platform_reader])
 
     {:ok, context} =
-      PlatformContext.new(principal, "system:#{purpose}", [:platform_reader],
+      PlatformContext.new(principal, "system:#{purpose}", roles,
         request_id: Keyword.get(opts, :request_id)
       )
 

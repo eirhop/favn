@@ -33,4 +33,28 @@ defmodule FavnOrchestrator.CancellationOutcomeTest do
     assert outcome.reason_class == nil
     assert outcome.correlation_id == nil
   end
+
+  test "only proven cancellation or known terminal completion is confirmed" do
+    assert CancellationOutcome.confirmed?(%CancellationOutcome{
+             execution_id: "task-1",
+             status: :acknowledged
+           })
+
+    assert CancellationOutcome.confirmed?(%CancellationOutcome{
+             execution_id: "task-1",
+             status: :already_completed,
+             runner_status: :succeeded
+           })
+
+    refute CancellationOutcome.confirmed?(%CancellationOutcome{
+             execution_id: "task-1",
+             status: :requested
+           })
+
+    refute CancellationOutcome.confirmed?(%CancellationOutcome{
+             execution_id: "task-1",
+             status: :already_completed,
+             runner_status: :unknown
+           })
+  end
 end

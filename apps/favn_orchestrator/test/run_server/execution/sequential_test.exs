@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
   use ExUnit.Case, async: false
 
   alias Favn.Manifest.Version
+  alias Favn.Manifest.Index
   alias Favn.Plan
   alias Favn.Contracts.RunnerError
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
@@ -103,6 +104,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     state = %RunExecutionState{
       run: run,
       version: version,
+      manifest_index: %Index{},
       runner_client: nil,
       sequential_refs: [{ref, node_key, 0}]
     }

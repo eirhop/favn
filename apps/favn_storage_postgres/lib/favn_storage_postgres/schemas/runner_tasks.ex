@@ -22,6 +22,7 @@ defmodule FavnStoragePostgres.Schemas.RunnerTask do
     field(:payload_version, :integer)
     field(:payload, :map)
     field(:payload_hash, :binary)
+    field(:orchestration_context, :map)
     field(:assigned_runner_instance_id, :string)
     field(:assigned_runner_session_generation, :integer)
     field(:assignment_generation, :integer)
@@ -50,7 +51,7 @@ defmodule FavnStoragePostgres.Schemas.RunnerTaskCommand do
   @primary_key false
   @schema_prefix "favn_control"
   schema "runner_task_commands" do
-    field(:workspace_id, :string, primary_key: true)
+    field(:scope_id, :string, primary_key: true)
     field(:command_id, :string, primary_key: true)
     field(:operation, :string)
     field(:request_hash, :binary)
@@ -84,7 +85,6 @@ defmodule FavnStoragePostgres.Schemas.RunnerCapacityDemand do
   @primary_key false
   @schema_prefix "favn_control"
   schema "runner_capacity_demands" do
-    field(:workspace_id, :string, primary_key: true)
     field(:runner_pool, :string, primary_key: true)
     field(:required_runner_release_id, :string, primary_key: true)
     field(:outstanding_count, :integer)

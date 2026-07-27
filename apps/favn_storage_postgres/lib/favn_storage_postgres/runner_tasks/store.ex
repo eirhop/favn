@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Commands, as: C
+  alias FavnOrchestrator.Persistence.Commands.PinRuntimeInputs
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries, as: Q
   alias FavnOrchestrator.Persistence.Results.RunnerCapacityDemand
@@ -15,6 +16,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RunnerTasks.Codec
+  alias FavnStoragePostgres.Runs.Store, as: RunsStore
   alias FavnStoragePostgres.Schemas.RunnerCapacityDemand, as: Demand
   alias FavnStoragePostgres.Schemas.RunnerTask
   alias FavnStoragePostgres.Schemas.RunnerTaskCommand
@@ -63,6 +65,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         payload_version: 13,
         payload: command.payload,
         payload_hash: command.payload_hash,
+        orchestration_context: command.orchestration_context,
         assignment_generation: 0,
         last_command_id: command.command_id,
         inserted_at: command.occurred_at,
@@ -72,7 +75,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       case Repo.insert_all(RunnerTask, [row], on_conflict: :nothing) do
         {1, _} ->
           add_queued_demand!(
-            workspace_id,
             command.runner_pool,
             command.required_runner_release_id,
             command.occurred_at,
@@ -108,28 +110,35 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   def claim(%C.ClaimRunnerTask{} = command) do
     idempotent_transact(command, "claim", fn ->
       validate_claim!(command)
-      workspace_id = command.workspace_context.workspace_id
       task_kinds = Enum.map(command.supported_task_kinds, &Atom.to_string/1)
+      lock_runner_claim_key!(command.runner_instance_id, command.runner_session_generation)
 
       task =
-        Repo.one(
-          from(task in RunnerTask,
-            where:
-              task.workspace_id == ^workspace_id and task.status == "queued" and
-                task.runner_pool == ^command.runner_pool and
-                task.required_runner_release_id == ^command.required_runner_release_id and
-                task.task_kind in ^task_kinds and
-                (is_nil(task.required_capability) or
-                   task.required_capability in ^command.capabilities),
-            order_by: [asc: task.enqueued_at, asc: task.task_id],
-            limit: 1,
-            lock: "FOR UPDATE SKIP LOCKED"
+        active_runner_task(command) ||
+          Repo.one(
+            from(task in RunnerTask,
+              where:
+                task.status == "queued" and task.runner_pool == ^command.runner_pool and
+                  task.required_runner_release_id == ^command.required_runner_release_id and
+                  task.task_kind in ^task_kinds and
+                  (is_nil(task.required_capability) or
+                     task.required_capability in ^command.capabilities),
+              order_by: [asc: task.enqueued_at, asc: task.workspace_id, asc: task.task_id],
+              limit: 1,
+              lock: "FOR UPDATE SKIP LOCKED"
+            )
           )
-        )
 
       case task do
         nil ->
           nil
+
+        %RunnerTask{status: status} = active when status in @active_statuses ->
+          if active_runner_matches_claim?(active, command) do
+            active
+          else
+            Repo.rollback(Error.new(:conflict, "runner already owns an incompatible active task"))
+          end
 
         %RunnerTask{status: "queued"} ->
           expires_at = DateTime.add(command.occurred_at, command.lease_duration_ms, :millisecond)
@@ -137,7 +146,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           {1, _} =
             Repo.update_all(
               from(row in RunnerTask,
-                where: row.workspace_id == ^workspace_id and row.task_id == ^task.task_id
+                where: row.workspace_id == ^task.workspace_id and row.task_id == ^task.task_id
               ),
               set: [
                 status: "assigned",
@@ -151,13 +160,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             )
 
           move_queued_to_active!(
-            workspace_id,
             task.runner_pool,
             task.required_runner_release_id,
             command.occurred_at
           )
 
-          fetch_task!(workspace_id, task.task_id)
+          fetch_task!(task.workspace_id, task.task_id)
       end
     end)
   end
@@ -199,10 +207,25 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       {attrs, persisted_status, persisted_fingerprint, persisted_resolution_error} =
         case command.status do
           :resolved ->
-            unless is_binary(command.payload_fingerprint) and
+            pin_fingerprint =
+              case command.runtime_input_pin do
+                %Favn.RuntimeInput.Pin{payload_fingerprint: encoded} ->
+                  case Base.decode16(encoded, case: :mixed) do
+                    {:ok, decoded} -> decoded
+                    :error -> nil
+                  end
+
+                _other ->
+                  nil
+              end
+
+            unless pin_fingerprint == command.payload_fingerprint and
+                     is_binary(command.payload_fingerprint) and
                      byte_size(command.payload_fingerprint) == 32 do
               Repo.rollback(Error.new(:invalid, "runtime input fingerprint must be sha256"))
             end
+
+            pin_runtime_inputs!(command, command.runtime_input_pin)
 
             {
               [
@@ -216,7 +239,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             }
 
           :failed ->
-            if is_nil(command.error) do
+            if is_nil(command.error) or not is_nil(command.runtime_input_pin) do
               Repo.rollback(Error.new(:invalid, "runtime input failure requires an error"))
             end
 
@@ -258,6 +281,21 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         )
       end
     end)
+  end
+
+  defp pin_runtime_inputs!(command, pin) do
+    pin_command = %PinRuntimeInputs{
+      workspace_context: command.workspace_context,
+      command_id: "runner-task-pin:" <> command.resolution_id,
+      run_id: pin.run_id,
+      pins: [pin]
+    }
+
+    case RunsStore.pin_runtime_inputs(pin_command) do
+      {:ok, [_persisted]} -> :ok
+      {:error, %Error{} = error} -> Repo.rollback(error)
+      {:error, reason} -> Repo.rollback(ErrorMapper.map(reason))
+    end
   end
 
   @impl true
@@ -338,7 +376,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           )
 
         remove_active_demand!(
-          task.workspace_id,
           task.runner_pool,
           task.required_runner_release_id,
           command.occurred_at
@@ -440,16 +477,19 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   @impl true
   def recover_expired(%C.RecoverRunnerTasks{} = command) do
     idempotent_transact(command, "recover_expired", fn ->
-      workspace_id = command.workspace_context.workspace_id
       validate_recovery!(command)
 
       tasks =
         Repo.all(
           from(task in RunnerTask,
             where:
-              task.workspace_id == ^workspace_id and task.status in ^@active_statuses and
+              task.status in ^@active_statuses and
                 task.assignment_expires_at <= ^command.occurred_at,
-            order_by: [asc: task.assignment_expires_at, asc: task.task_id],
+            order_by: [
+              asc: task.assignment_expires_at,
+              asc: task.workspace_id,
+              asc: task.task_id
+            ],
             limit: ^command.limit,
             lock: "FOR UPDATE SKIP LOCKED"
           )
@@ -470,7 +510,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             ]
           )
 
-        fetch_task!(workspace_id, task.task_id) |> to_result()
+        fetch_task!(task.workspace_id, task.task_id) |> to_result()
       end)
     end)
   end
@@ -478,13 +518,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   @impl true
   def reconcile_demand(%C.ReconcileRunnerCapacityDemand{} = command) do
     idempotent_transact(command, "reconcile_demand", fn ->
+      validate_platform_runner_context!(command.platform_context)
       validate_pool_release!(command.runner_pool, command.required_runner_release_id)
-      workspace_id = command.workspace_context.workspace_id
 
       case command.mode do
         :audit ->
           audit_demand!(
-            workspace_id,
             command.runner_pool,
             command.required_runner_release_id,
             command.occurred_at
@@ -492,7 +531,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
         :repair ->
           rebuild_demand!(
-            workspace_id,
             command.runner_pool,
             command.required_runner_release_id,
             command.occurred_at
@@ -560,10 +598,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   @impl true
   def demand(%Q.GetRunnerCapacityDemand{} = query) do
     read(fn ->
-      case validate_pool_release(query.runner_pool, query.required_runner_release_id) do
-        :ok ->
+      case {
+        valid_platform_runner_context?(query.platform_context),
+        validate_pool_release(query.runner_pool, query.required_runner_release_id)
+      } do
+        {true, :ok} ->
           case Repo.get_by(Demand,
-                 workspace_id: query.workspace_context.workspace_id,
                  runner_pool: query.runner_pool,
                  required_runner_release_id: query.required_runner_release_id
                ) do
@@ -572,7 +612,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             nil -> {:error, Error.new(:unavailable, "runner capacity demand is unavailable")}
           end
 
-        :error ->
+        _invalid ->
           {:error, Error.new(:invalid, "invalid runner demand query")}
       end
     end)
@@ -637,6 +677,36 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     )
   end
 
+  defp active_runner_task(command) do
+    Repo.one(
+      from(task in RunnerTask,
+        where:
+          task.assigned_runner_instance_id == ^command.runner_instance_id and
+            task.assigned_runner_session_generation == ^command.runner_session_generation and
+            task.status in ^@active_statuses,
+        order_by: [asc: task.workspace_id, asc: task.task_id],
+        limit: 1,
+        lock: "FOR UPDATE"
+      )
+    )
+  end
+
+  defp active_runner_matches_claim?(task, command) do
+    task.runner_pool == command.runner_pool and
+      task.required_runner_release_id == command.required_runner_release_id and
+      task_kind!(task.task_kind) in command.supported_task_kinds and
+      (is_nil(task.required_capability) or
+         task.required_capability in command.capabilities)
+  end
+
+  defp lock_runner_claim_key!(runner_instance_id, session_generation) do
+    lock_key =
+      "runner-claim:#{byte_size(runner_instance_id)}:#{runner_instance_id}:#{session_generation}"
+
+    SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [lock_key])
+    :ok
+  end
+
   defp fetch_task!(workspace_id, task_id),
     do: Repo.get_by!(RunnerTask, workspace_id: workspace_id, task_id: task_id)
 
@@ -659,7 +729,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp update_demand_for_status_change!(task, "queued", occurred_at)
        when task.status in @active_statuses do
     move_active_to_queued_demand!(
-      task.workspace_id,
       task.runner_pool,
       task.required_runner_release_id,
       task.enqueued_at,
@@ -670,7 +739,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp update_demand_for_status_change!(task, status, occurred_at)
        when task.status == "queued" and status in @terminal_statuses do
     remove_queued_demand!(
-      task.workspace_id,
       task.runner_pool,
       task.required_runner_release_id,
       occurred_at
@@ -680,7 +748,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp update_demand_for_status_change!(task, status, occurred_at)
        when task.status in @active_statuses and status in @terminal_statuses do
     remove_active_demand!(
-      task.workspace_id,
       task.runner_pool,
       task.required_runner_release_id,
       occurred_at
@@ -696,11 +763,10 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     )
   end
 
-  defp add_queued_demand!(workspace_id, runner_pool, release_id, enqueued_at, occurred_at) do
-    lock_demand_key!(workspace_id, runner_pool, release_id)
+  defp add_queued_demand!(runner_pool, release_id, enqueued_at, occurred_at) do
+    lock_demand_key!(runner_pool, release_id)
 
     attrs = %{
-      workspace_id: workspace_id,
       runner_pool: runner_pool,
       required_runner_release_id: release_id,
       outstanding_count: 1,
@@ -717,7 +783,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         :ok
 
       {0, _} ->
-        demand = lock_healthy_demand!(workspace_id, runner_pool, release_id)
+        demand = lock_healthy_demand!(runner_pool, release_id)
         oldest = oldest(demand.oldest_queued_at, enqueued_at)
 
         update_demand!(
@@ -729,9 +795,9 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     end
   end
 
-  defp move_queued_to_active!(workspace_id, runner_pool, release_id, occurred_at) do
-    demand = lock_healthy_demand!(workspace_id, runner_pool, release_id)
-    next_oldest = oldest_queued_at(workspace_id, runner_pool, release_id)
+  defp move_queued_to_active!(runner_pool, release_id, occurred_at) do
+    demand = lock_healthy_demand!(runner_pool, release_id)
+    next_oldest = oldest_queued_at(runner_pool, release_id)
 
     update_demand!(
       demand,
@@ -742,13 +808,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp move_active_to_queued_demand!(
-         workspace_id,
          runner_pool,
          release_id,
          enqueued_at,
          occurred_at
        ) do
-    demand = lock_healthy_demand!(workspace_id, runner_pool, release_id)
+    demand = lock_healthy_demand!(runner_pool, release_id)
     oldest = oldest(demand.oldest_queued_at, enqueued_at)
 
     update_demand!(
@@ -759,9 +824,9 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     )
   end
 
-  defp remove_queued_demand!(workspace_id, runner_pool, release_id, occurred_at) do
-    demand = lock_healthy_demand!(workspace_id, runner_pool, release_id)
-    next_oldest = oldest_queued_at(workspace_id, runner_pool, release_id)
+  defp remove_queued_demand!(runner_pool, release_id, occurred_at) do
+    demand = lock_healthy_demand!(runner_pool, release_id)
+    next_oldest = oldest_queued_at(runner_pool, release_id)
 
     update_demand!(
       demand,
@@ -771,8 +836,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     )
   end
 
-  defp remove_active_demand!(workspace_id, runner_pool, release_id, occurred_at) do
-    demand = lock_healthy_demand!(workspace_id, runner_pool, release_id)
+  defp remove_active_demand!(runner_pool, release_id, occurred_at) do
+    demand = lock_healthy_demand!(runner_pool, release_id)
 
     update_demand!(
       demand,
@@ -781,13 +846,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     )
   end
 
-  defp lock_healthy_demand!(workspace_id, runner_pool, release_id) do
+  defp lock_healthy_demand!(runner_pool, release_id) do
     demand =
       Repo.one(
         from(row in Demand,
           where:
-            row.workspace_id == ^workspace_id and row.runner_pool == ^runner_pool and
-              row.required_runner_release_id == ^release_id,
+            row.runner_pool == ^runner_pool and row.required_runner_release_id == ^release_id,
           lock: "FOR UPDATE"
         )
       )
@@ -804,8 +868,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       Repo.update_all(
         from(row in Demand,
           where:
-            row.workspace_id == ^demand.workspace_id and
-              row.runner_pool == ^demand.runner_pool and
+            row.runner_pool == ^demand.runner_pool and
               row.required_runner_release_id == ^demand.required_runner_release_id
         ),
         inc: increments,
@@ -815,11 +878,11 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     :ok
   end
 
-  defp oldest_queued_at(workspace_id, runner_pool, release_id) do
+  defp oldest_queued_at(runner_pool, release_id) do
     Repo.one!(
       from(task in RunnerTask,
         where:
-          task.workspace_id == ^workspace_id and task.runner_pool == ^runner_pool and
+          task.runner_pool == ^runner_pool and
             task.required_runner_release_id == ^release_id and task.status == "queued",
         select: min(task.enqueued_at)
       )
@@ -832,28 +895,27 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp oldest(left, right),
     do: if(DateTime.compare(left, right) == :gt, do: right, else: left)
 
-  defp audit_demand!(workspace_id, runner_pool, release_id, occurred_at) do
-    lock_demand_key!(workspace_id, runner_pool, release_id)
-    demand = lock_demand(workspace_id, runner_pool, release_id)
-    actual = demand_counts(workspace_id, runner_pool, release_id)
+  defp audit_demand!(runner_pool, release_id, occurred_at) do
+    lock_demand_key!(runner_pool, release_id)
+    demand = lock_demand(runner_pool, release_id)
+    actual = demand_counts(runner_pool, release_id)
 
     case demand do
       nil ->
         healthy? = actual.outstanding_count == 0
-        insert_demand!(workspace_id, runner_pool, release_id, actual, healthy?, occurred_at)
+        insert_demand!(runner_pool, release_id, actual, healthy?, occurred_at)
 
       %Demand{healthy: true} = current ->
         if demand_matches?(current, actual) do
           current
         else
           {1, _} =
-            Repo.update_all(demand_query(workspace_id, runner_pool, release_id),
+            Repo.update_all(demand_query(runner_pool, release_id),
               inc: [version: 1],
               set: [healthy: false, updated_at: occurred_at]
             )
 
           Repo.get_by!(Demand,
-            workspace_id: workspace_id,
             runner_pool: runner_pool,
             required_runner_release_id: release_id
           )
@@ -864,13 +926,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     end
   end
 
-  defp rebuild_demand!(workspace_id, runner_pool, release_id, occurred_at) do
-    lock_demand_key!(workspace_id, runner_pool, release_id)
-    lock_demand(workspace_id, runner_pool, release_id)
-    actual = demand_counts(workspace_id, runner_pool, release_id)
+  defp rebuild_demand!(runner_pool, release_id, occurred_at) do
+    lock_demand_key!(runner_pool, release_id)
+    lock_demand(runner_pool, release_id)
+    actual = demand_counts(runner_pool, release_id)
 
     attrs = %{
-      workspace_id: workspace_id,
       runner_pool: runner_pool,
       required_runner_release_id: release_id,
       outstanding_count: actual.outstanding_count,
@@ -883,7 +944,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     }
 
     Repo.insert_all(Demand, [attrs],
-      conflict_target: [:workspace_id, :runner_pool, :required_runner_release_id],
+      conflict_target: [:runner_pool, :required_runner_release_id],
       on_conflict: [
         set: [
           outstanding_count: attrs.outstanding_count,
@@ -898,29 +959,26 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     )
 
     Repo.get_by!(Demand,
-      workspace_id: workspace_id,
       runner_pool: runner_pool,
       required_runner_release_id: release_id
     )
   end
 
-  defp lock_demand(workspace_id, runner_pool, release_id) do
+  defp lock_demand(runner_pool, release_id) do
     Repo.one(
       from(row in Demand,
-        where:
-          row.workspace_id == ^workspace_id and row.runner_pool == ^runner_pool and
-            row.required_runner_release_id == ^release_id,
+        where: row.runner_pool == ^runner_pool and row.required_runner_release_id == ^release_id,
         lock: "FOR UPDATE"
       )
     )
   end
 
-  defp demand_counts(workspace_id, runner_pool, release_id) do
+  defp demand_counts(runner_pool, release_id) do
     queued =
       Repo.one!(
         from(task in RunnerTask,
           where:
-            task.workspace_id == ^workspace_id and task.runner_pool == ^runner_pool and
+            task.runner_pool == ^runner_pool and
               task.required_runner_release_id == ^release_id and task.status == "queued",
           select: %{count: count(task.task_id), oldest: min(task.enqueued_at)}
         )
@@ -930,7 +988,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       Repo.one!(
         from(task in RunnerTask,
           where:
-            task.workspace_id == ^workspace_id and task.runner_pool == ^runner_pool and
+            task.runner_pool == ^runner_pool and
               task.required_runner_release_id == ^release_id and task.status in ^@active_statuses,
           select: count(task.task_id)
         )
@@ -952,7 +1010,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp insert_demand!(
-         workspace_id,
          runner_pool,
          release_id,
          actual,
@@ -961,7 +1018,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
        ) do
     Repo.insert_all(Demand, [
       %{
-        workspace_id: workspace_id,
         runner_pool: runner_pool,
         required_runner_release_id: release_id,
         outstanding_count: actual.outstanding_count,
@@ -975,23 +1031,20 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     ])
 
     Repo.get_by!(Demand,
-      workspace_id: workspace_id,
       runner_pool: runner_pool,
       required_runner_release_id: release_id
     )
   end
 
-  defp demand_query(workspace_id, runner_pool, release_id) do
+  defp demand_query(runner_pool, release_id) do
     from(row in Demand,
-      where:
-        row.workspace_id == ^workspace_id and row.runner_pool == ^runner_pool and
-          row.required_runner_release_id == ^release_id
+      where: row.runner_pool == ^runner_pool and row.required_runner_release_id == ^release_id
     )
   end
 
-  defp lock_demand_key!(workspace_id, runner_pool, release_id) do
+  defp lock_demand_key!(runner_pool, release_id) do
     lock_key =
-      Enum.map_join([workspace_id, runner_pool, release_id], "|", fn value ->
+      Enum.map_join([runner_pool, release_id], "|", fn value ->
         "#{byte_size(value)}:#{value}"
       end)
 
@@ -1013,8 +1066,10 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
              command.retry_class
            ),
          true <- is_map(command.payload),
+         true <- is_map(command.orchestration_context),
          true <- is_binary(command.payload_hash) and byte_size(command.payload_hash) == 32,
          {:ok, _decoded} <- Codec.decode_payload(command.task_kind, command.payload),
+         {:ok, _context} <- Codec.decode_orchestration_context(command.orchestration_context),
          {:ok, expected_hash} <- Codec.payload_hash(command.payload),
          true <- expected_hash == command.payload_hash,
          :ok <- optional_bounded_id(command.run_id),
@@ -1041,11 +1096,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       task.enqueued_at == command.occurred_at and
       task.deadline_at == command.deadline_at and
       task.payload_version == 13 and
-      task.payload_hash == command.payload_hash
+      task.payload_hash == command.payload_hash and
+      task.orchestration_context == command.orchestration_context
   end
 
   defp validate_claim!(command) do
-    with :ok <- validate_pool_release!(command.runner_pool, command.required_runner_release_id),
+    with true <- valid_platform_runner_context?(command.platform_context),
+         :ok <- validate_pool_release!(command.runner_pool, command.required_runner_release_id),
          :ok <- bounded_id(command.runner_instance_id),
          true <-
            is_integer(command.runner_session_generation) and
@@ -1098,7 +1155,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     do: Repo.rollback(Error.new(:invalid, "invalid runner task transition"))
 
   defp validate_recovery!(command) do
-    with :ok <- bounded_id(command.owner_id),
+    with true <- valid_platform_runner_context?(command.platform_context),
+         :ok <- bounded_id(command.owner_id),
          true <- is_integer(command.limit) and command.limit in 1..500,
          true <- is_integer(command.lease_duration_ms) and command.lease_duration_ms > 0 do
       :ok
@@ -1125,7 +1183,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
          true <- is_integer(command.sequence) and command.sequence >= 0,
          true <- is_list(command.entries),
          true <- is_binary(command.payload_hash) and byte_size(command.payload_hash) == 32,
-         {:ok, expected_hash} <- CanonicalJSON.hash(command.entries),
+         {:ok, expected_hash} <-
+           Favn.Contracts.RunnerTask.PersistenceCodec.hash_term(command.entries),
          true <- expected_hash == command.payload_hash do
       :ok
     else
@@ -1201,6 +1260,21 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     end
   end
 
+  defp validate_platform_runner_context!(context) do
+    if valid_platform_runner_context?(context),
+      do: :ok,
+      else: Repo.rollback(Error.new(:invalid, "invalid platform runner task authority"))
+  end
+
+  defp valid_platform_runner_context?(
+         %FavnOrchestrator.Persistence.PlatformContext{roles: roles} = context
+       ) do
+    FavnOrchestrator.Persistence.PlatformContext.valid?(context) and
+      Enum.any?(roles, &(&1 in [:platform_operator, :platform_admin]))
+  end
+
+  defp valid_platform_runner_context?(_context), do: false
+
   defp validate_pool_release(runner_pool, release_id) do
     with :ok <- Favn.RunnerPool.validate_runtime(runner_pool),
          :ok <- Favn.Contracts.RunnerReleaseBinding.validate(release_id) do
@@ -1235,7 +1309,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   defp idempotent_transact(command, operation, fun) do
     transact(fn ->
-      workspace_id = command.workspace_context.workspace_id
+      scope_id = command_scope(command)
 
       unless bounded_id(command.command_id) == :ok do
         Repo.rollback(Error.new(:invalid, "invalid runner task command identity"))
@@ -1247,7 +1321,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
              RunnerTaskCommand,
              [
                %{
-                 workspace_id: workspace_id,
+                 scope_id: scope_id,
                  command_id: command.command_id,
                  operation: operation,
                  request_hash: request_hash,
@@ -1264,9 +1338,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           {1, _} =
             Repo.update_all(
               from(row in RunnerTaskCommand,
-                where:
-                  row.workspace_id == ^workspace_id and
-                    row.command_id == ^command.command_id
+                where: row.scope_id == ^scope_id and row.command_id == ^command.command_id
               ),
               set: [result: receipt]
             )
@@ -1276,12 +1348,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         {0, _} ->
           receipt =
             Repo.get_by!(RunnerTaskCommand,
-              workspace_id: workspace_id,
+              scope_id: scope_id,
               command_id: command.command_id
             )
 
           if receipt.operation == operation and receipt.request_hash == request_hash do
-            decode_command_result!(workspace_id, receipt.result)
+            decode_command_result!(receipt.result)
           else
             Repo.rollback(Error.new(:conflict, "runner task command identity was reused"))
           end
@@ -1292,8 +1364,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp command_hash(command),
     do: :crypto.hash(:sha256, :erlang.term_to_binary(command, [:deterministic]))
 
-  defp encode_command_result(%RunnerTask{task_id: task_id}),
-    do: %{"kind" => "task", "task_id" => task_id}
+  defp command_scope(%{workspace_context: %{workspace_id: workspace_id}}),
+    do: "workspace:" <> workspace_id
+
+  defp command_scope(%{platform_context: _context}), do: "platform:runner_tasks"
+
+  defp encode_command_result(%RunnerTask{workspace_id: workspace_id, task_id: task_id}),
+    do: %{"kind" => "task", "workspace_id" => workspace_id, "task_id" => task_id}
 
   defp encode_command_result(%Demand{} = demand),
     do: %{
@@ -1303,7 +1380,11 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     }
 
   defp encode_command_result(tasks) when is_list(tasks),
-    do: %{"kind" => "tasks", "task_ids" => Enum.map(tasks, & &1.task_id)}
+    do: %{
+      "kind" => "tasks",
+      "task_keys" =>
+        Enum.map(tasks, &%{"workspace_id" => &1.workspace_id, "task_id" => &1.task_id})
+    }
 
   defp encode_command_result(nil), do: %{"kind" => "none"}
   defp encode_command_result(:persisted), do: %{"kind" => "atom", "value" => "persisted"}
@@ -1311,36 +1392,43 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp encode_command_result(:already_persisted),
     do: %{"kind" => "atom", "value" => "already_persisted"}
 
-  defp decode_command_result!(workspace_id, %{"kind" => "task", "task_id" => task_id}),
-    do: fetch_task!(workspace_id, task_id)
+  defp decode_command_result!(%{
+         "kind" => "task",
+         "workspace_id" => workspace_id,
+         "task_id" => task_id
+       }),
+       do: fetch_task!(workspace_id, task_id)
 
-  defp decode_command_result!(workspace_id, %{
+  defp decode_command_result!(%{
          "kind" => "demand",
          "runner_pool" => runner_pool,
          "required_runner_release_id" => release_id
        }),
        do:
          Repo.get_by!(Demand,
-           workspace_id: workspace_id,
            runner_pool: runner_pool,
            required_runner_release_id: release_id
          )
 
-  defp decode_command_result!(workspace_id, %{"kind" => "tasks", "task_ids" => task_ids}),
-    do: Enum.map(task_ids, &fetch_task!(workspace_id, &1)) |> Enum.map(&to_result/1)
+  defp decode_command_result!(%{"kind" => "tasks", "task_keys" => task_keys}),
+    do:
+      Enum.map(
+        task_keys,
+        &(fetch_task!(&1["workspace_id"], &1["task_id"]) |> to_result())
+      )
 
-  defp decode_command_result!(_workspace_id, %{"kind" => "none"}), do: nil
+  defp decode_command_result!(%{"kind" => "none"}), do: nil
 
-  defp decode_command_result!(_workspace_id, %{"kind" => "atom", "value" => "persisted"}),
+  defp decode_command_result!(%{"kind" => "atom", "value" => "persisted"}),
     do: :persisted
 
-  defp decode_command_result!(_workspace_id, %{
+  defp decode_command_result!(%{
          "kind" => "atom",
          "value" => "already_persisted"
        }),
        do: :already_persisted
 
-  defp decode_command_result!(_workspace_id, _receipt),
+  defp decode_command_result!(_receipt),
     do: Repo.rollback(Error.new(:internal, "runner task command receipt is invalid"))
 
   defp transact(fun) do
@@ -1368,10 +1456,18 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp to_result(%RunnerTask{} = task) do
+    task_kind = task_kind!(task.task_kind)
+    payload = decode_payload!(task_kind, task.payload)
+    orchestration_context = decode_orchestration_context!(task.orchestration_context)
+    result = decode_result!(task_kind, Map.fetch!(@status_by_string, task.status), task.result)
+
     task
     |> Map.from_struct()
     |> Map.take(Map.keys(%RunnerTaskResult{}))
-    |> Map.update!(:task_kind, &task_kind!/1)
+    |> Map.put(:task_kind, task_kind)
+    |> Map.put(:payload, payload)
+    |> Map.put(:orchestration_context, orchestration_context)
+    |> Map.put(:result, result)
     |> Map.update!(:retry_class, &Map.fetch!(@retry_class_by_string, &1))
     |> Map.update!(:status, &Map.fetch!(@status_by_string, &1))
     |> Map.update!(:runtime_input_resolution_status, fn
@@ -1384,9 +1480,42 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   defp task_kind!(value), do: Map.fetch!(@task_kind_by_string, value)
 
+  defp decode_payload!(task_kind, envelope) do
+    case Codec.decode_payload(task_kind, envelope) do
+      {:ok, payload} -> payload
+      {:error, reason} -> raise "invalid persisted runner task payload: #{inspect(reason)}"
+    end
+  end
+
+  defp decode_orchestration_context!(envelope) do
+    case Codec.decode_orchestration_context(envelope) do
+      {:ok, context} -> context
+      {:error, reason} -> raise "invalid persisted runner task context: #{inspect(reason)}"
+    end
+  end
+
+  defp decode_result!(_task_kind, status, nil)
+       when status in [:queued, :assigned, :preparing, :running, :cancelling],
+       do: nil
+
+  defp decode_result!(task_kind, status, envelope)
+       when status in [:succeeded, :failed, :cancelled, :unknown] do
+    outcome =
+      case status do
+        :succeeded -> :succeeded
+        :failed -> :failed
+        :cancelled -> :cancelled
+        :unknown -> :unknown
+      end
+
+    case Codec.decode_result(task_kind, outcome, envelope) do
+      {:ok, result} -> result
+      {:error, reason} -> raise "invalid persisted runner task result: #{inspect(reason)}"
+    end
+  end
+
   defp to_demand(%Demand{} = demand) do
     %RunnerCapacityDemand{
-      workspace_id: demand.workspace_id,
       runner_pool: demand.runner_pool,
       required_runner_release_id: demand.required_runner_release_id,
       outstanding_count: demand.outstanding_count,

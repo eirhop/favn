@@ -10,18 +10,17 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerWork
+  alias FavnOrchestrator.CancellationOutcome
   alias Favn.Freshness.Key
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.AssetRunnerTasks
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.MaterializationClaims
-  alias FavnOrchestrator.RunExecutionOwnership
-  alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.ResourceCircuits
-  alias FavnOrchestrator.RuntimeInputPins
   alias FavnOrchestrator.RunServer.Cancellation
-  alias FavnOrchestrator.RunServer.Execution.RunWorkSet
+  alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.PreSubmitFailure
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
   alias FavnOrchestrator.RunServer.Execution.StageEntry
@@ -369,18 +368,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
              ctx.work,
              ctx.version,
              ctx.manifest_index
-           ),
-         {:ok, prepared} <-
-           RuntimeInputPins.prepare(
-             ctx.current_run,
-             work,
-             ctx.runner_client,
-             ctx.runner_opts
            ) do
       do_submit_admitted_entry(%{
         ctx
-        | work: prepared,
-          materialization_claim: MaterializationClaims.enrich(ctx.materialization_claim, prepared)
+        | work: work,
+          materialization_claim: MaterializationClaims.enrich(ctx.materialization_claim, work)
       })
     else
       {:error, reason} -> fail_unsubmitted_entry(ctx, ctx.work.asset_ref, reason)
@@ -388,60 +380,102 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp do_submit_admitted_entry(ctx) do
-    asset_ref = ctx.work.asset_ref
-    asset_step_id = ctx.work.asset_step_id
-
-    ownership =
-      RunExecutionOwnership.new(ctx.current_run,
-        asset_step_id: asset_step_id,
-        node_key: ctx.node_key,
-        asset_ref: asset_ref,
-        stage: ctx.stage,
-        attempt: ctx.attempt,
-        execution_pool: RunnerWork.execution_pool(ctx.work),
-        deadline_at: StepAttemptLifecycle.deadline_at(ctx.work)
+    task_id =
+      AssetRunnerTasks.task_id(
+        ctx.current_run,
+        ctx.work,
+        ctx.node_key,
+        ctx.attempt
       )
 
-    work = attach_ownership_metadata(ctx.work, ownership)
-    ctx = %{ctx | work: work}
+    intended_run =
+      with_inflight_task(
+        ctx.current_run,
+        task_id,
+        RunnerWork.lifecycle_metadata(ctx.work)
+      )
 
-    case RunExecutionOwnership.persist(ownership) do
+    intent = %{
+      asset_ref: ctx.work.asset_ref,
+      runner_task_id: task_id,
+      asset_step_id: ctx.work.asset_step_id,
+      window: RunnerWork.window(ctx.work),
+      stage: ctx.stage,
+      attempt: ctx.attempt,
+      max_attempts: ctx.work.max_attempts,
+      execution_pool: RunnerWork.execution_pool(ctx.work),
+      freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
+    }
+
+    case Persistence.persist_run_step(intended_run, attempt_start_event(ctx.attempt), intent) do
       :ok ->
-        submit_owned_entry(ctx, ownership, work, asset_ref)
+        enqueue_admitted_entry(%{ctx | current_run: intended_run}, task_id)
 
       {:error, reason} ->
-        fail_unsubmitted_entry(ctx, asset_ref, reason)
+        fail_unsubmitted_entry(
+          %{ctx | current_run: without_inflight_task(ctx.current_run, task_id)},
+          ctx.work.asset_ref,
+          reason
+        )
     end
   end
 
-  defp submit_owned_entry(ctx, ownership, work, asset_ref) do
-    result = RunnerDispatch.submit_work(ctx.runner_client, work, ctx.runner_opts)
+  defp enqueue_admitted_entry(ctx, task_id) do
+    case AssetRunnerTasks.enqueue(
+           ctx.current_run,
+           ctx.work,
+           ctx.node_key,
+           ctx.stage,
+           ctx.attempt,
+           orchestration_context(ctx)
+         ) do
+      {:ok, %{task_id: ^task_id} = task, work} ->
+        entry =
+          StageEntry.new!(%{
+            run_id: ctx.current_run.id,
+            asset_step_id: work.asset_step_id,
+            asset_ref: work.asset_ref,
+            node_key: ctx.node_key,
+            window: RunnerWork.window(work),
+            task_id: task.task_id,
+            assignment_generation: task.assignment_generation,
+            execution_id: task.task_id,
+            runner_execution_id: nil,
+            ownership: nil,
+            decision: Map.get(ctx.decisions, ctx.node_key, %{}),
+            attempt: ctx.attempt,
+            stage: ctx.stage,
+            lease: ctx.lease,
+            materialization_claim: MaterializationClaims.enrich(ctx.materialization_claim, work),
+            execution_pool: RunnerWork.execution_pool(work),
+            resource_circuit_permits: ctx.resource_circuit_permits,
+            freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key),
+            version: ctx.version,
+            manifest_index: ctx.manifest_index,
+            freshness_context: ctx.freshness_context
+          })
 
-    case result do
-      {:ok, execution_id} ->
-        with :ok <- RunExecutionOwnership.validate_runner_execution_id(ownership, execution_id) do
-          submitted_ownership = RunExecutionOwnership.submitted(ownership, execution_id)
-
-          case persist_submitted_ownership_snapshot(submitted_ownership) do
-            :ok ->
-              submit_started_entry(ctx, submitted_ownership, execution_id)
-
-            {:error, :external_cancel} ->
-              fail_submitted_entry(ctx, asset_ref, execution_id, :external_cancel)
-
-            {:error, reason} ->
-              fail_submitted_entry(ctx, asset_ref, execution_id, reason)
-          end
-        else
-          {:error, reason} ->
-            fail_submitted_entry(ctx, asset_ref, execution_id, reason)
-        end
+        do_submit(ctx.rest, %{
+          ctx
+          | work: work,
+            current_run: ctx.current_run,
+            entries_rev: [entry | ctx.entries_rev]
+        })
 
       {:error, reason} ->
-        _ = RunExecutionOwnership.fail_dispatch(ownership, reason)
-
-        fail_unsubmitted_entry(ctx, asset_ref, reason)
+        fail_unsubmitted_entry(ctx, ctx.work.asset_ref, reason)
     end
+  end
+
+  defp orchestration_context(ctx) do
+    %{
+      kind: :pipeline,
+      decision: Map.get(ctx.decisions, ctx.node_key, %{}),
+      materialization_claim: MaterializationClaims.enrich(ctx.materialization_claim, ctx.work),
+      resource_circuit_permits: ctx.resource_circuit_permits,
+      freshness_context: ctx.freshness_context,
+      freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
+    }
   end
 
   defp fail_unsubmitted_entry(ctx, asset_ref, reason) do
@@ -498,48 +532,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
 
     persist_stage_submit_failure(ctx, failed, asset_ref, reason, safe_retryable?(reason))
-  end
-
-  defp fail_submitted_entry(ctx, asset_ref, execution_id, :external_cancel) do
-    :ok = release_entry_lease(%{lease: ctx.lease})
-    :ok = fail_claim(ctx, :external_cancel)
-    :ok = cleanup_entries(ctx.current_run, entries(ctx), :external_cancel)
-
-    {cancelled, cancel_results} =
-      cancel_execution_ids_with_results(
-        ctx.current_run,
-        execution_ids(ctx) ++ [execution_id],
-        %{kind: :external_cancel, asset_ref: asset_ref, stage: ctx.stage, attempt: ctx.attempt},
-        ctx.runner_client,
-        ctx.runner_opts
-      )
-
-    persist_submit_persist_failure_outcome(ctx, execution_id, cancel_results, :external_cancel)
-
-    {:error, Snapshots.cancelled_snapshot(cancelled), [],
-     attempted_node_keys(ctx) ++ [ctx.node_key]}
-  end
-
-  defp fail_submitted_entry(ctx, asset_ref, execution_id, reason) do
-    :ok = release_entry_lease(%{lease: ctx.lease})
-    :ok = fail_claim(ctx, reason)
-    :ok = cleanup_entries(ctx.current_run, entries(ctx), reason)
-
-    {cancelled, cancel_results} =
-      cancel_execution_ids_with_results(
-        ctx.current_run,
-        execution_ids(ctx) ++ [execution_id],
-        %{kind: :step_submitted_persist_failed, asset_ref: asset_ref, error: reason},
-        ctx.runner_client,
-        ctx.runner_opts
-      )
-
-    persist_submit_persist_failure_outcome(ctx, execution_id, cancel_results, reason)
-
-    failed =
-      RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
-
-    persist_stage_submit_failure(ctx, failed, asset_ref, reason, false)
   end
 
   defp persist_stage_submit_failure(ctx, failed, asset_ref, reason, retryable?) do
@@ -599,188 +591,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       {:error, :external_cancel} -> {:error, :external_cancel}
       {:error, reason} -> {:error, reason, retry}
     end
-  end
-
-  defp attach_ownership_metadata(%RunnerWork{} = work, %RunExecutionOwnership{} = ownership) do
-    metadata =
-      work.metadata
-      |> Map.put(:ownership_id, ownership.ownership_id)
-      |> Map.put(:dispatch_id, ownership.dispatch_id)
-      |> Map.put(:deadline_at, ownership.deadline_at)
-
-    %{work | execution_id: ownership.dispatch_id, metadata: metadata}
-  end
-
-  defp submit_started_entry(ctx, ownership, execution_id) do
-    asset_ref = ctx.work.asset_ref
-    asset_step_id = ctx.work.asset_step_id
-    started_ownership = RunExecutionOwnership.started(ownership)
-
-    case RunExecutionOwnership.persist(started_ownership) do
-      :ok ->
-        submit_started_entry_after_ownership(
-          ctx,
-          RunExecutionOwnership.advance_local_version(started_ownership),
-          execution_id,
-          asset_ref,
-          asset_step_id
-        )
-
-      {:error, reason} ->
-        :ok = release_entry_lease(%{lease: ctx.lease})
-        :ok = fail_claim(ctx, reason)
-        :ok = cleanup_entries(ctx.current_run, entries(ctx), reason)
-
-        cancelled =
-          cancel_execution_ids(
-            ctx.current_run,
-            [execution_id],
-            %{kind: :step_started_ownership_persist_failed, asset_ref: asset_ref, error: reason},
-            ctx.runner_client,
-            ctx.runner_opts
-          )
-
-        failed =
-          Snapshots.snapshot_update(cancelled,
-            status: :error,
-            error: reason,
-            runner_execution_id: nil
-          )
-
-        {:error, failed, [], attempted_node_keys(ctx) ++ [ctx.node_key]}
-    end
-  end
-
-  defp submit_started_entry_after_ownership(
-         ctx,
-         ownership,
-         execution_id,
-         asset_ref,
-         asset_step_id
-       ) do
-    updated_run =
-      with_inflight_execution(
-        ctx.current_run,
-        execution_id,
-        RunnerWork.lifecycle_metadata(ctx.work)
-      )
-
-    case Persistence.persist_run_step(updated_run, attempt_start_event(ctx.attempt), %{
-           asset_ref: asset_ref,
-           runner_execution_id: execution_id,
-           asset_step_id: asset_step_id,
-           window: RunnerWork.window(ctx.work),
-           stage: ctx.stage,
-           attempt: ctx.attempt,
-           max_attempts: ctx.work.max_attempts,
-           execution_pool: RunnerWork.execution_pool(ctx.work),
-           freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key),
-           runtime_input_event: Map.get(ctx.work.metadata, :runtime_input_event),
-           runtime_input_lineage: Map.get(ctx.work.metadata, :runtime_input_lineage)
-         }) do
-      :ok ->
-        entry =
-          StageEntry.new!(%{
-            run_id: ctx.current_run.id,
-            asset_step_id: asset_step_id,
-            asset_ref: asset_ref,
-            node_key: ctx.node_key,
-            window: RunnerWork.window(ctx.work),
-            execution_id: execution_id,
-            runner_execution_id: execution_id,
-            ownership: ownership,
-            decision: Map.get(ctx.decisions, ctx.node_key, %{}),
-            attempt: ctx.attempt,
-            stage: ctx.stage,
-            lease: ctx.lease,
-            materialization_claim: ctx.materialization_claim,
-            execution_pool: RunnerWork.execution_pool(ctx.work),
-            resource_circuit_permits: ctx.resource_circuit_permits,
-            freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key),
-            version: ctx.version,
-            manifest_index: ctx.manifest_index,
-            freshness_context: ctx.freshness_context
-          })
-
-        do_submit(ctx.rest, %{
-          ctx
-          | current_run: updated_run,
-            entries_rev: [entry | ctx.entries_rev]
-        })
-
-      {:error, :external_cancel} ->
-        :ok = release_entry_lease(%{lease: ctx.lease})
-        :ok = fail_claim(ctx, :external_cancel)
-        :ok = cleanup_entries(ctx.current_run, entries(ctx), :external_cancel)
-
-        cancelled =
-          cancel_execution_ids(
-            updated_run,
-            [execution_id],
-            %{
-              kind: :external_cancel,
-              asset_ref: asset_ref,
-              stage: ctx.stage,
-              attempt: ctx.attempt
-            },
-            ctx.runner_client,
-            ctx.runner_opts
-          )
-
-        {:error, Snapshots.cancelled_snapshot(cancelled), [],
-         attempted_node_keys(ctx) ++ [ctx.node_key]}
-
-      {:error, reason} ->
-        :ok = release_entry_lease(%{lease: ctx.lease})
-        :ok = fail_claim(ctx, reason)
-        :ok = cleanup_entries(ctx.current_run, entries(ctx), reason)
-
-        cancelled =
-          cancel_execution_ids(
-            updated_run,
-            [execution_id],
-            %{kind: :step_started_persist_failed, asset_ref: asset_ref, error: reason},
-            ctx.runner_client,
-            ctx.runner_opts
-          )
-
-        failed =
-          Snapshots.snapshot_update(ctx.current_run,
-            status: :error,
-            error: reason,
-            runner_execution_id: nil,
-            metadata: cancelled.metadata
-          )
-
-        {:error, failed, [], attempted_node_keys(ctx) ++ [ctx.node_key]}
-    end
-  end
-
-  defp persist_submitted_ownership_snapshot(%RunExecutionOwnership{} = ownership) do
-    if Persistence.externally_cancelled?(ownership) do
-      {:error, :external_cancel}
-    else
-      RunExecutionOwnership.persist(ownership)
-    end
-  end
-
-  defp persist_submit_persist_failure_outcome(ctx, execution_id, cancel_results, reason) do
-    result = Enum.find(cancel_results, &(&1.execution_id == execution_id))
-
-    ctx.current_run
-    |> RunExecutionOwnership.new(
-      asset_step_id: ctx.work.asset_step_id,
-      node_key: ctx.node_key,
-      asset_ref: ctx.work.asset_ref,
-      stage: ctx.stage,
-      attempt: ctx.attempt,
-      execution_pool: RunnerWork.execution_pool(ctx.work),
-      deadline_at: StepAttemptLifecycle.deadline_at(ctx.work)
-    )
-    |> RunExecutionOwnership.submitted(execution_id)
-    |> RunExecutionOwnership.mark_submit_persist_failed(result, reason)
-
-    :ok
   end
 
   defp persist_step_queued(run_state, work, stage, attempt, queue_reason, scope) do
@@ -857,32 +667,36 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp safe_retryable?(%RunnerError{retryable?: true, outcome: :safe_failure}), do: true
   defp safe_retryable?(_reason), do: false
 
-  defp with_inflight_execution(%RunState{} = run_state, execution_id, metadata) do
+  defp with_inflight_task(%RunState{} = run_state, task_id, metadata) do
     ids =
-      run_state
-      |> inflight_ids_from_metadata()
-      |> Kernel.++([execution_id])
+      run_state.metadata
+      |> Map.get(:in_flight_task_ids, [])
+      |> Kernel.++([task_id])
       |> Enum.filter(&is_binary/1)
       |> Enum.uniq()
 
     RunState.transition(run_state,
-      runner_execution_id: execution_id,
-      metadata:
-        run_state.metadata |> Map.merge(metadata) |> Map.put(:in_flight_execution_ids, ids)
+      runner_execution_id: nil,
+      metadata: run_state.metadata |> Map.merge(metadata) |> Map.put(:in_flight_task_ids, ids)
     )
   end
 
-  defp inflight_ids_from_metadata(%RunState{} = run_state) do
-    case Map.get(run_state.metadata, :in_flight_execution_ids, []) do
-      ids when is_list(ids) -> ids
-      _other -> []
-    end
+  defp without_inflight_task(%RunState{} = run_state, task_id) do
+    ids =
+      run_state.metadata
+      |> Map.get(:in_flight_task_ids, [])
+      |> Enum.reject(&(&1 == task_id))
+
+    RunState.transition(run_state,
+      runner_execution_id: nil,
+      metadata: Map.put(run_state.metadata, :in_flight_task_ids, ids)
+    )
   end
 
   defp cleanup_entries(%RunState{} = run_state, entries, reason) when is_list(entries) do
     run_state
-    |> RunWorkSet.from_entries(entries)
-    |> RunWorkSet.cleanup_all(reason)
+    |> ActiveTaskSet.from_entries(entries)
+    |> ActiveTaskSet.cleanup_all(reason)
   end
 
   defp stop_after_stage_build_failure(ctx, node_key, reason) do
@@ -898,10 +712,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp fail_claim(ctx, reason) do
-    RunWorkSet.fail_entry_claim(%{materialization_claim: ctx.materialization_claim}, reason)
+    ActiveTaskSet.fail_entry_claim(%{materialization_claim: ctx.materialization_claim}, reason)
   end
 
-  defp release_entry_lease(entry), do: RunWorkSet.release_entry(entry)
+  defp release_entry_lease(entry), do: ActiveTaskSet.release_entry(entry)
 
   defp release_pre_dispatch(ctx) do
     with :ok <- release_entry_lease(ctx),
@@ -948,21 +762,29 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          runner_client,
          runner_opts
        ) do
-    cancel_results =
-      Cancellation.dispatch_runner_work(
-        run_state,
-        execution_ids,
-        reason,
-        runner_client,
-        runner_opts
-      )
+    _ = runner_client
+    _ = runner_opts
+    cancel_results = Cancellation.dispatch_runner_tasks(run_state, execution_ids, reason)
 
-    _ = RunExecutionOwnership.persist_cancel_outcomes(run_state, cancel_results, reason)
+    confirmed_ids =
+      cancel_results
+      |> Enum.filter(&CancellationOutcome.confirmed?/1)
+      |> Enum.map(& &1.execution_id)
 
-    {Snapshots.clear_inflight_executions(
-       run_state,
-       Enum.map(cancel_results, & &1.execution_id)
-     ), cancel_results}
+    remaining_ids =
+      run_state
+      |> ActiveTaskSet.inflight_task_ids()
+      |> Enum.reject(&(&1 in confirmed_ids))
+
+    metadata =
+      run_state.metadata
+      |> Map.delete(:in_flight_execution_ids)
+      |> Map.delete("in_flight_execution_ids")
+      |> Map.put(:in_flight_task_ids, remaining_ids)
+      |> Map.put(:cancel_outcomes, Enum.map(cancel_results, &CancellationOutcome.to_map/1))
+
+    {Snapshots.snapshot_update(run_state, metadata: metadata, runner_execution_id: nil),
+     cancel_results}
   end
 
   defp decision_freshness_key(decisions, node_key) when is_map(decisions) do

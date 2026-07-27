@@ -41,8 +41,15 @@ defmodule FavnRunner.ManifestStore do
 
   @spec register(Version.t(), keyword()) :: :ok | {:error, term()}
   def register(%Version{} = version, opts \\ []) do
-    with :ok <-
-           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)) do
+    register_for_release(version, Version.transitional_default_release!(version), opts)
+  end
+
+  @doc false
+  @spec register_for_release(Version.t(), String.t(), keyword()) :: :ok | {:error, term()}
+  def register_for_release(%Version{} = version, required_release_id, opts \\ [])
+      when is_binary(required_release_id) and is_list(opts) do
+    with :ok <- manifest_contains_release(version, required_release_id),
+         :ok <- ReleaseVerifier.verify_required_release(required_release_id) do
       cache = server(opts)
 
       case ensure(version.manifest_version_id, version.content_hash, server: cache) do
@@ -84,8 +91,33 @@ defmodule FavnRunner.ManifestStore do
 
   def acquire(%Version{} = version, lease_id, %DateTime{} = expires_at, opts)
       when is_binary(lease_id) and byte_size(lease_id) in 1..512 and is_list(opts) do
-    with :ok <-
-           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)) do
+    acquire_for_release(
+      version,
+      Version.transitional_default_release!(version),
+      lease_id,
+      expires_at,
+      opts
+    )
+  end
+
+  def acquire(%Version{}, _lease_id, %DateTime{}, _opts), do: {:error, :invalid_manifest_lease}
+
+  @doc false
+  @spec acquire_for_release(Version.t(), String.t(), String.t(), DateTime.t(), keyword()) ::
+          :ok | {:error, term()}
+  def acquire_for_release(version, required_release_id, lease_id, expires_at, opts \\ [])
+
+  def acquire_for_release(
+        %Version{} = version,
+        required_release_id,
+        lease_id,
+        %DateTime{} = expires_at,
+        opts
+      )
+      when is_binary(required_release_id) and is_binary(lease_id) and
+             byte_size(lease_id) in 1..512 and is_list(opts) do
+    with :ok <- manifest_contains_release(version, required_release_id),
+         :ok <- ReleaseVerifier.verify_required_release(required_release_id) do
       cache = server(opts)
       expires_at_ms = DateTime.to_unix(expires_at, :millisecond)
       timeout = Keyword.get(opts, :timeout, 30_000)
@@ -116,7 +148,8 @@ defmodule FavnRunner.ManifestStore do
     end
   end
 
-  def acquire(%Version{}, _lease_id, %DateTime{}, _opts), do: {:error, :invalid_manifest_lease}
+  def acquire_for_release(%Version{}, _release, _lease_id, %DateTime{}, _opts),
+    do: {:error, :invalid_manifest_lease}
 
   @doc "Leases an already-registered manifest without copying its payload."
   @spec acquire_registered(String.t(), String.t(), String.t(), DateTime.t(), keyword()) ::
@@ -777,12 +810,24 @@ defmodule FavnRunner.ManifestStore do
   defp package_relation_modules(%ExecutionPackage{}), do: []
 
   defp handle(%Version{} = version) do
+    {:ok, release} = ReleaseVerifier.verified_release()
+
     %ManifestHandle{
       manifest_version_id: version.manifest_version_id,
       content_hash: version.content_hash,
-      required_runner_release_id: Version.transitional_default_release!(version)
+      required_runner_release_id: release.runner_release_id
     }
   end
+
+  defp manifest_contains_release(%Version{runner_releases: releases}, required_release_id)
+       when is_map(releases) do
+    if required_release_id in Map.values(releases),
+      do: :ok,
+      else: {:error, :manifest_runner_release_mismatch}
+  end
+
+  defp manifest_contains_release(_version, _required_release_id),
+    do: {:error, :manifest_runner_release_mismatch}
 
   defp match_expected_hash(_version, nil), do: :ok
 

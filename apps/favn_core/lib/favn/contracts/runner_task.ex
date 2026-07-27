@@ -152,7 +152,9 @@ defmodule Favn.Contracts.RunnerTask do
   def validate_result(_kind, outcome, nil) when outcome in [:failed, :cancelled, :unknown],
     do: :ok
 
-  def validate_result(:asset_attempt, :succeeded, %Favn.Contracts.RunnerResult{}), do: :ok
+  def validate_result(:asset_attempt, outcome, %Favn.Contracts.RunnerResult{})
+      when outcome in @terminal_outcomes,
+      do: :ok
 
   def validate_result(
         :relation_inspection,
@@ -216,6 +218,7 @@ defmodule Favn.Contracts.RunnerTask.Contract do
     :workspace_id,
     :task_id,
     :runner_instance_id,
+    :boot_id,
     :assignment_id,
     :batch_id,
     :command_id,
@@ -568,23 +571,52 @@ defmodule Favn.Contracts.RunnerTask.Registration do
     tag: "registration",
     fields: [
       runner_instance_id: nil,
+      boot_id: nil,
       runner_session_generation: 0,
       beam_node: nil,
       runner_pool: nil,
       required_runner_release_id: nil,
       protocol_version: 13,
       slots: 1,
+      lifecycle_mode: :elastic,
       supported_task_kinds: [],
-      capabilities: []
+      capabilities: [],
+      active_assignment: nil
     ],
     required: [
       :runner_instance_id,
+      :boot_id,
       :beam_node,
       :runner_pool,
       :required_runner_release_id,
+      :lifecycle_mode,
       :supported_task_kinds
     ],
-    enums: [protocol_version: [13]]
+    enums: [protocol_version: [13], lifecycle_mode: [:elastic, :resident]]
+
+  def validate(%__MODULE__{} = registration) do
+    with :ok <- super(registration),
+         :ok <- validate_active_assignment(registration.active_assignment) do
+      :ok
+    end
+  end
+
+  def validate(value), do: super(value)
+
+  defp validate_active_assignment(nil), do: :ok
+
+  defp validate_active_assignment(%{
+         workspace_id: workspace_id,
+         task_id: task_id,
+         assignment_generation: generation
+       })
+       when is_binary(workspace_id) and byte_size(workspace_id) in 1..255 and
+              is_binary(task_id) and byte_size(task_id) in 1..255 and
+              is_integer(generation) and generation > 0,
+       do: :ok
+
+  defp validate_active_assignment(value),
+    do: {:error, {:invalid_runner_task_active_assignment, value}}
 end
 
 defmodule Favn.Contracts.RunnerTask.RegistrationAck do
@@ -829,14 +861,15 @@ defmodule Favn.Contracts.RunnerTask.RuntimeInputsAck do
       payload_fingerprint: nil,
       status: :persisted
     ],
-    required: [
-      :workspace_id,
-      :task_id,
-      :runner_instance_id,
-      :resolution_id,
-      :payload_fingerprint
-    ],
+    required: [:workspace_id, :task_id, :runner_instance_id, :resolution_id],
     enums: [status: [:persisted, :stale, :rejected]]
+
+  def validate(%__MODULE__{payload_fingerprint: fingerprint} = message)
+      when is_nil(fingerprint) or is_binary(fingerprint),
+      do: super(message)
+
+  def validate(%__MODULE__{}), do: {:error, {:invalid_field, :payload_fingerprint}}
+  def validate(value), do: super(value)
 end
 
 defmodule Favn.Contracts.RunnerTask.LogBatch do
@@ -972,6 +1005,30 @@ defmodule Favn.Contracts.RunnerTask.Cancellation do
       requested_at: nil
     ],
     required: [:workspace_id, :task_id, :runner_instance_id, :command_id, :requested_at]
+end
+
+defmodule Favn.Contracts.RunnerTask.CancellationAck do
+  use Favn.Contracts.RunnerTask.Message,
+    tag: "cancellation_ack",
+    session_fenced: true,
+    fields: [
+      workspace_id: nil,
+      task_id: nil,
+      runner_instance_id: nil,
+      runner_session_generation: 0,
+      assignment_generation: 0,
+      command_id: nil,
+      status: :observed,
+      acknowledged_at: nil
+    ],
+    required: [
+      :workspace_id,
+      :task_id,
+      :runner_instance_id,
+      :command_id,
+      :acknowledged_at
+    ],
+    enums: [status: [:observed, :stale, :rejected]]
 end
 
 defmodule Favn.Contracts.RunnerTask.Shutdown do

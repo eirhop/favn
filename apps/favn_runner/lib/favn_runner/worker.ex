@@ -27,7 +27,7 @@ defmodule FavnRunner.Worker do
   alias FavnRunner.ResultRetention
 
   @type init_arg :: %{
-          required(:server) => pid(),
+          required(:server) => pid() | {:bounded, pid()},
           required(:execution_id) => String.t(),
           required(:work) => RunnerWork.t(),
           optional(:version) => Version.t(),
@@ -60,7 +60,7 @@ defmodule FavnRunner.Worker do
     {result, _bytes, _truncated?} =
       ResultRetention.compact(result, Map.get(state, :result_max_bytes, 768 * 1_024))
 
-    send(server, {:runner_result, execution_id, result})
+    emit_result(server, execution_id, result)
     {:stop, :normal, state}
   end
 
@@ -486,6 +486,14 @@ defmodule FavnRunner.Worker do
     }
 
     EventSink.emit(server, execution_id, event)
+  end
+
+  defp emit_result({:bounded, server}, execution_id, result),
+    do: GenServer.call(server, {:runner_result, execution_id, result}, :infinity)
+
+  defp emit_result(server, execution_id, result) do
+    send(server, {:runner_result, execution_id, result})
+    :ok
   end
 
   defp emit_log(

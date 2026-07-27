@@ -308,13 +308,12 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "manifest_versions" =>
       ~w(manifest_version_id content_hash schema_version runner_contract_version required_runner_release_id payload_version asset_count pipeline_count schedule_count atom_strings manifest inserted_at),
     "runner_tasks" =>
-      ~w(workspace_id task_id domain_identity task_kind run_id operation_id asset_step_id runner_pool required_runner_release_id required_capability retry_class status enqueued_at deadline_at payload_version payload payload_hash assigned_runner_instance_id assigned_runner_session_generation assignment_generation assignment_expires_at cancellation_requested_at cancellation_acknowledged_at runtime_input_resolution_id runtime_input_resolution_status runtime_input_payload_fingerprint runtime_input_error runtime_inputs_resolved_at last_command_id result_version result error terminal_at inserted_at updated_at),
-    "runner_task_commands" =>
-      ~w(workspace_id command_id operation request_hash result inserted_at),
+      ~w(workspace_id task_id domain_identity task_kind run_id operation_id asset_step_id runner_pool required_runner_release_id required_capability retry_class status enqueued_at deadline_at payload_version payload payload_hash orchestration_context assigned_runner_instance_id assigned_runner_session_generation assignment_generation assignment_expires_at cancellation_requested_at cancellation_acknowledged_at runtime_input_resolution_id runtime_input_resolution_status runtime_input_payload_fingerprint runtime_input_error runtime_inputs_resolved_at last_command_id result_version result error terminal_at inserted_at updated_at),
+    "runner_task_commands" => ~w(scope_id command_id operation request_hash result inserted_at),
     "runner_task_log_batches" =>
       ~w(workspace_id task_id batch_id assignment_generation sequence entries payload_hash inserted_at),
     "runner_capacity_demands" =>
-      ~w(workspace_id runner_pool required_runner_release_id outstanding_count queued_count active_count oldest_queued_at version healthy updated_at),
+      ~w(runner_pool required_runner_release_id outstanding_count queued_count active_count oldest_queued_at version healthy updated_at),
     "execution_packages" =>
       ~w(content_hash asset_module asset_name runtime_input_resolver payload first_linked_at inserted_at),
     "manifest_execution_packages" => ~w(manifest_version_id package_hash asset_module asset_name),
@@ -467,8 +466,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     run_events_outbox_fk run_targets_run_fk run_targets_deployment_target_fk
     runtime_input_pins_run_fk runtime_input_pins_execution_package_hash_fkey
     run_ownerships_run_fk runner_executions_run_fk runner_tasks_workspace_fkey
-    runner_task_log_batches_task_fkey runner_capacity_demands_workspace_fkey
-    runner_task_commands_workspace_fkey
+    runner_task_log_batches_task_fkey
     schedule_activations_workspace_fk schedule_activation_commands_workspace_fk
     schedule_cursors_target_fk schedule_occurrences_cursor_fk execution_leases_run_fk
     execution_lease_scopes_lease_fk execution_lease_scopes_scope_fk admission_waiters_run_fk
@@ -494,7 +492,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "14e39f94a62b8e0a86232e52e444b585a235a6d30015cdfbe1d8838f3d199e6e"
+  @expected_definition_fingerprint "61fa5698077103a1237cd9216ff45f37bffea6f350b730d8b7423acb55b58321"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

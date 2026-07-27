@@ -20,24 +20,6 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     def record_audit(_command), do: :ok
   end
 
-  defmodule Protocol13ManifestStore do
-    def get_manifest(_query) do
-      manifest =
-        FavnTestSupport.with_manifest_contract(%{
-          assets: [],
-          pipelines: [],
-          schedules: [],
-          graph: %{},
-          metadata: %{}
-        })
-
-      Favn.Manifest.Version.new(manifest, manifest_version_id: "mv_protocol_13")
-    end
-
-    def get_runtime_state(_query), do: {:error, :active_manifest_not_set}
-    def record_audit(_command), do: :ok
-  end
-
   setup do
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
 
@@ -111,32 +93,6 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
 
     assert response.status == 404
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "not_found"
-  end
-
-  test "protocol 13 activation is rejected before the singleton runner path" do
-    start_manifest_runtime(Protocol13ManifestStore)
-
-    response =
-      :post
-      |> conn("/mv_protocol_13/activate", "")
-      |> put_req_header("authorization", "Bearer #{@token}")
-      |> put_req_header("x-favn-workspace-id", "workspace-a")
-      |> put_req_header("idempotency-key", "protocol-13-not-activatable")
-      |> Map.put(:body_params, %{
-        "selection" => %{
-          "common_assets" => "all",
-          "common_pipelines" => "all",
-          "workspace_assets" => [],
-          "workspace_pipelines" => []
-        },
-        "configuration" => %{}
-      })
-      |> ManifestsRouter.call(ManifestsRouter.init([]))
-
-    assert response.status == 503
-
-    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) ==
-             "runner_protocol_not_activatable"
   end
 
   test "platform operator service token can read the active manifest without actor headers" do

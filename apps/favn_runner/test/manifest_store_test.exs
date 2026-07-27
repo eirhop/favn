@@ -130,11 +130,11 @@ defmodule FavnRunner.ManifestStoreTest do
              ManifestStore.acquire(
                first,
                lease_id,
-               DateTime.add(DateTime.utc_now(), 1, :millisecond),
+               DateTime.add(DateTime.utc_now(), 100, :millisecond),
                server: store
              )
 
-    Process.sleep(5)
+    Process.sleep(150)
     assert :ok = ManifestStore.register(second, server: store)
     assert %{active_leases: 0, count: 1} = ManifestStore.diagnostics(server: store)
   end

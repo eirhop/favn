@@ -80,7 +80,14 @@ defmodule FavnOrchestrator.Application do
             {Task.Supervisor, name: FavnOrchestrator.RunManagerTaskSupervisor},
             {RunManager, []},
             {RunSubmissionSupervisor, config: runtime_config.run_submissions},
-            {FavnOrchestrator.ResourceRecovery, []}
+            {FavnOrchestrator.ResourceRecovery, []},
+            {FavnOrchestrator.RunnerRegistry, []},
+            {FavnOrchestrator.RunnerQueueSupervisor, []},
+            {Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor},
+            {FavnOrchestrator.RunnerTaskResultRouter, []},
+            {FavnOrchestrator.RunnerGateway, []},
+            {FavnOrchestrator.RunnerTaskRecovery, []},
+            {FavnOrchestrator.RunnerCapacityReconciler, []}
           ] ++
           [{BackfillDispatcher, []}, {RebuildDispatcher, []}] ++
           [

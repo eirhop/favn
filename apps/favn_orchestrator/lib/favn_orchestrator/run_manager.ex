@@ -26,6 +26,7 @@ defmodule FavnOrchestrator.RunManager do
   alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunServer.Cancellation
+  alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RuntimeConfig
@@ -721,6 +722,18 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   defp forward_cancel_result(%RunState{} = run, reason) do
+    case ActiveTaskSet.inflight_task_ids(run) do
+      [_ | _] = task_ids ->
+        run
+        |> Cancellation.dispatch_runner_tasks(task_ids, reason)
+        |> classify_cancel_results()
+
+      [] ->
+        forward_legacy_cancel_result(run, reason)
+    end
+  end
+
+  defp forward_legacy_cancel_result(%RunState{} = run, reason) do
     runtime_config = RuntimeConfig.current()
     runner_client = runtime_config.runner_client
     runner_opts = runtime_config.runner_client_opts
@@ -731,7 +744,7 @@ defmodule FavnOrchestrator.RunManager do
       else
         with :ok <- RunnerClientValidator.validate(runner_client) do
           results =
-            Cancellation.dispatch_runner_work(
+            Cancellation.dispatch_legacy_runner_work(
               run,
               execution_ids,
               reason,

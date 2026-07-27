@@ -22,6 +22,7 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
       add(:payload_version, :integer, null: false)
       add(:payload, :map, null: false)
       add(:payload_hash, :binary, null: false)
+      add(:orchestration_context, :map, null: false)
       add(:assigned_runner_instance_id, :text)
       add(:assigned_runner_session_generation, :bigint)
       add(:assignment_generation, :bigint, null: false, default: 0)
@@ -53,7 +54,6 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
       index(
         :runner_tasks,
         [
-          :workspace_id,
           :runner_pool,
           :required_runner_release_id,
           :status,
@@ -132,7 +132,7 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
       constraint(:runner_tasks, :runner_tasks_state_shape_valid,
         prefix: @prefix,
         check:
-          "(status IN ('queued','assigned','preparing','running','cancelling') AND terminal_at IS NULL AND result_version IS NULL AND result IS NULL AND error IS NULL) OR (status = 'succeeded' AND terminal_at IS NOT NULL AND result_version IS NOT NULL AND result IS NOT NULL AND error IS NULL) OR (status IN ('failed','unknown') AND terminal_at IS NOT NULL AND result_version IS NOT NULL AND result IS NULL AND error IS NOT NULL) OR (status = 'cancelled' AND terminal_at IS NOT NULL AND result IS NULL)"
+          "(status IN ('queued','assigned','preparing','running','cancelling') AND terminal_at IS NULL AND result_version IS NULL AND result IS NULL AND error IS NULL) OR (status = 'succeeded' AND terminal_at IS NOT NULL AND result_version IS NOT NULL AND result IS NOT NULL AND error IS NULL) OR (status IN ('failed','unknown') AND terminal_at IS NOT NULL AND result_version IS NOT NULL AND error IS NOT NULL) OR (status = 'cancelled' AND terminal_at IS NOT NULL)"
       )
     )
 
@@ -140,7 +140,7 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
       constraint(:runner_tasks, :runner_tasks_payload_valid,
         prefix: @prefix,
         check:
-          "payload_version = 13 AND octet_length(payload_hash) = 32 AND pg_column_size(payload) <= 2097152 AND (result IS NULL OR pg_column_size(result) <= 2097152) AND (error IS NULL OR pg_column_size(error) <= 262144) AND (runtime_input_error IS NULL OR pg_column_size(runtime_input_error) <= 262144)"
+          "payload_version = 13 AND octet_length(payload_hash) = 32 AND pg_column_size(payload) <= 2097152 AND pg_column_size(orchestration_context) <= 2097152 AND (result IS NULL OR pg_column_size(result) <= 2097152) AND (error IS NULL OR pg_column_size(error) <= 262144) AND (runtime_input_error IS NULL OR pg_column_size(runtime_input_error) <= 262144)"
       )
     )
 
@@ -213,7 +213,6 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
     )
 
     create table(:runner_capacity_demands, primary_key: false, prefix: @prefix) do
-      add(:workspace_id, :text, null: false, primary_key: true)
       add(:runner_pool, :text, null: false, primary_key: true)
       add(:required_runner_release_id, :text, null: false, primary_key: true)
       add(:outstanding_count, :bigint, null: false, default: 0)
@@ -224,14 +223,6 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
       add(:healthy, :boolean, null: false, default: true)
       add(:updated_at, :utc_datetime_usec, null: false)
     end
-
-    execute("""
-    ALTER TABLE #{@prefix}.runner_capacity_demands
-    ADD CONSTRAINT runner_capacity_demands_workspace_fkey
-    FOREIGN KEY (workspace_id)
-    REFERENCES #{@prefix}.workspaces(workspace_id)
-    ON DELETE CASCADE
-    """)
 
     create(
       constraint(:runner_capacity_demands, :runner_capacity_demands_counts_valid,
@@ -245,12 +236,12 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
       constraint(:runner_capacity_demands, :runner_capacity_demands_identity_valid,
         prefix: @prefix,
         check:
-          "octet_length(workspace_id) BETWEEN 1 AND 255 AND runner_pool ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$' AND required_runner_release_id ~ '^rr_[0-9a-f]{64}$'"
+          "runner_pool ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$' AND required_runner_release_id ~ '^rr_[0-9a-f]{64}$'"
       )
     )
 
     create table(:runner_task_commands, primary_key: false, prefix: @prefix) do
-      add(:workspace_id, :text, null: false, primary_key: true)
+      add(:scope_id, :text, null: false, primary_key: true)
       add(:command_id, :text, null: false, primary_key: true)
       add(:operation, :text, null: false)
       add(:request_hash, :binary, null: false)
@@ -258,19 +249,11 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
       add(:inserted_at, :utc_datetime_usec, null: false)
     end
 
-    execute("""
-    ALTER TABLE #{@prefix}.runner_task_commands
-    ADD CONSTRAINT runner_task_commands_workspace_fkey
-    FOREIGN KEY (workspace_id)
-    REFERENCES #{@prefix}.workspaces(workspace_id)
-    ON DELETE CASCADE
-    """)
-
     create(
       constraint(:runner_task_commands, :runner_task_commands_values_valid,
         prefix: @prefix,
         check:
-          "octet_length(workspace_id) BETWEEN 1 AND 255 AND octet_length(command_id) BETWEEN 1 AND 255 AND operation IN ('enqueue','claim','transition','runtime_inputs','append_log_batch','complete','request_cancellation','acknowledge_cancellation','release','recover_expired','reconcile_demand') AND octet_length(request_hash) = 32 AND pg_column_size(result) <= 262144"
+          "octet_length(scope_id) BETWEEN 1 AND 255 AND octet_length(command_id) BETWEEN 1 AND 255 AND operation IN ('enqueue','claim','transition','runtime_inputs','append_log_batch','complete','request_cancellation','acknowledge_cancellation','release','recover_expired','reconcile_demand') AND octet_length(request_hash) = 32 AND pg_column_size(result) <= 262144"
       )
     )
   end

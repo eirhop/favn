@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.RunExecutionCleanup do
   alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunServer.Cancellation
+  alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.RuntimeConfig
 
@@ -14,6 +15,18 @@ defmodule FavnOrchestrator.RunExecutionCleanup do
 
   @spec cancel_active(RunState.t(), term()) :: [map()]
   def cancel_active(%RunState{} = run, reason) do
+    case ActiveTaskSet.inflight_task_ids(run) do
+      [_ | _] = task_ids ->
+        run
+        |> Cancellation.dispatch_runner_tasks(task_ids, reason)
+        |> result_statuses()
+
+      [] ->
+        cancel_legacy_active(run, reason)
+    end
+  end
+
+  defp cancel_legacy_active(run, reason) do
     case RunExecutionOwnership.fetch_active(run) do
       {:ok, ownerships} -> cancel_ownerships(run, ownerships, reason)
       {:error, error} -> [unknown_status({:execution_ownership_read_failed, error})]
@@ -74,7 +87,7 @@ defmodule FavnOrchestrator.RunExecutionCleanup do
     runtime_config = RuntimeConfig.current()
 
     if RunnerClientValidator.validate(runtime_config.runner_client) == :ok do
-      Cancellation.dispatch_runner_work(
+      Cancellation.dispatch_legacy_runner_work(
         run,
         execution_ids,
         reason,

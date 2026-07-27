@@ -9,15 +9,15 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   """
 
   alias Favn.Contracts.RunnerResult
+  alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.Freshness.StateWriter
   alias FavnOrchestrator.InitialTargetGenerationReconciler
   alias FavnOrchestrator.MaterializationClaims
-  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.ResourceCircuits
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.ResultSanitizer
-  alias FavnOrchestrator.RunServer.Execution.RunWorkSet
+  alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.StageAttemptState
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
   alias FavnOrchestrator.RunServer.Persistence
@@ -68,13 +68,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       cancelled =
         cancel_execution_ids(
           current_run,
-          RunWorkSet.inflight_execution_ids(current_run),
+          ActiveTaskSet.inflight_task_ids(current_run),
           %{kind: :external_cancel},
           runner_client,
           runner_opts
         )
 
-      :ok = RunWorkSet.fail_entry_claim(entry, :external_cancel)
+      :ok = ActiveTaskSet.fail_entry_claim(entry, :external_cancel)
 
       results = StageAttemptState.settled_results(state)
 
@@ -379,8 +379,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   end
 
   defp finish_persisted_step(resume) do
-    _ = RunExecutionOwnership.complete_execution(resume.entry.ownership)
-
     step_state = ResultBuilder.append_node_result(resume.run, resume.node_result)
 
     case persist_post_step_state(
@@ -640,31 +638,47 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
          runner_opts
        )
        when is_list(execution_ids) do
-    cancel_results =
-      Cancellation.dispatch_runner_work(
-        run_state,
-        execution_ids,
-        reason,
-        runner_client,
-        runner_opts
-      )
+    _ = runner_client
+    _ = runner_opts
+    cancel_results = Cancellation.dispatch_runner_tasks(run_state, execution_ids, reason)
 
-    _ = RunExecutionOwnership.persist_cancel_outcomes(run_state, cancel_results, reason)
-    clear_inflight_executions(run_state, Enum.map(cancel_results, & &1.execution_id))
+    confirmed_ids =
+      cancel_results
+      |> Enum.filter(&CancellationOutcome.confirmed?/1)
+      |> Enum.map(& &1.execution_id)
+
+    run_state
+    |> put_cancel_outcomes(cancel_results)
+    |> clear_inflight_tasks(confirmed_ids)
   end
 
-  defp clear_inflight_executions(%RunState{} = run_state, execution_ids) do
-    rejected = MapSet.new(execution_ids)
+  defp clear_inflight_tasks(%RunState{} = run_state, task_ids) do
+    rejected = MapSet.new(task_ids)
 
     ids =
       run_state
-      |> RunWorkSet.inflight_execution_ids()
+      |> ActiveTaskSet.inflight_task_ids()
       |> Enum.reject(&MapSet.member?(rejected, &1))
 
     Snapshots.snapshot_update(run_state,
-      metadata: Map.put(run_state.metadata, :in_flight_execution_ids, ids),
-      runner_execution_id: List.first(ids)
+      metadata:
+        run_state.metadata
+        |> Map.delete(:in_flight_execution_ids)
+        |> Map.delete("in_flight_execution_ids")
+        |> Map.put(:in_flight_task_ids, ids),
+      runner_execution_id: nil
     )
+  end
+
+  defp put_cancel_outcomes(%RunState{} = run_state, outcomes) do
+    metadata =
+      Map.put(
+        run_state.metadata,
+        :cancel_outcomes,
+        Enum.map(outcomes, &CancellationOutcome.to_map/1)
+      )
+
+    Snapshots.snapshot_update(run_state, metadata: metadata)
   end
 
   defp return_external_cancel(%RunState{} = run_state, step_results) do

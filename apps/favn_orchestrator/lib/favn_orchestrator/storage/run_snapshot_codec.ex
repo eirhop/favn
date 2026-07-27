@@ -56,6 +56,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "freshness_key",
     "id",
     "in_flight_execution_ids",
+    "in_flight_task_ids",
     "initial_ms",
     "input_versions",
     "input_generations",
@@ -113,6 +114,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "run_finished",
     "run_kind",
     "runner_execution_id",
+    "runner_task_id",
     "runner_releases",
     "rows_written",
     "runner_metadata",
@@ -1343,6 +1345,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> promote_key("asset_dependencies", :asset_dependencies)
     |> promote_key("refresh_policy", :refresh_policy)
     |> promote_key("in_flight_execution_ids", :in_flight_execution_ids)
+    |> promote_key("in_flight_task_ids", :in_flight_task_ids)
     |> promote_key("replay_submit_kind", :replay_submit_kind)
     |> promote_key("replay_mode", :replay_mode)
     |> promote_key("retry_state", :retry_state)

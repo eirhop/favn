@@ -17,9 +17,11 @@ defmodule Favn.Contracts.RunnerTaskTest do
 
     message = %Registration{
       runner_instance_id: "runner-1",
+      boot_id: "boot-1",
       beam_node: "runner-1@private",
       runner_pool: pool,
       required_runner_release_id: @release,
+      lifecycle_mode: :elastic,
       supported_task_kinds: [:relation_inspection]
     }
 
@@ -175,6 +177,35 @@ defmodule Favn.Contracts.RunnerTaskTest do
              Favn.Contracts.RunnerTask.RuntimeInputsResolved.decode(failed_encoded)
   end
 
+  test "failed runtime input acknowledgements do not invent a payload fingerprint" do
+    acknowledgement = %Favn.Contracts.RunnerTask.RuntimeInputsAck{
+      workspace_id: "workspace-1",
+      task_id: "rt_inputs",
+      runner_instance_id: "runner-1",
+      runner_session_generation: 1,
+      assignment_generation: 1,
+      resolution_id: "resolution-failed",
+      payload_fingerprint: nil,
+      status: :persisted
+    }
+
+    assert :ok = Favn.Contracts.RunnerTask.RuntimeInputsAck.validate(acknowledgement)
+  end
+
+  test "private orchestration context round trips without entering the runner payload" do
+    context = %{
+      kind: :pipeline,
+      materialization_claim: %{claim_key: "claim-1", fencing_token: 3},
+      decision: %{status: :stale}
+    }
+
+    assert {:ok, envelope} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.encode_orchestration_context(context)
+
+    assert {:ok, ^context} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.decode_orchestration_context(envelope)
+  end
+
   test "every protocol 13 message validates and round trips" do
     now = DateTime.utc_now()
 
@@ -190,10 +221,12 @@ defmodule Favn.Contracts.RunnerTaskTest do
     messages = [
       %Favn.Contracts.RunnerTask.Registration{
         runner_instance_id: "runner-1",
+        boot_id: "boot-1",
         runner_session_generation: 1,
         beam_node: "runner-1@private",
         runner_pool: "duckdb",
         required_runner_release_id: @release,
+        lifecycle_mode: :elastic,
         supported_task_kinds: [:relation_inspection],
         capabilities: ["relation_inspection"]
       },
@@ -315,6 +348,16 @@ defmodule Favn.Contracts.RunnerTaskTest do
         command_id: "cancel-1",
         reason: :operator_request,
         requested_at: now
+      },
+      %Favn.Contracts.RunnerTask.CancellationAck{
+        workspace_id: "workspace-1",
+        task_id: "rt_cancel",
+        runner_instance_id: "runner-1",
+        runner_session_generation: 1,
+        assignment_generation: 1,
+        command_id: "cancel-1",
+        status: :observed,
+        acknowledged_at: now
       },
       %Favn.Contracts.RunnerTask.Shutdown{
         runner_instance_id: "runner-1",

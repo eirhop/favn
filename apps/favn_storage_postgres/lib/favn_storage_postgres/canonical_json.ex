@@ -28,6 +28,7 @@ defmodule FavnStoragePostgres.CanonicalJSON do
   end
 
   defp ordered(values) when is_list(values), do: Enum.map(values, &ordered/1)
+  defp ordered(value) when is_boolean(value) or is_nil(value), do: value
   defp ordered(value) when is_atom(value) and not is_nil(value), do: Atom.to_string(value)
   defp ordered(value), do: value
 end

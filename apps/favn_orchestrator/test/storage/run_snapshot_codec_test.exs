@@ -432,7 +432,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored.metadata.pipeline_context.resolved_refs == [{__MODULE__.TaggedAsset, :tag}]
   end
 
-  test "operational in-flight execution ids remain atom-keyed after DTO roundtrip" do
+  test "operational in-flight ids remain atom-keyed after DTO roundtrip" do
     version = manifest_version("mv_run_snapshot_in_flight", __MODULE__.Asset)
 
     run =
@@ -442,7 +442,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         manifest_content_hash: version.content_hash,
         required_runner_release_id: version.required_runner_release_id,
         asset_ref: {__MODULE__.Asset, :asset},
-        metadata: %{in_flight_execution_ids: ["exec_1", "exec_2"]}
+        metadata: %{
+          in_flight_execution_ids: ["exec_1", "exec_2"],
+          in_flight_task_ids: ["task_1", "task_2"]
+        }
       )
 
     assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
@@ -455,7 +458,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
              )
 
     assert restored.metadata.in_flight_execution_ids == ["exec_1", "exec_2"]
+    assert restored.metadata.in_flight_task_ids == ["task_1", "task_2"]
     refute Map.has_key?(restored.metadata, "in_flight_execution_ids")
+    refute Map.has_key?(restored.metadata, "in_flight_task_ids")
   end
 
   test "restores multi-ref plans from DTO snapshots" do

@@ -14,7 +14,14 @@ defmodule FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask do
     :occurred_at
   ]
   defstruct @enforce_keys ++
-              [:run_id, :operation_id, :asset_step_id, :required_capability, :deadline_at]
+              [
+                :run_id,
+                :operation_id,
+                :asset_step_id,
+                :required_capability,
+                :deadline_at,
+                :orchestration_context
+              ]
 
   @type t :: %__MODULE__{}
 end
@@ -22,7 +29,7 @@ end
 defmodule FavnOrchestrator.Persistence.Commands.ClaimRunnerTask do
   @moduledoc "Atomically claims the oldest compatible queued runner task."
   @enforce_keys [
-    :workspace_context,
+    :platform_context,
     :command_id,
     :runner_instance_id,
     :runner_session_generation,
@@ -73,7 +80,7 @@ defmodule FavnOrchestrator.Persistence.Commands.PersistRunnerTaskRuntimeInputs d
     :status,
     :occurred_at
   ]
-  defstruct @enforce_keys ++ [:payload_fingerprint, :error]
+  defstruct @enforce_keys ++ [:payload_fingerprint, :runtime_input_pin, :error]
   @type status :: :resolved | :failed
   @type t :: %__MODULE__{}
 end
@@ -157,8 +164,8 @@ defmodule FavnOrchestrator.Persistence.Commands.ReleaseRunnerTask do
 end
 
 defmodule FavnOrchestrator.Persistence.Commands.RecoverRunnerTasks do
-  @moduledoc "Claims a bounded batch of expired assignments for recovery."
-  @enforce_keys [:workspace_context, :command_id, :owner_id, :occurred_at]
+  @moduledoc "Claims a bounded platform-global batch of expired assignments for recovery."
+  @enforce_keys [:platform_context, :command_id, :owner_id, :occurred_at]
   defstruct @enforce_keys ++ [limit: 50, lease_duration_ms: 30_000]
   @type t :: %__MODULE__{}
 end
@@ -166,7 +173,7 @@ end
 defmodule FavnOrchestrator.Persistence.Commands.ReconcileRunnerCapacityDemand do
   @moduledoc "Audits or repairs one bounded exact capacity-demand projection."
   @enforce_keys [
-    :workspace_context,
+    :platform_context,
     :command_id,
     :runner_pool,
     :required_runner_release_id,
@@ -197,6 +204,7 @@ defmodule FavnOrchestrator.Persistence.Results.RunnerTask do
     :payload_version,
     :payload,
     :payload_hash,
+    :orchestration_context,
     :assigned_runner_instance_id,
     :assigned_runner_session_generation,
     :assignment_generation,
@@ -222,7 +230,6 @@ end
 defmodule FavnOrchestrator.Persistence.Results.RunnerCapacityDemand do
   @moduledoc "O(1) exact demand projection for one pool and release."
   defstruct [
-    :workspace_id,
     :runner_pool,
     :required_runner_release_id,
     :outstanding_count,

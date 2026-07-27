@@ -1,0 +1,794 @@
+defmodule FavnRunner.RunnerAgent do
+  @moduledoc "One-slot pull/execute/report loop for durable protocol-13 runner tasks."
+  use GenServer
+
+  alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.RunnerTask
+  alias Favn.Contracts.RunnerWork
+  alias Favn.RuntimeInput.Pin
+  alias FavnRunner.ControlPlaneConnection
+  alias FavnRunner.ManifestStore
+  alias FavnRunner.ReleaseVerifier
+  alias FavnRunner.TaskExecutor
+  alias FavnRunner.TaskResultBuffer
+
+  @default_idle_grace_ms 15_000
+  @default_lease_ms 30_000
+  @log_flush_ms 1_000
+  @mailbox_pressure_threshold 1_000
+
+  def start_link(opts) do
+    case Keyword.get(opts, :name, __MODULE__) do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
+  end
+
+  @impl true
+  def init(opts) do
+    {:ok, release} = ReleaseVerifier.verified_release()
+    runner_id = Keyword.get(opts, :runner_instance_id) || random_id("runner")
+
+    state = %{
+      connection: Keyword.get(opts, :connection, ControlPlaneConnection),
+      gateway: nil,
+      runner_instance_id: runner_id,
+      boot_id: Keyword.get(opts, :boot_id, random_id("boot")),
+      runner_pool: Keyword.fetch!(opts, :runner_pool),
+      required_runner_release_id: release.runner_release_id,
+      lifecycle_mode: Keyword.get(opts, :lifecycle_mode, :elastic),
+      idle_grace_ms: Keyword.get(opts, :idle_grace_ms, @default_idle_grace_ms),
+      exit_fun: Keyword.get(opts, :exit_fun, &System.stop/1),
+      runtime_input_resolver:
+        Keyword.get(opts, :runtime_input_resolver, &FavnRunner.resolve_runtime_inputs/1),
+      session_generation: nil,
+      assignment: nil,
+      manifest_lease_id: nil,
+      executor: nil,
+      pending_runtime_inputs: nil,
+      idle_timer: nil,
+      lease_timer: nil,
+      log_timer: nil,
+      log_sequence: 0,
+      reconnect_attempt: 0,
+      resume_phase: nil,
+      draining?: false,
+      phase: :connecting
+    }
+
+    send(self(), :connect)
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_info(:connect, state) do
+    case safe_gateway_call(fn -> ControlPlaneConnection.gateway(state.connection) end) do
+      {:ok, gateway} ->
+        registration = %RunnerTask.Registration{
+          runner_instance_id: state.runner_instance_id,
+          boot_id: state.boot_id,
+          runner_session_generation: state.session_generation || 0,
+          beam_node: Atom.to_string(node()),
+          runner_pool: state.runner_pool,
+          required_runner_release_id: state.required_runner_release_id,
+          lifecycle_mode: state.lifecycle_mode,
+          supported_task_kinds: [:asset_attempt],
+          capabilities: ["asset_execution"],
+          active_assignment: active_assignment(state)
+        }
+
+        case safe_gateway_call(fn ->
+               ControlPlaneConnection.register(gateway, registration, self())
+             end) do
+          {:ok, %RunnerTask.RegistrationAck{status: :accepted} = ack} ->
+            state =
+              %{
+                state
+                | gateway: gateway,
+                  session_generation: ack.runner_session_generation,
+                  reconnect_attempt: 0
+              }
+
+            resume_after_registration(state)
+
+          {:ok, %RunnerTask.RegistrationAck{status: :rejected}} ->
+            stop_rejected_registration(state)
+
+          _error ->
+            reconnect(state)
+        end
+
+      {:error, _reason} ->
+        reconnect(state)
+    end
+  end
+
+  def handle_info(:claim, %{assignment: nil, phase: phase} = state)
+      when phase in [:idle, :waiting] do
+    state = cancel_idle_timer(state)
+    command_id = random_id("claim")
+
+    request = %RunnerTask.ClaimRequest{
+      command_id: command_id,
+      runner_instance_id: state.runner_instance_id,
+      runner_session_generation: state.session_generation,
+      runner_pool: state.runner_pool,
+      required_runner_release_id: state.required_runner_release_id,
+      supported_task_kinds: [:asset_attempt],
+      capabilities: ["asset_execution"]
+    }
+
+    case request(state, request) do
+      {:ok, %RunnerTask.Assignment{} = assignment} ->
+        start_assignment(%{state | assignment: assignment, phase: :preparing})
+
+      {:ok, %RunnerTask.NoWork{} = no_work} ->
+        wait_for_work(state, no_work)
+
+      {:error, _reason} ->
+        reconnect(%{state | phase: :connecting})
+    end
+  end
+
+  def handle_info({:favn_runner_task, %RunnerTask.Wake{} = wake}, state) do
+    if wake.runner_instance_id == state.runner_instance_id and
+         wake.runner_session_generation == state.session_generation and
+         is_nil(state.assignment) do
+      send(self(), :claim)
+      {:noreply, %{cancel_idle_timer(state) | phase: :idle}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(
+        {:favn_runner_task, %RunnerTask.Cancellation{} = cancellation},
+        %{assignment: %RunnerTask.Assignment{} = assignment} = state
+      ) do
+    if cancellation_matches?(cancellation, assignment, state) do
+      status =
+        case state.executor do
+          executor when is_pid(executor) ->
+            case safe_cancel_executor(executor, cancellation.reason) do
+              :ok -> :observed
+              {:error, _reason} -> :rejected
+            end
+
+          _other ->
+            :rejected
+        end
+
+      ack = %RunnerTask.CancellationAck{
+        workspace_id: assignment.workspace_id,
+        task_id: assignment.task_id,
+        runner_instance_id: state.runner_instance_id,
+        runner_session_generation: state.session_generation,
+        assignment_generation: assignment.assignment_generation,
+        command_id: cancellation.command_id,
+        status: status,
+        acknowledged_at: DateTime.utc_now()
+      }
+
+      case request(state, ack) do
+        {:ok, %RunnerTask.CancellationAck{status: :observed}} ->
+          {:noreply, state}
+
+        {:ok, %RunnerTask.CancellationAck{status: :rejected}} ->
+          {:noreply, state}
+
+        _error ->
+          reconnect(state)
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(
+        {:favn_runner_task, %RunnerTask.Shutdown{} = shutdown},
+        state
+      ) do
+    if shutdown.runner_instance_id == state.runner_instance_id and
+         shutdown.runner_session_generation == state.session_generation and
+         shutdown.action == :stop do
+      if is_nil(state.assignment) do
+        state.exit_fun.(0)
+        {:stop, :normal, state}
+      else
+        {:noreply, %{state | draining?: true}}
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(:idle_expired, %{assignment: nil, lifecycle_mode: :elastic} = state) do
+    state.exit_fun.(0)
+    {:stop, :normal, state}
+  end
+
+  def handle_info(:idle_expired, state), do: {:noreply, state}
+
+  def handle_info({:runner_task_logs_ready, executor}, %{executor: executor} = state) do
+    emit_mailbox_pressure(state)
+    send(self(), :flush_logs)
+    {:noreply, state}
+  end
+
+  def handle_info(:flush_logs, %{assignment: %RunnerTask.Assignment{}} = state) do
+    case deliver_logs(state) do
+      {:ok, state} -> {:noreply, schedule_log_flush(state)}
+      {:error, state} -> reconnect(state)
+    end
+  end
+
+  def handle_info(:flush_logs, state), do: {:noreply, state}
+
+  def handle_info(
+        {:runner_task_finished, executor, %RunnerResult{} = result},
+        %{executor: executor, phase: :lease_lost} = state
+      ) do
+    protocol_result = lease_lost_result(state.assignment, result)
+    :ok = TaskResultBuffer.put_result(protocol_result)
+    send(self(), :deliver_result)
+    {:noreply, %{state | executor: nil, phase: :reporting}}
+  end
+
+  def handle_info(
+        {:runner_task_finished, executor, %RunnerResult{} = result},
+        %{executor: executor} = state
+      ) do
+    protocol_result = protocol_result(state.assignment, result)
+    :ok = TaskResultBuffer.put_result(protocol_result)
+    send(self(), :deliver_result)
+    {:noreply, %{state | executor: nil, phase: :reporting}}
+  end
+
+  def handle_info(:deliver_result, %{assignment: assignment} = state)
+      when not is_nil(assignment) do
+    with {:ok, state} <- deliver_logs(state),
+         %RunnerTask.Result{} = result <- TaskResultBuffer.pending_result(),
+         {:ok, %RunnerTask.ResultAck{status: :persisted}} <- request(state, result) do
+      :ok = TaskResultBuffer.acknowledge_result()
+      if state.manifest_lease_id, do: :ok = ManifestStore.release(state.manifest_lease_id)
+      state = clear_assignment(state)
+
+      if state.draining? do
+        state.exit_fun.(0)
+        {:stop, :normal, state}
+      else
+        send(self(), :claim)
+        {:noreply, state}
+      end
+    else
+      {:error, reason} ->
+        if stale_assignment_error?(reason) do
+          abandon_stale_assignment(state)
+        else
+          reconnect(state)
+        end
+
+      _reason ->
+        reconnect(state)
+    end
+  end
+
+  def handle_info(:renew_lease, %{assignment: %RunnerTask.Assignment{} = assignment} = state) do
+    occurred_at = DateTime.utc_now()
+    expires_at = DateTime.add(occurred_at, lease_ms(), :millisecond)
+
+    renewal = %RunnerTask.LeaseRenewal{
+      workspace_id: assignment.workspace_id,
+      task_id: assignment.task_id,
+      runner_instance_id: state.runner_instance_id,
+      runner_session_generation: state.session_generation,
+      assignment_generation: assignment.assignment_generation,
+      lease_expires_at: expires_at
+    }
+
+    case request(state, renewal) do
+      {:ok, _task} ->
+        assignment = %{assignment | lease_expires_at: expires_at}
+        {:noreply, schedule_lease_renewal(%{state | assignment: assignment})}
+
+      _error ->
+        reconnect_after_lease_failure(state, assignment)
+    end
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
+
+  defp start_assignment(state) do
+    assignment = state.assignment
+    lease_id = "task:#{assignment.task_id}:#{assignment.assignment_generation}"
+
+    with {:ok, version} <-
+           safe_gateway_call(fn ->
+             ControlPlaneConnection.fetch_manifest(state.gateway, assignment)
+           end),
+         :ok <-
+           ManifestStore.register_for_release(
+             version,
+             assignment.required_runner_release_id
+           ),
+         :ok <-
+           ManifestStore.acquire_for_release(
+             version,
+             assignment.required_runner_release_id,
+             lease_id,
+             assignment.lease_expires_at
+           ),
+         %RunnerWork{} = work <- %{assignment.payload | manifest_lease_id: lease_id},
+         {:ok, state, work} <- resolve_runtime_inputs(state, assignment, work),
+         {:ok, _task} <- request(state, started_message(state, assignment)),
+         {:ok, executor} <-
+           DynamicSupervisor.start_child(
+             FavnRunner.TaskExecutorSupervisor,
+             {TaskExecutor, assignment: assignment, work: work, owner: self()}
+           ) do
+      TaskResultBuffer.reset()
+
+      {:noreply,
+       %{state | executor: executor, manifest_lease_id: lease_id, phase: :running}
+       |> schedule_lease_renewal()
+       |> schedule_log_flush()}
+    else
+      {:reconnect, reconnect_state} ->
+        reconnect(%{reconnect_state | phase: :preparing})
+
+      {:error, reason, failed_state} ->
+        report_preparation_failure(failed_state, assignment, lease_id, reason)
+
+      {:error, {:control_plane_call_failed, _reason}} ->
+        reconnect(%{state | phase: :preparing})
+
+      {:error, :control_plane_unavailable} ->
+        reconnect(%{state | phase: :preparing})
+
+      {:error, reason} ->
+        report_preparation_failure(state, assignment, lease_id, reason)
+    end
+  end
+
+  defp resolve_runtime_inputs(
+         %{pending_runtime_inputs: %RunnerTask.RuntimeInputsResolved{} = message} = state,
+         _assignment,
+         work
+       ) do
+    persist_runtime_inputs(state, work, message)
+  end
+
+  defp resolve_runtime_inputs(state, assignment, work) do
+    case state.runtime_input_resolver.(work) do
+      {:ok, nil} ->
+        {:ok, state, work}
+
+      {:ok, resolution} ->
+        message = %RunnerTask.RuntimeInputsResolved{
+          workspace_id: assignment.workspace_id,
+          task_id: assignment.task_id,
+          runner_instance_id: state.runner_instance_id,
+          runner_session_generation: state.session_generation,
+          assignment_generation: assignment.assignment_generation,
+          resolution_id: "ri:#{assignment.task_id}:#{assignment.assignment_generation}",
+          status: :resolved,
+          runtime_inputs: resolution
+        }
+
+        persist_runtime_inputs(state, work, message)
+
+      {:error, %RunnerError{} = error} ->
+        message = %RunnerTask.RuntimeInputsResolved{
+          workspace_id: assignment.workspace_id,
+          task_id: assignment.task_id,
+          runner_instance_id: state.runner_instance_id,
+          runner_session_generation: state.session_generation,
+          assignment_generation: assignment.assignment_generation,
+          resolution_id: "ri:#{assignment.task_id}:#{assignment.assignment_generation}",
+          status: :failed,
+          error: error
+        }
+
+        persist_runtime_inputs(state, work, message)
+    end
+  end
+
+  defp persist_runtime_inputs(state, work, message) do
+    pending_state = %{state | pending_runtime_inputs: message}
+
+    case request(state, message) do
+      {:ok, %RunnerTask.RuntimeInputsAck{status: :persisted}} ->
+        acknowledged_state = %{pending_state | pending_runtime_inputs: nil}
+
+        case message do
+          %RunnerTask.RuntimeInputsResolved{status: :resolved, runtime_inputs: resolution} ->
+            pin = Pin.new(work.run_id, RunnerWork.node_key(work), resolution)
+            {:ok, acknowledged_state, %{work | runtime_input_pin: pin}}
+
+          %RunnerTask.RuntimeInputsResolved{status: :failed, error: error} ->
+            {:error, error, acknowledged_state}
+        end
+
+      {:ok, %RunnerTask.RuntimeInputsAck{status: status}} ->
+        {:error, {:runtime_input_resolution_rejected, status}, pending_state}
+
+      {:error, reason} ->
+        if stale_assignment_error?(reason) do
+          {:error, reason, pending_state}
+        else
+          {:reconnect, pending_state}
+        end
+
+      _other ->
+        {:reconnect, pending_state}
+    end
+  end
+
+  defp report_preparation_failure(state, assignment, lease_id, reason) do
+    result =
+      RunnerError.normalize(reason,
+        phase: :runner_task_preparation,
+        retryable?: true,
+        outcome: :safe_failure
+      )
+
+    protocol_result = %RunnerTask.Result{
+      workspace_id: assignment.workspace_id,
+      task_id: assignment.task_id,
+      task_kind: assignment.task_kind,
+      runner_instance_id: state.runner_instance_id,
+      runner_session_generation: state.session_generation,
+      assignment_generation: assignment.assignment_generation,
+      outcome: :failed,
+      retry_class: :safe_to_retry,
+      result: nil,
+      error: result,
+      finished_at: DateTime.utc_now()
+    }
+
+    TaskResultBuffer.reset()
+    TaskResultBuffer.put_result(protocol_result)
+    send(self(), :deliver_result)
+    {:noreply, %{state | manifest_lease_id: lease_id, phase: :reporting}}
+  end
+
+  defp deliver_logs(state) do
+    entries = TaskResultBuffer.drain_logs()
+
+    if entries == [] do
+      {:ok, state}
+    else
+      assignment = state.assignment
+      sequence = state.log_sequence
+
+      batch = %RunnerTask.LogBatch{
+        workspace_id: assignment.workspace_id,
+        task_id: assignment.task_id,
+        runner_instance_id: state.runner_instance_id,
+        runner_session_generation: state.session_generation,
+        assignment_generation: assignment.assignment_generation,
+        batch_id: "logs:#{assignment.task_id}:#{assignment.assignment_generation}:#{sequence}",
+        sequence: sequence,
+        entries: entries,
+        truncated?: Enum.any?(entries, &match?(%{type: :truncated}, &1))
+      }
+
+      case request(state, batch) do
+        {:ok, %RunnerTask.LogAck{}} ->
+          {:ok, %{state | log_sequence: sequence + 1}}
+
+        _error ->
+          Enum.each(entries, &TaskResultBuffer.append/1)
+          {:error, state}
+      end
+    end
+  end
+
+  defp protocol_result(assignment, %RunnerResult{status: :ok} = result) do
+    result_message(assignment, result, :succeeded, :terminal, nil)
+  end
+
+  defp protocol_result(assignment, %RunnerResult{status: :cancelled, error: error} = result) do
+    result_message(assignment, result, :cancelled, :terminal, error)
+  end
+
+  defp protocol_result(
+         assignment,
+         %RunnerResult{error: %RunnerError{outcome: :safe_failure, retryable?: true} = error} =
+           result
+       ) do
+    result_message(assignment, result, :failed, :safe_to_retry, error)
+  end
+
+  defp protocol_result(
+         assignment,
+         %RunnerResult{error: %RunnerError{outcome: :unknown} = error} = result
+       ) do
+    result_message(assignment, result, :unknown, :unknown_do_not_retry, error)
+  end
+
+  defp protocol_result(assignment, %RunnerResult{error: error} = result) do
+    error = error || RunnerError.new(outcome: :unknown, retryable?: false)
+    result_message(assignment, result, :failed, :unknown_do_not_retry, error)
+  end
+
+  defp lease_lost_result(assignment, %RunnerResult{} = result) do
+    error =
+      RunnerError.new(
+        type: :runner_task_lease_lost,
+        phase: :runner_task_execution,
+        message: "Runner task lease expired before renewal was acknowledged",
+        retryable?: false,
+        outcome: :unknown
+      )
+
+    result =
+      %{result | status: :error, asset_results: [], error: error}
+
+    result_message(assignment, result, :unknown, :unknown_do_not_retry, error)
+  end
+
+  defp result_message(assignment, result, outcome, retry_class, error) do
+    %RunnerTask.Result{
+      workspace_id: assignment.workspace_id,
+      task_id: assignment.task_id,
+      task_kind: assignment.task_kind,
+      runner_instance_id: assignment.runner_instance_id,
+      runner_session_generation: assignment.runner_session_generation,
+      assignment_generation: assignment.assignment_generation,
+      outcome: outcome,
+      retry_class: retry_class,
+      result: result,
+      error: error,
+      finished_at: DateTime.utc_now()
+    }
+  end
+
+  defp started_message(state, assignment) do
+    %RunnerTask.Started{
+      workspace_id: assignment.workspace_id,
+      task_id: assignment.task_id,
+      runner_instance_id: state.runner_instance_id,
+      runner_session_generation: state.session_generation,
+      assignment_generation: assignment.assignment_generation,
+      occurred_at: DateTime.utc_now()
+    }
+  end
+
+  defp request(state, message),
+    do:
+      safe_gateway_call(fn ->
+        ControlPlaneConnection.request(state.gateway, message)
+      end)
+
+  defp safe_gateway_call(fun) do
+    fun.()
+  catch
+    :exit, reason -> {:error, {:control_plane_call_failed, reason}}
+  end
+
+  defp wait_for_work(state, %RunnerTask.NoWork{action: :stop}) do
+    state.exit_fun.(0)
+    {:stop, :normal, state}
+  end
+
+  defp wait_for_work(%{lifecycle_mode: :resident} = state, no_work) do
+    delay = max(no_work.wait_ms, 1_000)
+    timer = Process.send_after(self(), :claim, delay)
+    {:noreply, %{state | phase: :waiting, idle_timer: timer}}
+  end
+
+  defp wait_for_work(state, %RunnerTask.NoWork{wait_ms: wait_ms}) do
+    delay = min(max(wait_ms, 0), state.idle_grace_ms)
+    timer = Process.send_after(self(), :idle_expired, delay)
+    {:noreply, %{state | phase: :waiting, idle_timer: timer}}
+  end
+
+  defp reconnect(state) do
+    ControlPlaneConnection.reconnect(state.connection)
+    delay = reconnect_delay(state.reconnect_attempt)
+    Process.send_after(self(), :connect, delay)
+
+    resume_phase =
+      cond do
+        is_nil(state.assignment) -> nil
+        state.phase == :connecting -> state.resume_phase || infer_resume_phase(state)
+        true -> state.phase
+      end
+
+    {:noreply,
+     %{
+       state
+       | gateway: nil,
+         phase: :connecting,
+         resume_phase: resume_phase,
+         reconnect_attempt: min(state.reconnect_attempt + 1, 8)
+     }}
+  end
+
+  defp reconnect_delay(attempt) do
+    ceiling = min(250 * round(:math.pow(2, attempt)), 30_000)
+    max(1, div(ceiling, 2) + :rand.uniform(max(div(ceiling, 2), 1)))
+  end
+
+  defp stop_rejected_registration(state) do
+    if is_pid(state.executor) do
+      _ = safe_cancel_executor(state.executor, :stale_runner_task_resume)
+    end
+
+    if state.manifest_lease_id, do: ManifestStore.release(state.manifest_lease_id)
+    state.exit_fun.(0)
+    {:stop, :normal, %{state | draining?: true, phase: :draining}}
+  end
+
+  defp safe_cancel_executor(executor, reason) do
+    TaskExecutor.cancel(executor, reason)
+  catch
+    :exit, _reason -> {:error, :executor_unavailable}
+  end
+
+  defp schedule_lease_renewal(state) do
+    if state.lease_timer, do: Process.cancel_timer(state.lease_timer)
+    %{state | lease_timer: Process.send_after(self(), :renew_lease, div(lease_ms(), 3))}
+  end
+
+  defp reconnect_after_lease_failure(state, assignment) do
+    remaining_ms =
+      max(DateTime.diff(assignment.lease_expires_at, DateTime.utc_now(), :millisecond), 0)
+
+    if remaining_ms > 0 do
+      delay = min(max(div(remaining_ms, 3), 50), 1_000)
+      state = %{state | lease_timer: Process.send_after(self(), :renew_lease, delay)}
+      reconnect(state)
+    else
+      state = %{state | phase: :lease_lost, lease_timer: nil, draining?: true}
+
+      if is_pid(state.executor) do
+        _ = TaskExecutor.cancel(state.executor, :runner_task_lease_lost)
+        {:noreply, state}
+      else
+        if is_nil(TaskResultBuffer.pending_result()) do
+          result = lease_lost_runner_result(assignment.payload)
+          :ok = TaskResultBuffer.put_result(lease_lost_result(assignment, result))
+        end
+
+        send(self(), :deliver_result)
+        {:noreply, %{state | phase: :reporting}}
+      end
+    end
+  end
+
+  defp resume_after_registration(%{assignment: nil} = state) do
+    send(self(), :claim)
+    {:noreply, %{state | phase: :idle, resume_phase: nil}}
+  end
+
+  defp resume_after_registration(state) do
+    phase = state.resume_phase || infer_resume_phase(state)
+    state = %{state | phase: phase, resume_phase: nil}
+
+    case phase do
+      :preparing ->
+        start_assignment(state)
+
+      phase when phase in [:reporting, :lease_lost] ->
+        send(self(), :deliver_result)
+        {:noreply, state}
+
+      :running ->
+        send(self(), :renew_lease)
+        send(self(), :flush_logs)
+        {:noreply, state}
+    end
+  end
+
+  defp infer_resume_phase(state) do
+    cond do
+      not is_nil(TaskResultBuffer.pending_result()) -> :reporting
+      is_pid(state.executor) -> :running
+      true -> :preparing
+    end
+  end
+
+  defp stale_assignment_error?(%{kind: kind}) when kind in [:fenced, :not_found], do: true
+
+  defp stale_assignment_error?({:stale_runner_task_assignment, _details}), do: true
+  defp stale_assignment_error?(:stale_runner_task_assignment), do: true
+  defp stale_assignment_error?(_reason), do: false
+
+  defp abandon_stale_assignment(state) do
+    :ok = TaskResultBuffer.acknowledge_result()
+    if state.manifest_lease_id, do: ManifestStore.release(state.manifest_lease_id)
+    state.exit_fun.(0)
+    {:stop, :normal, %{state | draining?: true, phase: :draining}}
+  end
+
+  defp lease_lost_runner_result(%RunnerWork{} = work) do
+    %RunnerResult{
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
+      status: :error,
+      asset_results: [],
+      error: RunnerError.new(outcome: :unknown, retryable?: false),
+      metadata: RunnerWork.lifecycle_metadata(work)
+    }
+  end
+
+  defp schedule_log_flush(state) do
+    if state.log_timer, do: Process.cancel_timer(state.log_timer)
+    %{state | log_timer: Process.send_after(self(), :flush_logs, @log_flush_ms)}
+  end
+
+  defp cancel_idle_timer(state) do
+    if state.idle_timer, do: Process.cancel_timer(state.idle_timer)
+    %{state | idle_timer: nil}
+  end
+
+  defp clear_assignment(state) do
+    if state.lease_timer, do: Process.cancel_timer(state.lease_timer)
+    if state.log_timer, do: Process.cancel_timer(state.log_timer)
+
+    %{
+      state
+      | assignment: nil,
+        manifest_lease_id: nil,
+        executor: nil,
+        pending_runtime_inputs: nil,
+        lease_timer: nil,
+        log_timer: nil,
+        log_sequence: 0,
+        reconnect_attempt: 0,
+        resume_phase: nil,
+        phase: :idle
+    }
+  end
+
+  defp active_assignment(%{assignment: nil}), do: nil
+
+  defp active_assignment(%{assignment: assignment}),
+    do: %{
+      workspace_id: assignment.workspace_id,
+      task_id: assignment.task_id,
+      assignment_generation: assignment.assignment_generation
+    }
+
+  defp cancellation_matches?(cancellation, assignment, state) do
+    cancellation.workspace_id == assignment.workspace_id and
+      cancellation.task_id == assignment.task_id and
+      cancellation.runner_instance_id == state.runner_instance_id and
+      cancellation.runner_session_generation == state.session_generation and
+      cancellation.assignment_generation == assignment.assignment_generation
+  end
+
+  defp lease_ms, do: Application.get_env(:favn_runner, :runner_task_lease_ms, @default_lease_ms)
+
+  defp emit_mailbox_pressure(state) do
+    threshold =
+      Application.get_env(
+        :favn_runner,
+        :runner_task_mailbox_pressure_threshold,
+        @mailbox_pressure_threshold
+      )
+
+    case Process.info(self(), :message_queue_len) do
+      {:message_queue_len, length} when length >= threshold ->
+        :telemetry.execute(
+          [:favn, :runner, :task_mailbox, :pressure],
+          %{message_queue_len: length},
+          %{
+            runner_instance_id: state.runner_instance_id,
+            task_id: state.assignment && state.assignment.task_id
+          }
+        )
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp random_id(prefix),
+    do: prefix <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+end

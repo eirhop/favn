@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.CancellationOutcome do
 
   @type status ::
           :acknowledged
+          | :requested
           | :already_completed
           | :not_found
           | :best_effort_failed
@@ -78,9 +79,21 @@ defmodule FavnOrchestrator.CancellationOutcome do
 
   @doc "Returns true when cancellation reached a safe terminal runner outcome."
   @spec confirmed?(t() | map()) :: boolean()
-  def confirmed?(%__MODULE__{status: status}), do: status in [:acknowledged, :already_completed]
-  def confirmed?(%{status: status}), do: status in [:acknowledged, :already_completed]
-  def confirmed?(%{"status" => status}), do: status in ["acknowledged", "already_completed"]
+  def confirmed?(%__MODULE__{status: :acknowledged}), do: true
+
+  def confirmed?(%__MODULE__{status: :already_completed, runner_status: runner_status}),
+    do: runner_status in [:succeeded, :failed, :cancelled]
+
+  def confirmed?(%{status: :acknowledged}), do: true
+
+  def confirmed?(%{status: :already_completed, runner_status: runner_status}),
+    do: runner_status in [:succeeded, :failed, :cancelled]
+
+  def confirmed?(%{"status" => "acknowledged"}), do: true
+
+  def confirmed?(%{"status" => "already_completed", "runner_status" => runner_status}),
+    do: runner_status in ["succeeded", "failed", "cancelled"]
+
   def confirmed?(_outcome), do: false
 
   @doc "Returns a bounded map for events, metadata, and error DTOs."
@@ -100,7 +113,7 @@ defmodule FavnOrchestrator.CancellationOutcome do
   end
 
   defp normalize_status(status)
-       when status in [:acknowledged, :already_completed, :not_found],
+       when status in [:acknowledged, :requested, :already_completed, :not_found],
        do: status
 
   defp normalize_status(:best_effort_failed), do: :best_effort_failed
