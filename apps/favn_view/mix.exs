@@ -85,10 +85,11 @@ defmodule FavnView.MixProject do
     [
       setup: ["deps.get", "assets.setup", "assets.build"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
-      "assets.build": ["compile", "tailwind favn_view", "esbuild favn_view"],
+      "assets.build": ["tailwind favn_view", "esbuild favn_view", "compile"],
       "assets.deploy": [
         "tailwind favn_view --minify",
         "esbuild favn_view --minify",
+        "compile",
         "phx.digest"
       ]
     ]
