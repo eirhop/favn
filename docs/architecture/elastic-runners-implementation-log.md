@@ -876,3 +876,22 @@ repository workflows target pull requests and pushes to `main`.
 
 Evidence commit: this field is intentionally not self-recorded; see the
 checkpoint workflow in the implementation plan.
+
+### Post-checkpoint main synchronization
+
+Before final PR qualification, `origin/main` advanced to
+`73eb98299b0efb403e86789d159a9d7f0b46d20a` with scalar asset-attempt error
+loading. The merge conflict in the operator-run overview test was resolved by
+preserving the upstream blocked-step/scalar-error assertions while keeping
+`runner_releases` as the canonical elastic-runner release projection.
+
+The focused storage gate passed 80 tests on a fresh database. Compilation with
+warnings as errors and the legacy guard passed. The complete umbrella suite
+then passed 1,928 tests on another fresh database. A focused reviewer approved
+the resolution with no remaining finding.
+
+Reviewed synchronization tree SHA:
+`4ab46ce7752b298ea3d0686aa4b8570a0a7fa72f`
+
+Reviewed synchronization commit SHA:
+`c66556eb1452a3fa852d5e389919e1ea7e3f7d6e`
