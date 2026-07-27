@@ -10,6 +10,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries, as: Q
   alias FavnOrchestrator.Persistence.Results.RunnerCapacityDemand
+  alias FavnOrchestrator.Persistence.Results.RunnerCapacityHealth
+  alias FavnOrchestrator.Persistence.Results.RunnerReleaseDrain
   alias FavnOrchestrator.Persistence.Results.RunnerTask, as: RunnerTaskResult
   alias Favn.Contracts.RunnerError
   alias FavnStoragePostgres.CanonicalJSON
@@ -18,6 +20,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnStoragePostgres.RunnerTasks.Codec
   alias FavnStoragePostgres.Runs.Store, as: RunsStore
   alias FavnStoragePostgres.Schemas.RunnerCapacityDemand, as: Demand
+  alias FavnStoragePostgres.Schemas.RebuildPlanAction
+  alias FavnStoragePostgres.Schemas.Run
   alias FavnStoragePostgres.Schemas.RunnerTask
   alias FavnStoragePostgres.Schemas.RunnerTaskCommand
   alias FavnStoragePostgres.Schemas.RunnerTaskLogBatch
@@ -670,7 +674,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   def demand(%Q.GetRunnerCapacityDemand{} = query) do
     read(fn ->
       case {
-        valid_platform_runner_context?(query.platform_context),
+        valid_platform_runner_read_context?(query.platform_context),
         validate_pool_release(query.runner_pool, query.required_runner_release_id)
       } do
         {true, :ok} ->
@@ -685,6 +689,134 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
         _invalid ->
           {:error, Error.new(:invalid, "invalid runner demand query")}
+      end
+    end)
+  end
+
+  @impl true
+  def ensure_demand(%C.EnsureRunnerCapacityDemand{} = command) do
+    transact(fn ->
+      validate_platform_runner_context!(command.platform_context)
+      validate_pool_release!(command.runner_pool, command.required_runner_release_id)
+
+      row = %{
+        runner_pool: command.runner_pool,
+        required_runner_release_id: command.required_runner_release_id,
+        outstanding_count: 0,
+        queued_count: 0,
+        active_count: 0,
+        oldest_queued_at: nil,
+        version: 0,
+        healthy: true,
+        updated_at: command.occurred_at
+      }
+
+      Repo.insert_all(Demand, [row], on_conflict: :nothing)
+
+      Repo.get_by!(Demand,
+        runner_pool: command.runner_pool,
+        required_runner_release_id: command.required_runner_release_id
+      )
+    end)
+  end
+
+  @impl true
+  def list_demands(%Q.ListRunnerCapacityDemands{} = query) do
+    read(fn ->
+      if valid_platform_runner_read_context?(query.platform_context) and
+           is_integer(query.limit) and query.limit in 1..1_024 do
+        Demand
+        |> order_by([demand], asc: demand.runner_pool, asc: demand.required_runner_release_id)
+        |> limit(^query.limit)
+        |> Repo.all()
+        |> Enum.map(&to_demand/1)
+      else
+        {:error, Error.new(:invalid, "invalid runner demand list query")}
+      end
+    end)
+  end
+
+  @impl true
+  def release_drain(%Q.GetRunnerReleaseDrain{} = query) do
+    read(fn ->
+      with true <- valid_platform_runner_read_context?(query.platform_context),
+           :ok <-
+             validate_pool_release(query.runner_pool, query.required_runner_release_id),
+           %Demand{} = demand <-
+             Repo.get_by(Demand,
+               runner_pool: query.runner_pool,
+               required_runner_release_id: query.required_runner_release_id
+             ),
+           true <- demand.healthy do
+        active_run_count =
+          active_run_blocker_count(query.runner_pool, query.required_runner_release_id)
+
+        pending_operation_count =
+          pending_operation_blocker_count(
+            query.runner_pool,
+            query.required_runner_release_id
+          )
+
+        to_release_drain(demand, active_run_count, pending_operation_count)
+      else
+        false -> {:error, Error.new(:invalid, "invalid runner release drain query")}
+        nil -> {:error, Error.new(:unavailable, "runner release drain is unavailable")}
+        %Demand{} -> {:error, Error.new(:unavailable, "runner release drain is stale")}
+        {:error, _reason} -> {:error, Error.new(:invalid, "invalid runner release drain query")}
+      end
+    end)
+  end
+
+  @impl true
+  def capacity_health(%Q.GetRunnerCapacityHealth{} = query) do
+    read(fn ->
+      if valid_platform_runner_read_context?(query.platform_context) do
+        %{rows: [[partition_count, unhealthy_partition_count]]} =
+          SQL.query!(
+            Repo,
+            """
+            SELECT count(*)::bigint,
+                   count(*) FILTER (WHERE NOT healthy)::bigint
+            FROM favn_control.runner_capacity_demands
+            """,
+            []
+          )
+
+        %RunnerCapacityHealth{
+          partition_count: partition_count,
+          unhealthy_partition_count: unhealthy_partition_count
+        }
+      else
+        {:error, Error.new(:invalid, "invalid runner capacity health query")}
+      end
+    end)
+  end
+
+  @impl true
+  def list_release_drains(%Q.ListRunnerReleaseDrains{} = query) do
+    read(fn ->
+      if valid_platform_runner_read_context?(query.platform_context) and
+           is_integer(query.limit) and query.limit in 1..1_024 do
+        demands =
+          Demand
+          |> order_by([demand], asc: demand.runner_pool, asc: demand.required_runner_release_id)
+          |> limit(^query.limit)
+          |> Repo.all()
+
+        active_runs = active_run_blocker_counts()
+        pending_operations = pending_operation_blocker_counts()
+
+        Enum.map(demands, fn demand ->
+          partition = {demand.runner_pool, demand.required_runner_release_id}
+
+          to_release_drain(
+            demand,
+            Map.get(active_runs, partition, 0),
+            Map.get(pending_operations, partition, 0)
+          )
+        end)
+      else
+        {:error, Error.new(:invalid, "invalid runner release drain list query")}
       end
     end)
   end
@@ -1090,6 +1222,95 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       demand.oldest_queued_at == actual.oldest_queued_at
   end
 
+  defp active_run_blocker_count(runner_pool, release_id) do
+    Run
+    |> where(
+      [run],
+      run.status in ["pending", "running"] and
+        fragment(
+          """
+          COALESCE(
+            ?->'runner_releases'->>?,
+            CASE WHEN ? = 'default' THEN ?->>'required_runner_release_id' END
+          ) = ?
+          """,
+          run.snapshot,
+          ^runner_pool,
+          ^runner_pool,
+          run.snapshot,
+          ^release_id
+        )
+    )
+    |> select([run], count(run.run_id))
+    |> Repo.one()
+  end
+
+  defp pending_operation_blocker_count(runner_pool, release_id) do
+    RebuildPlanAction
+    |> where(
+      [action],
+      action.runner_pool == ^runner_pool and
+        action.required_runner_release_id == ^release_id and
+        action.status in ["planned", "running"]
+    )
+    |> select([action], count(action.target_id))
+    |> Repo.one()
+  end
+
+  defp active_run_blocker_counts do
+    sql = """
+    SELECT binding.runner_pool, binding.required_runner_release_id, count(*)::bigint
+    FROM favn_control.runs AS run
+    CROSS JOIN LATERAL jsonb_each_text(
+      COALESCE(
+        run.snapshot->'runner_releases',
+        CASE
+          WHEN run.snapshot ? 'required_runner_release_id'
+          THEN jsonb_build_object('default', run.snapshot->>'required_runner_release_id')
+          ELSE '{}'::jsonb
+        END
+      )
+    ) AS binding(runner_pool, required_runner_release_id)
+    WHERE run.status IN ('pending', 'running')
+    GROUP BY binding.runner_pool, binding.required_runner_release_id
+    """
+
+    {:ok, %{rows: rows}} = SQL.query(Repo, sql, [])
+    Map.new(rows, fn [pool, release_id, count] -> {{pool, release_id}, count} end)
+  end
+
+  defp pending_operation_blocker_counts do
+    RebuildPlanAction
+    |> where([action], action.status in ["planned", "running"])
+    |> where(
+      [action],
+      not is_nil(action.runner_pool) and not is_nil(action.required_runner_release_id)
+    )
+    |> group_by([action], [action.runner_pool, action.required_runner_release_id])
+    |> select(
+      [action],
+      {action.runner_pool, action.required_runner_release_id, count(action.target_id)}
+    )
+    |> Repo.all()
+    |> Map.new(fn {pool, release_id, count} -> {{pool, release_id}, count} end)
+  end
+
+  defp to_release_drain(demand, active_run_count, pending_operation_count) do
+    blocker_count = demand.outstanding_count + active_run_count + pending_operation_count
+
+    %RunnerReleaseDrain{
+      runner_pool: demand.runner_pool,
+      required_runner_release_id: demand.required_runner_release_id,
+      outstanding_task_count: demand.outstanding_count,
+      active_run_count: active_run_count,
+      pending_operation_count: pending_operation_count,
+      blocker_count: blocker_count,
+      updated_at: demand.updated_at,
+      healthy?: demand.healthy,
+      durable_drained?: demand.healthy and blocker_count == 0
+    }
+  end
+
   defp insert_demand!(
          runner_pool,
          release_id,
@@ -1355,6 +1576,15 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp valid_platform_runner_context?(_context), do: false
+
+  defp valid_platform_runner_read_context?(
+         %FavnOrchestrator.Persistence.PlatformContext{roles: roles} = context
+       ) do
+    FavnOrchestrator.Persistence.PlatformContext.valid?(context) and
+      Enum.any?(roles, &(&1 in [:platform_reader, :platform_operator, :platform_admin]))
+  end
+
+  defp valid_platform_runner_read_context?(_context), do: false
 
   defp validate_pool_release(runner_pool, release_id) do
     with :ok <- Favn.RunnerPool.validate_runtime(runner_pool),

@@ -1,19 +1,26 @@
 defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Contracts.GenerationCapabilitiesRequest
   alias Favn.Manifest.Publication
-  alias Favn.Manifest.Version
   alias FavnLocal.Config
   alias FavnLocal.Lifecycle, as: LocalLifecycle
   alias FavnLocal.Locator
   alias FavnLocal.Publication, as: LocalPublication
-  alias FavnOrchestrator.Lifecycle, as: OrchestratorLifecycle
+  alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.Persistence.Commands, as: C
+  alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.RunnerRegistry
+  alias FavnOrchestrator.RunnerTasks
+  alias FavnOrchestrator.Runs
+  alias FavnOrchestrator.RunState
+  alias FavnStoragePostgres.RunnerTasks.Codec
   alias FavnStoragePostgres.Release
 
   @moduletag :acceptance
   @moduletag timeout: 180_000
 
-  test "source development starts, reloads, and shuts down safely after reload failure" do
+  test "source development overlaps releases and preserves the active runner after reload failure" do
     previous_primary_level = Logger.level()
     previous_handler_level = handler_level()
 
@@ -22,7 +29,17 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
 
     workspace_id = "source-dev-#{System.unique_integer([:positive])}"
     File.mkdir_p!(Path.join(root_dir, "config"))
-    File.write!(Path.join([root_dir, "config", "config.exs"]), "import Config\n")
+
+    File.write!(
+      Path.join([root_dir, "config", "config.exs"]),
+      """
+      import Config
+      config :favn, asset_modules: [FavnLocal.TestSupport.DrainAsset]
+      """
+    )
+
+    previous_asset_modules = Application.get_env(:favn, :asset_modules)
+    Application.put_env(:favn, :asset_modules, [FavnLocal.TestSupport.DrainAsset])
     previous_endpoint = Application.get_env(:favn_view, FavnView.Endpoint)
     previous_session = Application.get_env(:favn_view, :session_cookie_options)
 
@@ -31,8 +48,6 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
 
     previous_trusted_local =
       Application.get_env(:favn_orchestrator, :trusted_local_development_auth)
-
-    previous_dev = Application.get_env(:favn, :dev)
 
     Application.delete_env(:favn_view, FavnView.Endpoint)
     Application.delete_env(:favn_view, :session_cookie_options)
@@ -43,7 +58,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
       restore_env(:session_cookie_options, previous_session)
       restore_env(:source_development_passwordless_login, previous_passwordless)
       restore_orchestrator_env(:trusted_local_development_auth, previous_trusted_local)
-      restore_favn_env(:dev, previous_dev)
+      restore_favn_env(:asset_modules, previous_asset_modules)
       Logger.configure(level: previous_primary_level)
       restore_handler_level(previous_handler_level)
     end)
@@ -64,11 +79,9 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     test_process = self()
 
     dev_env =
-      Map.drop(System.get_env(), [
-        "FAVN_LOG_LEVEL",
-        "FAVN_VIEW_PORT",
-        "FAVN_ORCHESTRATOR_API_PORT"
-      ])
+      System.get_env()
+      |> Map.delete("FAVN_LOG_LEVEL")
+      |> Map.put_new("FAVN_RUNTIME_INPUT_PIN_KEY", Base.encode64(String.duplicate("k", 32)))
 
     assert {:ok, started} =
              FavnLocal.dev(
@@ -117,110 +130,77 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
                []
              )
 
-    admission_holder =
-      Task.async(fn ->
-        {:ok, permit} = OrchestratorLifecycle.acquire_admission()
-        send(test_process, :admission_held)
-
-        receive do
-          :release_admission -> :ok
-        end
-
-        :ok = OrchestratorLifecycle.release_admission(permit)
-      end)
-
-    assert_receive :admission_held
-
-    forced_release_id = FavnTestSupport.runner_release_id(:alternate)
+    {workspace_context, pinned_run, pinned_version, pinned_ref} =
+      create_release_pinned_run(workspace_id)
 
     reload =
       Task.async(fn ->
-        FavnLocal.reload(
-          root_dir: root_dir,
-          runner_release_id: forced_release_id,
-          reload_timeout_ms: 60_000
-        )
+        FavnLocal.reload(root_dir: root_dir, reload_timeout_ms: 60_000)
       end)
 
-    assert_eventually(fn -> LocalLifecycle.status().status == :reloading end)
-    assert nil == Task.yield(reload, 100)
+    assert_eventually(fn ->
+      status = LocalLifecycle.status()
 
-    send(admission_holder.pid, :release_admission)
-    assert :ok = Task.await(admission_holder)
+      status.status == :reloading and
+        status.runner_release_id != started.runner_release_id
+    end)
+
+    old_session = runner_session(started.runner_release_id)
+    old_runner_node = node(old_session.agent_pid)
+    assert Node.ping(old_runner_node) == :pong
+
+    :erpc.cast(old_runner_node, System, :stop, [1])
+
+    assert_eventually(fn ->
+      case runner_session(started.runner_release_id, :optional) do
+        %{runner_instance_id: runner_id} -> runner_id != old_session.runner_instance_id
+        nil -> false
+      end
+    end)
+
+    restarted_old_session = runner_session(started.runner_release_id)
+    assert Node.ping(node(restarted_old_session.agent_pid)) == :pong
+
+    delayed_task =
+      enqueue_delayed_release_work(
+        workspace_context,
+        pinned_run,
+        pinned_version,
+        pinned_ref,
+        started.runner_release_id
+      )
+
+    assert_eventually(fn ->
+      match?(
+        {:ok, %{status: status}} when status in [:succeeded, :failed, :cancelled, :unknown],
+        RunnerTasks.fetch(workspace_id, delayed_task.task_id)
+      )
+    end)
+
+    finish_release_pinned_run(workspace_context, pinned_run)
+
     assert {:ok, reloaded} = Task.await(reload, 60_000)
     assert reloaded.runner_release_id != started.runner_release_id
-    assert reloaded.reload_status == :runner_replaced
+    assert reloaded.runner_node != started.runner_node
+    assert Node.ping(started.runner_node) == :pang
+    assert Node.ping(reloaded.runner_node) == :pong
 
-    assert {:ok, manifest_only_publication} = LocalPublication.build(forced_release_id)
-
-    changed_manifest = %{
-      manifest_only_publication.version.manifest
-      | metadata:
-          Map.put(
-            manifest_only_publication.version.manifest.metadata,
-            :reload_acceptance_marker,
-            true
-          )
-    }
-
-    assert {:ok, manifest_only_version} = Version.new(changed_manifest)
-    changed_publication = %{manifest_only_publication | version: manifest_only_version}
-
-    assert {:ok, manifest_reloaded} =
-             LocalLifecycle.reload(
-               changed_publication,
-               forced_release_id,
-               60_000
-             )
-
-    assert manifest_reloaded.reload_status == :manifest_deployed
-    assert manifest_reloaded.runner_release_id == forced_release_id
-
-    assert {:ok, restored_manifest} =
-             FavnLocal.reload(
-               root_dir: root_dir,
-               runner_release_id: forced_release_id,
-               reload_timeout_ms: 60_000
-             )
-
-    assert restored_manifest.reload_status == :manifest_deployed
-
-    assert {:ok, unchanged} =
-             FavnLocal.reload(
-               root_dir: root_dir,
-               runner_release_id: forced_release_id,
-               reload_timeout_ms: 60_000
-             )
-
-    assert unchanged.reload_status == :unchanged
-    assert unchanged.runner_release_id == reloaded.runner_release_id
-    assert unchanged.manifest_version_id == reloaded.manifest_version_id
-    assert unchanged.deployment_id == restored_manifest.deployment_id
-    assert unchanged.execution_packages.registered == 0
-
-    assert {:ok, externally_deployed} =
-             LocalPublication.deploy(changed_publication, workspace_id)
-
-    assert externally_deployed.manifest_version_id == manifest_reloaded.manifest_version_id
-
-    assert {:ok, reconciled} =
-             FavnLocal.reload(
-               root_dir: root_dir,
-               runner_release_id: forced_release_id,
-               reload_timeout_ms: 60_000
-             )
-
-    assert reconciled.reload_status == :manifest_deployed
-    assert reconciled.manifest_version_id == restored_manifest.manifest_version_id
-
-    failed_release_id = FavnTestSupport.runner_release_id()
+    failed_release_id = FavnTestSupport.runner_release_id(:alternate)
     assert {:ok, %Publication{} = publication} = LocalPublication.build(failed_release_id)
     invalid_publication = %{publication | execution_packages: [%{}]}
 
     assert {:error, _reason} =
              LocalLifecycle.reload(invalid_publication, failed_release_id, 60_000)
 
+    assert Process.alive?(started.supervisor)
+    assert LocalLifecycle.status().status == :ready
+    assert LocalLifecycle.status().runner_release_id == reloaded.runner_release_id
+    assert Node.ping(reloaded.runner_node) == :pong
+    assert {:ok, locator} = Locator.read(root_dir)
+    assert locator.runner_release_id == reloaded.runner_release_id
+
     ref = Process.monitor(started.supervisor)
+    assert :ok = FavnLocal.stop(root_dir: root_dir, stop_timeout_ms: 60_000)
     assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 10_000
     assert {:error, :not_running} = Locator.read(root_dir)
 
@@ -253,6 +233,112 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     {:ok, {_address, port}} = :inet.sockname(socket)
     :ok = :gen_tcp.close(socket)
     port
+  end
+
+  defp create_release_pinned_run(workspace_id) do
+    context = SystemContext.workspace(workspace_id, :local_drain_acceptance)
+    {:ok, runtime} = ManifestStore.get_runtime_state(context)
+    {:ok, version} = ManifestStore.get_manifest(context, runtime.manifest_version_id)
+    ref = version.manifest.assets |> hd() |> Map.fetch!(:ref)
+    run_id = "local-drain-#{System.unique_integer([:positive])}"
+
+    run =
+      RunState.new(
+        id: run_id,
+        workspace_id: workspace_id,
+        deployment_id: runtime.deployment_id,
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        runner_releases: version.runner_releases,
+        asset_ref: ref,
+        target_refs: [ref]
+      )
+
+    assert {:ok, committed} =
+             Runs.create(
+               context,
+               run,
+               %{
+                 run_id: run.id,
+                 sequence: 1,
+                 event_type: :run_submitted,
+                 status: :pending,
+                 occurred_at: run.inserted_at
+               },
+               command_id: "create:#{run.id}"
+             )
+
+    {context, committed.run, version, ref}
+  end
+
+  defp enqueue_delayed_release_work(context, run, version, ref, release_id) do
+    request = %GenerationCapabilitiesRequest{manifest: version, asset_ref: ref}
+    {:ok, payload, payload_hash} = Codec.encode_payload(:generation_capabilities, request)
+    {:ok, orchestration_context} = Codec.encode_orchestration_context(%{kind: :test})
+    now = DateTime.utc_now()
+
+    command = %C.EnqueueRunnerTask{
+      workspace_context: context,
+      command_id: "enqueue:delayed:#{run.id}",
+      task_id: "rt_delayed_#{System.unique_integer([:positive])}",
+      domain_identity: "local-drain-delayed:#{run.id}",
+      task_kind: :generation_capabilities,
+      runner_pool: "default",
+      required_runner_release_id: release_id,
+      required_capability: "generation_capabilities",
+      retry_class: :safe_to_retry,
+      payload: payload,
+      payload_hash: payload_hash,
+      orchestration_context: orchestration_context,
+      run_id: run.id,
+      operation_id: nil,
+      asset_step_id: nil,
+      deadline_at: DateTime.add(now, 60, :second),
+      occurred_at: now
+    }
+
+    assert {:ok, task} = RunnerTasks.enqueue(command)
+    task
+  end
+
+  defp finish_release_pinned_run(context, run) do
+    occurred_at = DateTime.utc_now()
+
+    terminal =
+      RunState.transition(
+        run,
+        [
+          status: :ok,
+          result: %{status: :ok},
+          metadata: Map.put(run.metadata, :terminal_event_type, :run_finished)
+        ],
+        occurred_at
+      )
+
+    assert {:ok, _committed} =
+             Runs.commit(
+               context,
+               terminal,
+               %{
+                 run_id: run.id,
+                 sequence: terminal.event_seq,
+                 event_type: :run_finished,
+                 status: :ok,
+                 occurred_at: occurred_at
+               },
+               command_id: "finish:#{run.id}"
+             )
+  end
+
+  defp runner_session(release_id, mode \\ :required) do
+    session =
+      RunnerRegistry.list()
+      |> Enum.find(&(&1.required_runner_release_id == release_id))
+
+    case {session, mode} do
+      {nil, :required} -> flunk("runner release #{release_id} is not registered")
+      _other -> session
+    end
   end
 
   defp assert_eventually(fun, attempts \\ 300)

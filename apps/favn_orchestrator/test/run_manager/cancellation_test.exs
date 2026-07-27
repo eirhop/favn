@@ -223,7 +223,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
       runner_instance_id: "runner-inactive",
       boot_id: "boot-inactive",
       beam_node: Atom.to_string(node()),
-      runner_pool: "duckdb",
+      runner_pool: "default",
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       lifecycle_mode: :elastic,
       supported_task_kinds: [:asset_attempt],
@@ -307,7 +307,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
       assigned_runner_instance_id: if(status == :running, do: "runner-inactive"),
       assigned_runner_session_generation: if(status == :running, do: 1, else: 0),
       assignment_generation: if(status == :running, do: 1, else: 0),
-      runner_pool: "duckdb",
+      runner_pool: "default",
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       cancellation_acknowledged_at: nil
     }

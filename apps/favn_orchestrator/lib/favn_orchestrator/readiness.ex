@@ -3,7 +3,7 @@ defmodule FavnOrchestrator.Readiness do
   Aggregates bounded control-plane liveness and production readiness checks.
 
   Liveness is process-local. Readiness includes boot configuration, lifecycle,
-  PostgreSQL, scheduler, and the transitional resident-runner diagnostics.
+  PostgreSQL, scheduler, and the process-local runner registry.
   Manifest installation is assignment-local and therefore never a readiness
   prerequisite.
   """
@@ -11,9 +11,10 @@ defmodule FavnOrchestrator.Readiness do
   alias FavnOrchestrator.ControlPlaneRuntimeConfig
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Persistence.Queries.GetRunnerCapacityHealth
   alias FavnOrchestrator.Redaction
-  alias FavnOrchestrator.RunnerDiagnostics
-  alias FavnOrchestrator.RunnerHealth
+  alias FavnOrchestrator.RunnerRegistry
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.Readiness, as: SchedulerReadiness
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
@@ -26,7 +27,8 @@ defmodule FavnOrchestrator.Readiness do
   @spec readiness(keyword()) :: map()
   def readiness(opts \\ []) when is_list(opts) do
     storage_snapshot = Keyword.get_lazy(opts, :storage_snapshot, &Persistence.readiness/0)
-    runner_snapshot = Keyword.get_lazy(opts, :runner_snapshot, &RunnerHealth.snapshot/0)
+    runner_snapshot = Keyword.get_lazy(opts, :runner_snapshot, &runner_registry_snapshot/0)
+    capacity_snapshot = Keyword.get_lazy(opts, :capacity_snapshot, &runner_capacity_snapshot/0)
 
     checks = [
       safe_check(:config, &config_check/0),
@@ -36,8 +38,8 @@ defmodule FavnOrchestrator.Readiness do
       safe_check(:schema, fn -> schema_check(storage_snapshot) end),
       safe_check(:scheduler, &scheduler_check/0),
       safe_check(:lifecycle, &lifecycle_check/0),
-      safe_check(:runner_connection, fn -> runner_connection_check(runner_snapshot) end),
-      safe_check(:runner_release, fn -> runner_release_check(runner_snapshot) end)
+      safe_check(:runner_capacity, fn -> runner_capacity_check(capacity_snapshot) end),
+      safe_check(:runner_registry, fn -> runner_registry_check(runner_snapshot) end)
     ]
 
     status = if Enum.all?(checks, &(&1.status == :ok)), do: :ready, else: :not_ready
@@ -130,35 +132,48 @@ defmodule FavnOrchestrator.Readiness do
     end
   end
 
-  defp runner_connection_check(runner_snapshot) do
-    with {:ok, diagnostics} <- runner_snapshot,
-         true <- Map.get(diagnostics, :available?, false) do
-      ok(:runner_connection, %{
-        available?: true,
-        node_name: Map.get(diagnostics, :node_name),
-        client: module_name(RuntimeConfig.current().runner_client)
-      })
-    else
-      false -> error(:runner_connection, :runner_node_unreachable)
-      {:error, reason} -> error(:runner_connection, reason)
+  defp runner_registry_check({:ok, %{available?: true} = snapshot}),
+    do: ok(:runner_registry, snapshot)
+
+  defp runner_registry_check({:error, reason}), do: error(:runner_registry, reason)
+  defp runner_registry_check(snapshot), do: error(:runner_registry, snapshot)
+
+  defp runner_registry_snapshot do
+    case Process.whereis(RunnerRegistry) do
+      nil -> {:error, :runner_registry_not_running}
+      _pid -> {:ok, RunnerRegistry.snapshot()}
     end
   end
 
-  defp runner_release_check(runner_snapshot) do
-    runtime_config = RuntimeConfig.current()
+  defp runner_capacity_check(
+         {:ok,
+          %{
+            partition_count: partition_count,
+            unhealthy_partition_count: unhealthy_partition_count
+          }}
+       )
+       when is_integer(partition_count) and partition_count >= 0 and
+              is_integer(unhealthy_partition_count) and unhealthy_partition_count >= 0 do
+    details = %{
+      partitions: partition_count,
+      unhealthy_partitions: unhealthy_partition_count
+    }
 
-    with {:ok, diagnostics} <- runner_snapshot,
-         {:ok, release_id} <-
-           RunnerDiagnostics.validate_ready(diagnostics, runtime_config.runner_client_opts) do
-      ok(:runner_release, %{
-        runner_release_id: release_id,
-        favn_version: Map.get(diagnostics, :favn_version),
-        runner_contract_version: Map.get(diagnostics, :runner_contract_version),
-        identity_source: Map.fetch!(diagnostics, :identity_source)
-      })
-    else
-      {:error, reason} -> error(:runner_release, reason)
-    end
+    if unhealthy_partition_count == 0,
+      do: ok(:runner_capacity, details),
+      else: error(:runner_capacity, details)
+  end
+
+  defp runner_capacity_check({:error, reason}), do: error(:runner_capacity, reason)
+  defp runner_capacity_check(snapshot), do: error(:runner_capacity, snapshot)
+
+  defp runner_capacity_snapshot do
+    {:ok, context} =
+      PlatformContext.new("readiness", "runner-capacity-readiness", [:platform_reader])
+
+    Persistence.stores().runner_tasks.capacity_health(%GetRunnerCapacityHealth{
+      platform_context: context
+    })
   end
 
   defp normalize_storage_error({:raised, %{__exception__: true, __struct__: exception_module}}) do

@@ -20,6 +20,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RunnerTasks.Codec
   alias FavnStoragePostgres.RunnerTasks.Store
+  alias FavnStoragePostgres.Schemas.RunnerCapacityDemand, as: Demand
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @release "rr_" <> String.duplicate("a", 64)
@@ -41,6 +42,14 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     workspace_id = "runner-task-ws-#{unique}"
     runner_pool = "duckdb_#{unique}"
     now = DateTime.utc_now()
+    previous_runner_pools = Application.get_env(:favn_orchestrator, :runner_pools)
+    Application.put_env(:favn_orchestrator, :runner_pools, %{runner_pool => %{mode: :elastic}})
+
+    on_exit(fn ->
+      if is_nil(previous_runner_pools),
+        do: Application.delete_env(:favn_orchestrator, :runner_pools),
+        else: Application.put_env(:favn_orchestrator, :runner_pools, previous_runner_pools)
+    end)
 
     {:ok, platform_context} =
       PlatformContext.new("runner-task-test", "grant-#{unique}", [:platform_admin])
@@ -92,6 +101,90 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              Codec.decode_payload(:relation_inspection, compressed)
   end
 
+  test "known release partitions exist at zero demand before their first task", fixture do
+    command = %C.EnsureRunnerCapacityDemand{
+      platform_context: fixture.platform_context,
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: @release,
+      occurred_at: fixture.now
+    }
+
+    assert {:ok, first} = Store.ensure_demand(command)
+    assert {:ok, second} = Store.ensure_demand(command)
+    assert first == second
+    assert first.outstanding_count == 0
+    assert first.healthy?
+
+    assert {:ok, listed} =
+             Store.list_demands(%Q.ListRunnerCapacityDemands{
+               platform_context: fixture.platform_context,
+               limit: 1_024
+             })
+
+    assert Enum.any?(listed, fn demand ->
+             demand.runner_pool == fixture.runner_pool and
+               demand.required_runner_release_id == @release
+           end)
+
+    assert {:ok, drain} =
+             Store.release_drain(%Q.GetRunnerReleaseDrain{
+               platform_context: fixture.platform_context,
+               runner_pool: fixture.runner_pool,
+               required_runner_release_id: @release
+             })
+
+    assert drain.blocker_count == 0
+    assert drain.durable_drained?
+  end
+
+  test "capacity health aggregates every partition beyond diagnostic list limits", fixture do
+    query = %Q.GetRunnerCapacityHealth{platform_context: fixture.platform_context}
+    assert {:ok, before} = Store.capacity_health(query)
+    history_pool = "#{fixture.runner_pool}_history"
+
+    on_exit(fn ->
+      SQL.query!(
+        Repo,
+        "DELETE FROM favn_control.runner_capacity_demands WHERE runner_pool = $1",
+        [history_pool]
+      )
+    end)
+
+    rows =
+      Enum.map(1..300, fn index ->
+        release_id =
+          :sha256
+          |> :crypto.hash("#{fixture.runner_pool}:#{index}")
+          |> Base.encode16(case: :lower)
+          |> then(&"rr_#{&1}")
+
+        %{
+          runner_pool: history_pool,
+          required_runner_release_id: release_id,
+          outstanding_count: 0,
+          queued_count: 0,
+          active_count: 0,
+          oldest_queued_at: nil,
+          version: 0,
+          healthy: index != 300,
+          updated_at: fixture.now
+        }
+      end)
+
+    assert {300, nil} = Repo.insert_all(Demand, rows)
+    assert {:ok, after_insert} = Store.capacity_health(query)
+    assert after_insert.partition_count == before.partition_count + 300
+    assert after_insert.unhealthy_partition_count == before.unhealthy_partition_count + 1
+
+    assert {:ok, bounded} =
+             Store.list_release_drains(%Q.ListRunnerReleaseDrains{
+               platform_context: fixture.platform_context,
+               limit: 256
+             })
+
+    assert length(bounded) == 256
+  end
+
   test "enqueue is idempotent, validates payload hashes, and updates exact demand", fixture do
     command = enqueue_command(fixture, "enqueue")
 
@@ -108,6 +201,13 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert demand.active_count == 0
     assert demand.oldest_queued_at == command.occurred_at
     assert demand.healthy?
+
+    assert {:ok, %{outstanding_task_count: 1, blocker_count: 1, durable_drained?: false}} =
+             Store.release_drain(%Q.GetRunnerReleaseDrain{
+               platform_context: fixture.platform_context,
+               runner_pool: fixture.runner_pool,
+               required_runner_release_id: @release
+             })
 
     assert {:error, %{kind: :conflict}} =
              Store.enqueue(%{command | payload_hash: :crypto.strong_rand_bytes(32)})

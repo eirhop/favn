@@ -81,6 +81,7 @@ defmodule FavnOrchestrator.Application do
             {RunSubmissionSupervisor, config: runtime_config.run_submissions},
             {FavnOrchestrator.ResourceRecovery, []},
             {FavnOrchestrator.RunnerRegistry, []},
+            {FavnOrchestrator.RunnerDemandLimiter, []},
             {FavnOrchestrator.RunnerQueueSupervisor, []},
             {Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor},
             {Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor},

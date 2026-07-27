@@ -5,6 +5,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
   alias Favn.Contracts.GenerationCapabilitiesResult
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerTask.Assignment
+  alias Favn.Contracts.RunnerTask.NoWork
   alias Favn.Contracts.RunnerTask.Registration
   alias Favn.Contracts.RunnerTask.Result
   alias Favn.Manifest.Version
@@ -47,6 +48,24 @@ defmodule Favn.Contracts.RunnerTaskTest do
              assignment
              |> Map.put(:payload, %{})
              |> Assignment.validate()
+  end
+
+  test "control-plane wait instructions are bounded" do
+    no_work = %NoWork{
+      command_id: "claim-empty",
+      runner_instance_id: "runner-1",
+      runner_session_generation: 1,
+      action: :wait,
+      wait_ms: 15_000
+    }
+
+    assert :ok = NoWork.validate(no_work)
+
+    assert {:error, {:invalid_runner_task_wait_ms, -1}} =
+             no_work |> Map.put(:wait_ms, -1) |> NoWork.validate()
+
+    assert {:error, {:invalid_runner_task_wait_ms, 3_600_001}} =
+             no_work |> Map.put(:wait_ms, 3_600_001) |> NoWork.validate()
   end
 
   test "successful results require the result type for their task kind" do

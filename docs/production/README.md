@@ -46,6 +46,9 @@ Multi-node application failover is a later topology claim.
 
 ## Canonical documents
 
+- [`elastic_runners.md`](elastic_runners.md) defines arbitrary runner pools,
+  durable demand, elastic self-exit, mutual-TLS distribution, and
+  infrastructure-neutral scaling.
 - [`control_plane_environment.md`](control_plane_environment.md) defines the
   implemented same-BEAM environment, proxy, HTTP, lifecycle, shutdown, and secret
   contract.

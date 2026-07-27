@@ -747,6 +747,8 @@ defmodule Favn.Contracts.RunnerTask.Assignment do
 end
 
 defmodule Favn.Contracts.RunnerTask.NoWork do
+  @max_wait_ms 3_600_000
+
   use Favn.Contracts.RunnerTask.Message,
     tag: "no_work",
     session_fenced: true,
@@ -759,6 +761,20 @@ defmodule Favn.Contracts.RunnerTask.NoWork do
     ],
     required: [:command_id, :runner_instance_id],
     enums: [action: [:wait, :stop]]
+
+  def validate(%__MODULE__{} = no_work) do
+    with :ok <- super(no_work),
+         true <-
+           is_integer(no_work.wait_ms) and no_work.wait_ms >= 0 and
+             no_work.wait_ms <= @max_wait_ms do
+      :ok
+    else
+      false -> {:error, {:invalid_runner_task_wait_ms, no_work.wait_ms}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def validate(value), do: super(value)
 end
 
 defmodule Favn.Contracts.RunnerTask.Wake do

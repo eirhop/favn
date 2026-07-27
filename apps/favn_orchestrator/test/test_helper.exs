@@ -20,6 +20,9 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInput.Resolution
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Persistence.Results.RunnerCapacityDemand
+  alias FavnOrchestrator.Persistence.Results.RunnerCapacityHealth
+  alias FavnOrchestrator.Persistence.Results.RunnerReleaseDrain
   alias FavnOrchestrator.Persistence.Results.RunnerTask
 
   def enqueue(command) do
@@ -51,6 +54,20 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   def recover_expired(_command), do: unavailable()
   def reconcile_demand(_command), do: unavailable()
 
+  def ensure_demand(command) do
+    {:ok,
+     %RunnerCapacityDemand{
+       runner_pool: command.runner_pool,
+       required_runner_release_id: command.required_runner_release_id,
+       outstanding_count: 0,
+       queued_count: 0,
+       active_count: 0,
+       version: 0,
+       updated_at: command.occurred_at,
+       healthy?: true
+     }}
+  end
+
   def get(query) do
     case Process.get({__MODULE__, query.task_id}) do
       %RunnerTask{} = task -> {:ok, task}
@@ -59,7 +76,51 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   end
 
   def page_run(_query), do: unavailable()
-  def demand(_query), do: unavailable()
+
+  def demand(query) do
+    case Application.get_env(:favn_orchestrator, :test_runner_capacity_demand) do
+      %RunnerCapacityDemand{} = demand
+      when demand.runner_pool == query.runner_pool and
+             demand.required_runner_release_id == query.required_runner_release_id ->
+        {:ok, demand}
+
+      _other ->
+        unavailable()
+    end
+  end
+
+  def list_demands(_query) do
+    case Application.get_env(:favn_orchestrator, :test_runner_capacity_demand) do
+      %RunnerCapacityDemand{} = demand -> {:ok, [demand]}
+      _other -> {:ok, []}
+    end
+  end
+
+  def release_drain(query) do
+    with {:ok, demand} <- demand(query) do
+      {:ok, drain_result(demand)}
+    end
+  end
+
+  def capacity_health(_query) do
+    case Application.get_env(:favn_orchestrator, :test_runner_capacity_demand) do
+      %RunnerCapacityDemand{healthy?: healthy?} ->
+        {:ok,
+         %RunnerCapacityHealth{
+           partition_count: 1,
+           unhealthy_partition_count: if(healthy?, do: 0, else: 1)
+         }}
+
+      _other ->
+        {:ok, %RunnerCapacityHealth{partition_count: 0, unhealthy_partition_count: 0}}
+    end
+  end
+
+  def list_release_drains(_query) do
+    with {:ok, demands} <- list_demands(nil) do
+      {:ok, Enum.map(demands, &drain_result/1)}
+    end
+  end
 
   def runtime_inputs(run_id, node_keys) do
     node_keys
@@ -70,6 +131,20 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
 
   defp unavailable,
     do: {:error, Error.new(:unavailable, "runner task store is not used by this test")}
+
+  defp drain_result(demand) do
+    %RunnerReleaseDrain{
+      runner_pool: demand.runner_pool,
+      required_runner_release_id: demand.required_runner_release_id,
+      outstanding_task_count: demand.outstanding_count,
+      active_run_count: 0,
+      pending_operation_count: 0,
+      blocker_count: demand.outstanding_count,
+      updated_at: demand.updated_at,
+      healthy?: demand.healthy?,
+      durable_drained?: demand.healthy? and demand.outstanding_count == 0
+    }
+  end
 
   defp execute(command, runner, opts, payload) do
     result =

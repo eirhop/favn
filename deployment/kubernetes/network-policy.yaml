@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: favn-runner-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: favn.dev/runner-pool
+        operator: Exists
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: favn-control-plane
+      ports:
+        - protocol: TCP
+          port: 4369
+        - protocol: TCP
+          port: 9100
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

@@ -133,10 +133,10 @@ defmodule FavnRunner.Application do
             value -> raise ArgumentError, "invalid FAVN_RUNNER_LIFECYCLE_MODE: #{inspect(value)}"
           end
 
-        idle_grace_ms =
+        max_uptime_ms =
           positive_integer(
-            Map.get(environment, "FAVN_RUNNER_IDLE_GRACE_MS", "15000"),
-            "FAVN_RUNNER_IDLE_GRACE_MS"
+            Map.get(environment, "FAVN_RUNNER_MAX_UPTIME_MS", "3600000"),
+            "FAVN_RUNNER_MAX_UPTIME_MS"
           )
 
         [
@@ -148,7 +148,7 @@ defmodule FavnRunner.Application do
              runner_pool: runner_pool,
              runner_instance_id: Map.get(environment, "FAVN_RUNNER_INSTANCE_ID"),
              lifecycle_mode: lifecycle_mode,
-             idle_grace_ms: idle_grace_ms},
+             max_uptime_ms: max_uptime_ms},
             restart: :transient
           )
         ]

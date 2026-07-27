@@ -12,6 +12,8 @@ defmodule FavnOrchestrator.Manifests do
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Persistence.DeploymentPlanner
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Commands, as: C
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Results.RuntimeState
   alias FavnOrchestrator.Persistence.TargetIdentity
@@ -26,7 +28,12 @@ defmodule FavnOrchestrator.Manifests do
           {:ok, :published | :already_published, Version.t()} | {:error, term()}
   def publish(%PlatformContext{} = context, %Version{} = version) do
     Lifecycle.with_admission(fn ->
-      result = ManifestStore.publish_manifest(context, version)
+      result =
+        with {:ok, status, published} <- ManifestStore.publish_manifest(context, version),
+             :ok <- ensure_runner_capacity_partitions(context, published) do
+          {:ok, status, published}
+        end
+
       emit_publication_result(version, result)
       result
     end)
@@ -67,6 +74,25 @@ defmodule FavnOrchestrator.Manifests do
 
       emit_activation_result(context, manifest_version_id, result)
       result
+    end)
+  end
+
+  defp ensure_runner_capacity_partitions(context, version) do
+    now = DateTime.utc_now()
+
+    version.runner_releases
+    |> Enum.reduce_while(:ok, fn {pool, release_id}, :ok ->
+      command = %C.EnsureRunnerCapacityDemand{
+        platform_context: context,
+        runner_pool: pool,
+        required_runner_release_id: release_id,
+        occurred_at: now
+      }
+
+      case Persistence.stores().runner_tasks.ensure_demand(command) do
+        {:ok, _demand} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
     end)
   end
 
@@ -127,7 +153,7 @@ defmodule FavnOrchestrator.Manifests do
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
       runner_releases: version.runner_releases,
-      required_runner_release_id: Version.transitional_default_release!(version),
+      required_runner_release_id: transitional_default_release(version),
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
       schedule_count: length(List.wrap(version.manifest.schedules))
@@ -260,13 +286,20 @@ defmodule FavnOrchestrator.Manifests do
         status: :rejected,
         manifest_version_id: version.manifest_version_id,
         runner_releases: version.runner_releases,
-        required_runner_release_id: Version.transitional_default_release!(version),
+        required_runner_release_id: transitional_default_release(version),
         reason: bounded_reason(reason)
       },
       level: :warning
     )
 
     version
+  end
+
+  defp transitional_default_release(version) do
+    case Version.transitional_default_release(version) do
+      {:ok, release_id} -> release_id
+      {:error, _reason} -> nil
+    end
   end
 
   defp emit_activation_result(context, manifest_version_id, {:ok, runtime}) do

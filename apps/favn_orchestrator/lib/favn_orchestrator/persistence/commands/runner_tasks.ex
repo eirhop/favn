@@ -198,6 +198,18 @@ defmodule FavnOrchestrator.Persistence.Commands.ReconcileRunnerCapacityDemand do
   @type t :: %__MODULE__{}
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.EnsureRunnerCapacityDemand do
+  @moduledoc "Ensures that one known pool/release partition has a durable zero-demand row."
+  @enforce_keys [
+    :platform_context,
+    :runner_pool,
+    :required_runner_release_id,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+  @type t :: %__MODULE__{}
+end
+
 defmodule FavnOrchestrator.Persistence.Results.RunnerTask do
   @moduledoc "Durable runner-task state returned by persistence."
   defstruct [
@@ -256,4 +268,32 @@ defmodule FavnOrchestrator.Persistence.Results.RunnerCapacityDemand do
   ]
 
   @type t :: %__MODULE__{}
+end
+
+defmodule FavnOrchestrator.Persistence.Results.RunnerReleaseDrain do
+  @moduledoc "Durable authority for deciding whether one runner release can be removed."
+  defstruct [
+    :runner_pool,
+    :required_runner_release_id,
+    :outstanding_task_count,
+    :active_run_count,
+    :pending_operation_count,
+    :blocker_count,
+    :updated_at,
+    healthy?: true,
+    durable_drained?: false
+  ]
+
+  @type t :: %__MODULE__{}
+end
+
+defmodule FavnOrchestrator.Persistence.Results.RunnerCapacityHealth do
+  @moduledoc "All-partition capacity projection health used by fail-closed readiness."
+  @enforce_keys [:partition_count, :unhealthy_partition_count]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          partition_count: non_neg_integer(),
+          unhealthy_partition_count: non_neg_integer()
+        }
 end

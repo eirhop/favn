@@ -47,6 +47,11 @@ defmodule FavnOrchestrator.RunnerRegistry do
 
   def fetch(runner_instance_id), do: GenServer.call(__MODULE__, {:fetch, runner_instance_id})
   def list, do: GenServer.call(__MODULE__, :list)
+  def snapshot, do: GenServer.call(__MODULE__, :snapshot)
+
+  def count(runner_pool, required_runner_release_id),
+    do: GenServer.call(__MODULE__, {:count, runner_pool, required_runner_release_id})
+
   def begin_claim(request), do: GenServer.call(__MODULE__, {:begin_claim, request})
 
   def finish_claim(request, outcome),
@@ -94,6 +99,35 @@ defmodule FavnOrchestrator.RunnerRegistry do
   end
 
   def handle_call(:list, _from, state), do: {:reply, Map.values(state.sessions), state}
+
+  def handle_call(:snapshot, _from, state) do
+    sessions = Map.values(state.sessions)
+
+    by_partition =
+      sessions
+      |> Enum.group_by(&{&1.runner_pool, &1.required_runner_release_id})
+      |> Map.new(fn {{pool, release}, partition_sessions} ->
+        statuses = Enum.frequencies_by(partition_sessions, & &1.status)
+
+        {{pool, release},
+         %{
+           registered: length(partition_sessions),
+           statuses: statuses,
+           lifecycle_modes: Enum.frequencies_by(partition_sessions, & &1.lifecycle_mode)
+         }}
+      end)
+
+    {:reply, %{available?: true, registered: length(sessions), partitions: by_partition}, state}
+  end
+
+  def handle_call({:count, pool, release}, _from, state) do
+    count =
+      Enum.count(state.sessions, fn {_id, session} ->
+        session.runner_pool == pool and session.required_runner_release_id == release
+      end)
+
+    {:reply, count, state}
+  end
 
   def handle_call({:begin_claim, %ClaimRequest{} = request}, _from, state) do
     with :ok <- ClaimRequest.validate(request),
@@ -171,18 +205,41 @@ defmodule FavnOrchestrator.RunnerRegistry do
 
   defp validate_registration(registration, agent_pid, resume_verified?) do
     with :ok <- Registration.validate(registration),
+         {:ok, policy} <-
+           FavnOrchestrator.RunnerPools.fetch(
+             FavnOrchestrator.RuntimeConfig.runner_pools(),
+             registration.runner_pool
+           ),
+         true <- policy.mode == registration.lifecycle_mode,
          true <- agent_alive?(agent_pid),
          true <- registration.beam_node == Atom.to_string(node(agent_pid)),
          true <- is_nil(registration.active_assignment) or resume_verified? do
       :ok
     else
       false ->
-        if registration.active_assignment && not resume_verified?,
-          do: {:error, :unverified_active_assignment},
-          else: {:error, :invalid_runner_agent}
+        cond do
+          policy_mode_mismatch?(registration) ->
+            {:error, :runner_lifecycle_mode_mismatch}
+
+          registration.active_assignment && not resume_verified? ->
+            {:error, :unverified_active_assignment}
+
+          true ->
+            {:error, :invalid_runner_agent}
+        end
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp policy_mode_mismatch?(registration) do
+    case FavnOrchestrator.RunnerPools.fetch(
+           FavnOrchestrator.RuntimeConfig.runner_pools(),
+           registration.runner_pool
+         ) do
+      {:ok, policy} -> policy.mode != registration.lifecycle_mode
+      {:error, _reason} -> false
     end
   end
 

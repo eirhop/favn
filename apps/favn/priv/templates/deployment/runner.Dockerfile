@@ -52,6 +52,5 @@ ENV FAVN_RUNNER_RELEASE_ID=$FAVN_RUNNER_RELEASE_ID \
 LABEL io.favn.runner-release-id="$FAVN_RUNNER_RELEASE_ID"
 
 USER 10001:10001
-EXPOSE 4369 9100
 ENTRYPOINT ["/opt/favn/bin/favn_runner"]
 CMD ["start"]

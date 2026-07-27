@@ -372,7 +372,7 @@ defmodule FavnRunner.RunnerAgentTest do
     end
   end
 
-  test "an elastic runner exits after an empty claim and fixed idle grace" do
+  test "an elastic runner honors the control-plane wait and exits after a final empty claim" do
     owner = self()
     {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
 
@@ -382,14 +382,64 @@ defmodule FavnRunner.RunnerAgentTest do
          name: nil,
          connection: control_plane,
          runner_pool: :duckdb,
-         idle_grace_ms: 10,
          exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
       )
 
     assert_receive {:registered, %RunnerTask.Registration{lifecycle_mode: :elastic}, ^agent}
     assert_receive {:claimed, %RunnerTask.ClaimRequest{}}
+    assert_receive {:claimed, %RunnerTask.ClaimRequest{}}, 500
     assert_receive {:runner_exit, 0}, 500
     assert_eventually(fn -> not Process.alive?(agent) end)
+  end
+
+  test "an elastic runner exits at bounded maximum uptime while idle" do
+    owner = self()
+    {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         max_uptime_ms: 10,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:registered, %RunnerTask.Registration{}, ^agent}
+    assert_receive {:runner_exit, 0}, 500
+    assert_eventually(fn -> not Process.alive?(agent) end)
+  end
+
+  test "a resident runner parks until the control plane wakes it" do
+    {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         exit_fun: fn _status -> :ok end}
+      )
+
+    assert_receive {:registered, registration, ^agent}
+    assert_receive {:claimed, %RunnerTask.ClaimRequest{}}
+    refute_receive {:claimed, %RunnerTask.ClaimRequest{}}, 50
+
+    send(
+      agent,
+      {:favn_runner_task,
+       %RunnerTask.Wake{
+         runner_instance_id: registration.runner_instance_id,
+         runner_session_generation: 1,
+         runner_pool: registration.runner_pool,
+         required_runner_release_id: registration.required_runner_release_id
+       }}
+    )
+
+    assert_receive {:claimed, %RunnerTask.ClaimRequest{}}, 500
   end
 
   test "cancellation is acknowledged and applied only to the exact assignment fence" do

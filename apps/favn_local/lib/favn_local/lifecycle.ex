@@ -1,10 +1,10 @@
 defmodule FavnLocal.Lifecycle do
   @moduledoc """
-  Owns the Docker-free source-development runner lifecycle.
+  Owns source-development runner processes using the production registration,
+  pull, result, and drain protocol.
 
-  The lifecycle owns exactly one runner OS process. Compilation and manifest
-  construction happen in the invoking Mix command before a reload reaches this
-  process.
+  Reloads overlap releases: the candidate registers before activation and the
+  previous runner remains available until its exact release has no work.
   """
 
   use GenServer
@@ -14,38 +14,33 @@ defmodule FavnLocal.Lifecycle do
   alias FavnLocal.Locator
   alias FavnLocal.Publication, as: LocalPublication
   alias FavnLocal.RunnerChild
+  alias FavnOrchestrator.Persistence.Queries, as: Q
+  alias FavnOrchestrator.Persistence.Commands, as: C
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.RunnerRegistry
 
   @probe_interval_ms 100
   @runner_drain_probe_interval_ms 50
-  @runner_drain_timeout_ms 10_000
+  @runner_drain_timeout_ms 60_000
   @runner_start_timeout_ms 30_000
   @runner_stop_timeout_ms 15_000
-  @request_timeout_ms 60_000
+  @request_timeout_ms 120_000
 
   @type status :: :starting | :ready | :reloading | :stopping | :failed
 
-  @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts) when is_list(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
-  @spec await_ready(timeout()) :: {:ok, map()} | {:error, term()}
-  def await_ready(timeout_ms \\ @request_timeout_ms) do
-    GenServer.call(__MODULE__, :await_ready, timeout_ms)
-  end
+  def await_ready(timeout_ms \\ @request_timeout_ms),
+    do: GenServer.call(__MODULE__, :await_ready, timeout_ms)
 
-  @spec reload(Publication.t(), String.t(), timeout()) :: {:ok, map()} | {:error, term()}
   def reload(%Publication{} = publication, runner_release_id, timeout_ms \\ @request_timeout_ms)
-      when is_binary(runner_release_id) do
-    GenServer.call(__MODULE__, {:reload, publication, runner_release_id}, timeout_ms)
-  end
+      when is_binary(runner_release_id),
+      do: GenServer.call(__MODULE__, {:reload, publication, runner_release_id}, timeout_ms)
 
-  @spec stop(timeout()) :: :ok | {:error, term()}
-  def stop(timeout_ms \\ @request_timeout_ms) do
-    GenServer.call(__MODULE__, :stop, timeout_ms)
-  end
+  def stop(timeout_ms \\ @request_timeout_ms),
+    do: GenServer.call(__MODULE__, :stop, timeout_ms)
 
-  @spec status() :: map()
   def status, do: GenServer.call(__MODULE__, :status, 1_000)
 
   @impl true
@@ -53,24 +48,27 @@ defmodule FavnLocal.Lifecycle do
     config = Keyword.fetch!(opts, :config)
     publication = Keyword.fetch!(opts, :publication)
 
-    with :ok <- Locator.write(config, config.runner_release_id),
+    with :ok <- ensure_local_capacity_partition(config.runner_release_id),
+         :ok <- Locator.write(config, config.runner_release_id),
          {:ok, runner} <- RunnerChild.start(config, config.runner_release_id) do
-      deadline = now_ms() + @runner_start_timeout_ms
-      Process.send_after(self(), :probe_runner, @probe_interval_ms)
+      schedule(:probe_runner, @probe_interval_ms)
 
       {:ok,
        %{
          config: config,
          runner: runner,
+         candidate: nil,
+         retiring: nil,
          publication: publication,
-         deployment_id: nil,
-         manifest_version_id: nil,
          status: :starting,
-         deadline: deadline,
+         startup_action: :deploy,
+         deadline: now_ms() + @runner_start_timeout_ms,
          ready_waiters: [],
          request: nil,
-         maintenance_token: nil,
          task: nil,
+         pending_deployment: nil,
+         stopping_ports: MapSet.new(),
+         ignored_ports: MapSet.new(),
          failure: nil
        }}
     else
@@ -79,216 +77,156 @@ defmodule FavnLocal.Lifecycle do
   end
 
   @impl true
-  def handle_call(:await_ready, _from, %{status: :ready} = state) do
-    {:reply, {:ok, summary(state)}, state}
-  end
+  def handle_call(:await_ready, _from, %{status: :ready} = state),
+    do: {:reply, {:ok, summary(state)}, state}
 
   def handle_call(:await_ready, from, %{status: status} = state)
-      when status in [:starting, :reloading] do
-    {:noreply, %{state | ready_waiters: [from | state.ready_waiters]}}
-  end
+      when status in [:starting, :reloading],
+      do: {:noreply, %{state | ready_waiters: [from | state.ready_waiters]}}
 
   def handle_call(:await_ready, _from, state),
     do: {:reply, {:error, state.failure || :not_ready}, state}
 
-  def handle_call({:reload, publication, runner_release_id}, from, %{status: :ready} = state) do
-    cond do
-      unchanged_publication?(state, publication, runner_release_id) ->
-        {:reply, {:ok, unchanged_result(state)}, state}
+  def handle_call({:reload, publication, release_id}, from, %{status: :ready} = state) do
+    with :ok <- ensure_local_capacity_partition(release_id),
+         {:ok, candidate} <- RunnerChild.start(state.config, release_id) do
+      schedule(:probe_runner, @probe_interval_ms)
 
-      state.runner.release_id == runner_release_id ->
-        state
-        |> Map.merge(%{
-          status: :reloading,
-          publication: publication,
-          request: {from, publication, runner_release_id},
-          maintenance_token: nil
-        })
-        |> start_deployment()
-
-      true ->
-        token = random_token()
-
-        with {:ok, ^token} <- FavnOrchestrator.begin_runner_replacement(token) do
-          continue_runner_replacement(%{
-            state
-            | status: :reloading,
-              request: {from, publication, runner_release_id},
-              maintenance_token: token,
-              deadline: now_ms() + @runner_drain_timeout_ms
-          })
-        else
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
+      {:noreply,
+       %{
+         state
+         | candidate: candidate,
+           publication: publication,
+           status: :reloading,
+           request: {from, publication, release_id},
+           deadline: now_ms() + @runner_start_timeout_ms
+       }}
+    else
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
-  def handle_call({:reload, _publication, _runner_release_id}, _from, state),
+  def handle_call({:reload, _publication, _release_id}, _from, state),
     do: {:reply, {:error, {:lifecycle_not_ready, state.status}}, state}
 
-  def handle_call(:stop, _from, %{status: :stopping} = state),
-    do: {:reply, :ok, state}
+  def handle_call(:stop, _from, %{status: :stopping} = state), do: {:reply, :ok, state}
 
   def handle_call(:stop, from, state) do
     _ = FavnOrchestrator.drain()
-    :ok = RunnerChild.stop(state.runner)
-    Process.send_after(self(), {:runner_stop_timeout, state.runner.port}, @runner_stop_timeout_ms)
-    {:noreply, %{state | status: :stopping, request: {:stop, from}}}
+    runners = [state.runner, state.candidate, state.retiring] |> Enum.reject(&is_nil/1)
+    Enum.each(runners, &stop_runner/1)
+    ports = MapSet.new(runners, & &1.port)
+
+    if MapSet.size(ports) == 0 do
+      start_shutdown(%{state | status: :stopping, request: {:stop, from}})
+    else
+      {:noreply, %{state | status: :stopping, request: {:stop, from}, stopping_ports: ports}}
+    end
   end
 
   def handle_call(:status, _from, state), do: {:reply, summary(state), state}
 
   @impl true
-  def handle_info(:probe_runner, %{status: status} = state)
-      when status in [:starting, :reloading] do
+  def handle_info(:probe_runner, %{status: :starting} = state) do
+    case RunnerChild.refresh_registration(state.runner) do
+      {:ok, runner} when state.startup_action == :deploy ->
+        start_deployment(%{state | runner: runner})
+
+      {:ok, runner} ->
+        ready_after_recovery(%{state | runner: runner})
+
+      :not_ready ->
+        if now_ms() >= state.deadline do
+          fail(state, :runner_start_timeout)
+        else
+          schedule(:probe_runner, @probe_interval_ms)
+          {:noreply, state}
+        end
+    end
+  end
+
+  def handle_info(:probe_runner, %{status: :reloading, candidate: candidate} = state)
+      when not is_nil(candidate) do
+    case RunnerChild.refresh_registration(candidate) do
+      {:ok, candidate} ->
+        start_deployment(%{state | candidate: candidate})
+
+      :not_ready ->
+        if now_ms() >= state.deadline do
+          abort_candidate(state, :runner_start_timeout)
+        else
+          schedule(:probe_runner, @probe_interval_ms)
+          {:noreply, state}
+        end
+    end
+  end
+
+  def handle_info(:probe_retiring, %{status: :reloading, retiring: retiring} = state)
+      when not is_nil(retiring) do
     cond do
-      RunnerChild.ready?(state.runner) ->
-        start_deployment(state)
+      safe_to_stop?(retiring) ->
+        stop_runner(retiring)
+        {:noreply, state}
 
       now_ms() >= state.deadline ->
-        fail(state, :runner_start_timeout)
+        complete_reload(state, {:warning, :old_runner_drain_timeout})
 
       true ->
-        Process.send_after(self(), :probe_runner, @probe_interval_ms)
+        schedule(:probe_retiring, @runner_drain_probe_interval_ms)
         {:noreply, state}
     end
   end
 
-  def handle_info(:probe_runner_drain, %{status: :reloading} = state),
-    do: continue_runner_replacement(state)
+  def handle_info(:probe_retiring, %{status: :ready, retiring: retiring} = state)
+      when not is_nil(retiring) do
+    if safe_to_stop?(retiring) do
+      stop_runner(retiring)
+    else
+      schedule(:probe_retiring, @runner_drain_probe_interval_ms)
+    end
 
-  def handle_info({port, {:data, bytes}}, %{runner: %{port: port}} = state) do
-    IO.write(bytes)
     {:noreply, state}
   end
 
-  def handle_info({port, {:exit_status, status}}, %{runner: %{port: port}} = state) do
-    runner_exited(state, status)
+  def handle_info({port, {:data, bytes}}, state) when is_port(port) do
+    if managed_port?(state, port), do: IO.write(bytes)
+    {:noreply, state}
   end
 
-  def handle_info({:runner_stop_timeout, port}, %{runner: %{port: port}} = state) do
-    _ = Port.close(port)
-    runner_exited(state, :timeout)
-  catch
-    :error, :badarg -> runner_exited(state, :timeout)
+  def handle_info({port, {:exit_status, status}}, state) when is_port(port),
+    do: runner_exited(state, port, status)
+
+  def handle_info({:runner_stop_timeout, port}, state) do
+    if managed_port?(state, port), do: close_port(port)
+    runner_exited(state, port, :timeout)
   end
 
   def handle_info({ref, result}, %{task: %{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
-    deployment_finished(state, result)
+    deployment_finished(%{state | task: nil}, result)
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %{ref: ref}} = state) do
-    deployment_finished(state, {:error, {:deployment_task_failed, reason}})
-  end
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %{ref: ref}} = state),
+    do: deployment_finished(%{state | task: nil}, {:error, {:deployment_task_failed, reason}})
 
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do
-    finish_runner_replacement(state.maintenance_token)
+    [state.runner, state.candidate, state.retiring]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.each(&RunnerChild.stop/1)
+
     Config.clear_source_development_auth()
     Locator.delete(state.config.root_dir)
     :ok
   end
 
-  defp runner_exited(
-         %{status: :reloading, request: {from, publication, release_id}} = state,
-         _status
-       ) do
-    case RunnerChild.start(state.config, release_id) do
-      {:ok, runner} ->
-        Process.send_after(self(), :probe_runner, @probe_interval_ms)
-
-        {:noreply,
-         %{
-           state
-           | runner: runner,
-             publication: publication,
-             request: {from, publication, release_id},
-             deadline: now_ms() + @runner_start_timeout_ms
-         }}
-
-      {:error, reason} ->
-        fail(state, reason)
-    end
-  end
-
-  defp runner_exited(%{status: :stopping} = state, _status), do: start_shutdown(state)
-
-  defp runner_exited(%{status: :ready} = state, status) do
-    case RunnerChild.start(state.config, state.runner.release_id) do
-      {:ok, runner} ->
-        Process.send_after(self(), :probe_runner, @probe_interval_ms)
-
-        {:noreply,
-         %{
-           state
-           | runner: runner,
-             status: :starting,
-             deadline: now_ms() + @runner_start_timeout_ms
-         }}
-
-      {:error, reason} ->
-        fail(state, {:runner_crashed, status, reason})
-    end
-  end
-
-  defp runner_exited(state, status), do: fail(state, {:runner_exited, status})
-
-  defp continue_runner_replacement(state) do
-    case FavnOrchestrator.runner_replacement_status() do
-      %{active_admissions: 0} ->
-        :ok = RunnerChild.stop(state.runner)
-
-        Process.send_after(
-          self(),
-          {:runner_stop_timeout, state.runner.port},
-          @runner_stop_timeout_ms
-        )
-
-        {:noreply, %{state | deadline: now_ms() + @runner_start_timeout_ms}}
-
-      %{active_admissions: count} when is_integer(count) and count > 0 ->
-        if now_ms() >= state.deadline do
-          abort_runner_replacement(state, {:runs_in_flight, count})
-        else
-          Process.send_after(self(), :probe_runner_drain, @runner_drain_probe_interval_ms)
-          {:noreply, state}
-        end
-
-      status ->
-        abort_runner_replacement(state, {:runner_drain_unavailable, status})
-    end
-  end
-
-  defp abort_runner_replacement(state, reason) do
-    finish_runner_replacement(state.maintenance_token)
-
-    case state.request do
-      {from, %Publication{}, _release_id} -> GenServer.reply(from, {:error, reason})
-      _none -> :ok
-    end
-
-    {:noreply,
-     %{
-       state
-       | status: :ready,
-         request: nil,
-         maintenance_token: nil,
-         deadline: nil
-     }}
-  end
-
   defp start_deployment(state) do
-    token = state.maintenance_token
-    workspace_id = state.config.workspace_id
-    publication = state.publication
-
     task =
       Task.Supervisor.async_nolink(FavnLocal.TaskSupervisor, fn ->
-        LocalPublication.deploy(publication, workspace_id, token)
+        LocalPublication.deploy(state.publication, state.config.workspace_id)
       end)
 
     {:noreply, %{state | task: task}}
@@ -296,50 +234,30 @@ defmodule FavnLocal.Lifecycle do
 
   defp deployment_finished(%{status: :starting} = state, {:ok, deployment}) do
     :ok = Locator.write(state.config, state.runner.release_id)
-
-    ready_state = %{
-      state
-      | status: :ready,
-        deployment_id: deployment.deployment_id,
-        manifest_version_id: deployment.manifest_version_id,
-        task: nil,
-        ready_waiters: [],
-        failure: nil
-    }
-
-    reply_waiters(state.ready_waiters, {:ok, Map.merge(summary(ready_state), deployment)})
+    ready_state = ready_state(state)
+    reply_waiters(state.ready_waiters, {:ok, Map.merge(deployment, summary(ready_state))})
     {:noreply, ready_state}
   end
 
   defp deployment_finished(
-         %{status: :reloading, request: {from, _publication, _release_id}} = state,
+         %{status: :reloading, candidate: candidate, runner: old_runner} = state,
          {:ok, deployment}
        ) do
-    :ok = Locator.write(state.config, state.runner.release_id)
-    :ok = finish_runner_replacement(state.maintenance_token)
-    deployment =
-      Map.put(
-        deployment,
-        :reload_status,
-        if(is_nil(state.maintenance_token), do: :manifest_deployed, else: :runner_replaced)
-      )
+    state = %{
+      state
+      | runner: candidate,
+        candidate: nil,
+        retiring: old_runner,
+        pending_deployment: deployment,
+        deadline: now_ms() + @runner_drain_timeout_ms
+    }
 
-    GenServer.reply(from, {:ok, deployment})
-    reply_waiters(state.ready_waiters, {:ok, Map.merge(summary(state), deployment)})
-
-    {:noreply,
-     %{
-       state
-       | status: :ready,
-         deployment_id: deployment.deployment_id,
-         manifest_version_id: deployment.manifest_version_id,
-         request: nil,
-         maintenance_token: nil,
-         task: nil,
-         ready_waiters: [],
-         failure: nil
-     }}
+    schedule(:probe_retiring, 0)
+    {:noreply, state}
   end
+
+  defp deployment_finished(%{status: :reloading} = state, {:error, reason}),
+    do: abort_candidate(state, reason)
 
   defp deployment_finished(%{status: :stopping, request: {:stop, from}} = state, :ok) do
     Locator.delete(state.config.root_dir)
@@ -347,7 +265,216 @@ defmodule FavnLocal.Lifecycle do
     {:stop, :normal, %{state | task: nil}}
   end
 
-  defp deployment_finished(state, {:error, reason}), do: fail(%{state | task: nil}, reason)
+  defp deployment_finished(state, {:error, reason}), do: fail(state, reason)
+
+  defp runner_exited(%{status: :stopping} = state, port, _status) do
+    ports = MapSet.delete(state.stopping_ports, port)
+
+    if MapSet.size(ports) == 0,
+      do: start_shutdown(%{state | stopping_ports: ports}),
+      else: {:noreply, %{state | stopping_ports: ports}}
+  end
+
+  defp runner_exited(state, port, status) when is_port(port) do
+    if MapSet.member?(state.ignored_ports, port) do
+      {:noreply, %{state | ignored_ports: MapSet.delete(state.ignored_ports, port)}}
+    else
+      runner_exited_managed(state, port, status)
+    end
+  end
+
+  defp runner_exited_managed(
+         %{status: :reloading, retiring: %{port: port}} = state,
+         port,
+         status
+       ) do
+    retiring = state.retiring
+    state = %{state | retiring: nil}
+
+    if durable_release_drained?(retiring) do
+      complete_reload(state, :drained)
+    else
+      restart_retiring(state, retiring, status)
+    end
+  end
+
+  defp runner_exited_managed(
+         %{status: :ready, retiring: %{port: port}} = state,
+         port,
+         status
+       ) do
+    retiring = state.retiring
+    state = %{state | retiring: nil}
+
+    if durable_release_drained?(retiring) do
+      {:noreply, state}
+    else
+      restart_retiring(state, retiring, status)
+    end
+  end
+
+  defp runner_exited_managed(%{candidate: %{port: port}} = state, port, _status),
+    do: abort_candidate(%{state | candidate: nil}, :candidate_runner_exited)
+
+  defp runner_exited_managed(%{runner: %{port: port}, status: :ready} = state, port, _status) do
+    case RunnerChild.start(state.config, state.runner.release_id) do
+      {:ok, runner} ->
+        schedule(:probe_runner, @probe_interval_ms)
+
+        {:noreply,
+         %{
+           state
+           | runner: runner,
+             status: :starting,
+             startup_action: :recover,
+             deadline: now_ms() + @runner_start_timeout_ms
+         }}
+
+      {:error, reason} ->
+        fail(state, {:runner_crashed, reason})
+    end
+  end
+
+  defp runner_exited_managed(state, _port, _status), do: fail(state, :runner_exited)
+
+  defp restart_retiring(state, retiring, exit_status) do
+    case RunnerChild.start(state.config, retiring.release_id) do
+      {:ok, restarted} ->
+        schedule(:probe_retiring, @probe_interval_ms)
+        {:noreply, %{state | retiring: restarted}}
+
+      {:error, reason} ->
+        fail(state, {:retiring_runner_restart_failed, exit_status, reason})
+    end
+  end
+
+  defp complete_reload(state, drain_status) do
+    :ok = Locator.write(state.config, state.runner.release_id)
+    ready = ready_state(state)
+
+    response =
+      (state.pending_deployment || %{})
+      |> Map.put(:old_runner, drain_status)
+      |> Map.merge(summary(ready))
+
+    case state.request do
+      {from, %Publication{}, _release_id} -> GenServer.reply(from, {:ok, response})
+      _none -> :ok
+    end
+
+    if drain_status == {:warning, :old_runner_drain_timeout},
+      do: schedule(:probe_retiring, @runner_drain_probe_interval_ms)
+
+    reply_waiters(state.ready_waiters, {:ok, response})
+    {:noreply, ready}
+  end
+
+  defp abort_candidate(state, reason) do
+    if state.candidate, do: stop_runner(state.candidate)
+
+    ignored_ports =
+      if state.candidate,
+        do: MapSet.put(state.ignored_ports, state.candidate.port),
+        else: state.ignored_ports
+
+    case state.request do
+      {from, %Publication{}, _release_id} -> GenServer.reply(from, {:error, reason})
+      _none -> :ok
+    end
+
+    reply_waiters(state.ready_waiters, {:error, reason})
+
+    {:noreply,
+     %{
+       state
+       | candidate: nil,
+         publication: nil,
+         status: :ready,
+         ignored_ports: ignored_ports,
+         request: nil,
+         deadline: nil,
+         ready_waiters: [],
+         failure: nil
+     }}
+  end
+
+  defp ready_after_recovery(state) do
+    ready = ready_state(state)
+    reply_waiters(state.ready_waiters, {:ok, summary(ready)})
+    {:noreply, ready}
+  end
+
+  defp ready_state(state) do
+    %{
+      state
+      | status: :ready,
+        startup_action: :deploy,
+        request: nil,
+        task: nil,
+        pending_deployment: nil,
+        deadline: nil,
+        ready_waiters: [],
+        failure: nil
+    }
+  end
+
+  defp safe_to_stop?(runner) do
+    context = SystemContext.platform(:favn_local_runner_drain, roles: [:platform_operator])
+
+    drain =
+      Persistence.stores().runner_tasks.release_drain(%Q.GetRunnerReleaseDrain{
+        platform_context: context,
+        runner_pool: "default",
+        required_runner_release_id: runner.release_id
+      })
+
+    session_idle? =
+      case RunnerRegistry.fetch(runner.runner_instance_id) do
+        {:ok, %{status: :idle}} -> true
+        {:error, :runner_session_not_found} -> true
+        _other -> false
+      end
+
+    match?({:ok, %{durable_drained?: true}}, drain) and session_idle?
+  end
+
+  defp durable_release_drained?(runner) do
+    context = SystemContext.platform(:favn_local_runner_drain, roles: [:platform_operator])
+
+    match?(
+      {:ok, %{durable_drained?: true}},
+      Persistence.stores().runner_tasks.release_drain(%Q.GetRunnerReleaseDrain{
+        platform_context: context,
+        runner_pool: "default",
+        required_runner_release_id: runner.release_id
+      })
+    )
+  end
+
+  defp ensure_local_capacity_partition(release_id) do
+    context = SystemContext.platform(:favn_local_runner_partition, roles: [:platform_operator])
+
+    case Persistence.stores().runner_tasks.ensure_demand(%C.EnsureRunnerCapacityDemand{
+           platform_context: context,
+           runner_pool: "default",
+           required_runner_release_id: release_id,
+           occurred_at: DateTime.utc_now()
+         }) do
+      {:ok, _demand} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp stop_runner(runner) do
+    runner =
+      case RunnerChild.refresh_registration(runner) do
+        {:ok, registered} -> registered
+        :not_ready -> runner
+      end
+
+    :ok = RunnerChild.stop(runner)
+    schedule({:runner_stop_timeout, runner.port}, @runner_stop_timeout_ms)
+  end
 
   defp start_shutdown(%{request: {:stop, from}} = state) do
     task =
@@ -360,52 +487,42 @@ defmodule FavnLocal.Lifecycle do
     {:noreply, %{state | task: task, request: {:stop, from}}}
   end
 
-  defp fail(%{status: :reloading} = state, reason) do
-    finish_runner_replacement(state.maintenance_token)
+  defp fail(state, reason) do
     reply_waiters(state.ready_waiters, {:error, reason})
 
     case state.request do
+      {:stop, from} -> GenServer.reply(from, {:error, reason})
       {from, %Publication{}, _release_id} -> GenServer.reply(from, {:error, reason})
       _none -> :ok
     end
 
-    _ = RunnerChild.stop(state.runner)
-    _ = Application.stop(:favn_view)
-    _ = Application.stop(:favn_orchestrator)
-    Locator.delete(state.config.root_dir)
-
-    {:stop, {:shutdown, {:reload_failed, reason}},
+    {:noreply,
      %{
        state
        | status: :failed,
          failure: reason,
          ready_waiters: [],
          request: nil,
-         maintenance_token: nil,
          task: nil
      }}
   end
 
-  defp fail(state, reason) do
-    reply_waiters(state.ready_waiters, {:error, reason})
-
-    case state.request do
-      {:stop, from} -> GenServer.reply(from, {:error, reason})
-      _none -> :ok
-    end
-
-    {:noreply,
-     %{state | status: :failed, failure: reason, ready_waiters: [], request: nil, task: nil}}
+  defp managed_port?(state, port) do
+    MapSet.member?(state.ignored_ports, port) or
+      Enum.any?([state.runner, state.candidate, state.retiring], fn
+        %{port: ^port} -> true
+        _other -> false
+      end)
   end
 
-  defp finish_runner_replacement(nil), do: :ok
-
-  defp finish_runner_replacement(token) when is_binary(token) do
-    _ = FavnOrchestrator.finish_runner_replacement(token)
-    :ok
+  defp close_port(port) do
+    Port.close(port)
+  catch
+    :error, :badarg -> :ok
   end
 
   defp reply_waiters(waiters, reply), do: Enum.each(waiters, &GenServer.reply(&1, reply))
+  defp schedule(message, delay), do: Process.send_after(self(), message, delay)
 
   defp summary(state) do
     %{
@@ -416,38 +533,6 @@ defmodule FavnLocal.Lifecycle do
       workspace_id: state.config.workspace_id,
       view_url: "http://127.0.0.1:#{state.config.view_port}",
       orchestrator_url: "http://127.0.0.1:#{state.config.orchestrator_port}"
-    }
-  end
-
-  defp random_token, do: 32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
-
-  defp unchanged_publication?(state, publication, runner_release_id) do
-    state.runner.release_id == runner_release_id and
-      state.publication.version.content_hash == publication.version.content_hash and
-      LocalPublication.active_deployment?(
-        state.config.workspace_id,
-        state.deployment_id,
-        state.manifest_version_id,
-        state.runner.release_id
-      )
-  end
-
-  defp unchanged_result(state) do
-    %{
-      reload_status: :unchanged,
-      manifest_version_id: state.manifest_version_id,
-      runner_release_id: state.runner.release_id,
-      deployment_id: state.deployment_id,
-      execution_packages: %{
-        provided: length(state.publication.execution_packages),
-        registered: 0
-      },
-      phases: %{
-        execution_packages_ms: 0,
-        manifest_publication_ms: 0,
-        manifest_activation_ms: 0,
-        deployment_ms: 0
-      }
     }
   end
 

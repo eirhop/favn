@@ -11,6 +11,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
   alias FavnOrchestrator.Persistence.Commands.DeploymentTarget
   alias FavnOrchestrator.Persistence.Commands.EnqueueRunSubmission
+  alias FavnOrchestrator.Persistence.Commands.EnsureRunnerCapacityDemand
   alias FavnOrchestrator.Persistence.Commands.MarkRunSubmissionAdmitting
   alias FavnOrchestrator.Persistence.Commands.MarkRunSubmissionFailed
   alias FavnOrchestrator.Persistence.Commands.MarkRunSubmissionSubmitted
@@ -27,6 +28,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
   alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionByRunId
   alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionStats
   alias FavnOrchestrator.Persistence.Queries.GetRun
+  alias FavnOrchestrator.Persistence.Queries.GetRunnerReleaseDrain
   alias FavnOrchestrator.Persistence.Queries.PageClaimableRunSubmissionWorkspaces
   alias FavnOrchestrator.Persistence.Queries.PageRunSubmissions
   alias FavnOrchestrator.Persistence.RunSubmissionAuthority
@@ -40,6 +42,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Runs.Store, as: RunStore
   alias FavnStoragePostgres.RunSubmissions.Store
+  alias FavnStoragePostgres.RunnerTasks.Store, as: RunnerTaskStore
   alias FavnStoragePostgres.StorageV2.Migrations
 
   defmodule IntegrationPreparation do
@@ -286,6 +289,33 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
     }
 
     assert {:error, %{kind: :conflict}} = Store.enqueue(run_collision)
+  end
+
+  test "an active run keeps its release alive between runnable asset tasks", fixture do
+    now = DateTime.utc_now()
+    release_id = fixture.version.required_runner_release_id
+
+    assert {:ok, _demand} =
+             RunnerTaskStore.ensure_demand(%EnsureRunnerCapacityDemand{
+               platform_context: fixture.platform_context,
+               runner_pool: "default",
+               required_runner_release_id: release_id,
+               occurred_at: now
+             })
+
+    create_run!(fixture, "drain-gap-#{random_id()}")
+
+    assert {:ok, drain} =
+             RunnerTaskStore.release_drain(%GetRunnerReleaseDrain{
+               platform_context: fixture.platform_context,
+               runner_pool: "default",
+               required_runner_release_id: release_id
+             })
+
+    assert drain.outstanding_task_count == 0
+    assert drain.active_run_count >= 1
+    assert drain.blocker_count >= 1
+    refute drain.durable_drained?
   end
 
   test "malformed commands return typed errors before request encoding", fixture do

@@ -23,22 +23,30 @@ defmodule FavnStoragePostgres.StorageV2.RunnerReleaseMigrationTest do
       adapter: Ecto.Adapters.Postgres
   end
 
-  test "upgrades the previous schema, preserves history, enforces current identity, and downgrades" do
+  defmodule MaintenanceRepo do
+    use Ecto.Repo,
+      otp_app: :favn_storage_postgres,
+      adapter: Ecto.Adapters.Postgres
+  end
+
+  test "upgrades the previous schema, permits empty manifests, validates identities, and downgrades" do
     source_url =
       System.get_env("FAVN_DATABASE_URL") ||
         raise "FAVN_DATABASE_URL is required for PostgreSQL migration tests"
 
     database = "favn_runner_release_upgrade_#{random_suffix()}"
     target_url = replace_database(source_url, database)
-    source_tool_url = postgres_tool_url(source_url)
 
-    assert {_, 0} =
-             System.cmd("createdb", ["--maintenance-db", source_tool_url, database],
-               stderr_to_stdout: true
-             )
+    {:ok, maintenance_options} =
+      Config.repo_options(url: source_url, ssl_mode: :disable, pool_size: 1)
+
+    {:ok, maintenance_repo} = MaintenanceRepo.start_link(maintenance_options)
+    Process.unlink(maintenance_repo)
+    assert %{num_rows: 0} = SQL.query!(MaintenanceRepo, ~s(CREATE DATABASE "#{database}"), [])
 
     {:ok, options} = Config.repo_options(url: target_url, ssl_mode: :disable, pool_size: 2)
     {:ok, repo} = UpgradeRepo.start_link(options)
+    Process.unlink(repo)
 
     on_exit(fn ->
       if Process.alive?(repo) do
@@ -49,11 +57,15 @@ defmodule FavnStoragePostgres.StorageV2.RunnerReleaseMigrationTest do
         end
       end
 
-      System.cmd(
-        "dropdb",
-        ["--if-exists", "--force", "--maintenance-db", source_tool_url, database],
-        stderr_to_stdout: true
+      SQL.query!(
+        MaintenanceRepo,
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1",
+        [database]
       )
+
+      SQL.query!(MaintenanceRepo, ~s(DROP DATABASE IF EXISTS "#{database}"), [])
+
+      if Process.alive?(maintenance_repo), do: GenServer.stop(maintenance_repo)
     end)
 
     assert :ok = Migrations.migrate!(UpgradeRepo)
@@ -106,9 +118,11 @@ defmodule FavnStoragePostgres.StorageV2.RunnerReleaseMigrationTest do
                [legacy_id]
              )
 
-    assert_runner_release_constraint(10, nil, "current-null")
+    assert {:ok, _result} = assert_manifest_insert(10, nil, "current-null")
     assert_runner_release_constraint(10, "rr_invalid", "current-malformed")
-    assert_runner_release_constraint(9, @valid_runner_release_id, "legacy-bound")
+
+    assert {:ok, _result} =
+             assert_manifest_insert(9, @valid_runner_release_id, "legacy-bound")
 
     assert {:ok, _result} =
              assert_manifest_insert(10, @valid_runner_release_id, "current-valid")
@@ -122,18 +136,19 @@ defmodule FavnStoragePostgres.StorageV2.RunnerReleaseMigrationTest do
 
     assert {:ok, _result} = insert_pre_migration_current(invalid_current_id)
 
-    assert_raise Postgrex.Error,
-                 ~r/current manifest rows cannot be bound to a valid runner release identity/,
-                 fn -> Migrations.migrate!(UpgradeRepo) end
-
-    SQL.query!(
-      UpgradeRepo,
-      "DELETE FROM favn_control.manifest_versions WHERE manifest_version_id = $1",
-      [invalid_current_id]
-    )
-
     assert :ok = Migrations.migrate!(UpgradeRepo)
     assert column_present?()
+
+    assert %{rows: [[nil]]} =
+             SQL.query!(
+               UpgradeRepo,
+               """
+               SELECT required_runner_release_id
+               FROM favn_control.manifest_versions
+               WHERE manifest_version_id = $1
+               """,
+               [invalid_current_id]
+             )
 
     assert %{rows: [[nil]]} =
              SQL.query!(
@@ -263,9 +278,6 @@ defmodule FavnStoragePostgres.StorageV2.RunnerReleaseMigrationTest do
     uri = URI.parse(url)
     URI.to_string(%{uri | path: "/" <> database})
   end
-
-  defp postgres_tool_url("ecto://" <> rest), do: "postgresql://" <> rest
-  defp postgres_tool_url(url), do: url
 
   defp random_suffix, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
 end

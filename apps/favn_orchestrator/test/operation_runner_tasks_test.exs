@@ -113,8 +113,13 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
 
     def recover_expired(_command), do: unavailable()
     def reconcile_demand(_command), do: unavailable()
+    def ensure_demand(_command), do: unavailable()
     def page_run(_query), do: unavailable()
     def demand(_query), do: unavailable()
+    def list_demands(_query), do: unavailable()
+    def release_drain(_query), do: unavailable()
+    def capacity_health(_query), do: unavailable()
+    def list_release_drains(_query), do: unavailable()
 
     defp agent,
       do: Application.fetch_env!(:favn_orchestrator, :operation_runner_tasks_test_agent)

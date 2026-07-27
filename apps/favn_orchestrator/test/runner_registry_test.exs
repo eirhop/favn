@@ -11,8 +11,17 @@ defmodule FavnOrchestrator.RunnerRegistryTest do
   @release "rr_" <> String.duplicate("a", 64)
 
   setup do
+    previous = Application.get_env(:favn_orchestrator, :runner_pools)
+    Application.put_env(:favn_orchestrator, :runner_pools, duckdb: [mode: :elastic])
     start_supervised!({RunnerRegistry, []})
     start_supervised!({RunnerQueueSupervisor, []})
+
+    on_exit(fn ->
+      if is_nil(previous),
+        do: Application.delete_env(:favn_orchestrator, :runner_pools),
+        else: Application.put_env(:favn_orchestrator, :runner_pools, previous)
+    end)
+
     :ok
   end
 
@@ -77,6 +86,17 @@ defmodule FavnOrchestrator.RunnerRegistryTest do
     assert {:ok, ack} = RunnerRegistry.register(registration, agent)
     assert ack.status == :rejected
     assert ack.reason == :unverified_active_assignment
+  end
+
+  test "registration must match the configured pool lifecycle mode" do
+    Application.put_env(:favn_orchestrator, :runner_pools, duckdb: [mode: :resident])
+    agent = spawn_agent()
+
+    assert {:ok, ack} =
+             RunnerRegistry.register(registration("runner-mode", "boot-mode"), agent)
+
+    assert ack.status == :rejected
+    assert ack.reason == :runner_lifecycle_mode_mismatch
   end
 
   test "one live session cannot claim a second task and duplicate requests replay" do

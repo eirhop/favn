@@ -14,7 +14,7 @@ defmodule FavnRunner.RunnerAgent do
   alias FavnRunner.TaskExecutor.Result, as: ExecutorResult
   alias FavnRunner.TaskResultBuffer
 
-  @default_idle_grace_ms 15_000
+  @default_max_uptime_ms 3_600_000
   @default_lease_ms 30_000
   @log_flush_ms 1_000
   @mailbox_pressure_threshold 1_000
@@ -50,7 +50,6 @@ defmodule FavnRunner.RunnerAgent do
       runner_pool: Keyword.fetch!(opts, :runner_pool),
       required_runner_release_id: release.runner_release_id,
       lifecycle_mode: Keyword.get(opts, :lifecycle_mode, :elastic),
-      idle_grace_ms: Keyword.get(opts, :idle_grace_ms, @default_idle_grace_ms),
       exit_fun: Keyword.get(opts, :exit_fun, &System.stop/1),
       runtime_input_resolver:
         Keyword.get(opts, :runtime_input_resolver, &FavnRunner.resolve_runtime_inputs/1),
@@ -61,6 +60,7 @@ defmodule FavnRunner.RunnerAgent do
       executor_monitor: nil,
       pending_runtime_inputs: nil,
       idle_timer: nil,
+      final_claim?: false,
       lease_timer: nil,
       log_timer: nil,
       log_sequence: 0,
@@ -69,6 +69,14 @@ defmodule FavnRunner.RunnerAgent do
       draining?: false,
       phase: :connecting
     }
+
+    if state.lifecycle_mode == :elastic do
+      Process.send_after(
+        self(),
+        :max_uptime,
+        Keyword.get(opts, :max_uptime_ms, @default_max_uptime_ms)
+      )
+    end
 
     send(self(), :connect)
     {:ok, state}
@@ -134,7 +142,12 @@ defmodule FavnRunner.RunnerAgent do
 
     case request(state, request) do
       {:ok, %RunnerTask.Assignment{} = assignment} ->
-        start_assignment(%{state | assignment: assignment, phase: :preparing})
+        start_assignment(%{
+          state
+          | assignment: assignment,
+            final_claim?: false,
+            phase: :preparing
+        })
 
       {:ok, %RunnerTask.NoWork{} = no_work} ->
         wait_for_work(state, no_work)
@@ -149,7 +162,7 @@ defmodule FavnRunner.RunnerAgent do
          wake.runner_session_generation == state.session_generation and
          is_nil(state.assignment) do
       send(self(), :claim)
-      {:noreply, %{cancel_idle_timer(state) | phase: :idle}}
+      {:noreply, %{cancel_idle_timer(state) | final_claim?: false, phase: :idle}}
     else
       {:noreply, state}
     end
@@ -217,11 +230,21 @@ defmodule FavnRunner.RunnerAgent do
   end
 
   def handle_info(:idle_expired, %{assignment: nil, lifecycle_mode: :elastic} = state) do
-    state.exit_fun.(0)
-    {:stop, :normal, state}
+    send(self(), :claim)
+    {:noreply, %{state | idle_timer: nil, final_claim?: true, phase: :idle}}
   end
 
   def handle_info(:idle_expired, state), do: {:noreply, state}
+
+  def handle_info(:max_uptime, %{lifecycle_mode: :elastic, assignment: nil} = state) do
+    state.exit_fun.(0)
+    {:stop, :normal, %{state | draining?: true, phase: :draining}}
+  end
+
+  def handle_info(:max_uptime, %{lifecycle_mode: :elastic} = state),
+    do: {:noreply, %{state | draining?: true}}
+
+  def handle_info(:max_uptime, state), do: {:noreply, state}
 
   def handle_info({:runner_task_logs_ready, executor}, %{executor: executor} = state) do
     emit_mailbox_pressure(state)
@@ -655,15 +678,16 @@ defmodule FavnRunner.RunnerAgent do
     {:stop, :normal, state}
   end
 
-  defp wait_for_work(%{lifecycle_mode: :resident} = state, no_work) do
-    delay = max(no_work.wait_ms, 1_000)
-    timer = Process.send_after(self(), :claim, delay)
-    {:noreply, %{state | phase: :waiting, idle_timer: timer}}
+  defp wait_for_work(%{lifecycle_mode: :resident} = state, %RunnerTask.NoWork{}),
+    do: {:noreply, %{state | phase: :waiting, idle_timer: nil}}
+
+  defp wait_for_work(%{final_claim?: true} = state, %RunnerTask.NoWork{}) do
+    state.exit_fun.(0)
+    {:stop, :normal, state}
   end
 
   defp wait_for_work(state, %RunnerTask.NoWork{wait_ms: wait_ms}) do
-    delay = min(max(wait_ms, 0), state.idle_grace_ms)
-    timer = Process.send_after(self(), :idle_expired, delay)
+    timer = Process.send_after(self(), :idle_expired, wait_ms)
     {:noreply, %{state | phase: :waiting, idle_timer: timer}}
   end
 
@@ -871,6 +895,7 @@ defmodule FavnRunner.RunnerAgent do
         log_sequence: 0,
         reconnect_attempt: 0,
         resume_phase: nil,
+        final_claim?: false,
         phase: :idle
     }
   end

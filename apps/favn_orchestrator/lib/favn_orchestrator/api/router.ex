@@ -29,6 +29,8 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.RunnerCapacity
+  alias FavnOrchestrator.RunnerDemandLimiter
   alias FavnOrchestrator.Runs
 
   plug(Plug.RequestId)
@@ -45,6 +47,14 @@ defmodule FavnOrchestrator.API.Router do
 
   plug(:match)
   plug(:dispatch)
+
+  get "/internal/runner-demand/:runner_pool/:runner_release_id" do
+    serve_runner_demand(conn, runner_pool, runner_release_id, :json)
+  end
+
+  get "/internal/runner-demand/:runner_pool/:runner_release_id/metrics" do
+    serve_runner_demand(conn, runner_pool, runner_release_id, :openmetrics)
+  end
 
   get "/api/orchestrator/v1/health" do
     data(conn, 200, %{status: "ok"})
@@ -68,6 +78,42 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
+    end
+  end
+
+  get "/api/orchestrator/v1/runner-capacity" do
+    with {:ok, context} <- Authentication.platform_context(conn, :platform_reader),
+         {:ok, diagnostics} <- RunnerCapacity.diagnostics(context) do
+      data(conn, 200, DTO.normalize(diagnostics))
+    else
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Platform reader access is required")
+
+      {:error, reason} ->
+        Logger.error("runner_capacity.diagnostics failed: #{inspect(reason)}")
+        error(conn, 503, "capacity_unavailable", "Runner capacity is unavailable")
+    end
+  end
+
+  get "/api/orchestrator/v1/runner-capacity/:pool/:release_id" do
+    with {:ok, context} <- Authentication.platform_context(conn, :platform_reader),
+         {:ok, diagnostics} <- RunnerCapacity.drain(context, pool, release_id) do
+      data(conn, 200, DTO.normalize(diagnostics))
+    else
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Platform reader access is required")
+
+      {:error, %Error{kind: :unavailable}} ->
+        error(conn, 503, "capacity_unavailable", "Runner release drain is unavailable")
+
+      {:error, _reason} ->
+        error(conn, 422, "validation_failed", "Runner pool or release is invalid")
     end
   end
 
@@ -318,6 +364,93 @@ defmodule FavnOrchestrator.API.Router do
 
   defp runner_verification_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp runner_verification_reason(_reason), do: "runner_verification_failed"
+
+  defp serve_runner_demand(conn, pool, release_id, format) do
+    started_at = System.monotonic_time()
+
+    result =
+      with {:ok, context, identity} <- Authentication.capacity_context(conn),
+           true <- RunnerDemandLimiter.allow?(identity),
+           {:ok, demand} <- RunnerCapacity.demand(context, pool, release_id) do
+        {:ok, demand}
+      else
+        false -> {:error, :rate_limited}
+        {:error, reason} -> {:error, reason}
+      end
+
+    emit_runner_demand_read(started_at, pool, release_id, result)
+    conn = Plug.Conn.put_resp_header(conn, "cache-control", "no-store")
+
+    case result do
+      {:ok, demand} when format == :json ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(%{outstanding: demand.outstanding_count}))
+
+      {:ok, demand} ->
+        labels =
+          ~s(runner_pool="#{pool}",runner_release_id="#{release_id}")
+
+        body =
+          "# TYPE favn_runner_outstanding gauge\n" <>
+            "favn_runner_outstanding{#{labels}} #{demand.outstanding_count}\n" <>
+            "# EOF\n"
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/openmetrics-text; version=1.0.0")
+        |> Plug.Conn.send_resp(200, body)
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Capacity reader access is required")
+
+      {:error, :rate_limited} ->
+        error(conn, 429, "rate_limited", "Capacity read rate limit exceeded")
+
+      {:error, {:runner_pool_not_configured, _pool}} ->
+        error(conn, 404, "not_found", "Runner pool is not configured")
+
+      {:error, %Error{kind: :unavailable}} ->
+        error(conn, 503, "capacity_unavailable", "Runner capacity is unavailable")
+
+      {:error, _reason} ->
+        error(conn, 422, "validation_failed", "Runner pool or release is invalid")
+    end
+  end
+
+  defp emit_runner_demand_read(started_at, pool, release_id, result) do
+    duration = System.monotonic_time() - started_at
+
+    FavnOrchestrator.Telemetry.emit(
+      :runner_demand_read,
+      %{duration: duration, outstanding: demand_outstanding(result)},
+      Map.merge(
+        %{
+          partition_status: runner_demand_partition_status(result),
+          outcome: if(match?({:ok, _demand}, result), do: :ok, else: :error)
+        },
+        known_runner_demand_partition(result, pool, release_id)
+      )
+    )
+  end
+
+  defp known_runner_demand_partition({:ok, _demand}, pool, release_id),
+    do: %{runner_pool: pool, runner_release_id: release_id}
+
+  defp known_runner_demand_partition(_result, _pool, _release_id), do: %{}
+
+  defp runner_demand_partition_status({:ok, _demand}), do: :known
+
+  defp runner_demand_partition_status({:error, {:runner_pool_not_configured, _pool}}),
+    do: :unknown_pool
+
+  defp runner_demand_partition_status({:error, %Error{kind: :invalid}}), do: :malformed
+  defp runner_demand_partition_status({:error, _reason}), do: :unavailable
+
+  defp demand_outstanding({:ok, demand}), do: demand.outstanding_count
+  defp demand_outstanding(_result), do: 0
 
   defp data(conn, status, payload), do: Response.data(conn, status, payload)
 

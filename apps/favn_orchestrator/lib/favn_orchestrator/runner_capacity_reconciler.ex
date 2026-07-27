@@ -19,8 +19,24 @@ defmodule FavnOrchestrator.RunnerCapacityReconciler do
 
   @impl true
   def handle_info(:reconcile, state) do
-    RunnerRegistry.list()
-    |> Enum.map(&{&1.runner_pool, &1.required_runner_release_id})
+    live_partitions =
+      RunnerRegistry.list()
+      |> Enum.map(&{&1.runner_pool, &1.required_runner_release_id})
+
+    durable_partitions =
+      case Persistence.stores().runner_tasks.list_demands(%Q.ListRunnerCapacityDemands{
+             platform_context:
+               SystemContext.platform(:runner_capacity_reconciler, roles: [:platform_operator]),
+             limit: 100
+           }) do
+        {:ok, demands} ->
+          Enum.map(demands, &{&1.runner_pool, &1.required_runner_release_id})
+
+        {:error, _reason} ->
+          []
+      end
+
+    (live_partitions ++ durable_partitions)
     |> Enum.uniq()
     |> Enum.take(100)
     |> Enum.each(&reconcile/1)

@@ -386,7 +386,17 @@ defmodule FavnOrchestrator.RunnerTasks do
   defp wait_or_retry(request, _session, _observed, _attempt), do: finish_empty_claim(request)
 
   defp finish_empty_claim(request) do
-    no_work = no_work(request, :wait, @empty_wait_ms)
+    wait_ms =
+      case FavnOrchestrator.RunnerPools.fetch(
+             FavnOrchestrator.RuntimeConfig.runner_pools(),
+             request.runner_pool
+           ) do
+        {:ok, %{mode: :elastic, idle_grace_ms: idle_grace_ms}} -> idle_grace_ms
+        {:ok, %{mode: :resident}} -> @empty_wait_ms
+        {:error, _reason} -> @empty_wait_ms
+      end
+
+    no_work = no_work(request, :wait, wait_ms)
     {:ok, _session} = RunnerRegistry.finish_claim(request, no_work)
     {:ok, no_work}
   end

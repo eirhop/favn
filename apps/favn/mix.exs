@@ -32,7 +32,8 @@ defmodule Favn.MixProject do
       internal_dep(:favn_orchestrator, "../favn_orchestrator", runtime: false),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
       {:ex_doc, "~> 0.38", only: :dev, runtime: false},
-      {:mint, "~> 1.6", runtime: false}
+      {:mint, "~> 1.6", runtime: false},
+      {:yaml_elixir, "~> 2.12", only: :test, runtime: false}
     ]
   end
 

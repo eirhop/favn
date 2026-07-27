@@ -4,7 +4,6 @@ defmodule FavnLocal.Config do
   alias Favn.RunnerRelease
   alias FavnLocal.SourceRelease
   alias FavnOrchestrator.Auth.ServiceTokens
-  alias FavnOrchestrator.RunnerClient.BeamNode
   alias FavnStoragePostgres.Config, as: PostgresConfig
   alias FavnView.ApplicationConfig, as: ViewConfig
 
@@ -143,17 +142,9 @@ defmodule FavnLocal.Config do
     Application.put_env(:favn_orchestrator, :workspace_ids, [config.workspace_id])
     Application.put_env(:favn_orchestrator, :api_service_tokens, service_tokens)
     Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
-    Application.put_env(:favn_orchestrator, :runner_client, BeamNode)
-
-    Application.put_env(
-      :favn_orchestrator,
-      :runner_client_opts,
-      runner_node: config.runner_node,
-      runner_module: FavnRunner,
-      runner_rpc_timeout_ms: 15_000,
-      runner_diagnostics_timeout_ms: 5_000,
-      runner_identity_source: :source
-    )
+    Application.delete_env(:favn_orchestrator, :runner_client)
+    Application.delete_env(:favn_orchestrator, :runner_client_opts)
+    Application.put_env(:favn_orchestrator, :runner_pools, default: [mode: :resident])
 
     Application.put_env(
       :favn_orchestrator,

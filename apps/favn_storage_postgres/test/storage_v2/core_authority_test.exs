@@ -2024,6 +2024,76 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert payload_deployment_id == fixture.deployment_id
   end
 
+  test "rollback routes new runs to the old release without changing in-flight run pins",
+       fixture do
+    release_a = fixture.version.required_runner_release_id
+    release_b = FavnTestSupport.runner_release_id(:alternate)
+
+    manifest_b =
+      FavnTestSupport.with_manifest_contract(
+        fixture.version.manifest,
+        %{"default" => release_b}
+      )
+
+    assert {:ok, version_b} =
+             Version.new(manifest_b,
+               manifest_version_id: "mv-rollback-b-#{System.unique_integer([:positive])}"
+             )
+
+    assert {:ok, ^version_b} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: version_b
+             })
+
+    deployment_b = fixture.deployment_id <> "-release-b"
+
+    assert {:ok, runtime_b} =
+             RegistryStore.deploy_manifest(%{
+               fixture.deploy_command
+               | deployment_id: deployment_b,
+                 manifest_version_id: version_b.manifest_version_id,
+                 occurred_at: DateTime.add(fixture.deploy_command.occurred_at, 1, :second)
+             })
+
+    assert runtime_b.runner_releases == %{"default" => release_b}
+
+    fixture_b = %{fixture | deployment_id: deployment_b, version: version_b}
+
+    {run_b_command, run_b} =
+      create_run_command(fixture_b, "run-release-b-#{fixture.workspace_id}")
+
+    assert {:ok, _created} = RunStore.create_run(run_b_command)
+
+    assert {:ok, rollback_runtime} =
+             RegistryStore.deploy_manifest(%{
+               fixture.deploy_command
+               | deployment_id: fixture.deployment_id <> "-rollback-intent",
+                 occurred_at: DateTime.add(fixture.deploy_command.occurred_at, 2, :second)
+             })
+
+    assert rollback_runtime.manifest_version_id == fixture.version.manifest_version_id
+    assert rollback_runtime.runner_releases == %{"default" => release_a}
+
+    {run_a_command, run_a} = create_run_command(fixture, "run-release-a-#{fixture.workspace_id}")
+    assert {:ok, _created} = RunStore.create_run(run_a_command)
+
+    assert {:ok, persisted_b} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run_b.id
+             })
+
+    assert {:ok, persisted_a} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run_a.id
+             })
+
+    assert persisted_b.runner_releases == %{"default" => release_b}
+    assert persisted_a.runner_releases == %{"default" => release_a}
+  end
+
   test "persists runner release identity and exposes it through manifest audit reads", fixture do
     row = Repo.get!(ManifestVersionRow, fixture.version.manifest_version_id)
 

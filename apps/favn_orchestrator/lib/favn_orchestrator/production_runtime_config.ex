@@ -22,9 +22,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @default_active_run_plan_max_bytes 512 * 1_024 * 1_024
   @min_active_run_plan_max_bytes 64 * 1_024 * 1_024
   @max_active_run_plan_max_bytes 8 * 1_024 * 1_024 * 1_024
-  @max_runner_rpc_timeout_ms 120_000
-  @max_runner_diagnostics_timeout_ms 30_000
-  @max_runner_await_buffer_ms 120_000
   @max_shutdown_drain_timeout_ms 3_600_000
   @max_workspace_count 1_000
   @max_workspace_env_bytes 65_536
@@ -33,8 +30,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @max_http_connections 100_000
   @max_http_request_timeout_ms 120_000
   @max_http_idle_timeout_ms 300_000
-  @runner_module Module.concat(["FavnRunner"])
-
   @type runtime_input_pin_config :: %{
           keys: %{pos_integer() => binary()},
           current_version: pos_integer()
@@ -79,7 +74,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   """
   @spec apply_from_env(map()) :: :ok | {:error, term()}
   def apply_from_env(env) when is_map(env) do
-    with {:ok, config} <- validate(env) do
+    with {:ok, config} <- validate(env),
+         :ok <- Favn.DistributionTLS.validate_running_transport(env) do
       apply(config)
     end
   end
@@ -170,12 +166,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     Application.put_env(:favn_orchestrator, :run_submissions, config.run_submissions)
     Application.put_env(:favn_orchestrator, :runner_pools, config.runner_pools)
     Application.put_env(:favn_orchestrator, :runner_client, config.runner_client)
-
-    Application.put_env(
-      :favn_orchestrator,
-      :runner_client_opts,
-      install_runner_node_atom(config.runner_client_opts)
-    )
+    Application.put_env(:favn_orchestrator, :runner_client_opts, config.runner_client_opts)
 
     Application.put_env(
       :favn_orchestrator,
@@ -226,7 +217,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          runner_pools: runner_pools,
          shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
          runner: runner,
-         runner_client: FavnOrchestrator.RunnerClient.BeamNode,
+         runner_client: nil,
          runner_client_opts: runner_client_opts
        }}
     else
@@ -561,55 +552,25 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
   defp runner(env) do
     with {:ok, control_plane_node} <- node_name(env, "FAVN_CONTROL_PLANE_NODE"),
-         {:ok, runner_node} <- node_name(env, "FAVN_RUNNER_NODE"),
-         :ok <- distinct_nodes(control_plane_node, runner_node),
          :ok <- current_control_plane_node(control_plane_node),
          {:ok, cookie} <- required_secret(env, "FAVN_DISTRIBUTION_COOKIE"),
          :ok <- distribution_cookie(cookie),
          :ok <- current_distribution_cookie(cookie),
          {:ok, distribution_port} <- required_port(env, "FAVN_BEAM_DISTRIBUTION_PORT"),
          {:ok, epmd_port} <- int(env, "ERL_EPMD_PORT", "4369", 1, 65_535),
-         {:ok, rpc_timeout_ms} <-
-           int(
-             env,
-             "FAVN_RUNNER_RPC_TIMEOUT_MS",
-             "15000",
-             100,
-             @max_runner_rpc_timeout_ms
-           ),
-         {:ok, diagnostics_timeout_ms} <-
-           int(
-             env,
-             "FAVN_RUNNER_DIAGNOSTICS_TIMEOUT_MS",
-             "5000",
-             100,
-             @max_runner_diagnostics_timeout_ms
-           ),
-         {:ok, await_buffer_ms} <-
-           int(
-             env,
-             "FAVN_RUNNER_AWAIT_TIMEOUT_BUFFER_MS",
-             "2000",
-             0,
-             @max_runner_await_buffer_ms
-           ) do
+         {:ok, tls} <- Favn.DistributionTLS.validate(env) do
       {:ok,
        {
          %{
            topology: :beam_node,
            control_plane_node: control_plane_node,
-           runner_node: runner_node,
            distribution_port: distribution_port,
            epmd_port: epmd_port,
+           transport: tls.transport,
+           mutual_tls?: tls.mutual_tls?,
            cookie_configured?: true
          },
-         [
-           runner_node: runner_node,
-           runner_module: @runner_module,
-           runner_rpc_timeout_ms: rpc_timeout_ms,
-           runner_diagnostics_timeout_ms: diagnostics_timeout_ms,
-           runner_await_timeout_buffer_ms: await_buffer_ms
-         ]
+         []
        }}
     end
   end
@@ -647,11 +608,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     end
   end
 
-  defp distinct_nodes(node, node),
-    do: {:error, {:invalid_env, "FAVN_RUNNER_NODE", "different from control-plane node"}}
-
-  defp distinct_nodes(_control_plane_node, _runner_node), do: :ok
-
   defp current_control_plane_node(control_plane_node) do
     if Node.alive?() and Atom.to_string(node()) != control_plane_node do
       {:error, {:invalid_env, "FAVN_CONTROL_PLANE_NODE", "equal to the running release node"}}
@@ -677,11 +633,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     else
       :ok
     end
-  end
-
-  # sobelow_skip ["DOS.StringToAtom"]
-  defp install_runner_node_atom(opts) do
-    Keyword.update!(opts, :runner_node, &String.to_atom/1)
   end
 
   defp required_port(env, name) do
