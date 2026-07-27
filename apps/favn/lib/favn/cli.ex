@@ -19,6 +19,7 @@ defmodule Favn.CLI do
   def run(target, opts), do: Run.submit(target, opts)
   def list_runs(opts), do: Runs.list(opts)
   def get_run(run_id, opts), do: Runs.get(run_id, opts)
+  def run_events(run_id, opts), do: Runs.events(run_id, opts)
   def cancel_run(run_id, opts), do: Runs.cancel(run_id, opts)
   def list_schedules(opts), do: Schedules.list(opts)
   def get_schedule(schedule_id, opts), do: Schedules.get(schedule_id, opts)

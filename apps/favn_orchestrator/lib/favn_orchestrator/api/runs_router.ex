@@ -47,7 +47,8 @@ defmodule FavnOrchestrator.API.RunsRouter do
         authentication_error(conn, reason)
 
       {:error, _reason} ->
-        Response.error(conn, 400, "bad_request", "Request failed")
+        Logger.error("persisted run list is unavailable")
+        Response.error(conn, 500, "runs_unavailable", "Runs could not be loaded")
     end
   end
 
@@ -65,7 +66,8 @@ defmodule FavnOrchestrator.API.RunsRouter do
         authentication_error(conn, reason)
 
       {:error, _reason} ->
-        Response.error(conn, 400, "bad_request", "Request failed")
+        Logger.error("persisted run events are unavailable", run_id: run_id)
+        Response.error(conn, 500, "run_events_unavailable", "Run events could not be loaded")
     end
   end
 

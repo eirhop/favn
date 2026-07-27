@@ -242,10 +242,12 @@ defmodule Favn.AI do
     `Favn.Pipeline.Resolver` if needed.
   - To plan execution order, read `Favn plan_asset_run`, then
     `Favn.Assets.Planner` if needed.
-  - To inspect or cancel local runs, inspect run events, inspect relation
-    metadata, or inspect relation partitions, read
-    `Favn.CLI.Runs`, `Favn.CLI.DataInspection`, `Mix.Tasks.Favn.Runs`,
-    and `Mix.Tasks.Favn.Inspect`.
+  - To submit, inspect, or cancel local runs from IEx, use `Favn.run/2`,
+    `Favn.list_runs/1`, `Favn.get_run/2`, `Favn.run_events/2`,
+    `Favn.cancel_run/2`, and `Favn.diagnostics/1`; read the
+    [IEx Session Cheatsheet](iex-cheatsheet.html). To inspect relation metadata
+    or relation partitions from the shell, read `Favn.CLI.DataInspection` and
+    `Mix.Tasks.Favn.Inspect`.
     `mix favn.runs cancel RUN_ID` requests cancellation through the local
     orchestrator HTTP boundary; add `--wait` to poll the run until it is
     terminal. Run summaries use persisted pipeline identity or asset refs for

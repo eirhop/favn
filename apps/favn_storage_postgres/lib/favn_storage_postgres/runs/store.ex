@@ -20,6 +20,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnOrchestrator.Persistence.Queries.PagePublishedRunEvents
   alias FavnOrchestrator.Persistence.Queries.PageRunEvents
   alias FavnOrchestrator.Persistence.Queries.PageRuns
+  alias FavnOrchestrator.Persistence.RunEnum
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RunCommitted
   alias FavnOrchestrator.Persistence.Results.RunSummary
@@ -1567,8 +1568,8 @@ defmodule FavnStoragePostgres.Runs.Store do
       run_id: row.run_id,
       manifest_version_id: row.manifest_version_id,
       required_runner_release_id: Map.get(runner_releases, row.manifest_version_id),
-      submit_kind: String.to_existing_atom(row.submit_kind),
-      status: String.to_existing_atom(row.status),
+      submit_kind: RunEnum.decode!(:submit_kind, row.submit_kind),
+      status: RunEnum.decode!(:status, row.status),
       event_sequence: row.event_sequence,
       inserted_at: row.inserted_at,
       updated_at: row.updated_at,
@@ -1577,7 +1578,7 @@ defmodule FavnStoragePostgres.Runs.Store do
       rerun_of_run_id: row.rerun_of_run_id,
       root_run_id: row.root_execution_group_id,
       deployment_id: row.deployment_id,
-      trigger_type: String.to_existing_atom(row.trigger_type),
+      trigger_type: RunEnum.decode!(:trigger_type, row.trigger_type),
       submitted_event_id: row.submitted_event_id,
       latest_event_id: row.latest_event_id,
       target_label: target.target_label,

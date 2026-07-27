@@ -55,6 +55,10 @@ mix favn.runs list
 mix favn.stop
 ```
 
+For interactive inspection, run `iex -S mix` in the second terminal and use
+`Favn.run/2`, `Favn.list_runs/1`, `Favn.get_run/2`, `Favn.run_events/2`, and
+`Favn.diagnostics/1`.
+
 ## Small DSL Example
 
 Define one asset:
@@ -125,6 +129,7 @@ not depend on Favn runtime, storage, or UI implementation apps directly.
 - [Authoring Assets](guides/authoring-assets.md): define assets, SQL assets, multi-assets, namespaces, pipelines, schedules, windows, and freshness.
 - [Transactional SQL Asset Checks](guides/sql-asset-checks.md): validate staged candidates and published targets atomically with fail, warn, and successful no-op policies.
 - [Local Development](guides/local-development.md): use `mix favn.*` commands locally.
+- [IEx Session Cheatsheet](guides/iex-cheatsheet.cheatmd): submit, inspect, and debug runs interactively while `mix favn.dev` is running.
 - [Configuration](guides/configuration.md): configure discovery, runtime environment, SQL connections, DuckDB, ADBC, and pooling.
 - [SQL Client](guides/sql-client.md): use `Favn.SQLClient` from Elixir code.
 - [Adapters](guides/adapters.md): understand SQL plugins and runtime storage adapters.

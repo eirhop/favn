@@ -1,0 +1,184 @@
+# IEx Session Cheatsheet
+
+Use this page to submit, inspect, and debug runs from an interactive Elixir
+session while the Docker-free Favn development stack runs in another terminal.
+The IEx session is an operator client: it talks to the Orchestrator HTTP API and
+does not own durable state or start a second Favn stack.
+
+## Start the two terminals
+
+Start Favn from the consumer project:
+
+```bash
+mix favn.dev
+```
+
+From the same project directory, start IEx in another terminal:
+
+```bash
+iex -S mix
+```
+
+Both terminals need the same environment and project checkout. Local calls read
+the Orchestrator URL, service token, and workspace ID from `.favn/local`, which
+`mix favn.dev` writes. They return `{:error, :not_running}` when that local state
+does not exist.
+
+Do not add `:favn_runner` as a direct runtime dependency just to use IEx.
+Consumer applications depend on `:favn` and supported plugins. The isolated
+runner is started and verified by `mix favn.dev`.
+
+## Run work
+
+Run a pipeline and wait for its terminal result:
+
+```elixir
+{:ok, run} = Favn.run(MyApp.Pipelines.Daily)
+```
+
+Submit without waiting:
+
+```elixir
+{:ok, accepted} =
+  Favn.run(MyApp.Pipelines.Daily,
+    window: "day:2026-07-27",
+    wait: false
+  )
+```
+
+Run one asset with its upstream dependencies:
+
+```elixir
+Favn.run(MyApp.Mart.Orders,
+  dependencies: :all,
+  refresh: :missing
+)
+```
+
+Use `dependencies: :none` only for a targeted repair whose upstream inputs have
+already been verified. Asset refresh values are `:auto`, `:missing`,
+`:force_selected`, `:force_selected_upstream`, and `:force_all`. Pipeline
+refresh values are `:auto`, `:missing`, and `:force_all`; pipelines do not
+accept `dependencies`.
+
+`Favn.run/2` waits by default. Useful bounded options are `wait_timeout_ms`,
+`run_timeout_ms`, `poll_interval_ms`, `retry_max_attempts`, and
+`retry_backoff_ms`.
+
+## Inspect runs
+
+List recent runs:
+
+```elixir
+{:ok, runs} = Favn.list_runs(limit: 20)
+```
+
+Filter by one status:
+
+```elixir
+{:ok, failed_runs} = Favn.list_runs(status: :error, limit: 20)
+```
+
+Fetch one run and its events:
+
+```elixir
+run_id = accepted["id"]
+
+{:ok, run} = Favn.get_run(run_id)
+{:ok, events} = Favn.run_events(run_id, limit: 200)
+{:ok, later_events} = Favn.run_events(run_id, after_sequence: 200, limit: 200)
+```
+
+Responses cross the JSON API boundary, so response maps have string keys. IEx
+helpers such as `Map.take/2`, `Enum.filter/2`, and `Enum.group_by/2` are useful:
+
+```elixir
+Enum.map(runs, &Map.take(&1, ["id", "status", "target_label", "started_at", "finished_at"]))
+
+Enum.filter(events, fn event ->
+  event["event_type"] in ["node_failed", "run_failed"]
+end)
+```
+
+## Cancel and diagnose
+
+Request cancellation:
+
+```elixir
+{:ok, cancellation} = Favn.cancel_run(run_id)
+```
+
+Wait for that run to become terminal:
+
+```elixir
+{:ok, cancelled_run} =
+  Favn.cancel_run(run_id,
+    wait: true,
+    wait_timeout_ms: 30_000,
+    poll_interval_ms: 500
+  )
+```
+
+Read the bounded runtime diagnostic report:
+
+```elixir
+{:ok, report} = Favn.diagnostics()
+```
+
+## Public IEx functions
+
+| Function | Result |
+| --- | --- |
+| `Favn.run(target, opts)` | Submit an asset or pipeline; wait by default. |
+| `Favn.list_runs(opts)` | List persisted run summaries. |
+| `Favn.get_run(run_id, opts)` | Fetch one persisted run. |
+| `Favn.run_events(run_id, opts)` | List one run's persisted events. |
+| `Favn.cancel_run(run_id, opts)` | Request cancellation and optionally wait. |
+| `Favn.diagnostics(opts)` | Read allowlisted Orchestrator diagnostics. |
+
+These functions return `{:ok, value}` or `{:error, reason}`. During debugging,
+bind the whole result before using an exact match so the original error remains
+visible:
+
+```elixir
+result = Favn.list_runs(limit: 20)
+
+case result do
+  {:ok, items} -> Enum.map(items, &Map.take(&1, ["id", "status"]))
+  {:error, reason} -> {:inspect_failed, reason}
+end
+```
+
+Writing `{:ok, runs} = Favn.list_runs(...)` raises `MatchError` when the
+operation returns an error, which hides the result you usually want to inspect.
+
+## Connect to another Orchestrator
+
+For a deployed or separately configured Orchestrator, set all three variables
+before starting IEx:
+
+```bash
+export FAVN_ORCHESTRATOR_URL='https://orchestrator.example'
+export FAVN_ORCHESTRATOR_SERVICE_TOKEN='...'
+export FAVN_WORKSPACE_ID='workspace-id'
+iex -S mix
+```
+
+You can instead pass `orchestrator_url`, `service_token`, and `workspace_id` as
+options to each function. All three are required together. Do not paste
+service tokens into shared IEx history.
+
+## Common failures
+
+| Result | Meaning |
+| --- | --- |
+| `{:error, :not_running}` | No local `.favn/local` state was found; start `mix favn.dev` from this project. |
+| `{:error, {:incomplete_cli_environment, names}}` | Only part of the three-variable remote connection was configured. |
+| `{:error, %{reason: {:http_error, 401, _}}}` | The service token was rejected. |
+| `{:error, %{reason: {:http_error, 403, _}}}` | The identity lacks the required workspace role. |
+| `{:error, %{reason: {:http_error, 500, _}}}` | The Orchestrator could not complete the read; inspect its logs and `Favn.diagnostics/1`. |
+| `runner release verification failed: :runner_release_id_missing` during `iex -S mix` | The consumer is starting the internal `:favn_runner` application. Remove that direct dependency, or mark a temporary dependency-resolution override with `runtime: false`. |
+
+Use the [Local Development](local-development.html) guide for setup and runtime
+lifecycle details. Use `mix favn.*` for shell automation and the functions on
+this page for interactive exploration.

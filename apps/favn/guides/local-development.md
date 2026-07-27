@@ -153,6 +153,12 @@ These commands use the running local process when available. For a deployed
 Orchestrator, set `FAVN_ORCHESTRATOR_URL`,
 `FAVN_ORCHESTRATOR_SERVICE_TOKEN`, and `FAVN_WORKSPACE_ID`.
 
+For an interactive workflow, keep `mix favn.dev` running in this terminal and
+start `iex -S mix` from the same project in another terminal. The supported
+`Favn.run/2`, `Favn.list_runs/1`, `Favn.get_run/2`, `Favn.run_events/2`,
+`Favn.cancel_run/2`, and `Favn.diagnostics/1` functions use the same HTTP
+boundary. See the [IEx Session Cheatsheet](iex-cheatsheet.html).
+
 ```bash
 mix favn.run MyApp.Pipelines.Daily
 mix favn.run MyApp.Pipelines.Daily --window day:2026-07-23

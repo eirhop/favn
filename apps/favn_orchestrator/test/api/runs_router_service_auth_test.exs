@@ -22,7 +22,23 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     alias FavnOrchestrator.Persistence.Selectors.SessionByTokenHash
 
     def page_run_summaries(query) do
-      {:ok, %CursorPage{items: [], limit: query.limit, has_more?: false, next_cursor: nil}}
+      case Process.get(:runs_router_list_error) do
+        nil ->
+          {:ok, %CursorPage{items: [], limit: query.limit, has_more?: false, next_cursor: nil}}
+
+        error ->
+          {:error, error}
+      end
+    end
+
+    def page_events(query) do
+      case Process.get(:runs_router_events_error) do
+        nil ->
+          {:ok, %CursorPage{items: [], limit: query.limit, has_more?: false, next_cursor: nil}}
+
+        error ->
+          {:error, error}
+      end
     end
 
     def request_cancellation(_command) do
@@ -77,6 +93,8 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     Process.put(:runs_router_sessions, %{})
     Process.put(:runs_router_terminal_run, %{status: :ok})
     Process.put(:runs_router_test_pid, self())
+    Process.delete(:runs_router_list_error)
+    Process.delete(:runs_router_events_error)
 
     stores = %Stores{
       registry: EmptyRunsStore,
@@ -105,6 +123,8 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       Process.delete(:runs_router_sessions)
       Process.delete(:runs_router_terminal_run)
       Process.delete(:runs_router_test_pid)
+      Process.delete(:runs_router_list_error)
+      Process.delete(:runs_router_events_error)
       if Process.alive?(runtime), do: GenServer.stop(runtime)
     end)
 
@@ -116,6 +136,32 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
 
     assert response.status == 200
     assert %{"data" => %{"items" => []}} = Jason.decode!(response.resp_body)
+  end
+
+  test "run storage failures are reported as unavailable rather than bad requests" do
+    Process.put(
+      :runs_router_list_error,
+      FavnOrchestrator.Persistence.Error.new(:internal, "internal persistence failure")
+    )
+
+    response = list_request()
+
+    assert response.status == 500
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "runs_unavailable"
+  end
+
+  test "run event storage failures are reported as unavailable rather than bad requests" do
+    Process.put(
+      :runs_router_events_error,
+      FavnOrchestrator.Persistence.Error.new(:internal, "internal persistence failure")
+    )
+
+    response = events_request("run-1")
+
+    assert response.status == 500
+
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) ==
+             "run_events_unavailable"
   end
 
   test "platform operator service token reaches run submission without actor headers" do
@@ -250,6 +296,14 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
 
   defp submit_request(actor \\ nil) do
     submit_request_with_headers(actor_headers(actor))
+  end
+
+  defp events_request(run_id) do
+    :get
+    |> conn("/#{run_id}/events")
+    |> put_req_header("authorization", "Bearer #{@token}")
+    |> put_req_header("x-favn-workspace-id", "workspace-a")
+    |> RunsRouter.call(RunsRouter.init([]))
   end
 
   defp submit_request_with_headers(headers) do
