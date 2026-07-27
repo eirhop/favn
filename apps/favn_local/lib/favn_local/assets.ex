@@ -27,7 +27,11 @@ defmodule FavnLocal.Assets do
         --input=assets/css/app.css
         --output=priv/static/assets/css/app.css
       ),
-      cd: view_root
+      cd: view_root,
+      env: %{
+        "FAVN_HEROICONS_PATH" => Path.join(deps_path, "heroicons/optimized"),
+        "NODE_PATH" => deps_path
+      }
     )
 
     Application.put_env(:esbuild, :version, @esbuild_version)

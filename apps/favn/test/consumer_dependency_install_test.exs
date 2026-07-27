@@ -3,10 +3,11 @@ defmodule Favn.ConsumerDependencyInstallTest do
 
   setup do
     base_dir =
-      Path.join(
-        System.tmp_dir!(),
+      Path.join([
+        Mix.Project.build_path(),
+        "test-artifacts",
         "favn_consumer_dependency_install_#{System.unique_integer([:positive])}"
-      )
+      ])
 
     snapshot_dir = Path.join(base_dir, "snapshot")
     consumer_dir = Path.join(base_dir, "consumer")
@@ -87,7 +88,42 @@ defmodule Favn.ConsumerDependencyInstallTest do
     assert {output, 0} = System.cmd("mix", ["deps.get"], cd: consumer_dir, stderr_to_stdout: true)
     refute output =~ "App favn lists itself as a dependency"
 
-    assert {_, 0} = System.cmd("mix", ["compile"], cd: consumer_dir, stderr_to_stdout: true)
+    assert {compile_output, 0} =
+             System.cmd("mix", ["compile"], cd: consumer_dir, stderr_to_stdout: true)
+
+    refute compile_output =~ "Can't resolve css_path"
+
+    {dev_output, dev_status} =
+      System.cmd("mix", ["favn.dev"],
+        cd: consumer_dir,
+        env: dev_env_overrides(),
+        stderr_to_stdout: true
+      )
+
+    assert dev_status != 0
+    assert dev_output =~ "missing required environment variable FAVN_DATABASE_URL"
+    refute dev_output =~ "Can't resolve css_path"
+    refute dev_output =~ "ENOENT"
+
+    view_root = Path.join([consumer_dir, "deps", "favn", "apps", "favn_view"])
+    assert File.stat!(Path.join(view_root, "priv/static/assets/css/app.css")).size > 0
+    assert File.stat!(Path.join(view_root, "priv/static/assets/js/app.js")).size > 0
+
+    hash_probe = """
+    hash = FavnView.Storybook.asset_hash(:css_path)
+
+    unless is_binary(hash) and byte_size(hash) > 0 do
+      raise "Storybook CSS hash is unavailable"
+    end
+    """
+
+    assert {_, 0} =
+             System.cmd(
+               "mix",
+               ["run", "--no-start", "--no-compile", "--eval", hash_probe],
+               cd: consumer_dir,
+               stderr_to_stdout: true
+             )
   end
 
   @tag :slow
@@ -198,6 +234,15 @@ defmodule Favn.ConsumerDependencyInstallTest do
     if Regex.match?(~r/^[A-Za-z]:\//, normalized),
       do: "file:///" <> normalized,
       else: "file://" <> normalized
+  end
+
+  defp dev_env_overrides do
+    empty_proxies =
+      for name <- ~w(HTTP_PROXY HTTPS_PROXY http_proxy https_proxy),
+          System.get_env(name) == "",
+          do: {name, nil}
+
+    [{"FAVN_DATABASE_URL", nil} | empty_proxies]
   end
 
   defp consumer_mix_exs(repo_url, ref) do

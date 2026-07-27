@@ -26,8 +26,9 @@ defmodule Mix.Tasks.Favn.Dev do
         scheduler: :boolean
       )
 
-    Mix.Task.run("compile")
     build_view_assets!()
+    recompile_view!()
+    Mix.Task.run("compile")
     print_start()
 
     case FavnLocal.dev(Keyword.put(opts, :progress_fun, &print_progress/1)) do
@@ -64,6 +65,37 @@ defmodule Mix.Tasks.Favn.Dev do
 
       _missing ->
         Mix.raise("failed to locate favn_view source assets")
+    end
+  end
+
+  defp recompile_view! do
+    mix = System.find_executable("mix") || Mix.raise("mix executable not found")
+
+    case System.cmd(mix, ["deps.compile", "favn_view"],
+           into: IO.stream(:stdio, :line),
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} ->
+        reload_storybook!()
+
+      {_output, status} ->
+        Mix.raise("failed to recompile favn_view after asset generation (exit #{status})")
+    end
+  end
+
+  defp reload_storybook! do
+    :code.purge(FavnView.Storybook)
+    :code.delete(FavnView.Storybook)
+
+    case Code.ensure_loaded(FavnView.Storybook) do
+      {:module, FavnView.Storybook} ->
+        case apply(FavnView.Storybook, :asset_hash, [:css_path]) do
+          hash when is_binary(hash) and byte_size(hash) > 0 -> :ok
+          _missing -> Mix.raise("favn_view Storybook CSS hash is unavailable after asset build")
+        end
+
+      {:error, reason} ->
+        Mix.raise("failed to reload favn_view Storybook after asset build: #{inspect(reason)}")
     end
   end
 

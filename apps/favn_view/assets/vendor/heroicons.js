@@ -3,7 +3,11 @@ const fs = require("fs")
 const path = require("path")
 
 module.exports = plugin(function({matchComponents, theme}) {
-  let iconsDir = path.join(__dirname, "../../../../deps/heroicons/optimized")
+  const iconsDir = process.env.FAVN_HEROICONS_PATH
+  if (!iconsDir) {
+    throw new Error("FAVN_HEROICONS_PATH must point to the Heroicons optimized directory")
+  }
+
   let values = {}
   let icons = [
     ["", "/24/outline"],

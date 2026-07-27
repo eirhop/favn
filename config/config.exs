@@ -38,7 +38,11 @@ config :tailwind,
       --input=assets/css/app.css
       --output=priv/static/assets/css/app.css
     ),
-    cd: Path.expand("../apps/favn_view", __DIR__)
+    cd: Path.expand("../apps/favn_view", __DIR__),
+    env: %{
+      "FAVN_HEROICONS_PATH" => Path.expand("../deps/heroicons/optimized", __DIR__),
+      "NODE_PATH" => Path.expand("../deps", __DIR__)
+    }
   ]
 
 config :argon2_elixir,
