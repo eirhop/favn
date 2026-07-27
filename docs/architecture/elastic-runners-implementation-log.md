@@ -658,3 +658,121 @@ repository workflows target pull requests and pushes to `main`.
 
 Evidence commit: this field is intentionally not self-recorded; see the
 checkpoint workflow in the implementation plan.
+
+## Phase 6: Operations and infrastructure deployment
+
+Status: approved and checkpointed
+
+Date: 2026-07-27
+
+### Implemented runtime and references
+
+- Added resident and elastic lifecycle modes. Resident runners park until an
+  explicit wake; elastic runners honor the control-plane idle grace exactly,
+  make one final claim, and exit. Pool names remain arbitrary user-defined
+  environment identities.
+- Added authenticated exact pool/release demand in JSON and OpenMetrics forms,
+  bounded telemetry labels, rate limiting, zero-runner readiness, and
+  all-partition capacity-projection health.
+- Added exact durable release-drain authority covering current runner tasks,
+  active pinned runs, and pending rebuild continuations. The bounded collection
+  diagnostic reports `partition_limit` and `truncated`; the exact authenticated
+  partition endpoint is the infrastructure-removal authority.
+- Preserved manifest rollback semantics: existing work keeps its frozen
+  pool/release map while newly submitted work follows the newly active map.
+- Rebuilt the local source-development lifecycle on production registration,
+  claim, result, and drain paths. A crashed retiring runner is restarted while
+  durable old-release blockers remain.
+- Implemented bounded OTP dynamic runner node names and production mutual-TLS
+  distribution enforcement. Real TLS peers connect, while a same-cookie
+  plaintext peer is rejected.
+- Added provider-neutral resident/job contracts plus reviewed Azure Container
+  Apps and Kubernetes/KEDA references. Favn core contains no provider SDK or
+  infrastructure credential.
+- Verified the current stable KEDA 2.20 metrics API and default ScaledJob
+  accounting contract. The reference keeps assigned work in `outstanding` and
+  explicitly uses the default strategy that subtracts running Jobs.
+
+### Review history
+
+The first phase review rejected eight issues: unbounded runner node naming,
+unsafe retirement after runner loss, incomplete Azure authentication and boot
+configuration, TLS files without enforced TLS transport, readiness that ignored
+stale capacity, runner-local wait overrides, insufficient conformance/rollback
+coverage, and unbounded unknown-release telemetry. All eight were corrected.
+
+The second review found one remaining high-severity boundary: readiness and
+operator drain diagnostics silently treated the first 256 historical
+partitions as the complete set. Readiness now uses one all-row aggregate health
+query, the collection diagnostic declares truncation, and safe removal uses an
+exact pool/release endpoint. A 300-partition regression proves the aggregate
+counts every row while the diagnostic remains bounded at 256; a separate
+readiness test proves an unhealthy aggregate fails readiness.
+
+Final reviewer verdict: approved with no remaining findings.
+
+### Phase 6 verification
+
+```text
+mix compile --warnings-as-errors
+  # passed
+
+targeted mix format --check-formatted for every Phase 6 Elixir file
+  # passed
+
+cd apps/favn_core
+mix test test/contracts/runner_task_test.exs \
+  test/deployment/runner_pool_spec_test.exs \
+  test/distribution_tls_test.exs
+  # 17 passed, including real mutual-TLS/plaintext rejection
+
+cd apps/favn_runner
+mix test test/production_runtime_config_test.exs test/runner_agent_test.exs
+  # 21 passed
+
+cd apps/favn_orchestrator
+mix test test/api/runner_capacity_router_test.exs \
+  test/readiness_runner_test.exs \
+  test/production_runtime_config_test.exs \
+  test/operation_runner_tasks_test.exs \
+  test/runner_registry_test.exs \
+  test/run_manager/cancellation_test.exs
+  # 37 passed
+
+cd apps/favn_storage_postgres
+mix test test/storage_v2/runner_tasks_test.exs \
+  test/storage_v2/run_submissions_test.exs \
+  test/storage_v2/runner_release_migration_test.exs
+  # 52 passed against a fresh disposable database
+
+mix test test/storage_v2/core_authority_test.exs:1730
+  # 1 passed, 81 excluded; rollback routing and frozen in-flight pins
+
+cd apps/favn
+mix test test/deployment_reference_conformance_test.exs
+  # 4 passed
+
+cd apps/favn_local
+mix test test/acceptance/docker_free_local_lifecycle_test.exs --include acceptance
+  # 1 passed against a fresh disposable database
+
+bicep 0.45.15 build deployment/azure-container-apps/control-plane.bicep
+bicep 0.45.15 build deployment/azure-container-apps/elastic-runner-job.bicep
+  # both passed without diagnostics
+```
+
+No full umbrella suite was run because the accepted plan reserves that gate for
+Phase 7. No live Azure or managed Kubernetes resources were created; those
+provider qualification gates remain explicitly external.
+
+Reviewed tree SHA: `1031b98217485b2644617e5884234b18a0915169`
+
+Reviewed content commit SHA:
+`88a3cb480fa81a1edb02b495ff45118933a9870b`
+
+Pushed branch CI: no GitHub Actions workflow run was triggered by the branch
+push (`gh run list --branch codex/elastic-runners` returned no runs); the
+repository workflows target pull requests and pushes to `main`.
+
+Evidence commit: this field is intentionally not self-recorded; see the
+checkpoint workflow in the implementation plan.
