@@ -202,28 +202,6 @@ defmodule Favn.CLI.OrchestratorClient do
     )
   end
 
-  @spec register_runner(String.t(), String.t(), session_context(), map()) ::
-          {:ok, map()} | {:error, term()}
-  def register_runner(base_url, service_token, session_context, payload)
-      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
-             is_map(payload) do
-    manifest_version_id =
-      Map.get(payload, :manifest_version_id) || Map.get(payload, "manifest_version_id")
-
-    if is_binary(manifest_version_id) and manifest_version_id != "" do
-      request_post(
-        :register_runner,
-        base_url <>
-          "/api/orchestrator/v1/manifests/#{URI.encode(manifest_version_id)}/runner/register",
-        service_token,
-        %{},
-        session_context
-      )
-    else
-      {:error, operation_error(:register_runner, :post, base_url, :missing_manifest_version_id)}
-    end
-  end
-
   @spec bootstrap_active_manifest(String.t(), String.t(), session_context()) ::
           {:ok, map()} | {:error, term()}
   def bootstrap_active_manifest(base_url, service_token, session_context)

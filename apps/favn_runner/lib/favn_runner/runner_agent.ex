@@ -11,12 +11,24 @@ defmodule FavnRunner.RunnerAgent do
   alias FavnRunner.ManifestStore
   alias FavnRunner.ReleaseVerifier
   alias FavnRunner.TaskExecutor
+  alias FavnRunner.TaskExecutor.Result, as: ExecutorResult
   alias FavnRunner.TaskResultBuffer
 
   @default_idle_grace_ms 15_000
   @default_lease_ms 30_000
   @log_flush_ms 1_000
   @mailbox_pressure_threshold 1_000
+  @supported_task_kinds Favn.Contracts.RunnerTask.task_kinds()
+  @capabilities [
+    "asset_execution",
+    "relation_inspection",
+    "generation_capabilities",
+    "generation_marker_read",
+    "generation_marker_initialize",
+    "generation_activate",
+    "generation_reconcile",
+    "generation_discard"
+  ]
 
   def start_link(opts) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -46,6 +58,7 @@ defmodule FavnRunner.RunnerAgent do
       assignment: nil,
       manifest_lease_id: nil,
       executor: nil,
+      executor_monitor: nil,
       pending_runtime_inputs: nil,
       idle_timer: nil,
       lease_timer: nil,
@@ -73,8 +86,8 @@ defmodule FavnRunner.RunnerAgent do
           runner_pool: state.runner_pool,
           required_runner_release_id: state.required_runner_release_id,
           lifecycle_mode: state.lifecycle_mode,
-          supported_task_kinds: [:asset_attempt],
-          capabilities: ["asset_execution"],
+          supported_task_kinds: @supported_task_kinds,
+          capabilities: @capabilities,
           active_assignment: active_assignment(state)
         }
 
@@ -115,8 +128,8 @@ defmodule FavnRunner.RunnerAgent do
       runner_session_generation: state.session_generation,
       runner_pool: state.runner_pool,
       required_runner_release_id: state.required_runner_release_id,
-      supported_task_kinds: [:asset_attempt],
-      capabilities: ["asset_execution"]
+      supported_task_kinds: @supported_task_kinds,
+      capabilities: @capabilities
     }
 
     case request(state, request) do
@@ -229,8 +242,29 @@ defmodule FavnRunner.RunnerAgent do
         {:runner_task_finished, executor, %RunnerResult{} = result},
         %{executor: executor, phase: :lease_lost} = state
       ) do
+    state = clear_executor_monitor(state)
     protocol_result = lease_lost_result(state.assignment, result)
     :ok = TaskResultBuffer.put_result(protocol_result)
+    send(self(), :deliver_result)
+    {:noreply, %{state | executor: nil, phase: :reporting}}
+  end
+
+  def handle_info(
+        {:runner_task_finished, executor, %ExecutorResult{}},
+        %{executor: executor, phase: :lease_lost} = state
+      ) do
+    state = clear_executor_monitor(state)
+    :ok = TaskResultBuffer.put_result(lease_lost_protocol_result(state.assignment))
+    send(self(), :deliver_result)
+    {:noreply, %{state | executor: nil, phase: :reporting}}
+  end
+
+  def handle_info(
+        {:runner_task_finished, executor, %ExecutorResult{} = result},
+        %{executor: executor} = state
+      ) do
+    state = clear_executor_monitor(state)
+    :ok = TaskResultBuffer.put_result(protocol_result(state.assignment, result))
     send(self(), :deliver_result)
     {:noreply, %{state | executor: nil, phase: :reporting}}
   end
@@ -239,10 +273,28 @@ defmodule FavnRunner.RunnerAgent do
         {:runner_task_finished, executor, %RunnerResult{} = result},
         %{executor: executor} = state
       ) do
+    state = clear_executor_monitor(state)
     protocol_result = protocol_result(state.assignment, result)
     :ok = TaskResultBuffer.put_result(protocol_result)
     send(self(), :deliver_result)
     {:noreply, %{state | executor: nil, phase: :reporting}}
+  end
+
+  def handle_info(
+        {:DOWN, monitor, :process, executor, reason},
+        %{executor: executor, executor_monitor: monitor, assignment: %RunnerTask.Assignment{}} =
+          state
+      ) do
+    result =
+      if state.phase == :lease_lost do
+        lease_lost_protocol_result(state.assignment)
+      else
+        executor_stopped_protocol_result(state.assignment, reason)
+      end
+
+    :ok = TaskResultBuffer.put_result(result)
+    send(self(), :deliver_result)
+    {:noreply, %{state | executor: nil, executor_monitor: nil, phase: :reporting}}
   end
 
   def handle_info(:deliver_result, %{assignment: assignment} = state)
@@ -319,18 +371,23 @@ defmodule FavnRunner.RunnerAgent do
              lease_id,
              assignment.lease_expires_at
            ),
-         %RunnerWork{} = work <- %{assignment.payload | manifest_lease_id: lease_id},
-         {:ok, state, work} <- resolve_runtime_inputs(state, assignment, work),
+         {:ok, state, payload} <- prepare_payload(state, assignment, lease_id),
          {:ok, _task} <- request(state, started_message(state, assignment)),
          {:ok, executor} <-
            DynamicSupervisor.start_child(
              FavnRunner.TaskExecutorSupervisor,
-             {TaskExecutor, assignment: assignment, work: work, owner: self()}
+             {TaskExecutor, assignment: assignment, payload: payload, owner: self()}
            ) do
       TaskResultBuffer.reset()
 
       {:noreply,
-       %{state | executor: executor, manifest_lease_id: lease_id, phase: :running}
+       %{
+         state
+         | executor: executor,
+           executor_monitor: Process.monitor(executor),
+           manifest_lease_id: lease_id,
+           phase: :running
+       }
        |> schedule_lease_renewal()
        |> schedule_log_flush()}
     else
@@ -350,6 +407,21 @@ defmodule FavnRunner.RunnerAgent do
         report_preparation_failure(state, assignment, lease_id, reason)
     end
   end
+
+  defp prepare_payload(
+         state,
+         %RunnerTask.Assignment{task_kind: :asset_attempt} = assignment,
+         lease_id
+       ) do
+    with %RunnerWork{} = work <- %{assignment.payload | manifest_lease_id: lease_id} do
+      resolve_runtime_inputs(state, assignment, work)
+    else
+      _invalid -> {:error, :invalid_asset_attempt_payload}
+    end
+  end
+
+  defp prepare_payload(state, %RunnerTask.Assignment{} = assignment, _lease_id),
+    do: {:ok, state, assignment.payload}
 
   defp resolve_runtime_inputs(
          %{pending_runtime_inputs: %RunnerTask.RuntimeInputsResolved{} = message} = state,
@@ -426,7 +498,7 @@ defmodule FavnRunner.RunnerAgent do
   end
 
   defp report_preparation_failure(state, assignment, lease_id, reason) do
-    result =
+    error =
       RunnerError.normalize(reason,
         phase: :runner_task_preparation,
         retryable?: true,
@@ -443,7 +515,7 @@ defmodule FavnRunner.RunnerAgent do
       outcome: :failed,
       retry_class: :safe_to_retry,
       result: nil,
-      error: result,
+      error: error,
       finished_at: DateTime.utc_now()
     }
 
@@ -487,6 +559,16 @@ defmodule FavnRunner.RunnerAgent do
 
   defp protocol_result(assignment, %RunnerResult{status: :ok} = result) do
     result_message(assignment, result, :succeeded, :terminal, nil)
+  end
+
+  defp protocol_result(assignment, %ExecutorResult{} = result) do
+    result_message(
+      assignment,
+      result.result,
+      result.outcome,
+      result.retry_class,
+      result.error
+    )
   end
 
   defp protocol_result(assignment, %RunnerResult{status: :cancelled, error: error} = result) do
@@ -649,8 +731,7 @@ defmodule FavnRunner.RunnerAgent do
         {:noreply, state}
       else
         if is_nil(TaskResultBuffer.pending_result()) do
-          result = lease_lost_runner_result(assignment.payload)
-          :ok = TaskResultBuffer.put_result(lease_lost_result(assignment, result))
+          :ok = TaskResultBuffer.put_result(lease_lost_protocol_result(assignment))
         end
 
         send(self(), :deliver_result)
@@ -717,6 +798,53 @@ defmodule FavnRunner.RunnerAgent do
     }
   end
 
+  defp lease_lost_protocol_result(%RunnerTask.Assignment{task_kind: :asset_attempt} = assignment) do
+    result = lease_lost_runner_result(assignment.payload)
+    lease_lost_result(assignment, result)
+  end
+
+  defp lease_lost_protocol_result(%RunnerTask.Assignment{} = assignment) do
+    retry_class = RunnerTask.default_retry_class(assignment.task_kind)
+
+    {outcome, error_outcome, retryable?} =
+      case retry_class do
+        :safe_to_retry -> {:failed, :safe_failure, true}
+        :reconcile_before_retry -> {:unknown, :unknown, false}
+      end
+
+    error =
+      RunnerError.new(
+        type: :runner_task_lease_lost,
+        phase: :runner_task_execution,
+        message: "Runner task lease expired before renewal was acknowledged",
+        retryable?: retryable?,
+        outcome: error_outcome
+      )
+
+    result_message(assignment, nil, outcome, retry_class, error)
+  end
+
+  defp executor_stopped_protocol_result(%RunnerTask.Assignment{} = assignment, reason) do
+    retry_class = RunnerTask.default_retry_class(assignment.task_kind)
+
+    {outcome, error_outcome, retryable?} =
+      case retry_class do
+        :safe_to_retry -> {:failed, :safe_failure, true}
+        :reconcile_before_retry -> {:unknown, :unknown, false}
+        :unknown_do_not_retry -> {:unknown, :unknown, false}
+      end
+
+    error =
+      RunnerError.normalize({:runner_task_executor_stopped, reason},
+        type: :runner_task_executor_stopped,
+        phase: :runner_task_execution,
+        retryable?: retryable?,
+        outcome: error_outcome
+      )
+
+    result_message(assignment, nil, outcome, retry_class, error)
+  end
+
   defp schedule_log_flush(state) do
     if state.log_timer, do: Process.cancel_timer(state.log_timer)
     %{state | log_timer: Process.send_after(self(), :flush_logs, @log_flush_ms)}
@@ -736,6 +864,7 @@ defmodule FavnRunner.RunnerAgent do
       | assignment: nil,
         manifest_lease_id: nil,
         executor: nil,
+        executor_monitor: nil,
         pending_runtime_inputs: nil,
         lease_timer: nil,
         log_timer: nil,
@@ -745,6 +874,14 @@ defmodule FavnRunner.RunnerAgent do
         phase: :idle
     }
   end
+
+  defp clear_executor_monitor(%{executor_monitor: monitor} = state)
+       when is_reference(monitor) do
+    Process.demonitor(monitor, [:flush])
+    %{state | executor_monitor: nil}
+  end
+
+  defp clear_executor_monitor(state), do: state
 
   defp active_assignment(%{assignment: nil}), do: nil
 

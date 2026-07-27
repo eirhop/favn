@@ -106,6 +106,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
       struct(Stores,
         registry: Store,
         runs: Store,
+        runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
         run_ownership: Store,
         scheduler: Store,
         admission: Store,
@@ -308,9 +309,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     assert decision.compatibility_status == :rebuild_required
     assert decision.reason_code == "incompatible_descriptor"
 
-    assert_received {:ensure_manifest, active_manifest_id}
-    assert active_manifest_id == active_version.manifest_version_id
-    assert_received {:register_manifest, ^active_manifest_id}
+    refute_received {:ensure_manifest, _active_manifest_id}
+    refute_received {:register_manifest, _active_manifest_id}
     assert_received {:inspect_relation, request}
     assert request.manifest_version_id == active_version.manifest_version_id
     assert request.asset_ref == active_asset.ref

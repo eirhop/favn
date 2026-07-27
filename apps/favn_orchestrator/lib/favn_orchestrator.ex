@@ -11,7 +11,6 @@ defmodule FavnOrchestrator do
 
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
-  alias Favn.Contracts.RunnerClient
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Auth
@@ -37,6 +36,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.OperatorCommands.PipelineBackfillRequest
   alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
   alias FavnOrchestrator.OperatorErrorDTO
+  alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
@@ -46,8 +46,6 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.RunManager
-  alias FavnOrchestrator.RunnerManifestRegistration
-  alias FavnOrchestrator.RunnerDispatch
   alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RunnerReplacement
   alias FavnOrchestrator.RunReadModel
@@ -57,7 +55,6 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunSubmission.AssetOptions
   alias FavnOrchestrator.RunSubmissions
   alias FavnOrchestrator.Runs
-  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Shutdown
   alias FavnOrchestrator.ScheduleListEntry
   alias FavnOrchestrator.ScheduleOccurrencePreview
@@ -250,45 +247,6 @@ defmodule FavnOrchestrator do
   def get_manifest(%WorkspaceContext{} = context, manifest_version_id)
       when is_binary(manifest_version_id) do
     ManifestStore.get_manifest(context, manifest_version_id)
-  end
-
-  @doc "Registers the workspace's active manifest release with the runner."
-  @spec register_manifest_with_runner(WorkspaceContext.t(), String.t()) ::
-          {:ok, map()} | {:error, term()}
-  def register_manifest_with_runner(%WorkspaceContext{} = context, manifest_version_id)
-      when is_binary(manifest_version_id) do
-    with {:ok, version} <- ManifestStore.get_active_manifest(context),
-         true <- version.manifest_version_id == manifest_version_id do
-      register_version_with_runner(version)
-    else
-      false -> {:error, :manifest_not_active_in_workspace}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp register_version_with_runner(%Version{} = version) do
-    runner_client = configured_runner_client()
-    runner_opts = configured_runner_opts()
-    manifest_version_id = version.manifest_version_id
-
-    with :ok <- validate_runner_client(runner_client),
-         :ok <- RunnerReleaseCompatibility.verify_runner(runner_client, version, runner_opts) do
-      content_hash = version.content_hash
-
-      case RunnerManifestRegistration.ensure(runner_client, version, runner_opts) do
-        :ok ->
-          {:ok, runner_manifest_registration(version, runner_client, :accepted)}
-
-        {:error, {:manifest_version_conflict, ^manifest_version_id, ^content_hash, ^content_hash}} ->
-          {:ok, runner_manifest_registration(version, runner_client, :already_registered)}
-
-        {:error, {:manifest_version_conflict, ^manifest_version_id, _existing, _incoming}} ->
-          {:error, :runner_manifest_conflict}
-
-        {:error, reason} ->
-          {:error, runner_registration_error(reason)}
-      end
-    end
   end
 
   @doc "Returns customer-visible asset catalogue entries for an operator workspace."
@@ -1036,44 +994,45 @@ defmodule FavnOrchestrator do
              :asset,
              target_id
            ),
-         {:ok, result} <- inspect_manifest_asset_version(version, target_id, opts) do
+         {:ok, result} <- inspect_manifest_asset_version(context, version, target_id, opts) do
       {:ok, result}
     end
   end
 
-  defp inspect_manifest_asset_version(%Version{} = version, target_id, opts) do
+  defp inspect_manifest_asset_version(
+         %WorkspaceContext{} = context,
+         %Version{} = version,
+         target_id,
+         opts
+       ) do
     with manifest_version_id <- version.manifest_version_id,
          {:ok, asset_ref} <- ManifestTarget.resolve_asset_ref(version, target_id),
-         :ok <- validate_runner_client(configured_runner_client()),
-         :ok <-
-           RunnerReleaseCompatibility.verify_runner(
-             configured_runner_client(),
-             version,
-             configured_runner_opts()
-           ),
-         :ok <-
-           RunnerManifestRegistration.ensure(
-             configured_runner_client(),
-             version,
-             configured_runner_opts()
-           ) do
+         {:ok, binding} <- OperationRunnerTasks.binding(version, asset_ref) do
       request = %RelationInspectionRequest{
         manifest_version_id: manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: Version.transitional_default_release!(version),
+        required_runner_release_id: binding.required_runner_release_id,
         asset_ref: asset_ref,
         sample_limit: Keyword.get(opts, :sample_limit, 20)
       }
 
-      case RunnerDispatch.inspect_relation(
-             configured_runner_client(),
+      identity =
+        {:operator_inspection, target_id,
+         context.request_id || Keyword.get(opts, :request_id) || unique_runner_task_identity()}
+
+      case OperationRunnerTasks.ensure_and_await(
+             context,
+             version,
+             asset_ref,
+             :relation_inspection,
              request,
-             configured_runner_opts()
+             identity,
+             timeout: Keyword.get(opts, :timeout, 300_000)
            ) do
         {:ok, %RelationInspectionResult{} = result} ->
           with :ok <-
                  RunnerReleaseCompatibility.verify_inspection_result(
-                   Version.transitional_default_release!(version),
+                   binding.required_runner_release_id,
                    result
                  ) do
             {:ok, result}
@@ -1306,6 +1265,10 @@ defmodule FavnOrchestrator do
   defp new_run_id do
     suffix = 16 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
     "run_#{suffix}"
+  end
+
+  defp unique_runner_task_identity do
+    16 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
   end
 
   defp remaining_retry_opts(plan, child, opts) do
@@ -1684,58 +1647,8 @@ defmodule FavnOrchestrator do
     }
   end
 
-  defp configured_runner_client do
-    RuntimeConfig.current().runner_client
-  end
-
-  defp configured_runner_opts do
-    RuntimeConfig.current().runner_client_opts
-  end
-
   defp maybe_put_runtime_input_lineage(metadata, []), do: metadata
 
   defp maybe_put_runtime_input_lineage(metadata, pins),
     do: Map.put(metadata, :runtime_input_lineage, Enum.map(pins, &Pin.lineage/1))
-
-  defp validate_runner_client(module) when is_atom(module) do
-    callbacks =
-      RunnerClient.behaviour_info(:callbacks) -- RunnerClient.behaviour_info(:optional_callbacks)
-
-    with {:module, ^module} <- Code.ensure_loaded(module),
-         true <-
-           Enum.all?(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end) do
-      :ok
-    else
-      _ -> {:error, :runner_client_not_available}
-    end
-  end
-
-  defp validate_runner_client(_module), do: {:error, :runner_client_not_available}
-
-  defp runner_manifest_registration(%Version{} = version, runner_client, status) do
-    %{
-      manifest_version_id: version.manifest_version_id,
-      content_hash: version.content_hash,
-      runner_client: atom_name(runner_client),
-      status: atom_name(status)
-    }
-  end
-
-  defp runner_registration_error(:runner_client_not_available), do: :runner_client_not_available
-  defp runner_registration_error({:runner_node_unreachable, _node}), do: :runner_unavailable
-  defp runner_registration_error({:runner_node_ignored, _node}), do: :runner_unavailable
-
-  defp runner_registration_error({:runner_function_undefined, _module, _function, _arity}),
-    do: :runner_client_not_available
-
-  defp runner_registration_error({:runner_dispatch_failed, _details}), do: :runner_unavailable
-
-  defp runner_registration_error({:manifest_version_conflict, _id, _existing, _incoming}),
-    do: :runner_manifest_conflict
-
-  defp runner_registration_error(_reason), do: :runner_unavailable
-
-  defp atom_name(nil), do: nil
-  defp atom_name(value) when is_atom(value), do: Atom.to_string(value)
-  defp atom_name(value), do: to_string(value)
 end

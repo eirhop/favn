@@ -274,29 +274,6 @@ defmodule Favn.CLI.OrchestratorClientTest do
     assert_receive {:request_path, "/api/orchestrator/v1/health"}
   end
 
-  test "register_runner/4 sends the workspace actor context" do
-    parent = self()
-
-    {:ok, base_url, _server} =
-      start_server(~s({"data":{"registration":{"manifest_version_id":"mv_1"}}}), 200,
-        parent: parent
-      )
-
-    assert {:ok, %{"data" => %{"registration" => %{"manifest_version_id" => "mv_1"}}}} =
-             OrchestratorClient.register_runner(
-               base_url,
-               "token",
-               session_context(),
-               %{manifest_version_id: "mv_1"}
-             )
-
-    assert_receive {:request_path, "/api/orchestrator/v1/manifests/mv_1/runner/register"}
-    assert_receive {:request_body, body}
-    assert body == "{}"
-    assert_receive {:request_headers, headers}
-    assert headers["x-favn-workspace-id"] == "workspace-1"
-  end
-
   test "activate_manifest_service/4 sends workspace authority without actor credentials" do
     parent = self()
 

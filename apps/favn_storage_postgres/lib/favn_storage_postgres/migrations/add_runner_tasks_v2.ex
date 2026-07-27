@@ -253,7 +253,7 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
       constraint(:runner_task_commands, :runner_task_commands_values_valid,
         prefix: @prefix,
         check:
-          "octet_length(scope_id) BETWEEN 1 AND 255 AND octet_length(command_id) BETWEEN 1 AND 255 AND operation IN ('enqueue','claim','transition','runtime_inputs','append_log_batch','complete','request_cancellation','acknowledge_cancellation','release','recover_expired','reconcile_demand') AND octet_length(request_hash) = 32 AND pg_column_size(result) <= 262144"
+          "octet_length(scope_id) BETWEEN 1 AND 255 AND octet_length(command_id) BETWEEN 1 AND 255 AND operation IN ('enqueue','claim','transition','runtime_inputs','append_log_batch','complete','request_cancellation','acknowledge_cancellation','release','retry','recover_expired','reconcile_demand') AND octet_length(request_hash) = 32 AND pg_column_size(result) <= 262144"
       )
     )
   end

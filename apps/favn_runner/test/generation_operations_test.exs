@@ -3,6 +3,8 @@ defmodule FavnRunner.GenerationOperationsTest do
 
   alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
+  alias Favn.Contracts.GenerationCapabilitiesRequest
+  alias Favn.Contracts.GenerationCapabilitiesResult
   alias Favn.Contracts.GenerationActivationRequest
   alias Favn.Contracts.GenerationActivationResult
   alias Favn.Contracts.GenerationDiscardRequest
@@ -11,6 +13,7 @@ defmodule FavnRunner.GenerationOperationsTest do
   alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Contracts.GenerationReconciliationRequest
   alias Favn.Contracts.GenerationReconciliationResult
+  alias Favn.Contracts.RunnerTask.Assignment
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Graph
@@ -18,6 +21,8 @@ defmodule FavnRunner.GenerationOperationsTest do
   alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.SQL.GenerationRelation
+  alias FavnRunner.TaskExecutor
+  alias FavnRunner.TaskExecutor.Result
 
   @previous_generation_id "018f47a0-7b0d-4b1a-8d8b-e18a9a987654"
   @candidate_generation_id "018f47a0-7b0d-4b1a-8d8b-e18a9a987655"
@@ -59,6 +64,8 @@ defmodule FavnRunner.GenerationOperationsTest do
 
     @impl Favn.SQL.GenerationAdapter
     def generation_capabilities(%Resolved{}, _opts) do
+      notify_operation(:generation_capabilities)
+
       {:ok,
        %GenerationCapabilities{
          transactional_ddl: :supported,
@@ -76,6 +83,8 @@ defmodule FavnRunner.GenerationOperationsTest do
 
     @impl Favn.SQL.GenerationAdapter
     def initialize_generation_marker(:generation_conn, request, _opts) do
+      notify_operation(:generation_marker_initialize)
+
       marker = %GenerationMarker{
         logical_target_id: request.logical_target_id,
         active_relation: request.stable_relation,
@@ -95,26 +104,49 @@ defmodule FavnRunner.GenerationOperationsTest do
        }}
     end
 
+    defp notify_operation(kind) do
+      case Application.get_env(:favn_runner, :generation_operations_test_observer) do
+        {owner, :block} when is_pid(owner) ->
+          send(owner, {:generation_operation_started, kind, self()})
+
+          receive do
+            {:release_generation_operation, ^kind} -> :ok
+          end
+
+        owner when is_pid(owner) ->
+          send(owner, {:generation_operation_started, kind, self()})
+
+        _other ->
+          :ok
+      end
+    end
+
     @impl Favn.SQL.GenerationAdapter
     def activate_generation(:generation_conn, request, _opts) do
-      marker = %GenerationMarker{
-        logical_target_id: request.logical_target_id,
-        active_relation: request.stable_relation,
-        active_generation_id: request.candidate_generation_id,
-        activation_operation_id: request.activation_operation_id,
-        activation_token: request.activation_token,
-        activated_at: request.activated_at
-      }
+      case Application.get_env(:favn_runner, :generation_operations_test_activation_error) do
+        nil ->
+          marker = %GenerationMarker{
+            logical_target_id: request.logical_target_id,
+            active_relation: request.stable_relation,
+            active_generation_id: request.candidate_generation_id,
+            activation_operation_id: request.activation_operation_id,
+            activation_token: request.activation_token,
+            activated_at: request.activated_at
+          }
 
-      Application.put_env(:favn_runner, :generation_operations_test_marker, marker)
+          Application.put_env(:favn_runner, :generation_operations_test_marker, marker)
 
-      {:ok,
-       %GenerationActivationResult{
-         marker: marker,
-         candidate_fingerprint: request.expected_candidate_fingerprint,
-         physical_fingerprint: String.duplicate("d", 64),
-         inspection: inspection(request.stable_relation)
-       }}
+          {:ok,
+           %GenerationActivationResult{
+             marker: marker,
+             candidate_fingerprint: request.expected_candidate_fingerprint,
+             physical_fingerprint: String.duplicate("d", 64),
+             inspection: inspection(request.stable_relation)
+           }}
+
+        %Favn.SQL.Error{} = error ->
+          {:error, error}
+      end
     end
 
     @impl Favn.SQL.GenerationAdapter
@@ -175,6 +207,7 @@ defmodule FavnRunner.GenerationOperationsTest do
     Application.delete_env(:favn_runner, :generation_operations_test_marker)
     Application.delete_env(:favn_runner, :generation_operations_test_discard_error)
     Application.delete_env(:favn_runner, :generation_operations_test_reconciliation_request)
+    Application.delete_env(:favn_runner, :generation_operations_test_activation_error)
 
     Registry.reload(
       %{
@@ -192,6 +225,7 @@ defmodule FavnRunner.GenerationOperationsTest do
       Application.delete_env(:favn_runner, :generation_operations_test_marker)
       Application.delete_env(:favn_runner, :generation_operations_test_discard_error)
       Application.delete_env(:favn_runner, :generation_operations_test_reconciliation_request)
+      Application.delete_env(:favn_runner, :generation_operations_test_activation_error)
 
       Registry.reload(Map.new(previous, &{&1.name, &1}),
         registry_name: FavnRunner.ConnectionRegistry
@@ -325,6 +359,249 @@ defmodule FavnRunner.GenerationOperationsTest do
     assert capabilities.atomic_swap == :supported
   end
 
+  test "durable task executor runs generation reads through the registered manifest" do
+    {version, asset} = registered_target()
+
+    payload = %GenerationCapabilitiesRequest{
+      manifest: %{version | manifest: nil},
+      asset_ref: asset.ref
+    }
+
+    assignment = %Assignment{
+      command_id: "claim-generation-capabilities",
+      workspace_id: "workspace-generation-capabilities",
+      task_id: "rt_generation_capabilities",
+      task_kind: :generation_capabilities,
+      runner_instance_id: "runner-generation-capabilities",
+      runner_session_generation: 1,
+      assignment_generation: 1,
+      runner_pool: "default",
+      required_runner_release_id: version.required_runner_release_id,
+      lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
+      retry_class: :safe_to_retry,
+      payload: payload
+    }
+
+    assert {:ok, executor} =
+             TaskExecutor.start_link(assignment: assignment, payload: payload, owner: self())
+
+    assert_receive {:runner_task_finished, ^executor,
+                    %Result{
+                      outcome: :succeeded,
+                      retry_class: :terminal,
+                      result: %GenerationCapabilitiesResult{capabilities: capabilities}
+                    }}
+
+    assert capabilities.atomic_swap == :supported
+  end
+
+  test "a temporary executor child performs one external operation and is not restarted" do
+    {version, asset} = registered_target()
+    Application.put_env(:favn_runner, :generation_operations_test_observer, self())
+
+    on_exit(fn ->
+      Application.delete_env(:favn_runner, :generation_operations_test_observer)
+    end)
+
+    payload = %GenerationCapabilitiesRequest{
+      manifest: %{version | manifest: nil},
+      asset_ref: asset.ref
+    }
+
+    assignment = generation_assignment(version, payload)
+
+    {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+    assert {:ok, executor} =
+             DynamicSupervisor.start_child(
+               supervisor,
+               {TaskExecutor, assignment: assignment, payload: payload, owner: self()}
+             )
+
+    monitor = Process.monitor(executor)
+    assert_receive {:generation_operation_started, :generation_capabilities, _worker}
+    assert_receive {:runner_task_finished, ^executor, %Result{outcome: :succeeded}}
+    assert_receive {:DOWN, ^monitor, :process, ^executor, :normal}
+    refute_receive {:generation_operation_started, :generation_capabilities, _worker}, 100
+  end
+
+  test "killing an executor also terminates its owned operation process" do
+    {version, asset} = registered_target()
+    Application.put_env(:favn_runner, :generation_operations_test_observer, {self(), :block})
+
+    on_exit(fn ->
+      Application.delete_env(:favn_runner, :generation_operations_test_observer)
+    end)
+
+    payload = %GenerationCapabilitiesRequest{
+      manifest: %{version | manifest: nil},
+      asset_ref: asset.ref
+    }
+
+    assignment = generation_assignment(version, payload)
+    {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+    assert {:ok, executor} =
+             DynamicSupervisor.start_child(
+               supervisor,
+               {TaskExecutor, assignment: assignment, payload: payload, owner: self()}
+             )
+
+    assert_receive {:generation_operation_started, :generation_capabilities, worker}
+    executor_monitor = Process.monitor(executor)
+    worker_monitor = Process.monitor(worker)
+
+    Process.exit(executor, :kill)
+
+    assert_receive {:DOWN, ^executor_monitor, :process, ^executor, :killed}
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, reason}
+    assert reason in [:killed, :kill]
+    refute Process.alive?(worker)
+  end
+
+  test "an assigned non-default pool uses its exact release and ignores the default release" do
+    {version, asset} = registered_target_for_exact_pool()
+
+    payload = %GenerationCapabilitiesRequest{
+      manifest: %{version | manifest: nil},
+      asset_ref: asset.ref
+    }
+
+    assignment = %{
+      generation_assignment(version, payload)
+      | runner_pool: "duckdb_image",
+        required_runner_release_id: FavnTestSupport.runner_release_id()
+    }
+
+    assert {:ok, executor} =
+             TaskExecutor.start_link(assignment: assignment, payload: payload, owner: self())
+
+    assert_receive {:runner_task_finished, ^executor,
+                    %Result{
+                      outcome: :succeeded,
+                      result: %GenerationCapabilitiesResult{}
+                    }}
+  end
+
+  test "operation interruption is safe to retry for reads and unknown for writes" do
+    {version, asset} = registered_target()
+    Application.put_env(:favn_runner, :generation_operations_test_observer, {self(), :block})
+
+    on_exit(fn ->
+      Application.delete_env(:favn_runner, :generation_operations_test_observer)
+    end)
+
+    read_payload = %GenerationCapabilitiesRequest{
+      manifest: %{version | manifest: nil},
+      asset_ref: asset.ref
+    }
+
+    read_assignment = generation_assignment(version, read_payload)
+
+    assert {:ok, read_executor} =
+             TaskExecutor.start_link(
+               assignment: read_assignment,
+               payload: read_payload,
+               owner: self()
+             )
+
+    assert_receive {:generation_operation_started, :generation_capabilities, read_worker}
+    Process.exit(read_worker, :kill)
+
+    assert_receive {:runner_task_finished, ^read_executor,
+                    %Result{outcome: :failed, retry_class: :safe_to_retry}}
+
+    write_payload = initialization_request(version, asset)
+
+    write_assignment = %{
+      generation_assignment(version, write_payload)
+      | task_id: "rt_generation_initialize",
+        task_kind: :generation_marker_initialize,
+        retry_class: :reconcile_before_retry,
+        payload: write_payload
+    }
+
+    assert {:ok, write_executor} =
+             TaskExecutor.start_link(
+               assignment: write_assignment,
+               payload: write_payload,
+               owner: self()
+             )
+
+    assert_receive {:generation_operation_started, :generation_marker_initialize, _adapter_worker}
+    Process.exit(:sys.get_state(write_executor).worker, :kill)
+
+    assert_receive {:runner_task_finished, ^write_executor,
+                    %Result{outcome: :unknown, retry_class: :reconcile_before_retry}}
+  end
+
+  test "adapter-proven safe generation failures enter the durable retry lifecycle" do
+    {version, asset} = registered_target()
+
+    initialization = initialization_request(version, asset)
+    assert {:ok, initialized} = FavnRunner.initialize_generation_marker(initialization)
+
+    payload = activation_request(version, asset, initialized.observed_marker)
+
+    Application.put_env(
+      :favn_runner,
+      :generation_operations_test_activation_error,
+      %Favn.SQL.Error{
+        type: :execution_error,
+        message: "activation failed before commit",
+        retryable?: false,
+        details: %{transaction_stage: :prepare}
+      }
+    )
+
+    assignment = %{
+      generation_assignment(version, payload)
+      | task_id: "rt_generation_activation_safe_failure",
+        task_kind: :generation_activate,
+        retry_class: :reconcile_before_retry,
+        payload: payload
+    }
+
+    assert {:ok, executor} =
+             TaskExecutor.start_link(assignment: assignment, payload: payload, owner: self())
+
+    assert_receive {:runner_task_finished, ^executor,
+                    %Result{
+                      outcome: :failed,
+                      retry_class: :safe_to_retry,
+                      result: nil,
+                      error: %{outcome: :safe_failure, retryable?: true}
+                    }}
+  end
+
+  test "cancelling an operation remains responsive and conservatively classifies writes" do
+    {version, asset} = registered_target()
+    Application.put_env(:favn_runner, :generation_operations_test_observer, {self(), :block})
+
+    on_exit(fn ->
+      Application.delete_env(:favn_runner, :generation_operations_test_observer)
+    end)
+
+    payload = initialization_request(version, asset)
+
+    assignment = %{
+      generation_assignment(version, payload)
+      | task_id: "rt_generation_initialize_cancel",
+        task_kind: :generation_marker_initialize,
+        retry_class: :reconcile_before_retry,
+        payload: payload
+    }
+
+    assert {:ok, executor} =
+             TaskExecutor.start_link(assignment: assignment, payload: payload, owner: self())
+
+    assert_receive {:generation_operation_started, :generation_marker_initialize, _worker}
+    assert :ok = TaskExecutor.cancel(executor, :operator_request)
+
+    assert_receive {:runner_task_finished, ^executor,
+                    %Result{outcome: :unknown, retry_class: :reconcile_before_retry}}
+  end
+
   defp registered_target do
     ref = {MyApp.GenerationTarget, :asset}
     relation = RelationRef.new!(connection: :generation_warehouse, schema: "main", name: "target")
@@ -368,6 +645,100 @@ defmodule FavnRunner.GenerationOperationsTest do
 
     :ok = FavnRunner.register_manifest(version)
     {version, hd(version.manifest.assets)}
+  end
+
+  defp registered_target_for_exact_pool do
+    ref = {MyApp.ExactPoolGenerationTarget, :asset}
+    relation = RelationRef.new!(connection: :generation_warehouse, schema: "main", name: "target")
+
+    asset = %Asset{
+      ref: ref,
+      module: elem(ref, 0),
+      name: elem(ref, 1),
+      type: :sql,
+      relation: relation,
+      materialization: :table,
+      runner_pool: :duckdb_image,
+      execution_package_hash: String.duplicate("a", 64)
+    }
+
+    descriptor =
+      TargetDescriptor.from_asset(Map.from_struct(asset),
+        connection_definitions: %{
+          generation_warehouse: %{adapter: Adapter, module: __MODULE__}
+        },
+        manifest_schema_version: 14,
+        runner_contract_version: 13
+      )
+
+    asset = %{asset | target_descriptor: descriptor}
+
+    default_ref = {MyApp.DefaultPoolGenerationTarget, :asset}
+
+    default_asset = %Asset{
+      asset
+      | ref: default_ref,
+        module: elem(default_ref, 0),
+        name: elem(default_ref, 1),
+        runner_pool: nil,
+        execution_package_hash: String.duplicate("b", 64),
+        relation: %{relation | name: "default_target"}
+    }
+
+    default_asset = %{
+      default_asset
+      | target_descriptor:
+          TargetDescriptor.from_asset(Map.from_struct(default_asset),
+            connection_definitions: %{
+              generation_warehouse: %{adapter: Adapter, module: __MODULE__}
+            },
+            manifest_schema_version: 14,
+            runner_contract_version: 13
+          )
+    }
+
+    manifest = %Manifest{
+      schema_version: 14,
+      runner_contract_version: 13,
+      runner_releases: %{
+        "default" => FavnTestSupport.runner_release_id(:alternate),
+        "duckdb_image" => FavnTestSupport.runner_release_id()
+      },
+      assets: [asset, default_asset],
+      graph: %Graph{nodes: [ref, default_ref], topo_order: [ref, default_ref]}
+    }
+
+    {:ok, version} =
+      Version.new(manifest,
+        manifest_version_id:
+          "mv_exact_pool_generation_" <>
+            Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+      )
+
+    :ok =
+      FavnRunner.ManifestStore.register_for_release(
+        version,
+        FavnTestSupport.runner_release_id()
+      )
+
+    {version, hd(version.manifest.assets)}
+  end
+
+  defp generation_assignment(version, payload) do
+    %Assignment{
+      command_id: "claim-generation-capabilities",
+      workspace_id: "workspace-generation-capabilities",
+      task_id: "rt_generation_capabilities_" <> Base.encode16(:crypto.strong_rand_bytes(4)),
+      task_kind: :generation_capabilities,
+      runner_instance_id: "runner-generation-capabilities",
+      runner_session_generation: 1,
+      assignment_generation: 1,
+      runner_pool: "default",
+      required_runner_release_id: version.required_runner_release_id,
+      lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
+      retry_class: :safe_to_retry,
+      payload: payload
+    }
   end
 
   defp initialization_request(version, asset) do

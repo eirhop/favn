@@ -163,6 +163,20 @@ defmodule FavnOrchestrator.Persistence.Commands.ReleaseRunnerTask do
   @type t :: %__MODULE__{}
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.RetryRunnerTask do
+  @moduledoc "Requeues one terminal task only when its persisted outcome proves retry safety."
+  @enforce_keys [
+    :workspace_context,
+    :command_id,
+    :task_id,
+    :expected_assignment_generation,
+    :expected_result_version,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+  @type t :: %__MODULE__{}
+end
+
 defmodule FavnOrchestrator.Persistence.Commands.RecoverRunnerTasks do
   @moduledoc "Claims a bounded platform-global batch of expired assignments for recovery."
   @enforce_keys [:platform_context, :command_id, :owner_id, :occurred_at]

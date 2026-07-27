@@ -105,8 +105,7 @@ defmodule FavnOrchestrator.ReadinessRunnerTest do
              :scheduler,
              :lifecycle,
              :runner_connection,
-             :runner_release,
-             :active_manifests
+             :runner_release
            ]
   end
 
@@ -139,49 +138,13 @@ defmodule FavnOrchestrator.ReadinessRunnerTest do
     assert %{status: :error, error: :runner_not_ready} = runner_check(:runner_release)
   end
 
-  test "active-manifest readiness accepts undeployed workspaces and rejects malformed snapshots" do
-    Application.put_env(:favn_orchestrator, :workspace_ids, ["empty"])
-
-    runner_snapshot =
-      {:ok,
-       %{
-         available?: true,
-         ready?: true,
-         status: :ready,
-         runner_release_id: FavnTestSupport.runner_release_id(),
-         favn_version: Favn.RunnerRelease.current_favn_version(),
-         runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
-         identity_source: :operator,
-         node_name: "runner@runner.internal"
-       }}
-
-    valid = %{checked: 1, aligned: 0, inactive: 1, failed: 0, manifests: []}
-
-    assert %{status: :ok, details: %{active_manifest_count: 0}} =
-             active_manifest_check(runner_snapshot, {:ok, valid})
-
-    assert %{status: :error, error: :invalid_active_manifest_reconciliation} =
-             active_manifest_check(runner_snapshot, {:ok, %{valid | checked: 0}})
-  end
-
   defp runner_check(name) do
     Readiness.readiness(
       runner_snapshot:
         Application.fetch_env!(:favn_orchestrator, :readiness_test_runner_diagnostics),
-      active_manifest_snapshot: {:ok, %{manifests: []}},
       storage_snapshot: {:error, :not_used}
     )
     |> Map.fetch!(:checks)
     |> Enum.find(&(&1.name == name))
-  end
-
-  defp active_manifest_check(runner_snapshot, active_manifest_snapshot) do
-    Readiness.readiness(
-      runner_snapshot: runner_snapshot,
-      active_manifest_snapshot: active_manifest_snapshot,
-      storage_snapshot: {:error, :not_used}
-    )
-    |> Map.fetch!(:checks)
-    |> Enum.find(&(&1.name == :active_manifests))
   end
 end

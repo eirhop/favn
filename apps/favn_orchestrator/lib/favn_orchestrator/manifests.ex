@@ -8,7 +8,6 @@ defmodule FavnOrchestrator.Manifests do
 
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestStore
-  alias FavnOrchestrator.ActiveManifestReconciler
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Operator.Catalogue.Targets
@@ -67,7 +66,6 @@ defmodule FavnOrchestrator.Manifests do
         end
 
       emit_activation_result(context, manifest_version_id, result)
-      if match?({:ok, %RuntimeState{}}, result), do: ActiveManifestReconciler.refresh()
       result
     end)
   end

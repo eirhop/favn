@@ -127,6 +127,8 @@ defmodule FavnStoragePostgres.Schemas.RebuildPlanAction do
     field(:upstream_impact, :map)
     field(:mapping_proof, :map)
     field(:pinned_input_generation_ids, {:array, :map})
+    field(:runner_pool, :string)
+    field(:required_runner_release_id, :string)
     field(:candidate_generation_id, Ecto.UUID)
     field(:status, :string)
     field(:child_operation_id, :string)

@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
+  alias Favn.Contracts.GenerationCapabilitiesRequest
   alias Favn.Manifest
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
@@ -26,6 +27,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.BackfillMissingProjection
   alias FavnOrchestrator.Persistence.Commands.AppendBackfillPlanBatch
   alias FavnOrchestrator.Persistence.Commands.BackfillPlanWindow
+  alias FavnOrchestrator.Persistence.Commands.BeginRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.CommitRunTransition
   alias FavnOrchestrator.Persistence.Commands.AdvanceRunnerExecution
   alias FavnOrchestrator.Persistence.Commands.ClaimRun
@@ -56,6 +58,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.EnsureWritableTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.BeginTargetRecovery
   alias FavnOrchestrator.Persistence.Commands.EnqueueRunSubmission
+  alias FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask
   alias FavnOrchestrator.Persistence.Commands.ReconcileInitialTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.AppendLogBatch
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
@@ -63,6 +66,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.PurgeLogs
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
   alias FavnOrchestrator.Persistence.Commands.RenewMaterializationClaim
+  alias FavnOrchestrator.Persistence.Commands.RenewRebuildOperationLease
   alias FavnOrchestrator.Persistence.Commands.RenewRunOwnership
   alias FavnOrchestrator.Persistence.Commands.ClaimDueSchedules
   alias FavnOrchestrator.Persistence.Commands.ClaimScheduleOccurrences
@@ -95,6 +99,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetSession
   alias FavnOrchestrator.Persistence.Queries.GetRun
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeInputs
+  alias FavnOrchestrator.Persistence.Queries.GetRunnerTask
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
   alias FavnOrchestrator.Persistence.Queries.GetMaterializations
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
@@ -168,8 +173,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.RuntimeInputKeyInventory
   alias FavnStoragePostgres.RunOwnership.Store, as: RunOwnershipStore
   alias FavnStoragePostgres.RunSubmissions.Store, as: RunSubmissionStore
+  alias FavnStoragePostgres.RunnerTasks.Codec, as: RunnerTaskCodec
+  alias FavnStoragePostgres.RunnerTasks.Store, as: RunnerTaskStore
   alias FavnStoragePostgres.Runs.Store, as: RunStore
   alias FavnStoragePostgres.Schemas.ManifestVersion, as: ManifestVersionRow
+  alias FavnStoragePostgres.Schemas.RebuildOperation, as: RebuildOperationRow
   alias FavnStoragePostgres.Schemas.RuntimeInputPin, as: RuntimeInputPinRow
   alias FavnStoragePostgres.Scheduler.Store, as: SchedulerStore
   alias FavnStoragePostgres.TargetGenerations.Store, as: TargetGenerationStore
@@ -335,6 +343,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       target_id: fixture.target_id,
       ordinal: 0,
       action: :rebuild,
+      runner_pool: "default",
+      required_runner_release_id: fixture.version.required_runner_release_id,
       reason: %{reason_code: "test_rebuild"},
       upstream_impact: %{},
       pinned_input_generation_ids: [],
@@ -405,17 +415,121 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       actions: [action],
       items: [item],
       occurred_at: occurred_at,
+      idempotency: nil
+    }
+
+    planning_payload = %{
+      schema_version: 1,
+      status: :planning,
+      operation_id: operation_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      manifest_content_hash: fixture.version.content_hash,
+      deployment_id: fixture.deployment_id
+    }
+
+    begin = %BeginRebuildPlan{
+      workspace_context: fixture.workspace_context,
+      command_id: "rebuild:begin:" <> fixture.workspace_id,
+      operation_id: operation_id,
+      root_target_id: fixture.target_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      planning_hash: RebuildPlan.hash(planning_payload),
+      planning_payload: planning_payload,
+      actor_id: fixture.workspace_context.principal_id,
+      reason: "test immutable rebuild",
+      idempotency_key: operation_id,
+      evaluated_at: occurred_at,
+      occurred_at: occurred_at,
       idempotency: plan_idempotency
     }
+
+    assert {:ok, planning} = RebuildStore.begin_plan(begin)
+    assert planning.state == :planning
+    assert planning.action_count == 0
+    assert planning.window_count == 0
+
+    planning_cancel_operation_id = "rebuild-planning-cancel:" <> fixture.workspace_id
+
+    planning_cancel_payload = %{
+      planning_payload
+      | operation_id: planning_cancel_operation_id
+    }
+
+    assert {:ok, %{state: :planning}} =
+             RebuildStore.begin_plan(%{
+               begin
+               | command_id: "rebuild:begin-planning-cancel:" <> fixture.workspace_id,
+                 operation_id: planning_cancel_operation_id,
+                 planning_hash: RebuildPlan.hash(planning_cancel_payload),
+                 planning_payload: planning_cancel_payload,
+                 idempotency_key: planning_cancel_operation_id,
+                 idempotency: nil
+             })
+
+    planning_task_id = "rt_planning_cancel_" <> fixture.workspace_id
+
+    planning_request = %GenerationCapabilitiesRequest{
+      manifest: %{fixture.version | manifest: nil},
+      asset_ref: {MyApp.Asset, :asset}
+    }
+
+    {:ok, planning_task_payload, planning_task_hash} =
+      RunnerTaskCodec.encode_payload(:generation_capabilities, planning_request)
+
+    {:ok, planning_task_context} = RunnerTaskCodec.encode_orchestration_context(%{})
+
+    assert {:ok, %{status: :queued}} =
+             RunnerTaskStore.enqueue(%EnqueueRunnerTask{
+               workspace_context: fixture.workspace_context,
+               command_id: "enqueue:planning-cancel:" <> fixture.workspace_id,
+               task_id: planning_task_id,
+               domain_identity: "planning-cancel:" <> fixture.workspace_id,
+               task_kind: :generation_capabilities,
+               runner_pool: "default",
+               required_runner_release_id: fixture.version.required_runner_release_id,
+               retry_class: :safe_to_retry,
+               payload: planning_task_payload,
+               payload_hash: planning_task_hash,
+               orchestration_context: planning_task_context,
+               operation_id: planning_cancel_operation_id,
+               required_capability: "generation_capabilities",
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, planning_cancelled} =
+             RebuildStore.request_cancellation(%RequestRebuildCancellation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:cancel-planning:" <> fixture.workspace_id,
+               operation_id: planning_cancel_operation_id,
+               reason: "operator cancelled during planning",
+               occurred_at: occurred_at
+             })
+
+    assert planning_cancelled.state == :cancelled
+    assert planning_cancelled.phase == :terminal
+    assert planning_cancelled.candidate_generation_id == nil
+    assert planning_cancelled.action_count == 0
+    assert planning_cancelled.window_count == 0
+
+    assert {:ok, planning_task} =
+             RunnerTaskStore.get(%GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: planning_task_id
+             })
+
+    assert planning_task.status == :cancelled
+    assert planning_task.cancellation_requested_at == occurred_at
+    assert planning_task.terminal_at == occurred_at
 
     assert {:ok, planned} = RebuildStore.create_plan(create)
     assert planned.state == :planned
     assert planned.plan_hash == plan_hash
     refute planned.idempotency_replay?
     assert planned.actions |> hd() |> Map.fetch!(:progress) == %{planned: 1, total: 1}
-    assert {:ok, replayed_plan} = RebuildStore.create_plan(create)
+    assert {:ok, replayed_plan} = RebuildStore.begin_plan(begin)
     assert replayed_plan.idempotency_replay?
     assert %{replayed_plan | idempotency_replay?: false} == planned
+    assert {:ok, ^planned} = RebuildStore.create_plan(create)
 
     changed_payload = Map.put(payload, :target_id, fixture.target_id <> ":changed")
 
@@ -497,6 +611,43 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     assert claimed_operation.dispatcher.fencing_token == 1
+
+    claimed_row =
+      Repo.get_by!(RebuildOperationRow,
+        workspace_id: fixture.workspace_id,
+        operation_id: operation_id
+      )
+
+    assert :ok =
+             RebuildStore.renew_operation_lease(%RenewRebuildOperationLease{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:renew-operation:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: claimed_operation.dispatcher.fencing_token,
+               lease_duration_ms: 60_000,
+               occurred_at: occurred_at
+             })
+
+    renewed_row =
+      Repo.get_by!(RebuildOperationRow,
+        workspace_id: fixture.workspace_id,
+        operation_id: operation_id
+      )
+
+    assert renewed_row.version == claimed_row.version
+    assert DateTime.after?(renewed_row.dispatcher_expires_at, claimed_row.dispatcher_expires_at)
+
+    assert {:error, %{kind: :fenced}} =
+             RebuildStore.renew_operation_lease(%RenewRebuildOperationLease{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:renew-operation-stale:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: claimed_operation.dispatcher.fencing_token + 1,
+               lease_duration_ms: 60_000,
+               occurred_at: occurred_at
+             })
 
     assert {:ok, building} =
              RebuildStore.transition_operation(%TransitionRebuildOperation{
@@ -595,6 +746,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     planned_action = hd(building.actions)
+    assert planned_action.runner_pool == "default"
+
+    assert planned_action.required_runner_release_id ==
+             fixture.version.required_runner_release_id
 
     assert {:ok, running_action} =
              RebuildStore.transition_action(%TransitionRebuildAction{
@@ -768,19 +923,37 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         items_digest: RebuildPlan.hash(%{items: [Map.from_struct(cancel_item)]})
     }
 
-    assert {:ok, cancel_planned} =
-             RebuildStore.create_plan(%{
-               create
-               | command_id: "rebuild:create-cancel:" <> fixture.workspace_id,
+    cancel_create = %{
+      create
+      | command_id: "rebuild:create-cancel:" <> fixture.workspace_id,
+        operation_id: cancel_operation_id,
+        candidate_generation_id: cancel_candidate_id,
+        plan_hash: RebuildPlan.hash(cancel_payload),
+        plan_payload: cancel_payload,
+        idempotency_key: cancel_operation_id,
+        actions: [cancel_action],
+        items: [cancel_item],
+        idempotency: nil
+    }
+
+    cancel_planning_payload = %{
+      planning_payload
+      | operation_id: cancel_operation_id
+    }
+
+    assert {:ok, %{state: :planning}} =
+             RebuildStore.begin_plan(%{
+               begin
+               | command_id: "rebuild:begin-cancel:" <> fixture.workspace_id,
                  operation_id: cancel_operation_id,
-                 candidate_generation_id: cancel_candidate_id,
-                 plan_hash: RebuildPlan.hash(cancel_payload),
-                 plan_payload: cancel_payload,
+                 planning_hash: RebuildPlan.hash(cancel_planning_payload),
+                 planning_payload: cancel_planning_payload,
                  idempotency_key: cancel_operation_id,
-                 actions: [cancel_action],
-                 items: [cancel_item],
                  idempotency: nil
              })
+
+    assert {:ok, cancel_planned} =
+             RebuildStore.create_plan(cancel_create)
 
     assert {:ok, cancel_queued} =
              RebuildStore.start_operation(%StartRebuildOperation{

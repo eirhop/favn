@@ -4,7 +4,6 @@ defmodule FavnOrchestrator.Application do
   use Application
 
   alias FavnOrchestrator.API.Config, as: APIConfig
-  alias FavnOrchestrator.ActiveManifestReconciler
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.BackfillDispatcher
   alias FavnOrchestrator.BoundedDispatcher
@@ -84,16 +83,22 @@ defmodule FavnOrchestrator.Application do
             {FavnOrchestrator.RunnerRegistry, []},
             {FavnOrchestrator.RunnerQueueSupervisor, []},
             {Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor},
+            {Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor},
             {FavnOrchestrator.RunnerTaskResultRouter, []},
             {FavnOrchestrator.RunnerGateway, []},
             {FavnOrchestrator.RunnerTaskRecovery, []},
-            {FavnOrchestrator.RunnerCapacityReconciler, []}
+            {FavnOrchestrator.RunnerCapacityReconciler, []},
+            {Registry, keys: :unique, name: FavnOrchestrator.RebuildPlanningRegistry},
+            {DynamicSupervisor,
+             strategy: :one_for_one, name: FavnOrchestrator.RebuildPlanningSupervisor},
+            {Registry, keys: :unique, name: FavnOrchestrator.RebuildExecutionRegistry},
+            {DynamicSupervisor,
+             strategy: :one_for_one, name: FavnOrchestrator.RebuildExecutionSupervisor}
           ] ++
           [{BackfillDispatcher, []}, {RebuildDispatcher, []}] ++
           [
             {RunRecovery, []},
             {RunnerHealth, []},
-            {ActiveManifestReconciler, []},
             {BoundedDispatcher, []}
           ] ++
           scheduler_children(runtime_config) ++

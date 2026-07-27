@@ -17,6 +17,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddLogsIdentityAndOperationsV2
   alias FavnStoragePostgres.Migrations.AddRuntimeInputKeyInventoryV2
   alias FavnStoragePostgres.Migrations.AddRebuildOperatorReadsV2
+  alias FavnStoragePostgres.Migrations.AddRebuildRunnerBindingsV2
   alias FavnStoragePostgres.Migrations.AddRunnerReleaseIdentityV2
   alias FavnStoragePostgres.Migrations.AddRunnerTasksV2
   alias FavnStoragePostgres.Migrations.AddResourceCircuitsV2
@@ -69,6 +70,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_722_020_000, AddRebuildOperatorReadsV2},
     {20_260_725_000_000, AddScheduleActivationsV2},
     {20_260_726_000_000, AddRunnerTasksV2},
+    {20_260_727_000_000, AddRebuildRunnerBindingsV2},
     {20_260_728_000_000, AddTargetRecoveryV2},
     {20_260_728_010_000, AddAssetEvidenceBindingsV2}
   ]
@@ -357,7 +359,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "rebuild_operations" =>
       ~w(workspace_id operation_id root_target_id manifest_version_id active_generation_id candidate_generation_id plan_hash plan_version plan_payload trigger actor_id session_id reason idempotency_key evaluated_at coverage_start coverage_end action_count window_count state phase activation_token dispatched_at result_marker unknown_outcome validation_result terminal_error cleanup_state last_command_id dispatcher_owner dispatcher_fencing_token dispatcher_expires_at cancel_requested version started_at completed_at cancelled_at inserted_at updated_at),
     "rebuild_plan_actions" =>
-      ~w(workspace_id operation_id target_id ordinal action reason upstream_impact mapping_proof pinned_input_generation_ids candidate_generation_id status child_operation_id child_run_id activation_intent validation_result terminal_error cleanup_state activated_at last_command_id version inserted_at updated_at),
+      ~w(workspace_id operation_id target_id ordinal action reason upstream_impact mapping_proof pinned_input_generation_ids runner_pool required_runner_release_id candidate_generation_id status child_operation_id child_run_id activation_intent validation_result terminal_error cleanup_state activated_at last_command_id version inserted_at updated_at),
     "rebuild_windows" =>
       ~w(workspace_id operation_id target_id item_id ordinal work_kind window_key window_start window_end status claim_owner fencing_token claim_command_id last_command_id claim_expires_at child_run_id materialization_id attempt_count row_count last_error candidate_generation_id runtime_input_expectation version inserted_at updated_at),
     "schedule_activations" =>
@@ -436,7 +438,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     materialization_claims_generation_valid materializations_generation_valid
     asset_evidence_bindings_values_valid asset_target_generations_values_valid asset_target_bindings_values_valid
     rebuild_operations_values_valid rebuild_operations_dispatch_valid rebuild_plan_actions_values_valid
-    rebuild_plan_actions_saga_valid rebuild_windows_values_valid
+    rebuild_plan_actions_saga_valid rebuild_plan_actions_runner_binding_valid rebuild_windows_values_valid
     materialization_claims_operation_id_valid
     target_operation_locks_values_valid asset_window_states_evidence_generation_valid
     target_recovery_operations_values_valid target_recovery_operations_identifiers_bounded
@@ -492,7 +494,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "61fa5698077103a1237cd9216ff45f37bffea6f350b730d8b7423acb55b58321"
+  @expected_definition_fingerprint "130af22f3d5c867fa95b3a8d7946de5673924cecb44cd2295ca8ecde247dab3f"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

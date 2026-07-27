@@ -2,7 +2,9 @@ defmodule FavnRunner.RunnerAgentTest do
   use ExUnit.Case, async: false
 
   alias Favn.Contracts.RunnerTask
+  alias Favn.Contracts.RunnerResult
   alias FavnRunner.RunnerAgent
+  alias FavnRunner.TaskExecutor
 
   defmodule FakeControlPlane do
     use GenServer
@@ -296,7 +298,7 @@ defmodule FavnRunner.RunnerAgentTest do
       assignment = %RunnerTask.Assignment{
         command_id: "execute-claim",
         workspace_id: "workspace-execute",
-        task_id: "rt_execute_cancel",
+        task_id: "rt_" <> state.work.run_id,
         task_kind: :asset_attempt,
         runner_instance_id: registration.runner_instance_id,
         runner_session_generation: 1,
@@ -485,6 +487,30 @@ defmodule FavnRunner.RunnerAgentTest do
     refute_receive {:executor_cancelled, _reason}
   end
 
+  test "runtime-input-only asset tasks finish without starting customer execution" do
+    assignment = assignment("runner-runtime-input-resolution")
+
+    work = %{
+      assignment.payload
+      | run_id: "run_runtime_input_resolution",
+        asset_step_id: "step_runtime_input_resolution",
+        attempt: 1,
+        metadata: %{runner_task_mode: :runtime_input_resolution}
+    }
+
+    assignment = %{assignment | payload: work}
+
+    assert {:ok, executor} =
+             TaskExecutor.start_link(assignment: assignment, payload: work, owner: self())
+
+    assert_receive {:runner_task_finished, ^executor,
+                    %RunnerResult{
+                      run_id: "run_runtime_input_resolution",
+                      status: :ok,
+                      asset_results: []
+                    }}
+  end
+
   test "cancellation racing a terminal executor is rejected without crashing the runner" do
     {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
     {:ok, executor} = start_supervised({FinishedExecutor, self()})
@@ -523,6 +549,50 @@ defmodule FavnRunner.RunnerAgentTest do
 
     assert_receive {:cancellation_ack, %RunnerTask.CancellationAck{status: :rejected}}
     assert Process.alive?(agent)
+  end
+
+  test "an executor process loss produces one conservative durable result" do
+    owner = self()
+    {:ok, control_plane} = start_supervised({FakeControlPlane, owner})
+    {:ok, executor} = start_supervised({FakeExecutor, owner})
+    start_supervised!({FavnRunner.TaskResultBuffer, []})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:registered, registration, ^agent}
+    assert_receive {:claimed, %RunnerTask.ClaimRequest{}}
+    assignment = assignment(registration.runner_instance_id)
+
+    :sys.replace_state(agent, fn state ->
+      %{
+        state
+        | assignment: assignment,
+          executor: executor,
+          executor_monitor: Process.monitor(executor),
+          session_generation: assignment.runner_session_generation,
+          phase: :running
+      }
+    end)
+
+    Process.exit(executor, :kill)
+
+    assert_receive {:result_delivery,
+                    %RunnerTask.Result{
+                      task_id: "rt_task",
+                      outcome: :unknown,
+                      retry_class: :unknown_do_not_retry
+                    }}
+
+    assert_receive {:runner_exit, 0}
+    refute_receive {:result_delivery, %RunnerTask.Result{task_id: "rt_task"}}, 100
   end
 
   test "an expired unrenewed lease stops execution and enters conservative drain" do
@@ -873,10 +943,82 @@ defmodule FavnRunner.RunnerAgentTest do
     )
 
     assert_receive {:cancelled_result_persisted, %RunnerTask.Result{} = result}, 2_000
-    assert result.outcome == :cancelled
+    assert result.outcome == :cancelled, inspect(result)
     assert result.retry_class == :terminal
     assert result.error.outcome == :cancelled
     assert :ok = RunnerTask.Result.validate(result)
+  end
+
+  test "killing an asset executor also terminates its owned customer-code worker" do
+    start_supervised!({FavnRunner.TaskResultBuffer, []})
+
+    start_supervised!(
+      {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.TaskExecutorSupervisor}
+    )
+
+    asset = %Favn.Manifest.Asset{
+      ref: {__MODULE__.SlowAsset, :asset},
+      module: __MODULE__.SlowAsset,
+      name: :asset,
+      type: :elixir,
+      execution: %{entrypoint: :asset, arity: 1}
+    }
+
+    manifest =
+      %Favn.Manifest{
+        assets: [asset],
+        pipelines: [],
+        schedules: [],
+        graph: %Favn.Manifest.Graph{nodes: [asset.ref], edges: [], topo_order: [asset.ref]}
+      }
+      |> FavnTestSupport.with_manifest_contract()
+
+    {:ok, version} =
+      Favn.Manifest.Version.new(manifest,
+        manifest_version_id: "mv_asset_executor_ownership_#{System.unique_integer([:positive])}"
+      )
+
+    work = %Favn.Contracts.RunnerWork{
+      run_id: "run_asset_executor_ownership",
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      runner_pool: :duckdb,
+      asset_ref: asset.ref,
+      asset_step_id: "step_asset_executor_ownership",
+      attempt: 1,
+      metadata: %{}
+    }
+
+    {:ok, control_plane} =
+      start_supervised({ExecutingControlPlane, owner: self(), version: version, work: work})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         exit_fun: fn _status -> :ok end}
+      )
+
+    assert_receive {:task_started, %RunnerTask.Started{}, ^agent}, 2_000
+    assert_eventually(fn -> is_pid(:sys.get_state(agent).executor) end)
+    executor = :sys.get_state(agent).executor
+    assert_eventually(fn -> is_pid(:sys.get_state(executor).worker) end)
+    worker = :sys.get_state(executor).worker
+
+    executor_monitor = Process.monitor(executor)
+    worker_monitor = Process.monitor(worker)
+    Process.exit(executor, :kill)
+
+    assert_receive {:DOWN, ^executor_monitor, :process, ^executor, :killed}
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, reason}
+    assert reason in [:killed, :kill]
+    refute Process.alive?(worker)
+    assert_receive {:cancelled_result_persisted, %RunnerTask.Result{}}, 2_000
+    assert_eventually(fn -> is_nil(:sys.get_state(agent).assignment) end)
   end
 
   defp assignment(runner_instance_id) do

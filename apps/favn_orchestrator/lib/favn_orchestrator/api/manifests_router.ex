@@ -254,56 +254,6 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     end
   end
 
-  post "/:manifest_version_id/runner/register" do
-    with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :operator),
-         {:ok, registration} <-
-           FavnOrchestrator.register_manifest_with_runner(context, manifest_version_id) do
-      Response.data(conn, 200, %{registration: registration})
-    else
-      {:error, %Error{kind: :not_found}} ->
-        Response.error(conn, 404, "not_found", "Manifest version was not found")
-
-      {:error, :runner_manifest_conflict} ->
-        Response.error(
-          conn,
-          409,
-          "runner_manifest_conflict",
-          "Runner has a different manifest for this version id"
-        )
-
-      {:error, {:runner_release_mismatch, required, actual}} ->
-        Response.error(
-          conn,
-          409,
-          "runner_release_mismatch",
-          "Runner release does not match the manifest requirement",
-          %{required_runner_release_id: required, runner_release_id: actual}
-        )
-
-      {:error, reason}
-      when reason in [
-             :runner_client_not_available,
-             :runner_release_info_unavailable,
-             :runner_not_ready,
-             :runner_unavailable
-           ] ->
-        Response.error(
-          conn,
-          503,
-          "runner_unavailable",
-          "Runner manifest registration is unavailable"
-        )
-
-      {:error, :service_unauthorized} ->
-        authentication_error(conn, :service_unauthorized)
-
-      {:error, reason} ->
-        Logger.error("runner manifest registration failed: #{inspect(reason)}")
-        Response.error(conn, 400, "bad_request", "Request failed")
-    end
-  end
-
   match _ do
     Response.error(conn, 404, "not_found", "Route was not found")
   end

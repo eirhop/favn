@@ -804,6 +804,65 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert failed.retry_class == :safe_to_retry
   end
 
+  test "terminal safe operation failures requeue with a new assignment generation", fixture do
+    assert {:ok, _queued} = Store.enqueue(enqueue_command(fixture, "safe-operation-retry"))
+
+    assert {:ok, assigned} =
+             Store.claim(claim_command(fixture, "claim-safe-operation", "runner-safe-operation"))
+
+    assert {:ok, running} =
+             Store.transition(
+               transition_command(fixture, assigned, "start-safe-operation", :running)
+             )
+
+    assert {:ok, failed} =
+             Store.complete(%C.CompleteRunnerTask{
+               workspace_context: fixture.workspace_context,
+               command_id: "complete-safe-operation-failure",
+               task_id: running.task_id,
+               runner_instance_id: running.assigned_runner_instance_id,
+               runner_session_generation: running.assigned_runner_session_generation,
+               assignment_generation: running.assignment_generation,
+               result_version: 1,
+               outcome: :failed,
+               retry_class: :safe_to_retry,
+               result: nil,
+               error:
+                 Favn.Contracts.RunnerError.new(
+                   outcome: :safe_failure,
+                   retryable?: true
+                 ),
+               occurred_at: DateTime.add(fixture.now, 3, :second)
+             })
+
+    retry = %C.RetryRunnerTask{
+      workspace_context: fixture.workspace_context,
+      command_id: "retry-safe-operation-1",
+      task_id: failed.task_id,
+      expected_assignment_generation: failed.assignment_generation,
+      expected_result_version: failed.result_version,
+      occurred_at: DateTime.add(fixture.now, 4, :second)
+    }
+
+    assert {:ok, retried} = Store.retry(retry)
+    assert retried.status == :queued
+    assert retried.result_version == nil
+    assert retried.error == nil
+    assert {:ok, ^retried} = Store.retry(retry)
+
+    assert {:ok, %{outstanding_count: 1, queued_count: 1, active_count: 0}} =
+             demand(fixture)
+
+    assert {:ok, reassigned} =
+             Store.claim(
+               claim_command(fixture, "reclaim-safe-operation", "runner-safe-operation-two",
+                 occurred_at: DateTime.add(fixture.now, 5, :second)
+               )
+             )
+
+    assert reassigned.assignment_generation == assigned.assignment_generation + 1
+  end
+
   test "expired assignments are claimed once for fenced recovery", fixture do
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "recover"))
 

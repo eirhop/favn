@@ -9,11 +9,13 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   alias Favn.GenerationDataPlaneMarker
   alias Favn.Manifest.Serializer
   alias FavnOrchestrator.Persistence.Commands.ActivateRebuildGeneration
+  alias FavnOrchestrator.Persistence.Commands.BeginRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.ClaimRebuildItems
   alias FavnOrchestrator.Persistence.Commands.ClaimRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.CreateRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.RequestRebuildCancellation
   alias FavnOrchestrator.Persistence.Commands.RequestRebuildReconciliation
+  alias FavnOrchestrator.Persistence.Commands.RenewRebuildOperationLease
   alias FavnOrchestrator.Persistence.Commands.RetryRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.StartRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.TransitionRebuildAction
@@ -37,6 +39,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   alias FavnStoragePostgres.Idempotency.Transaction, as: IdempotencyTransaction
   alias FavnStoragePostgres.Payload
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.RunnerTasks.Store, as: RunnerTaskStore
   alias FavnStoragePostgres.Schemas.AssetTargetBinding
   alias FavnStoragePostgres.Schemas.AssetTargetGeneration
   alias FavnStoragePostgres.Schemas.RebuildOperation
@@ -89,11 +92,18 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     :inserted_at,
     :updated_at
   ]
-  @operation_states ~w(planned queued building validating activating activation_unknown reconciling cancelling succeeded failed cancelled)a
-  @claimable_states ~w(queued building validating activating activation_unknown reconciling cancelling)a
-  @operation_phases ~w(planned locking building validating activating reconciling repairing cleanup terminal)a
+  @operation_states ~w(planning planned queued building validating activating activation_unknown reconciling cancelling succeeded failed cancelled)a
+  @claimable_states ~w(planning queued building validating activating activation_unknown reconciling cancelling)a
+  @operation_phases ~w(planning planned locking building validating activating reconciling repairing cleanup terminal)a
   @action_statuses ~w(planned running succeeded failed cancelled outcome_unknown)a
   @item_statuses ~w(planned ready claimed running succeeded failed cancelled outcome_unknown)a
+
+  @impl true
+  def begin_plan(%BeginRebuildPlan{} = command) do
+    with :ok <- validate_begin(command) do
+      idempotent_transaction(command, fn -> begin_plan!(command) end)
+    end
+  end
 
   @impl true
   def create_plan(%CreateRebuildPlan{} = command) do
@@ -134,6 +144,16 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   def claim_operation(%ClaimRebuildOperation{} = command) do
     with :ok <- validate_claim_operation(command) do
       transaction(fn -> claim_operation!(command) end)
+    end
+  end
+
+  @impl true
+  def renew_operation_lease(%RenewRebuildOperationLease{} = command) do
+    with :ok <- validate_renew_operation_lease(command) do
+      case transaction(fn -> renew_operation_lease!(command) end) do
+        {:ok, :ok} -> :ok
+        {:error, _reason} = error -> error
+      end
     end
   end
 
@@ -301,15 +321,43 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
       existing && exact_plan_replay?(existing, command) ->
         operation_result(existing, load_actions(existing), progress(existing))
 
+      existing && existing.state == "planning" && exact_planning_identity?(existing, command) ->
+        finalize_plan!(existing, command)
+
       existing ->
         Repo.rollback(Error.new(:conflict, "rebuild plan identity has different content"))
 
       true ->
-        insert_plan!(command)
+        Repo.rollback(Error.new(:conflict, "rebuild planning continuation was not persisted"))
     end
   end
 
-  defp insert_plan!(command) do
+  defp begin_plan!(command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    existing =
+      from(operation in RebuildOperation,
+        where:
+          operation.workspace_id == ^workspace_id and
+            (operation.operation_id == ^command.operation_id or
+               operation.idempotency_key == ^command.idempotency_key),
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    cond do
+      existing && exact_begin_replay?(existing, command) ->
+        operation_result(existing, load_actions(existing), progress(existing))
+
+      existing ->
+        Repo.rollback(Error.new(:conflict, "rebuild plan identity has different content"))
+
+      true ->
+        insert_planning_continuation!(command)
+    end
+  end
+
+  defp insert_planning_continuation!(command) do
     workspace_id = command.workspace_context.workspace_id
     now = database_datetime(command.occurred_at)
 
@@ -320,22 +368,22 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         root_target_id: command.root_target_id,
         manifest_version_id: command.manifest_version_id,
         active_generation_id: command.active_generation_id,
-        candidate_generation_id: command.candidate_generation_id,
-        plan_hash: command.plan_hash,
-        plan_version: command.plan_version,
-        plan_payload: canonical_map(command.plan_payload),
+        candidate_generation_id: nil,
+        plan_hash: command.planning_hash,
+        plan_version: 1,
+        plan_payload: canonical_map(command.planning_payload),
         trigger: "manual",
         actor_id: command.actor_id,
         session_id: command.session_id,
         reason: command.reason,
         idempotency_key: command.idempotency_key,
         evaluated_at: database_datetime(command.evaluated_at),
-        coverage_start: optional_datetime(command.coverage_start),
-        coverage_end: optional_datetime(command.coverage_end),
-        action_count: length(command.actions),
-        window_count: length(command.items),
-        state: "planned",
-        phase: "planned",
+        coverage_start: nil,
+        coverage_end: nil,
+        action_count: 0,
+        window_count: 0,
+        state: "planning",
+        phase: "planning",
         cleanup_state: "not_started",
         last_command_id: command.command_id,
         dispatcher_fencing_token: 0,
@@ -346,9 +394,38 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
       }
       |> Repo.insert!()
 
+    operation_result(operation, [], progress(operation))
+  end
+
+  defp finalize_plan!(operation, command) do
+    now = database_datetime(command.occurred_at)
+
     insert_candidate_generations!(command, now)
     insert_actions!(command, now)
     insert_items!(command, now)
+
+    operation =
+      operation
+      |> Ecto.Changeset.change(%{
+        active_generation_id: command.active_generation_id,
+        candidate_generation_id: command.candidate_generation_id,
+        plan_hash: command.plan_hash,
+        plan_version: command.plan_version,
+        plan_payload: canonical_map(command.plan_payload),
+        coverage_start: optional_datetime(command.coverage_start),
+        coverage_end: optional_datetime(command.coverage_end),
+        action_count: length(command.actions),
+        window_count: length(command.items),
+        state: "planned",
+        phase: "planned",
+        last_command_id: command.command_id,
+        dispatcher_owner: nil,
+        dispatcher_expires_at: nil,
+        version: operation.version + 1,
+        updated_at: now
+      })
+      |> Repo.update!()
+
     operation_result(operation, load_actions(operation), progress(operation))
   end
 
@@ -392,6 +469,8 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
           upstream_impact: canonical_map(action.upstream_impact),
           mapping_proof: optional_map(action.mapping_proof),
           pinned_input_generation_ids: canonical_value(action.pinned_input_generation_ids),
+          runner_pool: action.runner_pool,
+          required_runner_release_id: action.required_runner_release_id,
           candidate_generation_id: candidate_id(action.candidate_generation),
           status: Atom.to_string(action.status),
           cleanup_state: "not_started",
@@ -507,27 +586,37 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         )
         |> Repo.update_all(set: [status: "cancelled", updated_at: now], inc: [version: 1])
 
-        operation
-        |> Ecto.Changeset.change(%{
-          cancel_requested: true,
-          state: state,
-          phase: phase,
-          cleanup_state: "pending",
-          terminal_error: %{
-            "reason_code" => "operator_cancel_requested",
-            "reason" => command.reason
-          },
-          last_command_id: command.command_id,
-          version: operation.version + 1,
-          cancelled_at: cancelled_at,
-          updated_at: now
-        })
-        |> Repo.update!()
-        |> then(&operation_result(&1, load_actions(&1), progress(&1)))
+        cancelled =
+          operation
+          |> Ecto.Changeset.change(%{
+            cancel_requested: true,
+            state: state,
+            phase: phase,
+            cleanup_state: "pending",
+            terminal_error: %{
+              "reason_code" => "operator_cancel_requested",
+              "reason" => command.reason
+            },
+            last_command_id: command.command_id,
+            version: operation.version + 1,
+            cancelled_at: cancelled_at,
+            updated_at: now
+          })
+          |> Repo.update!()
+
+        RunnerTaskStore.cancel_operation_in_transaction(
+          command.workspace_context.workspace_id,
+          command.operation_id,
+          now,
+          command.command_id
+        )
+
+        operation_result(cancelled, load_actions(cancelled), progress(cancelled))
     end
   end
 
   defp cancellation_state("planned", now), do: {"cancelled", "terminal", now}
+  defp cancellation_state("planning", now), do: {"cancelled", "terminal", now}
 
   defp cancellation_state(state, _now)
        when state in ["activating", "activation_unknown", "reconciling"],
@@ -686,6 +775,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         lock: "FOR UPDATE SKIP LOCKED"
       )
       |> maybe_operation(command.operation_id)
+      |> exclude_operations(command.exclude_operation_ids)
 
     case Repo.one(query) do
       nil ->
@@ -711,6 +801,34 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         |> Repo.update!()
         |> then(&operation_result(&1, load_actions(&1), progress(&1)))
     end
+  end
+
+  defp renew_operation_lease!(command) do
+    operation =
+      lock_operation!(command.workspace_context.workspace_id, command.operation_id)
+
+    now = database_now!()
+
+    unless (operation.dispatcher_owner == command.owner_id and
+              operation.dispatcher_fencing_token == command.fencing_token and
+              operation.dispatcher_expires_at) &&
+             DateTime.compare(operation.dispatcher_expires_at, now) == :gt do
+      Repo.rollback(Error.new(:fenced, "rebuild dispatcher fence is stale"))
+    end
+
+    {1, _} =
+      Repo.update_all(
+        from(row in RebuildOperation,
+          where:
+            row.workspace_id == ^operation.workspace_id and
+              row.operation_id == ^operation.operation_id
+        ),
+        set: [
+          dispatcher_expires_at: DateTime.add(now, command.lease_duration_ms, :millisecond)
+        ]
+      )
+
+    :ok
   end
 
   defp transition_operation!(command) do
@@ -1240,6 +1358,8 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
       upstream_impact: action.upstream_impact,
       mapping_proof: action.mapping_proof,
       pinned_input_generation_ids: action.pinned_input_generation_ids,
+      runner_pool: action.runner_pool,
+      required_runner_release_id: action.required_runner_release_id,
       candidate_generation_id: action.candidate_generation_id,
       status: String.to_existing_atom(action.status),
       child_operation_id: action.child_operation_id,
@@ -1421,6 +1541,40 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
       operation.plan_payload == canonical_map(command.plan_payload)
   end
 
+  defp exact_begin_replay?(operation, command) do
+    operation.operation_id == command.operation_id and
+      operation.idempotency_key == command.idempotency_key and
+      operation.manifest_version_id == command.manifest_version_id and
+      operation.root_target_id == command.root_target_id and
+      operation.active_generation_id == command.active_generation_id and
+      is_nil(operation.candidate_generation_id) and
+      operation.actor_id == command.actor_id and operation.session_id == command.session_id and
+      operation.reason == command.reason and operation.evaluated_at == command.evaluated_at and
+      begin_payload_matches?(operation, command)
+  end
+
+  defp begin_payload_matches?(%{state: "planning", plan_payload: payload}, command),
+    do: payload == canonical_map(command.planning_payload)
+
+  defp begin_payload_matches?(operation, command) do
+    planning_payload = canonical_map(command.planning_payload)
+
+    operation.plan_payload["manifest_content_hash"] ==
+      planning_payload["manifest_content_hash"] and
+      operation.plan_payload["deployment_id"] == planning_payload["deployment_id"]
+  end
+
+  defp exact_planning_identity?(operation, command) do
+    operation.operation_id == command.operation_id and
+      operation.idempotency_key == command.idempotency_key and
+      operation.manifest_version_id == command.manifest_version_id and
+      operation.root_target_id == command.root_target_id and
+      operation.active_generation_id == command.active_generation_id and
+      is_nil(operation.candidate_generation_id) and
+      operation.actor_id == command.actor_id and operation.session_id == command.session_id and
+      operation.reason == command.reason and operation.evaluated_at == command.evaluated_at
+  end
+
   defp operator_decision?(operation) do
     from(action in RebuildPlanAction,
       where:
@@ -1433,6 +1587,8 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   end
 
   defp legal_operation_transition?(state, state), do: true
+
+  defp legal_operation_transition?("planning", next), do: next == "failed"
 
   defp legal_operation_transition?("queued", next),
     do: next in ["building", "cancelling", "failed"]
@@ -1510,6 +1666,29 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
        else: {:error, ErrorMapper.map(:invalid)}
   end
 
+  defp validate_begin(command) do
+    if valid_context?(command.workspace_context) and
+         Enum.all?(
+           [
+             command.command_id,
+             command.operation_id,
+             command.root_target_id,
+             command.manifest_version_id,
+             command.actor_id,
+             command.idempotency_key
+           ],
+           &valid_id?/1
+         ) and (is_nil(command.active_generation_id) or valid_uuid?(command.active_generation_id)) and
+         valid_hash?(command.planning_hash) and
+         is_map(command.planning_payload) and
+         Payload.validate(command.planning_payload, 1_048_576) == :ok and
+         plan_hash(command.planning_payload) == command.planning_hash and
+         valid_reason?(command.reason) and match?(%DateTime{}, command.evaluated_at) and
+         match?(%DateTime{}, command.occurred_at),
+       do: :ok,
+       else: {:error, ErrorMapper.map(:invalid)}
+  end
+
   defp valid_actions?(actions, command) do
     ordinals = Enum.map(actions, & &1.ordinal)
     target_ids = Enum.map(actions, & &1.target_id)
@@ -1533,6 +1712,8 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
          (is_map(action.mapping_proof) and Payload.validate(action.mapping_proof, 65_536) == :ok)) and
       is_list(action.pinned_input_generation_ids) and
       Payload.validate(action.pinned_input_generation_ids, 262_144) == :ok and
+      Favn.RunnerPool.validate_runtime(action.runner_pool) == :ok and
+      valid_runner_release_id?(action.required_runner_release_id) and
       valid_candidate_for_action?(action, command)
   end
 
@@ -1621,7 +1802,18 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     (valid_context?(command.workspace_context) and valid_id?(command.command_id) and
        valid_id?(command.owner_id) and
        valid_duration?(command.lease_duration_ms) and
-       (is_nil(command.operation_id) or valid_id?(command.operation_id)))
+       (is_nil(command.operation_id) or valid_id?(command.operation_id)) and
+       is_list(command.exclude_operation_ids) and length(command.exclude_operation_ids) <= 1_000 and
+       Enum.all?(command.exclude_operation_ids, &valid_id?/1))
+    |> valid_or_error()
+  end
+
+  defp validate_renew_operation_lease(command) do
+    (valid_context?(command.workspace_context) and valid_id?(command.command_id) and
+       valid_id?(command.operation_id) and valid_id?(command.owner_id) and
+       valid_positive?(command.fencing_token) and
+       valid_duration?(command.lease_duration_ms) and
+       match?(%DateTime{}, command.occurred_at))
     |> valid_or_error()
   end
 
@@ -1748,6 +1940,10 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   defp valid_positive?(value), do: is_integer(value) and value > 0
   defp valid_uuid?(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
   defp valid_hash?(value), do: is_binary(value) and Regex.match?(~r/\A[0-9a-f]{64}\z/, value)
+
+  defp valid_runner_release_id?(value),
+    do: is_binary(value) and Regex.match?(~r/\Arr_[0-9a-f]{64}\z/, value)
+
   defp valid_duration?(value), do: is_integer(value) and value > 0 and value <= @max_lease_ms
 
   defp valid_range?(nil, nil), do: true
@@ -1796,6 +1992,11 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
 
   defp maybe_operation(query, operation_id),
     do: where(query, [operation], operation.operation_id == ^operation_id)
+
+  defp exclude_operations(query, []), do: query
+
+  defp exclude_operations(query, operation_ids),
+    do: where(query, [operation], operation.operation_id not in ^operation_ids)
 
   defp maybe_target(query, nil), do: query
   defp maybe_target(query, target_id), do: where(query, [item], item.target_id == ^target_id)

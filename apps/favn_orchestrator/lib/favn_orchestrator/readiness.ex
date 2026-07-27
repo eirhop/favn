@@ -3,13 +3,12 @@ defmodule FavnOrchestrator.Readiness do
   Aggregates bounded control-plane liveness and production readiness checks.
 
   Liveness is process-local. Readiness includes boot configuration, lifecycle,
-  PostgreSQL, scheduler, remote runner identity, and alignment for each active
-  manifest in the configured workspace set. A workspace without a deployment
-  is valid and does not make a clean installation unready.
+  PostgreSQL, scheduler, and the transitional resident-runner diagnostics.
+  Manifest installation is assignment-local and therefore never a readiness
+  prerequisite.
   """
 
   alias FavnOrchestrator.ControlPlaneRuntimeConfig
-  alias FavnOrchestrator.ActiveManifestReconciler
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Redaction
@@ -29,9 +28,6 @@ defmodule FavnOrchestrator.Readiness do
     storage_snapshot = Keyword.get_lazy(opts, :storage_snapshot, &Persistence.readiness/0)
     runner_snapshot = Keyword.get_lazy(opts, :runner_snapshot, &RunnerHealth.snapshot/0)
 
-    active_manifest_snapshot =
-      Keyword.get_lazy(opts, :active_manifest_snapshot, &ActiveManifestReconciler.snapshot/0)
-
     checks = [
       safe_check(:config, &config_check/0),
       safe_check(:api, &api_check/0),
@@ -41,10 +37,7 @@ defmodule FavnOrchestrator.Readiness do
       safe_check(:scheduler, &scheduler_check/0),
       safe_check(:lifecycle, &lifecycle_check/0),
       safe_check(:runner_connection, fn -> runner_connection_check(runner_snapshot) end),
-      safe_check(:runner_release, fn -> runner_release_check(runner_snapshot) end),
-      safe_check(:active_manifests, fn ->
-        active_manifests_check(runner_snapshot, active_manifest_snapshot)
-      end)
+      safe_check(:runner_release, fn -> runner_release_check(runner_snapshot) end)
     ]
 
     status = if Enum.all?(checks, &(&1.status == :ok)), do: :ready, else: :not_ready
@@ -165,76 +158,6 @@ defmodule FavnOrchestrator.Readiness do
       })
     else
       {:error, reason} -> error(:runner_release, reason)
-    end
-  end
-
-  defp active_manifests_check(runner_snapshot, active_manifest_snapshot) do
-    runtime_config = RuntimeConfig.current()
-
-    with {:ok, diagnostics} <- runner_snapshot,
-         {:ok, runner_release_id} <-
-           RunnerDiagnostics.validate_ready(diagnostics, runtime_config.runner_client_opts),
-         {:ok, reconciliation} <-
-           validate_reconciliation_snapshot(
-             active_manifest_snapshot,
-             length(runtime_config.workspace_ids)
-           ),
-         manifests <- reconciliation.manifests,
-         :ok <- validate_manifest_releases(manifests, runner_release_id) do
-      ok(:active_manifests, %{
-        configured_workspace_count: length(runtime_config.workspace_ids),
-        active_manifest_count: length(manifests),
-        runner_release_id: runner_release_id,
-        manifests: manifests
-      })
-    else
-      {:error, reason} -> error(:active_manifests, reason)
-    end
-  end
-
-  defp validate_reconciliation_snapshot(
-         {:ok,
-          %{
-            checked: checked,
-            aligned: aligned,
-            inactive: inactive,
-            failed: 0,
-            manifests: manifests
-          } = reconciliation},
-         configured_workspace_count
-       )
-       when is_integer(checked) and is_integer(aligned) and is_integer(inactive) and
-              is_list(manifests) do
-    valid_manifests? =
-      Enum.all?(manifests, fn manifest ->
-        is_binary(Map.get(manifest, :workspace_id)) and
-          is_binary(Map.get(manifest, :manifest_version_id)) and
-          is_binary(Map.get(manifest, :required_runner_release_id)) and
-          Map.get(manifest, :runner_cache) == :registered
-      end)
-
-    if checked == configured_workspace_count and aligned == length(manifests) and
-         inactive + aligned == checked and valid_manifests? do
-      {:ok, reconciliation}
-    else
-      {:error, :invalid_active_manifest_reconciliation}
-    end
-  end
-
-  defp validate_reconciliation_snapshot({:error, reason}, _configured_workspace_count),
-    do: {:error, reason}
-
-  defp validate_reconciliation_snapshot(_invalid, _configured_workspace_count),
-    do: {:error, :invalid_active_manifest_reconciliation}
-
-  defp validate_manifest_releases(manifests, runner_release_id) do
-    case Enum.find(manifests, &(&1.required_runner_release_id != runner_release_id)) do
-      nil ->
-        :ok
-
-      manifest ->
-        {:error,
-         {:runner_release_mismatch, manifest.required_runner_release_id, runner_release_id}}
     end
   end
 

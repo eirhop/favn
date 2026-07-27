@@ -16,8 +16,19 @@ defmodule FavnRunner.Inspection do
 
   @spec inspect_relation(RelationInspectionRequest.t(), Favn.Manifest.Version.t()) ::
           {:ok, RelationInspectionResult.t()} | {:error, term()}
-  def inspect_relation(%RelationInspectionRequest{} = request, version) do
-    with {:ok, prepared} <- prepare(request, version),
+  def inspect_relation(%RelationInspectionRequest{} = request, version),
+    do: inspect_relation(request, version, request.required_runner_release_id)
+
+  @doc false
+  @spec inspect_relation(RelationInspectionRequest.t(), Favn.Manifest.Version.t(), String.t()) ::
+          {:ok, RelationInspectionResult.t()} | {:error, term()}
+  def inspect_relation(
+        %RelationInspectionRequest{} = request,
+        %Version{} = version,
+        required_runner_release_id
+      )
+      when is_binary(required_runner_release_id) do
+    with {:ok, prepared} <- prepare(request, version, required_runner_release_id),
          {:ok, session} <-
            Client.connect(
              prepared.relation_ref.connection,
@@ -78,7 +89,11 @@ defmodule FavnRunner.Inspection do
 
   def inspect_relations(_items), do: {:error, :invalid_relation_inspection_batch}
 
-  defp prepare(request, version) do
+  defp prepare(request, version),
+    do: prepare(request, version, request.required_runner_release_id)
+
+  defp prepare(request, version, required_runner_release_id)
+       when is_binary(required_runner_release_id) do
     include = normalize_include(request.include)
 
     with {:ok, sample_limit} <- normalize_sample_limit(request.sample_limit, include),
@@ -89,10 +104,13 @@ defmodule FavnRunner.Inspection do
          relation_ref: relation_ref,
          include: include,
          sample_limit: sample_limit,
-         required_runner_release_id: version.required_runner_release_id
+         required_runner_release_id: required_runner_release_id
        }}
     end
   end
+
+  defp prepare(_request, _version, _required_runner_release_id),
+    do: {:error, :invalid_runner_release_id}
 
   defp inspect_group(group, results) do
     relation_refs = Enum.map(group, & &1.relation_ref)

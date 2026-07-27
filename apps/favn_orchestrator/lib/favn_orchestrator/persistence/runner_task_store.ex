@@ -24,6 +24,8 @@ defmodule FavnOrchestrator.Persistence.RunnerTaskStore do
               {:ok, RunnerTask.t()} | {:error, Error.t()}
   @callback release(C.ReleaseRunnerTask.t()) ::
               {:ok, RunnerTask.t()} | {:error, Error.t()}
+  @callback retry(C.RetryRunnerTask.t()) ::
+              {:ok, RunnerTask.t()} | {:error, Error.t()}
   @callback recover_expired(C.RecoverRunnerTasks.t()) ::
               {:ok, [RunnerTask.t()]} | {:error, Error.t()}
   @callback reconcile_demand(C.ReconcileRunnerCapacityDemand.t()) ::

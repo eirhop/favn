@@ -3,7 +3,6 @@ defmodule FavnOrchestrator.RuntimeStarter do
 
   use GenServer
 
-  alias FavnOrchestrator.ActiveManifestReconciler
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.OperationalEvents
@@ -33,7 +32,6 @@ defmodule FavnOrchestrator.RuntimeStarter do
 
   defp maybe_refresh(true) do
     :ok = RunnerHealth.refresh()
-    :ok = ActiveManifestReconciler.refresh()
   end
 
   defp maybe_refresh(false), do: :ok

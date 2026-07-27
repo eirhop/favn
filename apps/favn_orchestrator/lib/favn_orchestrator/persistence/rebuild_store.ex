@@ -2,11 +2,13 @@ defmodule FavnOrchestrator.Persistence.RebuildStore do
   @moduledoc "Persistence authority for immutable rebuild plans and resumable saga checkpoints."
 
   alias FavnOrchestrator.Persistence.Commands.ActivateRebuildGeneration
+  alias FavnOrchestrator.Persistence.Commands.BeginRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.ClaimRebuildItems
   alias FavnOrchestrator.Persistence.Commands.ClaimRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.CreateRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.RequestRebuildCancellation
   alias FavnOrchestrator.Persistence.Commands.RequestRebuildReconciliation
+  alias FavnOrchestrator.Persistence.Commands.RenewRebuildOperationLease
   alias FavnOrchestrator.Persistence.Commands.RetryRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.StartRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.TransitionRebuildAction
@@ -22,6 +24,8 @@ defmodule FavnOrchestrator.Persistence.RebuildStore do
   alias FavnOrchestrator.Persistence.Results.RebuildItem
   alias FavnOrchestrator.Persistence.Results.RebuildOperation
 
+  @callback begin_plan(BeginRebuildPlan.t()) ::
+              {:ok, RebuildOperation.t()} | {:error, Error.t()}
   @callback create_plan(CreateRebuildPlan.t()) ::
               {:ok, RebuildOperation.t()} | {:error, Error.t()}
   @callback start_operation(StartRebuildOperation.t()) ::
@@ -34,6 +38,8 @@ defmodule FavnOrchestrator.Persistence.RebuildStore do
               {:ok, RebuildOperation.t()} | {:error, Error.t()}
   @callback claim_operation(ClaimRebuildOperation.t()) ::
               {:ok, RebuildOperation.t() | nil} | {:error, Error.t()}
+  @callback renew_operation_lease(RenewRebuildOperationLease.t()) ::
+              :ok | {:error, Error.t()}
   @callback transition_operation(TransitionRebuildOperation.t()) ::
               {:ok, RebuildOperation.t()} | {:error, Error.t()}
   @callback claim_items(ClaimRebuildItems.t()) ::

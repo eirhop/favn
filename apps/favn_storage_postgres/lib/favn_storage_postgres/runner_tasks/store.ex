@@ -412,6 +412,38 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     end)
   end
 
+  @doc false
+  def cancel_operation_in_transaction(workspace_id, operation_id, occurred_at, command_id)
+      when is_binary(workspace_id) and is_binary(operation_id) and
+             is_struct(occurred_at, DateTime) and is_binary(command_id) do
+    command = %{command_id: command_id, occurred_at: occurred_at}
+
+    from(task in RunnerTask,
+      where:
+        task.workspace_id == ^workspace_id and task.operation_id == ^operation_id and
+          task.status not in ^@terminal_statuses,
+      order_by: [asc: task.task_id],
+      lock: "FOR UPDATE"
+    )
+    |> Repo.all()
+    |> Enum.each(fn task ->
+      attrs =
+        if task.status == "queued" do
+          [
+            status: "cancelled",
+            cancellation_requested_at: occurred_at,
+            terminal_at: occurred_at
+          ]
+        else
+          [status: "cancelling", cancellation_requested_at: occurred_at]
+        end
+
+      update_task!(task, command, attrs)
+    end)
+
+    :ok
+  end
+
   @impl true
   def acknowledge_cancellation(%C.AcknowledgeRunnerTaskCancellation{} = command) do
     idempotent_transact(command, "acknowledge_cancellation", fn ->
@@ -471,6 +503,45 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         end
 
       update_task!(task, command, attrs)
+    end)
+  end
+
+  @impl true
+  def retry(%C.RetryRunnerTask{} = command) do
+    idempotent_transact(command, "retry", fn ->
+      unless bounded_id(command.task_id) == :ok and
+               is_integer(command.expected_assignment_generation) and
+               command.expected_assignment_generation > 0 and
+               is_integer(command.expected_result_version) and
+               command.expected_result_version >= 0 do
+        Repo.rollback(Error.new(:invalid, "invalid runner task retry command"))
+      end
+
+      task = lock_task!(command.workspace_context.workspace_id, command.task_id)
+
+      unless task.status == "failed" and task.retry_class == "safe_to_retry" and
+               task.assignment_generation == command.expected_assignment_generation and
+               task.result_version == command.expected_result_version do
+        Repo.rollback(Error.new(:conflict, "runner task is not a retryable terminal failure"))
+      end
+
+      update_task!(task, command,
+        status: "queued",
+        assigned_runner_instance_id: nil,
+        assigned_runner_session_generation: nil,
+        assignment_expires_at: nil,
+        cancellation_requested_at: nil,
+        cancellation_acknowledged_at: nil,
+        runtime_input_resolution_id: nil,
+        runtime_input_resolution_status: nil,
+        runtime_input_payload_fingerprint: nil,
+        runtime_input_error: nil,
+        runtime_inputs_resolved_at: nil,
+        result_version: nil,
+        result: nil,
+        error: nil,
+        terminal_at: nil
+      )
     end)
   end
 
@@ -729,6 +800,16 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp update_demand_for_status_change!(task, "queued", occurred_at)
        when task.status in @active_statuses do
     move_active_to_queued_demand!(
+      task.runner_pool,
+      task.required_runner_release_id,
+      task.enqueued_at,
+      occurred_at
+    )
+  end
+
+  defp update_demand_for_status_change!(task, "queued", occurred_at)
+       when task.status in @terminal_statuses do
+    add_queued_demand!(
       task.runner_pool,
       task.required_runner_release_id,
       task.enqueued_at,
