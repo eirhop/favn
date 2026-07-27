@@ -776,3 +776,103 @@ repository workflows target pull requests and pushes to `main`.
 
 Evidence commit: this field is intentionally not self-recorded; see the
 checkpoint workflow in the implementation plan.
+
+## Phase 7: Legacy removal and final qualification
+
+Status: approved and checkpointed
+
+Date: 2026-07-27
+
+### Implemented cleanup and qualification
+
+- Removed the retired synchronous runner client, dispatch, execution-ownership,
+  runner-server, and replacement paths. Durable runner tasks are now the single
+  asset-attempt execution authority, with `task_id` as the canonical runtime
+  identity.
+- Removed stale migration modules, compatibility shims, obsolete runtime
+  starters, and completed refactor-plan documents from the active tree. The
+  historical material that remains useful is explicitly archived.
+- Added an executable legacy-architecture guard to CI. Its exclusions are
+  limited to archived history and the elastic-runner architecture plan that
+  intentionally names the removed paths.
+- Completed the local runner lifecycle cleanup, including safe shutdown of a
+  runner process that exits before BEAM registration.
+- Documented concurrent pool/release upgrades and rollback. Old and new
+  generations may coexist; exact durable drain authority determines when old
+  infrastructure can be removed.
+- Added distributed-BEAM qualification. A fresh peer boots the production
+  `FavnRunner.Application`, registers through the production gateway, claims
+  PostgreSQL work, and reaches durable `Started`. The scale scenario exercises
+  arbitrary pool names, 3,000 durable tasks, and 0/1/10/100 remote agents
+  through the real gateway, registry, and PostgreSQL claim protocol.
+
+### Review history
+
+The first final-phase review rejected seven issues: singleton upgrade guidance,
+successful exit status after rejected registration, duplicate execution
+identity in run-server state, simulated-only scale and cold-start tests,
+corrupted audit-document identifiers, a local pre-registration process leak,
+and overly broad legacy-guard documentation exclusions. All seven were
+corrected.
+
+The consolidated re-review covered the full implementation plan and exact
+uncommitted merge tree. It also checked historical-manifest activation,
+descriptor handling, RunEnum/IEx integration, provider neutrality, merge
+integrity, and direct legacy searches.
+
+Final reviewer verdict: approved with no remaining findings.
+
+### Phase 7 verification
+
+```text
+targeted mix format --check-formatted for all 193 changed Elixir files
+  # passed
+
+mix compile --warnings-as-errors
+  # passed
+
+mix credo --only warning --strict
+  # 1,154 source files, no issues
+
+mix sobelow --root apps/favn_orchestrator ... --strict --exit
+mix sobelow --root apps/favn_view ... --strict --exit
+  # both passed
+
+mix dialyzer --list-unused-filters --format short
+mix dialyzer --format dialyzer --quiet-with-result
+  # 285 known findings skipped, 0 unnecessary skips; passed
+
+mix hex.audit
+mix deps.audit
+  # no retired packages, advisories, or vulnerabilities
+
+elixir scripts/check_no_legacy_runner_architecture.exs
+  # passed
+
+cd apps/favn_storage_postgres
+mix test test/storage_v2/runner_tasks_test.exs
+  # 26 passed against a fresh disposable database
+  # production RunnerAgent cold start reached durable Started in 312 ms
+  # 3,000-task distributed scale scenario had 706 ms claim-to-Started P95
+
+mix test
+  # complete umbrella fast-test suite passed against a fresh disposable database
+  # 1,926 passed; no failures
+```
+
+The distributed measurements use a local peer host, so they qualify Favn's
+BEAM, registry, gateway, and PostgreSQL path rather than a cloud provider's VM
+or container cold-start time. No live Azure or managed Kubernetes resources
+were created; those provider qualification gates remain explicitly external.
+
+Reviewed tree SHA: `ce758faf1c986636e31c2e064ad8176387726686`
+
+Reviewed content commit SHA:
+`ae2eef0b59b494292c82532d0ba51b6e070ebfe1`
+
+Pushed branch CI: no GitHub Actions workflow run was triggered by the branch
+push (`gh run list --branch codex/elastic-runners` returned no runs); the
+repository workflows target pull requests and pushes to `main`.
+
+Evidence commit: this field is intentionally not self-recorded; see the
+checkpoint workflow in the implementation plan.
