@@ -108,6 +108,8 @@ defmodule FavnStoragePostgres.Schemas.AssetAttemptOverview do
   @moduledoc false
   use Ecto.Schema
 
+  alias FavnStoragePostgres.Types.JsonValue
+
   @primary_key false
   @schema_prefix "favn_control"
   schema "asset_attempt_overviews" do
@@ -126,7 +128,7 @@ defmodule FavnStoragePostgres.Schemas.AssetAttemptOverview do
     field(:started_at, :utc_datetime_usec)
     field(:finished_at, :utc_datetime_usec)
     field(:duration_ms, :integer)
-    field(:error, :map)
+    field(:error, JsonValue)
     field(:output_metadata, :map)
     field(:source_publication_id, :integer)
     field(:updated_at, :utc_datetime_usec)
