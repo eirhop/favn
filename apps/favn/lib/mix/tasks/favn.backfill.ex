@@ -8,9 +8,10 @@ defmodule Mix.Tasks.Favn.Backfill do
 
       mix favn.backfill submit MyApp.Pipelines.Daily --from 2026-04-01 --to 2026-04-07 --kind day
       mix favn.backfill submit MyApp.Pipelines.Daily --window month:2025-05..2026-05 --refresh force
+      mix favn.backfill status BACKFILL_ID
       mix favn.backfill missing-plan MyApp.Assets.Orders --plan-file coverage-plan.json
       mix favn.backfill missing-submit MyApp.Assets.Orders --plan-file coverage-plan.json
-      mix favn.backfill windows RUN_ID
+      mix favn.backfill windows BACKFILL_ID
 
   The local CLI submit path accepts explicit `--from`/`--to`/`--kind` ranges or
   compact `--window kind:FROM..TO` syntax for `hour`, `day`, `month`, and `year`
@@ -53,6 +54,7 @@ defmodule Mix.Tasks.Favn.Backfill do
     limit: :integer,
     cursor: :string
   ]
+  @status_switches [root_dir: :string, limit: :integer]
   @missing_plan_switches [
     root_dir: :string,
     plan_file: :string,
@@ -73,8 +75,11 @@ defmodule Mix.Tasks.Favn.Backfill do
       {:ok, {:missing_submit, asset, opts}} ->
         submit_missing(asset, opts)
 
-      {:ok, {:windows, run_id, opts}} ->
-        list_windows(run_id, opts)
+      {:ok, {:status, backfill_id, opts}} ->
+        show_status(backfill_id, opts)
+
+      {:ok, {:windows, backfill_id, opts}} ->
+        list_windows(backfill_id, opts)
 
       {:error, message} ->
         Mix.raise(message)
@@ -108,7 +113,11 @@ defmodule Mix.Tasks.Favn.Backfill do
   end
 
   def parse_args(["windows" | args]) do
-    parse_one_id_command(args, @windows_switches, :windows, "RUN_ID")
+    parse_one_id_command(args, @windows_switches, :windows, "BACKFILL_ID")
+  end
+
+  def parse_args(["status" | args]) do
+    parse_one_id_command(args, @status_switches, :status, "BACKFILL_ID")
   end
 
   def parse_args(["missing-plan" | args]) do
@@ -153,6 +162,10 @@ defmodule Mix.Tasks.Favn.Backfill do
         print_run("Submitted pipeline backfill", run)
         Mix.raise(message)
 
+      {:error, {:backfill_failed, backfill}} ->
+        print_failed_submission(backfill, opts)
+        Mix.raise(error_message({:backfill_failed, backfill}))
+
       {:error, reason} ->
         Mix.raise(error_message(reason))
     end
@@ -185,6 +198,13 @@ defmodule Mix.Tasks.Favn.Backfill do
   defp list_windows(run_id, opts) do
     case CLI.list_backfill_windows(run_id, opts) do
       {:ok, page} -> print_page("Backfill windows", page)
+      {:error, reason} -> Mix.raise(error_message(reason))
+    end
+  end
+
+  defp show_status(backfill_id, opts) do
+    case CLI.get_backfill(backfill_id, opts) do
+      {:ok, status} -> print_status(status)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
@@ -238,7 +258,9 @@ defmodule Mix.Tasks.Favn.Backfill do
     do: "timed out waiting for backfill #{backfill_id}"
 
   defp error_message({:backfill_failed, backfill}),
-    do: "backfill #{backfill["backfill_id"] || "unknown"} finished with status failed"
+    do:
+      "backfill #{backfill["backfill_id"] || "unknown"} finished with status failed. " <>
+        "Inspect it with mix favn.backfill status #{backfill["backfill_id"] || "BACKFILL_ID"}"
 
   defp error_message({:invalid_option, :timeout_ms}), do: "--timeout-ms must be greater than 0"
 
@@ -256,6 +278,8 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   defp error_message({:invalid_option, :retry_backoff_ms}),
     do: "--retry-backoff-ms must be 0 or greater"
+
+  defp error_message({:invalid_option, :limit}), do: "--limit must be between 1 and 200"
 
   defp error_message({:invalid_window_range, _value}),
     do: "--window must use KIND:FROM..TO syntax, for example month:2025-05..2026-05"
@@ -281,6 +305,28 @@ defmodule Mix.Tasks.Favn.Backfill do
     if run["backfill_id"], do: IO.puts("backfill: #{run["backfill_id"]}")
     IO.puts("run: #{run["id"] || run["root_run_id"] || "unknown"}")
     IO.puts("status: #{run["status"] || "unknown"}")
+  end
+
+  @doc false
+  def print_status(%{
+        "backfill" => backfill,
+        "failed_windows" => failed_windows,
+        "failed_windows_pagination" => pagination
+      })
+      when is_map(backfill) and is_list(failed_windows) and is_map(pagination) do
+    progress = map_field(backfill, "progress", %{})
+    backfill_id = safe_value(map_field(backfill, "backfill_id"), "unknown")
+
+    IO.puts("Backfill: #{backfill_id}")
+    IO.puts("Root run: #{safe_value(map_field(backfill, "root_run_id"), "unknown")}")
+    IO.puts("Status: #{safe_value(map_field(backfill, "status"), "unknown")}")
+    IO.puts("Target: #{safe_value(map_field(backfill, "target_id"), "unknown")}")
+    IO.puts("Windows: #{count(backfill, progress, "expected_window_count", "total_count")}")
+    IO.puts("Succeeded: #{count(progress, "succeeded_count")}")
+    IO.puts("Failed: #{count(progress, "failed_count")}")
+
+    print_failed_windows(failed_windows, backfill)
+    print_more_failed_windows(backfill_id, pagination)
   end
 
   defp print_items(title, items) do
@@ -365,6 +411,105 @@ defmodule Mix.Tasks.Favn.Backfill do
     end
   end
 
+  defp print_failed_submission(backfill, opts) do
+    case map_field(backfill, "backfill_id") do
+      backfill_id when is_binary(backfill_id) and backfill_id != "" ->
+        case CLI.get_backfill(backfill_id, opts) do
+          {:ok, status} -> print_status(status)
+          {:error, _reason} -> print_run("Submitted pipeline backfill", backfill)
+        end
+
+      _missing ->
+        print_run("Submitted pipeline backfill", backfill)
+    end
+  end
+
+  defp print_failed_windows([], _backfill), do: IO.puts("\nFailed windows: none")
+
+  defp print_failed_windows(failed_windows, backfill) do
+    IO.puts("\nFailed windows:")
+
+    Enum.each(failed_windows, fn window ->
+      error = map_field(window, "last_error", %{})
+      target = failure_field(error, ["target_id"]) || map_field(backfill, "target_id")
+
+      IO.puts("- #{safe_value(map_field(window, "window_key"), "unknown")}")
+      IO.puts("  child run: #{safe_value(map_field(window, "run_id"), "not created")}")
+      IO.puts("  reason: #{failure_reason(error)}")
+      IO.puts("  target: #{safe_value(target, "unknown")}")
+      print_optional_failure_field("compatibility", error, ["compatibility_status"])
+      print_optional_failure_field("compatibility reason", error, ["reason_code"])
+    end)
+  end
+
+  defp print_more_failed_windows(backfill_id, pagination) do
+    if map_field(pagination, "has_more", false) do
+      cursor = map_field(pagination, "next_cursor")
+      limit = map_field(pagination, "limit", 20)
+
+      IO.puts(
+        "\nMore failed windows: mix favn.backfill windows #{backfill_id} " <>
+          "--status failed --limit #{limit} --cursor #{cursor}"
+      )
+    end
+  end
+
+  defp print_optional_failure_field(label, error, keys) do
+    case failure_field(error, keys) do
+      nil -> :ok
+      value -> IO.puts("  #{label}: #{safe_value(value, "unknown")}")
+    end
+  end
+
+  defp failure_reason(error) do
+    error
+    |> failure_field(["reason", "error_code", "code", "message", "kind"])
+    |> safe_value("unknown")
+  end
+
+  defp failure_field(error, keys) when is_map(error) do
+    direct = Enum.find_value(keys, &present_field(error, &1))
+
+    direct ||
+      Enum.find_value(["details", "diagnostic", "metadata"], fn container ->
+        case map_field(error, container) do
+          nested when is_map(nested) -> Enum.find_value(keys, &present_field(nested, &1))
+          _other -> nil
+        end
+      end)
+  end
+
+  defp failure_field(_error, _keys), do: nil
+
+  defp present_field(map, key) do
+    case map_field(map, key) do
+      value when value in [nil, ""] -> nil
+      value -> value
+    end
+  end
+
+  defp count(backfill, progress, backfill_key, progress_key) do
+    case map_field(backfill, backfill_key) do
+      value when is_integer(value) -> value
+      _other -> count(progress, progress_key)
+    end
+  end
+
+  defp count(map, key) do
+    case map_field(map, key) do
+      value when is_integer(value) and value >= 0 -> value
+      _other -> 0
+    end
+  end
+
+  defp safe_value(value, fallback), do: Error.safe_message(value || fallback)
+
+  defp map_field(map, key, default \\ nil) when is_map(map) and is_binary(key) do
+    Map.get(map, key, Map.get(map, String.to_existing_atom(key), default))
+  rescue
+    ArgumentError -> Map.get(map, key, default)
+  end
+
   defp command_name(:missing_plan), do: "missing-plan"
   defp command_name(:missing_submit), do: "missing-submit"
   defp command_name(command), do: Atom.to_string(command)
@@ -373,7 +518,7 @@ defmodule Mix.Tasks.Favn.Backfill do
   defp option_name(key), do: "--" <> (key |> Atom.to_string() |> String.replace("_", "-"))
 
   defp usage do
-    "mix favn.backfill submit|missing-plan|missing-submit|windows"
+    "mix favn.backfill submit|status|missing-plan|missing-submit|windows"
   end
 
   defp submit_usage do

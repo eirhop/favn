@@ -21,6 +21,8 @@ defmodule Favn.CLI.Backfill do
   @terminal_statuses ["ok", "partial", "error", "cancelled", "timed_out"]
   @default_timeout_ms 60_000
   @default_poll_interval_ms 1_000
+  @default_failed_window_limit 20
+  @max_failed_window_limit 200
 
   @type submit_opts :: [
           root_dir: Path.t(),
@@ -164,6 +166,50 @@ defmodule Favn.CLI.Backfill do
   end
 
   def submit_missing_asset(_asset, _plan, _opts), do: {:error, :invalid_asset}
+
+  @doc """
+  Reads one authoritative backfill header and a bounded page of failed windows.
+
+  `:limit` controls the failed-window page size and defaults to
+  #{@default_failed_window_limit}. The maximum is #{@max_failed_window_limit}.
+  Returned failure payloads have already crossed the orchestrator's redacted
+  operator API boundary.
+  """
+  @spec get(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def get(backfill_id, opts \\ [])
+
+  def get(backfill_id, opts)
+      when is_binary(backfill_id) and backfill_id != "" and is_list(opts) do
+    limit = Keyword.get(opts, :limit, @default_failed_window_limit)
+
+    with :ok <- validate_failed_window_limit(limit),
+         {:ok, base_url, credentials, session_context} <- session(opts),
+         {:ok, backfill} <-
+           OrchestratorClient.get_backfill(
+             base_url,
+             credentials.service_token,
+             session_context,
+             backfill_id
+           ),
+         {:ok, failed_page} <-
+           OrchestratorClient.list_backfill_windows(
+             base_url,
+             credentials.service_token,
+             session_context,
+             backfill_id,
+             status: :failed,
+             limit: limit
+           ) do
+      {:ok,
+       %{
+         "backfill" => backfill,
+         "failed_windows" => Map.get(failed_page, "items", []),
+         "failed_windows_pagination" => Map.get(failed_page, "pagination", %{})
+       }}
+    end
+  end
+
+  def get(_backfill_id, _opts), do: {:error, :invalid_backfill_id}
 
   defp resolve_asset_target(base_url, credentials, session_context, asset) do
     with {:ok, active_manifest} <-
@@ -323,6 +369,12 @@ defmodule Favn.CLI.Backfill do
       {:ok, _value} -> {:error, {:invalid_option, key}}
     end
   end
+
+  defp validate_failed_window_limit(limit)
+       when is_integer(limit) and limit in 1..@max_failed_window_limit,
+       do: :ok
+
+  defp validate_failed_window_limit(_limit), do: {:error, {:invalid_option, :limit}}
 
   defp session(opts), do: Context.resolve(opts)
 

@@ -277,7 +277,9 @@ defmodule Favn.AI do
     A windowed pipeline without `--window` pins one latest complete period;
     `--window` accepts one exact override, while ranges belong to
     `mix favn.backfill`. Direct asset `--window` input becomes an exact
-    data-coverage selection.
+    data-coverage selection. Failed backfills are inspected by backfill ID with
+    `mix favn.backfill status BACKFILL_ID`; the bounded output includes failed
+    windows even when admission rejected a window before creating a child run.
     Direct asset repair can combine `--dependencies all|none` with
     `--refresh auto|missing|force_selected|force_selected_upstream|force_all`;
     pipeline runs have the narrower `auto|missing|force_all` refresh contract and

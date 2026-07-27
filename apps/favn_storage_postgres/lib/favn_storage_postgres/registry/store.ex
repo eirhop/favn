@@ -25,6 +25,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
+  alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
   alias FavnOrchestrator.Persistence.Queries.PageWorkspaces
@@ -59,6 +60,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   @max_execution_packages_per_command 1_000
   @execution_package_insert_size 100
   @execution_package_validation_batch_size 500
+  @max_manifest_target_descriptors 500
   @max_deployment_targets 10_000
   @max_deployment_target_descriptor_bytes 256 * 1_024
   @max_deployment_target_catalog_bytes 32 * 1_024 * 1_024
@@ -451,6 +453,18 @@ defmodule FavnStoragePostgres.Registry.Store do
   end
 
   @impl true
+  def get_manifest_target_descriptors(%GetManifestTargetDescriptors{} = query) do
+    with :ok <- validate_platform_manifest_read(query.platform_context),
+         :ok <- validate_manifest_target_descriptor_query(query),
+         {:ok, rows} <- select_manifest_target_descriptors(query),
+         {:ok, descriptors} <- decode_manifest_target_descriptors(rows, query.target_ids) do
+      {:ok, descriptors}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
   def get_deployment_manifest(%GetDeploymentManifest{} = query) do
     context = query.workspace_context
 
@@ -490,6 +504,77 @@ defmodule FavnStoragePostgres.Registry.Store do
       {:error, _reason} ->
         {:error, Error.new(:invalid, "invalid manifest content hash")}
     end
+  end
+
+  defp select_manifest_target_descriptors(query) do
+    case SQL.query(
+           Repo,
+           """
+           SELECT selected.descriptor
+           FROM favn_control.manifest_versions AS manifest
+           LEFT JOIN LATERAL (
+             SELECT asset -> 'target_descriptor' AS descriptor
+             FROM jsonb_array_elements(
+               COALESCE(manifest.manifest -> 'assets', '[]'::jsonb)
+             ) AS asset
+             WHERE asset -> 'target_descriptor' ->> 'target_id' = ANY($2::text[])
+           ) AS selected ON TRUE
+           WHERE manifest.manifest_version_id = $1
+           ORDER BY selected.descriptor ->> 'target_id'
+           """,
+           [query.manifest_version_id, query.target_ids]
+         ) do
+      {:ok, %{rows: []}} ->
+        {:error, Error.new(:not_found, "manifest release not found")}
+
+      {:ok, %{rows: rows}} ->
+        {:ok, rows}
+
+      {:error, error} ->
+        {:error, ErrorMapper.map(error)}
+    end
+  end
+
+  defp decode_manifest_target_descriptors(rows, target_ids) do
+    allowed = MapSet.new(target_ids)
+
+    rows
+    |> Enum.reduce_while({:ok, %{}}, fn
+      [nil], {:ok, descriptors} ->
+        {:cont, {:ok, descriptors}}
+
+      [value], {:ok, descriptors} ->
+        case TargetDescriptor.from_value(value) do
+          {:ok, %TargetDescriptor{} = descriptor} ->
+            cond do
+              not MapSet.member?(allowed, descriptor.target_id) ->
+                {:halt, invalid_persisted_manifest_target_descriptor()}
+
+              Map.has_key?(descriptors, descriptor.target_id) ->
+                {:halt, invalid_persisted_manifest_target_descriptor()}
+
+              true ->
+                {:cont, {:ok, Map.put(descriptors, descriptor.target_id, descriptor)}}
+            end
+
+          _invalid ->
+            {:halt, invalid_persisted_manifest_target_descriptor()}
+        end
+    end)
+    |> then(fn
+      {:ok, descriptors} ->
+        {:ok, descriptors |> Map.values() |> Enum.sort_by(& &1.target_id)}
+
+      error ->
+        error
+    end)
+  end
+
+  defp invalid_persisted_manifest_target_descriptor do
+    {:error,
+     Error.new(:internal, "persisted manifest target descriptor is invalid",
+       details: %{reason: :invalid_target_descriptor}
+     )}
   end
 
   defp get_activatable_manifest(manifest_version_id) do
@@ -1760,6 +1845,34 @@ defmodule FavnStoragePostgres.Registry.Store do
       {:error, :execution_package_identity_mismatch}
     end
   end
+
+  defp validate_manifest_target_descriptor_query(query) do
+    target_ids = query.target_ids
+
+    if valid_id?(query.manifest_version_id) and is_list(target_ids) and target_ids != [] and
+         length(target_ids) <= @max_manifest_target_descriptors and
+         length(target_ids) == length(Enum.uniq(target_ids)) and
+         Enum.all?(target_ids, &valid_id?/1) do
+      :ok
+    else
+      {:error, Error.new(:invalid, "manifest target descriptor query is invalid")}
+    end
+  end
+
+  defp validate_platform_manifest_read(%PlatformContext{} = context) do
+    if PlatformContext.valid?(context) and
+         Enum.any?(
+           context.roles,
+           &(&1 in [:platform_reader, :platform_operator, :platform_admin])
+         ) do
+      :ok
+    else
+      {:error, Error.new(:forbidden, "platform manifest read role required")}
+    end
+  end
+
+  defp validate_platform_manifest_read(_context),
+    do: {:error, Error.new(:forbidden, "platform manifest read role required")}
 
   defp validate_platform_read(%PlatformContext{} = context) do
     if PlatformContext.valid?(context) and
